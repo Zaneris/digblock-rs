@@ -2,25 +2,21 @@
 //!
 //! Precedence is structural, not timing-based: every authoritative edit
 //! broadcast first `confirm`s our own seq (if it is ours), then
-//! `on_authoritative(cell)` drops any other pending entries on that cell,
-//! then the broadcast value is applied. A rejection arriving after an
-//! authoritative write to the same cell finds no entry and reverts
-//! nothing — authority always wins.
+//! `on_authoritative(cell)` drops any other pending entries on that cell, then
+//! the broadcast value is applied. A rejection arriving after an authoritative
+//! write to the same cell finds no entry and reverts nothing — authority always
+//! wins.
 //!
-//! Each entry also carries the inventory delta predicted with it (dig
-//! credit / place debit). The cell and the delta revert on different
-//! events: a rejection reverts both, but a superseding authoritative
-//! write owns the CELL while the server never applied our INVENTORY
-//! change — so `on_authoritative` returns the dropped entries and the
-//! caller reverts only their deltas.
+//! Each entry also carries the inventory delta predicted with it. The cell and
+//! the delta revert on different events: a rejection reverts both, but a
+//! superseding authoritative write owns the CELL while the server never applied
+//! our INVENTORY change — so `on_authoritative` returns the dropped entries and
+//! the caller reverts only their deltas.
 //!
-//! Multi-cell actions (a door pair's place/dig/toggle) are LINKED
-//! entries sharing one seq via `begin_multi`: confirm drops them all,
-//! reject returns every SURVIVING entry for revert (a per-cell
-//! authoritative supersede has already removed just that cell's entry,
-//! so a late rejection can never clobber the authoritative value), and
-//! the shared inventory delta rides only the first entry so it reverts
-//! exactly once.
+//! Multi-cell actions are LINKED entries sharing one seq via `begin_multi`:
+//! confirm drops them all, reject returns every SURVIVING entry for revert, and
+//! the shared inventory delta rides only the first entry so it reverts exactly
+//! once.
 
 use digblock_core::block::BlockType;
 use std::collections::VecDeque;

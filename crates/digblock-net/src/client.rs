@@ -326,20 +326,18 @@ impl NetClient {
 		}
 	}
 
-	/// Report the outcome of a reconcile. The ENGINE owns that call — it
-	/// needs the world borrow for the replay — so the round trip and the
-	/// replay count come back here rather than being sampled from inside.
+	/// Report the outcome of a reconcile. The ENGINE owns that call — it needs
+	/// the world borrow for the replay — so the round trip and the replay count
+	/// come back here rather than being sampled from inside.
 	///
-	/// Takes the outcome rather than a `replayed` bool because a STALE ack
-	/// is not a round trip and must not be sampled as one.
-	/// [`Predictor::reconcile`] returns early on a stale ack, before it
-	/// assigns `last_rtt` — so the value still describes the PREVIOUS ack,
-	/// and feeding it again re-blends a measurement already in the average.
-	/// That halves the EWMA's effective response and, worse, deflates the
-	/// reported jitter: `on_rtt` derives deviation from the running mean, and
-	/// a duplicate deviates from it by nothing. The measured stale share of
-	/// acks is none at all on lan and wifi and climbs with latency until it
-	/// is half of them on the worst link — so the overlay was least
+	/// Takes the OUTCOME rather than a `replayed` bool because a STALE ack is
+	/// not a round trip and must not be sampled as one.
+	/// [`Predictor::reconcile`] returns early on a stale ack, before it assigns
+	/// `last_rtt`, so the value still describes the PREVIOUS ack and feeding it
+	/// again re-blends a measurement already in the average — halving the EWMA's
+	/// response and deflating the reported jitter, since a duplicate deviates
+	/// from the running mean by nothing. The stale share climbs with latency
+	/// until it is half of all acks on the worst link, so the overlay was least
 	/// trustworthy on exactly the links a player opens it to diagnose.
 	pub fn note_reconciled(&mut self, outcome: Reconciled) {
 		if matches!(outcome, Reconciled::Replayed { .. }) {
@@ -918,21 +916,18 @@ impl NetClient {
 
 	/// Say goodbye, and give it a moment to leave the machine.
 	///
-	/// Call this on every path where the player is knowingly going —
-	/// Leave Server, closing the window, the tab unloading. The server
-	/// drops the session the instant it reads a `Bye`, and without one it
-	/// has to wait out QUIC's idle timeout instead. That matters now that
-	/// records are keyed on an account and one account holds one live
-	/// connection: the player whose session is being held is the same
-	/// player trying to get back in.
+	/// Call this on every path where the player is knowingly going. The server
+	/// drops the session the instant it reads a `Bye`, and without one it has to
+	/// wait out QUIC's idle timeout instead — which matters now that one account
+	/// holds one live connection: the player whose session is being held is the
+	/// same player trying to get back in.
 	///
-	/// The pairing is the whole point and is why this is one method
-	/// rather than two. `Bye` alone is a message queued into a stream
-	/// buffer; dropping the transport a line later takes it with it.
+	/// The pairing is the whole point and is why this is one method rather than
+	/// two. `Bye` alone is a message queued into a stream buffer; dropping the
+	/// transport a line later takes it with it.
 	///
-	/// Best effort throughout. Nothing here can promise the message
-	/// arrives — a pulled cable, a killed process and a closed laptop all
-	/// still fall back on the server's timeout.
+	/// Best effort throughout — a pulled cable, a killed process and a closed
+	/// laptop all skip it, and the server still reaps the connection.
 	pub fn disconnect(&mut self) {
 		if self.left || self.transport.status() == crate::transport::ConnStatus::Closed {
 			return;

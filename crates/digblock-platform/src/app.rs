@@ -623,19 +623,17 @@ impl<G: Game> App<G> {
 		self.state = AppState::WaitingForGpu { window };
 	}
 
-	/// Re-read the window and reconfigure if it has resized since
-	/// [`init_gpu`] measured it. Runs at every hand-off from an async GPU
-	/// init, which is the whole window in which that can happen.
+	/// Re-read the window and reconfigure if it has resized since [`init_gpu`]
+	/// measured it. Runs at every hand-off from an async GPU init, which is the
+	/// whole window in which that can happen.
 	///
-	/// On the web the two routinely disagree. A freshly created canvas
-	/// reports 0×0 — winit fills its size in from a `ResizeObserver`, which
-	/// first fires at the browser's next rendering step — so an async init
-	/// that beats that callback configures the surface at the `max(1)`
-	/// floor. The `Resized` that follows arrives while the app is still
-	/// `WaitingForGpu` and is dropped there, and winit only sends one when
-	/// the size CHANGES: the next one comes with the device's next real
-	/// resize. That is a phone rendering into one stretched pixel until it
-	/// is turned sideways.
+	/// On the web the two routinely disagree. A freshly created canvas reports
+	/// 0×0 — winit fills its size in from a `ResizeObserver`, which first fires
+	/// at the browser's next rendering step — so an async init that beats that
+	/// callback configures the surface at the `max(1)` floor. The `Resized` that
+	/// follows arrives while the app is still `WaitingForGpu` and is dropped
+	/// there, and winit only sends one when the size CHANGES. That is a phone
+	/// rendering into one stretched pixel until it is turned sideways.
 	fn adopt_window_size(
 		window: &Window,
 		gpu: &Gpu,
@@ -734,19 +732,16 @@ impl<G: Game> App<G> {
 				self.game.on_suspend();
 				// On the web this arm is reached from `pagehide` with
 				// `persisted` set — the page went into the back/forward
-				// cache. It may be restored, but the connection will not
-				// be: a frozen page stops pumping and the socket dies
-				// with it. So say goodbye rather than leave the server
-				// holding a session nobody is behind.
+				// cache. It may be restored, but the connection will not be:
+				// a frozen page stops pumping and the socket dies with it.
+				// So say goodbye rather than leave the server holding a
+				// session nobody is behind.
 				//
-				// The OTHER pagehide — an actual close or navigation —
-				// does not come through here at all. winit turns that one
-				// into `LoopExiting`, which is why `exiting` below is
-				// where the web's real departure is handled.
-				//
-				// Native keeps suspend and exit apart: a backgrounded
-				// phone is suspended and may well come back, and hanging
-				// up on it would end a session the player still wants.
+				// The OTHER pagehide — an actual close or navigation — does
+				// not come through here at all; winit turns that into
+				// `LoopExiting`, which is where the web's real departure is
+				// handled. Native keeps suspend and exit apart, because a
+				// backgrounded phone may well come back.
 				#[cfg(target_arch = "wasm32")]
 				self.exit_once();
 				// r.surface and r.depth drop here; gpu + window retained.

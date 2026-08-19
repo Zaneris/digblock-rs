@@ -231,27 +231,23 @@ pub mod font {
 }
 
 pub mod shader {
-	// WGSL has no include mechanism, so shared preludes are prepended
-	// with concat! at include time, each the sole definition of one thing
-	// so the passes cannot silently disagree:
-	// frame_common.wgsl (the Frame uniform block + its group(0) binding),
-	// medium_common.wgsl (the participating medium and its extinction
-	// constants), sky_common.wgsl (the procedural-sky core — gradient,
-	// glow, stars — shared so the sky pass, water reflections and the
-	// medium's in-scatter are one function), gi_common.wgsl (the probe
-	// gather + the group(2) world bindings), and ink_common.wgsl (the
-	// fullbright-ink gain, so a `glows` block reads the same in the
-	// world, in your hand and in somebody else's).
+	// WGSL has no include mechanism, so shared preludes are prepended with
+	// concat! at include time, each the sole definition of one thing so the
+	// passes cannot silently disagree: frame_common.wgsl (the Frame uniform
+	// block + its group(0) binding), medium_common.wgsl (the participating
+	// medium and its extinction constants), sky_common.wgsl (the
+	// procedural-sky core, shared so the sky pass, water reflections and the
+	// medium's in-scatter are one function), gi_common.wgsl (the probe gather
+	// + the group(2) world bindings), and ink_common.wgsl.
 	//
-	// Order is frame_common, medium_common, sky_common, gi_common,
-	// ink_common, body.
-	// medium_common sits early on purpose: it is dependency-free (every
-	// input an argument) precisely so the GI compute kernels — which
-	// carry their own uniform block and CANNOT take frame_common — can
-	// still share its water extinction with the view ray.
+	// Order is frame_common, medium_common, sky_common, gi_common, ink_common,
+	// body. medium_common sits early on purpose: it is dependency-free
+	// precisely so the GI compute kernels — which carry their own uniform block
+	// and CANNOT take frame_common — can still share its water extinction with
+	// the view ray.
 	//
-	// naga error line numbers in the body files are offset by the total
-	// prelude length.
+	// naga error line numbers in the body files are offset by the total prelude
+	// length.
 	pub const CHUNK: &str = concat!(
 		include_str!("../../../assets/shaders/frame_common.wgsl"),
 		include_str!("../../../assets/shaders/medium_common.wgsl"),
@@ -446,25 +442,23 @@ mod tests {
 			.unwrap_or_else(|e| panic!("{name}: not a number: {e}"))
 	}
 
-	/// The spatial filter has to run on every pixel the temporal one cut
-	/// short. That is the whole trade — give up temporal samples,
-	/// let `gi_atrous` hand them back — and it holds only while a moving
-	/// pixel's history stays under the length at which the filter decides
-	/// the pixel is converged and skips it.
+	/// The spatial filter has to run on every pixel the temporal one cut short.
+	/// That is the whole trade — give up temporal samples, let `gi_atrous` hand
+	/// them back — and it holds only while a moving pixel's history stays under
+	/// the length at which the filter decides the pixel is converged and skips
+	/// it.
 	///
-	/// It stopped holding silently once. The cap used to be a smooth
-	/// function of per-frame reprojection travel, and per-frame parallax
-	/// collapses with view distance, so the far field walked around with a
-	/// history longer than `N_CONVERGED`, where the filter switches itself
-	/// off. The band that most needed it was the band not getting it, and the
-	/// only symptom was a shadow ten blocks out sliding with the player
-	/// (R13). A two-state cap makes the relationship structural, and this
-	/// pins it so a future retune of either constant cannot re-open it.
+	/// It stopped holding silently once. A cap that was a smooth function of
+	/// per-frame reprojection travel let the far field walk around with a
+	/// history longer than `N_CONVERGED`, since per-frame parallax collapses
+	/// with view distance — the band that most needed the filter was the band
+	/// not getting it, and the only symptom was a shadow ten blocks out sliding
+	/// with the player (R13). A two-state cap makes the relationship structural,
+	/// and this pins it against a future retune of either constant.
 	///
-	/// Since the deterministic sun this trade covers only INDIRECT: the sun
-	/// stopped relying on the converged/skip gate at all (its filter is
-	/// penumbra-driven reconstruction that runs at rest too, and its
-	/// history is capped at N_SUN — see the pin below).
+	/// Since the deterministic sun, this trade covers only INDIRECT: the sun's
+	/// filter is penumbra-driven reconstruction that runs at rest too, and its
+	/// history is capped at N_SUN.
 	#[test]
 	fn a_moving_pixel_always_gets_the_spatial_filter() {
 		let moving = wgsl_const(super::shader::GI_RESOLVE, "N_MOVING");
@@ -500,23 +494,20 @@ mod tests {
 		);
 	}
 
-	/// A `glows` block reads the same wherever it is drawn, because there
-	/// is ONE definition of the gain and every pass that can draw one
-	/// takes it as a prelude.
+	/// A `glows` block reads the same wherever it is drawn, because there is ONE
+	/// definition of the gain and every pass that can draw one takes it as a
+	/// prelude.
 	///
-	/// The pin is a COUNT of DECLARATIONS, not a comparison of values, and
-	/// that is the point: two module-scope declarations would be a WGSL
-	/// error and need no test, but a function-scope `const EMISSIVE_GAIN`
-	/// shadows the prelude's silently — and a torch that glowed one way in
-	/// the world and another way in a hand is precisely what
-	/// ink_common.wgsl exists to make impossible.
+	/// The pin is a COUNT of DECLARATIONS, not a comparison of values, and that
+	/// is the point: two module-scope declarations would be a WGSL error and
+	/// need no test, but a function-scope `const EMISSIVE_GAIN` shadows the
+	/// prelude's silently.
 	///
-	/// Counting `const EMISSIVE_GAIN` rather than `EMISSIVE_GAIN = ` is
-	/// what makes that true. The narrower pattern misses the TYPED form
-	/// (`const EMISSIVE_GAIN: f32 = …;`) that `wgsl_const` itself
-	/// supports, and comparing the value cannot catch it either, since
-	/// the prelude is prepended and its declaration is the one found
-	/// first — so a shadowing local passed every assertion here.
+	/// Counting `const EMISSIVE_GAIN` rather than `EMISSIVE_GAIN = ` is what
+	/// makes that true. The narrower pattern misses the TYPED form that
+	/// `wgsl_const` itself supports, and comparing the value cannot catch it
+	/// either, since the prelude is prepended and its declaration is found
+	/// first.
 	#[test]
 	fn every_pass_that_draws_ink_shares_one_gain() {
 		let shared = wgsl_const(super::shader::INK_COMMON, "EMISSIVE_GAIN");
@@ -566,19 +557,17 @@ mod tests {
 		);
 	}
 
-	/// The fragment-side NEE (R20, shared by the resolve and players
-	/// since R33) and the probe pass's stochastic one price the same
-	/// torch with const twins — the probe kernel lives in a shader that
-	/// cannot share bindings, so the compiler can't hold them together.
-	/// If they drift, the deterministic direct pool and the cache's
-	/// bounce of that same pool disagree about the light's strength, and
-	/// the seam moves with the camera (the near field is the ray, the far
-	/// field is the cache). Retuning is legal — in both files at once.
+	/// The fragment-side NEE (R20, shared by the resolve and players since R33)
+	/// and the probe pass's stochastic one price the same torch with const twins
+	/// — the probe kernel lives in a shader that cannot share bindings, so the
+	/// compiler cannot hold them together. If they drift, the deterministic
+	/// direct pool and the cache's bounce of that same pool disagree about the
+	/// light's strength, and the seam moves with the camera. Retuning is legal —
+	/// in both files at once.
 	///
-	/// The resolve and players are listed even though they now share
-	/// gi_common's ONE declaration: what the loop catches for them is a
-	/// function-scope shadowing const, the same failure mode the ink pin
-	/// counts declarations for.
+	/// The resolve and players are listed even though they share gi_common's ONE
+	/// declaration: what the loop catches for them is a function-scope shadowing
+	/// const.
 	#[test]
 	fn resolve_and_probe_agree_on_light_calibration() {
 		for name in ["LIGHT_RANGE", "LIGHT_GAIN", "LIGHT_NEAR"] {
@@ -601,18 +590,17 @@ mod tests {
 	}
 
 	/// Every pass that prices local lights does it through the ONE
-	/// `gi_light_score` gi_common carries (R33, R34) — defined once (no
-	/// shadowing copy), and each pass actually calls the estimator built
-	/// on it, because a pass that takes the prelude and never calls it is
-	/// a body torches cannot light, which is exactly the regression
-	/// players shipped with and confetti sat in until R34.
+	/// `gi_light_score` gi_common carries (R33, R34) — defined once, with no
+	/// shadowing copy, and each pass actually CALLS the estimator built on it,
+	/// because a pass that takes the prelude and never calls it is a body
+	/// torches cannot light.
 	///
-	/// The two estimators differ on purpose and the pin says which pass
-	/// runs which: the resolve resamples the pool behind an accumulator,
-	/// while players and confetti sum the brightest few in front of
-	/// nothing at all. Swapping them is the R34 bug in either direction —
-	/// a dither on an unfiltered surface, or a march per tap per pixel
-	/// across the whole screen.
+	/// The two estimators differ on purpose and the pin says which pass runs
+	/// which: the resolve resamples the pool behind an accumulator, while
+	/// players and confetti sum the brightest few in front of nothing at all.
+	/// Swapping them is the R34 bug in either direction — a dither on an
+	/// unfiltered surface, or a march per tap per pixel across the whole
+	/// screen.
 	#[test]
 	fn every_nee_consumer_runs_the_shared_estimator() {
 		for (name, src, estimator) in [

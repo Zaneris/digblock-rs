@@ -675,23 +675,20 @@ impl WebTransportClient {
 	}
 }
 
-/// Open a throwaway WebTransport session, read the browser's own QUIC
-/// round-trip estimate, close — the browser mirror of digblock-net-native's
-/// `probe`, and the same measurement it makes. Calls `done` with `Some(ms)`
-/// on success, `None` on failure or timeout.
+/// Open a throwaway WebTransport session, read the browser's own QUIC round-trip
+/// estimate, close — the browser mirror of digblock-net-native's `probe`, and the
+/// same measurement it makes. Calls `done` with `Some(ms)` on success, `None` on
+/// failure or timeout.
 ///
-/// This used to time the connect itself, which is a QUIC+TLS handshake plus
-/// an HTTP/3 extended CONNECT — two round trips at best, plus DNS, which
-/// does not scale with distance at all. `getStats().smoothedRtt` is a ping;
-/// the handshake time was roughly double one. See the native probe's module
-/// docs for the full reasoning, which both platforms share.
+/// Timing the connect instead is a QUIC+TLS handshake plus an HTTP/3 extended
+/// CONNECT — two round trips at best, plus DNS, which does not scale with
+/// distance at all. See the native probe's module docs for the full reasoning,
+/// which both platforms share.
 ///
-/// In practice Chrome does not implement `getStats`, so the browser build
-/// falls back to the handshake time here and reports no ping at all on the
-/// overlay. The stats path is kept because it is the correct measurement
-/// the moment a browser ships it, and because the fallback is honest:
-/// an over-estimated ping in a server list, versus dashes for a number
-/// nothing can currently produce.
+/// In practice Chrome does not implement `getStats`, so the browser build falls
+/// back to the handshake time and reports no ping at all on the overlay. The
+/// stats path is kept because it is the correct measurement the moment a browser
+/// ships it, and because the fallback is honest.
 pub fn probe(
 	url: &str,
 	cert_hash: [u8; 32],

@@ -291,48 +291,39 @@ pub enum ClientMsg {
 		hotbar: Vec<u16>,
 		grid: Vec<u16>,
 	},
-	/// Claim the pre-account character this server holds for `legacy`, and
-	/// fold it into the account that sent this. Appended in v24.
+	/// Claim the pre-account character this server holds for `legacy`, and fold
+	/// it into the account that sent this. Appended in v24.
 	///
-	/// `legacy` is the LOOKUP KEY those records were filed under — the
-	/// truncated hash of the old device secret, which the client computes
-	/// locally. The secret itself never leaves the machine; there is
-	/// nothing a server could learn here that it could present to a
-	/// different server as an identity, because no server takes an
-	/// identity from the wire any more.
+	/// `legacy` is the LOOKUP KEY those records were filed under — the truncated
+	/// hash of the old device secret, computed locally. The secret itself never
+	/// leaves the machine, and there is nothing a server could learn here that
+	/// it could present elsewhere as an identity.
 	///
-	/// It is still a bearer credential for one thing: whoever presents it
-	/// first gets those records. That is unavoidable — the server stores
-	/// only the hash, so it has nothing to run a challenge against — and
-	/// it is bounded, because a successful claim DELETES the legacy entry.
-	/// One claim per server, and the alternative was deleting every
-	/// pre-account character outright. See AUTH-DESIGN.md §6.
+	/// It is still a bearer credential for one thing: whoever presents it first
+	/// gets those records. That is unavoidable — the server stores only the
+	/// hash, so it has nothing to run a challenge against — and it is bounded,
+	/// because a successful claim DELETES the legacy entry. See AUTH-DESIGN.md
+	/// §6.
 	///
-	/// Sent once per connection, immediately after `Hello`, by any client
-	/// that still has an old identity file. In-order on the reliable
-	/// stream, so the server has already admitted the player and knows
-	/// which account is asking. Unmatched claims are silent: a player who
-	/// has already migrated here, or never played here, is not an error.
+	/// Sent once per connection, immediately after `Hello`. In-order on the
+	/// reliable stream, so the server already knows which account is asking.
+	/// Unmatched claims are silent.
 	ClaimLegacy {
 		legacy: [u8; 16],
 	},
-	/// This client's transport has no datagram channel: its unreliable
-	/// traffic will arrive as [`ClientMsg::Unreliable`] on this stream,
-	/// and the server must answer in kind ([`ServerMsg::Unreliable`]).
-	/// Appended in v26.
+	/// This client's transport has no datagram channel: its unreliable traffic
+	/// will arrive as [`ClientMsg::Unreliable`] on this stream, and the server
+	/// must answer in kind ([`ServerMsg::Unreliable`]). Appended in v26.
 	///
-	/// Sent once per connection, immediately after `Hello`, by a client
-	/// whose transport says so — today only iOS Safari, whose
-	/// `WebTransport.datagrams` has no writable side at all. In-order on
-	/// the reliable stream, so it lands before the first snapshot the
-	/// server would otherwise send where this client cannot hear it.
+	/// Sent once per connection, immediately after `Hello`, by a client whose
+	/// transport says so — today only iOS Safari, whose `WebTransport.datagrams`
+	/// has no writable side. In-order on the reliable stream, so it lands before
+	/// the first snapshot the server would otherwise send where this client
+	/// cannot hear it.
 	///
-	/// A capability, deliberately not a preference: nothing chooses this,
-	/// and a client with working datagrams never sends it. Announcing it
-	/// rather than inferring it from the first `Unreliable` frame is what
-	/// keeps the two directions from disagreeing — the server would
-	/// otherwise keep talking into a channel that was never there until
-	/// the client happened to say something.
+	/// A capability, deliberately not a preference. Announcing it rather than
+	/// inferring it from the first `Unreliable` frame is what keeps the two
+	/// directions from disagreeing.
 	NoDatagrams,
 	/// One datagram that could not travel as one: the encoded
 	/// [`Datagram`] payload, verbatim. Appended in v26.
@@ -545,21 +536,18 @@ pub enum ServerMsg {
 		skill: u8,
 		level: u32,
 	},
-	/// Every journaled column within `AREA_SYNC_RADIUS` of where you were
-	/// just put has been sent — the ground under you is the real one now.
+	/// Every journaled column within `AREA_SYNC_RADIUS` of where you were just
+	/// put has been sent — the ground under you is the real one now.
 	///
-	/// The client holds the world (no render, no player sim) from `Welcome`
-	/// or `Teleported` until this lands, because until then it is standing
-	/// on pristine worldgen the journal is about to overwrite: on a spawn
-	/// anyone has dug out, the arrival pose is a guess that the first
-	/// snapshot then corrects, which reads as being *moved* after joining.
+	/// The client holds the world (no render, no player sim) from `Welcome` or
+	/// `Teleported` until this lands, because until then it is standing on
+	/// pristine worldgen the journal is about to overwrite: on a spawn anyone
+	/// has dug out, the arrival pose is a guess the first snapshot then
+	/// corrects, which reads as being *moved* after joining.
 	///
-	/// It is deliberately not `JournalDone`, which is sent at handshake
-	/// time BEFORE any column goes out and only names a sequence number.
-	/// One message covers both entrances: a join and a teleport are the
-	/// same event to the world around you. Sent immediately when the
-	/// radius holds no edits at all, so an untouched world never waits.
-	/// Appended in v20.
+	/// Deliberately not `JournalDone`, which is sent at handshake time BEFORE
+	/// any column goes out. One message covers both entrances, and it is sent
+	/// immediately when the radius holds no edits at all. Appended in v20.
 	AreaReady,
 	/// A snapshot for a client that announced [`ClientMsg::NoDatagrams`]:
 	/// the encoded [`Datagram`] payload, verbatim. Appended in v26.

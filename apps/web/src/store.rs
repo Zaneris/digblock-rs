@@ -1,24 +1,19 @@
-//! Web `WorldStore`: named saves in localStorage, sharded by REGION. Each
-//! shard is base64 of exact server-format journal bytes
-//! (`digblock_persist::journal::region_snapshot_bytes`), so version/seed
-//! checks and LWW replay are the shared code paths and a shard is just an
-//! ordinary journal that holds one region. localStorage over IndexedDB
-//! deliberately: `flush` runs inside the synchronous `on_suspend`
-//! contract, and after LWW compaction a save is live-cells small — a
-//! handful of base64 bytes per cell, comfortably inside the quota.
+//! Web `WorldStore`: named saves in localStorage, sharded by REGION. Each shard
+//! is base64 of exact server-format journal bytes, so version/seed checks and
+//! LWW replay are the shared code paths and a shard is just an ordinary journal
+//! that holds one region. localStorage over IndexedDB deliberately: `flush` runs
+//! inside the synchronous `on_suspend` contract, and after LWW compaction a save
+//! is live-cells small.
 //!
-//! Sharding is why the save cost is bounded. A single blob meant every
-//! write re-serialized the world's ENTIRE edit history, base64'd it and
-//! handed it to a synchronous `setItem` — inside the frame, on every
-//! flush, growing forever with the age of the save. Now only regions
-//! that actually changed are rewritten, so the cost tracks recent
-//! building rather than lifetime building.
+//! Sharding is why the save cost is bounded. A single blob meant every write
+//! re-serialized the world's ENTIRE edit history, base64'd it and handed it to a
+//! synchronous `setItem` — inside the frame, growing forever with the age of the
+//! save. Now only regions that actually changed are rewritten.
 //!
-//! The store still never mirrors the live index: `maintain`/`flush`
-//! receive the Pipeline's authoritative `EditOverlay`, and a region is
-//! serialized by asking the overlay for that region's columns — O(region),
-//! not O(world). Only the DIRTY-REGION SET is tracked here, fed by
-//! `append_edit`. Quota/private-mode failures degrade to in-memory play
+//! The store never mirrors the live index: `maintain`/`flush` receive the
+//! Pipeline's authoritative `EditOverlay` and a region is serialized by asking
+//! the overlay for that region's columns — O(region), not O(world). Only the
+//! DIRTY-REGION SET is tracked here. Quota failures degrade to in-memory play
 //! with a one-time status the menu surfaces.
 
 use digblock_persist::journal::{

@@ -1,28 +1,24 @@
 //! Browser sign-in, and the session it produces.
 //!
-//! Same master endpoints as desktop, different browser hop. A page cannot
-//! listen on a loopback port, so the redirect target is the game page
-//! itself: navigate away to the master, come back with `?code=&state=` in
-//! the query, exchange it, and scrub the URL.
+//! Same master endpoints as desktop, different browser hop. A page cannot listen
+//! on a loopback port, so the redirect target is the game page itself: navigate
+//! away to the master, come back with `?code=&state=` in the query, exchange it,
+//! and scrub the URL.
 //!
-//! A top-level navigation rather than a popup, deliberately. A popup opened
-//! from the engine's command drain is one task removed from the click that
-//! asked for it, which is exactly what a popup blocker exists to stop — and
-//! a sign-in that silently fails to open anything reads as a hang. The cost
-//! of navigating is a page reload, and sign-in happens at the menu before
-//! entering a world, so there is nothing to lose.
+//! A top-level navigation rather than a popup, deliberately. A popup opened from
+//! the engine's command drain is one task removed from the click that asked for
+//! it, which is exactly what a popup blocker exists to stop — and a sign-in that
+//! silently fails to open anything reads as a hang.
 //!
 //! The PKCE verifier and the state outlive that reload in `sessionStorage`:
-//! per-tab, cleared when the tab closes, and unreadable from another
-//! origin. They are consumed on return.
+//! per-tab, cleared when the tab closes, unreadable from another origin, and
+//! consumed on return.
 //!
-//! The page's own query rides along with them. `?master=` and its
-//! neighbours are configuration this load was started with, but the master
-//! refuses a redirect target that carries a query (it appends its own
-//! `?code=&state=`), so the query cannot survive the trip in the URL —
-//! losing it silently repointed a dev-stack session at the production
-//! master the moment sign-in succeeded. It is parked here instead and put
-//! back by `take_callback`, minus the one-shot actions (`?join`,
+//! The page's own query rides along with them. The master refuses a redirect
+//! target that carries a query, so `?master=` and its neighbours cannot survive
+//! the trip in the URL — losing them silently repointed a dev-stack session at
+//! the production master the moment sign-in succeeded. They are parked here and
+//! put back by `take_callback`, minus the one-shot actions (`?join`,
 //! `?devsignin`) that must not re-fire on return.
 
 use wasm_bindgen::JsValue;

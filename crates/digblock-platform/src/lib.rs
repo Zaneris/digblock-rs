@@ -73,30 +73,24 @@ pub trait Game: 'static {
 	/// Save state NOW — on iOS/Android the process may be killed with no
 	/// further callbacks. Must be cheap and synchronous.
 	fn on_suspend(&mut self) {}
-	/// We are going away for good: the window was closed, the page is
-	/// unloading, or a capture ran out its frames (`exit_after_frames`).
-	/// On a real departure it follows [`Game::on_suspend`], so state is
-	/// already saved — this is for the goodbyes state-saving cannot do,
-	/// like telling a server the player has left, or emitting a bench
-	/// summary. (A capture that runs out its frames reaches it without a
-	/// suspend: there is nothing to save, and every capture path is
-	/// deliberately hermetic.)
+	/// We are going away for good: the window was closed, the page is unloading,
+	/// or a capture ran out its frames. On a real departure it follows
+	/// [`Game::on_suspend`], so state is already saved — this is for the
+	/// goodbyes state-saving cannot do, like telling a server the player has
+	/// left, or emitting a bench summary.
 	///
-	/// Exists because a `Drop` impl is not a portable exit hook: on wasm,
-	/// winit's exit unwinds through JS and destructors do not reliably
-	/// run, so anything a capture is FOR would be emitted on native and
-	/// silently lost on the web, which is the platform with no other way
-	/// to report it.
+	/// Exists because a `Drop` impl is not a portable exit hook: on wasm, winit's
+	/// exit unwinds through JS and destructors do not reliably run, so anything a
+	/// capture is FOR would be emitted on native and silently lost on the web.
 	///
 	/// Kept apart from `on_suspend` because they mean different things. A
-	/// backgrounded phone is suspended and may well come back; hanging up
-	/// on it would end a session the player still wants. This one fires
-	/// only when there is nothing to come back to.
+	/// backgrounded phone is suspended and may well come back; hanging up on it
+	/// would end a session the player still wants. This fires only when there is
+	/// nothing to come back to.
 	///
-	/// May BLOCK, briefly, and is the only callback here allowed to: a
-	/// network flush queued and not waited for is a flush that loses the
-	/// race with the process exiting. Keep it to a fraction of a second —
-	/// a window that lingers after the click reads as a hang.
+	/// May BLOCK, briefly, and is the only callback here allowed to: a network
+	/// flush queued and not waited for loses the race with the process exiting.
+	/// Keep it to a fraction of a second.
 	fn on_exit(&mut self) {}
 	/// Polled once per frame. `false` (menu open) releases the cursor and
 	/// routes clicks/positions to the game as UI input; the shell re-grabs
@@ -155,23 +149,20 @@ pub struct RunOptions {
 	/// Present with `AutoNoVsync` instead of `Fifo` — frames run uncapped
 	/// so benchmarks measure real frame cost, not vsync residue.
 	pub no_vsync: bool,
-	/// Draw into a texture of our own instead of the swapchain, and never
-	/// acquire or present. A capture flag, and the one that makes a
-	/// capture independent of the DESKTOP: a window that is minimized,
-	/// covered, or behind a screensaver is handed no surface texture at
-	/// all on macOS, so an unattended run through the swapchain simply
-	/// stops producing frames when the screen locks. Off this path there
-	/// is no compositor in the picture — no drawable, no vsync, no window
-	/// stacking.
+	/// Draw into a texture of our own instead of the swapchain, and never acquire
+	/// or present.
 	///
-	/// Deliberately NOT implied by `--screenshot`: dropping the swapchain
-	/// also drops the present wait, so a frame-time run means something
-	/// different here, and every BENCH.md baseline was taken through the
-	/// surface. Opt in per run.
+	/// The flag that makes a capture independent of the DESKTOP: a window that is
+	/// minimized, covered, or behind a screensaver is handed no surface texture
+	/// at all on macOS, so an unattended run through the swapchain simply stops
+	/// producing frames when the screen locks.
 	///
-	/// Composes with [`Self::auto_drill`] — suspend still drops and
-	/// rebuilds the surface, and this target with it — but the drill then
-	/// covers one transition less, since nothing acquires.
+	/// Deliberately NOT implied by `--screenshot`: dropping the swapchain also
+	/// drops the present wait, so a frame-time run means something different
+	/// here, and every BENCH.md baseline was taken through the surface.
+	///
+	/// Composes with [`Self::auto_drill`], though the drill then covers one
+	/// transition less, since nothing acquires.
 	pub offscreen: bool,
 	/// Logical window size, when a run needs a SPECIFIC one rather than
 	/// winit's default. The GI resolve is a fraction of the surface, so
@@ -179,19 +170,16 @@ pub struct RunOptions {
 	/// desktop-vs-web comparison has to hold equal before any of its
 	/// numbers mean anything.
 	pub window_size: Option<(u32, u32)>,
-	/// Open the window on this monitor (index into winit's enumeration)
-	/// instead of wherever the desktop last had focus.
+	/// Open the window on this monitor (index into winit's enumeration) instead
+	/// of wherever the desktop last had focus.
 	///
-	/// This is a MEASUREMENT knob, not a convenience. A window that opens
-	/// on whichever screen the user most recently clicked lands on a
-	/// different refresh rate and a different backing scale run to run,
-	/// and both are load-bearing: the physical framebuffer follows the
-	/// scale, so the GI resolve's cost changes with it, and a
-	/// display-paced frame lets the GPU downclock, which inflates every
-	/// timestamp in the CSV. A bracket taken across two screens is
-	/// measuring the screens. `--display` pins it; the chosen monitor's
-	/// name, size and refresh are logged so a capture records which one
-	/// it ran on.
+	/// A MEASUREMENT knob, not a convenience. A window that opens on whichever
+	/// screen the user most recently clicked lands on a different refresh rate
+	/// and a different backing scale run to run, and both are load-bearing: the
+	/// physical framebuffer follows the scale, so the GI resolve's cost changes
+	/// with it, and a display-paced frame lets the GPU downclock, which inflates
+	/// every timestamp in the CSV. A bracket taken across two screens is
+	/// measuring the screens.
 	pub display: Option<usize>,
 	/// Step the world by exactly this much per frame instead of by
 	/// measured wall time (`--fixed-dt`). Everything animated rides dt —

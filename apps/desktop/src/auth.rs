@@ -1,19 +1,16 @@
-//! Desktop sign-in: the RFC 8252 loopback flow, and the session it
-//! produces.
+//! Desktop sign-in: the RFC 8252 loopback flow, and the session it produces.
 //!
-//! The shape, and why: the game opens the system browser at the master's
-//! sign-in page with a redirect back to a loopback port we are listening
-//! on. The browser does whichever provider the player picked; the master
-//! bounces back to `http://127.0.0.1:<port>/cb?code=…&state=…`; we redeem
-//! that code over our own HTTPS connection for a session token. The client
-//! never handles a provider token, and the master never handles our
-//! verifier.
+//! The game opens the system browser at the master's sign-in page with a
+//! redirect back to a loopback port we are listening on. The browser does
+//! whichever provider the player picked; the master bounces back to
+//! `http://127.0.0.1:<port>/cb?code=…&state=…`; we redeem that code over our own
+//! HTTPS connection for a session token. The client never handles a provider
+//! token, and the master never handles our verifier.
 //!
 //! Two secrets guard the hop the browser makes, because a URL is the least
-//! private thing on a machine — it lands in history, in logs, sometimes in
-//! a clipboard. `state` proves the callback belongs to the request we
-//! started. The PKCE verifier proves the redemption does: the code alone
-//! is useless to anything that merely read it (RFC 7636).
+//! private thing on a machine — history, logs, sometimes a clipboard. `state`
+//! proves the callback belongs to the request we started; the PKCE verifier
+//! proves the redemption does (RFC 7636).
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpListener;

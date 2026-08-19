@@ -1,23 +1,18 @@
-//! Append-only world persistence: every accepted edit is one fixed-size
-//! record. Boot loads the whole file into a last-write-wins in-memory
-//! index; application to chunks is lazy (the store overlays a column's
-//! cells when that column generates), so replay never waits on chunk
-//! loading. Fixed-size records give trivial torn-tail recovery: truncate
-//! to the last whole record.
+//! Append-only world persistence: every accepted edit is one fixed-size record.
+//! Boot loads the whole file into a last-write-wins in-memory index; application
+//! to chunks is lazy, so replay never waits on chunk loading. Fixed-size records
+//! give trivial torn-tail recovery: truncate to the last whole record.
 //!
-//! One format, two homes: the dedicated server's world journal AND the
-//! client's local saves share this file (and its `VERSION`) — a worldgen
-//! retune stales both at once, by construction. The `Journal` writer and
-//! its compaction machinery are fs-bound (native only); the index, the
-//! record codec, and the snapshot parse/serialize halves are pure and
-//! compile on wasm, where localStorage holds the byte blobs instead of
-//! files.
+//! One format, two homes: the dedicated server's world journal AND the client's
+//! local saves share this file and its `VERSION` — a worldgen retune stales both
+//! at once, by construction. The `Journal` writer and its compaction machinery
+//! are fs-bound (native only); the index, the record codec and the snapshot
+//! halves are pure and compile on wasm.
 //!
-//! Both homes shard by REGION (see `REGION_COLS`), so persistence work
-//! tracks what changed rather than a world's lifetime edit count. A shard
-//! is an ordinary journal blob that happens to hold one region's cells,
-//! which is why sharding needed no format bump: pre-shard single-file
-//! worlds MIGRATE at open instead of staling.
+//! Both homes shard by REGION (see `REGION_COLS`), so persistence work tracks
+//! what changed rather than a world's lifetime edit count. A shard is an ordinary
+//! journal blob that happens to hold one region's cells, which is why sharding
+//! needed no format bump: pre-shard worlds MIGRATE at open instead of staling.
 
 use digblock_net::messages::BlockEdit;
 use digblock_net::protocol::PlayerId;
@@ -1012,18 +1007,15 @@ fn load_shard(path: &Path, seed: f64, index: &mut JournalIndex) -> std::io::Resu
 
 /// Split a pre-shard whole-world journal into region shards.
 ///
-/// Crash safety rests entirely on the ordering: every shard is written to
-/// a tmp, fsynced and atomically renamed, the shard directory is fsynced,
-/// and only THEN is the legacy file removed. A crash before that removal
-/// leaves the legacy file intact and the next boot redoes the whole split
-/// from the same source — a half-written shard set is simply overwritten,
-/// and shards for regions the legacy file doesn't mention can only have
-/// come from an interrupted split of that same file. A crash after the
-/// removal leaves a complete shard set. There is no window in which both
-/// are incomplete.
+/// Crash safety rests entirely on the ordering: every shard is written to a tmp,
+/// fsynced and atomically renamed, the shard directory is fsynced, and only THEN
+/// is the legacy file removed. A crash before that removal leaves the legacy file
+/// intact and the next boot redoes the whole split from the same source; a crash
+/// after it leaves a complete shard set. There is no window in which both are
+/// incomplete.
 ///
-/// The shards come out compacted (`region_snapshot_bytes` is one record
-/// per live cell), so a bloated legacy file pays its rewrite once, here.
+/// The shards come out compacted, so a bloated legacy file pays its rewrite
+/// once, here.
 #[cfg(not(target_arch = "wasm32"))]
 fn migrate_legacy(legacy: &Path, shards: &Path, seed: f64) -> std::io::Result<()> {
 	let bytes = std::fs::read(legacy)?;

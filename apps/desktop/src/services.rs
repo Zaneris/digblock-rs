@@ -1,16 +1,14 @@
 //! Master-server client services for the menu: sign-in, the account's name,
-//! server-list fetch, per-server ping probes, and the join flow (mint a
-//! one-time token, connect with the listed cert pin). One background thread
-//! owns all HTTP; the engine sees only the `MenuServices` channels — it
+//! server-list fetch, per-server ping probes, and the join flow. One background
+//! thread owns all HTTP; the engine sees only the `MenuServices` channels — it
 //! stays wasm-clean and never blocks.
 //!
-//! This thread is also the ONLY place the session token lives. The menu
-//! holds a name and an account id, both public; the engine holds neither.
+//! This thread is also the ONLY place the session token lives. The menu holds a
+//! name and an account id, both public; the engine holds neither.
 //!
 //! HTTP contract (mirrors apps/master/Contracts.cs):
 //!   GET  /api/servers → { "servers": [{id, name, url, certHash, …}] }
 //!   POST /api/join { serverId } + Bearer session → { token, url, certHash }
-//!   see auth.rs for the sign-in and account calls
 
 use crate::auth::{self, Session};
 use digblock_render::menu::{AccountView, MenuCommand, MenuResponse, MenuServices, ServerEntry};

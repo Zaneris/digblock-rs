@@ -1,24 +1,19 @@
-//! Desktop audio filler: rodio on a dedicated thread, fed by the
-//! engine's `AudioSink` seam over a channel (the mirror of
-//! services.rs's thread-per-concern shape). The engine never sees
-//! rodio; a dead or deviceless audio thread silently mutes the game
-//! instead of failing it.
+//! Desktop audio filler: rodio on a dedicated thread, fed by the engine's
+//! `AudioSink` seam over a channel. The engine never sees rodio; a dead or
+//! deviceless audio thread silently mutes the game instead of failing it.
 //!
 //! Spatialization: one rodio `SpatialPlayer` per positional voice. Rodio's
-//! two-ear model is `min(1/d², 1.0)` per ear with no rolloff knob, so
-//! every world coordinate (emitters and ears) is scaled by [`ATT`] to
-//! place that curve over a useful range of world distances.
+//! two-ear model is `min(1/d², 1.0)` per ear with no rolloff knob, so every
+//! world coordinate is scaled by [`ATT`] to place that curve over a useful range
+//! of world distances.
 //!
-//! The clamp is the part that matters: everything closer than `1/ATT`
-//! blocks comes back at unity, with NO falloff at all inside that ball.
-//! At the original scale that plateau spanned most of a scene — a
-//! waterfall at your feet and one across the room were exactly as loud,
-//! and several could stack. Engine-side gains
-//! (see `water_audio::gain_of`) taper with distance for the same reason,
-//! because relying on the panner alone is what made water ubiquitous.
+//! The clamp is the part that matters: everything closer than `1/ATT` blocks
+//! comes back at unity, with NO falloff at all inside that ball. At the original
+//! scale that plateau spanned most of a scene — a waterfall at your feet and one
+//! across the room were exactly as loud, and several could stack. Engine-side
+//! gains taper with distance for the same reason.
 //!
-//! Music: fetched from the master server (never embedded) by a helper
-//! thread; the audio thread decodes and loops the playlist at low gain.
+//! Music: fetched from the master server (never embedded) by a helper thread.
 
 use digblock_render::audio::{AudioCmd, AudioSink, LoopId, Sfx, bytes};
 use rodio::source::{Buffered, Source};

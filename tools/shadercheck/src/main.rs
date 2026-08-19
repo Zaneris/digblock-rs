@@ -1,28 +1,24 @@
-//! Compiles every shader in `digblock_assets::shader::ALL` with the WGSL
-//! front end that actually ships, by handing them to a headless Chrome.
+//! Compiles every shader in `digblock_assets::shader::ALL` with the WGSL front
+//! end that actually ships, by handing them to a headless Chrome.
 //!
 //! **Why this is not the naga test.** `shaders_parse_and_validate` in
-//! digblock-assets is naga, and naga is the PERMISSIVE end. Chrome uses
-//! Tint, which rejects things naga accepts, and the failure mode is the
-//! worst one available: a whole invalidated pipeline, in the browser only,
-//! with every native gate green. That has shipped twice — `pass` as a
-//! reserved word (R15 follow-up), and `highlight.wgsl` mixing `*` and `^`
-//! unparenthesized, which cost the block outline and the dig crack on web.
-//! Both were found by a person loading the page.
+//! digblock-assets is naga, and naga is the PERMISSIVE end. Chrome uses Tint,
+//! which rejects things naga accepts, and the failure mode is the worst one
+//! available: a whole invalidated pipeline, in the browser only, with every
+//! native gate green. That has shipped twice — `pass` as a reserved word, and
+//! `highlight.wgsl` mixing `*` and `^` unparenthesized, which cost the block
+//! outline and the dig crack on web. Both were found by a person loading the
+//! page.
 //!
-//! **Why a browser rather than a `tint` binary.** Dawn publishes no
-//! standalone tint executable, so the choice was building Dawn from source
-//! or driving the browser. The browser is also the more honest answer: a
-//! pinned tint can drift from the Chrome a player is running, while this
-//! asks the exact front end that will compile the shipped bundle. The cost
-//! is that Chrome becomes a dependency of the web gate — which it already
-//! was informally, in the form of "load the page before believing a shader
-//! change is fine".
+//! **Why a browser rather than a `tint` binary.** Dawn publishes no standalone
+//! tint executable, so the choice was building Dawn from source or driving the
+//! browser. The browser is also the more honest answer: a pinned tint can drift
+//! from the Chrome a player is running.
 //!
-//! **What it does NOT cover.** Shader modules only. A module that compiles
-//! can still fail at pipeline creation, where bindings are matched against
-//! layouts; `every_pipeline_builds_without_a_gpu` in digblock-render is the
-//! other half, and it runs on naga. Neither subsumes the other.
+//! **What it does NOT cover.** Shader modules only. A module that compiles can
+//! still fail at pipeline creation, where bindings are matched against layouts;
+//! `every_pipeline_builds_without_a_gpu` in digblock-render is the other half,
+//! and it runs on naga. Neither subsumes the other.
 
 use std::path::PathBuf;
 use std::process::Command;

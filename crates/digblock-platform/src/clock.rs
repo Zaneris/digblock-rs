@@ -2,19 +2,17 @@ use std::time::Duration;
 use web_time::Instant;
 
 /// Game clock that pauses across suspend. First tick after unpause yields
-/// dt = 0; dt is clamped so debugger pauses or missed lifecycle events can
-/// never produce a giant simulation step.
+/// dt = 0; dt is clamped so debugger pauses or missed lifecycle events can never
+/// produce a giant simulation step.
 ///
-/// `fixed` replaces the wall clock with a constant step, which is what
-/// makes a capture comparable ACROSS BUILDS. Everything animated in this
-/// engine rides dt — the water surface's ripple phase and uv advection,
-/// the fluid sim, the spawn settle — so two builds of different speed
-/// reach `--frames N` in different world states, and the resulting image
-/// difference has nothing to do with the change under test. That trap is
-/// recorded twice in GI-DESIGN.md (R19's two harness notes) and it was
-/// costing a whole parity pass per attempt: at DIG_RIVER a same-build
-/// repeat diffs an order of magnitude below ANY cross-build pair,
-/// entirely in the ripple bands. A fixed step makes both zero.
+/// `fixed` replaces the wall clock with a constant step, which is what makes a
+/// capture comparable ACROSS BUILDS. Everything animated in this engine rides dt
+/// — the water surface's ripple phase and uv advection, the fluid sim, the spawn
+/// settle — so two builds of different speed reach `--frames N` in different
+/// world states, and the resulting image difference has nothing to do with the
+/// change under test. At DIG_RIVER a same-build repeat diffs an order of
+/// magnitude below ANY cross-build pair, entirely in the ripple bands; a fixed
+/// step makes both zero (GI-DESIGN.md R19).
 pub struct GameClock {
 	last_tick: Option<Instant>,
 	fixed: Option<Duration>,

@@ -1,17 +1,16 @@
-//! Web audio filler: the WebAudio mirror of apps/desktop/src/audio.rs.
-//! Commands apply synchronously to the node graph (no thread, no
-//! channel — WebAudio calls are cheap main-thread JS); decoding runs
-//! async up front and commands arriving before it finishes are queued.
+//! Web audio filler: the WebAudio mirror of apps/desktop/src/audio.rs. Commands
+//! apply synchronously to the node graph (WebAudio calls are cheap main-thread
+//! JS); decoding runs async up front and commands arriving before it finishes
+//! are queued.
 //!
-//! Graph per positional voice: source → panner (equalpower, inverse
-//! distance tuned to match the desktop rolloff) → voice gain → SFX
-//! bus → destination. Non-positional voices skip the panner. Music
-//! tracks route through their own bus; the two bus gains are the user
-//! volume sliders.
+//! Graph per positional voice: source → panner (equalpower, inverse distance
+//! tuned to match the desktop rolloff) → voice gain → SFX bus → destination.
+//! Non-positional voices skip the panner. Music tracks route through their own
+//! bus; the two bus gains are the user volume sliders.
 //!
-//! Chrome refuses audio before a user gesture: one-time pointerdown +
-//! keydown listeners call `ctx.resume()` — self-contained here, the
-//! platform crate stays audio-free.
+//! Chrome refuses audio before a user gesture: one-time pointerdown + keydown
+//! listeners call `ctx.resume()` — self-contained here, so the platform crate
+//! stays audio-free.
 
 // web-sys 0.3.103 blanket-marks the legacy WebAudio methods (`stop`,
 // `set_onended`, `AudioListener::set_position`, ...) deprecated. Chrome

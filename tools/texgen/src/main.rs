@@ -1,22 +1,16 @@
-//! Deterministic generator for derived block textures: palette-shift and
-//! noise variations of the hand-made originals, so new blocks stay in the
-//! established pixel-art style. Run manually (`cargo run -p texgen`) and
-//! commit the outputs — assets are `include_bytes!`d, so generated PNGs
-//! live in git; this tool is checked in for provenance and regeneration.
-//! Output matches the loader contract: `SIZE`-square 8-bit RGB,
-//! non-interlaced.
+//! Deterministic generator for derived block textures: palette-shift and noise
+//! variations of the hand-made originals, so new blocks stay in the established
+//! pixel-art style. Run manually (`cargo run -p texgen`) and commit the outputs —
+//! assets are `include_bytes!`d, so generated PNGs live in git. Output matches
+//! the loader contract: `SIZE`-square 8-bit RGB, non-interlaced.
 //!
-//! A run rewrites EVERY output, so it is not a free operation: the noisy
-//! recipes below share one rng, so adding, removing or reordering a
-//! `save` rerolls the noise in every output after it, and a hand-edited
-//! source whose derivative was never regenerated comes back into sync the
-//! moment anyone runs this. Both are fine — a reroll of the same recipe
-//! is the same texture, and re-syncing is the point — but they mean the
-//! diff of a run is wider than the edit that prompted it. Retiring the
-//! door leaf (the door draws `LumberDark` directly now) was an edit of
-//! that kind. Cutting the torch's post from `LumberDark` was not: the
-//! run that followed it moved `TorchSide.png` and nothing else, which is
-//! what a tree already in sync looks like.
+//! A run rewrites EVERY output, so it is not a free operation: the noisy recipes
+//! below share one rng, so adding, removing or reordering a `save` rerolls the
+//! noise in every output after it, and a hand-edited source whose derivative was
+//! never regenerated comes back into sync the moment anyone runs this. Both are
+//! fine — a reroll of the same recipe is the same texture, and re-syncing is the
+//! point — but they mean the diff of a run is wider than the edit that prompted
+//! it.
 
 use digblock_core::block::BlockType as B;
 use image::RgbImage;
@@ -78,33 +72,30 @@ fn main() {
 	);
 	save("TorchFlame.png", torch_flame(&mut rng));
 
-	// The four ore faces (SKILLS-DESIGN §5.3) and the generic tapped one.
-	// APPENDED at the end deliberately: the noisy recipes share one rng, so
-	// an insertion anywhere above rerolls every output after it and the
-	// diff of a regeneration would be the whole texture directory.
+	// The four ore faces and the generic tapped one. APPENDED at the end
+	// deliberately: the noisy recipes share one rng, so an insertion anywhere
+	// above rerolls every output after it and the diff of a regeneration would
+	// be the whole texture directory.
 	//
-	// Each is stone with tier-coloured flecks — the gravel recipe's blob
-	// walk, but coloured rather than shaded, and with a light rim so a
-	// fleck reads as a crystal set into rock instead of a stain on it.
+	// Each is stone with tier-coloured flecks — the gravel recipe's blob walk,
+	// but coloured rather than shaded, with a light rim so a fleck reads as a
+	// crystal set into rock instead of a stain on it.
 	//
 	// The colours are not written here. `BlockType::node_flecks` holds them,
-	// because the GI material LUT casts a vein's light in its core colour
-	// and the spent rocks below paint their dead flecks from the same pair:
-	// three consumers, one table, and a retint moves all of them together.
+	// because the GI material LUT casts a vein's light in its core colour and
+	// the spent rocks below paint their dead flecks from the same pair: three
+	// consumers, one table.
 	//
-	// Cores are picked BRIGHT as well as saturated — all four rows carry
-	// the Stage-A emissive bit now, chunk.wgsl gains that ink by luminance,
-	// and a near-white fleck would glow at the cost of having no colour
-	// left to glow IN.
+	// Cores are picked BRIGHT as well as saturated — chunk.wgsl gains the ink by
+	// luminance, and a near-white fleck would glow at the cost of having no
+	// colour left to glow IN.
 	//
-	// Every tier also darkens its stone BODY hard (the `body` scale), and
-	// that is the load-bearing half. Emissive is a per-BLOCK flag, not a
-	// per-texel one: a glowing block renders its whole face at full albedo,
-	// so with the body left undarkened a vein in a black cave reads as a
-	// glowing white rock rather than as rock with glowing crystals in it.
-	// The contrast has to live in the texture, because the shader has no
-	// way to express it. The shallow pair were the exception while they did
-	// not glow; they glow now, so the exception went with it.
+	// Every tier also darkens its stone BODY hard (the `body` scale), and that
+	// is the load-bearing half. Emissive is a per-BLOCK flag, not a per-texel
+	// one: a glowing block renders its whole face at full albedo, so with the
+	// body left undarkened a vein in a black cave reads as a glowing white rock
+	// rather than as rock with glowing crystals in it. The contrast has to live
+	// in the texture, because the shader has no way to express it.
 	for (name, block, body) in [
 		("Emberore.png", B::Emberore, 0.34),
 		("Duskstone.png", B::Duskstone, 0.32),
@@ -559,23 +550,19 @@ fn torch_flame(rng: &mut Rng) -> RgbImage {
 
 /// Broken rock: MANY stones, not one cracked face.
 ///
-/// The distinction is the whole job. Rubble is the only thing a natural
-/// quarry hands a player now — clean rock is bench work (SKILLS-DESIGN
-/// §7.1) — so the two faces are a decision the player reads off a wall,
-/// and the recipe this replaced could not carry that. It was stone's own
-/// body with hairline fracture walks over it, which at any distance is
-/// smooth stone with scratches on it: the same value, the same grain, one
-/// surface.
+/// The distinction is the whole job. Rubble is the only thing a natural quarry
+/// hands a player now — clean rock is bench work — so the two faces are a
+/// decision the player reads off a wall. Stone's own body with hairline fracture
+/// walks over it cannot carry that: at any distance it is smooth stone with
+/// scratches on it, the same value and the same grain.
 ///
-/// So the silhouette changes rather than the detail. A wrapping Worley
-/// partition cuts the tile into a dozen-odd cobbles, each taking its own
-/// value offset — a face of stones at visibly different tones is the cue
-/// that survives being shrunk to an inventory icon, where every crack
-/// disappears — and the band where two sites run close darkens into the
-/// gap between them, with the body noise folded into the threshold so the
-/// gap chips rather than curving cleanly. A light catch on the gap's
-/// up-left side lifts the stones off it. Everything wraps modularly, so
-/// the tile still tiles.
+/// So the SILHOUETTE changes rather than the detail. A wrapping Worley partition
+/// cuts the tile into a dozen-odd cobbles, each taking its own value offset — a
+/// face of stones at visibly different tones is the cue that survives being
+/// shrunk to an inventory icon, where every crack disappears — and the band
+/// where two sites run close darkens into the gap between them, with the body
+/// noise folded into the threshold so the gap chips rather than curving cleanly.
+/// Everything wraps modularly, so the tile still tiles.
 fn rubble(stone: &RgbImage, rng: &mut Rng) -> RgbImage {
 	let s = SIZE as i32;
 	// Sites on a jittered lattice: chunky stones rather than a fine

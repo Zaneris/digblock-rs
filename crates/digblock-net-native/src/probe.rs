@@ -1,21 +1,18 @@
-//! One-shot reachability/latency probe: open a bare WebTransport session,
-//! read the connection's own round-trip estimate, close immediately. Runs on
-//! its own short-lived thread, mirroring channel_transport's pattern; the
-//! result arrives via `done`.
+//! One-shot reachability/latency probe: open a bare WebTransport session, read
+//! the connection's own round-trip estimate, close immediately. Runs on its own
+//! short-lived thread; the result arrives via `done`.
 //!
-//! The reported number is QUIC's smoothed RTT, NOT the time the connect
-//! took. Timing the connect was consistent enough to rank servers by, but it
-//! was not a ping and read about double one: establishing a WebTransport
-//! session is a QUIC+TLS 1.3 handshake and then an HTTP/3 extended CONNECT
-//! over it — two round trips at best, three if address validation issues a
-//! Retry — plus DNS resolution, which is not a round trip at all and does not
-//! scale with distance. So a nearby server was listed at a multiple of its
-//! real latency, and the figure could not be compared with the in-game
+//! The reported number is QUIC's smoothed RTT, NOT the time the connect took.
+//! Timing the connect was consistent enough to rank servers by, but it was not a
+//! ping and read about double one: establishing a WebTransport session is a
+//! QUIC+TLS 1.3 handshake and then an HTTP/3 extended CONNECT over it — two
+//! round trips at best — plus DNS resolution, which is not a round trip at all
+//! and does not scale with distance. So a nearby server was listed at a multiple
+//! of its real latency, and the figure could not be compared with the in-game
 //! overlay's.
 //!
-//! `Connection::rtt` is the transport's own smoothed estimate, sampled from
-//! the acks the handshake already exchanged. It costs nothing extra and it is
-//! the same quantity a `ping` reports.
+//! `Connection::rtt` is the transport's own smoothed estimate, sampled from the
+//! acks the handshake already exchanged.
 
 use crate::CertPolicy;
 use std::time::{Duration, Instant};

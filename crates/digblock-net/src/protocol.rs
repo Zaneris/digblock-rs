@@ -181,24 +181,20 @@ pub fn validate_name(name: &str) -> Result<(), &'static str> {
 
 // ---- account identity ------------------------------------------------
 
-/// A master-issued account id: the UUID that identifies a player
-/// everywhere, and the one thing in this system that is not self-asserted.
+/// A master-issued account id: the UUID that identifies a player everywhere, and
+/// the one thing in this system that is not self-asserted.
 ///
 /// It reaches a game server ONLY from the master, as the answer to
-/// `/api/tokens/verify` — never from the client, which is exactly what
-/// makes it worth keying on. Server-side it is the persistence key for
-/// inventories and skills, the value `--admin` compares against, and what
-/// a ban records. Client-side the account screen shows it, because an
-/// operator needs to be handed one to grant admin.
+/// `/api/tokens/verify` — never from the client, which is exactly what makes it
+/// worth keying on. Server-side it is the persistence key for inventories and
+/// skills, the value `--admin` compares against, and what a ban records.
 ///
-/// It is public, not secret: knowing someone's account id lets you name
-/// them, not be them.
+/// It is public, not secret: knowing someone's account id lets you name them,
+/// not be them.
 ///
-/// Lives here because this crate owns the master contract (see
-/// [`DEFAULT_MASTER_URL`], [`validate_name`]) and is wasm-clean, so the
-/// browser client and the dedicated server share one parser. Parsed and
-/// formatted by hand rather than pulling in a UUID crate — it is 16 bytes
-/// of hex with four dashes, and this crate stays dependency-light.
+/// Lives here because this crate owns the master contract and is wasm-clean, so
+/// the browser client and the dedicated server share one parser. Parsed by hand
+/// rather than pulling in a UUID crate — this crate stays dependency-light.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Default, PartialOrd, Ord)]
 pub struct AccountId(pub [u8; 16]);
 
@@ -285,21 +281,19 @@ impl core::fmt::Debug for AccountId {
 	}
 }
 
-/// The key a pre-account character is filed under: truncated SHA-256 of
-/// the device secret that owned it. What `ClientMsg::ClaimLegacy` carries.
+/// The key a pre-account character is filed under: truncated SHA-256 of the
+/// device secret that owned it. What `ClientMsg::ClaimLegacy` carries.
 ///
 /// **This is a FILE FORMAT, not a choice.** It reproduces exactly what
-/// pre-account servers computed over the client's identity secret, because
-/// that is what their `inventories.bin` records are keyed by. Move it by a
-/// byte and every migration silently finds nothing — the store still loads
-/// and simply never matches anybody, which is the failure mode with no
-/// symptom. Pinned against an external vector by
+/// pre-account servers computed over the client's identity secret, because that
+/// is what their `inventories.bin` records are keyed by. Move it by a byte and
+/// every migration silently finds nothing — the store still loads and simply
+/// never matches anybody. Pinned against an external vector by
 /// `the_legacy_key_still_matches_what_old_servers_stored`.
 ///
-/// Lives here, and not in either launcher, because BOTH launchers must
-/// agree with it and with each other: a player who used the desktop and
-/// the browser has one old character per server, and two spellings of this
-/// function would give them one key that works and one that does not.
+/// Lives here, and not in either launcher, because BOTH must agree with it and
+/// with each other: a player who used the desktop and the browser has one old
+/// character per server.
 pub fn legacy_identity_hash(secret: &[u8; 16]) -> [u8; 16] {
 	use sha2::{Digest, Sha256};
 	Sha256::digest(secret)[..16]
@@ -366,23 +360,21 @@ pub const CONNECT_TIMEOUT_SECS: f32 = 10.0;
 /// otherwise leave the client in connecting-limbo forever).
 pub const HANDSHAKE_TIMEOUT_SECS: f32 = 5.0;
 
-/// Nothing at all received for this long AFTER the handshake → treat the
-/// session as dead.
+/// Nothing at all received for this long AFTER the handshake → treat the session
+/// as dead.
 ///
-/// A backstop, not the primary mechanism: normally the transport reports
-/// the disconnect and this never fires. It covers the case where the
-/// transport CANNOT report — a native background thread that died without
-/// reaching its `disconnect` call, a WebTransport session wedged rather
-/// than closed — which otherwise leaves the engine in a multiplayer
-/// session with no snapshots, no error and no way back, waiting on a QUIC
-/// idle timeout that a half-dead peer may never deliver.
+/// A backstop, not the primary mechanism: normally the transport reports the
+/// disconnect and this never fires. It covers the case where the transport
+/// CANNOT report — a native background thread that died without reaching its
+/// `disconnect` call, a WebTransport session wedged rather than closed — which
+/// otherwise leaves the engine in a multiplayer session with no snapshots, no
+/// error and no way back.
 ///
-/// Sized off [`TOD_SYNC_TICKS`]: the server broadcasts time-of-day to
-/// EVERY client, live or not, so even a player still waiting for their
-/// spawn column to generate has a heartbeat. Missing several beats in a
-/// row is unambiguous — the assert below pins how many — and the margin
-/// past the last of them is the point, since firing exactly on it would
-/// make ordinary scheduling jitter enough to drop a healthy session.
+/// Sized off [`TOD_SYNC_TICKS`]: the server broadcasts time-of-day to EVERY
+/// client, live or not, so even a player still waiting for their spawn column
+/// has a heartbeat. The margin past the last missed beat is the point, since
+/// firing exactly on it would make ordinary scheduling jitter enough to drop a
+/// healthy session.
 pub const RECV_TIMEOUT_SECS: f32 = 35.0;
 const _: () = assert!(RECV_TIMEOUT_SECS > 3.0 * (TOD_SYNC_TICKS / TICK_RATE) as f32);
 
@@ -515,52 +507,37 @@ pub const EDIT_BURST: f32 = 5.0;
 /// LAN, and that remainder was entirely [`INPUT_SEND_STRIDE`] burstiness.
 pub const JITTER_BUFFER_TICKS: u32 = 2;
 
-/// How long the input drain will hold a HOLE in the tick sequence open,
-/// waiting for the missing tick to arrive, before giving up and skipping it.
+/// How long the input drain will hold a HOLE in the tick sequence open, waiting
+/// for the missing tick to arrive, before giving up and skipping it.
 ///
-/// This is the server's actual reorder tolerance, and the reason it exists:
-/// `handle_inputs` refuses anything at or below the consumed high-water
-/// mark, so an input that arrives after the drain has already stepped past
-/// its tick is lost for good. Heavy jitter reorders datagrams, which is
-/// exactly how a bad link loses a far larger share of its INPUTS than of
-/// its packets — redundancy cannot help, because every copy of a tick is
-/// equally old.
+/// This is the server's actual reorder tolerance. `handle_inputs` refuses
+/// anything at or below the consumed high-water mark, so an input that arrives
+/// after the drain has stepped past its tick is lost for good. Heavy jitter
+/// reorders datagrams, which is exactly how a bad link loses a far larger share
+/// of its INPUTS than of its packets — redundancy cannot help, because every
+/// copy of a tick is equally old.
 ///
-/// A hold costs latency, but only ever converts DIVERGENCE into it: held
-/// inputs are applied in order, just later, so the server still lands on the
-/// claim the client sent, and client-side prediction hides the delay.
-/// Nothing happens at all on a link with no holes, which is why a clean
-/// connection pays literally zero for this.
+/// A hold costs latency, but only ever converts DIVERGENCE into it: held inputs
+/// are applied in order, just later, so the server still lands on the claim the
+/// client sent. A link with no holes pays literally zero.
 ///
-/// The cap is set by measurement, not taste: `just bench-net` swept it from
-/// no hold at all up past this depth. Two results decided it.
-///
-/// A hold does NOT simply spend `EDIT_POS_TOLERANCE`, which is what the
-/// arithmetic predicts and what the sweep refuted. Up to this depth the
-/// claimed edit origin sits CLOSER to the server's own position than with no
-/// hold at all, on every lossy link measured, because the alternative to
-/// holding is coasting on stale intent, and a coast diverges faster than a
-/// delay does. Deeper than this it starts climbing, and the deepest rungs of
-/// the sweep put it OVER [`EDIT_POS_TOLERANCE`], which is where honest edits
-/// begin bouncing (the sweep's only non-zero `tol-rej/s`).
-///
-/// Delivery is also flat past here. This depth recovers most of the
-/// shortfall on a mid-latency link; the next rungs up add a fraction of a
-/// point between them. The worst link keeps improving deeper still, but buys
-/// it with a replay rate that climbs back ABOVE the no-hold baseline, which
+/// The cap is set by measurement, not taste (`just bench-net` swept it from no
+/// hold up past this depth). Up to this depth the claimed edit origin sits
+/// CLOSER to the server's own position than with no hold at all, on every lossy
+/// link measured, because the alternative to holding is coasting on stale intent
+/// and a coast diverges faster than a delay does. Deeper, it climbs, and the
+/// deepest rungs put it OVER [`EDIT_POS_TOLERANCE`], where honest edits begin
+/// bouncing. Delivery is flat past here too; the worst link keeps improving
+/// deeper still but buys it with a replay rate above the no-hold baseline, which
 /// is the symptom this was meant to remove.
 ///
-/// What it costs: nothing measurable on a low-ping link (the lan, wifi and
-/// cellular rows are unchanged to the digit — no holes, no holds), and a
-/// latency add on the bad ones that grows with their ping.
-///
-/// RULE: [`EDIT_POS_TOLERANCE`] and [`dig_grace`] must never be scaled by
-/// the observed depth. A deeper buffer SPENDS those fixed budgets; making
-/// them elastic instead would hand anyone sending deliberately gappy input
-/// ticks a proportionally wider envelope — `verify_digs` casts
-/// `REACH + EDIT_POS_TOLERANCE`, so that is extra reach, bought by
-/// pretending to have a bad connection. Their fixedness is what makes this
-/// mechanism free of cheat surface.
+/// RULE: [`EDIT_POS_TOLERANCE`] and [`dig_grace`] must never be scaled by the
+/// observed depth. A deeper buffer SPENDS those fixed budgets; making them
+/// elastic would hand anyone sending deliberately gappy input ticks a
+/// proportionally wider envelope — `verify_digs` casts
+/// `REACH + EDIT_POS_TOLERANCE`, so that is extra reach, bought by pretending to
+/// have a bad connection. Their fixedness is what keeps this free of cheat
+/// surface.
 pub const INPUT_HOLD_MAX: u32 = 4;
 
 /// How far ahead of the server clock a fresh client starts predicting.

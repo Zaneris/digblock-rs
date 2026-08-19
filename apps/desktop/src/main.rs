@@ -429,21 +429,19 @@ fn main() {
 	config.debug_screen = std::env::var("DIG_SCREEN")
 		.ok()
 		.and_then(|v| digblock_render::DebugScreen::parse(&v));
-	// DIG_SIPHON=<percent>: pin the essence draw at that progress on the
-	// vein under the crosshair. A PERCENT, and meant as a SWEEP, for
-	// DIG_CRACK's reason — one still cannot tell a stream that thickens
-	// from one that merely brightens.
+	// DIG_SIPHON=<percent>: pin the essence draw at that progress on the vein
+	// under the crosshair. A PERCENT, and meant as a SWEEP, for DIG_CRACK's
+	// reason — one still cannot tell a stream that thickens from one that
+	// merely brightens.
 	//
-	// Unlike the crack it cannot stand its own scene: a vein is derived
-	// worldgen and there is no placing one, so it rides DIG_ORE, which
-	// already hollows a chamber around a deposit of a tier and grants the
-	// level that reveals it. Without that the crosshair lands on ordinary
-	// rock and the run photographs a bare wall — the silent-wrong-scene
-	// failure every other parse here is fatal about, so this one is too.
-	// And a draw needs the tool in hand: DIG_SCREEN's own `siphon`
-	// spelling is what puts it there, defaulted rather than
-	// re-implemented, so the capture still reaches the tool by cycling the
-	// roster the way a player does.
+	// Unlike the crack it cannot stand its own scene: a vein is derived worldgen
+	// and there is no placing one, so it rides DIG_ORE, which already hollows a
+	// chamber around a deposit and grants the level that reveals it. Without
+	// that the crosshair lands on ordinary rock and the run photographs a bare
+	// wall — the silent-wrong-scene failure every other parse here is fatal
+	// about, so this one is too. And a draw needs the tool in hand: DIG_SCREEN's
+	// own `siphon` spelling is what puts it there, defaulted rather than
+	// re-implemented.
 	if let Ok(v) = std::env::var("DIG_SIPHON") {
 		match v.parse::<f32>() {
 			Ok(p) if (0.0..=100.0).contains(&p) => config.debug_siphon = Some(p / 100.0),
@@ -650,20 +648,18 @@ fn main() {
 	}
 }
 
-/// The key this machine's pre-account character is filed under on the
-/// servers it used to play on: the truncated SHA-256 of the old identity
-/// secret, which is exactly what those servers stored.
+/// The key this machine's pre-account character is filed under on the servers it
+/// used to play on: the truncated SHA-256 of the old identity secret, which is
+/// exactly what those servers stored.
 ///
 /// **Read-only, and it never creates the file.** The secret it hashes was a
-/// bearer credential the client used to mint out of thin air; nothing does
-/// that any more, so a machine without one has no old character and must
-/// not be given a key to somebody else's. Absent, unreadable and all-zeros
-/// all answer `None`, which the migration reads as "nothing to claim".
+/// bearer credential the client used to mint out of thin air; nothing does that
+/// any more, so a machine without one has no old character and must not be given
+/// a key to somebody else's. Absent, unreadable and all-zeros all answer `None`.
 ///
-/// The secret itself stops here — only the hash goes on the wire. That is
-/// not much of a defence (the hash is the lookup key, so it is what a
-/// claim needs), but it costs nothing and it keeps the one file that used
-/// to be replayed to every server from being replayed anywhere at all.
+/// The secret itself stops here — only the hash goes on the wire. Not much of a
+/// defence, since the hash is what a claim needs, but it keeps the one file that
+/// used to be replayed to every server from being replayed anywhere at all.
 fn legacy_identity() -> Option<[u8; 16]> {
 	let path = std::env::var("DIG_IDENTITY_FILE")
 		.map(std::path::PathBuf::from)

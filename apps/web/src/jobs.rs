@@ -1,21 +1,15 @@
 //! Web Worker chunk-job pool — the browser's `Executor::Workers`.
 //!
 //! Workers can't share the client's linear memory, so jobs cross as bytes
-//! (`digblock_core::job_wire`) in transferable `ArrayBuffer`s. That costs a
-//! copy each way — a few kilobytes out for a mesh job, less back — against
-//! jobs that cost around a millisecond, so the transfer has never been the
-//! interesting number. What the pool buys is the main thread: streaming used
-//! to be paid for out of frame headroom (and out of an *unbudgeted* floor
-//! batch that no controller could shed), which is the one resource that
-//! vanishes on the weak hardware this exists for.
+//! (`digblock_core::job_wire`) in transferable `ArrayBuffer`s. That costs a copy
+//! each way against jobs that cost around a millisecond, so the transfer has
+//! never been the interesting number. What the pool buys is the main thread.
 //!
-//! The pool is best-effort by construction, in both directions. Until a
-//! worker reports in — and forever, if the browser refuses to spawn any —
-//! `ready()` is false and the pipeline runs jobs inline exactly as it did
-//! before this module existed. And a worker that dies AFTER reporting in is
-//! written off the same way: the slot stops taking work, the jobs it was
-//! holding go back to the pipeline through `lost()`, and once no slot is
-//! left the pool reports unready and the inline path takes over again.
+//! The pool is best-effort by construction, in both directions. Until a worker
+//! reports in — and forever, if the browser refuses to spawn any — `ready()` is
+//! false and the pipeline runs jobs inline. A worker that dies AFTER reporting
+//! in is written off the same way: the slot stops taking work, its jobs go back
+//! through `lost()`, and once no slot is left the inline path takes over again.
 //! Nothing here may be a one-way door — a browser tab lives for hours.
 
 use std::cell::{Cell, RefCell};
@@ -55,25 +49,18 @@ const WEDGE_SWEEPS: u32 = 600;
 
 /// Default ceiling on workers, whatever the machine reports.
 ///
-/// The sweep behind this — fill time, p99, worst frame and dropped-frame
-/// count against worker count — is in BENCH.md, with the browser, machine
-/// and capture recipe recorded alongside it.
+/// The sweep behind this — fill time, p99, worst frame and dropped-frame count
+/// against worker count — is in BENCH.md.
 ///
-/// **The next rung up was measured and declined, not overlooked.** It
-/// fills much faster and still beats the inline path on p99, but it is the
-/// only arm that drops a frame, and this whole change exists to buy frame
-/// time rather than spend it. Jobs move off-thread; ABSORBING their
-/// results — store bookkeeping and `write_buffer` — is pinned to the
-/// thread that owns the device and cannot follow them, which is what its
-/// worst-frame column is. The shipped count takes a slower fill for a
-/// clean frame.
+/// **The next rung up was measured and declined, not overlooked.** It fills much
+/// faster and still beats the inline path on p99, but it is the only arm that
+/// drops a frame, and this whole change exists to buy frame time rather than
+/// spend it: jobs move off-thread, but ABSORBING their results is pinned to the
+/// thread that owns the device and cannot follow them.
 ///
-/// Note this constant is NOT what protects weak hardware — `default_count`
-/// does, via `cores - 2`. A machine barely above the reserve is capped by
-/// that subtraction whatever this says, and one at or below it gets none.
-/// Raising it only ever affects machines
-/// with cores to spare, so re-measure THERE (and on the fill, which is
-/// what a player actually waits on) before changing it.
+/// This constant is NOT what protects weak hardware — `default_count` does, via
+/// `cores - 2`. Raising it only ever affects machines with cores to spare, so
+/// re-measure THERE, and on the fill, which is what a player actually waits on.
 pub const MAX_WORKERS: usize = 2;
 
 /// Absolute ceiling for an explicit `?workers=` override. The override
@@ -453,19 +440,15 @@ fn absolute_url(url: &str) -> Option<String> {
 fn bootstrap_source(module_url: &str) -> String {
 	// Two rules hold this together.
 	//
-	// `await boot` on every message rather than only the first: messages
-	// can be posted before instantiation finishes, and a worker that
-	// dropped those would lose chunks with no error anywhere.
+	// `await boot` on every message rather than only the first: messages can be
+	// posted before instantiation finishes, and a worker that dropped those
+	// would lose chunks with no error anywhere.
 	//
-	// And every path answers. The handler is async, so a throw inside it —
-	// a wasm trap, an allocation failure growing the worker's memory, a
-	// rejected `boot` if the module 404s after instantiation started —
-	// REJECTS ITS PROMISE rather than escaping as an uncaught exception,
-	// and only an uncaught exception reaches the parent's `Worker.onerror`
-	// (HTML splits "report the exception" from "notify about rejected
-	// promises"; the latter fires `unhandledrejection` inside the worker
-	// and reaches the main thread not at all). Without the catch the reply
-	// simply never arrives: the pool's slot never retires the job, the
+	// And every path answers. The handler is async, so a throw inside it — a
+	// wasm trap, an allocation failure, a rejected `boot` — REJECTS ITS PROMISE
+	// rather than escaping as an uncaught exception, and only an uncaught
+	// exception reaches the parent's `Worker.onerror`. Without the catch the
+	// reply simply never arrives: the pool's slot never retires the job, the
 	// chunk is stranded, and there is no diagnostic anywhere.
 	format!(
 		r#"import init, {{ run_job_bytes }} from "{module_url}";

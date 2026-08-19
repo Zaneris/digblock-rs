@@ -1,24 +1,20 @@
 //! Client-side movement prediction and server reconciliation.
 //!
-//! Each predicted tick runs the real `Player::tick` and records
-//! (input, post-state); the post-state rides the wire as the adoption
-//! envelope claim, frozen at first send. On a snapshot ack, the claim we
-//! actually SENT for the acked tick is compared against the server's
-//! state — a match (the common case: the server adopted our claims)
-//! costs nothing, a mismatch rewinds to the server state and replays the
-//! still-unacked inputs. Comparing against the sent claim rather than
-//! the live post-state matters at high ping: a replay rewrites the
-//! buffered post-states, but the server (first-wins input dedup) adopted
-//! the ORIGINAL in-flight claims — judging its echo of those against the
-//! rewritten values re-replays every snapshot, and at rest (an exact
-//! fixed point on both sides) that ping-pong never decays, vibrating the
-//! camera at RTT period.
+//! Each predicted tick runs the real `Player::tick` and records (input,
+//! post-state); the post-state rides the wire as the adoption envelope claim,
+//! frozen at first send. On a snapshot ack, the claim we actually SENT for the
+//! acked tick is compared against the server's state — a match costs nothing, a
+//! mismatch rewinds and replays the still-unacked inputs.
 //!
-//! Chosen simplification: replay runs against the LIVE world (which
-//! already contains predicted-but-unconfirmed block edits), not the world
-//! as it was at those past ticks. Any resulting error is bounded by one
-//! snapshot interval — the next reconcile re-converges — and the epsilon
-//! absorbs cross-platform f32 last-ulp drift.
+//! Comparing against the SENT claim rather than the live post-state matters at
+//! high ping: a replay rewrites the buffered post-states, but the server
+//! (first-wins input dedup) adopted the ORIGINAL in-flight claims, and judging
+//! its echo of those against the rewritten values re-replays every snapshot —
+//! at rest that ping-pong never decays, vibrating the camera at RTT period.
+//!
+//! Chosen simplification: replay runs against the LIVE world, not the world as
+//! it was at those past ticks. Any error is bounded by one snapshot interval,
+//! and the epsilon absorbs cross-platform f32 last-ulp drift.
 
 use crate::messages::{InputBatch, InputTick};
 use crate::protocol::INPUT_REDUNDANCY;

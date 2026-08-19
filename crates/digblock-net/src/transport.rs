@@ -41,19 +41,16 @@ macro_rules! transport_trait {
 
 			/// Flush what is queued and close down gracefully.
 			///
-			/// The one method here that is allowed to take a moment, and
-			/// it has to be: dropping a transport closes the connection
-			/// immediately, so a goodbye written a microsecond earlier is
-			/// still sitting in a stream buffer when the socket goes. On a
-			/// process exit there is no later — a detached network thread
-			/// does not outlive `main`.
+			/// The one method here allowed to take a moment, and it has to
+			/// be: dropping a transport closes the connection immediately,
+			/// so a goodbye written a microsecond earlier is still sitting
+			/// in a stream buffer when the socket goes. On a process exit
+			/// there is no later.
 			///
-			/// Bounded and best-effort in every implementation. Native
-			/// waits briefly for the flush; the browser cannot wait at all
-			/// on an unloading page, so it asks and moves on. Callers are
-			/// on their way out and must treat this as a courtesy, never
-			/// as a guarantee — the server still reaps a connection that
-			/// simply vanishes, just slowly.
+			/// Bounded and best-effort in every implementation. Native waits
+			/// briefly for the flush; the browser cannot wait at all on an
+			/// unloading page, so it asks and moves on. Callers must treat
+			/// this as a courtesy, never a guarantee.
 			fn close(&mut self) {}
 
 			/// The TRANSPORT's own smoothed round trip, in milliseconds —
@@ -63,14 +60,13 @@ macro_rules! transport_trait {
 			/// This exists because the client cannot derive it. The RTT the
 			/// netcode measures itself is the input→ack loop, which carries
 			/// the sim tick boundary, the snapshot cadence and the input
-			/// buffer on top of the wire — a whole pipeline's worth, and on
-			/// a LAN that is not an offset but QUANTIZATION: every sample is
-			/// either one tick or two, against a wire far shorter than a
-			/// single tick, so no constant subtracted from it can recover a
-			/// number the sampling never contained.
+			/// buffer on top of the wire — and on a LAN that is not an
+			/// offset but QUANTIZATION: every sample is one tick or two
+			/// against a wire far shorter than a tick, so no constant
+			/// subtracted from it can recover a number the sampling never
+			/// contained.
 			///
-			/// `None` when the transport has no estimate — loopback and the
-			/// benchmark wires, which have no path to measure.
+			/// `None` when the transport has no estimate.
 			fn wire_rtt_ms(&self) -> Option<f32> {
 				None
 			}

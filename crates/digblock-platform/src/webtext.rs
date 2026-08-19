@@ -1,16 +1,15 @@
-//! The web soft-keyboard bridge: a hidden `<input>` whose focus is what
-//! makes a phone raise its keyboard, forwarding what the user types into
-//! the engine's ordinary `InputEvent::Text`/`Key` vocabulary.
+//! The web soft-keyboard bridge: a hidden `<input>` whose focus is what makes a
+//! phone raise its keyboard, forwarding what the user types into the engine's
+//! ordinary `InputEvent::Text`/`Key` vocabulary.
 //!
-//! Lives in the platform crate rather than the launcher because the
-//! focus call has to run synchronously inside the tap's own winit event
-//! dispatch — the only context a mobile browser honours it in — and
-//! app.rs is the only code positioned there (see `after_game_input`).
+//! Lives in the platform crate rather than the launcher because the focus call
+//! has to run synchronously inside the tap's own winit event dispatch — the only
+//! context a mobile browser honours it in — and app.rs is the only code
+//! positioned there (see `after_game_input`).
 //!
-//! The input is on-screen but invisible: parked off-screen, iOS scrolls
-//! the page to it when the keyboard rises. Its value is kept permanently
-//! empty (every edit is forwarded and then suppressed), so no IME state
-//! accumulates and the charset rules stay engine-side where they belong.
+//! The input is on-screen but invisible: parked off-screen, iOS scrolls the page
+//! to it when the keyboard rises. Its value is kept permanently empty, so no IME
+//! state accumulates and the charset rules stay engine-side.
 
 use wasm_bindgen::JsCast;
 use wasm_bindgen::closure::Closure;
