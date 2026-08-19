@@ -1,4 +1,3 @@
-
 use super::*;
 
 /// The whole reason the edit drain is priced in time rather than

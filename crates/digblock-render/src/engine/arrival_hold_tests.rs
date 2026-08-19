@@ -1,4 +1,3 @@
-
 use super::*;
 use digblock_net::messages::ServerMsg;
 use digblock_net::protocol::{PROTOCOL_VERSION, encode_preamble};

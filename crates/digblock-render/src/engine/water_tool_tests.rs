@@ -1,4 +1,3 @@
-
 use super::*;
 
 /// A generated world with the camera parked in a corridor: a water

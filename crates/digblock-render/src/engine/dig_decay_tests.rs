@@ -1,4 +1,3 @@
-
 use super::craft_gate_tests::block_ahead;
 use super::*;
 use digblock_core::skills::DIG_DECAY_TICKS;

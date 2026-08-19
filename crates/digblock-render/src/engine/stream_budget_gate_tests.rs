@@ -1,4 +1,3 @@
-
 use super::*;
 
 /// The trap this gate's split exists to close. The adaptive budget is

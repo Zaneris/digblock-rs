@@ -1,4 +1,3 @@
-
 use super::*;
 
 /// `flush_lights` drops emitters outside the reach every march breaks
