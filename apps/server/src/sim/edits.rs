@@ -789,7 +789,7 @@ impl Sim {
 	/// Journal, fluid-schedule, and broadcast one landed world write (the
 	/// store mutation already happened). `already_set` is a lie-guard for
 	/// the doc only — callers pass the actual prev they observed.
-	fn apply_write(
+	pub(super) fn apply_write(
 		&mut self,
 		cell: (i32, i32, i32),
 		val: u16,

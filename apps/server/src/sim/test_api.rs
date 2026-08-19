@@ -239,4 +239,10 @@ impl Sim {
 	}
 
 	// ---- events -------------------------------------------------------
+
+	/// Whether a scheduled sweep is mid-slice.
+	#[cfg(test)]
+	pub(crate) fn test_world_job_running(&self) -> bool {
+		self.world_jobs.sweeping().is_some()
+	}
 }

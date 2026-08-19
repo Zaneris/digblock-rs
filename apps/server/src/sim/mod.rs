@@ -19,6 +19,7 @@ mod movement;
 mod spawn;
 mod sync;
 mod test_api;
+mod worldjobs;
 
 #[cfg(test)]
 pub(crate) mod harness;
@@ -453,6 +454,9 @@ pub struct Sim {
 	/// Seconds added to the tick clock by `/time` — same lifetime and
 	/// persistence policy as the tick counter it offsets (none).
 	tod_offset_secs: f64,
+	/// Clock-scheduled sweeps near active players. Empty until something
+	/// registers a rule; the tick costs one `is_none` while it is.
+	world_jobs: digblock_core::worldjob::Scheduler,
 }
 
 impl Sim {
@@ -518,6 +522,7 @@ impl Sim {
 			ban_store,
 			admin_accounts: FxHashSet::default(),
 			tod_offset_secs: 0.0,
+			world_jobs: digblock_core::worldjob::Scheduler::new(),
 		})
 	}
 
@@ -564,6 +569,7 @@ impl Sim {
 		self.verify_digs();
 		self.process_edits();
 		self.step_fluid();
+		self.step_world_jobs();
 		self.tick += 1;
 		if self.tick.is_multiple_of(SNAPSHOT_DIVISOR) {
 			self.send_snapshots();

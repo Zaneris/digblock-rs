@@ -81,7 +81,7 @@ pub trait CellSource {
 }
 
 /// A rule run on a clock over the cells near active players.
-pub trait WorldJob {
+pub trait WorldJob: Send {
 	fn name(&self) -> &'static str;
 	fn schedule(&self) -> Schedule;
 	fn scope(&self) -> Scope;
