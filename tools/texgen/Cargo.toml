@@ -11,3 +11,6 @@ publish = false
 # the light the engine throws cannot drift apart.
 digblock-core.workspace = true
 image.workspace = true
+
+[lints]
+workspace = true
