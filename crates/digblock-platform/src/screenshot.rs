@@ -5,7 +5,12 @@
 use crate::Gpu;
 use std::path::Path;
 
-pub fn capture(gpu: &Gpu, texture: &wgpu::Texture, format: wgpu::TextureFormat, path: &Path) {
+pub(crate) fn capture(
+	gpu: &Gpu,
+	texture: &wgpu::Texture,
+	format: wgpu::TextureFormat,
+	path: &Path,
+) {
 	let width = texture.width();
 	let height = texture.height();
 	let bytes_per_pixel = 4u32;

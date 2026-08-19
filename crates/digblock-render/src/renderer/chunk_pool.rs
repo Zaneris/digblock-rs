@@ -151,7 +151,7 @@ impl Renderer {
 
 	/// Upload (or replace) a chunk's mesh. Empty meshes remove the entry —
 	/// unlike the Java, a re-mesh to zero faces cannot leave a stale VBO.
-	pub fn upload_chunk(&mut self, gpu: &Gpu, pos: ChunkPos, mesh: &MeshData) {
+	pub(crate) fn upload_chunk(&mut self, gpu: &Gpu, pos: ChunkPos, mesh: &MeshData) {
 		if mesh.is_empty() {
 			self.remove_chunk(pos);
 			return;
@@ -188,12 +188,12 @@ impl Renderer {
 	}
 
 	/// RTGI: forward one classified chunk into the voxel window.
-	pub fn gi_upload(&mut self, gpu: &Gpu, pos: ChunkPos, gi: &digblock_core::gi::GiChunk) {
+	pub(crate) fn gi_upload(&mut self, gpu: &Gpu, pos: ChunkPos, gi: &digblock_core::gi::GiChunk) {
 		self.gi.upload_chunk(gpu, pos, gi);
 	}
 
 	/// RTGI: queue probe invalidation around an edited cell.
-	pub fn gi_invalidate(&mut self, pos: [f32; 3]) {
+	pub(crate) fn gi_invalidate(&mut self, pos: [f32; 3]) {
 		self.gi.invalidate(pos);
 	}
 
@@ -201,11 +201,11 @@ impl Renderer {
 	/// out. Identical to the probes; the two are told apart only so a
 	/// walking carrier's stream cannot evict a world edit from the
 	/// resolve's four screen-cap slots (`GiDraw::resolve_inval`).
-	pub fn gi_invalidate_moving(&mut self, pos: [f32; 3]) {
+	pub(crate) fn gi_invalidate_moving(&mut self, pos: [f32; 3]) {
 		self.gi.invalidate_moving(pos);
 	}
 
-	pub fn remove_chunk(&mut self, pos: ChunkPos) {
+	pub(crate) fn remove_chunk(&mut self, pos: ChunkPos) {
 		self.spray.remove_chunk(pos);
 		// Before the early return: GI residency is its own set, and an
 		// un-meshed chunk still owns an emitter entry.
@@ -227,7 +227,7 @@ impl Renderer {
 
 	/// Drop every uploaded chunk mesh (world swap: the multiplayer
 	/// handshake replaces the locally-seeded world with the server's).
-	pub fn clear_chunks(&mut self) {
+	pub(crate) fn clear_chunks(&mut self) {
 		for chunk in std::mem::take(&mut self.chunks) {
 			self.spray.remove_chunk(chunk.pos);
 			self.free_slots.push(chunk.slot);

@@ -13,7 +13,7 @@ use web_time::Instant;
 /// change under test. At DIG_RIVER a same-build repeat diffs an order of
 /// magnitude below ANY cross-build pair, entirely in the ripple bands; a fixed
 /// step makes both zero (GI-DESIGN.md R19).
-pub struct GameClock {
+pub(crate) struct GameClock {
 	last_tick: Option<Instant>,
 	fixed: Option<Duration>,
 }
@@ -21,7 +21,7 @@ pub struct GameClock {
 const MAX_DT: Duration = Duration::from_millis(100);
 
 impl GameClock {
-	pub fn new() -> Self {
+	pub(crate) fn new() -> Self {
 		Self {
 			last_tick: None,
 			fixed: None,
@@ -30,18 +30,18 @@ impl GameClock {
 
 	/// Step the world by exactly this much per frame instead of by
 	/// measured time (`--fixed-dt`, capture runs only).
-	pub fn with_fixed_step(step: Duration) -> Self {
+	pub(crate) fn with_fixed_step(step: Duration) -> Self {
 		Self {
 			last_tick: None,
 			fixed: Some(step),
 		}
 	}
 
-	pub fn pause(&mut self) {
+	pub(crate) fn pause(&mut self) {
 		self.last_tick = None;
 	}
 
-	pub fn tick(&mut self) -> Duration {
+	pub(crate) fn tick(&mut self) -> Duration {
 		if let Some(step) = self.fixed {
 			// Still the zero first tick, so nothing observes a step
 			// before the first frame is drawn.

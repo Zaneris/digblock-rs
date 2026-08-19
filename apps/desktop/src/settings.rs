@@ -27,7 +27,7 @@ fn path() -> std::path::PathBuf {
 
 /// Overlay saved values onto `base` (the platform defaults). Absent or
 /// malformed file/fields leave the defaults; everything is re-clamped.
-pub fn load(base: Settings) -> Settings {
+pub(crate) fn load(base: Settings) -> Settings {
 	let file: SettingsFile = match std::fs::read_to_string(path()) {
 		Ok(text) => match serde_json::from_str(&text) {
 			Ok(f) => f,
@@ -56,7 +56,7 @@ pub fn load(base: Settings) -> Settings {
 
 /// Fire-and-forget save; a failed write degrades to per-run settings
 /// (the identity-file policy).
-pub fn save(s: &Settings) {
+pub(crate) fn save(s: &Settings) {
 	let file = SettingsFile {
 		draw_dist: Some(s.draw_dist),
 		music_vol: Some(s.music_vol),

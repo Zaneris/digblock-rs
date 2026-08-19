@@ -50,13 +50,13 @@ impl Band {
 /// every x/z term of the corner sum) are computed once per run instead of
 /// once per cell. Every bit it reports is bit-identical to the free
 /// `carved` below, at any y, in any order.
-pub struct CaveColumn {
+pub(super) struct CaveColumn {
 	gallery: Band,
 	worm: Band,
 }
 
 impl CaveColumn {
-	pub fn new(x: i32, z: i32, seed: f64) -> Self {
+	pub(super) fn new(x: i32, z: i32, seed: f64) -> Self {
 		Self {
 			gallery: Band::new(x, z, seed, CAVE_SEED_OFF),
 			worm: Band::new(x, z, seed, CAVE_SEED_OFF2),
@@ -71,7 +71,7 @@ impl CaveColumn {
 	/// the whole run first leaves those evaluations independent, where the
 	/// per-cell short-circuit puts a coin-flip branch between them that
 	/// the predictor cannot learn.
-	pub fn carve_run(&mut self, lo: i32, hi: i32) -> u32 {
+	pub(super) fn carve_run(&mut self, lo: i32, hi: i32) -> u32 {
 		debug_assert!(hi - lo < 32, "run fits the mask");
 		let mut gallery = 0u32;
 		for (n, y) in (lo..=hi).enumerate() {

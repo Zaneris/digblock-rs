@@ -32,7 +32,7 @@ const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(180);
 /// it expires, the account screen can revoke it, and it is presented only
 /// to the master. A game server never sees it.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
-pub struct Session {
+pub(crate) struct Session {
 	pub account_id: String,
 	/// `None` until the player picks one.
 	#[serde(default)]
@@ -40,7 +40,7 @@ pub struct Session {
 	pub token: String,
 }
 
-pub fn session_path() -> PathBuf {
+pub(crate) fn session_path() -> PathBuf {
 	std::env::var("DIG_SESSION_FILE")
 		.map(PathBuf::from)
 		.unwrap_or_else(|_| {
@@ -50,7 +50,7 @@ pub fn session_path() -> PathBuf {
 		})
 }
 
-pub fn load(path: &Path) -> Option<Session> {
+pub(crate) fn load(path: &Path) -> Option<Session> {
 	let bytes = std::fs::read(path).ok()?;
 	serde_json::from_slice(&bytes).ok()
 }
@@ -61,7 +61,7 @@ pub fn load(path: &Path) -> Option<Session> {
 /// while). Same reasoning applies with less at stake: this token can be
 /// revoked and expires, but for as long as it lives it can join servers as
 /// this player, and nothing else on the machine has any business reading it.
-pub fn store(path: &Path, session: &Session) {
+pub(crate) fn store(path: &Path, session: &Session) {
 	let write = || -> std::io::Result<()> {
 		if let Some(dir) = path.parent() {
 			std::fs::create_dir_all(dir)?;
@@ -83,7 +83,7 @@ pub fn store(path: &Path, session: &Session) {
 	}
 }
 
-pub fn clear(path: &Path) {
+pub(crate) fn clear(path: &Path) {
 	if let Err(e) = std::fs::remove_file(path)
 		&& e.kind() != std::io::ErrorKind::NotFound
 	{
@@ -93,7 +93,7 @@ pub fn clear(path: &Path) {
 
 /// Run the whole browser round trip. Blocking — the caller gives it a
 /// thread of its own.
-pub fn sign_in(master_url: &str, cancel: &Arc<AtomicBool>) -> Result<Session, String> {
+pub(crate) fn sign_in(master_url: &str, cancel: &Arc<AtomicBool>) -> Result<Session, String> {
 	let verifier = random_b64(32);
 	let challenge = s256(&verifier);
 	let state = random_b64(16);
@@ -269,7 +269,7 @@ fn exchange(master_url: &str, code: &str, verifier: &str) -> Result<Session, Str
 
 /// Rotate a stored session at startup. A refusal means the token is gone
 /// (expired, revoked, or replayed) and the caller signs out locally.
-pub fn refresh(master_url: &str, token: &str) -> Result<Session, String> {
+pub(crate) fn refresh(master_url: &str, token: &str) -> Result<Session, String> {
 	let mut res = agent()
 		.post(format!("{master_url}/api/session/refresh"))
 		.header("authorization", &format!("Bearer {token}"))
@@ -281,7 +281,7 @@ pub fn refresh(master_url: &str, token: &str) -> Result<Session, String> {
 	session_of(&mut res)
 }
 
-pub fn sign_out(master_url: &str, token: &str) {
+pub(crate) fn sign_out(master_url: &str, token: &str) {
 	let _ = agent()
 		.post(format!("{master_url}/api/session/signout"))
 		.header("authorization", &format!("Bearer {token}"))
@@ -290,7 +290,7 @@ pub fn sign_out(master_url: &str, token: &str) {
 
 /// Is this name free for me? The session goes along so that re-picking my
 /// own name reads as available rather than as a collision with myself.
-pub fn check_name(master_url: &str, token: &str, name: &str) -> (bool, Option<String>) {
+pub(crate) fn check_name(master_url: &str, token: &str, name: &str) -> (bool, Option<String>) {
 	#[derive(serde::Deserialize)]
 	#[serde(rename_all = "camelCase")]
 	struct Body {
@@ -314,7 +314,7 @@ pub fn check_name(master_url: &str, token: &str, name: &str) -> (bool, Option<St
 	}
 }
 
-pub fn set_name(master_url: &str, token: &str, name: &str) -> Result<String, String> {
+pub(crate) fn set_name(master_url: &str, token: &str, name: &str) -> Result<String, String> {
 	#[derive(serde::Deserialize)]
 	#[serde(rename_all = "camelCase")]
 	struct Body {
@@ -337,7 +337,7 @@ pub fn set_name(master_url: &str, token: &str, name: &str) -> Result<String, Str
 /// Development-only sign-in, for scripted runs (`--dev-signin`) that cannot
 /// open a browser. The master honours it only in Development and refuses to
 /// boot with it set anywhere else.
-pub fn dev_sign_in(master_url: &str, subject: &str) -> Result<Session, String> {
+pub(crate) fn dev_sign_in(master_url: &str, subject: &str) -> Result<Session, String> {
 	let mut res = agent()
 		.post(format!("{master_url}/api/dev/signin"))
 		.send_json(serde_json::json!({ "subject": subject, "platform": "desktop" }))

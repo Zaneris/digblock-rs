@@ -47,7 +47,7 @@ struct ItemMesh {
 	quads: u32,
 }
 
-pub struct RemotePlayersDraw {
+pub(crate) struct RemotePlayersDraw {
 	pipeline: wgpu::RenderPipeline,
 	instance_buf: wgpu::Buffer,
 	count: u32,
@@ -108,7 +108,7 @@ fn group_by_kind(items: &mut [(IconKind, [f32; 8])]) -> Vec<(IconKind, std::ops:
 }
 
 impl RemotePlayersDraw {
-	pub fn new(
+	pub(crate) fn new(
 		gpu: &Gpu,
 		surface_format: wgpu::TextureFormat,
 		frame_bgl: &wgpu::BindGroupLayout,
@@ -263,7 +263,7 @@ impl RemotePlayersDraw {
 	}
 
 	/// Upload this frame's body instances: `[pos.xyz, yaw, rgb, spare]`.
-	pub fn set_instances(&mut self, gpu: &Gpu, instances: &[[f32; 8]]) {
+	pub(crate) fn set_instances(&mut self, gpu: &Gpu, instances: &[[f32; 8]]) {
 		let n = instances.len().min(MAX_INSTANCES);
 		self.count = n as u32;
 		if n > 0 {
@@ -333,7 +333,7 @@ impl RemotePlayersDraw {
 	/// padding])`. Grouped by kind so each distinct item is ONE instanced
 	/// draw; the set is one entry per person on screen, so the sort is
 	/// over a handful of entries.
-	pub fn set_held(&mut self, gpu: &Gpu, held: &[(IconKind, [f32; 8])]) {
+	pub(crate) fn set_held(&mut self, gpu: &Gpu, held: &[(IconKind, [f32; 8])]) {
 		self.batches.clear();
 		self.instances.clear();
 		self.instances.extend_from_slice(held);
@@ -355,7 +355,7 @@ impl RemotePlayersDraw {
 
 	/// Draw in the scene pass, after solids, before the sky (frame bind
 	/// group must be bound at 0). Returns triangles drawn.
-	pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>, index_buf: &wgpu::Buffer) -> u32 {
+	pub(crate) fn draw(&self, pass: &mut wgpu::RenderPass<'_>, index_buf: &wgpu::Buffer) -> u32 {
 		let mut tris = 0;
 		if self.count > 0 {
 			pass.set_pipeline(&self.pipeline);
@@ -382,7 +382,7 @@ impl RemotePlayersDraw {
 
 	/// Draw calls this frame — the body's one, plus one per distinct
 	/// item anybody is holding.
-	pub fn draw_calls(&self) -> u32 {
+	pub(crate) fn draw_calls(&self) -> u32 {
 		u32::from(self.count > 0) + self.batches.len() as u32
 	}
 }

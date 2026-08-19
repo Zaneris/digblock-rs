@@ -64,7 +64,7 @@ struct JoinResponse {
 	cert_hash: String,
 }
 
-pub fn start(master_url: String, session: Option<Session>) -> MenuServices {
+pub(crate) fn start(master_url: String, session: Option<Session>) -> MenuServices {
 	let (cmd_tx, cmd_rx) = mpsc::channel::<MenuCommand>();
 	let (resp_tx, resp_rx) = mpsc::channel::<MenuResponse>();
 	std::thread::Builder::new()
@@ -339,7 +339,7 @@ fn parse_token(hex: &str) -> Result<[u8; 16], String> {
 /// the server moments earlier), pick first or by name filter, mint, connect.
 /// `session` is a session token — scripted runs get one from
 /// `--dev-signin`, since they cannot open a browser.
-pub fn auto_join(
+pub(crate) fn auto_join(
 	master_url: &str,
 	filter: Option<&str>,
 	session: &str,

@@ -7,7 +7,7 @@ use super::*;
 impl GiDraw {
 	/// Queue an edit position for probe invalidation (age reset around
 	/// it; the uniform's sphere slots bound how many apply per frame).
-	pub fn invalidate(&mut self, pos: [f32; 3]) {
+	pub(crate) fn invalidate(&mut self, pos: [f32; 3]) {
 		self.queue_invalidation(pos, false);
 	}
 
@@ -18,7 +18,7 @@ impl GiDraw {
 	/// not a second mechanism. The flag rides along only so the resolve's
 	/// four-slot screen-cap ring can keep the two streams from starving
 	/// each other; see `resolve_inval`.
-	pub fn invalidate_moving(&mut self, pos: [f32; 3]) {
+	pub(crate) fn invalidate_moving(&mut self, pos: [f32; 3]) {
 		self.queue_invalidation(pos, true);
 	}
 

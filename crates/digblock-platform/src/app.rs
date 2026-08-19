@@ -184,7 +184,7 @@ fn share_gpu(gpu: Gpu) -> Arc<Gpu> {
 	Arc::new(gpu)
 }
 
-pub fn run(game: impl Game, options: RunOptions) -> Result<(), crate::RunError> {
+pub(crate) fn run(game: impl Game, options: RunOptions) -> Result<(), crate::RunError> {
 	let event_loop = EventLoop::<UserEvent>::with_user_event()
 		.build()
 		.expect("event loop");

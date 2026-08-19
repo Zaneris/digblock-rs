@@ -4,7 +4,7 @@
 use super::*;
 
 impl GiDraw {
-	pub fn new(
+	pub(crate) fn new(
 		gpu: &Gpu,
 		window_chunks: u32,
 		layer_means: &[[u8; 3]],

@@ -5,7 +5,11 @@
 use super::*;
 
 impl Renderer {
-	pub fn new(gpu: &Gpu, surface_format: wgpu::TextureFormat, config: &RenderConfig) -> Self {
+	pub(crate) fn new(
+		gpu: &Gpu,
+		surface_format: wgpu::TextureFormat,
+		config: &RenderConfig,
+	) -> Self {
 		let device = &gpu.device;
 		let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
 			label: Some("chunk"),

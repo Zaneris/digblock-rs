@@ -18,7 +18,7 @@ use std::ops::Range;
 /// The space at a soft break belongs to neither line. A `-` or `/`
 /// belongs to the line above it, which is why it is only recorded as a
 /// break opportunity once it is known to fit.
-pub fn wrap(face: &Face, text: &str, px: f32, max_w: f32, out: &mut Vec<Range<usize>>) {
+pub(crate) fn wrap(face: &Face, text: &str, px: f32, max_w: f32, out: &mut Vec<Range<usize>>) {
 	out.clear();
 	if text.is_empty() {
 		out.push(0..0);

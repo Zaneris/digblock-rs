@@ -21,7 +21,7 @@ use crate::ui::hud::IconKind;
 
 /// One face to draw: geometry in twelfths (y may run past a single cell
 /// for the door's stacked halves), UVs already 0..1.
-pub struct ItemFace {
+pub(crate) struct ItemFace {
 	pub dir: Dir,
 	pub corners: [[i32; 3]; 4],
 	pub uv: [[f32; 2]; 4],
@@ -266,7 +266,7 @@ fn sigil_faces(out: &mut Vec<ItemFace>) {
 
 /// Total geometry height in twelfths — doors stack two cells, and the
 /// icon projector sizes its rect from this.
-pub fn height(kind: IconKind) -> i32 {
+pub(crate) fn height(kind: IconKind) -> i32 {
 	match kind {
 		IconKind::Shaped(b) if b.is_door() => 24,
 		_ => 12,
@@ -276,7 +276,7 @@ pub fn height(kind: IconKind) -> i32 {
 /// Every face of `kind`, unculled and unsorted. Callers filter (the
 /// icon keeps the three visible directions) or draw the lot (the
 /// viewmodel, which turns the item).
-pub fn faces(kind: IconKind) -> Vec<ItemFace> {
+pub(crate) fn faces(kind: IconKind) -> Vec<ItemFace> {
 	let mut out = Vec::with_capacity(6 * shapes::MAX_SHAPE_QUADS);
 	match kind {
 		IconKind::Cube(b) => box_faces([0, 0, 0], [12, 12, 12], |d| b.texture(d) as u16, &mut out),

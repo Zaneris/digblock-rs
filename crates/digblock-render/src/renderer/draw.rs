@@ -8,7 +8,7 @@ impl Renderer {
 	/// Encode the frame in one command encoder, fixed order — probes →
 	/// depth prepass → depth blit → GI resolve → scene → water →
 	/// viewmodel → overlay (GI-DESIGN.md).
-	pub fn render(
+	pub(crate) fn render(
 		&mut self,
 		gpu: &Gpu,
 		target: &wgpu::TextureView,

@@ -48,7 +48,7 @@ use debug_plans::{
 /// launcher owns the platform call. Write-only — nothing in this project
 /// pastes, and adding a read would mean giving the game a way to see what
 /// the player copied somewhere else.
-pub type ClipboardSink = Box<dyn FnMut(&str)>;
+pub(crate) type ClipboardSink = Box<dyn FnMut(&str)>;
 
 #[derive(Default)]
 struct HeldKeys {

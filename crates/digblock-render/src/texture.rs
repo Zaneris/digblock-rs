@@ -5,7 +5,7 @@
 
 use digblock_platform::Gpu;
 
-pub struct BlockTextures {
+pub(crate) struct BlockTextures {
 	pub array_view: wgpu::TextureView,
 	pub sampler: wgpu::Sampler,
 	/// Mean rgb per texture layer (gamma-space, like the atlas) — the
@@ -38,7 +38,7 @@ fn box_downsample(src: &[u8], w: usize, h: usize) -> Vec<u8> {
 }
 
 impl BlockTextures {
-	pub fn new(gpu: &Gpu) -> Self {
+	pub(crate) fn new(gpu: &Gpu) -> Self {
 		const SIZE: u32 = 64;
 		let levels = mip_levels(SIZE);
 		let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {

@@ -9,14 +9,14 @@
 
 /// Mirror of the shell's `AppState`, without resources.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Phase {
+pub(crate) enum Phase {
 	Uninitialized,
 	Running,
 	Suspended,
 }
 
 #[derive(Clone, Copy, Debug)]
-pub enum Event {
+pub(crate) enum Event {
 	/// winit `resumed()` — initial launch or return from background.
 	OsResumed,
 	/// winit `suspended()`.
@@ -48,7 +48,7 @@ pub enum Event {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Action {
+pub(crate) enum Action {
 	/// First launch: window + gpu + surface + `Game::init`.
 	InitAll,
 	/// Pause clock, deliver FocusLost + `on_suspend`, drop the surface.
@@ -72,7 +72,7 @@ pub enum Action {
 }
 
 /// Ordered actions for one event (a short list today).
-pub type Actions = Vec<Action>;
+pub(crate) type Actions = Vec<Action>;
 
 /// Frames a fatal acquire error is treated as loss-suspect (retried)
 /// before giving up. A dying device surfaces as a generic fatal error
@@ -80,7 +80,7 @@ pub type Actions = Vec<Action>;
 /// work drain so the shell's next poll can fire the closure.
 const MAX_FATAL_RETRIES: u8 = 2;
 
-pub struct Lifecycle {
+pub(crate) struct Lifecycle {
 	phase: Phase,
 	/// The format the game's pipelines were built against (init or last
 	/// rebuild).
@@ -103,7 +103,7 @@ impl Default for Lifecycle {
 }
 
 impl Lifecycle {
-	pub fn new() -> Self {
+	pub(crate) fn new() -> Self {
 		Self {
 			phase: Phase::Uninitialized,
 			built_format: None,
@@ -115,14 +115,14 @@ impl Lifecycle {
 	/// Test seam: the shell mirrors phase through its own AppState and
 	/// never asks.
 	#[cfg(test)]
-	pub fn phase(&self) -> Phase {
+	pub(crate) fn phase(&self) -> Phase {
 		self.phase
 	}
 
 	/// Pure transition: updates the phase and returns the ordered actions
 	/// the shell must execute. Idempotent where the OS is (double-resume,
 	/// double-suspend deliver nothing).
-	pub fn on(&mut self, ev: Event) -> Actions {
+	pub(crate) fn on(&mut self, ev: Event) -> Actions {
 		let mut out = Actions::new();
 		match (self.phase, ev) {
 			(Phase::Uninitialized, Event::OsResumed) => {
@@ -187,7 +187,7 @@ impl Lifecycle {
 	}
 
 	/// A rebuild (drill or recovery) re-created pipelines for `format`.
-	pub fn note_rebuilt(&mut self, format: wgpu::TextureFormat) {
+	pub(crate) fn note_rebuilt(&mut self, format: wgpu::TextureFormat) {
 		self.built_format = Some(format);
 		self.fatal_retries = 0;
 	}

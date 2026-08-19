@@ -182,7 +182,7 @@ const fn bouldery(mut p: SurfaceProps) -> SurfaceProps {
 }
 
 /// Indexed by `SurfaceKind as usize` (declaration order).
-pub const SURFACE_PROPS: [SurfaceProps; 13] = [
+pub(super) const SURFACE_PROPS: [SurfaceProps; 13] = [
 	// Ocean
 	banded(sprops(
 		BlockType::Sand,

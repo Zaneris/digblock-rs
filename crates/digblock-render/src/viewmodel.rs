@@ -108,7 +108,7 @@ const SWAP_PITCH: f32 = 0.5;
 
 /// The item's placement this frame, in view space, relative to rest.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct Pose {
+pub(crate) struct Pose {
 	/// Offset from the rest position, in units of [`SIZE`]: +x right,
 	/// +y up, +z toward the viewer.
 	pub offset: Vec3,
@@ -126,7 +126,7 @@ pub struct Pose {
 /// the opposite by necessity, and takes over whatever amplitude the bob
 /// gives up.
 #[derive(Default)]
-pub struct Bob {
+pub(crate) struct Bob {
 	phase: f32,
 	amp: f32,
 	/// Seconds into the breathing cycle, wrapped — a free-running clock,
@@ -148,7 +148,7 @@ impl Bob {
 	/// through the air — or swimming, which is also off the ground — is
 	/// distance travelled that the walk did not do, and letting it feed
 	/// the stride swung the hand at a full walking pace through a jump.
-	pub fn advance(&mut self, moved: f32, dt: f32, grounded: bool) {
+	pub(crate) fn advance(&mut self, moved: f32, dt: f32, grounded: bool) {
 		if dt <= 0.0 {
 			return;
 		}
@@ -164,7 +164,7 @@ impl Bob {
 	}
 
 	/// This frame's contribution to the pose.
-	pub fn pose(&self) -> Pose {
+	pub(crate) fn pose(&self) -> Pose {
 		let t = self.phase * std::f32::consts::TAU;
 		let walk = Pose {
 			// Lateral at the stride rate, vertical at twice it: one dip
@@ -189,7 +189,7 @@ impl Bob {
 	}
 
 	/// World swap.
-	pub fn reset(&mut self) {
+	pub(crate) fn reset(&mut self) {
 		*self = Self::default();
 	}
 }
@@ -205,7 +205,7 @@ impl Bob {
 /// one began, and the bucket filled during it. The arc IS the scoop
 /// ([`SWING_SECS`]), so the hold has room for one and only one.
 #[derive(Default)]
-pub struct Swing {
+pub(crate) struct Swing {
 	/// Seconds into the current arc; `None` between arcs.
 	t: Option<f32>,
 }
@@ -214,7 +214,7 @@ impl Swing {
 	/// Advance the arc in flight, if any. One arc always runs to
 	/// completion, so releasing the button mid-swing returns the hand
 	/// smoothly instead of snapping it back.
-	pub fn advance(&mut self, dt: f32) {
+	pub(crate) fn advance(&mut self, dt: f32) {
 		self.t = self.t.map(|t| t + dt).filter(|t| *t < SWING_SECS);
 	}
 
@@ -222,11 +222,11 @@ impl Swing {
 	/// already in flight is correct and intended: the only way to get
 	/// here mid-swing is a hold that retargeted, which restarted the
 	/// scoop timer this arc is measuring.
-	pub fn strike(&mut self) {
+	pub(crate) fn strike(&mut self) {
 		self.t = Some(0.0);
 	}
 
-	pub fn pose(&self) -> Pose {
+	pub(crate) fn pose(&self) -> Pose {
 		let Some(t) = self.t else {
 			return Pose::default();
 		};
@@ -240,7 +240,7 @@ impl Swing {
 		}
 	}
 
-	pub fn reset(&mut self) {
+	pub(crate) fn reset(&mut self) {
 		*self = Self::default();
 	}
 }
@@ -249,7 +249,7 @@ impl Swing {
 /// and the new one rises in its place. Owning `shown` is the whole
 /// point — the drawn item lags the selection by half a swap, which is
 /// what makes it a swap rather than a dip with a jump-cut in the middle.
-pub struct Swap {
+pub(crate) struct Swap {
 	/// Seconds into the current swap; at or past [`SWAP_SECS`] = at rest.
 	t: f32,
 	shown: Option<IconKind>,
@@ -278,7 +278,7 @@ fn same_item(a: Option<IconKind>, b: Option<IconKind>) -> bool {
 impl Swap {
 	/// Feed this frame's selection. Read the item to draw back out of
 	/// [`Self::shown`].
-	pub fn advance(&mut self, dt: f32, selected: Option<IconKind>) {
+	pub(crate) fn advance(&mut self, dt: f32, selected: Option<IconKind>) {
 		// A state change on the item already in hand is adopted in place
 		// — no dip — and adopting it first is what keeps the comparisons
 		// below reading as "a different item".
@@ -310,11 +310,11 @@ impl Swap {
 	}
 
 	/// The item to draw — not necessarily the one that's selected.
-	pub fn shown(&self) -> Option<IconKind> {
+	pub(crate) fn shown(&self) -> Option<IconKind> {
 		self.shown
 	}
 
-	pub fn pose(&self) -> Pose {
+	pub(crate) fn pose(&self) -> Pose {
 		if self.t >= SWAP_SECS {
 			return Pose::default();
 		}
@@ -329,13 +329,13 @@ impl Swap {
 		}
 	}
 
-	pub fn reset(&mut self) {
+	pub(crate) fn reset(&mut self) {
 		*self = Self::default();
 	}
 }
 
 /// Sum of the poses in play this frame.
-pub fn combine(a: Pose, b: Pose) -> Pose {
+pub(crate) fn combine(a: Pose, b: Pose) -> Pose {
 	Pose {
 		offset: a.offset + b.offset,
 		pitch: a.pitch + b.pitch,
@@ -347,7 +347,7 @@ pub fn combine(a: Pose, b: Pose) -> Pose {
 /// `height` is the geometry's height in twelfths — a door's spans both
 /// its cells — used to centre it, so a door hangs in the hand like a
 /// cube does.
-pub fn mvp(aspect: f32, height: i32, pose: Pose) -> Mat4 {
+pub(crate) fn mvp(aspect: f32, height: i32, pose: Pose) -> Mat4 {
 	let half_h = (FOV_Y_DEG.to_radians() / 2.0).tan() * DIST;
 	let half_w = half_h * aspect.max(0.01);
 	let rest = Vec3::new(REST_X_FRAC * half_w, REST_Y_FRAC * half_h, -DIST);
@@ -368,7 +368,7 @@ pub fn mvp(aspect: f32, height: i32, pose: Pose) -> Mat4 {
 /// own frame, so the shader can shade against the raw face normals it
 /// already has — no normal matrix, and the item darkens with the sun
 /// like everything else.
-pub fn light_in_item_space(light_dir_view: Vec3, pose: Pose) -> Vec3 {
+pub(crate) fn light_in_item_space(light_dir_view: Vec3, pose: Pose) -> Vec3 {
 	let rot = Mat4::from_rotation_z(pose.roll)
 		* Mat4::from_rotation_x(REST_PITCH + pose.pitch)
 		* Mat4::from_rotation_y(REST_YAW);
@@ -429,7 +429,7 @@ pub(crate) const INK_BIT: u32 = 16;
 
 /// Everything the viewmodel pass needs for one frame.
 #[derive(Clone, Copy)]
-pub struct ViewmodelFrame {
+pub(crate) struct ViewmodelFrame {
 	pub kind: IconKind,
 	pub pose: Pose,
 	/// View-space light direction (toward the ground) and its strength
@@ -476,7 +476,7 @@ fn uniforms(aspect: f32, f: &ViewmodelFrame) -> Uniforms {
 
 // ---- draw -------------------------------------------------------------
 
-pub struct ViewmodelDraw {
+pub(crate) struct ViewmodelDraw {
 	pipeline: wgpu::RenderPipeline,
 	uniform_buf: wgpu::Buffer,
 	bind_group: wgpu::BindGroup,
@@ -486,7 +486,7 @@ pub struct ViewmodelDraw {
 }
 
 impl ViewmodelDraw {
-	pub fn new(
+	pub(crate) fn new(
 		gpu: &Gpu,
 		surface_format: wgpu::TextureFormat,
 		materials_bgl: &wgpu::BindGroupLayout,
@@ -606,7 +606,7 @@ impl ViewmodelDraw {
 
 	/// Rebuild and upload this frame's item. `None` (empty hand, a
 	/// screen open, the menu up) skips the pass entirely.
-	pub fn prepare(&mut self, gpu: &Gpu, aspect: f32, frame: Option<&ViewmodelFrame>) {
+	pub(crate) fn prepare(&mut self, gpu: &Gpu, aspect: f32, frame: Option<&ViewmodelFrame>) {
 		let Some(f) = frame else {
 			self.quads = 0;
 			return;
@@ -628,14 +628,14 @@ impl ViewmodelDraw {
 		self.scratch = scratch;
 	}
 
-	pub fn is_empty(&self) -> bool {
+	pub(crate) fn is_empty(&self) -> bool {
 		self.quads == 0
 	}
 
 	/// Draw into the viewmodel pass. `index_buf` is the shared quad
 	/// index buffer — the same [3,1,0,3,0,2] pattern every chunk uses,
 	/// which is why [`item_geom`] orders its corners the mesher's way.
-	pub fn draw(
+	pub(crate) fn draw(
 		&self,
 		pass: &mut wgpu::RenderPass<'_>,
 		index_buf: &wgpu::Buffer,

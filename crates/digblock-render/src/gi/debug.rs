@@ -5,7 +5,7 @@ use super::*;
 
 impl GiDraw {
 	/// Draw the debug raymarch over the whole target (`DIG_GI=`).
-	pub fn encode_debug(
+	pub(crate) fn encode_debug(
 		&mut self,
 		gpu: &Gpu,
 		encoder: &mut wgpu::CommandEncoder,

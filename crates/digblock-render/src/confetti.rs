@@ -14,28 +14,28 @@ use digblock_platform::Gpu;
 /// Simultaneous bursts. The cap is far past what a session ever shows at
 /// once (a level-up is rare and a burst is short-lived — see [`LIFE`]),
 /// and the buffer it sizes is negligible.
-pub const MAX_BURSTS: usize = 16;
+pub(crate) const MAX_BURSTS: usize = 16;
 /// Flakes per burst — keep in sync with confetti.wgsl PARTICLES.
 const PARTICLES: u32 = 96;
 /// Seconds a burst lives. The shader fades out over its last stretch and
 /// reaches zero exactly here, so dropping the burst at this age can never
 /// cut a visible flake.
-pub const LIFE: f32 = 2.6;
+pub(crate) const LIFE: f32 = 2.6;
 /// Bytes per instance: origin + age, then the seed lane.
 const INSTANCE_SIZE: usize = 32;
 
 /// One live burst, in the flat `[origin.xyz, age][seed, 0, 0, 0]` layout
 /// the vertex shader reads.
-pub type BurstInstance = [f32; 8];
+pub(crate) type BurstInstance = [f32; 8];
 
 /// Build the instance for a burst at `pos`, `age` seconds old, with
 /// per-burst `seed`. Shared by the engine so the packing lives with the
 /// shader that decodes it.
-pub fn instance(pos: [f32; 3], age: f32, seed: f32) -> BurstInstance {
+pub(crate) fn instance(pos: [f32; 3], age: f32, seed: f32) -> BurstInstance {
 	[pos[0], pos[1], pos[2], age, seed, 0.0, 0.0, 0.0]
 }
 
-pub struct Confetti {
+pub(crate) struct Confetti {
 	pipeline: wgpu::RenderPipeline,
 	/// Group 1: the RTGI camera-light buffer, as spray uses.
 	cam_bg: wgpu::BindGroup,
@@ -48,7 +48,7 @@ impl Confetti {
 	/// beside a torch is lit by it (R34). Spray takes no such group: it
 	/// belongs to a waterfall, which is outdoor geometry lit by the sky,
 	/// while confetti is thrown wherever a player happens to level up.
-	pub fn new(
+	pub(crate) fn new(
 		gpu: &Gpu,
 		surface_format: wgpu::TextureFormat,
 		frame_bgl: &wgpu::BindGroupLayout,
@@ -136,7 +136,7 @@ impl Confetti {
 
 	/// Upload this frame's live bursts (engine-owned; over the cap the
 	/// oldest simply don't draw). Returns the instance count to draw.
-	pub fn prepare(&self, gpu: &Gpu, bursts: &[BurstInstance]) -> u32 {
+	pub(crate) fn prepare(&self, gpu: &Gpu, bursts: &[BurstInstance]) -> u32 {
 		let n = bursts.len().min(MAX_BURSTS);
 		if n > 0 {
 			gpu.queue
@@ -152,7 +152,7 @@ impl Confetti {
 	/// happened to bind at 2: the water draw ahead of this one leaves the
 	/// same group there, and a pipeline whose layout matches would keep
 	/// reading it silently if that draw ever moved.
-	pub fn draw(
+	pub(crate) fn draw(
 		&self,
 		pass: &mut wgpu::RenderPass<'_>,
 		instances: u32,

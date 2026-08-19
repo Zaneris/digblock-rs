@@ -9,7 +9,7 @@ use digblock_platform::input::{InputEvent, Key};
 
 /// What a handled input asks the engine to do.
 #[derive(Debug, PartialEq, Eq)]
-pub enum ChatAction {
+pub(crate) enum ChatAction {
 	/// Enter on a non-empty line: send this text (already trimmed).
 	Send(String),
 	/// The box closed without sending (Escape, or Enter on empty).
@@ -20,14 +20,14 @@ pub enum ChatAction {
 
 /// Immutable per-frame view for the overlay.
 #[derive(Clone, Copy)]
-pub struct ChatView<'a> {
+pub(crate) struct ChatView<'a> {
 	pub line: &'a str,
 	/// Caret blink phase, driven by the engine clock.
 	pub caret: bool,
 }
 
 #[derive(Default)]
-pub struct Chat {
+pub(crate) struct Chat {
 	open: bool,
 	buffer: String,
 	/// The keypress that opened the box (T, Enter) also produces its own
@@ -44,16 +44,16 @@ pub struct Chat {
 }
 
 impl Chat {
-	pub fn is_open(&self) -> bool {
+	pub(crate) fn is_open(&self) -> bool {
 		self.open
 	}
 
 	/// Install the server's command set (`ServerMsg::AdminCommands`).
-	pub fn set_commands(&mut self, commands: Vec<(String, String)>) {
+	pub(crate) fn set_commands(&mut self, commands: Vec<(String, String)>) {
 		self.commands = commands;
 	}
 
-	pub fn open(&mut self) {
+	pub(crate) fn open(&mut self) {
 		if !self.open {
 			self.open = true;
 			self.buffer.clear();
@@ -61,7 +61,7 @@ impl Chat {
 		}
 	}
 
-	pub fn view(&self, caret: bool) -> ChatView<'_> {
+	pub(crate) fn view(&self, caret: bool) -> ChatView<'_> {
 		ChatView {
 			line: &self.buffer,
 			caret,
@@ -71,7 +71,7 @@ impl Chat {
 	/// Handle one input while open. Returns an action when the box
 	/// closes; `None` while it stays open. Must only be called while
 	/// `is_open()`.
-	pub fn handle_input(&mut self, event: &InputEvent) -> Option<ChatAction> {
+	pub(crate) fn handle_input(&mut self, event: &InputEvent) -> Option<ChatAction> {
 		match event {
 			InputEvent::Text { ch } => {
 				if std::mem::take(&mut self.suppress_text) {

@@ -20,12 +20,12 @@ use glam::Vec3;
 ///
 /// Presentation only: gameplay reads the authoritative `Player::pos`.
 #[derive(Debug, Clone, Copy)]
-pub struct TickLerp {
+pub(crate) struct TickLerp {
 	prev: Vec3,
 }
 
 impl TickLerp {
-	pub fn new(pos: Vec3) -> Self {
+	pub(crate) fn new(pos: Vec3) -> Self {
 		Self { prev: pos }
 	}
 
@@ -33,14 +33,14 @@ impl TickLerp {
 	/// and any frame that SKIPS the sim (an unloaded feet column drops
 	/// the accumulator, which would otherwise leave alpha at 0 and draw a
 	/// tick-sized step backwards).
-	pub fn reset(&mut self, pos: Vec3) {
+	pub(crate) fn reset(&mut self, pos: Vec3) {
 		self.prev = pos;
 	}
 
 	/// Record the pre-tick position. Called immediately before every
 	/// `Player::tick`, so after a multi-tick frame the anchor is the
 	/// state before the LAST tick — the one being interpolated toward.
-	pub fn before_tick(&mut self, pos: Vec3) {
+	pub(crate) fn before_tick(&mut self, pos: Vec3) {
 		self.prev = pos;
 	}
 
@@ -48,7 +48,7 @@ impl TickLerp {
 	/// anchor with it: otherwise the lerp interpolates from the
 	/// pre-rewind position and re-injects the very jump the camera's
 	/// correction offset exists to hide.
-	pub fn rewind(&mut self, error: Vec3) {
+	pub(crate) fn rewind(&mut self, error: Vec3) {
 		self.prev -= error;
 	}
 
@@ -65,7 +65,7 @@ impl TickLerp {
 	/// torch-bearer paid a full rebuild on a large share of frames.
 	/// `a + (b - a)*t` returns `a` bit-exactly when `a == b`, which is the
 	/// property that early-out rests on.
-	pub fn render_pos(&self, curr: Vec3, accum: f32) -> Vec3 {
+	pub(crate) fn render_pos(&self, curr: Vec3, accum: f32) -> Vec3 {
 		let t = (accum / TICK).clamp(0.0, 1.0);
 		self.prev + (curr - self.prev) * t
 	}

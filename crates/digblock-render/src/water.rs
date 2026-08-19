@@ -23,7 +23,7 @@ pub(crate) struct WaterDraw {
 }
 
 impl WaterDraw {
-	pub fn new(
+	pub(crate) fn new(
 		gpu: &Gpu,
 		surface_format: wgpu::TextureFormat,
 		layout: &wgpu::PipelineLayout,
@@ -91,7 +91,7 @@ impl WaterDraw {
 	/// culled water list (indices into `chunks`). The caller has bound
 	/// groups 0-2, the index buffer, and the origin stream at vertex slot
 	/// 1. Returns (water draws, triangles).
-	pub fn draw(
+	pub(crate) fn draw(
 		&self,
 		pass: &mut wgpu::RenderPass<'_>,
 		chunks: &[ChunkGpu],

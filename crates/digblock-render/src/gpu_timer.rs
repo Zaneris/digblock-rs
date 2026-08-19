@@ -17,15 +17,15 @@ use digblock_platform::Gpu;
 /// gap between measured GPU time and the actual frame was invisible.
 /// A pass that is not in this list does not exist as far as tuning is
 /// concerned.
-pub const Q_PREPASS: u32 = 0;
-pub const Q_MAIN: u32 = 2;
-pub const Q_OVERLAY: u32 = 4;
+pub(crate) const Q_PREPASS: u32 = 0;
+pub(crate) const Q_MAIN: u32 = 2;
+pub(crate) const Q_OVERLAY: u32 = 4;
 /// Water pass (blit + prepass + water color), once the main pass splits.
-pub const Q_WATER: u32 = 6;
+pub(crate) const Q_WATER: u32 = 6;
 /// RTGI probe-update compute (GI-DESIGN.md).
-pub const Q_GI: u32 = 8;
+pub(crate) const Q_GI: u32 = 8;
 /// The half-res GI trace (probe gather + sun ray).
-pub const Q_GI_TRACE: u32 = 10;
+pub(crate) const Q_GI_TRACE: u32 = 10;
 /// À-trous iteration 1 (the stride-1 pass).
 ///
 /// The two iterations need SEPARATE pairs. They used to share this one,
@@ -33,18 +33,18 @@ pub const Q_GI_TRACE: u32 = 10;
 /// overwrote the stride-1 pass and the reported "denoise" number was one
 /// iteration masquerading as both — the same class of blind spot the
 /// header warns about, one level down from a pass.
-pub const Q_GI_DENOISE: u32 = 12;
+pub(crate) const Q_GI_DENOISE: u32 = 12;
 /// À-trous iteration 2 (the stride-2 pass).
-pub const Q_GI_DENOISE2: u32 = 14;
+pub(crate) const Q_GI_DENOISE2: u32 = 14;
 /// The D32F → R32Float depth blit. A full-screen read+write of every
 /// pixel that ran untimed since it was written.
-pub const Q_DEPTH_BLIT: u32 = 16;
+pub(crate) const Q_DEPTH_BLIT: u32 = 16;
 /// The viewmodel pass — its own render pass with its own depth clear.
-pub const Q_VIEWMODEL: u32 = 18;
+pub(crate) const Q_VIEWMODEL: u32 = 18;
 /// The upscale pass: render resolution → the surface. A straight 1:1
 /// blit at the default render scale, so this is also the cost of the pass
 /// boundary the restructure added.
-pub const Q_UPSCALE: u32 = 20;
+pub(crate) const Q_UPSCALE: u32 = 20;
 const QUERY_COUNT: u32 = 22;
 const BUF_SIZE: u64 = QUERY_COUNT as u64 * 8;
 /// Readback ring depth; deep enough to cover the buffer-map latency.
@@ -57,7 +57,7 @@ struct Slot {
 	pending: bool,
 }
 
-pub struct GpuTimer {
+pub(crate) struct GpuTimer {
 	query_set: wgpu::QuerySet,
 	slots: Vec<Slot>,
 	cursor: usize,
@@ -71,7 +71,7 @@ pub struct GpuTimer {
 
 impl GpuTimer {
 	/// None if the device lacks TIMESTAMP_QUERY.
-	pub fn new(gpu: &Gpu) -> Option<Self> {
+	pub(crate) fn new(gpu: &Gpu) -> Option<Self> {
 		if !gpu
 			.device
 			.features()
@@ -114,7 +114,7 @@ impl GpuTimer {
 
 	/// Call at frame start: harvests the current slot if its readback
 	/// landed, and decides whether this frame writes timestamps.
-	pub fn begin_frame(&mut self) {
+	pub(crate) fn begin_frame(&mut self) {
 		let slot = &mut self.slots[self.cursor % SLOTS];
 		if slot.pending {
 			if !slot.ready.load(Ordering::Relaxed) {
@@ -163,7 +163,7 @@ impl GpuTimer {
 
 	/// Pass descriptor timestamp writes for the pass starting at `first`,
 	/// or None when timing is skipped this frame.
-	pub fn writes(&self, first: u32) -> Option<wgpu::RenderPassTimestampWrites<'_>> {
+	pub(crate) fn writes(&self, first: u32) -> Option<wgpu::RenderPassTimestampWrites<'_>> {
 		self.armed.then_some(wgpu::RenderPassTimestampWrites {
 			query_set: &self.query_set,
 			beginning_of_pass_write_index: Some(first),
@@ -172,7 +172,10 @@ impl GpuTimer {
 	}
 
 	/// The compute-pass twin of [`writes`].
-	pub fn compute_writes(&self, first: u32) -> Option<wgpu::ComputePassTimestampWrites<'_>> {
+	pub(crate) fn compute_writes(
+		&self,
+		first: u32,
+	) -> Option<wgpu::ComputePassTimestampWrites<'_>> {
 		self.armed.then_some(wgpu::ComputePassTimestampWrites {
 			query_set: &self.query_set,
 			beginning_of_pass_write_index: Some(first),
@@ -181,7 +184,7 @@ impl GpuTimer {
 	}
 
 	/// Encode resolve + copy. Call after the last pass, before submit.
-	pub fn resolve(&mut self, encoder: &mut wgpu::CommandEncoder) {
+	pub(crate) fn resolve(&mut self, encoder: &mut wgpu::CommandEncoder) {
 		if !self.armed {
 			return;
 		}
@@ -191,7 +194,7 @@ impl GpuTimer {
 	}
 
 	/// Kick off the async readback. Call after queue.submit.
-	pub fn after_submit(&mut self, gpu: &Gpu) {
+	pub(crate) fn after_submit(&mut self, gpu: &Gpu) {
 		if self.armed {
 			let slot = &mut self.slots[self.cursor % SLOTS];
 			let ready = Arc::clone(&slot.ready);

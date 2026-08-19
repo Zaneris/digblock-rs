@@ -43,7 +43,7 @@ impl AudioSink for ChannelSink {
 
 /// Spawn the audio thread and return the engine-facing sink.
 /// `master_url` enables the music playlist when present.
-pub fn start(master_url: Option<String>) -> Box<dyn AudioSink> {
+pub(crate) fn start(master_url: Option<String>) -> Box<dyn AudioSink> {
 	let (tx, rx) = mpsc::channel::<AudioCmd>();
 	let (music_tx, music_rx) = mpsc::channel::<(bool, Vec<u8>)>();
 	if let Some(url) = master_url {

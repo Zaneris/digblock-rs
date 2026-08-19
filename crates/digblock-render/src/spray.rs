@@ -18,7 +18,7 @@ const MIST_N: u32 = 3;
 /// so an emitter is already invisible by the time it is dropped.
 const SPRAY_RADIUS: f32 = 64.0;
 
-pub struct Spray {
+pub(crate) struct Spray {
 	pipeline: wgpu::RenderPipeline,
 	/// Group 1: the RTGI camera-light buffer (gi_probe's cam_light) —
 	/// billboards have no surface to gather at, so the camera's probe
@@ -34,7 +34,7 @@ pub struct Spray {
 }
 
 impl Spray {
-	pub fn new(
+	pub(crate) fn new(
 		gpu: &Gpu,
 		surface_format: wgpu::TextureFormat,
 		frame_bgl: &wgpu::BindGroupLayout,
@@ -119,7 +119,7 @@ impl Spray {
 
 	/// Record a chunk's impact cells (empty clears the entry). Fed from
 	/// `Renderer::upload_chunk`, so emitters follow remeshes for free.
-	pub fn set_chunk(&mut self, pos: ChunkPos, origin: (f32, f32, f32), impacts: &[u16]) {
+	pub(crate) fn set_chunk(&mut self, pos: ChunkPos, origin: (f32, f32, f32), impacts: &[u16]) {
 		if impacts.is_empty() {
 			self.impacts.remove(&pos);
 			return;
@@ -137,14 +137,14 @@ impl Spray {
 		self.impacts.insert(pos, pts);
 	}
 
-	pub fn remove_chunk(&mut self, pos: ChunkPos) {
+	pub(crate) fn remove_chunk(&mut self, pos: ChunkPos) {
 		self.impacts.remove(&pos);
 	}
 
 	/// Cull to the radius (nearest-first when over the cap) and upload
 	/// the instance list. The map holds only splash-bearing chunks, so
 	/// rebuilding every frame is microseconds and needs no dirty flags.
-	pub fn prepare(&mut self, gpu: &Gpu, cam: glam::Vec3) -> u32 {
+	pub(crate) fn prepare(&mut self, gpu: &Gpu, cam: glam::Vec3) -> u32 {
 		self.scratch.clear();
 		for pts in self.impacts.values() {
 			for p in pts {
@@ -171,7 +171,7 @@ impl Spray {
 
 	/// Draw after the water color subpass (same pass; the caller must
 	/// have re-bound the frame bind group at 0). Returns triangles.
-	pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>, instances: u32) -> u32 {
+	pub(crate) fn draw(&self, pass: &mut wgpu::RenderPass<'_>, instances: u32) -> u32 {
 		if instances == 0 {
 			return 0;
 		}

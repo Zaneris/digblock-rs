@@ -26,13 +26,13 @@ mod probes;
 mod resolve;
 mod window;
 
-pub const C0_DIMS: (u32, u32, u32) = (32, 24, 32);
+pub(crate) const C0_DIMS: (u32, u32, u32) = (32, 24, 32);
 /// C0's probe spacing in blocks — the finest scale the bounce field can
 /// resolve, and therefore the granularity a moving emitter has to be
 /// re-placed at (`engine::CARRY_INVAL_STEP`).
-pub const C0_SPACING: u32 = 2;
+pub(crate) const C0_SPACING: u32 = 2;
 /// C1 far cascade (the coarse spacing).
-pub const C1_DIMS: (u32, u32, u32) = (32, 20, 32);
+pub(crate) const C1_DIMS: (u32, u32, u32) = (32, 20, 32);
 /// Probes traced per cascade per frame (the amortization grain).
 const PROBES_PER_DISPATCH: u32 = 512;
 /// World height in blocks — the window's fixed Y extent (an up-ray
@@ -50,7 +50,7 @@ const MAX_LIGHTS: usize = 256;
 /// question about the light's CELL and a carried one has none, and
 /// [`Self::level`], which only a carried light ever sets.
 #[derive(Clone, Copy, PartialEq, Debug)]
-pub struct Emitter {
+pub(crate) struct Emitter {
 	/// Where the light radiates from: a point for a lamp, the CENTRE of
 	/// the rectangle for a [`Self::face`] emitter.
 	///
@@ -96,7 +96,7 @@ pub struct Emitter {
 /// way `mesher::lights::tangents` does, in ascending axis order, so the
 /// packer and the sampler cannot disagree about which extent is which.
 #[derive(Clone, Copy, PartialEq, Debug)]
-pub struct Face {
+pub(crate) struct Face {
 	/// The axis the outward normal lies along: 0, 1 or 2 for x, y, z.
 	pub axis: u8,
 	/// Outward normal points UP that axis rather than down it.
@@ -171,7 +171,7 @@ const LIGHT_QUAD: u32 = 16384;
 /// to carry the smallest increment the history length asks for: alpha of 1/N
 /// stalls once the residual falls under ~N ulps. f32's 24-bit mantissa puts that
 /// floor far below one output LSB; f16's put it inside the signal.
-pub const GI_ACC_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
+pub(crate) const GI_ACC_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
 
 // The a-trous tap strides, one entry per iteration. Doubling the stride
 // instead of growing the kernel is the whole trick: these strides of a B3
@@ -242,7 +242,7 @@ fn schedule_stride(count: u32) -> u32 {
 	if gcd(s, count.max(1)) != 1 { 1 } else { s }
 }
 
-pub struct GiDraw {
+pub(crate) struct GiDraw {
 	probe_pipeline: wgpu::ComputePipeline,
 	inval_pipeline: wgpu::ComputePipeline,
 	/// One invocation sampling probes + sun visibility at the camera
@@ -574,38 +574,38 @@ const GI_UNIFORM_SIZE: u64 = 176;
 /// The GI resolve's group 0 bind plus its two MRT attachments — one
 /// argument instead of three, which is what keeps the encode signature
 /// under clippy's limit as the pass grows.
-pub struct ResolveTargets<'a> {
+pub(crate) struct ResolveTargets<'a> {
 	pub bind: &'a wgpu::BindGroup,
 	pub indirect_view: &'a wgpu::TextureView,
 	pub sun_view: &'a wgpu::TextureView,
 }
 
 impl GiDraw {
-	pub fn scene_bgl(&self) -> &wgpu::BindGroupLayout {
+	pub(crate) fn scene_bgl(&self) -> &wgpu::BindGroupLayout {
 		&self.scene_bgl
 	}
 
 	/// gi_common.wgsl's group(2) layout — water and players reference it
 	/// in their pipeline layouts.
-	pub fn gather_bgl(&self) -> &wgpu::BindGroupLayout {
+	pub(crate) fn gather_bgl(&self) -> &wgpu::BindGroupLayout {
 		&self.gather_bgl
 	}
 
 	/// The GI world bind group reading the FRONT (just written) atlases
 	/// — valid after this frame's `encode`.
-	pub fn gather_bind(&self) -> &wgpu::BindGroup {
+	pub(crate) fn gather_bind(&self) -> &wgpu::BindGroup {
 		&self.gather_bind[self.ping]
 	}
 
 	/// The camera-light buffer `cam_light` writes — spray and the
 	/// viewmodel bind it as a uniform.
-	pub fn cam_light_buf(&self) -> &wgpu::Buffer {
+	pub(crate) fn cam_light_buf(&self) -> &wgpu::Buffer {
 		&self.cam_buf
 	}
 
 	/// Drop the screen-space history: device loss, a resize, or anything
 	/// else that leaves last frame's buffers describing another world.
-	pub fn reset_history(&mut self) {
+	pub(crate) fn reset_history(&mut self) {
 		self.history_valid = false;
 	}
 
@@ -613,7 +613,7 @@ impl GiDraw {
 	/// gatherers (water, players) read: quantized caster, cascade dims,
 	/// window side. Also latches `last_sun` for this frame's `encode` /
 	/// `encode_resolve`. Call BEFORE the frame UBO uploads.
-	pub fn patch_frame(&mut self, frame: &mut FrameUniforms) {
+	pub(crate) fn patch_frame(&mut self, frame: &mut FrameUniforms) {
 		// Quantized caster: the ACTIVE light (sun by day, moon by night —
 		// light_dir points toward the ground and light_color already
 		// matches it), snapped by `SUN_QUANT` so probe results hold still

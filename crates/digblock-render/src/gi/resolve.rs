@@ -7,7 +7,7 @@ impl GiDraw {
 	/// Build the resolve's group-0 bind (uniform + the depth and
 	/// face-normal taps) against the current targets — called whenever
 	/// the frame targets rebuild.
-	pub fn make_resolve_bind(
+	pub(crate) fn make_resolve_bind(
 		&self,
 		gpu: &Gpu,
 		depth_copy_view: &wgpu::TextureView,
@@ -46,7 +46,7 @@ impl GiDraw {
 	/// Build one a-trous iteration's bind: its stride uniform plus the pair
 	/// it reads. Iteration `i` reads whichever pair the previous stage
 	/// wrote, so the caller owns the ping — there is no state here.
-	pub fn make_atrous_bind(
+	pub(crate) fn make_atrous_bind(
 		&self,
 		gpu: &Gpu,
 		iter: usize,
@@ -79,7 +79,7 @@ impl GiDraw {
 	/// `query` is the caller's, one pair per ITERATION. Both used to write
 	/// `Q_GI_DENOISE`, so the second silently overwrote the first and the
 	/// denoise column reported the stride-2 pass alone.
-	pub fn encode_atrous(
+	pub(crate) fn encode_atrous(
 		&self,
 		encoder: &mut wgpu::CommandEncoder,
 		timer: Option<&GpuTimer>,
@@ -113,7 +113,7 @@ impl GiDraw {
 	}
 
 	/// Encode the half-res GI resolve into the two lighting targets.
-	pub fn encode_resolve(
+	pub(crate) fn encode_resolve(
 		&mut self,
 		gpu: &Gpu,
 		encoder: &mut wgpu::CommandEncoder,

@@ -28,6 +28,9 @@ license = "MIT"
 # discovering it later. Each crate opts in via `[lints] workspace = true`.
 [workspace.lints.rust]
 warnings = "deny"
+# A `pub` item inside a private module is reachable by nobody and reads as
+# API. Denying it is what keeps a crate's real surface the one in `lib.rs`.
+unreachable_pub = "deny"
 
 [workspace.dependencies]
 digblock-core = { path = "crates/digblock-core" }

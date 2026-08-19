@@ -28,7 +28,8 @@ mod draw;
 mod frame_types;
 mod targets;
 
-pub use frame_types::{FrameScene, FrameUniforms, NameTag, RenderConfig, stub};
+pub use frame_types::stub;
+pub(crate) use frame_types::{FrameScene, FrameUniforms, NameTag, RenderConfig};
 
 const NORMAL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Uint;
 
@@ -116,7 +117,7 @@ fn grown_slots(current: u32, needed: u32) -> u32 {
 	needed.next_multiple_of(256).max(current.saturating_mul(2))
 }
 
-pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+pub(crate) const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 /// The packed two-word chunk vertex (see `mesher::pack`), shared by the
 /// solid, water, and depth-prepass pipelines.
@@ -169,7 +170,7 @@ pub(crate) struct ChunkMesh {
 /// Vec (`by_pos` maps ChunkPos back to its index). Flat because the cull
 /// walks the whole set every frame: a hash map costs more in layout and
 /// iteration order than the frustum test itself does.
-pub struct ChunkGpu {
+pub(crate) struct ChunkGpu {
 	pub(crate) pos: ChunkPos,
 	pub(crate) solid: Option<ChunkMesh>,
 	pub(crate) water: Option<ChunkMesh>,
@@ -230,7 +231,7 @@ fn scatter_by_bucket(keyed: &[(u8, u32)], counts: &[u32; DIST_BUCKETS], out: &mu
 	}
 }
 
-pub struct Renderer {
+pub(crate) struct Renderer {
 	solid_pipeline: wgpu::RenderPipeline,
 	/// Depth-only prepass over the opaque solids: fills the scene depth
 	/// the GI resolve reconstructs world positions from, before any
@@ -340,7 +341,7 @@ pub struct Renderer {
 /// ratio — the upsample would read texels that no longer line up with the
 /// pixels it is weighting. `gi_ratio` is the number the shader is handed.
 #[derive(Clone, Copy, PartialEq)]
-pub struct RenderScale {
+pub(crate) struct RenderScale {
 	pub render: f32,
 	pub gi_div: u32,
 }
@@ -431,7 +432,7 @@ struct FrameTargets {
 impl Renderer {
 	/// Latest GPU pass reading (a few frames latent); None when timestamps
 	/// are unsupported or nothing has been read back yet.
-	pub fn gpu_pass_ms(&self) -> Option<digblock_core::metrics::GpuPassMs> {
+	pub(crate) fn gpu_pass_ms(&self) -> Option<digblock_core::metrics::GpuPassMs> {
 		self.gpu_timer.as_ref().and_then(|t| t.latest)
 	}
 
@@ -488,16 +489,16 @@ impl Renderer {
 	/// The GI voxel window's radius in chunks, as this renderer built it.
 	/// F7 drill: drop the GI's ratcheting derived state — see
 	/// `GiDraw::clear_derived_state`.
-	pub fn gi_clear_derived_state(&mut self) {
+	pub(crate) fn gi_clear_derived_state(&mut self) {
 		self.gi.clear_derived_state();
 	}
 
 	/// `sky_y` and the emitter count, for the F7 drill's log line.
-	pub fn gi_debug_state(&self) -> (f32, u32) {
+	pub(crate) fn gi_debug_state(&self) -> (f32, u32) {
 		self.gi.debug_state()
 	}
 
-	pub fn gi_window_chunks(&self) -> i32 {
+	pub(crate) fn gi_window_chunks(&self) -> i32 {
 		self.gi.window_chunks()
 	}
 }

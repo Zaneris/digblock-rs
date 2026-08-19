@@ -7,7 +7,7 @@
 
 use crate::renderer::DEPTH_FORMAT;
 
-pub struct PipelineDesc<'a> {
+pub(crate) struct PipelineDesc<'a> {
 	pub label: &'a str,
 	pub layout: &'a wgpu::PipelineLayout,
 	pub module: &'a wgpu::ShaderModule,
@@ -27,7 +27,7 @@ pub struct PipelineDesc<'a> {
 /// depth-only shadow pass). A `fs_entry` with `color_format` Some and
 /// an empty `write_mask` is the depth-prepass shape (rasterize, write
 /// nothing).
-pub fn build(
+pub(crate) fn build(
 	device: &wgpu::Device,
 	color_format: Option<wgpu::TextureFormat>,
 	desc: &PipelineDesc<'_>,
@@ -38,7 +38,7 @@ pub fn build(
 /// The one pass shape with no depth attachment at all: the depth-resolve
 /// blit, whose color target IS the depth copy. `desc.depth_*` are
 /// ignored.
-pub fn build_depthless(
+pub(crate) fn build_depthless(
 	device: &wgpu::Device,
 	color_format: wgpu::TextureFormat,
 	desc: &PipelineDesc<'_>,

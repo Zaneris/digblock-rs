@@ -58,7 +58,7 @@ struct Voice {
 }
 
 #[derive(Default)]
-pub struct WaterAudio {
+pub(crate) struct WaterAudio {
 	impacts: FxHashMap<ChunkPos, Vec<Vec3>>,
 	voices: Vec<Voice>,
 	accum: f32,
@@ -69,7 +69,7 @@ pub struct WaterAudio {
 impl WaterAudio {
 	/// Record a chunk's impact cells (same packed cells and decode as
 	/// `Spray::set_chunk`; empty clears).
-	pub fn set_chunk(&mut self, pos: ChunkPos, origin: (f32, f32, f32), impacts: &[u16]) {
+	pub(crate) fn set_chunk(&mut self, pos: ChunkPos, origin: (f32, f32, f32), impacts: &[u16]) {
 		if impacts.is_empty() {
 			self.impacts.remove(&pos);
 			return;
@@ -87,12 +87,12 @@ impl WaterAudio {
 		self.impacts.insert(pos, pts);
 	}
 
-	pub fn remove_chunk(&mut self, pos: ChunkPos) {
+	pub(crate) fn remove_chunk(&mut self, pos: ChunkPos) {
 		self.impacts.remove(&pos);
 	}
 
 	/// Stop every voice (world swap / audio teardown).
-	pub fn clear(&mut self, out: &mut Vec<AudioCmd>) {
+	pub(crate) fn clear(&mut self, out: &mut Vec<AudioCmd>) {
 		for v in self.voices.drain(..) {
 			out.push(AudioCmd::LoopStop { id: v.id });
 		}
@@ -102,7 +102,7 @@ impl WaterAudio {
 
 	/// Advance and reconcile. Emits LoopStart/LoopMove/LoopStop into
 	/// `out`; internally throttled to [`STEP_SECS`].
-	pub fn update(&mut self, dt: f32, cam: Vec3, out: &mut Vec<AudioCmd>) {
+	pub(crate) fn update(&mut self, dt: f32, cam: Vec3, out: &mut Vec<AudioCmd>) {
 		self.accum += dt;
 		if self.accum < STEP_SECS {
 			return;

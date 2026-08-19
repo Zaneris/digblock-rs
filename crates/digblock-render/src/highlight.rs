@@ -27,7 +27,7 @@ const INSTANCE_BYTES: wgpu::BufferAddress = 48;
 /// produce an identical target — same outline, same fracture — which is what
 /// makes it read as one object, and matches the click.
 #[derive(Clone, Copy, PartialEq, Debug)]
-pub struct HighlightTarget {
+pub(crate) struct HighlightTarget {
 	/// The cell the box is anchored to — the targeted cell for everything
 	/// except a door, where it is the pair's lower half.
 	pub cell: (i32, i32, i32),
@@ -40,7 +40,7 @@ pub struct HighlightTarget {
 
 impl HighlightTarget {
 	/// Box the whole object a raw cell value belongs to.
-	pub fn new(cell: (i32, i32, i32), value: u16, progress: Option<f32>) -> Self {
+	pub(crate) fn new(cell: (i32, i32, i32), value: u16, progress: Option<f32>) -> Self {
 		let s = 1.0 / f32::from(digblock_core::shapes::GRID);
 		let (cell, bounds) = digblock_core::shapes::object_bounds(cell, value);
 		let (lo, hi) = match bounds {
@@ -79,14 +79,14 @@ fn cell_seed(cell: (i32, i32, i32)) -> u32 {
 		& 0xFFFF
 }
 
-pub struct HighlightDraw {
+pub(crate) struct HighlightDraw {
 	pipeline: wgpu::RenderPipeline,
 	instance_buf: wgpu::Buffer,
 	active: bool,
 }
 
 impl HighlightDraw {
-	pub fn new(
+	pub(crate) fn new(
 		gpu: &Gpu,
 		surface_format: wgpu::TextureFormat,
 		water_frame_bgl: &wgpu::BindGroupLayout,
@@ -155,7 +155,7 @@ impl HighlightDraw {
 	}
 
 	/// Upload this frame's target, or clear it.
-	pub fn set_target(&mut self, gpu: &Gpu, target: Option<HighlightTarget>) {
+	pub(crate) fn set_target(&mut self, gpu: &Gpu, target: Option<HighlightTarget>) {
 		self.active = target.is_some();
 		let Some(t) = target else {
 			return;
@@ -183,7 +183,7 @@ impl HighlightDraw {
 	/// Draw in the water pass, after the water surfaces (the water frame
 	/// bind group at 0 — it carries the solid depth copy the shader
 	/// occludes against). Returns triangles drawn.
-	pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>) -> u32 {
+	pub(crate) fn draw(&self, pass: &mut wgpu::RenderPass<'_>) -> u32 {
 		if !self.active {
 			return 0;
 		}

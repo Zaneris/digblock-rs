@@ -7,7 +7,7 @@ impl GiDraw {
 	/// Encode this frame's probe updates (both cascades) at the head of
 	/// the frame's encoder: full prev→out copy, then the amortized
 	/// trace over PROBES_PER_DISPATCH probes, then edit invalidation.
-	pub fn encode(
+	pub(crate) fn encode(
 		&mut self,
 		gpu: &Gpu,
 		encoder: &mut wgpu::CommandEncoder,

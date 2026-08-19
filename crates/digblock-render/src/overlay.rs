@@ -11,7 +11,7 @@ use digblock_platform::Gpu;
 use crate::font;
 
 /// Frames shown in the frame-time graph.
-pub const GRAPH_FRAMES: usize = 120;
+pub(crate) const GRAPH_FRAMES: usize = 120;
 
 use crate::ui::scale::{FIXED_GLYPH_PX, glyph_px};
 
@@ -139,7 +139,7 @@ struct OverlayVertex {
 	color: u32,
 }
 
-pub struct Overlay {
+pub(crate) struct Overlay {
 	pipeline: wgpu::RenderPipeline,
 	bind_group: wgpu::BindGroup,
 	uniform_buf: wgpu::Buffer,
@@ -401,7 +401,7 @@ fn look_dir(yaw_deg: f32, pitch_deg: f32) -> glam::Vec3 {
 }
 
 impl Overlay {
-	pub fn new(gpu: &Gpu, surface_format: wgpu::TextureFormat) -> Self {
+	pub(crate) fn new(gpu: &Gpu, surface_format: wgpu::TextureFormat) -> Self {
 		let device = &gpu.device;
 		// Starts empty; glyphs are rasterized and uploaded as they are
 		// first drawn (see `prepare`).
@@ -654,7 +654,7 @@ impl Overlay {
 	/// so screens can dim them. The two derived splits bracket the icon
 	/// pipeline's main and ghost stages.
 	#[allow(clippy::too_many_arguments)]
-	pub fn prepare(
+	pub(crate) fn prepare(
 		&mut self,
 		gpu: &Gpu,
 		size: (u32, u32),
@@ -897,18 +897,18 @@ impl Overlay {
 	}
 
 	/// The range under the main icons (crosshair, slot/panel backdrops).
-	pub fn draw_below(&self, pass: &mut wgpu::RenderPass<'_>) {
+	pub(crate) fn draw_below(&self, pass: &mut wgpu::RenderPass<'_>) {
 		self.draw_range(pass, 0, self.splits[0]);
 	}
 
 	/// The content band over the main icons (counts, labels, panel,
 	/// feed, menu) but under the ghost icon.
-	pub fn draw_mid(&self, pass: &mut wgpu::RenderPass<'_>) {
+	pub(crate) fn draw_mid(&self, pass: &mut wgpu::RenderPass<'_>) {
 		self.draw_range(pass, self.splits[0], self.splits[1]);
 	}
 
 	/// The topmost range (ghost-layer quads/text, over the ghost icon).
-	pub fn draw_above(&self, pass: &mut wgpu::RenderPass<'_>) {
+	pub(crate) fn draw_above(&self, pass: &mut wgpu::RenderPass<'_>) {
 		self.draw_range(pass, self.splits[1], self.vert_count);
 	}
 

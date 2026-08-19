@@ -10,7 +10,7 @@ pub(crate) struct SkyDraw {
 }
 
 impl SkyDraw {
-	pub fn new(
+	pub(crate) fn new(
 		gpu: &Gpu,
 		surface_format: wgpu::TextureFormat,
 		frame_bgl: &wgpu::BindGroupLayout,
@@ -47,7 +47,7 @@ impl SkyDraw {
 	}
 
 	/// Draw into the scene pass; the frame bind group must be bound at 0.
-	pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
+	pub(crate) fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
 		pass.set_pipeline(&self.pipeline);
 		pass.draw(0..3, 0..1);
 	}

@@ -8,7 +8,7 @@ use super::*;
 /// format — derived from `EngineConfig` (see `render_config`), so the
 /// renderer itself never infers platform tiers from other knobs.
 #[derive(Clone)]
-pub struct RenderConfig {
+pub(crate) struct RenderConfig {
 	/// Draw distance in chunks (sizes the chunk-origin buffer).
 	pub draw_dist: i32,
 	/// Spray droplets per waterfall-impact instance (on top of the mist
@@ -146,7 +146,7 @@ pub mod stub {
 /// Everything `Renderer::render` consumes for one frame, built by the
 /// engine — one argument instead of a parameter list that grew with
 /// every feature.
-pub struct FrameScene<'a> {
+pub(crate) struct FrameScene<'a> {
 	pub uniforms: FrameUniforms,
 	pub view_proj: glam::Mat4,
 	/// The SURFACE size. The world may render smaller (see `scale`), but
@@ -196,7 +196,7 @@ pub struct FrameScene<'a> {
 
 /// One name tag: screen-space anchor (pixels, tag centered on `x`),
 /// overlay 0xAABBGGRR color, and the display name.
-pub struct NameTag {
+pub(crate) struct NameTag {
 	pub x: f32,
 	pub y: f32,
 	pub color: u32,
@@ -209,7 +209,7 @@ pub struct NameTag {
 /// Layouter over the compiled shader and compares struct sizes.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct FrameUniforms {
+pub(crate) struct FrameUniforms {
 	pub view_proj: [[f32; 4]; 4],
 	/// Inverse of view_proj — sky-pass view-ray reconstruction.
 	pub inv_view_proj: [[f32; 4]; 4],

@@ -7,7 +7,7 @@ use super::*;
 impl GiDraw {
 	/// Upload one classified chunk into its toroidal window region (and
 	/// its coarse bytes, and its emitter-list slice).
-	pub fn upload_chunk(&mut self, gpu: &Gpu, pos: ChunkPos, gi: &GiChunk) {
+	pub(crate) fn upload_chunk(&mut self, gpu: &Gpu, pos: ChunkPos, gi: &GiChunk) {
 		let wc = self.window_chunks as i32;
 		let (tx, tz) = (pos.x.rem_euclid(wc) as u32, pos.z.rem_euclid(wc) as u32);
 		let ty = pos.y as u32;
@@ -125,7 +125,7 @@ impl GiDraw {
 	/// gather's does — silently writing one part of the world into
 	/// another's slot, which is exactly the aliasing `gi_uploadable`
 	/// exists to prevent.
-	pub fn window_chunks(&self) -> i32 {
+	pub(crate) fn window_chunks(&self) -> i32 {
 		self.window_chunks as i32
 	}
 
@@ -138,7 +138,7 @@ impl GiDraw {
 	/// carries a tier lighting up the moment its reveal level is crossed:
 	/// crossing one re-meshes, the re-mesh stamps the ore, and the faces
 	/// arrive here with no threshold logic anywhere in the renderer.
-	pub fn set_chunk_lights(&mut self, pos: ChunkPos, packed: &[u32]) {
+	pub(crate) fn set_chunk_lights(&mut self, pos: ChunkPos, packed: &[u32]) {
 		use digblock_core::mesher::lights;
 		let world = (
 			pos.x as f32 * 16.0,
@@ -202,7 +202,7 @@ impl GiDraw {
 	/// much smaller than residency, so an evicted chunk's `rem_euclid` slot is
 	/// very likely owned by a different, live chunk by now — clearing it would
 	/// erase real occupancy, and it would buy nothing (BENCH.md 2026-08-12).
-	pub fn remove_chunk(&mut self, pos: ChunkPos) {
+	pub(crate) fn remove_chunk(&mut self, pos: ChunkPos) {
 		if self.emitters.remove(&pos).is_some() | self.surfaces.remove(&pos).is_some() {
 			self.lights_dirty = true;
 		}
@@ -220,7 +220,7 @@ impl GiDraw {
 	///
 	/// If frame time recovers after pressing F7, the ratchet is real and
 	/// the fix belongs in eviction, not here.
-	pub fn clear_derived_state(&mut self) {
+	pub(crate) fn clear_derived_state(&mut self) {
 		self.coarse_mirror.fill(0);
 		self.coarse_mips_dirty = true;
 		self.emitters.clear();
@@ -234,7 +234,7 @@ impl GiDraw {
 	/// mirror and the emitter map are never pruned on eviction), which is
 	/// exactly why they are worth showing: they are the two pieces of GI
 	/// state that make a settled session cost more than a fresh one.
-	pub fn debug_state(&self) -> (f32, u32) {
+	pub(crate) fn debug_state(&self) -> (f32, u32) {
 		(
 			self.sky_y,
 			// Carried lights are counted too, and not for completeness:

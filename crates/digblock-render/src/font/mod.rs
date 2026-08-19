@@ -13,9 +13,9 @@ mod atlas;
 mod face;
 mod wrap;
 
-pub use atlas::{ATLAS_H, ATLAS_W, GlyphAtlas};
-pub use face::{Face, RasterGlyph};
-pub use wrap::wrap;
+pub(crate) use atlas::{ATLAS_H, ATLAS_W, GlyphAtlas};
+pub(crate) use face::{Face, RasterGlyph};
+pub(crate) use wrap::wrap;
 
 use std::sync::LazyLock;
 
@@ -48,15 +48,15 @@ static UI: LazyLock<Face> = LazyLock::new(|| Face::load(digblock_assets::font::U
 static MONO: LazyLock<Face> =
 	LazyLock::new(|| Face::load(digblock_assets::font::MONO, MONO_EM_RATIO));
 
-pub fn ui() -> &'static Face {
+pub(crate) fn ui() -> &'static Face {
 	&UI
 }
 
-pub fn mono() -> &'static Face {
+pub(crate) fn mono() -> &'static Face {
 	&MONO
 }
 
-pub fn face(id: FaceId) -> &'static Face {
+pub(crate) fn face(id: FaceId) -> &'static Face {
 	match id {
 		FaceId::Ui => ui(),
 		FaceId::Mono => mono(),
@@ -67,7 +67,7 @@ pub fn face(id: FaceId) -> &'static Face {
 /// ranges live in `digblock-net` because the server is what enforces
 /// them; this crate's job is proving the embedded face can draw them.
 #[cfg(test)]
-pub use digblock_net::protocol::text_charset as repertoire;
+pub(crate) use digblock_net::protocol::text_charset as repertoire;
 
 #[cfg(test)]
 mod tests {

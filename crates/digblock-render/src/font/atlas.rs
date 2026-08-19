@@ -7,8 +7,8 @@
 use super::{Face, FaceId, RasterGlyph};
 use rustc_hash::FxHashMap;
 
-pub const ATLAS_W: u32 = 2048;
-pub const ATLAS_H: u32 = 2048;
+pub(crate) const ATLAS_W: u32 = 2048;
+pub(crate) const ATLAS_H: u32 = 2048;
 
 /// Side of the all-white block reserved at the origin for untextured
 /// quads. Several texels, not one: the overlay samples it with a Linear
@@ -21,7 +21,7 @@ const PAD: u32 = 1;
 
 /// Where a glyph lives in the page and where it sits relative to the pen.
 #[derive(Clone, Copy, Debug)]
-pub struct Glyph {
+pub(crate) struct Glyph {
 	pub uv0: [f32; 2],
 	pub uv1: [f32; 2],
 	/// Bitmap size in texels — also its size on screen. A cached glyph is
@@ -33,7 +33,7 @@ pub struct Glyph {
 	pub top: f32,
 }
 
-pub struct GlyphAtlas {
+pub(crate) struct GlyphAtlas {
 	px: Vec<u8>,
 	/// `None` = the glyph has no ink (space) or didn't fit.
 	map: FxHashMap<(FaceId, u32, char), Option<Glyph>>,
@@ -52,7 +52,7 @@ impl Default for GlyphAtlas {
 }
 
 impl GlyphAtlas {
-	pub fn new() -> Self {
+	pub(crate) fn new() -> Self {
 		let mut a = Self {
 			px: vec![0; (ATLAS_W * ATLAS_H) as usize],
 			map: FxHashMap::default(),
@@ -69,7 +69,7 @@ impl GlyphAtlas {
 
 	/// Center of the reserved white block — the UV every untextured quad
 	/// samples.
-	pub fn solid_uv(&self) -> [f32; 2] {
+	pub(crate) fn solid_uv(&self) -> [f32; 2] {
 		let h = SOLID as f32 * 0.5;
 		[h / ATLAS_W as f32, h / ATLAS_H as f32]
 	}
@@ -81,7 +81,7 @@ impl GlyphAtlas {
 	/// This is the ONLY place a reset may happen. Resetting mid-frame
 	/// would invalidate UVs already written into the vertex buffer and
 	/// flash one frame of scrambled text.
-	pub fn begin_frame(&mut self, live: &[(FaceId, u32)]) {
+	pub(crate) fn begin_frame(&mut self, live: &[(FaceId, u32)]) {
 		if !self.overflow && self.live == live {
 			return;
 		}
@@ -108,7 +108,7 @@ impl GlyphAtlas {
 	/// Cached glyph, rasterizing and packing on first sight. `None` when
 	/// the glyph has no ink, or when the page is full (in which case the
 	/// next [`begin_frame`](Self::begin_frame) wipes and retries).
-	pub fn glyph(&mut self, id: FaceId, face: &Face, c: char, px: f32) -> Option<Glyph> {
+	pub(crate) fn glyph(&mut self, id: FaceId, face: &Face, c: char, px: f32) -> Option<Glyph> {
 		let key = (id, face.size_key(px), c);
 		if let Some(g) = self.map.get(&key) {
 			return *g;
@@ -168,7 +168,7 @@ impl GlyphAtlas {
 	}
 
 	/// Rows written since the last call, as `(y0, y1, full-width pixels)`.
-	pub fn take_dirty(&mut self) -> Option<(u32, u32, &[u8])> {
+	pub(crate) fn take_dirty(&mut self) -> Option<(u32, u32, &[u8])> {
 		let (y0, y1) = self.dirty.take()?;
 		let (a, b) = ((y0 * ATLAS_W) as usize, (y1 * ATLAS_W) as usize);
 		Some((y0, y1, &self.px[a..b]))

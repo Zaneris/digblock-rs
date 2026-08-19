@@ -39,8 +39,8 @@ const INSTANCE_BYTES: wgpu::BufferAddress = 48;
 /// Seconds the stream takes to reach full strength when a draw starts,
 /// and to die away once one stops. Short enough that a tap on the button
 /// reads as a tap; long enough that neither end is a cut.
-pub const FADE_IN_SECS: f32 = 0.18;
-pub const FADE_OUT_SECS: f32 = 0.42;
+pub(crate) const FADE_IN_SECS: f32 = 0.18;
+pub(crate) const FADE_OUT_SECS: f32 = 0.42;
 
 /// What the envelope is set to the instant a draw COMPLETES.
 ///
@@ -51,7 +51,7 @@ pub const FADE_OUT_SECS: f32 = 0.42;
 /// instead of blinking off the frame the cell turns spent. Above 1 on
 /// purpose — the envelope multiplies the motes' colour, so the flare is
 /// allowed to clip.
-pub const FLARE: f32 = 2.4;
+pub(crate) const FLARE: f32 = 2.4;
 
 /// Advance the envelope by `dt`, with `live` saying whether the siphon is
 /// working a vein this frame.
@@ -61,7 +61,7 @@ pub const FLARE: f32 = 2.4;
 /// draw begins settles back to full instead of being held there. It
 /// belongs to the vein that earned it, and carrying it forward would hand
 /// the next one a brightness it never paid for.
-pub fn envelope_step(current: f32, live: bool, dt: f32) -> f32 {
+pub(crate) fn envelope_step(current: f32, live: bool, dt: f32) -> f32 {
 	if live && current <= 1.0 {
 		(current + dt / FADE_IN_SECS).min(1.0)
 	} else {
@@ -73,7 +73,7 @@ pub fn envelope_step(current: f32, live: bool, dt: f32) -> f32 {
 
 /// One live draw, in the flat layout the vertex shader reads:
 /// `[source.xyz, progress][dest.xyz, envelope][tint.rgb, face code]`.
-pub type DrawInstance = [f32; 12];
+pub(crate) type DrawInstance = [f32; 12];
 
 /// Which face of the cell a draw comes out of, as `axis * 2 + positive`
 /// — decoded by siphon.wgsl's `face_normal`, its twin.
@@ -96,7 +96,7 @@ fn face_code(normal: (i32, i32, i32)) -> f32 {
 /// Pack one draw. `source` is the centre of the face the motes lift off,
 /// `dest` where they are drawn to, `progress` how far through the hold
 /// (0..1) and `envelope` the fade/flare strength.
-pub fn instance(
+pub(crate) fn instance(
 	source: [f32; 3],
 	dest: [f32; 3],
 	tint: [f32; 3],
@@ -120,13 +120,13 @@ pub fn instance(
 	]
 }
 
-pub struct Siphon {
+pub(crate) struct Siphon {
 	pipeline: wgpu::RenderPipeline,
 	instance_buf: wgpu::Buffer,
 }
 
 impl Siphon {
-	pub fn new(
+	pub(crate) fn new(
 		gpu: &Gpu,
 		surface_format: wgpu::TextureFormat,
 		frame_bgl: &wgpu::BindGroupLayout,
@@ -213,7 +213,7 @@ impl Siphon {
 
 	/// Upload this frame's draw, or nothing. Returns the instance count —
 	/// one or zero, since a player holds one button.
-	pub fn prepare(&self, gpu: &Gpu, draw: Option<&DrawInstance>) -> u32 {
+	pub(crate) fn prepare(&self, gpu: &Gpu, draw: Option<&DrawInstance>) -> u32 {
 		let Some(d) = draw else {
 			return 0;
 		};
@@ -224,7 +224,7 @@ impl Siphon {
 
 	/// Draw alongside the spray and confetti billboards (same pass, frame
 	/// bind group already bound at 0). Returns triangles.
-	pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>, instances: u32) -> u32 {
+	pub(crate) fn draw(&self, pass: &mut wgpu::RenderPass<'_>, instances: u32) -> u32 {
 		if instances == 0 {
 			return 0;
 		}
