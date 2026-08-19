@@ -1,18 +1,14 @@
-//! End-to-end over real sockets AND the real .NET master — run exactly as
-//! it deploys: each test boots the apps/master Docker image (alpine +
-//! libmsquic, QUIC probe ON), which probes the host-side game server for
-//! real over `host.docker.internal` before listing it. Clients join the
-//! only way that exists: mint a one-time token from the master, present it
-//! in Hello, server verifies it back with the master. There is no
-//! tokenless path. Docker must be running for these tests.
+//! End-to-end over real sockets AND the real .NET master, run exactly as it
+//! deploys: each test boots the apps/master Docker image (QUIC probe ON), which
+//! probes the host-side game server over `host.docker.internal` before listing
+//! it. Clients join the only way that exists — mint a one-time token from the
+//! master, present it in Hello, server verifies it back. There is no tokenless
+//! path. Docker must be running.
 //!
-//! One test does NOT use that harness. Running the game server on the host
-//! forces `Master:Dev:ProbeHostOverride`, which aims BOTH of registration's
-//! probes at one host and so collapses the source probe into the advertised
-//! one — leaving everything that turns on the source probe specifically
-//! untested. [`ComposeRig`] brings up `docker/compose.yml` instead, putting
-//! both sides in containers on one network, which is the only topology here
-//! where the master dials the registrant's real address.
+//! One test does NOT use that harness: running the game server on the host
+//! forces `Master:Dev:ProbeHostOverride`, which collapses the source probe into
+//! the advertised one. [`ComposeRig`] brings up `docker/compose.yml` instead,
+//! the only topology here where the master dials the registrant's real address.
 
 use crossbeam_channel::unbounded;
 use digblock_core::block::BlockType;
@@ -825,18 +821,15 @@ fn the_listing_carries_protocol_and_sim_versions() {
 	);
 }
 
-/// Leaving properly frees the account IMMEDIATELY, so the same player can
-/// come straight back.
+/// Leaving properly frees the account IMMEDIATELY, so the same player can come
+/// straight back.
 ///
 /// This is what `ClientMsg::Bye` is for. Without it a closed client is only
 /// reaped on QUIC's idle timeout, and since one account may hold one live
-/// connection, the session being held hostage belongs to the very player
-/// trying to rejoin — quit and relaunch, and the game refuses you with your
-/// own connection.
-///
-/// The goodbye is only half of it: `write_all` merely buffers into the QUIC
-/// stream, so `NetClient::disconnect` pairs the message with a bounded
-/// flush. A test that sent `Bye` and dropped the transport would pass or
+/// connection, the session being held hostage belongs to the very player trying
+/// to rejoin. The goodbye is only half of it: `write_all` merely buffers into
+/// the QUIC stream, so `NetClient::disconnect` pairs the message with a bounded
+/// flush, and a test that sent `Bye` and dropped the transport would pass or
 /// fail on timing.
 #[test]
 fn a_goodbye_frees_the_account_at_once() {
@@ -1014,18 +1007,15 @@ fn a_pre_account_character_migrates_onto_the_account() {
 
 /// The rest of this suite runs the game server on the HOST, which forces
 /// `Master:Dev:ProbeHostOverride` on: a containerized master cannot reach
-/// `127.0.0.1` any other way. That override points BOTH probes at one host,
-/// which collapses the source probe into the advertised one — so everything
-/// registration decides from the source probe specifically is untested there.
+/// `127.0.0.1` any other way. That override points BOTH probes at one host and
+/// collapses the source probe into the advertised one, so everything
+/// registration decides from the source probe is untested there.
 ///
-/// This rig puts both sides in containers on one network, which is the only
-/// topology where the master dials the registrant's real address. It brings
-/// up `docker/compose.yml` rather than a copy: that file already carries the
-/// no-override, private-targets, dev-auth combination, and a second copy of
-/// it would drift from the rig people actually run.
-///
-/// Cost: it builds the SERVER image, which the rest of the suite does not.
-/// That is why it is one test doing two assertions rather than two tests.
+/// This rig puts both sides in containers on one network — the only topology
+/// where the master dials the registrant's real address. It brings up
+/// `docker/compose.yml` rather than a copy, which would drift from the rig
+/// people actually run. Cost: it builds the SERVER image, which is why this is
+/// one test doing two assertions rather than two tests.
 struct ComposeRig {
 	project: String,
 	master_url: String,
@@ -1135,23 +1125,19 @@ impl Drop for ComposeRig {
 	}
 }
 
-/// Registration's two hard cases, on the only topology that can tell them
-/// apart — both turn on whether the SOURCE probe passes.
+/// Registration's two hard cases, on the only topology that can tell them apart
+/// — both turn on whether the SOURCE probe passes.
 ///
-/// 1. An operator who lost `./data` and restarted must be able to re-key.
-///    This regressed once already and silently: the refusal used to fire on
-///    `live` alone, and `live` is the in-memory registry, which outlives the
-///    process it describes by up to `Registry:IdleTimeoutSeconds`. So the
-///    recovery path documented in AUTH-DESIGN.md §3 was unreachable in
-///    exactly the case it was written for — the operator was 409'd and
-///    temp-banned by their own stale entry. The kill here is deliberately
-///    ungraceful, because a clean shutdown de-registers and the stale entry
-///    is the whole point.
-///
-/// 2. The registration takeover must still be refused. Passing the
-///    source probe means serving the pinned certificate from the
-///    registrant's OWN address, which needs the incumbent's private key —
-///    so a caller elsewhere cannot reach the recovery branch.
+/// 1. An operator who lost `./data` and restarted must be able to re-key. This
+///    regressed once already and silently: the refusal fired on `live` alone,
+///    and `live` is the in-memory registry, which outlives the process it
+///    describes by up to `Registry:IdleTimeoutSeconds` — so the recovery path
+///    in AUTH-DESIGN.md §3 was unreachable in exactly the case it was written
+///    for. The kill here is deliberately ungraceful, because a clean shutdown
+///    de-registers and the stale entry is the whole point.
+/// 2. The registration takeover must still be refused. Passing the source probe
+///    means serving the pinned certificate from the registrant's OWN address,
+///    which needs the incumbent's private key.
 #[test]
 fn a_lost_key_is_recovered_only_by_the_machine_at_that_address() {
 	let _ = env_logger::builder().is_test(true).try_init();
@@ -1391,20 +1377,19 @@ fn a_live_connection_publishes_its_wire_rtt() {
 	);
 }
 
-/// The CLIENT-side probe — the one behind the server browser's ping column
-/// — reports the transport's own round-trip estimate, not the time the
-/// handshake took.
+/// The CLIENT-side probe — the one behind the server browser's ping column —
+/// reports the transport's own round-trip estimate, not the time the handshake
+/// took.
 ///
-/// Loopback cannot tell a good latency figure from a bad one, so this pins
-/// the two failure modes it CAN see: that the probe still reaches a real
-/// server after the API change, and that the number is a measurement rather
-/// than a constant. The realistic regression is quinn's RFC 9002 initial
-/// RTT — 333 ms, reported identically for every server in the list — which
-/// is what `Connection::rtt` returns before it has a sample of its own.
+/// Loopback cannot tell a good latency figure from a bad one, so this pins the
+/// two failure modes it CAN see: that the probe still reaches a real server
+/// after the API change, and that the number is a measurement rather than a
+/// constant. The realistic regression is quinn's RFC 9002 initial RTT, reported
+/// identically for every server in the list, which is what `Connection::rtt`
+/// returns before it has a sample of its own.
 ///
 /// No master here on purpose: an unregistered server still completes the
-/// WebTransport handshake, which is all a probe does. That keeps this test
-/// off Docker and fast.
+/// WebTransport handshake, which is all a probe does.
 #[test]
 fn client_probe_reports_a_round_trip_not_a_handshake() {
 	let _ = env_logger::builder().is_test(true).try_init();

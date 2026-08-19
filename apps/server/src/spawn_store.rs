@@ -1,29 +1,20 @@
-//! Persistent spawn overrides (`spawn.json` in the data dir): the
-//! hand-picked spawn point (`/set-spawn`), the facing that comes with it
-//! (`/set-spawn-dir`), and the spawn lock (`/lock-spawn`).
+//! Persistent spawn overrides (`spawn.json` in the data dir): the hand-picked
+//! spawn point, the facing that comes with it, and the spawn lock.
 //!
-//! JSON for the same reason as the ban list: tiny, operator-facing, and
-//! worth being able to read or clear by hand. Same durability policy —
-//! whole-file snapshot via tmp + fsync + rename, an unparseable file is
-//! archived rather than crashing the server, and mutations write through
-//! immediately (both are operator decisions that must survive a crash;
-//! there is no dirty/flush cadence).
+//! JSON for the same reason as the ban list: tiny, operator-facing, worth
+//! reading or clearing by hand. Same durability policy — whole-file snapshot via
+//! tmp + fsync + rename, an unparseable file is archived rather than crashing,
+//! and mutations write through immediately.
 //!
-//! The point and the lock both store an eye position, not a flag. Spawn
-//! is otherwise a pure function of `(seed, edits)` and recomputed on
-//! demand, but each override must pin one specific spot: a lock's whole
-//! purpose is that its region cannot change, so re-deriving it every boot
-//! would defeat it if worldgen or the search rule ever shifted, and a
-//! hand-picked point is by definition not something the search could
-//! rediscover.
+//! The point and the lock both store an eye POSITION, not a flag. Spawn is
+//! otherwise a pure function of `(seed, edits)` recomputed on demand, but each
+//! override must pin one specific spot: a lock's whole purpose is that its region
+//! cannot change, and a hand-picked point is by definition not something the
+//! search could rediscover.
 //!
-//! Point and lock are separate fields because they unset separately:
-//! `/lock-spawn off` releases the cells and hands spawn back to the
-//! automatic search, but only if no point was ever set by hand. When both
-//! are present they hold the SAME eye — `/set-spawn` under an active lock
-//! moves the lock with it, releasing the old cells and protecting the new
-//! ones. The facing is orthogonal to both: it describes which way you
-//! look on arrival, wherever arrival turns out to be.
+//! Point and lock are separate fields because they unset separately, and when
+//! both are present they hold the SAME eye — `/set-spawn` under an active lock
+//! moves the lock with it. The facing is orthogonal to both.
 
 use serde::{Deserialize, Serialize};
 use std::io;

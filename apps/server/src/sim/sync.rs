@@ -28,45 +28,36 @@ const JOIN_SYNC_RESERVE: usize = 64;
 /// Outbound slots a WRAPPED snapshot may not take, for the same reason
 /// [`JOIN_SYNC_RESERVE`] exists and with more force.
 ///
-/// A snapshot travelling as a datagram leaves the queue as fast as the
-/// pump can hand it to the socket, so it can never durably occupy a slot.
-/// Wrapped in a reliable frame it leaves at the speed of ONE stream's flow
-/// control, and a peer that reads slowly parks it there — which puts a
-/// lossy message class in a position to fill the queue whose refusal kills
-/// the client (`client_send_frame`). The player then loses the session
-/// over snapshots that were droppable the whole time, and the edit that
-/// happened to arrive during the stall is what does it. Half the queue is
-/// left to the traffic that dies without a slot; snapshots take the rest
-/// and are simply skipped above it.
+/// A snapshot travelling as a datagram leaves the queue as fast as the pump can
+/// hand it to the socket, so it can never durably occupy a slot. Wrapped in a
+/// reliable frame it leaves at the speed of ONE stream's flow control, and a peer
+/// that reads slowly parks it there — which puts a lossy message class in a
+/// position to fill the queue whose refusal kills the client. Half the queue is
+/// left to the traffic that dies without a slot; snapshots take the rest and are
+/// skipped above it.
 const WRAPPED_SNAPSHOT_RESERVE: usize = OUT_CAP / 2;
 
-/// The background re-sync: one already-synced column handed back to one
-/// settled client at a time, nearest first, going round for as long as
-/// they stay put.
+/// The background re-sync: one already-synced column handed back to one settled
+/// client at a time, nearest first, going round for as long as they stay put.
 ///
-/// The push sync has no acknowledgement — the server marks a column
-/// synced when it hands the frame to the outbound queue and never hears
-/// another word about it — so nothing in the protocol can NOTICE a client
-/// whose copy of a column went astray, and the symptom is a chunk that
-/// renders as pristine worldgen forever. Rather than pay an ack per
-/// column, for every column of every disc, for the life of the session,
-/// the loop simply comes round again: journal replay is last-write-wins,
-/// so a repeat costs nothing but its bytes, and a column that did go
-/// astray heals within a rotation instead of never.
+/// The push sync has no acknowledgement — the server marks a column synced when
+/// it hands the frame to the outbound queue and never hears another word — so
+/// nothing in the protocol can NOTICE a client whose copy of a column went
+/// astray, and the symptom is a chunk that renders as pristine worldgen forever.
+/// Rather than pay an ack per column for the life of the session, the loop comes
+/// round again: journal replay is last-write-wins, so a repeat costs nothing but
+/// its bytes.
 ///
-/// [`RESYNC_SETTLE_TICKS`] is what a client must spend in one column
-/// before any of this starts, and it is what keeps the cost off the
-/// common case: a MOVING client is already being handed the columns it is
-/// entering, and repeating them behind it would be a permanent bandwidth
-/// floor on every built-up world. The case this exists for is somebody
-/// standing in front of a chunk that came back wrong, and standing still
-/// is exactly what a player does while noticing that.
+/// [`RESYNC_SETTLE_TICKS`] is what keeps the cost off the common case: a MOVING
+/// client is already being handed the columns it is entering, and repeating them
+/// behind it would be a permanent bandwidth floor on every built-up world. The
+/// case this exists for is somebody standing in front of a chunk that came back
+/// wrong, and standing still is what a player does while noticing that.
 ///
-/// Deliberately unhurried even then, because it is the SECOND line and
-/// not the first: the client's own mirror of the journal is re-applied
-/// whenever a column regenerates (`Pipeline`'s overlay, multiplayer
-/// included), so eviction — the one cause anybody has reproduced — no
-/// longer needs the network at all.
+/// Deliberately unhurried even then, because it is the SECOND line: the client's
+/// own mirror of the journal is re-applied whenever a column regenerates
+/// (`Pipeline`'s overlay, multiplayer included), so eviction — the one cause
+/// anybody has reproduced — no longer needs the network at all.
 const RESYNC_SETTLE_TICKS: u32 = TICK_RATE * 10;
 /// Ticks between two columns of one rotation. See [`RESYNC_SETTLE_TICKS`].
 const RESYNC_INTERVAL_TICKS: u32 = TICK_RATE;
@@ -318,21 +309,17 @@ impl Sim {
 	}
 
 	pub(super) fn send_snapshots(&mut self) {
-		// Shared roster built once; per client only nearby players are
-		// selected, so snapshots can never outgrow one datagram (the cliff
-		// that used to silently kill all snapshots on a busy server).
+		// Shared roster built once; per client only nearby players are selected,
+		// so snapshots can never outgrow one datagram (the cliff that used to
+		// silently kill all snapshots on a busy server).
 		//
-		// Every buffer here is reused across ticks. This runs on every
-		// snapshot and used to allocate per client per snapshot — tens of
-		// thousands of allocations and megabytes a second of churn at a full
-		// server, on the sim thread. The selection is also a
-		// `select_nth_unstable` rather than a full sort: only the nearest
-		// `MAX_SNAPSHOT_PLAYERS - 1` matter, and sorting the whole candidate
-		// list per client made the pass O(n² log n) — millions of
-		// comparisons a second at a full server to choose a handful.
-		// The roster carries each player BOTH ways: as the remote everyone
-		// else sees (quantized once here, not per recipient) and as the
-		// full-precision self state its owner needs back.
+		// Every buffer here is reused across ticks: allocating per client per
+		// snapshot was tens of thousands of allocations and megabytes a second
+		// of churn at a full server, on the sim thread. The selection is a
+		// `select_nth_unstable` rather than a full sort, since only the nearest
+		// `MAX_SNAPSHOT_PLAYERS - 1` matter. The roster carries each player BOTH
+		// ways: as the remote everyone else sees (quantized once here, not per
+		// recipient) and as the full-precision self state its owner needs back.
 		let mut roster = std::mem::take(&mut self.snap_roster);
 		roster.clear();
 		roster.extend(self.clients.values().filter(|c| c.live).map(|c| {
@@ -1055,21 +1042,17 @@ mod tests {
 		);
 
 		// B walks away, out past A's draw distance rather than onto its edge.
-		// Server-authoritative movement: forward inputs, never-adopted
-		// claims, so the sim's own physics carries B.
+		// Server-authoritative movement: forward inputs, never-adopted claims,
+		// so the sim's own physics carries B.
 		//
-		// A DISTANCE goal, never a tick budget. The two clocks here are
-		// unrelated — this loop advances world time as fast as the host
-		// will run it, while the ground ahead of B is laid down by a
-		// worker on the wall clock — so a fixed tick count measures the
-		// GENERATOR: on a loaded host B was left standing at the frontier,
-		// stopped dead on a column boundary still well inside A's radius,
-		// and the test failed for a reason it is not about. Hold with a
-		// stop input while the ground ahead is missing, exactly as the
-		// fluid walk above does, and yield the core while holding so the
-		// worker can lay the next column. Both clients drain every tick:
-		// the walk is now as long as it needs to be, and an undrained
-		// snapshot queue reaches `OUT_CAP` and trips the stall drop.
+		// A DISTANCE goal, never a tick budget. The two clocks are unrelated —
+		// this loop advances world time as fast as the host will run it, while
+		// the ground ahead of B is laid down by a worker on the wall clock — so
+		// a fixed tick count measures the GENERATOR, and on a loaded host B is
+		// left standing at the frontier still inside A's radius. Hold with a
+		// stop input while the ground ahead is missing, and yield the core while
+		// holding. Both clients drain every tick, or an undrained snapshot queue
+		// reaches `OUT_CAP` and trips the stall drop.
 		let ahead_ready = |sim: &Sim| {
 			let (cx, cz) = column_of(sim.test_player(2).expect("B still connected").pos);
 			let mid = CHUNK_SIZE as i32 / 2;
@@ -1167,21 +1150,19 @@ mod tests {
 		);
 	}
 
-	/// The stream fallback must not put a LOSSY message class in a
-	/// position to fill the queue a lossless one dies on.
+	/// The stream fallback must not put a LOSSY message class in a position to
+	/// fill the queue a lossless one dies on.
 	///
-	/// A snapshot travelling as a datagram leaves the outbound queue the
-	/// moment the pump reaches it, so it cannot durably hold a slot;
-	/// wrapped in a frame it leaves at the speed of one stream's flow
-	/// control, and a peer reading slowly parks it there. Without a
-	/// reserve the queue fills with snapshots and the next edit, chat
-	/// line or teleport is refused — and `client_send_frame` drops a
-	/// client whose queue refuses a frame, so the session ends over the
-	/// one message class that was always allowed to be dropped instead.
+	/// A snapshot travelling as a datagram leaves the outbound queue the moment
+	/// the pump reaches it; wrapped in a frame it leaves at the speed of one
+	/// stream's flow control, and a peer reading slowly parks it there. Without a
+	/// reserve the queue fills with snapshots and the next edit, chat line or
+	/// teleport is refused — and `client_send_frame` drops a client whose queue
+	/// refuses a frame, so the session ends over the one message class that was
+	/// always allowed to be dropped instead.
 	///
-	/// The twin of `stalled_datagram_queue_escalates_to_drop`, which pins
-	/// the other half: a peer that has genuinely stopped reading still
-	/// goes. Here the peer is merely behind, and stays.
+	/// The twin of `stalled_datagram_queue_escalates_to_drop`, which pins the
+	/// other half: a peer that has genuinely stopped reading still goes.
 	#[test]
 	fn wrapped_snapshots_leave_the_queue_reliable_frames_die_on() {
 		let mut sim = flat_sim("no-datagrams-reserve");

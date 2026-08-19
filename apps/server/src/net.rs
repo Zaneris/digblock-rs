@@ -184,17 +184,15 @@ type IpCounts = Arc<std::sync::Mutex<rustc_hash::FxHashMap<std::net::IpAddr, usi
 
 /// One address's share of the connection table, released on drop.
 ///
-/// [`MAX_CONNECTIONS`] alone let ONE peer hold every slot and force an
-/// outbound token verify per slot per [`VERIFY_TIMEOUT`] window, turning
-/// this server into an unauthenticated amplifier against its own master
-/// The ordering that allows it is unavoidable — a
-/// connection's account is not known until the verify answers — so the cap
-/// goes on the thing that actually identifies the abuser at that point,
-/// which is the address.
+/// [`MAX_CONNECTIONS`] alone let ONE peer hold every slot and force an outbound
+/// token verify per slot per [`VERIFY_TIMEOUT`] window, turning this server into
+/// an unauthenticated amplifier against its own master. The ordering that allows
+/// it is unavoidable — a connection's account is not known until the verify
+/// answers — so the cap goes on the thing that identifies the abuser at that
+/// point, which is the address.
 ///
-/// Same RAII shape as [`ConnSlot`], and for the same reason: a panic
-/// anywhere in the connection task would skip a paired decrement and leak
-/// the count forever.
+/// Same RAII shape as [`ConnSlot`]: a panic anywhere in the connection task
+/// would skip a paired decrement and leak the count forever.
 struct IpSlot {
 	counts: IpCounts,
 	ip: std::net::IpAddr,
@@ -322,18 +320,15 @@ async fn handle_connection(
 
 /// A stream-shaped ending, resolved to the CONNECTION's own account of it.
 ///
-/// wtransport's stream errors carry nothing worth reading — `not
-/// connected` is the whole of what one says — while the connection knows
-/// whether it timed out, was closed by the peer and with what code, or
-/// died of a protocol error. That is also the exact half of the story a
-/// browser cannot tell: a `WebTransportError` sourced at the session
-/// carries an empty message by the spec, so on a phone the server's copy
-/// is the only copy there is.
+/// wtransport's stream errors carry nothing worth reading, while the connection
+/// knows whether it timed out, was closed by the peer and with what code, or
+/// died of a protocol error. That is also the exact half of the story a browser
+/// cannot tell: a `WebTransportError` sourced at the session carries an empty
+/// message by the spec, so on a phone the server's copy is the only copy.
 ///
-/// Bounded, because a stream can fail on a connection that is still up (a
-/// peer that reset just this one), and this wait sits in front of the sim
-/// hearing about the departure — which is what frees the account to
-/// reconnect.
+/// Bounded, because a stream can fail on a connection that is still up, and this
+/// wait sits in front of the sim hearing about the departure — which is what
+/// frees the account to reconnect.
 async fn peer_reason(conn: &Connection, what: &str) -> String {
 	match tokio::time::timeout(CLOSE_REASON_WAIT, conn.closed()).await {
 		Ok(e) => format!("{what}; {e}"),

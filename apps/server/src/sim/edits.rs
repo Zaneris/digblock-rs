@@ -89,20 +89,17 @@ impl DigState {
 }
 
 impl Sim {
-	/// Aim-tracking for in-progress holds: every tick, re-raycast each
-	/// digging client from the server's OWN simulated position and look.
-	/// An on-target tick advances `progress`; a missed tick merely
-	/// doesn't (the server's view of the aim lags the client's by jitter
-	/// buffering and reconciliation offsets, so transient misses are
-	/// expected from honest clients). Only a sustained miss — longer
-	/// than [`DIG_OFF_TARGET_RESET`] consecutive ticks — or the cell's
-	/// content changing abandons the hold.
+	/// Aim-tracking for in-progress holds: every tick, re-raycast each digging
+	/// client from the server's OWN simulated position and look. An on-target
+	/// tick advances `progress`; a missed tick merely doesn't, since the server's
+	/// view of the aim lags the client's by jitter buffering and reconciliation
+	/// offsets. Only a sustained miss — longer than [`DIG_OFF_TARGET_RESET`]
+	/// consecutive ticks — or the cell's content changing abandons the hold.
 	///
 	/// This is what makes the completion check unforgeable: the only
-	/// client-supplied input is the initial cell, and every counted tick
-	/// was verified against the server's own position and look. Do NOT
-	/// "optimize" this away — it is one short DDA walk per DIGGING client
-	/// per tick, and it is the anti-cheat.
+	/// client-supplied input is the initial cell. Do NOT "optimize" it away — it
+	/// is one short DDA walk per DIGGING client per tick, and it is the
+	/// anti-cheat.
 	pub(super) fn verify_digs(&mut self) {
 		let store = &self.store;
 		for client in self.clients.values_mut() {
@@ -681,20 +678,17 @@ impl Sim {
 		// LIST: one action can level both skills at once.
 		let mut crossed = Vec::new();
 		if place_cell.is_none() {
-			// An extraction credits ESSENCE, never a block: the siphon
-			// draws the seam out where it stands, so no ore is ever an
-			// item and the cell's own drop is beside the point (it was
-			// Stone, and Stone hands out Rubble — the whole reason
-			// quarrying stays a Mining question and drawing a vein does
-			// not). What the player can carry away is the spent rock now
-			// standing in the cell, on a later ordinary dig.
+			// An extraction credits ESSENCE, never a block: the siphon draws
+			// the seam out where it stands, so no node is ever an item and the
+			// cell's own drop is beside the point. What the player can carry
+			// away is the spent rock now standing in the cell, on a later
+			// ordinary dig.
 			//
 			// Un-predicted, deliberately: the essence is a SPLIT, and a
-			// `PendingEdit` carries one `inv_delta`. Rather than widen the
-			// wire for the one tier that pays in two, this takes the path
-			// `ClientMsg::Alchemy` already takes and lets the rebase below
-			// carry the counts. The CELL is still predicted, so the vein
-			// turns spent under the player's hand with no latency.
+			// `PendingEdit` carries one `inv_delta`. Rather than widen the wire
+			// for the one tier that pays in two, this takes the path
+			// `ClientMsg::Alchemy` already takes. The CELL is still predicted,
+			// so the vein turns spent under the player's hand with no latency.
 			if let Some(ore) = extracting {
 				let mining = client.skills.level(digblock_core::skills::Skill::Mining);
 				let alchemy = client.skills.level(digblock_core::skills::Skill::Alchemy);
@@ -921,23 +915,18 @@ impl Sim {
 	}
 
 	/// Alchemy craft: validate against the core tables, apply the shared
-	/// `apply_alchemy` rule, persist, and answer — success or failure —
-	/// with the authoritative `InventoryFull` rebase.
+	/// `apply_alchemy` rule, persist, and answer — success or failure — with the
+	/// authoritative `InventoryFull` rebase.
 	///
-	/// The wire's legacy `Convert` decodes and is REFUSED here (nothing
-	/// debited, the standing rebase as the answer): bench extraction left
-	/// with the essence redesign, and a frame kept decodable is how an
+	/// The wire's legacy `Convert` decodes and is REFUSED here: bench extraction
+	/// left with the essence redesign, and a frame kept decodable is how an
 	/// append-only wire retires a verb.
 	///
-	/// Every craft additionally draws from the per-player BENCH bucket,
-	/// charged per item — the anti-cheat half of the bench drip. The
-	/// client paces one single-item op per interval for presentation; a
-	/// modified client flooding ops (or smuggling a `count: 999` bulk op)
-	/// runs the bucket dry and refuses through the same standing rebase:
-	/// nothing debited, no XP, and the honest client self-heals for free.
-	/// The gate lives HERE, not in `apply_alchemy` — pacing is anti-cheat,
-	/// not an economy rule, and offline worlds keep running the identical
-	/// economy unpaced.
+	/// Every craft additionally draws from the per-player BENCH bucket, charged
+	/// per item. A modified client flooding ops, or smuggling a bulk `count`,
+	/// runs the bucket dry and refuses through the same standing rebase. The gate
+	/// lives HERE, not in `apply_alchemy` — pacing is anti-cheat, not an economy
+	/// rule, and offline worlds keep running the identical economy unpaced.
 	fn process_alchemy(&mut self, conn_id: u64, op: digblock_net::messages::AlchemyOp) {
 		use digblock_core::inventory::{AlchemyOp as CoreOp, apply_alchemy};
 		let Some(client) = self.clients.get_mut(&conn_id) else {
@@ -1214,24 +1203,20 @@ mod tests {
 		);
 	}
 
-	/// Nothing at all writes the world floor — every action the wire can
-	/// carry, driven against it in one world.
+	/// Nothing at all writes the world floor — every action the wire can carry,
+	/// driven against it in one world.
 	///
-	/// `dig_hardness(BEDROCK_Y) == None` is already pinned in block.rs and
-	/// it proves nothing about the call sites, because most of the writes
-	/// that can reach the floor are DERIVED rather than aimed: the
-	/// Resonant Pick's plane spreads onto cells the player never named, a
-	/// door's second half is worked out from the half you hit, a placement
-	/// lands one cell PAST the ray's target, and fluid falls into holes
-	/// nobody clicked. Each of those is its own seam and each has to
-	/// refuse on its own, so each is staged here and driven through the
-	/// real `Sim` — raycast, validation, write, journal, broadcast.
+	/// `dig_hardness(BEDROCK_Y) == None` is already pinned in block.rs and proves
+	/// nothing about the call sites, because most of the writes that can reach
+	/// the floor are DERIVED rather than aimed: the Resonant Pick's plane spreads
+	/// onto cells the player never named, a door's second half is worked out from
+	/// the half you hit, a placement lands one cell PAST the ray's target, and
+	/// fluid falls into holes nobody clicked. Each is its own seam and each has
+	/// to refuse on its own.
 	///
-	/// The floor is protected POSITIONALLY, never by block identity (there
-	/// is no bedrock block type; worldgen leaves plain Stone at
-	/// `BEDROCK_Y`), so the phases below deliberately stand a slab of other
-	/// things in it — a door, a water source, a hole — and none of them
-	/// opens a way in.
+	/// The floor is protected POSITIONALLY, never by block identity (there is no
+	/// bedrock block type; worldgen leaves plain Stone at `BEDROCK_Y`), so the
+	/// phases below deliberately stand a slab of other things in it.
 	#[test]
 	fn nothing_writes_the_world_floor() {
 		use digblock_core::block::BEDROCK_Y as FLOOR;

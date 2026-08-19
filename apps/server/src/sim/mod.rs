@@ -1036,25 +1036,18 @@ impl Sim {
 				// stream (edit raycasts re-validate against the player's
 				// position when they run anyway).
 				ClientMsg::ReturnToSpawn => self.handle_return_to_spawn(conn_id),
-				// Inline like chat: sync radius is read fresh each tick, so
-				// the change simply applies from the next sync pass.
+				// Inline like chat: sync radius is read fresh each tick, so the
+				// change applies from the next sync pass.
 				//
-				// Either direction must REQUEST a scan. The full
-				// edited-column walk is event-driven off `needs_sync_scan`,
-				// which otherwise only rises when the center column moves —
-				// so a player who widened their draw distance standing
-				// still got no `JournalColumn` for the newly visible ring,
-				// and no live edits there either (`broadcast_edit` gates on
-				// `synced_columns`). Other players' builds rendered as
-				// pristine terrain until they walked across a column
-				// border.
-				//
-				// SHRINKING used to skip the scan, on the grounds that the
-				// prune costs nothing to defer. It does, but a deferred
-				// prune leaves `synced_columns` claiming columns the client
-				// has just evicted — and widening again finds them already
-				// "synced" and sends nothing, which is the same pristine
-				// ring by a longer road.
+				// Either direction must REQUEST a scan. The full edited-column
+				// walk is event-driven off `needs_sync_scan`, which otherwise
+				// only rises when the center column moves — so a player who
+				// widened their draw distance standing still got no
+				// `JournalColumn` for the newly visible ring, and no live edits
+				// there either. SHRINKING must scan too: a deferred prune leaves
+				// `synced_columns` claiming columns the client has just evicted,
+				// and widening again finds them already "synced" and sends
+				// nothing.
 				ClientMsg::SetDrawDist { draw_dist } => {
 					if let Some(client) = self.clients.get_mut(&conn_id) {
 						let want = draw_dist.clamp(DRAW_DIST_MIN, DRAW_DIST_MAX);
@@ -1364,18 +1357,15 @@ impl Sim {
 
 	/// Whether `eye` passes every spawn rule as the world stands.
 	///
-	/// Vacuously true for the synthetic-column test seam: those worlds are
-	/// not described by real worldgen, so the pristine half of the test
-	/// would reject a spawn that is perfectly good in the world the sim
-	/// actually has.
+	/// Vacuously true for the synthetic-column test seam: those worlds are not
+	/// described by real worldgen, so the pristine half would reject a spawn that
+	/// is perfectly good in the world the sim actually has.
 	///
-	/// Also vacuously true for a hand-picked spawn, which this predicate
-	/// cannot judge and does not need to. It guards `/lock-spawn` against
-	/// pinning a spawn the *search* only returned because it gave up; a
-	/// point an admin aimed at has no give-up case, was checked against the
-	/// real world by [`digblock_core::spawn::stands_clear`] when it was
-	/// set, and would be rejected out of hand here for sitting on ground
-	/// pristine worldgen never made level.
+	/// Also vacuously true for a hand-picked spawn, which this predicate cannot
+	/// judge and does not need to. It guards `/lock-spawn` against pinning a
+	/// spawn the *search* only returned because it gave up; a point an admin
+	/// aimed at has no give-up case and was already checked against the real
+	/// world by [`digblock_core::spawn::stands_clear`].
 	fn spawn_valid(&self, eye: Vec3) -> bool {
 		self.spawn_store.point().is_some()
 			|| !self.spawn_search
@@ -1649,19 +1639,15 @@ impl Sim {
 		reconcile_layout(&inventory, &mut hotbar, &mut grid);
 		let name = sanitize_name(&name);
 		let draw_dist = draw_dist.clamp(DRAW_DIST_MIN, DRAW_DIST_MAX);
-		// Resume where they left off. Rejoining used to be a free trip to
-		// spawn that sidestepped the return-to-spawn cooldown entirely;
-		// stored positions close that, and `last_return_tick` (restored
-		// below) stops a rejoin resetting the timer as well.
+		// Resume where they left off. Rejoining used to be a free trip to spawn
+		// that sidestepped the return-to-spawn cooldown; stored positions close
+		// that, and `last_return_tick` stops a rejoin resetting the timer too.
 		//
-		// The landing rule still applies: the world may have changed while
-		// they were away — someone built on the spot, or an admin locked a
-		// region around it — so a resumed position is stepped clear the
-		// same way a spawn is. Anonymous joins and pre-v3 records have no
-		// stored position and start at spawn.
-		// The spawn facing rides along only when this join really is a
-		// spawn: it describes which way to look when you arrive THERE, and
-		// a player resuming in their own house has already chosen a view.
+		// The landing rule still applies: the world may have changed while they
+		// were away, so a resumed position is stepped clear the same way a spawn
+		// is. Anonymous joins and pre-v3 records start at spawn. The spawn
+		// facing rides along only when this join really is a spawn — a player
+		// resuming in their own house has already chosen a view.
 		let (spawn, spawn_look) = match record.pos {
 			Some(p) => (self.clear_landing(Vec3::from_array(p)), Vec3::ZERO),
 			None => (self.safe_spawn(), self.spawn_look()),
@@ -2678,20 +2664,16 @@ mod tests {
 		assert_eq!(sim.test_digging(1), Some(hit.cell), "gate cleared at 5");
 	}
 
-	/// SKILLS-DESIGN §5.3, server half — the whole ore loop in one test,
-	/// because the three halves only mean anything together:
+	/// SKILLS-DESIGN §5.3, server half — the whole ore loop in one test, because
+	/// the three halves only mean anything together:
 	///
-	/// 1. Below the reveal, a vein is stone. The hold opens, the dig
-	///    completes, and the player gets rubble and never knows: you dig
-	///    what you can see, and spending an unseen seam is the cost of
-	///    tunnelling through country you have not levelled into.
-	/// 2. At the reveal WITHOUT the siphon, `DigStart` refuses with
-	///    `NeedsTool` and opens no hold — if you can see the seam, the
-	///    game will not let you spend it by accident.
-	/// 3. With the siphon, the completing dig writes the tier's SPENT ROCK
-	///    rather than air, credits ESSENCE (not the cell's Rubble, and not
-	///    an ore block — a siphon draws the seam out where it stands, so no
-	///    ore is ever an item), and pays BOTH skills (§5.4's dual award).
+	/// 1. Below the reveal, a vein is stone: the hold opens, the dig completes,
+	///    and the player gets rubble and never knows.
+	/// 2. At the reveal WITHOUT the siphon, `DigStart` refuses with `NeedsTool`
+	///    and opens no hold — if you can see the seam, the game will not let you
+	///    spend it by accident.
+	/// 3. With the siphon, the completing dig writes the tier's SPENT ROCK rather
+	///    than air, credits ESSENCE, and pays BOTH skills.
 	#[test]
 	fn a_revealed_vein_needs_the_siphon_and_pays_two_skills() {
 		use digblock_core::block::BlockType;

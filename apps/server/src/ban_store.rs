@@ -1,19 +1,15 @@
 //! Persistent ban list (`bans.json` in the data dir).
 //!
 //! JSON on purpose — unlike the inventory store this file is tiny and
-//! operator-facing (hand-editable, greppable). Same durability policy as
-//! the binary stores: whole-file snapshot via tmp + fsync + rename, and
-//! an unparseable file is archived and replaced rather than crashing the
-//! server. Mutations write through immediately — a ban must survive a
-//! crash, so there is no dirty/flush cadence.
+//! operator-facing. Same durability policy as the binary stores: whole-file
+//! snapshot via tmp + fsync + rename, and an unparseable file is archived and
+//! replaced rather than crashing the server. Mutations write through
+//! immediately: a ban must survive a crash.
 //!
-//! A ban records BOTH the account and the IP, and either one enforces.
-//! They do different jobs. The account is the durable half: bans used to
-//! be IP-only, so evasion was a new address while the evader's inventory
-//! and position survived intact. The IP is still
-//! worth keeping because it also catches an unauthenticated peer and
-//! because kicking an address is what an operator reaches for when someone
-//! is actively griefing — it just is no longer the only key.
+//! A ban records BOTH the account and the IP, and either one enforces. The
+//! account is the durable half — IP-only bans were evaded with a new address
+//! while the evader's inventory and position survived intact. The IP is still
+//! worth keeping because it catches an unauthenticated peer.
 
 use digblock_net::protocol::AccountId;
 use serde::{Deserialize, Serialize};

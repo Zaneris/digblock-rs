@@ -28,18 +28,15 @@ impl Sim {
 		for input in batch.inputs {
 			if input.tick <= client.last_input_tick && client.last_input_tick != 0 {
 				// Classify before dropping. A redundancy copy of a tick we
-				// already held is the common case and costs nothing; a tick
-				// the buffer had drained past before it arrived is an input
-				// lost for good, and the only evidence the buffer was too
-				// shallow. `want` records exactly how much deeper it needed
-				// to be. Deliberately NOT derived from `input.tick` against
-				// `self.tick`: the client's counter free-runs and
-				// permanently loses ticks to its own frame hitches
-				// (`tick_accum` is capped and zeroes on an unloaded
-				// column), so that difference measures client frame pacing
-				// as much as the wire. This measures the wire alone — a
-				// stalled client still delivers in order, and an in-order
-				// stream produces no late-lost events at all.
+				// already held is the common case and costs nothing; a tick the
+				// buffer had drained past before it arrived is an input lost for
+				// good, and the only evidence the buffer was too shallow.
+				//
+				// Deliberately NOT derived from `input.tick` against
+				// `self.tick`: the client's counter free-runs and permanently
+				// loses ticks to its own frame hitches, so that difference
+				// measures client frame pacing as much as the wire. This
+				// measures the wire alone.
 				let age = client.admit_hi.wrapping_sub(input.tick);
 				if age >= 64 || client.admit_seen & (1u64 << age) == 0 {
 					client.stats.late_lost += 1;
@@ -154,22 +151,20 @@ impl Sim {
 			client.stats.depth_samples += 1;
 			client.stats.depth_max = client.stats.depth_max.max(depth);
 
-			// Hold a HOLE open. `pop_first` takes the lowest tick present,
-			// so a buffer missing the next tick but holding later ones steps
-			// straight past the gap and kills the missing ticks the moment
-			// they land — `handle_inputs` refuses anything at or below the
-			// mark. Waiting a few ticks for the hole to fill is the entire
-			// difference between a reordered input arriving late and one
-			// lost for good.
+			// Hold a HOLE open. `pop_first` takes the lowest tick present, so a
+			// buffer missing the next tick but holding later ones steps
+			// straight past the gap and kills the missing ticks the moment they
+			// land — `handle_inputs` refuses anything at or below the mark.
+			// Waiting a few ticks for the hole to fill is the entire difference
+			// between a reordered input arriving late and one lost for good.
 			//
-			// This is a hole, not an underrun: the buffer is non-empty and
-			// the tick we want is simply not in it yet. An empty buffer
-			// falls through to the drain below and coasts, as it always has.
+			// This is a hole, not an underrun: the buffer is non-empty and the
+			// tick we want is simply not in it yet. An empty buffer falls
+			// through to the drain below and coasts.
 			//
 			// `last_input_tick != 0` is load-bearing. A fresh client's first
-			// input is tick ~CLIENT_TICK_LEAD, so `next` would be 1 and
-			// every join would stall the full cap against a "hole" the size
-			// of the client's whole lead, which was never a hole.
+			// input is tick ~CLIENT_TICK_LEAD, so every join would otherwise
+			// stall the full cap against a "hole" the size of the client's lead.
 			let next = client.last_input_tick.wrapping_add(1);
 			if client.last_input_tick != 0
 				&& !client.inputs.is_empty()

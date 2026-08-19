@@ -233,19 +233,17 @@ impl Sim {
 		self.reply(conn_id, &format!("teleported to {x} {z}"));
 	}
 
-	/// Hand-pick the spawn: the block under the admin's crosshair becomes
-	/// the ground players stand on.
+	/// Hand-pick the spawn: the block under the admin's crosshair becomes the
+	/// ground players stand on.
 	///
-	/// The TOP face specifically, not any face. The cell the ray hits is
-	/// the floor, so a side or bottom hit would quietly mean a spawn
-	/// hanging in the air beside a wall or buried in a ceiling — and the
-	/// admin who aimed at a wall meant the ground, not the cell behind it.
+	/// The TOP face specifically, not any face. The cell the ray hits is the
+	/// floor, so a side or bottom hit would quietly mean a spawn hanging in the
+	/// air beside a wall or buried in a ceiling.
 	///
-	/// Validated by [`digblock_core::spawn::stands_clear`], which reads the
-	/// world as it actually is rather than pristine worldgen: the whole
-	/// point of setting spawn by hand is to put it somewhere terrain alone
-	/// would never have chosen — a levelled hillside, a built platform, a
-	/// hall cut into rock.
+	/// Validated by [`digblock_core::spawn::stands_clear`], which reads the world
+	/// as it actually is rather than pristine worldgen: the whole point of
+	/// setting spawn by hand is to put it somewhere terrain alone would never
+	/// have chosen.
 	fn cmd_set_spawn(&mut self, conn_id: u64, args: &[&str]) {
 		if !args.is_empty() {
 			return self.reply(conn_id, "usage: /set-spawn (aim at the block to stand on)");
@@ -573,19 +571,16 @@ impl Sim {
 		self.reply(conn_id, &format!("time set to {h:02}:{m:02}"));
 	}
 
-	/// `/reset` — the testing lever: a named player back to minute one.
-	/// Zeroes both skills and empties the inventory — essence, blocks and
-	/// every tool, the bucket included — so the fresh-player opening (a
-	/// bare tool slot, the first vessel as the first craft) can be walked
-	/// on a live server without minting a new account. The wire needs
-	/// only the standing machinery: a full `Skills` sync, which the
-	/// client adopts wholesale and re-syncs the ore reveal from (a level
-	/// DROP un-reveals veins exactly as joining at that level would), and
-	/// the `InventoryFull` rebase — both ends run the same
-	/// `reconcile_layout` over the zeroed counts, so every slot sweeps
-	/// and the tool slot goes bare with no Layout frame needed. The
-	/// persisted record follows the live state on its next write, as it
-	/// does for every other change.
+	/// `/reset` — the testing lever: a named player back to minute one. Zeroes
+	/// both skills and empties the inventory, tools included, so the
+	/// fresh-player opening can be walked on a live server without minting a new
+	/// account.
+	///
+	/// The wire needs only the standing machinery: a full `Skills` sync, which
+	/// the client adopts wholesale and re-syncs the node reveal from (a level
+	/// DROP un-reveals veins exactly as joining at that level would), and the
+	/// `InventoryFull` rebase — both ends run the same `reconcile_layout` over
+	/// the zeroed counts, so every slot sweeps with no Layout frame needed.
 	fn cmd_reset(&mut self, conn_id: u64, args: &[&str]) {
 		let usage = "usage: /reset <name>";
 		let [name] = args else {

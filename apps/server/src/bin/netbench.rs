@@ -1,19 +1,16 @@
-//! Deterministic netcode benchmark: what one sim tick costs, and what it
-//! puts on the wire, as a function of player count.
+//! Deterministic netcode benchmark: what one sim tick costs, and what it puts on
+//! the wire, as a function of player count.
 //!
-//! Socket-free by design. It drives the REAL `Sim` through the same
-//! `SimEvent` seam the wtransport layer uses, so it measures the code that
-//! ships — scheduling, interest management, snapshot encoding, edit
-//! broadcast — without a network in the way. That makes it repeatable
-//! enough to compare two commits, which a socket benchmark on a laptop is
-//! not.
+//! Socket-free by design. It drives the REAL `Sim` through the same `SimEvent`
+//! seam the wtransport layer uses, so it measures the code that ships —
+//! scheduling, interest management, snapshot encoding, edit broadcast — without
+//! a network in the way, which is what makes it repeatable enough to compare two
+//! commits.
 //!
-//! What it does NOT measure: latency. There is no wire here, so RTT and
-//! jitter are meaningless; those are live numbers, and they are on the
-//! debug overlay's `net` line instead.
+//! It does NOT measure latency: there is no wire here, so RTT and jitter are
+//! meaningless and live on the debug overlay's `net` line instead.
 //!
-//! Run with `just bench-net`. Output is one table plus a machine-diffable
-//! summary line per player count, for pasting into BENCH.md.
+//! Run with `just bench-net`.
 
 use digblock_net::messages::{ClientMsg, InputBatch, InputTick};
 use digblock_net::protocol::{AccountId, PROTOCOL_VERSION, SNAPSHOT_DIVISOR, TICK_RATE};

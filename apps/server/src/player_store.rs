@@ -1,36 +1,27 @@
-//! Persistent per-player state (inventory counts + item layout), keyed by
-//! the player's master account id. NOT part of the block journal — the
-//! journal is cell-keyed and its compaction discards authorship, so
-//! player-keyed state lives in this separate, much smaller file.
+//! Persistent per-player state (inventory counts + item layout), keyed by the
+//! player's master account id. NOT part of the block journal — the journal is
+//! cell-keyed and its compaction discards authorship.
 //!
-//! Records are tiny, so the format is a whole-file snapshot rewritten
-//! atomically at most once per [`FLUSH_INTERVAL`]. A hard crash loses at most
-//! that interval — deliberate, since blocks themselves are journaled. The
-//! rewrite runs on a dedicated writer thread ([`StoreWriter`]): encoding
-//! stays on the caller's thread because it needs the live map, but the fsync
-//! does not, and on a container or network volume that is several dropped
-//! ticks every interval. Only shutdown waits for the writer.
-//!
-//! Unlike the journal, a store that cannot write does NOT refuse edits: the
-//! world stays consistent either way, only persistence degrades.
+//! Records are tiny, so the format is a whole-file snapshot rewritten atomically
+//! at most once per [`FLUSH_INTERVAL`]; a hard crash loses at most that interval,
+//! which is deliberate since blocks themselves are journaled. The rewrite runs on
+//! a dedicated writer thread ([`StoreWriter`]) because on a container or network
+//! volume the fsync is several dropped ticks every interval. Unlike the journal,
+//! a store that cannot write does NOT refuse edits.
 //!
 //! **Every version this project has written still loads**, because the
-//! archive-and-start-fresh path is reserved for actual corruption — using it
-//! for a routine upgrade would wipe every player's inventory. Two shapes
+//! archive-and-start-fresh path is reserved for actual corruption. Two shapes
 //! keep that true:
 //!
 //! - **The file has TWO sections**: records keyed by account, and
-//!   [`Self::legacy`] records still keyed by the pre-account device hash,
-//!   held in quarantine. A quarantined record is inert — it belongs to
-//!   nobody and no join reads it — and the only thing that can happen to it
-//!   is [`PlayerStore::claim_legacy`]. The quarantine only ever SHRINKS:
-//!   nothing creates a device-keyed record any more, so it needs no cap of
-//!   its own.
-//! - **The layout blob is SELF-DESCRIBING**, which keeps growing the
-//!   inventory grid out of the version field entirely. Its leading byte is a
-//!   shape tag, not a present/absent flag, so a `GRID_SLOTS` change is a
-//!   no-op here — no version bump, no archive path, and no silent
-//!   re-interpretation of somebody's stored arrangement.
+//!   [`Self::legacy`] records still keyed by the pre-account device hash, held in
+//!   quarantine. A quarantined record is inert and the only thing that can happen
+//!   to it is [`PlayerStore::claim_legacy`]; the quarantine only ever SHRINKS, so
+//!   it needs no cap.
+//! - **The layout blob is SELF-DESCRIBING.** Its leading byte is a shape tag, not
+//!   a present/absent flag, so a `GRID_SLOTS` change is a no-op here — no version
+//!   bump, no archive path, and no silent re-interpretation of somebody's stored
+//!   arrangement.
 
 use digblock_core::hotbar::{HOTBAR_SLOTS, WIRE_EMPTY};
 use digblock_core::inv_grid::GRID_SLOTS;
@@ -85,19 +76,16 @@ const LAYOUT_SIZED: u8 = 2;
 /// [`GRID_SLOTS`], which is free to grow.
 const LEGACY_GRID_SLOTS: usize = 36;
 
-/// The hotbar width [`LAYOUT_LEGACY`] blobs were written at. FROZEN for
-/// exactly the same reason as [`LEGACY_GRID_SLOTS`], and split out because
-/// the legacy arm originally read the LIVE `HOTBAR_SLOTS` — the one half of
-/// the blob still described by a constant free to move.
+/// The hotbar width [`LAYOUT_LEGACY`] blobs were written at. FROZEN for exactly
+/// the same reason as [`LEGACY_GRID_SLOTS`], and split out because the legacy arm
+/// originally read the LIVE `HOTBAR_SLOTS` — the one half of the blob still
+/// described by a constant free to move.
 ///
-/// It happens to equal `HOTBAR_SLOTS` today, so nothing was wrong; it was
-/// wrong in waiting. Grow the bar and every tag-`1` record over-reads by two
-/// bytes a slot, desyncs into the next record's key, and `PlayerStore::open`
-/// takes that for corruption and archives everybody's inventory — precisely
-/// the failure the shape tag was introduced to make impossible,
-/// reintroduced through the half of the blob nobody froze. The regression
-/// test could not have caught it either, because its fixture was built from
-/// the same live constant and would have moved with the break.
+/// Grow the bar and every tag-`1` record over-reads by two bytes a slot, desyncs
+/// into the next record's key, and `PlayerStore::open` takes that for corruption
+/// and archives everybody's inventory. The regression test could not have caught
+/// it either, because its fixture was built from the same live constant and
+/// would have moved with the break.
 const LEGACY_HOTBAR_SLOTS: usize = 9;
 
 /// Both frozen widths describe bytes on disk, so this asserts the FORMAT,
@@ -128,19 +116,17 @@ const _: () = assert!(
 const FLUSH_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Account cap: beyond this, the least-recently-USED record is evicted on
-/// insert. Bounds the file; an evicted (absent) player's state is lost.
+/// insert. Bounds the file; an evicted player's state is lost.
 ///
-/// Least-recently-used, not first-inserted. The old policy never refreshed
-/// a key's position, so eviction walked strictly in join order and threw
-/// out the longest-standing players first — including ones currently online
-/// and actively writing.
+/// Least-recently-used, not first-inserted. The old policy never refreshed a
+/// key's position, so eviction walked strictly in join order and threw out the
+/// longest-standing players first — including ones currently online and actively
+/// writing.
 ///
-/// This used to bound the file without bounding the ABUSE: the key was
-/// client-chosen and join tokens were free, so a stream of join/disconnect
-/// cycles evicted every real record. That is closed
-/// upstream now rather than here — a record needs a master account, an
-/// account needs a real login at a third-party provider, and `/api/join` is
-/// rate-limited per session. The cap is back to being what it says it is.
+/// It used to bound the file without bounding the ABUSE, since the key was
+/// client-chosen and join tokens were free. That is closed upstream now: a
+/// record needs a master account, an account needs a real third-party login, and
+/// `/api/join` is rate-limited per session.
 const MAX_IDENTITIES: usize = 10_000;
 
 /// The stored key: the player's master account id.
@@ -193,25 +179,20 @@ pub struct PlayerRecord {
 }
 
 impl PlayerRecord {
-	/// This record with `old` folded in — the legacy-character migration's
-	/// whole definition of what a player gets back.
+	/// This record with `old` folded in — the legacy-character migration's whole
+	/// definition of what a player gets back. Four rules, each the conservative
+	/// reading of "the same person owned both":
 	///
-	/// Four rules, and each is the conservative reading of "the same person
-	/// owned both":
-	///
-	/// - **Stuff adds**, saturating at every cap, so owning a tool on both
-	///   sides still means owning one ([`Inventory::merge_from`]).
-	/// - **XP takes the higher total, never the sum** — one career, walked
-	///   on two keys ([`SkillSet::merge_from`]).
-	/// - **Where you are, and your spawn cooldown, stay where the ACCOUNT
-	///   left them.** A claim must not teleport a player who is standing
-	///   somewhere, and inheriting a stale cooldown tick would hand them a
-	///   free return; the old values are used only when the account has
-	///   none, which is the first-join case the migration is actually for.
-	/// - **The arrangement likewise**, with one difference that matters:
-	///   whichever layout survives is about to be run through
-	///   `reconcile_layout` against the MERGED counts, so items that gained
-	///   a slot get filed rather than lost.
+	/// - **Stuff adds**, saturating at every cap, so owning a tool on both sides
+	///   still means owning one ([`Inventory::merge_from`]).
+	/// - **XP takes the higher total, never the sum** — one career, two keys.
+	/// - **Where you are, and your spawn cooldown, stay where the ACCOUNT left
+	///   them.** A claim must not teleport a player who is standing somewhere,
+	///   and inheriting a stale cooldown would hand them a free return; the old
+	///   values are used only when the account has none.
+	/// - **The arrangement likewise**, with one difference: whichever layout
+	///   survives is about to be run through `reconcile_layout` against the
+	///   MERGED counts, so items that gained a slot get filed rather than lost.
 	fn merged_with(&self, old: &Self) -> Self {
 		let mut inventory = self.inventory.clone();
 		inventory.merge_from(&old.inventory);
@@ -298,21 +279,20 @@ impl PlayerStore {
 		Ok(store)
 	}
 
-	/// Fold this server's pre-account character for `legacy` into
-	/// `account`, and delete the quarantined copy. `None` when nothing is
-	/// held under that key — already claimed, never played here, or simply
-	/// not this player's device.
+	/// Fold this server's pre-account character for `legacy` into `account`,
+	/// and delete the quarantined copy. `None` when nothing is held under that
+	/// key.
 	///
-	/// **Deleting the source IS the one-time-ness.** There is no "claimed"
-	/// flag to keep in step with anything: a second attempt looks exactly
-	/// like a first attempt for a key that was never here, which is also
-	/// what every client that keeps its old identity file will send on
-	/// every join forever. Two accounts racing the same key resolve the
-	/// same way — the first one through takes it.
+	/// **Deleting the source IS the one-time-ness.** There is no "claimed" flag
+	/// to keep in step with anything: a second attempt looks exactly like a
+	/// first attempt for a key that was never here, which is also what every
+	/// client that keeps its old identity file sends on every join forever. Two
+	/// accounts racing the same key resolve the same way — first through takes
+	/// it.
 	///
-	/// The merge is defined by [`PlayerRecord::merged_with`]. It is a merge
+	/// The merge is defined by [`PlayerRecord::merged_with`], and it is a merge
 	/// rather than an overwrite because the account may already have played
-	/// here, and a player who owns both piles should not have to choose.
+	/// here.
 	pub fn claim_legacy(&mut self, legacy: [u8; 16], account: IdentityKey) -> Option<PlayerRecord> {
 		let old = self.legacy.remove(&legacy)?;
 		let merged = self.get(&account).merged_with(&old);
@@ -629,20 +609,18 @@ impl Drop for StoreWriter {
 	}
 }
 
-/// Decode a layout blob of `hotbar_len + grid_len` words into the CURRENT
-/// shape, padding short halves with `WIRE_EMPTY` and dropping any beyond
-/// today's constants.
+/// Decode a layout blob of `hotbar_len + grid_len` words into the CURRENT shape,
+/// padding short halves with `WIRE_EMPTY` and dropping any beyond today's
+/// constants.
 ///
 /// It always consumes exactly the words the writer declared, whatever the
-/// constants are now — that is the part that matters. A reader that
-/// stopped early would leave the remainder to be read as the next field
-/// and desync the whole record stream, which is precisely how a grid
-/// resize turns into "archive the file and start fresh".
+/// constants are now — that is the part that matters. A reader that stopped
+/// early would leave the remainder to be read as the next field and desync the
+/// whole record stream, which is precisely how a grid resize turns into "archive
+/// the file and start fresh".
 ///
-/// Truncation is lossy by construction (a shrinking grid has nowhere to
-/// put the tail), but `reconcile_layout` re-files anything that lost its
-/// slot on the first pass after load, so no item is lost — only its
-/// placement.
+/// Truncation is lossy by construction, but `reconcile_layout` re-files anything
+/// that lost its slot on the first pass after load.
 fn read_layout(
 	r: &mut &[u8],
 	hotbar_len: usize,
