@@ -1,25 +1,20 @@
-// Shared RTGI sampling core (GI-DESIGN.md), prepended by
-// digblock-assets to every shader that gathers the probe field
-// directly: the GI resolve, water, players and the confetti. Not all of
-// them from the fragment stage — water gathers per vertex (R17) and the
-// confetti prices a whole flake there (R34), which is why group(2) is
-// bound VERTEX | FRAGMENT. One definition
-// is the point — the probe-relocation nudge, the occlusion rule, and
-// the cascade fallthrough must agree everywhere or lighting differs
-// between a surface and the water beside it. The probe COMPUTE kernel
-// (gi_probe.wgsl) keeps its own twins of the small helpers — its
-// bindings live in a compute-visibility group of their own — with a
-// comment pinning them to these.
+// Shared RTGI sampling core (GI-DESIGN.md), prepended by digblock-assets to
+// every shader that gathers the probe field directly: the GI resolve, water,
+// players and the confetti. Not all from the fragment stage — water gathers per
+// vertex (R17) and the confetti prices a whole flake there (R34), which is why
+// group(2) is bound VERTEX | FRAGMENT.
 //
-// Bindings sit at group(2) (the water/players material group is 1 and
-// their frame group is 0; the resolve leaves group 1 empty). All
-// cascade/window parameters arrive as plain arguments, because the
-// consumers carry them in different uniforms (the resolve's own block
-// vs the shared Frame's gi fields). The group also carries the emitter
-// list and the NEE estimators over it (R33) — one price
-// (`gi_light_score`), two ways to spend a shadow ray on it — so the
-// resolve and players cannot value a torch differently: they share the
-// declaration, not twins.
+// One definition is the point: the probe-relocation nudge, the occlusion rule
+// and the cascade fallthrough must agree everywhere, or lighting differs between
+// a surface and the water beside it. The probe COMPUTE kernel (gi_probe.wgsl)
+// keeps its own twins of the small helpers, since its bindings live in a
+// compute-visibility group of their own, with a comment pinning them to these.
+//
+// Bindings sit at group(2). All cascade/window parameters arrive as plain
+// arguments, because the consumers carry them in different uniforms. The group
+// also carries the emitter list and the NEE estimators over it (R33) — one price
+// (`gi_light_score`), two ways to spend a shadow ray on it — so the resolve and
+// players share the declaration rather than twins.
 
 @group(2) @binding(0) var gi_window: texture_3d<u32>;
 @group(2) @binding(1) var gi_coarse: texture_3d<u32>;
@@ -49,23 +44,16 @@ const GI_SURFACE_EPS = 0.01;
 
 // The toroidal wrap, ONE integer modulo per axis instead of two.
 //
-// This is the frame's single hottest arithmetic, and it was hiding in
-// plain sight as address math. `((c % s) + s) % s` is the textbook
-// positive-modulo, and on a GPU with no integer divide unit each `%` is
-// an emulated sequence, not an instruction. The marches below ran it
-// twice per iteration — once for the coarse brick, once for the fine
-// cell — over two wrapping axes, so a whole stack of emulated divisions
-// stood between every DDA step and its texture load, in the loop that
-// dominates the frame. The second modulo exists only to fix a negative
-// first result, which a compare and an add do for free.
+// This is the frame's single hottest arithmetic, and it was hiding in plain
+// sight as address math. `((c % s) + s) % s` is the textbook positive-modulo,
+// and on a GPU with no integer divide unit each `%` is an emulated sequence, not
+// an instruction. The marches below ran it twice per iteration over two wrapping
+// axes, so a stack of emulated divisions stood between every DDA step and its
+// texture load, in the loop that dominates the frame. The second modulo exists
+// only to fix a negative first result, which a compare and an add do for free.
 //
-// Measured on the standard bench, repeated, well outside the run-to-run
-// spread: a large frame-time win for this half alone, capture
-// pixel-identical.
-//
-// The lateral pair is wrapped together because y never wraps (the window
-// is world-height) and a vec2 modulo is one instruction sequence, not
-// two.
+// The lateral pair is wrapped together because y never wraps (the window is
+// world-height) and a vec2 modulo is one instruction sequence, not two.
 fn gi_wrap2(v: vec2i, m: i32) -> vec2i {
 	let r = v % vec2i(m);
 	return select(r, r + vec2i(m), r < vec2i(0));
@@ -80,25 +68,21 @@ fn gi_cell_w(w: vec2i, y: i32) -> u32 {
 	return textureLoad(gi_window, vec3i(w.x, y, w.y), 0).r;
 }
 
-// The coarse brick from the SAME pre-wrapped lateral coordinate, which
-// is what lets one wrap serve both levels of the skip.
+// The coarse brick from the SAME pre-wrapped lateral coordinate, which is what
+// lets one wrap serve both levels of the skip.
 //
-// The window side is a multiple of the brick size, so for c = q*side + w
-// the identity wrap(c >> s, side >> s) == wrap(c, side) >> s holds
-// exactly (both sides are floor(w / brick), and w >= 0 makes the shift
-// the division). That is the whole trick: the brick address is a shift
-// off the fine one, with no modulo of its own. That halves the wrap
-// again — the two changes together take a large bite out of the bench's
-// mean frame time and its p95 alike.
+// The window side is a multiple of the brick size, so for c = q*side + w the
+// identity wrap(c >> s, side >> s) == wrap(c, side) >> s holds exactly. That is
+// the whole trick: the brick address is a shift off the fine one, with no
+// modulo of its own.
 //
-// Measured and REJECTED here, so it is not tried a third time: caching
-// the last brick index and skipping the coarse load while the march
-// stays inside it. The load it saves is a hit in a texture small enough
-// to stay resident; the extra live register and the divergent branch cost
-// more than that, and it measured slower.
+// Measured and REJECTED here, so it is not tried a third time: caching the last
+// brick index and skipping the coarse load while the march stays inside it. The
+// load it saves is a hit in a texture small enough to stay resident, and the
+// extra live register plus the divergent branch measured slower.
 //
-// The y guard is the FINE bound now, because the caller passes the fine
-// y; `y >> 3u` lands it inside the coarse texture's own vertical range.
+// The y guard is the FINE bound, because the caller passes the fine y; `y >> 3u`
+// lands it inside the coarse texture's own vertical range.
 fn gi_coarse_empty_w(w: vec2i, y: i32) -> bool {
 	if y < 0 || y > 255 {
 		return true;
@@ -183,34 +167,29 @@ fn gi_occluded(side: i32, a: vec3f, b: vec3f, cap: i32) -> bool {
 	return false;
 }
 
-// Sun visibility: march toward the sun until sky or a hit, counting the
-// water crossed on the way. `sun` = quantized dir toward the sun
-// (w = above-horizon 0/1); `iters` caps the march (the resolve affords
-// the full hard bound below, water/players a far shorter one). Returns:
+// Sun visibility: march toward the sun until sky or a hit, counting the water
+// crossed on the way. `sun` = quantized dir toward the sun (w = above-horizon
+// 0/1); `iters` caps the march (the resolve affords the full hard bound below,
+// water/players a far shorter one). Returns:
 //
-//   .x = 1 if the sun is reached, 0 if an opaque cell blocks it or the
-//        caster is below the horizon
-//   .y = water cells crossed — the submerged PATH LENGTH, not an
-//        attenuation
-//   .z = the distance (blocks, `sun` is unit) at which the blocking cell
-//        was entered, 0 when nothing blocked. The resolve turns this into
-//        a penumbra width — occluder distance x tan(sun radius) is the
-//        physical penumbra, reconstructed spatially instead of waited for
-//        temporally — and the DDA already carries it as `r.t`, so a
-//        blocked ray answers it for free.
+//   .x = 1 if the sun is reached, 0 if an opaque cell blocks it or the caster
+//        is below the horizon
+//   .y = water cells crossed — the submerged PATH LENGTH, not an attenuation
+//   .z = the distance (blocks) at which the blocking cell was entered, 0 when
+//        nothing blocked. The resolve turns this into a penumbra width —
+//        occluder distance x tan(sun radius), reconstructed spatially instead
+//        of waited for temporally — and the DDA already carries it as `r.t`.
 //
-// Returning the path instead of a transmittance is what leaves exactly
-// one water extinction constant in the engine. This used to end in a
-// grey per-cell exponential: a fudge with no relationship to the view
-// ray's water tint, and the two disagreed outright, with nothing tying
-// them together. The caller now applies
-// medium_common's per-channel WATER_SIGMA, so both rays through the same
-// water agree by construction and sunlight arrives underwater correctly
-// red-starved rather than uniformly dimmed.
+// Returning the PATH instead of a transmittance is what leaves exactly one water
+// extinction constant in the engine. A grey per-cell exponential here had no
+// relationship to the view ray's water tint and the two disagreed outright; the
+// caller now applies medium_common's per-channel WATER_SIGMA, so both rays
+// through the same water agree by construction and sunlight arrives underwater
+// correctly red-starved rather than uniformly dimmed.
 //
-// Cells, not exact chord lengths: a shallow ray crosses a cell over a
-// longer path than a steep one. That approximation predates this and is
-// left alone; M4's trace carries real segment lengths.
+// Cells, not exact chord lengths: a shallow ray crosses a cell over a longer
+// path than a steep one. That approximation is left alone; M4's trace carries
+// real segment lengths.
 fn gi_sun_vis(side: i32, sky_y: f32, cam_xz: vec2f, sun: vec4f, p: vec3f, iters: i32) -> vec3f {
 	if sun.w < 0.5 {
 		return vec3f(0.0, 0.0, 0.0);
@@ -387,15 +366,12 @@ fn gi_march(side: i32, sky_y: f32, cam_xz: vec2f, p: vec3f, dir: vec3f, max_t: f
 				// other partial (R27). It used to be a hit WHOLE, and that
 				// rule was never about occlusion — it was there so a gather
 				// ray would reliably strike the torch's cell and collect
-				// `alb * emit * LIGHT_GAIN`, because letting rays pass
-				// through collapsed the vault's pool to a fraction of
-				// itself. R27 removed the emission from this path entirely
-				// (`path_radiance`), which left the rule doing only the one
-				// thing its own comment said it must not do: casting a
-				// whole-cell shadow from a torch that is a thin post.
-				//
-				// It matters most exactly where R27 aims. With the direct
-				// term now resampled over EVERY in-range emitter, a
+				// `alb * emit * LIGHT_GAIN`. R27 removed emission from this
+				// path entirely (`path_radiance`), which left the rule doing
+				// only the one thing its own comment said it must not do:
+				// casting a whole-cell shadow from a torch that is a thin
+				// post. It matters most exactly where R27 aims — with the
+				// direct term resampled over EVERY in-range emitter, a
 				// clustered set of torches was shadowing each other's NEE
 				// rays as solid cubes.
 				let t_exit = min(r.tmax.x, min(r.tmax.y, r.tmax.z));
@@ -428,19 +404,17 @@ fn gi_emit(v: u32) -> f32 {
 	return f32(gi_lut[v].y & 0xffu);
 }
 
-// The colour a class CASTS, which is usually the colour it is — but not
-// always, and the exception is the reason this is a second accessor
-// rather than a call to `gi_albedo`.
+// The colour a class CASTS, which is usually the colour it is — but not always,
+// and the exception is why this is a second accessor rather than a call to
+// `gi_albedo`.
 //
-// An emitter's tint is normally the mean of its texture, and that works
-// for a torch because a torch's texture is mostly flame. An ore face is a
-// wide grey field with a few bright flecks on it, so its mean is STONE:
-// measured, every tier comes out within a few percent of colourless, and
-// no weighting of that image recovers the hue because the problem is the
-// composition and not the average. Left derived, an ember seam would
-// light a tunnel white. So the ore rows state their cast colour — the
-// same fleck palette texgen paints them with — and it rides the LUT word
-// above the level (GI-DESIGN.md R31).
+// An emitter's tint is normally the mean of its texture, which works for a torch
+// because a torch's texture is mostly flame. An ore face is a wide grey field
+// with a few bright flecks, so its mean is STONE — measured, every tier comes
+// out within a few percent of colourless, and no weighting recovers the hue
+// because the problem is the composition, not the average. Left derived, an
+// ember seam would light a tunnel white. So the ore rows STATE their cast colour
+// and it rides the LUT word above the level (GI-DESIGN.md R31).
 fn gi_emit_tint(v: u32) -> vec3f {
 	let m = gi_lut[v].y >> 8u;
 	return vec3f(f32(m & 0xffu), f32((m >> 8u) & 0xffu), f32((m >> 16u) & 0xffu)) / 255.0;
@@ -458,20 +432,17 @@ fn gi_sky_radiance(dir: vec3f, zenith: vec3f, horizon: vec3f) -> vec3f {
 
 // Is the probe at texel `t` carrying real radiance?
 //
-// A probe whose cell is solid — and whose six relocation neighbours are
-// solid too, so `gi_relocate` had nowhere to step — traces nothing and
-// stores BLACK. The update kernel flags exactly that in the atlas alpha
-// (0 = dead, gi_probe.wgsl's textureStore), and until now nothing read
-// the flag: every gather blended those zeros in as though they were
-// measured radiance, at full trilinear weight. That is where the dark
-// patches around trees, ridge interiors and any dense geometry came
-// from, and the bounce gather spread them further each sweep.
+// A probe whose cell is solid — and whose six relocation neighbours are solid
+// too, so `gi_relocate` had nowhere to step — traces nothing and stores BLACK.
+// The update kernel flags exactly that in the atlas alpha (0 = dead). Blending
+// those zeros in as though they were measured radiance is where the dark patches
+// around trees and ridge interiors came from, and the bounce gather spread them
+// further each sweep.
 //
-// A dead probe holds no information, so it must not vote at all — drop
-// it from the blend and let `wsum` fall, which is what makes the
-// cascade fall through to C1 and then to the analytic dome instead of
-// averaging in a lie. Axis 0's slab sits at z offset 0, and all six
-// axes of a probe are written with the same flag, so one load answers.
+// A dead probe holds no information, so it must not vote at all — drop it and
+// let `wsum` fall, which is what makes the cascade fall through to C1 and then
+// to the analytic dome instead of averaging in a lie. Axis 0's slab sits at z
+// offset 0 and all six axes carry the same flag, so one load answers.
 fn gi_probe_alive(t: vec3i, c1: bool) -> bool {
 	if c1 {
 		return textureLoad(gi_atlas1, t, 0).a > 0.5;
@@ -583,19 +554,17 @@ fn gi_in_cascade(p: vec3f, cam: vec3f, dims4: vec4f) -> bool {
 
 // The cheap cache lookup that TERMINATES a gather path: nearest probe, no
 // relocation walk, no occlusion DDA. gi_probe.wgsl's own multi-bounce
-// (`gather_prev`) has always done exactly this, and for the same reason —
-// the value fetched is one bounce further out, already dim, and about to
-// be averaged over a hemisphere of directions and hundreds of frames.
+// (`gather_prev`) does exactly this and for the same reason — the value fetched
+// is one bounce further out, already dim, and about to be averaged over a
+// hemisphere of directions and hundreds of frames.
 //
-// The difference is not small. `gi_cascade_gather` blends 8 probes, each
-// with a relocation walk and an occlusion march, which is dozens of
-// texture loads; this is a handful. Running the full version at the end
-// of the resolve's gather ray measured a large frame-rate drop, and
-// refining a secondary bounce is not what that budget should buy.
+// The difference is not small: `gi_cascade_gather` blends 8 probes, each with a
+// relocation walk and an occlusion march. Running the full version at the end of
+// the resolve's gather ray measured a large frame-rate drop, and refining a
+// secondary bounce is not what that budget should buy.
 //
-// Unlike `gather_prev` it checks coverage first, so a hit beyond a
-// cascade's reach falls through to the next one instead of reading a
-// wrapped texel from somewhere else entirely.
+// Unlike `gather_prev` it checks coverage first, so a hit beyond a cascade's
+// reach falls through instead of reading a wrapped texel from elsewhere.
 fn gi_cache_at(
 	side: i32,
 	p: vec3f,
@@ -667,18 +636,14 @@ const LIGHT_GAIN = 0.75;
 //
 // A voxel emitter is not a point, and a point's 1/d^2 diverges: the support
 // block's top face sits a fraction of a block from the torch's centre, so it
-// took `emit * LIGHT_GAIN` whole against a display whose white is 1.0. The
-// result was a hard-edged ellipse of saturated orange with the floor texture
-// gone inside it — per-channel saturation shifting hue to the light's, not a
-// bright surface.
+// took `emit * LIGHT_GAIN` whole against a display whose white is 1.0 — a
+// hard-edged ellipse of saturated orange with the floor texture gone inside it.
 //
 // A measured trade, not the extreme: clipping bottoms out a little further
-// along, but what survives there IS the torch's own emissive sprite, which
-// no falloff can touch, and buying that last sliver costs real pool
-// brightness on a pool that already reads faint. **A DISPLAY fact, not a
-// physical one, and explicitly a stopgap** — the honest fix is an HDR scene
-// target and one tonemap, which would roll the highlight off instead of
-// flattening it.
+// along, but what survives there IS the torch's own emissive sprite, and buying
+// that last sliver costs real pool brightness. **A DISPLAY fact, not a physical
+// one, and explicitly a stopgap** — the honest fix is an HDR scene target and
+// one tonemap.
 const LIGHT_NEAR = 2.0;
 // The NEE shadow ray's iteration cap. Bounded by max_t <= LIGHT_RANGE
 // anyway; this covers the worst dense diagonal with margin, because a
@@ -687,35 +652,32 @@ const LIGHT_NEAR = 2.0;
 const GI_NEE_ITERS = 64;
 
 // The per-pixel direct term for local lights: ONE shadow ray, at a light
-// RESAMPLED over the whole in-range list rather than at the brightest one
-// (R27; R20 built the ray and picked the argmax).
+// RESAMPLED over the whole in-range list rather than at the brightest one (R27;
+// R20 built the ray and picked the argmax).
 //
 // The argmax gave one light a zero-variance estimator and left every other
-// emitter to the gather's direct-hit lottery. So the gather no longer
-// returns emitter radiance AT ALL, and this covers every emitter instead.
-// The estimator is Talbot-style RIS in its exact discrete form: the loop
-// already visits every entry, so there is no candidate SUBSET to draw — one
-// weighted-reservoir pass selects light i with probability exactly
-// p_i / sum(p), and the contribution weight is sum(p) / p_sel.
+// emitter to the gather's direct-hit lottery. So the gather no longer returns
+// emitter radiance AT ALL, and this covers every emitter instead. The estimator
+// is Talbot-style RIS in its exact discrete form: the loop already visits every
+// entry, so there is no candidate SUBSET to draw — one weighted-reservoir pass
+// selects light i with probability exactly p_i / sum(p), and the contribution
+// weight is sum(p) / p_sel.
 //
-// The target function is `gi_light_score`, the unshadowed irradiance up to
-// the emitter's tint. That makes the estimator EXACT, not merely unbiased,
-// whenever the in-range emitters share a tint and are all visible — so in
-// the open the pool is as steady at n = 1 as the argmax was, while carrying
-// ALL of the light rather than the brightest slice.
+// The target function is `gi_light_score`, the unshadowed irradiance up to the
+// emitter's tint, which makes the estimator EXACT rather than merely unbiased
+// whenever the in-range emitters share a tint and are all visible.
 //
-// What is left is visibility, which the target function cannot see: a point
-// that can only see half of what it samples gets a Bernoulli on the pool
-// TOTAL rather than the old Bernoulli on a huge radiance spike. A temporal
-// reservoir (ReSTIR DI) would remove that residual and is deliberately NOT
-// built — the measurement decides, and it needs a scene with emitters
-// occluded from each other (`DIG_TORCHES_WALL`).
+// What is left is visibility, which the target cannot see: a point that can see
+// half of what it samples gets a Bernoulli on the pool TOTAL rather than on a
+// huge radiance spike. A temporal reservoir (ReSTIR DI) would remove that and is
+// deliberately NOT built — the measurement decides, and it needs a scene with
+// emitters occluded from each other (`DIG_TORCHES_WALL`).
 //
 // **The R20 property that must not regress**: this is still what lights the
-// block a torch STANDS ON. Every march steps before it tests, so a gather
-// ray leaving the support block's top face starts INSIDE the torch's cell
-// and exits without registering it — the brightest surface in the room can
-// only be lit from here, and its NEE ray runs zero blocks.
+// block a torch STANDS ON. Every march steps before it tests, so a gather ray
+// leaving the support block's top face starts INSIDE the torch's cell and exits
+// without registering it — the brightest surface in the room can only be lit
+// from here, and its NEE ray runs zero blocks.
 struct NeeLight {
 	valid: bool,
 	dir: vec3f,
@@ -750,24 +712,23 @@ fn lcg_next(state: ptr<function, u32>) -> f32 {
 // also why a flake is lit from either side: paper this thin has no back.
 const GI_OMNI_COS = 0.5;
 
-// What one candidate is worth before its shadow ray: the unshadowed
-// irradiance up to the emitter's tint, and zero for anything out of
-// range or behind the surface.
+// What one candidate is worth before its shadow ray: the unshadowed irradiance
+// up to the emitter's tint, and zero for anything out of range or behind the
+// surface.
 //
-// The ONE place a light is priced, which is what keeps the two
-// estimators below from drifting apart — the reservoir SELECTS on this
-// and `sum_lights` PAYS it, so a resolve pixel and the body standing in
-// front of it cannot disagree about what a torch is worth.
+// The ONE place a light is priced, which is what keeps the two estimators below
+// from drifting apart — the reservoir SELECTS on this and `sum_lights` PAYS it,
+// so a resolve pixel and the body standing in front of it cannot disagree about
+// what a torch is worth.
 //
-// The only LUT read here is the level: the tint is fetched per WINNER,
-// not per candidate. A tint that varies between classes just makes this
-// a slightly worse target for the reservoir, never a biased one.
+// The only LUT read here is the level; the tint is fetched per WINNER, not per
+// candidate. A tint that varies between classes just makes this a slightly
+// worse target for the reservoir, never a biased one.
 //
-// `n` is the receiver's normal, and a receiver with no normal worth the
-// name passes the ZERO vector to be lit isotropically instead (see
-// `GI_OMNI_COS`). That convention lives here rather than in a second
-// scoring function, because a second function is a second price and this
-// one is shared precisely so there is only ever one.
+// `n` is the receiver's normal, and a receiver with no normal worth the name
+// passes the ZERO vector to be lit isotropically (see `GI_OMNI_COS`). That
+// convention lives here rather than in a second scoring function, because a
+// second function is a second price.
 fn gi_light_score(l: vec4f, q: vec4f, p: vec3f, n: vec3f) -> f32 {
 	let d = l.xyz - p;
 	let dist2 = dot(d, d);
@@ -839,21 +800,18 @@ fn resample_light(p: vec3f, n: vec3f, seed: u32) -> NeeLight {
 		out.dist = length(d);
 		out.dir = d / out.dist;
 		out.margin = gi_light_margin_of(sel);
-		// f_sel / p_sel x sum(p), with the division done in closed form:
-		// the target IS the contribution up to the tint, so `score_sel`
-		// cancels exactly and never appears. That cancellation is the
-		// whole reason this reads as one deterministic multiply rather
-		// than as a ratio of two sampled quantities.
+		// f_sel / p_sel x sum(p), with the division in closed form: the
+		// target IS the contribution up to the tint, so `score_sel` cancels
+		// exactly and never appears. That cancellation is why this reads as
+		// one deterministic multiply rather than a ratio of two sampled
+		// quantities.
 		//
-		// The cancellation is now approximate rather than exact for a
-		// RECTANGLE, and knowingly: the target used the centre and the
-		// contribution uses the drawn point, so the two differ by however
-		// much the light-side cosine and the distance vary across the
-		// face. Standing well back that is nothing; standing at the seam
-		// it is a little extra variance, which the accumulator and the
-		// a-trous pass are already there for. The estimator stays
-		// unbiased either way — the same standing the mixed-tint pool has
-		// had since the tools started casting.
+		// For a RECTANGLE the cancellation is approximate, knowingly: the
+		// target uses the centre and the contribution the drawn point, so
+		// they differ by however much the light-side cosine and the distance
+		// vary across the face. At the seam that is a little extra variance,
+		// which the accumulator and the a-trous pass are there for. The
+		// estimator stays unbiased either way.
 		out.irradiance =
 			gi_light_tint(sel.w, gi_emit_tint(gi_light_class(sel.w))) * LIGHT_GAIN * wsum;
 	}
@@ -867,29 +825,25 @@ fn resample_light(p: vec3f, n: vec3f, seed: u32) -> NeeLight {
 // the bias below.
 const GI_NEE_TAPS = 4u;
 
-// The direct term for a consumer with NO accumulator and no a-trous
-// behind it: players, and the item in their hand (R34).
+// The direct term for a consumer with NO accumulator and no a-trous behind it:
+// players, and the item in their hand (R34).
 //
-// Same candidates, same pricing, same shadow ray as `resample_light` —
-// what changes is how many of them are asked. Carrying the WHOLE pool on
-// one binary visibility sample is exactly right in front of a temporal
-// filter, whose average IS the shadowed sum, and exactly wrong in front
-// of nothing: a body took the entire pool wherever its one draw happened
-// to be visible and pure black a texel away, in world-anchored blocks
-// that swam across it as it walked.
+// Same candidates, same pricing, same shadow ray as `resample_light` — what
+// changes is how many are asked. Carrying the WHOLE pool on one binary
+// visibility sample is exactly right in front of a temporal filter, whose
+// average IS the shadowed sum, and exactly wrong in front of nothing: a body
+// took the entire pool wherever its one draw happened to be visible and pure
+// black a texel away, in world-anchored blocks that swam as it walked.
 //
-// So this sums the brightest few candidates with a ray EACH. It is
-// deterministic, so a body at rest is still; it selects on the score
-// rather than on list order, which nothing keeps stable (`flush_lights`
-// selects, it does not sort); and where every emitter in range is
-// visible — a room, the common case — the taps ARE the pool, so a body
-// lights like the wall behind it instead of like a sample of it.
+// So this sums the brightest few candidates with a ray EACH. Deterministic, so
+// a body at rest is still; it selects on the SCORE rather than on list order,
+// which nothing keeps stable (`flush_lights` selects, it does not sort); and
+// where every emitter in range is visible the taps ARE the pool.
 //
-// What the budget drops is the dimmest of what is in range, and past
-// `GI_NEE_TAPS` emitters a body is quietly a little darker than the
-// terrain beside it. That is a bias, and a bias is the right thing to
-// trade a dither for: it holds still, it shrinks as the tail does, and a
-// capture can see it.
+// What the budget drops is the dimmest of what is in range, so past
+// `GI_NEE_TAPS` emitters a body is quietly a little darker than the terrain
+// beside it. A bias is the right thing to trade a dither for: it holds still,
+// it shrinks as the tail does, and a capture can see it.
 fn sum_lights(side: i32, sky_y: f32, cam_xz: vec2f, p: vec3f, n: vec3f) -> vec3f {
 	let count = min(bitcast<u32>(lights[0].x), 256u);
 	// The ladder: scores in descending order and the entries they came

@@ -1,17 +1,11 @@
 // Solid chunk shader (water has its own fork — water.wgsl).
-// RTGI shading (GI-DESIGN.md): ALL lighting arrives through the
-// half-res GI resolve buffers — probe-traced indirect plus a per-pixel
-// DDA sun visibility. This shader upsamples bilaterally and combines:
-// tex * (light_color * lambert * sunvis + indirect).
-//
-// Nothing else LIGHTS here any more. Baked AO and the Stage-B light
-// nibbles came out at the M1 demolition — contact darkening is the path
-// tracer's job now. Distance and underwater fog came out with them and
-// came back at M2 as one participating medium (medium_common.wgsl),
-// applied once at the end to emissive ink and lit surfaces alike. The
-// per-block tint jitter came out with the same demolition and came back
-// at R23 as `block_tint`, which is a material property rather than a
-// light and so sits on the albedo (see that function).
+// RTGI shading (GI-DESIGN.md): ALL lighting arrives through the half-res GI
+// resolve buffers — probe-traced indirect plus a per-pixel DDA sun visibility.
+// This shader upsamples bilaterally and combines
+// tex * (light_color * lambert * sunvis + indirect). Nothing else LIGHTS here;
+// the participating medium (medium_common.wgsl) is applied once at the end to
+// emissive ink and lit surfaces alike, and `block_tint` is a material property
+// that sits on the albedo rather than on the light.
 
 // The Frame struct + group(0) binding come from frame_common.wgsl
 // (prepended by digblock-assets).
@@ -114,22 +108,17 @@ fn vs(@location(0) packed: vec2u, @location(1) origin: vec4f) -> VsOut {
 	return o;
 }
 
-// Depth prepass: fills the R32F depth copy the GI resolve reconstructs
-// world positions from, AND — since M3 — one R8Uint face-normal code
-// per pixel.
+// Depth prepass: fills the R32F depth copy the GI resolve reconstructs world
+// positions from, AND one R8Uint face-normal code per pixel.
 //
-// That second output is what fixed two bugs at once. The resolve used to
-// take its normal from `cross(dpdy(p), dpdx(p))` at half res, which is
-// garbage on every silhouette and poisoned the ray origin, the ambient-
-// cube axis weights and the backface term. It then wrote that derived
-// code into the sun buffer, where `fs` below compares it against the
-// scene's EXACT per-vertex code — the two cannot agree at a silhouette,
-// so all four bilateral taps collapsed to the same negligible weight and
-// `acc / wsum` amplified whichever tap was least wrong. Those were the
-// horizontal ticks along every edge.
-//
-// Rasterizing the code makes it exact AND makes it the same number on
-// both sides of the comparison, because it comes from this one table.
+// The code must be RASTERIZED, not derived. `cross(dpdy(p), dpdx(p))` at half
+// res is garbage on every silhouette, and it poisoned the ray origin, the
+// ambient-cube axis weights and the backface term — then went into the sun
+// buffer, where `fs` compares it against the scene's EXACT per-vertex code. The
+// two cannot agree at a silhouette, so all four bilateral taps collapsed to the
+// same negligible weight and `acc / wsum` amplified whichever was least wrong.
+// Rasterizing makes it exact AND the same number on both sides, because it
+// comes from this one table.
 struct DepthOut {
 	@invariant @builtin(position) pos: vec4f,
 	@location(0) @interpolate(flat) ncode: u32,
@@ -171,52 +160,33 @@ fn hash3(c: vec3i) -> u32 {
 	return x;
 }
 
-// Per-block albedo jitter — one value step and one hue step per block
-// cell, so a hillside of a single grass id stops reading as wallpaper.
-// This is the M1 casualty coming back (R23), and it comes back somewhere
-// else: the old one (b6af702) packed a small hash into the spare top of
-// the geometry word and folded it into the AO varying, so it needed a
-// vertex bit, a re-mesh, and a mesher that knew its chunk's world
-// origin. None of that now — `fs` already has the world position and the
-// face code, and the block cell is one floor() away.
+// Per-block albedo jitter — one value step and one hue step per block cell, so
+// a hillside of a single grass id stops reading as wallpaper (R23).
 //
-// It multiplies ALBEDO, and that placement is the load-bearing part. The
-// à-trous filter and the temporal accumulator only ever see the lighting
-// buffers, so a per-block step written into the light is a signal they
-// are built to smooth across exactly the edges it lives on — it would
-// blur toward its own mean in the first à-trous iteration and then get
-// averaged over the accumulator's whole history. On the albedo it lands
-// after the bilateral upsample, where nothing downstream can filter,
-// blur or accumulate it.
+// It multiplies ALBEDO, and that placement is load-bearing: the à-trous filter
+// and the temporal accumulator only ever see the lighting buffers, so a
+// per-block step written into the LIGHT is a signal they are built to smooth
+// across exactly the edges it lives on. On the albedo it lands after the
+// bilateral upsample, where nothing downstream can filter or accumulate it. The
+// probes' material albedo stays untinted for a related reason — a block's
+// jitter must not ride its own bounce light, and paying for it would mean a
+// per-cell lookup inside every march.
 //
-// The probes' material albedo stays untinted, so a block's jitter does
-// not ride its own bounce light. That is deliberate: it is below the
-// noise floor of a 1-spp gather, and paying for it would mean a per-cell
-// lookup inside every march.
-//
-// `tint_down` (the w1 flag) shifts the hashed cell one down. A door is
-// one object across two cells, and hashing each half separately gave it
-// two tints — the leaf read as two planks sawn from different timber,
-// which is exactly the material break this function exists to CREATE
-// between neighbouring blocks. Anchoring the upper half on the lower one
-// is a shift of the anchor, not an exemption: the door still varies from
-// the door beside it, it just stops varying down its own middle.
+// `tint_down` (the w1 flag) shifts the hashed cell one down: a door is one
+// object across two cells, and hashing each half separately gave one leaf two
+// tints — exactly the material break this function exists to CREATE between
+// neighbouring blocks. A shift of the anchor, not an exemption.
 fn block_tint(world: vec3f, ncode: u32, tint_down: u32) -> vec3f {
-	// ±half-range of each step, calibrated on the DIG_VAULT stone wall —
-	// the flat one-material surface this exists for — against a sweep
-	// running from no jitter at all to well past what is set here. A
-	// markedly smaller step (roughly the old jitter's range) measured
-	// invisible at 1:1 over a daylit terrain frame, and a wide sample of the
-	// lit ground plane moved its luma stdev by less than the noise. A
-	// markedly larger one quilts —
-	// the wall stops reading as one material. The hue is new and is what
-	// keeps a desaturated stone wall from varying in brightness alone,
-	// which reads as grime rather than as stone.
+	// ±half-range of each step, calibrated on the DIG_VAULT stone wall — the
+	// flat one-material surface this exists for — against a sweep from no
+	// jitter to well past what is set here. Much smaller measures invisible
+	// at 1:1; much larger quilts, and the wall stops reading as one material.
+	// The hue step is what keeps a desaturated wall from varying in
+	// brightness alone, which reads as grime rather than as stone.
 	//
-	// Note these are ALBEDO half-ranges, so the visible effect scales
-	// with the light: the same wall varies most where it is brightest and
-	// the jitter all but vanishes in shade. That is correct for a
-	// material property and it is the reason the numbers were picked in a
+	// These are ALBEDO half-ranges, so the effect scales with the light: the
+	// wall varies most where it is brightest and all but vanishes in shade.
+	// Correct for a material property, and why the numbers were picked in a
 	// dim torch-lit room rather than in daylight.
 	const TINT_VALUE = 0.08;
 	const TINT_HUE = 0.03;
@@ -326,24 +296,14 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 		// the view ray uses — so sunlight reaching a submerged surface is
 		// red-starved, not just dim.
 		let sun_tr = medium_water_tr(water_acc / wsum);
-		// Twilight fades the LIGHT, not the shadow. This used to read
-		// `mix(vec3f(1.0), visibility, frame.light_dir.w)` — carried over
-		// from the shadow-map era, where fading a cascade out meant fading
-		// its shadowing toward "lit" because there was no other answer to
-		// give. Against a traced visibility it inverts the meaning: as the
-		// caster's strength falls to 0 near the horizon, the blend returns
-		// 1.0, and every surface facing the caster takes FULL, UNSHADOWED
-		// direct light — through walls.
-		//
-		// It is not subtle. A sealed stone vault at sunrise lit one wall
-		// to 4x the other (86 vs 19 mean), uniformly across the whole
-		// face, and the lit wall FLIPPED at the horizon crossing as the
-		// caster changed from sun to moon and its azimuth reversed. It
-		// survived forcing sun visibility to zero, which is what a
-		// visibility term that is being ignored looks like.
-		//
-		// Strength belongs on the radiance. At full strength this is
-		// identical to what it replaced, so only twilight moves.
+		// Twilight fades the LIGHT, not the shadow. Blending visibility
+		// toward 1.0 by the caster's strength — the shadow-map era's answer
+		// — inverts the meaning against a traced visibility: as strength
+		// falls to 0 near the horizon every surface facing the caster takes
+		// FULL, UNSHADOWED direct light, through walls. A sealed vault at
+		// sunrise lit one wall to 4x the other, and the lit wall FLIPPED at
+		// the horizon crossing. Strength belongs on the radiance; at full
+		// strength this is identical to what it replaced.
 		let sh = sun_acc / wsum * sun_tr;
 		// Per-block jitter belongs to the material, so it multiplies here
 		// and not into either lighting term. Emissive ink never reaches

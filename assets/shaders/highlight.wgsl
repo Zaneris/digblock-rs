@@ -1,29 +1,17 @@
-// Block highlight: an idle outline on the crosshair's target cell, plus
-// a procedural fracture that spreads across it with hold-to-dig
-// progress (the tree is documented at CR_BRANCH, below). One instance =
-// the target cell, as a vertex_index-generated box (the players.wgsl
-// trick) inflated a hair past the block so it never z-fights the face
-// it decorates. Alpha-blended darkening decal — no textures, no
-// lighting.
+// Block highlight: an idle outline on the crosshair's target cell, plus a
+// procedural fracture that spreads across it with hold-to-dig progress (the tree
+// is documented at CR_BRANCH, below). One instance = the target cell, as a
+// vertex_index-generated box (the players.wgsl trick) inflated a hair past the
+// block so it never z-fights the face it decorates. Alpha-blended darkening
+// decal — no textures, no lighting. Photograph it with DIG_CRACK=<percent>,
+// which pins the progress and stands a wall in front of the camera.
 //
-// Photograph it with DIG_CRACK=<percent>, which pins the progress and
-// stands a wall in front of the camera to hold it; a hold is input-
-// driven and lasts a second, so a sweep of those runs is the only way
-// to see whether the break SPREADS or merely fades in.
-//
-// The box is the TARGET'S OWN bounds, not the unit cell: a shaped block
-// hands over `shapes::object_bounds`, so a slab outlines at its own size
-// and a door outlines as one two-cell leaf. That is why the two scalar
-// look constants below (inflation and border width) are absolute world
-// distances rather than fractions of a face — a third-slab scaled the
-// same way would wear a border a third as thick, and a door leaf's would
-// all but vanish. Both still evaluate to exactly their old values on a
-// full cube.
-//
-// Nothing here assumes the box fits inside its cell: `local` is built
-// from the box's own centre and half-extents and added to the instance's
-// cell origin, so a door's two-cell y range spans both halves for free,
-// and `size` hands the fracture the whole leaf's face to spread across.
+// The box is the TARGET'S OWN bounds, not the unit cell: a shaped block hands
+// over `shapes::object_bounds`, so a slab outlines at its own size and a door as
+// one two-cell leaf. That is why the two scalar look constants below are
+// absolute world distances rather than fractions of a face — a third-slab scaled
+// the same way would wear a border a third as thick. Nothing here assumes the
+// box fits inside its cell.
 
 // The Frame struct + group(0) binding come from frame_common.wgsl
 // (prepended by digblock-assets).
@@ -129,36 +117,30 @@ fn hash11(x0: u32) -> f32 {
 }
 
 // ---------------------------------------------------------------------
-// The crack: a TREE of jagged polylines, not a radial web.
+// The crack: a TREE of jagged polylines, not a radial web. Root branches leave
+// a hash-placed origin, each throws off one branch partway along, and whatever
+// slots remain carry one more generation; every polyline's heading random-walks
+// at each joint. A spoke web reads as a pinwheel however hard you wobble it; a
+// line that wanders and splits reads as something giving way.
 //
-// Root branches leave a hash-placed origin; each root throws off one branch
-// partway along, and whatever slots remain carry one more generation. Every
-// polyline's heading random-walks at every joint, so no part of the pattern
-// is a rotation of any other. A spoke web reads as a pinwheel however hard
-// you wobble it; a line that wanders and splits reads as something giving
-// way.
-//
-// Growth is by ARC LENGTH from the origin, not by radius, so the break
-// spreads outward as you dig and RETREATS into the origin as a released
-// hold decays (`skills::dig_decayed`) — the same motion run backwards
-// rather than a fade.
+// Growth is by ARC LENGTH from the origin, not by radius, so the break spreads
+// as you dig and RETREATS as a released hold decays (`skills::dig_decayed`) —
+// the same motion run backwards rather than a fade.
 //
 // The tree is walked ONCE per pixel and children go into FIXED slots. A
-// next-free-slot counter would reshuffle the slots, and therefore the
-// per-branch hashes, and therefore the whole pattern, as growth reached
-// spawn points in a different order — that pops mid-hold.
+// next-free-slot counter would reshuffle the slots, and therefore the per-branch
+// hashes, as growth reached spawn points in a different order — that pops
+// mid-hold.
 //
-// Roots each fork ONCE rather than a few forking twice: both spend the same
-// budget, but a fork lands beside its parent, so wide-and-shallow covers the
-// face while narrow-and-deep piles into one quadrant and leaves the opposite
-// one bare.
+// Roots each fork ONCE rather than a few forking twice: same budget, but a fork
+// lands beside its parent, so wide-and-shallow covers the face while
+// narrow-and-deep piles into one quadrant.
 //
-// **Every knob below marked `per cell` is a RANGE, not a value**, drawn from
-// the cell's own hash. With the tree's shape fixed and only its angles
-// jittered, a fixed count of lines with one fork each is a signature, and
-// the eye reads the signature rather than the angles. They come off the CELL
-// hash, not the (cell, face) one that places individual lines, so all six
-// faces of a block fail the same WAY with different lines.
+// **Every knob below marked `per cell` is a RANGE, not a value**, drawn from the
+// CELL hash rather than the (cell, face) one that places individual lines — so
+// all six faces of a block fail the same WAY with different lines. With the
+// tree's shape fixed, a fixed count of lines would be a signature, and the eye
+// reads the signature rather than the angles.
 const CR_BRANCH = 16u; // slots; the ceiling on roots × 2 + their forks
 const CR_STEP = 4u;    // loop bound; deeper generations stop earlier
 const CR_ROOT_LO = 4u; // per cell: fewest roots...

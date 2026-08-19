@@ -1,39 +1,30 @@
 // The GI resolve's spatial half (SVGF, Schied et al. 2017): an edge-stopping
-// a-trous wavelet filter over the half-res lighting targets, run twice with
-// a doubling tap stride.
+// a-trous wavelet filter over the half-res lighting targets, run twice with a
+// doubling tap stride.
 //
 // **Why it exists.** Without it every bit of variance reduction here is
 // temporal, which forces N_MAX deep — and a deep SCREEN-SPACE history cannot
-// survive a moving camera: reprojection is exact for static geometry, but
-// the fetch still lands between texels, and resampling a half-res buffer for
-// the whole length of that history drags the image along the direction of
-// travel. There is no N that is both sharp under motion and clean at rest,
-// and that is precisely the trade a spatial filter removes.
+// survive a moving camera: reprojection is exact for static geometry, but the
+// fetch still lands between texels, and resampling a half-res buffer for the
+// whole length of that history drags the image along the direction of travel.
+// There is no N that is both sharp under motion and clean at rest.
 //
-// Two signals, in two different businesses, each with its own gate:
+// Two signals, two gates. INDIRECT is a genuinely stochastic 1-spp gather, so it
+// takes the original SVGF trade: filter while the history is short, shut off
+// once the temporal estimate has converged. SUN is deterministic with a static
+// dither, and its filter is RECONSTRUCTION rather than denoising — gi_resolve
+// stores the physical penumbra width in sun.a and this pass blurs the hard 0/1
+// answer across exactly that many texels. So it must run AT REST TOO, since a
+// deterministic ray never builds a penumbra in time; it must NOT edge-stop on
+// the sun value inside the penumbra, because that boundary is the thing to blur
+// (pen -> 0 collapses the kernel to identity, so contact stays hard); and it
+// spreads the width itself, so the LIT side of an edge blurs symmetrically.
 //
-// - INDIRECT is a genuinely stochastic 1-spp gather, so it takes the
-//   original SVGF trade: filter while the history is short, shut off once
-//   the temporal estimate has converged (measured a no-op there).
-//
-// - SUN is deterministic with a static dither, and its filter is not
-//   denoising but RECONSTRUCTION: gi_resolve stores the physical penumbra
-//   width in sun.a and this pass blurs the hard 0/1 answer across exactly
-//   that many texels. So it must run AT REST TOO — a deterministic ray never
-//   builds a penumbra in time, and skipping at high n would ship stair-edged
-//   shadows on every still frame. It must NOT edge-stop on the sun value
-//   inside the penumbra, since the 0/1 boundary is the thing to blur; pen ->
-//   0 collapses the kernel to identity, so contact stays hard with no
-//   luminance guard. And it spreads the width itself (max over accepted
-//   taps) so the LIT side of an edge blurs symmetrically by iteration two.
-//
-// **No moment buffer.** SVGF accumulates first and second moments of
-// luminance in a third target; both estimators here have an ANALYTIC
-// variance from data already stored — sun visibility is a mean of n
-// Bernoulli trials, so its standard error is exactly sqrt(p(1-p)/n) with p
-// and n both in the target. Deriving sigma instead of measuring it saves a
-// whole ping-ponged rgba32f and a pass of bandwidth, and cannot drift out of
-// step with the accumulator the way a separate buffer can.
+// **No moment buffer.** Both estimators have an ANALYTIC variance from data
+// already stored — sun visibility is a mean of n Bernoulli trials, so its
+// standard error is exactly sqrt(p(1-p)/n) with p and n both in the target.
+// Deriving sigma instead of measuring it saves a whole ping-ponged rgba32f and
+// cannot drift out of step with the accumulator the way a separate buffer can.
 
 struct Atrous {
 	// x tap stride in texels (doubling between the two iterations),

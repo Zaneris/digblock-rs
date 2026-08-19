@@ -141,19 +141,16 @@ fn vs(
 	// Lit like spray: probe ambient + traced sun, twilight fading the
 	// LIGHT and never the shadow (chunk.wgsl's rule).
 	let sh = cam_light.sun.rgb * frame.light_dir.w;
-	// Plus the emitter list, because bounce and sun are the two things a
-	// cave has none of: a burst thrown beside a torch used to be a cloud
-	// of BLACK paper over a lit floor, which is R33's bug in the
-	// billboard family. Priced at the flake's CENTRE — the whole quad
-	// sits inside a fraction of a block, so one answer serves its six
-	// corners and they cannot disagree across the seam — and with the
-	// ZERO normal, since a tumbling flake has no normal that holds still
-	// and paper this thin takes light from either side.
+	// Plus the emitter list, because bounce and sun are the two things a cave
+	// has none of: a burst thrown beside a torch used to be a cloud of BLACK
+	// paper over a lit floor, which is R33's bug in the billboard family.
+	// Priced at the flake's CENTRE — the whole quad sits inside a fraction of
+	// a block, so one answer serves its six corners — and with the ZERO
+	// normal, since a tumbling flake has no normal that holds still and paper
+	// this thin takes light from either side.
 	//
-	// The reach gate is players' (past `gi_lateral_max` a shadow ray has
-	// no window to march), and it earns its keep here: a burst is thrown
-	// over a REMOTE player's head too, and they can be most of the sync
-	// radius away.
+	// The reach gate is players': past `gi_lateral_max` a shadow ray has no
+	// window to march, and a burst is thrown over a REMOTE player's head too.
 	var nee = vec3f(0.0);
 	let lat = center.xz - frame.cam_pos.xz;
 	let gmax = gi_lateral_max(frame.gi_misc.x);

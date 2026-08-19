@@ -1,28 +1,21 @@
-// Water shader — fork of chunk.wgsl with the shared two-word vertex: word 0
-// is the solid geometry packing, word 1 the texture layer with the
-// per-vertex surface payload packed above it (drop code, falling flag, flow
-// dir, splash code, fall distance).
+// Water shader — fork of chunk.wgsl with the shared two-word vertex: word 0 is
+// the solid geometry packing, word 1 the texture layer with the per-vertex
+// surface payload above it (drop code, falling flag, flow dir, splash code,
+// fall distance).
 //
-// The drop code sinks a vertex below its lattice height by the strongest
-// water amount at that CORNER, so a surface corner sits at exactly the level
-// the sim computed and adjacent cells share it — no cracks. Falling water
-// scrolls its side faces downward; the flow dir scrolls top faces along the
-// current; the splash code ranks the fall's impact cell above the pool
-// around it by Chebyshev distance, a static foam wash that also boosts
-// ripple turbulence; the fall distance drives gravity stretch and aeration
-// whitening.
+// The drop code sinks a vertex below its lattice height by the strongest water
+// amount at that CORNER, so adjacent cells share exactly the level the sim
+// computed and there are no cracks.
 //
-// Lighting is RTGI: a probe gather at the surface world position, evaluated
-// PER VERTEX and interpolated (R17 — water quads are strictly per-cell, so
-// vertices sit at most a cell apart against a probe field spaced wider and
-// smooth by construction; per fragment at full res was the river frame
-// spike), plus a short per-fragment sun DDA, which stays per pixel because
-// shadow edges on the surface are the one lighting signal sharper than the
-// lattice.
+// Lighting is RTGI: a probe gather at the surface world position evaluated PER
+// VERTEX and interpolated (R17 — water quads are strictly per-cell against a
+// probe field spaced wider and smooth by construction), plus a short
+// per-fragment sun DDA, which stays per pixel because shadow edges on the
+// surface are the one lighting signal sharper than the lattice.
 //
 // Water never reads the half-res resolve buffers, whose depth belongs to the
-// solids BEHIND it. **It writes OPAQUE** — the fragment owns its own
-// backdrop (see the alpha note in `fs`).
+// solids BEHIND it. **It writes OPAQUE** — the fragment owns its own backdrop
+// (see the alpha note in `fs`).
 
 // The Frame struct + group(0) binding(0) come from frame_common.wgsl
 // (prepended by digblock-assets, before sky_common). The water pipelines
@@ -48,19 +41,16 @@
 // carries what's left (P5 revisits the number against the bench).
 const SUN_STEPS = 12;
 
-// Below this much RADIANCE a term is not worth a ray march. It is an
-// IMPORTANCE threshold, not a quality knob: the error it admits is
-// exactly `weight × (what the march would have returned)`, and the gate
-// multiplies the weight by the light colour before comparing — so this
-// is in the same units as the pixel, a fraction of the 1.0 that means
-// white.
+// Below this much RADIANCE a term is not worth a ray march. An IMPORTANCE
+// threshold, not a quality knob: the error it admits is exactly
+// `weight × (what the march would have returned)`, and the gate multiplies the
+// weight by the light colour before comparing, so it is in the pixel's own
+// units.
 //
-// Weighting by the light colour is not fussiness. This engine has no
-// tonemap, so radiance is HDR and 1.0 is merely "white": a small weight
-// against a sky several times brighter than white is a proportionally
-// larger error. The first cut of these gates compared bare weights and
-// put a ripple-banded difference across a whole basin, well clear of the
-// capture floor at DIG_RIVER. That is what a parity pass is for.
+// Weighting by the light colour is not fussiness. This engine has no tonemap,
+// so radiance is HDR and 1.0 is merely "white": a small weight against a sky
+// several times brighter is a proportionally larger error. Comparing bare
+// weights put a ripple-banded difference across a whole basin at DIG_RIVER.
 const SUN_MIN_L = 0.002;
 // The mirror gate gets NO tolerance, for the same reason. `mirror_w` is
 // pinned to EXACTLY zero on the underside of a surface seen from below
@@ -508,30 +498,20 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	// Glassy crest sheen where flow tips over a lip: strongest in the
 	// first fallen block, keyed to the plunging drop edge.
 	let lip = f32(i.falling) * (1.0 - min(i.fall_y, 1.0)) * smoothstep(6.0, 9.0, i.drop);
-	// RTGI: probe-field indirect at the surface (sky, bounce, torches —
-	// all one gathered term), gathered per VERTEX and interpolated in
-	// (see the header), + a short per-fragment sun DDA. Same combine as
-	// chunk.wgsl, minus AO. `sh` folds twilight exactly as mapped
-	// shadows did; it multiplies the foam and specular terms below,
-	// never the indirect (a torch has no sun glint lobe to borrow).
+	// RTGI: probe-field indirect at the surface (sky, bounce, torches — one
+	// gathered term), per VERTEX and interpolated (see the header), plus a
+	// short per-fragment sun DDA. `sh` folds twilight exactly as mapped
+	// shadows did; it multiplies foam and specular, never the indirect (a
+	// torch has no sun glint lobe to borrow).
 	//
-	// AND IT IS GATED ON ITS OWN COEFFICIENT, which is the single
-	// biggest thing in the water pass. Water has no diffuse sun
-	// response — a transparent surface's colour is the refracted
-	// backdrop and the reflection, neither of which uses `sh`. The sun
-	// visibility reaches the pixel ONLY through foam (aeration, the
-	// shore line, splash cells), the glint lobe and the lip sheen. On
-	// calm open water away from the glint, and on ANY surface seen from
-	// below (where the lobe faces away), every one of those weights is
-	// ~0 — so a whole march of dependent voxel loads was computing a
-	// number that then got multiplied by nothing.
-	//
-	// Measured as the single biggest term in the water pass at the submerged
-	// pose — more than half of everything water costs, per BENCH.md. This is
-	// not an approximation of the
-	// lighting, it is importance — the admitted error is the weight
-	// times the radiance the march would have contributed, and both are
-	// in the sum below.
+	// AND IT IS GATED ON ITS OWN COEFFICIENT, the single biggest thing in the
+	// water pass. Water has no diffuse sun response — a transparent surface's
+	// colour is the refracted backdrop and the reflection. Sun visibility
+	// reaches the pixel ONLY through foam, the glint lobe and the lip sheen,
+	// and on calm open water away from the glint, or ANY surface seen from
+	// below, every one of those weights is ~0. Importance, not approximation:
+	// the admitted error is the weight times the radiance the march would
+	// have contributed, and both are in the sum below.
 	let side = i32(frame.gi_misc.x);
 	let indirect = i.indirect;
 	let lc = max(frame.light_color.r, max(frame.light_color.g, frame.light_color.b));
@@ -606,29 +586,19 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	col += frame.light_color.rgb * lip * sh * 0.15;
 	// Alpha: the falling-sheet streak gate, and nothing else.
 	//
-	// This fragment is not a pane laid OVER the scene. It sampled the
-	// scene itself (`scene_tex`) and ran the whole water transport across
-	// `thick` of it, so `back + surf` below already IS the backdrop,
-	// absorbed. Blending that over the same backdrop a second time re-adds
-	// an UNABSORBED copy of it.
+	// This fragment is not a pane laid OVER the scene. It sampled the scene
+	// itself (`scene_tex`) and ran the whole water transport across `thick`
+	// of it, so `back + surf` below already IS the backdrop, absorbed.
+	// Blending that over the same backdrop a second time re-adds an
+	// UNABSORBED copy — invisible near shore, and the entire picture under a
+	// bay's worth of water, where the transport had correctly taken the
+	// backdrop's red to zero and the seabed came through anyway as grey rock
+	// under glass beside blue shallows.
 	//
-	// It used to: `frame.misc.x` carried the Java raster port's
-	// transparent-pass u_Alpha, and it outlived the M1 demolition that
-	// replaced the absorption model justifying it. Near shore the leak is
-	// invisible, because a shallow column barely changes the bottom's
-	// colour and the absorbed copy and the raw one nearly agree. Under a
-	// bay's worth of water — an ordinary grazing look, where the
-	// transport's answer is that you cannot see the bottom AT ALL and it
-	// had correctly taken the backdrop's red to exactly zero — the leak
-	// was the entire picture: the seabed came through in its own grey at a
-	// fraction of full strength, so distant water read as grey rock under
-	// glass while the shallows beside it stayed blue.
-	//
-	// The streak gaps stay. A torn falling sheet genuinely is see-through
-	// in its gaps, and `thick` — reconstructed from the depth buffer —
-	// cannot know about the tear. `s` sits at its neutral midpoint on
-	// every still surface, so this is exactly 1.0 — fully opaque —
-	// everywhere else.
+	// The streak gaps stay: a torn falling sheet genuinely is see-through in
+	// its gaps, and `thick` — reconstructed from the depth buffer — cannot
+	// know about the tear. `s` sits at its neutral midpoint on every still
+	// surface, so this is exactly 1.0 everywhere else.
 	let alpha = clamp(0.75 + 0.5 * s, 0.0, 1.0);
 	// The camera-to-surface medium, applied to the surface's own light
 	// only (see `backdrop` above). Every term above is a linear mix, so

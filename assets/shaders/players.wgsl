@@ -1,30 +1,23 @@
 // Remote players: two draws sharing one pipeline layout.
 //
 // The BODY is one instanced box per player, generated entirely from
-// vertex_index (no geometry buffer — the spray.wgsl trick). Instance =
-// two vec4s: (eye position xyz, yaw) + (color rgb, spare). The box takes
-// the capsule collider's own width and height, anchored to the eye so it
-// stands where the collider does, flat-colored.
+// vertex_index (the spray.wgsl trick). Instance = two vec4s: (eye xyz, yaw) +
+// (color rgb, spare). The box takes the capsule collider's own width and
+// height, anchored to the eye so it stands where the collider does.
 //
-// The HELD ITEM is `vs_held` into the SAME `fs`: the real item geometry,
-// from
-// item_geom by way of viewmodel::build — the same authority the
-// inventory icons and your own hand already use, so a remote's torch is
-// a torch, a bucket is a bucket with its charge showing, and a stair is
-// a stair. It cannot share the body's vertex-index generator (item
-// geometry needs a vertex buffer) and it wants the opposite `cull`, so
-// it is a second pipeline over the same three bind groups.
+// The HELD ITEM is `vs_held` into the SAME `fs`: real item geometry from
+// item_geom by way of viewmodel::build — the same authority the inventory icons
+// and your own hand use, so a remote's bucket shows its charge. It cannot share
+// the body's vertex-index generator and it wants the opposite `cull`, so it is a
+// second pipeline over the same three bind groups.
 //
-// Lighting is RTGI (GI-DESIGN.md) for both: a per-fragment probe gather
-// through gi_common, a short sun DDA, and the shared `sum_lights` NEE
-// over the emitter list (R33, R34) — players never read the half-res
-// resolve buffers, whose depth prepass doesn't know them, so the direct
-// term has to be computed here or a body beside a torch reads black —
-// and then the same participating medium (medium_common) the terrain
-// beside them goes through, so they sit in the scene rather than in
-// front of it. A held item that GLOWS skips the lighting and takes
-// ink_common's shared `emissive_ink` instead, exactly as chunk.wgsl does
-// for the same block standing in the world.
+// Lighting is RTGI for both: a per-fragment probe gather, a short sun DDA, and
+// the shared `sum_lights` NEE over the emitter list (R33, R34) — players never
+// read the half-res resolve buffers, whose depth prepass does not know them, so
+// a body beside a torch would read black — then the same participating medium
+// the terrain goes through, so they sit in the scene rather than in front of it.
+// A held item that GLOWS skips all of that for ink_common's `emissive_ink`,
+// exactly as chunk.wgsl does for the same block standing in the world.
 
 // The Frame struct + group(0) binding come from frame_common.wgsl, and
 // the group(2) GI world bindings + gather core from gi_common.wgsl
@@ -243,23 +236,18 @@ fn fs(in: VsOut) -> @location(0) vec4f {
 		// Strength fades the LIGHT, never the shadow — see chunk.wgsl.
 		let sh = sv.x * medium_water_tr(sv.y) * frame.light_dir.w;
 		// The direct term for local lights (R33): the shared NEE over the
-		// same list the resolve reads — a probe carries a torch only as
-		// its bounce off the room, so without this a player beside one
-		// read black while the wall behind them glowed. The resolve's
-		// half-res NEE can never cover them: they are not in the depth
-		// prepass, so its texels under a player belong to that wall.
+		// same list the resolve reads — a probe carries a torch only as its
+		// bounce off the room, and the resolve's half-res NEE can never cover
+		// a player, who is not in the depth prepass.
 		//
-		// `sum_lights` and not the resolve's `resample_light` (R34),
-		// because nothing filters this: one drawn light carrying the whole
-		// pool needs an accumulator behind it to average its visibility
-		// out, and a body has none — it dithered into world-anchored
-		// blocks of full pool and pure black that swam across a walking
-		// player. Same candidates and same pricing, one ray each.
+		// `sum_lights` and not the resolve's `resample_light` (R34), because
+		// nothing filters this: one drawn light carrying the whole pool needs
+		// an accumulator behind it to average its visibility out, and a body
+		// has none — it dithered into world-anchored blocks of full pool and
+		// pure black that swam across a walking player.
 		//
-		// The `far` gate is the resolve's own rule (past the window's
-		// reach a shadow ray has no data to march); the resolve takes the
-		// cascade blend there, this simply drops the term, and a player at
-		// that range covers a handful of pixels under the medium's fade.
+		// The `far` gate is the resolve's own rule: past the window's reach a
+		// shadow ray has no data to march.
 		var nee = vec3f(0.0);
 		let lat = gp.xz - frame.cam_pos.xz;
 		let gmax = gi_lateral_max(frame.gi_misc.x);

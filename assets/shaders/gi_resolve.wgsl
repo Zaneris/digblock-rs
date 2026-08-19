@@ -1,42 +1,36 @@
-// RTGI resolve (GI-DESIGN.md): the half-res fullscreen pass that turns
-// probes into per-pixel lighting. World position from the R32F depth copy,
-// face normal from derivatives (exact on a blocky world), then indirect =
-// the shared gi_common cascade fallthrough, direct = ONE sun-visibility DDA
-// per pixel — the entire replacement for the shadow-map system.
+// RTGI resolve (GI-DESIGN.md): the half-res fullscreen pass that turns probes
+// into per-pixel lighting. World position from the R32F depth copy, face normal
+// from the prepass code, then indirect = the shared gi_common cascade
+// fallthrough, direct = ONE sun-visibility DDA per pixel — the entire
+// replacement for the shadow-map system.
 //
-// The sun ray is DETERMINISTIC per world point and the penumbra is
-// reconstructed SPATIALLY (the SIGMA / FidelityFX pattern): `gi_sun_vis`
-// returns the occluder distance, occluder_t x tan(cone) is the physical
-// width, and gi_atrous blurs exactly that many texels. Sun history caps at
-// N_SUN purely to antialias the dithered edge, so smear is bounded by
-// construction (R13, R14).
+// The sun ray is DETERMINISTIC per world point and the penumbra is reconstructed
+// SPATIALLY (the SIGMA / FidelityFX pattern): `gi_sun_vis` returns the occluder
+// distance, occluder_t x tan(cone) is the physical width, and gi_atrous blurs
+// exactly that many texels. Sun history caps at N_SUN purely to antialias the
+// dithered edge, so smear is bounded by construction (R13, R14).
 //
-// The cone jitter cannot be dropped: sun.rs pins the caster to dir.z == 0
-// and gi.rs snaps it to a small rational, so every shadow ray is an
-// exactly-planar rational line through a cubic lattice and aliases
-// identically in every z-slice. That is the streaking. The offset breaks
-// the rational slope, and it is hashed from sub-block WORLD cells rather
-// than pixels — per-pixel was tried first and shimmered under rotation,
-// because a moving camera re-asks a different fixed question every frame.
-// It also self-scales as a penumbra sampler: at contact range the spread
-// displaces the tested edge by well under a texel, so contact stays hard.
+// The cone jitter cannot be dropped: sun.rs pins the caster to dir.z == 0 and
+// gi.rs snaps it to a small rational, so every shadow ray is an exactly-planar
+// rational line through a cubic lattice and aliases identically in every
+// z-slice. That is the streaking. The offset is hashed from sub-block WORLD
+// cells rather than pixels — per-pixel shimmered under rotation, because a
+// moving camera re-asks a different fixed question every frame.
 //
 // MRT, both rgba32f (gi::GI_ACC_FORMAT): indirect rgb + view distance; sun
-// visibility + the face-normal code packed with history length into one
-// channel + sun-ray water path + penumbra width in half-res texels. Every
-// reader is a textureLoad — nothing ever hardware-filters these.
+// visibility + the face-normal code packed with history length + sun-ray water
+// path + penumbra width in half-res texels. Every reader is a textureLoad —
+// nothing ever hardware-filters these.
 //
-// **The format is load-bearing, not a preference.** Both targets hold a
-// running average, so each frame contributes 1/N of a difference; rgba8 and
-// then rgba16f both rounded that to zero at full history length, and every
-// pixel froze where it stood when the camera stopped. The rule is that the
-// mantissa must carry the smallest increment the history length asks for.
-// `history_format_resolves_the_accumulator` in gi.rs pins N_MAX against the
-// format, so raising one without the other fails the build rather than the
-// picture.
+// **The format is load-bearing, not a preference.** Both targets hold a running
+// average, so each frame contributes 1/N of a difference; rgba8 and then rgba16f
+// both rounded that to zero at full history length, and every pixel froze where
+// it stood when the camera stopped. The mantissa must carry the smallest
+// increment the history length asks for, which
+// `history_format_resolves_the_accumulator` pins against N_MAX.
 //
-// The gather core and the group(2) world bindings come from gi_common.wgsl
-// (prepended by digblock-assets); group 1 is empty.
+// The gather core and the group(2) world bindings come from gi_common.wgsl;
+// group 1 is empty.
 
 struct GiResolve {
 	inv_view_proj: mat4x4f,
@@ -118,28 +112,23 @@ const N_MOVING = 48.0;
 // genuinely stochastic and does not smear, being smooth.
 const N_SUN = 12.0;
 
-// The confidence a DISOCCLUDED pixel starts its history at, primed from
-// the probe cascade blend instead of from its own first sample.
+// The confidence a DISOCCLUDED pixel starts its history at, primed from the
+// probe cascade blend instead of from its own first sample.
 //
-// A pixel with no valid history used to restart at n = 1: the raw 1-spp
-// gather, which in an indirectly-lit interior is speckle — a cave floor's
-// single ray mostly finds dark walls and occasionally the bright mouth —
-// so every surface the camera revealed (a cave rim, the strip a strafe
-// pulls in at the screen edge) visibly "developed" for a moment
-// while n climbed. The cascade blend is the engine's own converged
-// WORLD-SPACE answer for that exact point — smooth, wrong only by the
-// contact darkening the per-pixel gather exists to add — so the reveal
-// starts from lighting that is already right at probe resolution and
-// sharpens, instead of starting from noise and converging. This is the
-// irradiance-cache disocclusion pattern (GI-1.0's hash-grid fallback,
-// Lumen's world-probe fallback, NVIDIA's cache-mix formulation), applied
-// as a PRIOR: acc starts at the blend with this much virtual history, so
-// the prime decays out at the accumulator's own 1/n rate (~N_PRIOR/n
-// residual weight) with no per-frame blend machinery.
+// A pixel with no valid history used to restart at n = 1: the raw 1-spp gather,
+// which in an indirectly-lit interior is speckle — a cave floor's single ray
+// mostly finds dark walls and occasionally the bright mouth — so every surface
+// the camera revealed visibly "developed" for a moment while n climbed. The
+// cascade blend is the engine's own converged WORLD-SPACE answer for that exact
+// point, wrong only by the contact darkening the per-pixel gather exists to add,
+// so the reveal starts from lighting already right at probe resolution and
+// sharpens. This is the irradiance-cache disocclusion pattern applied as a
+// PRIOR: acc starts at the blend with this much virtual history, so the prime
+// decays out at the accumulator's own 1/n rate with no per-frame machinery.
 //
-// Kept under N_SUN and well under N_MOVING: the prior must never claim
-// more confidence than a moving pixel is allowed to keep, or the real
-// samples that follow can't correct it at the rate motion demands.
+// Kept under N_SUN and well under N_MOVING: the prior must never claim more
+// confidence than a moving pixel is allowed to keep, or the real samples that
+// follow cannot correct it at the rate motion demands.
 const N_PRIOR = 8.0;
 
 // The prime fires only where the sun term is under this — see the gate
@@ -178,23 +167,20 @@ const SUN_TAN = 0.0087269;
 // history it ran.
 const PEN_MAX = 12.0;
 
-// How far the reprojected fetch may miss its own texel, in texels, and
-// still be treated as having landed on it.
+// How far the reprojected fetch may miss its own texel, in texels, and still be
+// treated as having landed on it.
 //
-// This is an ARITHMETIC floor, not a motion threshold. The fetch round-trips
-// a world position out through `inv_view_proj` and back through
-// `prev_view_proj`; against this world's far plane f32 does not return what
-// it was given, and a standing camera measures a drift of a fraction of a
-// texel (measured near and far on --walk --warp). GI-DESIGN.md used to say
-// travel was measurably zero at rest. It is not, and believing it cost twice
-// over: the cap below reads arithmetic as movement, and the bilinear fetch
-// mixes in neighbours a camera that has not moved has no business touching —
-// at full history length that steady-state blur spans several texels, which
-// is most of why the resting far field was blotchy.
+// This is an ARITHMETIC floor, not a motion threshold. The fetch round-trips a
+// world position out through `inv_view_proj` and back through `prev_view_proj`;
+// against this world's far plane f32 does not return what it was given, and a
+// standing camera measures a drift of a fraction of a texel. Believing travel
+// was zero at rest cost twice over: the cap below reads arithmetic as movement,
+// and the bilinear fetch mixes in neighbours a camera that has not moved has no
+// business touching — at full history length that steady-state blur spans
+// several texels, which is most of why the resting far field was blotchy.
 //
 // The value clears the measured drift with margin and stays under half the
-// slowest real motion in the scene (the far field's median travel on
-// --walk).
+// slowest real motion in the scene.
 const TRAVEL_EPS = 0.15;
 
 // R2, the 2-D low-discrepancy sequence (Roberts 2018): the plastic
@@ -271,33 +257,27 @@ const CODE_NORMALS = array<vec3f, 6>(
 );
 
 // The tail of the gather path: radiance arriving from `dir` after the ray
-// resolved. This is where the probe cascades stop being "the answer" and
-// become what they were always meant to be — the cache that terminates a
-// path, so one ray buys the whole multi-bounce series.
+// resolved. This is where the probe cascades stop being "the answer" and become
+// what they were meant to be — the cache that terminates a path, so one ray buys
+// the whole multi-bounce series.
 //
-// An emitting cell contributes NOTHING here (R27). `resample_light`
-// covers every in-range emitter with a shadow ray, so a gather hit on
-// one is either a double count or — where the shadow ray was blocked —
-// the old flicker reinstated inside the torch's own shadow. R20
-// suppressed exactly the one cell it NEE'd and left the rest paying
-// `alb * emit * LIGHT_GAIN`: radiance, so it does not fall off with
-// distance, which is why the noise it made GREW with distance while its
-// energy shrank. Measured: most of the flicker, a sliver of the light.
+// An emitting cell contributes NOTHING here (R27). `resample_light` covers every
+// in-range emitter with a shadow ray, so a gather hit on one is either a double
+// count or — where the shadow ray was blocked — flicker reinstated inside the
+// torch's own shadow. Emission is radiance, so it does not fall off with
+// distance, which is why the noise it made GREW with distance while its energy
+// shrank: most of the flicker, a sliver of the light.
 //
-// The cell still OCCLUDES, which is correct — a torch is an object, and
-// the NEE ray is what carries its emission. And the suppression is
-// unconditional rather than range-gated: `LIGHT_RANGE` already declares
-// that an emitter past it may not matter (gi_probe's `nee`
-// enforces the same bound), and this was the one path in the system that
-// let one contribute from anywhere inside `GI_GATHER_T`, at full
-// radiance and full variance. One reach, everywhere.
+// The cell still OCCLUDES, which is correct — a torch is an object, and the NEE
+// ray carries its emission. The suppression is unconditional rather than
+// range-gated: `LIGHT_RANGE` already declares that an emitter past it may not
+// matter, and this was the one path that let one contribute from anywhere inside
+// `GI_GATHER_T`.
 //
-// The known gap, named because it is not free: with more than
-// MAX_LIGHTS emitters inside `flush_lights`' reach, the list truncates
-// to the nearest ones to THE CAMERA, so a distant surface's own nearby
-// torches can fall off the list and now go dark rather than arriving as
-// lottery noise. That trade is deliberate — it was never a usable signal
-// — but it is the thing to watch if a base ever outgrows the list.
+// The known gap: with more than MAX_LIGHTS emitters inside `flush_lights`'
+// reach, the list truncates to the nearest ones to THE CAMERA, so a distant
+// surface's own nearby torches can fall off and go dark rather than arriving as
+// lottery noise. Deliberate, but the thing to watch if a base outgrows the list.
 fn path_radiance(side: i32, h: GiHit, dir: vec3f) -> vec3f {
 	let tr = medium_water_tr(h.water);
 	if !h.hit {
@@ -471,29 +451,22 @@ fn fs(i: VsOut) -> FsOut {
 	// against the voxel window and terminated in the probe cache.
 	//
 	// This is where contact darkening comes from, and it is not a separate
-	// term: C0 samples irradiance at its own spacing and interpolates, so
-	// the cascade blend is smooth by construction and cannot represent
-	// darkening at contact scale — the per-probe occlusion DDA stops light
-	// leaking THROUGH a wall but does not darken the corner where two meet.
-	// A ray that travels a fraction of a block and returns a wall's dim
-	// bounce instead of the sky does, for free.
+	// term: C0 samples irradiance at its own spacing and interpolates, so the
+	// cascade blend is smooth by construction and cannot represent darkening
+	// at contact scale — the per-probe occlusion DDA stops light leaking
+	// THROUGH a wall but does not darken the corner where two meet. A ray that
+	// travels a fraction of a block and returns a wall's dim bounce instead of
+	// the sky does, for free. It also demotes the cache, which is the other
+	// half of the point: the probe field's convergence transient was measured
+	// to be inherent to its cadence, so the way out was to stop making the
+	// near field depend on it.
 	//
-	// It also demotes the cache, which is the other half of the point: the
-	// probe field's convergence transient was measured to be inherent to
-	// its cadence and immune to both better restarts and a vastly larger
-	// sweep budget, so the way out was to stop making the near field depend
-	// on it.
-	//
-	// **The reach is `gi_lateral_max` and nothing narrower.** It used to
-	// subtract GI_GATHER_T as margin so a ray launched at the limit could
-	// run its full length inside the data — unnecessary, because `gi_march`
-	// already breaks on the same bound and answers sky, which is what the
-	// fallback would have said anyway. All the margin bought was a ring
-	// where a pixel that COULD have traced took the cascade blend instead,
-	// and past C1's coverage that blend is the analytic sky dome, so
-	// distant grass was lit by desaturated sky and came out BLUE. Removing
-	// it recovered most of that for no memory and no frame time. See R18 in
-	// GI-DESIGN.md for why widening the window itself was declined.
+	// **The reach is `gi_lateral_max` and nothing narrower.** Subtracting
+	// GI_GATHER_T as margin is unnecessary — `gi_march` already breaks on the
+	// same bound and answers sky — and all it bought was a ring where a pixel
+	// that COULD have traced took the cascade blend instead; past C1's
+	// coverage that blend is the analytic sky dome, so distant grass came out
+	// BLUE. See R18 for why widening the window itself was declined.
 	let lat = sp.xz - rz.cam.xz;
 	let gather_max = gi_lateral_max(f32(side));
 	let far = dot(lat, lat) > gather_max * gather_max;
@@ -503,25 +476,22 @@ fn fs(i: VsOut) -> FsOut {
 		indirect =
 			gi_indirect(side, sp, n, rz.cam.xyz, rz.dims0, rz.dims1, rz.zenith.rgb, rz.horizon.rgb, vec2i(8, 4));
 	} else {
-		// The direct term for local lights — see resample_light. Folded
-		// into `indirect` BEFORE the accumulation below, so temporal
-		// blending, the edit spheres and the atrous machinery all carry it
-		// with no new plumbing.
+		// The direct term for local lights — see resample_light. Folded into
+		// `indirect` BEFORE the accumulation below, so temporal blending, the
+		// edit spheres and the atrous machinery all carry it with no new
+		// plumbing.
 		//
 		// The reservoir's seed is an integer pixel/frame hash rather than a
-		// draw off `sample2`'s R2 sequence, and that is not laziness: the
-		// selection is driven by the per-candidate LCG inside the loop, so
-		// stratifying the SEED would buy nothing the reservoir could use.
-		// It does have to advance with the frame — the residual variance
-		// here is the visibility Bernoulli, and a static world-anchored
-		// draw would freeze it into a fixed spatial dither the accumulator
-		// can never average out, which is a worse artifact than the one
-		// this removes.
+		// draw off `sample2`'s R2 sequence: the selection is driven by the
+		// per-candidate LCG inside the loop, so stratifying the SEED would buy
+		// nothing. It does have to advance with the frame — the residual
+		// variance here is the visibility Bernoulli, and a static
+		// world-anchored draw would freeze it into a fixed spatial dither the
+		// accumulator can never average out.
 		//
-		// STUB_GINEE drops the light scan AND its shadow ray. In a scene
-		// with no emitter in range `pick.valid` is already false, so this
-		// term measures zero there by construction — that is the answer,
-		// not a broken run.
+		// STUB_GINEE drops the light scan AND its shadow ray. With no emitter
+		// in range `pick.valid` is already false, so this term measures zero
+		// there by construction — that is the answer, not a broken run.
 		let seed = (u32(uv.x) * 73856093u)
 			^ (u32(uv.y) * 19349663u)
 			^ (u32(rz.jitter.x) * 83492791u);
@@ -558,25 +528,19 @@ fn fs(i: VsOut) -> FsOut {
 		}
 	}
 	// One sun ray along the EXACT direction, offset inside a cone a little
-	// wider than the real sun's disc — but the offset is STATIC and
-	// anchored to the WORLD, so the answer is deterministic FOR A WORLD
-	// POINT and the penumbra comes from the occluder distance instead of
-	// from time. See the header for why the offset stays at all (lattice
-	// resonance).
+	// wider than the real sun's disc — but the offset is STATIC and anchored
+	// to the WORLD, so the answer is deterministic FOR A WORLD POINT and the
+	// penumbra comes from the occluder distance instead of from time. See the
+	// header for why the offset stays at all (lattice resonance).
 	//
-	// World-anchored, not screen-anchored, and the difference is a
-	// flicker that shipped and came back: a screen-hashed offset is
-	// static per PIXEL, but a moving camera slides every world point
-	// across the pixels, re-asking a different fixed question each frame
-	// — penumbra bands shimmered under rotation (measured as a clear
-	// consecutive-frame delta in the mid-frame terrain bands on the
-	// flyover, and rotation is exactly the motion a player's mouse makes).
-	// Hashing sub-block world cells gives a point the same offset from
-	// every camera. The hash point is pushed slightly INTO the block
-	// behind the face, because the shading point sits exactly on the
-	// lattice plane the quantization cuts along — on the knife edge, the
-	// f32 reconstruction wobble would flip cells frame to frame, which is
-	// the flicker again by another route.
+	// World-anchored, not screen-anchored, and the difference is a flicker
+	// that shipped and came back: a screen-hashed offset is static per PIXEL,
+	// but a moving camera slides every world point across the pixels,
+	// re-asking a different fixed question each frame, and penumbra bands
+	// shimmered under rotation — exactly the motion a mouse makes. The hash
+	// point is pushed slightly INTO the block behind the face, because the
+	// shading point sits exactly on the lattice plane the quantization cuts
+	// along, and on that knife edge the f32 wobble flips cells frame to frame.
 	let jq = floor((sp - n * 0.0625) * 8.0);
 	let jh = fract(sin(dot(jq, vec3f(12.9898, 78.233, 37.719))) * 43758.5453);
 	let u = vec2f(jh, fract(jh * 1.6180339887));
@@ -628,25 +592,21 @@ fn fs(i: VsOut) -> FsOut {
 			let huv = vec2f(nd.x * 0.5 + 0.5, 0.5 - nd.y * 0.5);
 			if all(huv >= vec2f(0.0)) && all(huv <= vec2f(1.0)) {
 				let hdim = vec2f(textureDimensions(hist_indirect));
-				// BILINEAR, per tap validated. A nearest tap here is what
-				// smeared the image along the direction of travel: at half
-				// res a texel spans a large slice of world on any grazing
-				// surface, and rounding the reprojected position to the
-				// nearest one pulls history from a world point up to half a
-				// texel away. That error is not noise — the sub-texel phase
-				// drifts monotonically as the camera walks, so it is BIASED
-				// along the walk, and at full history weight the
-				// accumulated image advects with the player and then needs
-				// its whole length to decay. Neither validation below can catch
-				// it: the neighbouring texel is the same face at the same
-				// distance, just the wrong point on it.
+				// BILINEAR, per tap validated. A nearest tap is what smeared
+				// the image along the direction of travel: at half res a
+				// texel spans a large slice of world on any grazing surface,
+				// and rounding the reprojected position pulls history from a
+				// world point up to half a texel away. That error is not
+				// noise — the sub-texel phase drifts monotonically as the
+				// camera walks, so it is BIASED along the walk. Neither
+				// validation below can catch it: the neighbouring texel is
+				// the same face at the same distance, just the wrong point.
 				//
-				// Below TRAVEL_EPS the miss is the f32 round trip and not
-				// the camera, so snap onto the lattice: bilinear then
-				// degenerates to a copy of this pixel's own history, which
-				// is exactly what a camera that has not moved should get.
-				// It is also what lets `travel` below read a true zero
-				// instead of arithmetic.
+				// Below TRAVEL_EPS the miss is the f32 round trip and not the
+				// camera, so snap onto the lattice: bilinear then degenerates
+				// to a copy of this pixel's own history, which is what a
+				// camera that has not moved should get, and it is what lets
+				// `travel` below read a true zero instead of arithmetic.
 				let hp_raw = huv * hdim - 0.5;
 				let still = length(hp_raw + 0.5 - i.pos.xy) < TRAVEL_EPS;
 				let hp = select(hp_raw, i.pos.xy - 0.5, still);
@@ -664,25 +624,23 @@ fn fs(i: VsOut) -> FsOut {
 				var s_wat = 0.0;
 				var s_n = 0.0;
 				// Two passes, strict first. Pass 0 is the original flat
-				// relative tolerance and the original loop, byte for byte —
-				// the hot path pays nothing new. Pass 1 exists for one
-				// population: a surface seen nearly edge-on (an east face
-				// viewed looking north) legitimately spans MORE depth per
-				// half-res texel than that flat tolerance allows, so it
-				// rejected all four taps on every frame with any camera
-				// motion at all, and
-				// those faces churned at n = 1 as a distracting flicker
-				// band. Only when the strict pass comes up EMPTY with a
-				// same-face near-miss on record does the loop rerun with
-				// the tolerance widened to the surface's own per-texel
-				// depth span (GRAZE_K x texel_world, SVGF's fwidth(z)
-				// rule — already live for the penumbra; an always-widened
-				// single pass was built first and measured a real cost
-				// for the whole screen's benefit of nobody). The widening
-				// is capped at PRIME_MARGIN base tolerances, sharing the
-				// reveal threshold, so a silhouette gap stays rejected
-				// and the graze/reveal classification cannot disagree
-				// with the acceptance rule.
+				// relative tolerance and the original loop, byte for byte,
+				// so the hot path pays nothing new. Pass 1 exists for one
+				// population: a surface seen nearly edge-on legitimately
+				// spans MORE depth per half-res texel than that flat
+				// tolerance allows, so it rejected all four taps on every
+				// frame with any camera motion and those faces churned at
+				// n = 1 as a flicker band.
+				//
+				// Only when the strict pass comes up EMPTY with a same-face
+				// near-miss on record does the loop rerun with the tolerance
+				// widened to the surface's own per-texel depth span (SVGF's
+				// fwidth(z) rule; an always-widened single pass measured a
+				// real cost for nobody's benefit). The widening is capped at
+				// PRIME_MARGIN base tolerances, sharing the reveal
+				// threshold, so a silhouette gap stays rejected and the
+				// graze/reveal classification cannot disagree with the
+				// acceptance rule.
 				for (var relax = 0; relax < 2; relax++) {
 					let tol = select(
 						base,
@@ -726,35 +684,27 @@ fn fs(i: VsOut) -> FsOut {
 				if wsum > 0.0 {
 					let inv = 1.0 / wsum;
 					// How deep an average this pixel is ALLOWED to keep, and it
-					// is a two-state answer rather than a curve. Reprojection is
-					// exact for static geometry, so the only thing a long history
-					// costs is the resampling done to carry it — and once the
-					// fetch is off-lattice at all, each frame mixes in the
-					// neighbours and that blur COMPOUNDS at a rate the sub-texel
-					// phase sets, not the speed: a pixel creeping a tiny fraction
-					// of a texel a frame still sweeps the whole phase range
-					// across a full-length history. So there is no useful
-					// middle. Either the fetch landed on its texel and the
-					// history was free, or it did
-					// not and the history has to be short.
+					// is a two-state answer rather than a curve. Reprojection
+					// is exact for static geometry, so the only thing a long
+					// history costs is the resampling done to carry it — and
+					// once the fetch is off-lattice at all, each frame mixes in
+					// the neighbours and that blur COMPOUNDS at a rate the
+					// sub-texel phase sets, not the speed. So there is no
+					// useful middle: either the fetch landed on its texel and
+					// the history was free, or it did not and the history has
+					// to be short.
 					//
-					// It used to be `N_MAX/(1 + TRAVEL_K*travel)`, a per-frame RATE,
-					// and per-frame parallax collapses with distance while the blur
-					// does not. Near ground moves whole texels a frame and was
-					// capped short; the same ground far off barely moves and kept
-					// nearly all of N_MAX. Measured on --walk: mean n climbed
-					// steeply from the near field to the far one, with the
-					// walked-vs-warped residual tracking it the whole way, well
-					// over the repeat-noise floor, and much of the far field also
-					// above N_CONVERGED, where gi_atrous switches itself off.
-					// Only the near field was ever in
-					// the regime R9's N_MAX bisect measured, which is why that fix
-					// looked complete and was not (R13).
+					// A per-frame RATE (`N_MAX/(1 + TRAVEL_K*travel)`) fails
+					// because per-frame parallax collapses with distance while
+					// the blur does not — near ground was capped short while
+					// the same ground far off kept nearly all of N_MAX, much of
+					// it above N_CONVERGED where gi_atrous switches itself off.
+					// Only the near field was ever in the regime R9's N_MAX
+					// bisect measured, which is why that fix looked complete
+					// and was not (R13).
 					//
-					// What makes the short end affordable is gi_atrous:
-					// give up temporal samples and the spatial filter hands
-					// them back. Without it there is no setting of this that
-					// is both sharp under motion and clean at rest.
+					// What makes the short end affordable is gi_atrous: give up
+					// temporal samples and the spatial filter hands them back.
 					var cap = select(N_MOVING, N_MAX, still);
 					// A lighting edit near this surface: the probes are
 					// already re-tracing it, so let the screen follow at
@@ -789,24 +739,20 @@ fn fs(i: VsOut) -> FsOut {
 			n_hist = 1.0;
 		} else {
 			// Disocclusion: nothing on screen held this surface last frame
-			// (offscreen, a different face, or history whole blocks off —
-			// the occluder's). Prime the accumulator from the cascade
-			// blend — see N_PRIOR — rather than restarting at the raw
-			// gather, but only where INDIRECT is the light. On a sun-lit
-			// surface the gather term is a minor correction, so the
-			// prime can't help the picture there — but its bias can
-			// hurt it: the cache is missing exactly the contact-scale
-			// structure the gather adds, and a flat prime measured
-			// walked-vs-converged an order of magnitude worse on the
-			// walk's sun-lit ground and several times worse on the
-			// flyover (a distance ramp was tried between the two and
-			// just moved the bias to
-			// whatever band the ramp allowed). In shadow, in a cave, at
-			// night — where the reveal ghost actually lives, because
-			// 1-spp speckle IS the whole signal there — the sun term is
-			// zero and the prime runs at full strength. The sun channel
-			// itself needs no prime: its ray is deterministic, so the
-			// current answer is already the converged one.
+			// (offscreen, a different face, or history whole blocks off).
+			// Prime the accumulator from the cascade blend — see N_PRIOR —
+			// rather than restarting at the raw gather, but only where
+			// INDIRECT is the light.
+			//
+			// On a sun-lit surface the gather term is a minor correction, so
+			// the prime cannot help there and its bias can hurt: the cache is
+			// missing exactly the contact-scale structure the gather adds, and
+			// a flat prime measured walked-vs-converged an order of magnitude
+			// worse on the walk's sun-lit ground. In shadow, in a cave, at
+			// night — where the reveal ghost lives, because 1-spp speckle IS
+			// the whole signal there — the sun term is zero and the prime runs
+			// at full strength. The sun channel needs no prime: its ray is
+			// deterministic, so the current answer is already converged.
 			let sun_lit =
 				sv.x * clamp(dot(n, rz.sun_exact.xyz), 0.0, 1.0) * rz.sun_exact.w;
 			if sun_lit < PRIME_SUN_MAX {

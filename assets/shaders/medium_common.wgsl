@@ -1,48 +1,38 @@
 // One participating medium — the whole atmosphere in one function, and the
 // replacement for the two hand-tuned models it deleted.
 //
-// Radiative transfer along a segment of length d through a medium of
-// extinction sigma:
+// Radiative transfer along a segment of length d through extinction sigma:
 //
 //     L = L_surface * exp(-sigma*d)  +  L_in * (1 - exp(-sigma*d))
 //
-// **The entire design is in where L_in comes from: `sky_base`, the SAME
-// function the sky pass draws.** That makes the medium self-consistent at
-// infinity — as d grows a surface fades to exactly the sky pixel that would
-// be behind it, in that direction, sunset glow included. Haze and sky cannot
-// drift apart because there is only one of them, and it is what lets the
-// draw-distance rim disappear. The old `mix(col, fog_color, smoothstep(...))`
-// fogged toward one flat colour regardless of view direction, so no retuning
-// of the curve could have fixed it — the quantity was wrong, not the shape.
+// **The entire design is in where L_in comes from: `sky_base`, the SAME function
+// the sky pass draws.** That makes the medium self-consistent at infinity — as d
+// grows a surface fades to exactly the sky pixel that would be behind it, in
+// that direction, sunset glow included — so haze and sky cannot drift apart, and
+// the draw-distance rim disappears. Fogging toward one flat colour was the wrong
+// QUANTITY, not the wrong curve.
 //
-// Water is the same equation with a different sigma and a different
-// in-scatter DIRECTION (down-welling, not along the view ray), which is why
-// water tints by depth while air tints by distance. That one difference
-// subsumes the old underwater murk, water-thickness tint and alpha ramp
+// Water is the same equation with a different sigma and a down-welling
+// in-scatter DIRECTION, which is why water tints by depth while air tints by
+// distance, and which subsumes the old murk, thickness tint and alpha ramp
 // together.
 //
-// Deliberately dependency-free — no `frame`, no `sky_base`, every input an
-// argument — so it can be prepended to the GI compute kernels, which carry
-// their own uniform blocks. That is what lets the view ray and the sun ray
-// share one water extinction constant instead of the two that used to drift.
+// Deliberately dependency-free — every input an argument — so it can be
+// prepended to the GI compute kernels, which carry their own uniform blocks.
+// That is what lets the view ray and the sun ray share one water extinction
+// constant instead of the two that used to drift.
 
 // Air extinction, expressed as a VISIBILITY DISTANCE rather than a raw
-// coefficient: Koschmieder's relation, sigma = ln(1/0.02)/V, at the
-// standard 2% contrast threshold. The knob then has a meaning you can
-// argue about — "how far can you see?" — instead of being a magic
-// exponent someone nudged until a screenshot looked right.
+// coefficient: Koschmieder's relation, sigma = ln(1/0.02)/V, at the standard 2%
+// contrast threshold. The knob then has a meaning you can argue about — "how far
+// can you see?" — instead of being an exponent someone nudged until a screenshot
+// looked right.
 //
-// The visibility below is a light haze, and this IS a weather choice, so
-// here is the honest accounting rather than a claim of derivation.
-// Genuinely clear air — visibilities far beyond this one — is INVISIBLE
-// at this world's scale: across the whole draw distance it barely
-// attenuates at all, so a value that shows aerial perspective necessarily
-// declares hazy air. At the visibility chosen here the near field is
-// untouched, the mid ground is well on its way to the sky and the rim is
-// nearly all of it; measured against the captures that reads as depth on
-// the far ridge with the foreground untouched. Shorter draw distances get
-// proportionally less, which is correct: the air does not know what the
-// user set, and the rim term below owns the boundary.
+// The visibility below IS a weather choice. Genuinely clear air is INVISIBLE at
+// this world's scale — across the whole draw distance it barely attenuates — so
+// a value that shows aerial perspective necessarily declares hazy air. Shorter
+// draw distances get proportionally less, which is correct: the air does not
+// know what the user set, and the rim term below owns the boundary.
 const AIR_VISIBILITY = 1600.0;
 const AIR_SIGMA = 3.912 / AIR_VISIBILITY;
 
@@ -66,21 +56,17 @@ const WATER_SIGMA = vec3f(0.36, 0.068, 0.030);
 // blue-green haze between the eye and a submerged surface reads.
 const WATER_ALBEDO = 0.35;
 
-// The depth fade for UNPROVEN daylight (GI-DESIGN.md R32): full at the
-// top edge, gone at the bottom. Every place the lighting ANSWERS sky
-// without having proven a path to it — the cascade fallback, an
-// exhausted march, this file's own in-scatter — multiplies by this, so
-// a deep tunnel goes dark instead of glowing with sky nothing could
-// reach. A PROVEN sky escape (the R18 ceiling test) never takes it:
-// light pouring down an open shaft is real at any depth.
+// The depth fade for UNPROVEN daylight (GI-DESIGN.md R32): full at the top
+// edge, gone at the bottom. Every place the lighting ANSWERS sky without having
+// proven a path to it — the cascade fallback, an exhausted march, this file's
+// own in-scatter — multiplies by this, so a deep tunnel goes dark instead of
+// glowing with sky nothing could reach. A PROVEN sky escape (the R18 ceiling
+// test) never takes it.
 //
-// `smoothstep` saturates at the top edge, which is the load-bearing
-// property: at and above SKY_FADE_FULL_Y every consumer is bit-identical
-// to the pre-R32 image, so the surface world cannot regress by retuning
-// anything else. The top edge equals `SEA_LEVEL` — open-air terrain
-// below it is essentially all underwater, where the extra darkening is
-// the point — pinned by `the_sky_fade_tops_out_at_sea_level` in
-// digblock-render.
+// `smoothstep` saturates at the top edge, which is the load-bearing property:
+// at and above SKY_FADE_FULL_Y every consumer is bit-identical to the pre-R32
+// image, so the surface world cannot regress by retuning anything else. The top
+// edge equals `SEA_LEVEL`, pinned by `the_sky_fade_tops_out_at_sea_level`.
 const SKY_FADE_FULL_Y = 128.0;
 const SKY_FADE_ZERO_Y = 64.0;
 

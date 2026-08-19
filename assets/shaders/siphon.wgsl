@@ -1,28 +1,22 @@
-// The essence draw: motes of a vein's own colour prised off the rock and
-// pulled into the tool, over a kindle on the face they leave from. This
-// is what the Essence Siphon looks like while it works — the one action
-// in the game that takes a block apart without breaking it, and so the
-// one that the dig crack deliberately says nothing about.
+// The essence draw: motes of a vein's own colour prised off the rock and pulled
+// into the tool, over a kindle on the face they leave from. The one action in
+// the game that takes a block apart without breaking it, and so the one the dig
+// crack deliberately says nothing about.
 //
-// One instance per live draw — a player holds one button, so there is
-// never more than one — and every mote's flight is a pure function of
-// (source, destination, progress, envelope, animation clock): the CPU
-// owns an envelope and nothing else, exactly the arrangement spray.wgsl
-// and confetti.wgsl use. Nothing to simulate on the CPU, nothing to save
-// on suspend, nothing to rebuild on device loss but the pipeline.
-// vertex_index picks the particle (vi / 6) and the quad corner (vi % 6);
-// particle 0 is the face kindle and the rest are motes.
+// One instance per live draw — a player holds one button — and every mote's
+// flight is a pure function of (source, destination, progress, envelope, clock):
+// the CPU owns an envelope and nothing else, exactly the arrangement spray.wgsl
+// and confetti.wgsl use, so there is nothing to simulate, nothing to save on
+// suspend and nothing to rebuild on device loss but the pipeline. vertex_index
+// picks the particle (vi / 6) and the quad corner (vi % 6); particle 0 is the
+// face kindle and the rest are motes.
 //
-// The one effect in the engine drawn ADDITIVELY, because essence is
-// light: it is added to the pixel behind it rather than laid over it.
-// That is also why it does not call `medium_view`, which every other
-// billboard here does — the in-scatter half of the medium belongs to a
-// SURFACE seen through air, and adding sky to an emissive term would
-// make a far mote brighter than a near one. It takes the transmittance
-// halves alone, which is the part that stays true of light travelling
-// toward the eye. The rim term is skipped for a second reason: a draw is
-// always within a raycast's REACH of the eye, so the streaming boundary
-// can never cross one.
+// The one effect in the engine drawn ADDITIVELY, because essence is light. That
+// is also why it does not call `medium_view`: the in-scatter half of the medium
+// belongs to a SURFACE seen through air, and adding sky to an emissive term
+// would make a far mote brighter than a near one. It takes the transmittance
+// halves alone. The rim term is skipped for a second reason — a draw is always
+// within a raycast's REACH of the eye.
 
 // The Frame struct + group(0) binding come from frame_common.wgsl, the
 // extinction from medium_common.wgsl (both prepended by digblock-assets).

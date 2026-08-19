@@ -13,36 +13,30 @@
 
 // How far from the camera the window still holds real data, in blocks.
 //
-// The window is `side` blocks across and centred on the camera, so cells
-// within this radius are always inside the uploaded band — a CIRCLE of
-// this radius fits inside the +/-side/2 square with a cell to spare. Every
-// march in the system breaks here and answers "nothing further" rather
-// than reading a texel that the toroidal wrap would alias onto another
-// part of the world.
+// The window is `side` blocks across and centred on the camera, so cells within
+// this radius are always inside the uploaded band — a CIRCLE of this radius fits
+// inside the +/-side/2 square with a cell to spare. Every march breaks here and
+// answers "nothing further" rather than reading a texel the toroidal wrap would
+// alias onto another part of the world.
 //
-// It lives here because all four marches need it and none of them can
-// share bindings: gi_common's two (fragment, group(2) world data),
-// gi_probe's (its own uniform group) and gi_debug's. Three hand-copied
-// steppers is how the same bug had to be found three times; the bounds
-// they march to are the same kind of shared fact.
+// It lives here because all four marches need it and none of them can share
+// bindings. Three hand-copied steppers is how the same bug had to be found three
+// times.
 fn gi_lateral_max(side: f32) -> f32 {
 	return side * 0.5 - 1.0;
 }
 
-// Ray vs the box cover of a PARTIAL cell, over the ray's span
-// [t0, t1] inside `cell`. `bx` is the LUT entry's zw pair, one word per
-// box, each packing that box's min and max corner in twelfths
-// (core::gi::pack_box is the packer and
-// `box_pack_matches_the_shader_decode` pins the two together; an empty
-// word means no box). `def_axis` answers for a ray already inside
-// the box's lateral bounds when it enters the cell, where no box plane
-// was crossed and the cell-entry face is the hit face. Returns
-// (hit t, axis) with t < 0 for a miss.
+// Ray vs the box cover of a PARTIAL cell, over the ray's span [t0, t1] inside
+// `cell`. `bx` is the LUT entry's zw pair, one word per box, each packing that
+// box's min and max corner in twelfths (`core::gi::pack_box` is the packer and
+// `box_pack_matches_the_shader_decode` pins the two together; an empty word means
+// no box). `def_axis` answers for a ray already inside the box's lateral bounds
+// when it enters the cell. Returns (hit t, axis) with t < 0 for a miss.
 //
-// It lives here, not in gi_common.wgsl, for the same reason the
-// steppers do: gi_probe.wgsl cannot take gi_common's bindings, and a
-// partial cell must block a probe ray and a sun ray identically or a
-// slab's shadow differs between the cache and the per-pixel answer.
+// It lives here, not in gi_common.wgsl, for the same reason the steppers do:
+// gi_probe.wgsl cannot take gi_common's bindings, and a partial cell must block
+// a probe ray and a sun ray identically or a slab's shadow differs between the
+// cache and the per-pixel answer.
 fn gi_boxes_hit(o: vec3f, dir: vec3f, cell: vec3i, t0: f32, t1: f32, bx: vec2u, def_axis: u32) -> vec2f {
 	var best = vec2f(-1.0, 0.0);
 	// An axis with no motion cannot bound t. The epsilon's sign is
@@ -125,34 +119,28 @@ fn gi_ray_step(r: GiRay, step_dir: vec3i, inv: vec3f) -> GiRay {
 	return o;
 }
 
-// Advance to the LAST cell of the empty coarse brick containing
-// `r.cell`, leaving the boundary crossing itself to the ordinary step.
+// Advance to the LAST cell of the empty coarse brick containing `r.cell`,
+// leaving the boundary crossing itself to the ordinary step.
 //
-// THIS is the two-level skip GI-DESIGN.md describes and that was never
-// written. The coarse texture existed and was consulted, but an empty
-// brick only ever saved the fine texture load — the march still crawled
-// through every cell of it, and asked the coarse texture again at every
-// one of them. Air is most of a voxel world, so most of the DDA's life
-// was spent stepping through nothing.
+// THIS is the two-level skip GI-DESIGN.md describes and that was never written.
+// The coarse texture existed and was consulted, but an empty brick only ever
+// saved the fine texture load — the march still crawled through every cell of
+// it. Air is most of a voxel world, so most of the DDA's life was spent stepping
+// through nothing.
 //
-// It advances the DDA's own state arithmetically rather than
-// reconstructing a position as `origin + dir*t`. That is not fussiness:
-// the position form was measurably wrong. It has to land past the exit
-// plane, so where a ray leaves through a brick EDGE it jumps to the
-// diagonal cell and skips the one the stepper would have entered first —
-// and with the sun direction quantized to a small rational and pinned to
-// dir.z == 0, edge exits are periodic rather than rare. It moved a
-// measurable slice of the frame, well clear of the capture-noise floor,
-// all of it at shadow boundaries. Reconstructing from the origin also
-// accumulates f32 error over a long march, which the incremental form
-// does not have.
+// It advances the DDA's own state arithmetically rather than reconstructing a
+// position as `origin + dir*t`, and that is not fussiness: the position form has
+// to land past the exit plane, so where a ray leaves through a brick EDGE it
+// jumps to the diagonal cell and skips the one the stepper would have entered
+// first — and with the sun direction quantized to a small rational and pinned to
+// dir.z == 0, edge exits are periodic rather than rare. Reconstructing from the
+// origin also accumulates f32 error over a long march.
 //
-// The counts below are structural. From a cell inside the brick there
-// are exactly `n` boundary crossings left on each axis before that axis
-// leaves the brick, so clamping each axis to `n - 1` keeps the walk
-// strictly inside with no epsilon anywhere, and the exit plane is then
-// crossed by `gi_ray_step` under its own tie-breaking rule — which is
-// what makes this bit-identical to stepping.
+// The counts below are structural: from a cell inside the brick there are
+// exactly `n` boundary crossings left on each axis, so clamping each to `n - 1`
+// keeps the walk strictly inside with no epsilon anywhere, and the exit plane is
+// crossed by `gi_ray_step` under its own tie-breaking rule — which is what makes
+// this bit-identical to stepping.
 fn gi_ray_skip_brick(r: GiRay, dir: vec3f, step_dir: vec3i, inv: vec3f) -> GiRay {
 	let lo = (r.cell >> vec3u(3u)) << vec3u(3u);
 	// Crossings remaining to this brick's face, per axis. An axis with
@@ -189,35 +177,28 @@ fn gi_ray_skip_brick(r: GiRay, dir: vec3f, step_dir: vec3i, inv: vec3f) -> GiRay
 	return o;
 }
 
-// How far short of an emitter a shadow ray must stop so that the
-// emitter's own cell can never occlude it.
+// How far short of an emitter a shadow ray must stop so that the emitter's own
+// cell can never occlude it.
 //
-// An emitting cell is a hit WHOLE for every march but the sun ray (the
-// voxel is the emission model, and LIGHT_GAIN is calibrated against the
-// direct-hit term), so NEE guards against self-occlusion by stopping
-// short of the light rather than by teaching the DDA a skip cell. The
-// distance that guarantees it is the light's distance to the FARTHEST
-// CORNER of its own cell — the half diagonal, for a light at the cell
-// center, which is where the hardcoded margin this replaced came from,
-// slack included.
+// An emitting cell is a hit WHOLE for every march but the sun ray, so NEE guards
+// against self-occlusion by stopping short of the light rather than by teaching
+// the DDA a skip cell. The distance that guarantees it is the light's distance
+// to the FARTHEST CORNER of its own cell.
 //
-// That constant was only ever correct while the origin WAS the center.
-// `gi::light_origin` puts a shaped emitter's point source where its
-// geometry actually glows — a torch's flame, partway up its cell — and
-// from there the cell's lower corners sit further off than the old
-// margin reached: rays arriving from below re-entered the emitting cell
-// through them and the torch shadowed itself in cell-aligned wedges on
-// the floor around its base. Deriving the margin keeps that impossible for
-// whatever origin a future wall-mounted or off-center emitter has.
+// A hardcoded half-diagonal was only ever correct while the origin WAS the cell
+// centre. `gi::light_origin` puts a shaped emitter's point source where its
+// geometry actually glows — a torch's flame, partway up its cell — and from
+// there the cell's lower corners sit further off, so rays arriving from below
+// re-entered the emitting cell and the torch shadowed itself in cell-aligned
+// wedges around its base. Deriving the margin keeps that impossible for whatever
+// origin a future wall-mounted emitter has.
 //
-// It is deliberately the whole cell and not the shape's own boxes: the
-// window classifies an emitter as a hit whole, so the boxes are not
-// what a gather march would test against anyway.
-// The slack every stop-short margin carries over its own exact bound —
-// the amount by which a ray must miss a surface it is allowed to reach,
-// given that every march STEPS before it tests and a boundary lands
-// exactly on a cell face. Named because two margins now want it and a
-// second literal would be a copy.
+// Deliberately the whole cell and not the shape's own boxes: the window
+// classifies an emitter as a hit whole, so the boxes are not what a gather march
+// would test against anyway.
+// The slack every stop-short margin carries over its own exact bound — the
+// amount by which a ray must miss a surface it is allowed to reach, given that
+// every march STEPS before it tests and a boundary lands exactly on a cell face.
 const GI_LIGHT_SLACK = 0.035;
 
 fn gi_light_margin(p: vec3f) -> f32 {
@@ -225,21 +206,17 @@ fn gi_light_margin(p: vec3f) -> f32 {
 	return length(max(f, vec3f(1.0) - f)) + GI_LIGHT_SLACK;
 }
 
-// A light list entry's w word: the GI class byte, plus a flag set when a
-// player is CARRYING it. Every reader masks, exactly as the resolve's
-// history length rides its face code.
+// A light list entry's w word: the GI class byte, plus a flag set when a player
+// is CARRYING it. Every reader masks.
 //
-// The flag exists because `gi_light_margin` above is a property of the
-// light's CELL, and a carried light has no cell of its own. Its bound
-// stays modest only because a placed emitter sits at a KNOWN offset
-// inside one — a torch's flame is the worst any of them can do. A
-// carried light hangs above its carrier's feet, so a carrier standing on
-// a block top lands on frac(y) == 0.0 — the degenerate maximum of
-// `max(f, 1 - f)` — and the margin grows past a whole block, further
-// still depending where in x/z they stand. That is wider than the
-// player's own capsule, so a wall they are brushing falls entirely
-// inside that skip: the floor on its far side sees the light through
-// solid stone.
+// The flag exists because `gi_light_margin` above is a property of the light's
+// CELL, and a carried light has no cell of its own. Its bound stays modest only
+// because a placed emitter sits at a KNOWN offset inside one. A carried light
+// hangs above its carrier's feet, so a carrier standing on a block top lands on
+// frac(y) == 0.0 — the degenerate maximum of `max(f, 1 - f)` — and the margin
+// grows past a whole block. That is wider than the player's own capsule, so a
+// wall they are brushing falls entirely inside the skip and the floor on its far
+// side sees the light through solid stone.
 const GI_LIGHT_CARRIED = 256u;
 
 // A per-ENTRY cast level, riding above the flag, or 0 for "take the
@@ -259,23 +236,19 @@ const GI_LIGHT_LEVEL_MASK = 15u;
 const GI_LIGHT_WHITENED = 8192u;
 const GI_LIGHT_WHITEN = 0.35;
 
-// This entry is a RECTANGLE, not a point: the second vec4 of its pair
-// carries the two extents and the facing code, and `gi_light_sample`
-// draws a point on it.
+// This entry is a RECTANGLE, not a point: the second vec4 of its pair carries
+// the two extents and the facing code, and `gi_light_sample` draws a point on it.
 //
-// It exists because a glowing SURFACE is not a lamp. A revealed ore seam
-// is a flat patch of rock in a wall, and standing at one, a point source
-// at its middle is wrong twice over: it reads as a hotspot instead of an
-// even wash, and it has no cosine of its own, so it spills light around
-// the corner of the very rock it is set into. Emissive geometry has been
-// sampled as polygons for as long as path tracers have done next event
-// estimation, and the merged rectangle is CHEAPER here as well as better
-// — the reservoir below is a pass over the whole list per pixel, so a
-// seam that costs one entry instead of thirty is the difference the
-// merge in `mesher::lights` exists to make.
+// A glowing SURFACE is not a lamp. A revealed ore seam is a flat patch of rock
+// in a wall, and a point source at its middle is wrong twice over: it reads as a
+// hotspot instead of an even wash, and it has no cosine of its own, so it spills
+// light around the corner of the rock it is set into. The merged rectangle is
+// also CHEAPER — the reservoir below is a pass over the whole list per pixel, so
+// a seam costing one entry instead of thirty is the difference the merge in
+// `mesher::lights` exists to make.
 //
-// Punctual entries leave this clear and their second vec4 zero, so a
-// torch's word is exactly what it was before rectangles existed.
+// Punctual entries leave this clear and their second vec4 zero, so a torch's
+// word is exactly what it was before rectangles existed.
 const GI_LIGHT_QUAD = 16384u;
 
 fn gi_light_class(w: f32) -> u32 {
@@ -326,20 +299,17 @@ fn gi_light_margin_of(l: vec4f) -> f32 {
 	return gi_light_margin(l.xyz);
 }
 
-// One drawn sample on a light: where to run the shadow ray, and what the
-// sample is worth beyond the receiver's own cosine and falloff.
+// One drawn sample on a light: where to run the shadow ray, and what the sample
+// is worth beyond the receiver's own cosine and falloff.
 //
-// `w` is 1 for a point source, which is what makes every existing call site
-// read the same. For a rectangle it is the light-side cosine times the area
-// — the two factors that turn an intensity model (I/d^2) into an area one
-// (L*cosl*A/d^2) — so callers keep multiplying by `ndl / max(d2, near^2)`
-// exactly as they did. A 1x1 face at a given level delivers what a point at
-// that level delivered, and a seam six cells across delivers six times as
-// much, which is the whole reason to model it as a surface.
+// `w` is 1 for a point source, which is what makes every existing call site read
+// the same. For a rectangle it is the light-side cosine times the area — the two
+// factors that turn an intensity model (I/d^2) into an area one (L*cosl*A/d^2) —
+// so callers keep multiplying by `ndl / max(d2, near^2)` exactly as they did.
 //
 // Shared here, in the prelude both NEE passes include, for the same reason
-// `gi_light_tint` is: the resolve and the probes must not be able to
-// disagree about the geometry of a light.
+// `gi_light_tint` is: the resolve and the probes must not be able to disagree
+// about the geometry of a light.
 
 // What one unit of `light` level means for a SURFACE emitter. The two are
 // not the same quantity: a lamp's level is an INTENSITY, where the whole

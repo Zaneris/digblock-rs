@@ -1,16 +1,13 @@
 // The first-person viewmodel: the item in your own hand.
 //
-// Unlike every other pass, this one does NOT use the shared frame
-// uniforms. The item is authored in view space and carries its own
-// projection (see viewmodel.rs), so the camera never enters the maths —
-// the CPU hands over one finished mvp. The light rig comes along in the
-// same uniform, with the direction already rotated into ITEM space, so
-// the raw face normals below can be dotted against it with no normal
-// matrix. There is no fog: the item is a metre from the eye.
-//
-// Vertices are item geometry in twelfths, drawn through the shared quad
-// index pattern — same corner order as the chunk mesher, which is what
-// lets `cull: Back` keep the half you can see.
+// Unlike every other pass, this one does NOT use the shared frame uniforms. The
+// item is authored in view space and carries its own projection (viewmodel.rs),
+// so the camera never enters the maths — the CPU hands over one finished mvp,
+// with the light direction already rotated into ITEM space, so the raw face
+// normals below dot against it with no normal matrix. No fog: the item is a
+// metre from the eye. Vertices are item geometry in twelfths, drawn through the
+// shared quad index pattern — same corner order as the chunk mesher, which is
+// what lets `cull: Back` keep the half you can see.
 
 struct Vm {
 	mvp: mat4x4<f32>,
@@ -98,18 +95,15 @@ fn fs(in: VsOut) -> @location(0) vec4f {
 	// level spelled out anyway.
 	let tex = textureSampleLevel(materials, mat_smp, in.uv, i32(in.layer), 0.0);
 	// Fullbright ink is its own light: no ambient, no sun, no diffuse —
-	// exactly as chunk.wgsl treats the same block standing in the world,
-	// and through the same shared `emissive_ink`, so a torch you are
-	// holding and a torch on the floor in front of you are one object
-	// rendered twice rather than two objects that happen to match.
+	// exactly as chunk.wgsl treats the same block standing in the world, and
+	// through the same shared `emissive_ink`, so a torch you are holding and
+	// a torch on the floor are one object rendered twice.
 	//
 	// No medium term on either branch, unlike chunk.wgsl. Two independent
 	// reasons: the item is one world unit from the eye, where air
-	// transmittance is 1.0 to every digit that matters; and this pass
-	// carries no frame uniforms to read a medium from, which is the whole
-	// point of authoring it in view space. The one honest gap that leaves
-	// — a submerged camera's hand takes no water extinction — is already
-	// true today and is not introduced here.
+	// transmittance is 1.0 to every digit that matters; and this pass carries
+	// no frame uniforms to read a medium from. The honest gap that leaves — a
+	// submerged camera's hand takes no water extinction — is not new here.
 	//
 	// Two ways to be ink and one function to draw it: the whole item
 	// (`glows`, a torch), or this face alone (a tool's lit part).
