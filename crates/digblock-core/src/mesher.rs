@@ -1,20 +1,16 @@
-//! Chunk meshing from immutable snapshots. Replaces the Java pattern of
-//! writing face bits into neighbor chunks: a mesh job gets a padded copy
-//! of its chunk plus a one-block shell from every neighbor it touches —
-//! faces, edges and corners — so there is no shared mutation, no locks,
-//! and diagonal neighbors are available for
-//! per-vertex AO and water corner heights.
+//! Chunk meshing from immutable snapshots: a mesh job gets a padded copy of
+//! its chunk plus a one-block shell from every neighbour it touches — faces,
+//! edges and corners — so there is no shared mutation and no locks, and
+//! diagonal neighbours are available for water corner heights.
 //!
-//! Face rules (originally distilled from Chunk.setFlags in the Java, now
-//! driven by each block's RenderClass — see block.rs), verified by tests:
-//! - an Opaque neighbor occludes any face
-//! - Opaque emits toward any non-occluding neighbor; Cutout the same except
-//!   against its own type; Translucent emits only toward class-None (air)
-//!   and never against its own type — so water|water yields nothing
-//! - a missing (unloaded) neighbor suppresses border faces — whichever
-//!   chunk generates second re-dirties this one, matching the Java
-//! - above the top of the world there is an air sentinel; below the bottom,
-//!   missing (the Java null) — so no bottom faces at world bottom
+//! Face rules, driven by each block's RenderClass and verified by tests: an
+//! Opaque neighbour occludes any face; Opaque emits toward any non-occluding
+//! neighbour, Cutout the same except against its own type, Translucent only
+//! toward air and never against its own type, so water|water yields nothing. A
+//! missing (unloaded) neighbour suppresses border faces — whichever chunk
+//! generates second re-dirties this one. Above the top of the world there is
+//! an air sentinel; below the bottom, missing, so no bottom faces at world
+//! bottom.
 
 use crate::block::{BlockType, RenderClass};
 use crate::chunk::{CHUNK_SIZE, ChunkData};
@@ -314,25 +310,19 @@ impl MeshInput {
 			}
 		}
 		// ---- springstone (Sand hosts). Column-major, exactly like the
-		// heartwood pass above it: a bed is a property of the COLUMN, so
-		// one `springstone_bed` answers for the whole of it and the only
-		// question left is whether the y it names is in this box.
+		// heartwood pass above it: a bed is a property of the COLUMN, so one
+		// `springstone_bed` answers for the whole of it and the only question
+		// left is whether the y it names is in this box. Cell-major asked the
+		// same (x, z)-keyed question once per SAND CELL.
 		//
-		// Cell-major is what this was, and it asked `springstone_bed` once
-		// per SAND CELL for an answer keyed on (x, z) alone — so a beach
-		// chunk re-ran the classification's field evaluations for every
-		// cell of every column it had already classified.
-		//
-		// It used to pre-filter on the cell ABOVE being water — cheaper
-		// than the rate hash, and true of every bed worldgen makes. But
-		// that reads the SNAPSHOT where `nodes::revealed` reads worldgen,
-		// so the two answered differently the moment anything moved the
-		// water: a client's own predicted bucket scoop over a bed made the
-		// spring vanish from the picture while the dig path still called
-		// it a draw. A guard the dig path does not share cannot be a
-		// guard. The rate hash inside `springstone_bed` runs before its
-		// own five field evaluations and prunes nearly everything, which
-		// is what makes asking the real question affordable here.
+		// It must NOT pre-filter on the cell above being water, cheap as that
+		// is: that reads the SNAPSHOT where `nodes::revealed` reads worldgen,
+		// so a client's own predicted bucket scoop over a bed made the spring
+		// vanish from the picture while the dig path still called it a draw. A
+		// guard the dig path does not share cannot be a guard. The rate hash
+		// inside `springstone_bed` runs before its own field evaluations and
+		// prunes nearly everything, which is what makes asking the real
+		// question affordable here.
 		let sand = BlockType::Sand as u16;
 		if stamp.hosts.springs && !hidden(BlockType::Springstone) {
 			for z in 0..=span {
@@ -447,25 +437,18 @@ fn face_visible(me: BlockType, neighbor: Option<u16>, dir: Dir) -> bool {
 	}
 }
 
-/// Pack a vertex's GEOMETRY word (word 0 — solid and water share it), in
-/// order: x, y and z in TWELFTH-block units (the sub-block shape grid;
-/// full-block geometry lands on its whole-block lattice points), then the
-/// normal, then the corner code (TL, TR, BL, BR), with the top of the
-/// word free.
+/// Pack a vertex's GEOMETRY word (word 0 — solid and water share it), in order:
+/// x, y and z in TWELFTH-block units (the sub-block shape grid; full-block
+/// geometry lands on its whole-block lattice points), then the normal, then the
+/// corner code (TL, TR, BL, BR), with the top of the word free.
 ///
-/// Word 1 is per-stream material, assembled by the caller:
-/// solid — [`solid_word1`], in order: the texture layer (capped at
-/// `MAX_TEX_LAYERS`), uv u and uv v in twelfths, the emissive flag
-/// (Stage-A fullbright — chunk.wgsl skips the lighting terms), and
-/// tint-from-below (`shapes::tint_from_below` — chunk.wgsl hashes the
-/// cell one down for its per-block tint), with the rest free.
-/// water — the texture layer, then the payload (see MeshData::water),
-/// with the rest free; water reads its uv from the corner code.
+/// Word 1 is per-stream material, assembled by the caller. Solid
+/// ([`solid_word1`]): texture layer (capped at `MAX_TEX_LAYERS`), uv u and v in
+/// twelfths, the emissive flag (chunk.wgsl skips the lighting terms) and
+/// tint-from-below (chunk.wgsl hashes the cell one down). Water: texture layer
+/// then the payload (see `MeshData::water`), reading uv from the corner code.
 ///
-/// This layout is what the demolition left: the AO pair, the three
-/// Stage-B light channels and the per-block tint jitter all came out
-/// together, so the format was repacked tight rather than left holed.
-/// Every consumer moves with it — chunk.wgsl's `vs` and `vs_depth`,
+/// Every consumer moves with this layout — chunk.wgsl's `vs` and `vs_depth`,
 /// water.wgsl, and the renderer's vertex attributes.
 #[inline]
 fn pack(pos: (u32, u32, u32), normal: Dir, corner: u32) -> u32 {
@@ -745,24 +728,17 @@ mod tests {
 		MeshInput::build(d, |_, _, _| Src::Missing)
 	}
 
-	/// The reveal stamp and the DIG path must answer identically for
-	/// every cell — one is a worker rewriting block ids, the other is
-	/// `nodes::revealed` asked once at a dig, and a disagreement is either
-	/// a node you can see and cannot extract or one you cannot see and
-	/// accidentally do.
+	/// The reveal stamp and the DIG path must answer identically for every cell
+	/// — one is a worker rewriting block ids, the other is `nodes::revealed`
+	/// asked once at a dig, and a disagreement is either a node you can see and
+	/// cannot extract or one you cannot see and accidentally do.
 	///
-	/// Swept over a whole padded box rather than spot-checked, because the
-	/// two failure modes that matter (an unrevealed deposit shadowing a
-	/// revealed one at a shared cell; a claim on the shell the dig path
-	/// would refuse) both live in specific cells nobody would think to
-	/// pick.
-	///
-	/// Swept over every HOST too, and that half is not optional: the box
-	/// used to be filled with Stone alone, so the Wood and Sand passes —
-	/// two thirds of the node layer — were never executed by the one test
-	/// that pins stamp/dig agreement. A springstone prefilter that read
-	/// the snapshot where the dig path reads worldgen lived through that
-	/// gap.
+	/// Swept over a whole padded box rather than spot-checked, because the two
+	/// failure modes that matter — an unrevealed deposit shadowing a revealed
+	/// one at a shared cell, and a claim on the shell the dig path would refuse
+	/// — both live in cells nobody would think to pick. Swept over every HOST
+	/// too: filling the box with Stone alone left the Wood and Sand passes, two
+	/// thirds of the node layer, unexecuted by the one test that pins this.
 	#[test]
 	fn the_reveal_stamp_and_the_dig_path_agree() {
 		use crate::worldgen::nodes::{self, Levels};
@@ -858,19 +834,17 @@ mod tests {
 		}
 	}
 
-	/// The stamp only ever touches PRISTINE stone: air stays air, a spent
-	/// rock somebody has built with stays exactly what it is, and a shaped
-	/// stone cell is not stone.
+	/// The stamp only ever touches PRISTINE stone: air stays air, a spent rock
+	/// somebody has built with stays exactly what it is, and a shaped stone
+	/// cell is not stone.
 	///
-	/// **Swept across Mining levels**, which is the half that matters and
-	/// the half this test used to skip. At the cap the second pass reverts
-	/// nothing whatever it does, so a run there cannot tell "only claimed
-	/// cells are reverted" from "everything is". The case the sweep is for
-	/// is somebody wandering into a friend's hall of tapped Aetherock at
-	/// Mining 1: those blocks are ordinary chunk data with no reveal gate,
-	/// so they must survive at EVERY level, and a stamp that swept the
-	/// array instead of its own claims would quietly turn the hall to
-	/// stone for every visitor below the tier.
+	/// **Swept across Mining levels**, which is the half that matters: at the
+	/// cap the second pass reverts nothing whatever it does, so a run there
+	/// cannot tell "only claimed cells are reverted" from "everything is". The
+	/// case is somebody wandering into a friend's hall of tapped Aetherock at
+	/// Mining 1 — ordinary chunk data with no reveal gate, which a stamp
+	/// sweeping the array instead of its own claims would turn to stone for
+	/// every visitor below the tier.
 	#[test]
 	fn the_reveal_stamp_leaves_everything_else_alone() {
 		use crate::worldgen::{nodes::Levels, ore};
@@ -1751,19 +1725,14 @@ mod tests {
 		(m.solid.len(), m.water.len(), m.impacts.len(), h)
 	}
 
-	/// The splash ring scan's fast path (skipping the neighborhood walk
-	/// when no layer in reach holds falling water) must leave every
-	/// stream byte-identical — the impacts list drives spray emitters AND
-	/// waterfall audio, so a miss is silent in the mesh and audible in
-	/// the world.
+	/// The splash ring scan's fast path (skipping the neighborhood walk when no
+	/// layer in reach holds falling water) must leave every stream
+	/// byte-identical — the impacts list drives spray emitters AND waterfall
+	/// audio, so a miss is silent in the mesh and audible in the world.
 	///
-	/// Re-pinned at the M1 demolition (GI-DESIGN.md): the vertex format
-	/// repack moved the corner code down and dropped AO, the light
-	/// nibbles and the tint, so every word changed. Quad COUNTS are
-	/// unchanged — which is the part that matters here, since the
-	/// demolition removed shading, not geometry.
-	/// A count that moves means a culling or emission change and must not
-	/// be re-pinned without finding out why.
+	/// Quad COUNTS are the part that matters: a count that moves means a
+	/// culling or emission change and must not be re-pinned without finding
+	/// out why.
 	#[test]
 	fn water_heavy_chunk_mesh_is_pinned() {
 		let m = water_heavy();

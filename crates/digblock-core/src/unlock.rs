@@ -1,19 +1,16 @@
 //! Every level threshold in the game, and the one question each gate asks.
-//! Nothing else may hold an unlock number, and no caller compares levels
-//! itself.
+//! Nothing else may hold an unlock number, and no caller compares levels itself.
 //!
 //! - **The levels** — [`shape`] and [`material`] (§7.2's two grid axes),
-//!   [`functional`] for the hand-priced items, plus [`mine`] and the two
-//!   reveal axes. Each is the sole authority for its own axis, and the two
-//!   questions players actually ask are DERIVED: [`craft`] is
-//!   `max(shape, material)` and [`pickup`] reads `craft` of the drop.
-//! - **The questions** — [`can_craft`], [`dig_blocked`]. The dig gates are
-//!   asked identically by client prediction, the server's `DigStart`
-//!   backstop, the bot's target filter and the test harness, so all four
-//!   agree by construction rather than by review.
-//! - **What a level opens** — [`opens`], DERIVED from those tables rather
-//!   than restated, so retuning a threshold moves the level-up fanfare and
-//!   the character screen's teasers with it.
+//!   [`functional`] for the hand-priced items, plus [`mine`] and the two reveal
+//!   axes. Each is the sole authority for its own axis, and the two questions
+//!   players actually ask are DERIVED: [`craft`] is `max(shape, material)` and
+//!   [`pickup`] reads `craft` of the drop.
+//! - **The questions** — [`can_craft`], [`dig_blocked`], asked identically by
+//!   client prediction, the server's `DigStart` backstop, the bot's target
+//!   filter and the test harness, so all four agree by construction.
+//! - **What a level opens** — [`opens`], DERIVED from those tables, so retuning
+//!   a threshold moves the fanfare and the character screen's teasers with it.
 //!
 //! The refusal wording lives here too ([`Kind::message`]): prediction and the
 //! server's verdict speak the same sentence because there is only one.
@@ -150,26 +147,20 @@ pub fn functional(b: BlockType) -> Option<u32> {
 
 /// Alchemy level that unlocks crafting `b`; `None` = never craftable.
 ///
-/// **Nothing the world hands you may be transmuted.** The bench exists to
-/// make what a fresh world does not give away, so the catalog opens on
-/// [`BlockType::is_bench_only`] before it asks any table — dirt, sand,
-/// snow, grass, mud, the felled log and the bucket charge are all things
-/// you go and pick up, and a recipe for one is the bench competing with a
-/// shovel. What remains is the worked stuff: planed timber, brick,
-/// polished stone, glass, metal, crystal, every shape of every substance,
-/// and the hand-priced items.
+/// **Nothing the world hands you may be transmuted.** The bench exists to make
+/// what a fresh world does not give away, so the catalog opens on
+/// [`BlockType::is_bench_only`] before it asks any table — dirt, sand, snow,
+/// grass, mud, the felled log and the bucket charge are things you go and pick
+/// up, and a recipe for one is the bench competing with a shovel. What remains
+/// is the worked stuff.
 ///
 /// Clean rock is the exception the rule is BUILT to allow rather than one
-/// carved out of it. The world is made of stone but hands you Rubble
-/// (`BlockProps::crumbles`), so it is bench-only by the same derivation as
-/// everything else here, and §7.1's whole economy — quarry, refine, build
-/// — survives untouched.
+/// carved out of it: the world is made of stone but hands you Rubble, so it is
+/// bench-only by the same derivation as everything else.
 ///
-/// Then §7.2's grid rule, enforced rather than described: a material ×
-/// shape pair unlocks at `max(shape level, material level)`. StoneDoor
-/// lands where Stone does, not because anyone curated it; and reaching
-/// Stone opens clean stone in the block, slab, stairs and door forms
-/// together, because those shapes were already learned.
+/// Then §7.2's grid rule, enforced rather than described: a material × shape
+/// pair unlocks at `max(shape level, material level)`, so reaching Stone opens
+/// clean stone in block, slab, stairs and door forms together.
 pub fn craft(b: BlockType) -> Option<u32> {
 	if !b.is_bench_only() {
 		return None;
@@ -344,21 +335,17 @@ fn mine_material(m: Material) -> u32 {
 	use Material as M;
 	match m {
 		// The ORES, at exactly the level that reveals them. A vein in
-		// pristine stone is already invisible below its tier, so this arm
-		// is about the other way an ore block exists: one somebody PLACED.
-		// That is ordinary chunk data every visitor sees at any level
-		// (`apply_ore`'s second pass reverts only cells it claimed, never
-		// a placed block), so without these arms the whole table fell
-		// through to the ungated arm and a brand-new player could strip a
-		// late-game player's Aetherock wall. The tell was the neighbour:
-		// DepletedStone — the SPENT face, worth Rubble — sat behind the
-		// timber wall while the ore itself was ungated. The family wall
-		// does not cover this: ore is Rock, so on strength alone it would
-		// open with the rest of the rock.
+		// pristine stone is already invisible below its tier, so this arm is
+		// about the other way an ore block exists: one somebody PLACED. That
+		// is ordinary chunk data every visitor sees at any level, so without
+		// these arms the table fell through to the ungated arm and a
+		// brand-new player could strip a late-game player's Aetherock wall.
+		// The family wall does not cover it: ore is Rock, so on strength
+		// alone it would open with the rest of the rock.
 		//
 		// Keyed to `reveal` rather than hand-numbered, so a retune of the
-		// reveal ladder cannot leave the two disagreeing;
-		// `every_ore_is_gated_at_its_own_reveal` pins that they match.
+		// reveal ladder cannot leave the two disagreeing
+		// (`every_ore_is_gated_at_its_own_reveal`).
 		M::Emberore => reveal_of(BlockType::Emberore),
 		M::Duskstone => reveal_of(BlockType::Duskstone),
 		M::Glowvein => reveal_of(BlockType::Glowvein),
@@ -390,20 +377,17 @@ fn reveal_of(b: BlockType) -> u32 {
 }
 
 /// The strength wall's Alchemy counterpart: the level below which `b` refuses
-/// to be dug because picking it up would hand you an item you cannot make
-/// (the first level means ungated).
+/// to be dug because picking it up would hand you an item you cannot make (the
+/// first level means ungated).
 ///
-/// Derived from [`craft`] rather than tabled again, so the two can never
-/// disagree about what a torch costs to own. It keys on the DROP, not the
-/// block, because the gate is about the item that lands in the inventory
-/// — mined rock is Rubble whatever the cell was, so quarrying pristine
-/// Stone stays a Mining question. And it keys on `block::crafted` rather
-/// than on craftability alone: `Wood` and `Lumber` are both craftable, but
-/// only one of them grows on a tree, and gating the log would shut a
-/// brand-new player out of the first thing the world offers. Craft-only
-/// blocks are the ones a player can ONLY have crafted, so requiring their
-/// own recipe level closes the loop — you cannot mine your way around an
-/// unlock, in your own world or through someone else's build.
+/// Derived from [`craft`] rather than tabled again. It keys on the DROP, not
+/// the block, because the gate is about the item that lands in the inventory —
+/// mined rock is Rubble whatever the cell was, so quarrying pristine Stone
+/// stays a Mining question. And it keys on `block::crafted` rather than on
+/// craftability alone: `Wood` and `Lumber` are both craftable, but only one
+/// grows on a tree. Craft-ONLY blocks are the ones a player can only have
+/// crafted, so requiring their own recipe level is what stops anyone mining
+/// around an unlock through someone else's build.
 pub fn pickup(b: BlockType) -> u32 {
 	match b.dig_drop() {
 		Some(d) if d.is_crafted_only() => craft(d).unwrap_or(1),

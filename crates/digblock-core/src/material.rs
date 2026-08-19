@@ -2,19 +2,16 @@
 //!
 //! A structural block is a *substance* worked into a *form*: Stone stairs are
 //! Stone in the Stairs shape. A block declares its material once (the `mat`
-//! builder in `block.rs`) and four things then DERIVE from the pair rather
-//! than being tabled separately, which is what stopped them disagreeing:
-//!
-//! - **Unlock level** = `max(shape, material)` — [`crate::unlock::craft`].
-//! - **Craft cost** — [`crate::alchemy::craft_ideal`].
-//! - **The earned half of the strength wall** — [`crate::unlock::mine`].
-//! - **The transmute tab's families** — one per shape, in material order.
+//! builder in `block.rs`) and four things then DERIVE from the pair rather than
+//! being tabled separately — the unlock level (`max(shape, material)`), the
+//! craft cost, the earned half of the strength wall, and the transmute tab's
+//! families.
 //!
 //! [`Material::craft_units`] is what a substance COSTS and
-//! [`Material::node_units`] is what a live node of it PAYS at a draw. No
-//! material carries both, so essence cannot be manufactured from essence by
+//! [`Material::node_units`] what a live node of it PAYS at a draw. No material
+//! carries both, so essence cannot be manufactured from essence by
 //! construction. Functional items have NO material: §7.3 prices function by
-//! hand, in `unlock` and `alchemy`'s own small tables.
+//! hand.
 
 use crate::block::{BlockType, Essence};
 

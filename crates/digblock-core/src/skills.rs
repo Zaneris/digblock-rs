@@ -198,24 +198,20 @@ pub const DIG_STEPS: [u32; 21] = [
 	1, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 99,
 ];
 
-/// How much of the journey from a family's novice speed to its mastery
-/// speed is complete at each of [`DIG_STEPS`], in permille. A pinned integer
-/// table, never a `powf` — same reason as the XP curve: it is a golden
-/// both ends must agree on to the unit, and a float would let two
-/// platforms round a hold apart.
+/// How much of the journey from a family's novice speed to its mastery speed is
+/// complete at each of [`DIG_STEPS`], in permille. A pinned integer table, never
+/// a `powf` — same reason as the XP curve: it is a golden both ends must agree
+/// on to the unit, and a float would let two platforms round a hold apart.
 ///
-/// **The increments strictly decrease, and that IS the design.** Each
-/// jump is a constant fraction smaller than the one before it, so the
-/// very first step is the biggest speedup a player will ever feel, and
-/// every later one lands a little softer. Both halves of that matter: the
-/// early game is where a slow dig is most discouraging, and diminishing
-/// returns are what stop a late level from being a rounding error. The
-/// relative gain falls too, not just the absolute one, so the curve eases
-/// off in felt terms and not merely in ticks.
+/// **The increments strictly decrease, and that IS the design.** Each jump is a
+/// constant fraction smaller than the last, so the first step is the biggest
+/// speedup a player will ever feel. The early game is where a slow dig is most
+/// discouraging, and diminishing returns stop a late level from being a
+/// rounding error. The RELATIVE gain falls too, so the curve eases off in felt
+/// terms and not merely in ticks.
 ///
-/// One table serves every family: a family declares only where its range
-/// starts and ends, and the SHAPE of the journey between them is shared.
-/// `Fixed` has a zero-width range, so it stays flat for free.
+/// One table serves every family, so the shape is authored once. `Fixed` has a
+/// zero-width range and stays flat for free.
 const DIG_TAPER: [u32; 21] = [
 	0, 139, 259, 364, 455, 535, 604, 664, 716, 761, 801, 835, 865, 891, 914, 934, 951, 966, 979,
 	990, 1000,
@@ -242,27 +238,21 @@ pub fn dig_speed_step(level: u32) -> u32 {
 	DIG_STEPS[dig_step_index(level)]
 }
 
-/// §5.1's per-family dig-speed multiplier in permille: two endpoints per
-/// family — its novice speed and its mastery speed — with [`DIG_TAPER`]
-/// deciding how the journey between them is spent. A family therefore
-/// says only how hard its material resists a novice and how fast mastery
-/// gets; the shape of the climb is the same for all of them. Fixed is
-/// flat: foliage is already near-instant, the torch is a fixture, and the
-/// water scoop's duration is pinned to the viewmodel swing.
+/// §5.1's per-family dig-speed multiplier in permille: two endpoints per family
+/// — its novice speed and its mastery speed — with [`DIG_TAPER`] deciding how
+/// the journey between them is spent. A family says only how hard its material
+/// resists a novice and how fast mastery gets; the shape of the climb is shared.
+/// Fixed is flat: foliage is already near-instant, the torch is a fixture, and
+/// the water scoop's duration is pinned to the viewmodel swing.
 ///
-/// The mastery endpoint IS the speed floor — no second clamp. There is no
-/// mid anchor: one mid-ladder level used to be pinned so that it
-/// reproduced the shipped hardness table exactly, through SIM v12–v17, and
-/// SIM v18 dropped it. So `hardness_ticks` is a BASE the curve scales at
-/// every level, and outside `Fixed` no level spends it unscaled — don't
-/// reintroduce an assertion that some level returns the raw hardness.
+/// The mastery endpoint IS the speed floor — no second clamp — and there is no
+/// mid anchor. So `hardness_ticks` is a BASE the curve scales at every level,
+/// and outside `Fixed` no level spends it unscaled: don't reintroduce an
+/// assertion that some level returns the raw hardness.
 ///
-/// SIM v20 lengthened both endpoints of every non-Fixed family, mastery
-/// by rather more than the opening. So digging is slower everywhere, and
-/// the RATIO between the two ends — what a whole life of levelling is
-/// worth as a multiple — shrank with it. That second part is the
-/// deliberate one: mastery was fast enough that the ladder's top was
-/// where the material stopped mattering.
+/// The RATIO between the two ends — what a whole life of levelling is worth as
+/// a multiple — is deliberately modest: mastery was once fast enough that the
+/// ladder's top was where the material stopped mattering.
 pub fn dig_speed_permille(family: crate::block::DigFamily, level: u32) -> u32 {
 	use crate::block::DigFamily;
 	let (start, end) = match family {
@@ -296,16 +286,15 @@ pub const DIG_DECAY_TICKS: u32 = 60;
 /// applied on top of the family curve when the pick is the ACTIVE tool.
 ///
 /// **Level-only, never derived from how many cells actually qualify.** A
-/// world-derived multiplier would let client and server disagree by the
-/// whole multiplier whenever their worlds differ by one cell, which is far
-/// outside what `dig_grace` absorbs — the honest outcomes are a free
-/// completion or a `DigIncomplete` on a dig the player finished.
+/// world-derived multiplier would let the two ends disagree by the whole
+/// multiplier whenever their worlds differ by one cell, far outside what
+/// `dig_grace` absorbs.
 ///
-/// The consequence is deliberate: a LONE block costs the multiplier too.
-/// That is why the numbers are what they are — the spread penalty is set
-/// against an offsetting tool bonus that very nearly cancels it, so
-/// swinging at one block costs about what a bare hand does and the pick is
-/// always worth holding, while a full row clears in the time of one.
+/// The consequence is deliberate: a LONE block costs the multiplier too. The
+/// spread penalty is set against an offsetting tool bonus that very nearly
+/// cancels it, so swinging at one block costs about what a bare hand does and
+/// the pick is always worth holding, while a full row clears in the time of
+/// one.
 pub fn pick_permille(level: u32) -> u32 {
 	match crate::unlock::pick_cells(level) {
 		9 => 1800,
@@ -330,19 +319,16 @@ pub fn dig_required_with(
 	(base * pick_permille(level)).div_ceil(1000).max(1)
 }
 
-/// What is left of `progress` banked ticks out of `required` after
-/// `idle` ticks of not digging.
+/// What is left of `progress` banked ticks out of `required` after `idle` ticks
+/// of not digging.
 ///
-/// THE one decay rule: the client predicts with it, the server's
-/// completion gate charges it, and offline play runs the same call, so
-/// no two of them can drift. Integer and exact — it takes the ELAPSED
-/// idle count rather than accumulating a per-tick subtraction, because a
-/// fractional per-tick rate would be under one for every block in the game,
-/// so it would round to zero and decay nothing at all.
-///
-/// Truncating down means the bar always outlives its arithmetic by up
-/// to a tick, and reaches exactly zero at [`DIG_DECAY_TICKS`] for every
-/// hardness.
+/// THE one decay rule: the client predicts with it, the server's completion
+/// gate charges it, and offline play runs the same call, so no two can drift.
+/// Integer and exact — it takes the ELAPSED idle count rather than accumulating
+/// a per-tick subtraction, because a fractional per-tick rate would be under
+/// one for every block in the game and so would round to zero and decay
+/// nothing. Truncating down means the bar outlives its arithmetic by up to a
+/// tick and reaches exactly zero at [`DIG_DECAY_TICKS`] for every hardness.
 pub fn dig_decayed(progress: u32, required: u32, idle: u32) -> u32 {
 	let idle = idle.min(DIG_DECAY_TICKS);
 	progress.saturating_sub(required.saturating_mul(idle) / DIG_DECAY_TICKS)
@@ -403,67 +389,57 @@ const PERMILLE: u32 = 1000;
 /// however small the award scale is retuned to be.
 pub const DEPTH_XP_MAX_PERMILLE: u32 = 1500;
 
-/// What a cell the Resonant Pick's swing reached — every cell but the one
-/// under the crosshair — pays, in permille of its own flat award (§5.6).
+/// What a cell the Resonant Pick's swing reached — every cell but the one under
+/// the crosshair — pays, in permille of its own flat award (§5.6).
 ///
-/// A wide swing is a reach bonus, not an XP multiplier. The pick already
-/// pays for itself in **material**: one hold hands back a whole plane of
-/// blocks, and the hold is only a level-only multiple of a single-cell one
-/// rather than the whole plane's worth of time. Paying full XP per cell on
-/// top of that would make the tool the only sensible way to earn Mining at
-/// all, and would make each of its two reach milestones a step change in
-/// levelling speed rather than in what the tool DOES.
+/// A wide swing is a reach bonus, not an XP multiplier. The pick already pays
+/// for itself in **material**: one hold hands back a whole plane, at a
+/// level-only multiple of a single-cell hold. Paying full XP per cell on top
+/// would make the tool the only sensible way to earn Mining at all, and each of
+/// its two reach milestones a step change in levelling speed rather than in
+/// what the tool DOES.
 ///
-/// Floored at one whole point per cell by [`dig_award`], since a fraction
-/// of the cheap end of the hardness order is nothing at all, and an extra
-/// cell that pays literally nothing reads as a bug rather than as a
-/// discount.
+/// Floored at one whole point per cell by [`dig_award`]: an extra cell that
+/// pays literally nothing reads as a bug rather than as a discount.
 pub const PICK_EXTRA_PERMILLE: u32 = 200;
 
 /// §5.2's depth reward: the multiplier on a dig's Mining XP for the cell it
-/// happened in, in permille. Flat at and above [`DEPTH_XP_FROM`], then
-/// rising LINEARLY with depth to [`DEPTH_XP_MAX_PERMILLE`] at
-/// [`DEPTH_XP_TO`].
+/// happened in, in permille. Flat at and above [`DEPTH_XP_FROM`], then rising
+/// LINEARLY with depth to [`DEPTH_XP_MAX_PERMILLE`] at [`DEPTH_XP_TO`].
 ///
-/// **Linear per block rather than quantized into depth layers**, which is
-/// the opposite of what [`DIG_STEPS`] does to the dig curve, for the reason
-/// that grid exists at all. That curve had to be quantized because ticks are
-/// fine-grained enough that a per-level change moved a hold by one or by
-/// nothing, so the reward read as noise. XP has no such problem: the awards
-/// are small integers and the rounding in [`dig_award`] quantizes them for
-/// free, leaving each block type its own ladder of whole-point steps as you
-/// descend (`the_depth_reward_climbs_one_point_at_a_time`). Layering on top
-/// of that would add nothing a player can see and would buy cliffs — a
-/// handful of depths where one more block down is worth a permanent step and
-/// every block after it is worth nothing. A straight ramp is monotone with
-/// no threshold worth standing on.
+/// **Linear per block rather than quantized into depth layers**, the opposite
+/// of what [`DIG_STEPS`] does to the dig curve. That curve had to be quantized
+/// because ticks are fine-grained enough that a per-level change moved a hold
+/// by one or by nothing. XP has no such problem: the awards are small integers
+/// and [`dig_award`]'s rounding quantizes them for free, leaving each block
+/// type its own ladder of whole-point steps as you descend
+/// (`the_depth_reward_climbs_one_point_at_a_time`). Layering on top would buy
+/// cliffs — depths where one more block down is worth a permanent step and
+/// every block after it is worth nothing.
 pub fn depth_xp_permille(y: i32) -> u32 {
 	let depth = (DEPTH_XP_FROM - y.clamp(DEPTH_XP_TO, DEPTH_XP_FROM)) as u32;
 	let span = (DEPTH_XP_FROM - DEPTH_XP_TO) as u32;
 	PERMILLE + (DEPTH_XP_MAX_PERMILLE - PERMILLE) * depth / span
 }
 
-/// THE award for one completed dig, `(Mining, Alchemy)` — the whole answer
-/// in one call, so no award site can read the tables and forget the depth
-/// reward. The server's dig-credit chokepoint and the engine's offline arm
-/// call this and nothing else.
+/// THE award for one completed dig, `(Mining, Alchemy)` — the whole answer in
+/// one call, so no award site can read the tables and forget the depth reward.
+/// The server's dig-credit chokepoint and the engine's offline arm call this
+/// and nothing else.
 ///
 /// `prev` is the journaled truth about the cell that was replaced (never the
 /// raycast hit), `broken` how many cells the one hold cleared, and `y` the
-/// ANCHOR cell's — a wide pick swing spans several rows, and the anchor is
-/// the one cell both ends provably agree on. The whole swing is scaled once
-/// rather than cell by cell: one action, one rounding.
+/// ANCHOR cell's — a wide pick swing spans several rows, and the anchor is the
+/// one cell both ends provably agree on. The whole swing is scaled once rather
+/// than cell by cell: one action, one rounding.
 ///
-/// **Only the aimed cell pays in full**; every other cell the swing took
-/// pays [`PICK_EXTRA_PERMILLE`] of one. A door pair is still ONE block and
-/// never reaches that arm, since `broken` counts blocks rather than cells.
+/// **Only the aimed cell pays in full**; every other cell pays
+/// [`PICK_EXTRA_PERMILLE`] of one. A door pair is still ONE block and never
+/// reaches that arm, since `broken` counts blocks rather than cells.
 ///
-/// A field draw pays §5.4's per-kind figure in BOTH skills instead, and the
-/// depth reward deliberately does not touch it: the ore tiers are
-/// depth-banded already, so scaling them by depth would count the same axis
-/// twice and turn §5.3's authored figures into a consequence. Nothing is
-/// lost — a draw excavates nothing, and clearing the spent face it leaves is
-/// an ordinary dig that scales like any other.
+/// A field draw pays its per-kind figure in BOTH skills instead, and the depth
+/// reward deliberately does not touch it: the ore tiers are depth-banded
+/// already, so scaling them by depth would count the same axis twice.
 pub fn dig_award(
 	prev: BlockType,
 	extracting: Option<BlockType>,
@@ -504,26 +480,21 @@ pub fn dig_award(
 	(mining, 0)
 }
 
-/// The DUAL award for one field draw — a siphon taking a node where it
-/// stands: `(Mining, Alchemy)`. `None` for anything that is not a node.
+/// The DUAL award for one field draw — a siphon taking a node where it stands:
+/// `(Mining, Alchemy)`. `None` for anything that is not a node.
 ///
-/// A draw is mechanically a dig and thematically an alchemical
-/// separation, so it pays both — and WHICH skill takes the headline
-/// follows which skill found the node. The ore tiers pay Mining first
-/// with an Alchemy cut (§5.4: the find was a Mining reveal, deep in
-/// Mining's half of the world); the surface nodes invert it, Alchemy
-/// first with a Mining cut, because the surface hunt is Alchemy's and a
-/// forager who never opens a mine still moves the skill that revealed
-/// the find. There is no second moment behind either: a node is never an
-/// item, so no draw is ever "finished at the bench" later.
+/// A draw is mechanically a dig and thematically an alchemical separation, so
+/// it pays both, and WHICH skill takes the headline follows which skill found
+/// the node: the ore tiers pay Mining first with an Alchemy cut, the surface
+/// nodes invert it, because the surface hunt is Alchemy's and a forager who
+/// never opens a mine still moves the skill that revealed the find. There is no
+/// second moment behind either — a node is never an item, so no draw is
+/// "finished at the bench" later.
 ///
-/// Tabled rather than derived from hardness: these are headline rewards
-/// and the curve through them is a decision, not a consequence. Which is
-/// also why the table does NOT follow a retune of [`dig_xp`] — a node is
-/// scarce and finding one is most of the work, so what a draw is worth
-/// was chosen against the kind and not against a multiple of the host
-/// around it. A retune of the ordinary dig moves how much a find is
-/// worth RELATIVE to plain digging, deliberately: a lever, not a drift.
+/// Tabled rather than derived from hardness: these are headline rewards and the
+/// curve through them is a decision. Which is why the table does NOT follow a
+/// retune of [`dig_xp`] — a retune moves what a find is worth RELATIVE to plain
+/// digging, deliberately: a lever, not a drift.
 pub fn field_xp(node: BlockType) -> Option<(u64, u64)> {
 	Some(match node {
 		// The Alchemy cuts sit high against their Mining headlines on
@@ -545,21 +516,19 @@ pub fn field_xp(node: BlockType) -> Option<(u64, u64)> {
 }
 
 /// Alchemy XP per crafted item: the craft's full worth at the bench
-/// ([`crate::alchemy::craft_worth`], a fixed fraction of the ideal
-/// pre-waste cost, feedstock included) — fixed for life. Zero for
-/// uncraftable items.
+/// ([`crate::alchemy::craft_worth`], a fixed fraction of the ideal pre-waste
+/// cost, feedstock included) — fixed for life. Zero for uncraftable items.
 ///
-/// §13.4's award-side HALVING is deliberately gone. It existed because
-/// the bench was an unbounded XP machine — extraction against infinite
-/// matter — and the lever un-pulls with the machine: a craft is now
-/// bounded by essence that had to be found and matter that had to be
-/// quarried, so it may pay what it is worth. Award and pace still read
-/// the same underlying worth, so a thing worth more to make is worth
-/// more to have made — and takes the time the work takes.
+/// §13.4's award-side HALVING is deliberately gone. It existed because the
+/// bench was an unbounded XP machine, and the lever un-pulls with the machine:
+/// a craft is now bounded by essence that had to be found and matter that had
+/// to be quarried, so it may pay what it is worth. Award and pace read the same
+/// underlying worth, so a thing worth more to make takes the time the work
+/// takes.
 ///
-/// This is the bench's ONLY award: Alchemy is earned by drawing nodes in
-/// the field ([`field_xp`]) and by making things here, and by nothing
-/// that can be repeated against an unbounded supply.
+/// This is the bench's ONLY award: Alchemy is earned by drawing nodes in the
+/// field ([`field_xp`]) and by making things here, and by nothing that can be
+/// repeated against an unbounded supply.
 pub fn craft_xp(item: BlockType) -> u64 {
 	u64::from(crate::alchemy::craft_worth(item))
 }

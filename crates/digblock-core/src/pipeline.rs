@@ -1,16 +1,12 @@
-//! Threaded chunk pipeline — replaces the Java frame-slicing loop
-//! (one queue item per frame, round-robin) with a worker pool. The main
-//! thread owns the store and scheduling; workers run pure functions
-//! (terrain gen, meshing) over immutable snapshots.
+//! Threaded chunk pipeline: the main thread owns the store and scheduling,
+//! workers run pure functions (terrain gen, meshing) over immutable snapshots.
 //!
-//! Staleness is handled by generation counters, not flags: every mesh job
-//! carries the `mesh_gen` it was built from, and results that don't match
-//! the slot's current counter (or whose slot was evicted) are dropped.
-//! When a chunk finishes generating, it bumps its own and its Ready
-//! neighbors' counters — face neighbors unconditionally (the safe
-//! equivalent of the Java writing face bits into neighbor chunks and
-//! re-dirtying them), edge/corner diagonals only where the shared padded
-//! shell cells could shade an existing face.
+//! Staleness rides generation counters, not flags: every mesh job carries the
+//! `mesh_gen` it was built from, and results that don't match the slot's
+//! current counter — or whose slot was evicted — are dropped. A chunk that
+//! finishes generating bumps its own and its Ready neighbours' counters: face
+//! neighbours unconditionally, edge and corner diagonals only where the shared
+//! padded shell could shade an existing face.
 
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, VecDeque};
@@ -67,18 +63,13 @@ pub enum JobResult {
 
 /// Enough of a [`Job`] to put it back on the heap it came off.
 ///
-/// A pool that loses a job — a worker that trapped, was killed, or
-/// answered with a refusal — hands these back through
-/// [`JobDispatch::lost`], and `Pipeline::reclaim` requeues them. Without
-/// that a lost reply strands its chunk for the whole session, silently: a
-/// popped job is remembered NOWHERE else, so the column sits `Generating`
-/// forever (a hole in the world) or the chunk stays at
-/// `submitted_gen == mesh_gen` and never meshes again (invisible terrain).
-///
-/// The payload is deliberately not retained. A `Mesh` job's `MeshInput`
-/// is a whole padded snapshot and a pool may hold dozens outstanding —
-/// real memory on the platform this exists for — and the pipeline rebuilds
-/// it from the store at redispatch anyway.
+/// A pool that loses a job — a worker that trapped, was killed, or answered
+/// with a refusal — hands these back through [`JobDispatch::lost`]. A popped
+/// job is remembered NOWHERE else, so without the requeue its column sits
+/// `Generating` forever (a hole in the world) or never meshes again (invisible
+/// terrain). The payload is deliberately not retained: a `Mesh` job's
+/// `MeshInput` is a whole padded snapshot, dozens may be outstanding, and the
+/// pipeline rebuilds it from the store at redispatch anyway.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum JobKey {
 	Generate { x: i32, z: i32 },
@@ -110,20 +101,17 @@ struct ChunkSlot {
 	mesh_gen: u64,
 	/// Highest gen handed to a worker.
 	submitted_gen: u64,
-	/// Generation of the last accepted mesh, if that mesh was empty AND
-	/// was built with every face neighbor present. A chunk whose current
-	/// mesh is empty — every buried chunk — can then skip re-dirties
-	/// entirely: neighbors' shell cells only shade existing faces, they
-	/// never create them, so nothing stays nothing.
+	/// Generation of the last accepted mesh, if that mesh was empty AND was
+	/// built with every face neighbor present — a buried chunk can then skip
+	/// re-dirties, since neighbours' shell cells only shade existing faces
+	/// and never create them.
 	///
-	/// The face-neighbor condition is load-bearing, not caution.
-	/// `Src::Missing` doesn't merely read as air — it SUPPRESSES that
-	/// whole border (`MeshInput::missing`), so a chunk meshed beside an
-	/// ungenerated neighbor is empty for a reason that expires. Trusting
-	/// that emptiness left the border unemitted for the rest of the
-	/// session: a permanent hole wherever a solid chunk met the first
-	/// neighbor to arrive, which is every cave mouth and every surface
-	/// seam on the column that generated first.
+	/// The face-neighbor condition is load-bearing. `Src::Missing`
+	/// SUPPRESSES a whole border (`MeshInput::missing`) rather than reading
+	/// as air, so a chunk meshed beside an ungenerated neighbour is empty
+	/// for a reason that expires; trusting that emptiness leaves a permanent
+	/// hole at every cave mouth and every seam on the column that generated
+	/// first.
 	empty_mesh_gen: Option<u64>,
 	/// The dispatched mesh job had at least one missing face neighbor
 	/// (see `empty_mesh_gen`). Tracked here rather than round-tripped
@@ -180,23 +168,16 @@ pub struct Pipeline {
 	deferred_count: usize,
 	/// Every cell this world has ever written, local or authoritative.
 	///
-	/// Three jobs. **Re-applying** edits onto a column that regenerated,
+	/// Three jobs: **re-applying** edits onto a column that regenerated,
 	/// which is what makes hard eviction safe; **answering "has this cell
-	/// been touched?"** for the ORE reveal; and, locally, **reporting**
-	/// what to persist. All three run in multiplayer except the last —
-	/// what differs is only where the map comes from, since `set_cell`
-	/// stops recording there (`record_local`) and `apply_authoritative`
-	/// takes over, so the map holds the JOURNAL rather than this client's
-	/// guesses.
-	///
-	/// Re-application used to be local-only, and that was the hole behind
-	/// "I came back and the chunk was pristine again". A multiplayer
-	/// column that hard-evicts loses its cells, and the only thing that
-	/// could put them back was the server noticing and re-sending —
-	/// which it does not, because it prunes a client's synced set on a
-	/// radius of its own that is WIDER than the client's residency. The
-	/// map is the client's own copy of everything it was ever told, so
-	/// re-applying it needs no round trip and cannot be lost.
+	/// been touched?"** for the node reveal; and, locally, **reporting**
+	/// what to persist. The first two run in multiplayer too — what differs
+	/// is where the map comes from, since `set_cell` stops recording there
+	/// (`record_local`) and `apply_authoritative` takes over, so the map
+	/// holds the JOURNAL rather than this client's guesses. Re-application
+	/// has no other source: the server prunes a client's synced set on a
+	/// radius WIDER than the client's residency, so a hard-evicted column is
+	/// never re-sent.
 	edits: crate::overlay::EditOverlay,
 	/// Record local writes into `edits` and report them for persistence:
 	/// the single-player save path. False in multiplayer, where a local
@@ -286,22 +267,18 @@ pub trait JobDispatch {
 	/// jobs on this thread, and a run that streamed inline must not be
 	/// recorded in BENCH.md as a pooled arm.
 	fn worker_count(&self) -> usize;
-	/// Abandon everything in flight: after this returns, a result for any
-	/// job submitted before it must NEVER be delivered.
+	/// Abandon everything in flight: after this returns, a result for any job
+	/// submitted before it must NEVER be delivered.
 	///
-	/// Load-bearing across a world change. A pool outlives the pipeline
-	/// that fed it (see `take_dispatch`), and a `Generated` result carries
-	/// only a column coordinate — so one still in flight from the old
-	/// world would land as authoritative terrain in the new one, at the
-	/// same (x, z), from a different seed. Implementations that can't
-	/// recall a dispatched job must instead discard its reply.
-	///
-	/// Abandoned jobs are NOT reported through `lost` either: the new
-	/// pipeline's store has never heard of those chunks. And whatever
-	/// per-worker accounting bounds `submit` has to be released here — a
-	/// pool that still counted the old world's jobs against its depth
-	/// would refuse the new world's while `ready` stayed true, which is
-	/// the one state where nothing streams and nothing runs inline.
+	/// A pool outlives the pipeline that fed it (see `take_dispatch`), and a
+	/// `Generated` result carries only a column coordinate — so one in flight
+	/// from the old world would land as authoritative terrain in the new one,
+	/// same (x, z), different seed. A pool that cannot recall a dispatched job
+	/// must discard its reply instead. Abandoned jobs are NOT reported through
+	/// `lost` (the new store has never heard of those chunks), and any
+	/// per-worker depth accounting must be released here, or the pool refuses
+	/// the new world's jobs while `ready` stays true — the one state where
+	/// nothing streams and nothing runs inline.
 	fn reset(&mut self);
 }
 
@@ -796,27 +773,19 @@ impl Pipeline {
 			self.center = center;
 			self.visibility_scan(&mut out.evicted);
 		}
-		// Inline jobs run before the drain so their results land this
-		// frame; workers instead get topped up after (they produce across
-		// frames anyway).
+		// Inline jobs run before the drain so their results land this frame;
+		// workers get topped up after.
 		//
-		// The deadline is deliberately NOT extended by what the jobs spent.
-		// Extending it makes the stages ADD UP — jobs, drain and uploads
-		// each spending a budget of their own, plus overshoot — which is
-		// the miss the budget exists to avoid. Job slicing bounds the
-		// overrun at the source, and each stage keeps a minimum-progress
-		// floor (the drain always pulls one result, the upload loop always
-		// does `UPLOAD_MIN`), so a blown deadline delays work without ever
-		// starving it.
+		// The deadline is deliberately NOT extended by what the jobs spent —
+		// that makes the stages ADD UP, which is the miss the budget exists
+		// to avoid. Slicing bounds the overrun at the source and every stage
+		// keeps a minimum-progress floor, so a blown deadline delays work
+		// without ever starving it.
 		//
-		// An external pool's results arrived as their own event-loop tasks
-		// while this thread was elsewhere; pull them into the queue the
-		// drain reads first, so budgeting, staleness and `has_pending` stay
-		// identical for every executor. Under the deadline, because the
-		// pull is not free — every `poll` decodes, and a `Generated` column
-		// is a whole stack of chunks of bounds-checked u16 reads with a
-		// fresh allocation each. Always at least one, or the pool's inbox
-		// only grows.
+		// An external pool's results arrived as their own event-loop tasks,
+		// so pull them into the queue the drain reads first — under the
+		// deadline, because every `poll` decodes, but always at least one, or
+		// the pool's inbox only grows.
 		let mut lost: Vec<JobKey> = Vec::new();
 		// The pull can stop with replies still in the pool, which
 		// `has_pending` — which sees only the decoded queue — cannot know.
@@ -1026,21 +995,17 @@ impl Pipeline {
 						out.stale_dropped += 1;
 						continue;
 					}
-					// Re-apply persistent edits BEFORE the per-chunk air
-					// classification below: a block placed in a sky chunk
-					// must defeat `is_air_chunk` or it would never mesh.
-					// `Arc::make_mut` clones the shared AIR_CHUNK sentinel
-					// rather than mutating it (refcount > 1), mirroring the
-					// server's `ChunkStore::drain` overlay.
+					// Re-apply persistent edits BEFORE the per-chunk
+					// air classification below: a block placed in a sky
+					// chunk must defeat `is_air_chunk` or it would never
+					// mesh. `Arc::make_mut` clones the shared AIR_CHUNK
+					// sentinel rather than mutating it.
 					//
-					// Multiplayer included, and deliberately: the map there
-					// is this client's mirror of the server's journal, so
-					// re-applying it restores exactly the cells the server
-					// already told us about. Without it a column that
-					// hard-evicted came back as pristine worldgen and
-					// STAYED that way, because `apply_authoritative` drops
-					// a cell from `deferred_edits` the moment it lands and
-					// the server has no reason to send it twice.
+					// Multiplayer included: the map there mirrors the
+					// server's journal, and without this a hard-evicted
+					// column comes back as pristine worldgen and STAYS
+					// that way — `apply_authoritative` drops a cell the
+					// moment it lands and the server never resends it.
 					if let Some(cells) = self.edits.column(x, z) {
 						for (&(wx, wy, wz), &cell) in cells {
 							let Some(((_, cy, _), (lx, ly, lz))) =
@@ -1081,27 +1046,18 @@ impl Pipeline {
 								self.mesh_heap.push((Reverse(d), (pos.x, pos.y, pos.z)));
 							}
 						}
-						// Cross-border re-dirty: every Ready neighbor
-						// re-meshes from fresh snapshots. Diagonals only
-						// shade existing faces via the padded shell, so
-						// they're skipped for air chunks — without this the
-						// buried bulk of the world remeshes 26-ways on every
-						// generation.
+						// Cross-border re-dirty: every Ready neighbour
+						// re-meshes. Diagonals only shade existing faces
+						// via the padded shell, so they are skipped for
+						// air chunks — without that the buried bulk of the
+						// world remeshes 26-ways on every generation.
 						//
-						// The empty-mesh and queued-remesh skips below apply
-						// to FACES too, and are sound specifically because
-						// this is the ARRIVAL path: the shell goes from
-						// all-air to this chunk's real cells, so coverage
-						// only ever INCREASES, and more coverage can only
-						// cull faces. This does NOT hold for edits, where
-						// digging removes coverage; `set_cell` has its own
-						// unconditional bump.
-						//
-						// "Meshed to nothing" is narrower than it looks: a
-						// missing FACE neighbour also suppresses its whole
-						// border, so a chunk empty for THAT reason is not
-						// empty once the neighbour lands, and the slot
-						// declines to record it. Read `empty_mesh_gen`'s doc
+						// The empty-mesh and queued-remesh skips below
+						// apply to FACES too, sound only because this is
+						// the ARRIVAL path: coverage only ever INCREASES,
+						// and more coverage can only cull faces. Edits
+						// remove coverage, so `set_cell` bumps
+						// unconditionally. Read `empty_mesh_gen`'s doc
 						// before widening this skip.
 						for oy in -1..=1 {
 							for oz in -1..=1i32 {
@@ -1408,31 +1364,22 @@ impl Pipeline {
 		input
 	}
 
-	/// The node reveal's per-job parcel, or `None` when this chunk cannot
-	/// show a node at all. The edited-cell list is gathered HERE because
-	/// this is the only place holding the map — the worker has a snapshot
-	/// of block ids and nothing else.
+	/// The node reveal's per-job parcel, or `None` when this chunk cannot show
+	/// a node at all. The edited-cell list is gathered HERE because this is the
+	/// only place holding the map — the worker has block ids and nothing else.
 	///
-	/// Runs on the MAIN thread once per mesh job, out of the streaming
-	/// budget, which is why both guards exist:
+	/// Runs on the MAIN thread once per mesh job, out of the streaming budget,
+	/// which is why both guards exist. No node source reaching the box means no
+	/// stamp: the deposit half asks worldgen over the same box `apply_nodes`
+	/// walks, the surface halves scan the freshly built SNAPSHOT for hosts, and
+	/// the verdict rides the stamp as [`crate::mesher::NodeHosts`]. Otherwise
+	/// the edited-cell walk takes whichever side is smaller — `EditOverlay` has
+	/// no eviction and multiplayer keeps one fed by every broadcast edit, so
+	/// exactly where players build a column holds tens of thousands of entries.
 	///
-	/// - No node source reaching the box means no stamp at all. The deposit
-	///   half asks worldgen (the same box `apply_nodes` walks, so the two
-	///   agree by construction); the surface halves scan the freshly built
-	///   SNAPSHOT for host blocks, a fixed cost where the worldgen queries
-	///   are not. The verdict rides the stamp as
-	///   [`crate::mesher::NodeHosts`] rather than being re-derived in the
-	///   worker.
-	/// - Otherwise the edited-cell walk takes whichever side is smaller.
-	///   `EditOverlay` has no eviction and multiplayer keeps one too, fed by
-	///   every broadcast edit including fluid churn — so exactly where
-	///   players build, a column holds tens of thousands of entries, and an
-	///   F7 or a reveal-threshold `remesh_all` pays it for every resident
-	///   chunk at once.
-	///
-	/// The reveal LEVELS are NOT a guard, though they were written as one:
-	/// the first surface node reveals at the level everyone starts at, so
-	/// the test is true for every player alive. The host scan is the gate.
+	/// The reveal LEVELS are NOT a guard, though they were written as one: the
+	/// first surface node reveals at the level everyone starts at. The host
+	/// scan is the gate.
 	fn node_stamp(
 		&self,
 		pos: ChunkPos,
@@ -1566,20 +1513,15 @@ impl Pipeline {
 	}
 
 	/// Ceiling scale for the adaptive stream budget
-	/// (`stream_budget::urgency` of the nearest pending job): 1 = work
-	/// at the player, 0 = draw-distance rim churn or nothing pending.
-	/// Both heaps are keyed by flat d² from center so this is a peek; a
-	/// stale entry (column evicted or completed since queueing) can only
-	/// overestimate urgency, and only until a pop consumes it.
+	/// (`stream_budget::urgency` of the nearest pending job): 1 = work at the
+	/// player, 0 = rim churn or nothing pending. Both heaps are keyed by flat
+	/// d² from center so this is a peek; a stale entry can only overestimate.
 	///
-	/// **In-flight work counts.** With the inline executor an empty pair
-	/// of heaps genuinely meant nothing was pending — a job left the heap
-	/// and finished inside the same `run_inline_jobs` call. A pool breaks
-	/// that: `top_up_workers` drains BOTH heaps into it, so the frame the
-	/// backlog is handed over reads as idle and collapses the shared
-	/// deadline to its floor — precisely as those results start landing on
-	/// this thread to be absorbed. `in_flight_min_d2` is what keeps the
-	/// question "how near is the work" independent of WHERE it is running.
+	/// **In-flight work counts.** `top_up_workers` drains both heaps into the
+	/// pool, so the frame the backlog is handed over would read as idle and
+	/// collapse the shared deadline to its floor — precisely as those results
+	/// start landing here to be absorbed. `in_flight_min_d2` keeps "how near
+	/// is the work" independent of WHERE it is running.
 	pub fn stream_urgency(&self) -> f32 {
 		let generation = self.gen_heap.peek().map(|(Reverse(d), _)| *d);
 		let mesh = self.mesh_heap.peek().map(|(Reverse(d), _)| *d);
@@ -1725,21 +1667,16 @@ impl Pipeline {
 		self.gi_dirty.insert(pos);
 		self.gi_edits.push((x, y, z));
 		// Recorded here ONLY where this write is the authority. In
-		// multiplayer it is a prediction, and `apply_authoritative` records
-		// the server's answer instead — so the map still fills (a player's
-		// own stone wall is recorded the moment it is confirmed, and grows
-		// no phantom veins), but it fills with what the JOURNAL holds.
+		// multiplayer it is a prediction and `apply_authoritative` records
+		// the server's answer instead, so the map fills with what the
+		// JOURNAL holds.
 		//
-		// The difference is rejections. A refusal is reverted through this
-		// same function, and `EditOverlay::record` is insert-only, so a
-		// predicted edit that the server threw out used to leave its cell
-		// marked edited forever while the server had never journaled it.
-		// From then on the two ends answered `ore::dig_mode` differently
-		// about that cell — client Break, server Extract or NeedsSiphon —
-		// and since the server refuses the hold and the client remembers
-		// the refusal, the cell became permanently un-minable. Every
-		// rejection reason reaches here: Protected, InsidePlayer, Occluded,
-		// DigIncomplete, or a cell simply dropped by the rate limiter.
+		// The difference is rejections. A refusal reverts through this same
+		// function and `EditOverlay::record` is insert-only, so recording a
+		// prediction leaves a thrown-out cell marked edited forever — the
+		// two ends then answer `nodes::dig_mode` differently about it and
+		// the cell is permanently un-minable. Every rejection reason reaches
+		// here.
 		if self.record_local {
 			self.edits.record(x, y, z, cell);
 			self.recorded.push((x, y, z, cell));

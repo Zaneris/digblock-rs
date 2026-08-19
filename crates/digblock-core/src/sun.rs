@@ -1,17 +1,16 @@
 //! Day/night sun + moon.
 //!
-//! `tod` is the angle of the sun's light vector from straight-down,
-//! rotating about world Z and wrapping continuously in (−180°, 180°]:
-//! 0 = noon, ±90 = horizons, 180 = midnight. A full cycle takes
-//! [`DAY_SECS`]. The moon sits exactly opposite the sun and takes over
-//! as the light source at night; near the horizon the caster's strength
-//! fades to zero, so the handoff at ±90° is invisible.
+//! `tod` is the angle of the sun's light vector from straight-down, rotating
+//! about world Z and wrapping continuously in (−180°, 180°]: 0 = noon, ±90 =
+//! horizons, 180 = midnight. A full cycle takes [`DAY_SECS`]. The moon sits
+//! exactly opposite and takes over at night; near the horizon the caster's
+//! strength fades to zero, so the handoff is invisible.
 //!
-//! Because `dir_of` rotates about world Z alone, the light direction
-//! ALWAYS has z = 0. That is load-bearing for anything tracing against
-//! the voxel lattice: a ray confined to a plane, on an exactly rational
-//! slope, aliases identically in every slice of the third axis. Sun rays
-//! are jittered per-pixel for exactly this reason — see GI-DESIGN.md.
+//! Because `dir_of` rotates about world Z alone, the light direction ALWAYS has
+//! z = 0 — load-bearing for anything tracing the voxel lattice, since a ray
+//! confined to a plane on an exactly rational slope aliases identically in
+//! every slice of the third axis. Sun rays are jittered per-pixel for exactly
+//! this reason (GI-DESIGN.md).
 
 use glam::Vec3;
 

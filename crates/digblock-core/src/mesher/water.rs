@@ -82,24 +82,19 @@ fn surface_amount(input: &MeshInput, x: i32, y: i32, z: i32, b: BlockType) -> Op
 }
 
 /// Water surface drop code at horizontal lattice corner (lx, lz) for water
-/// cells at height y: the corner touches up to four cells. In priority
-/// order — water at y + 1 or a covered water cell in any touching column
-/// pins the surface full; else an open-air cell with water directly below
-/// plunges the whole block, so cascades render as connected ramps rather
-/// than stacked slivers, UNLESS a resting SOURCE touches the corner, since
-/// a full block must keep looking full exactly where it spills outward
-/// (`a_spilling_source_keeps_its_full_height`); else the whole-block code
+/// cells at height y: the corner touches up to four cells. In priority order —
+/// water at y + 1 or a covered water cell in any touching column pins the
+/// surface full; else an open-air cell with water directly below plunges the
+/// whole block, so cascades render as connected ramps rather than stacked
+/// slivers, UNLESS a resting SOURCE touches the corner, since a full block must
+/// keep looking full exactly where it spills outward; else the whole-block code
 /// minus the STRONGEST touching amount.
 ///
 /// Strongest, not the mean: the sim halves the amount on every spread, so
-/// averaging drags every corner toward the thinner water beyond it. The max
-/// makes each cell's top face span exactly from its uphill neighbour's
-/// level down to its own, reproducing the ladder the sim computed, and it
-/// subsumes the old separate source pin.
+/// averaging drags every corner toward the thinner water beyond it.
 ///
-/// A pure function of the CORNER, never of the cell emitting the face —
-/// which is what lets adjacent cells agree and knit without cracks,
-/// including across chunk borders via the padded shell.
+/// A pure function of the CORNER, never of the cell emitting the face — which
+/// is what lets adjacent cells knit without cracks, chunk borders included.
 fn corner_drop(input: &MeshInput, lx: i32, y: i32, lz: i32) -> u32 {
 	let mut best = 0u8;
 	let mut plunge = false;
@@ -141,20 +136,15 @@ fn corner_drop(input: &MeshInput, lx: i32, y: i32, lz: i32) -> u32 {
 	9 - u32::from(best)
 }
 
-/// A fall's landing: falling water whose below-cell is where the fall
-/// ends — resting water (worldgen falls land in pools) or solid ground
-/// (fluid-sim falls punching to a floor).
+/// A fall's landing: falling water whose below-cell is where the fall ends —
+/// resting water (worldgen falls land in pools) or solid ground (fluid-sim
+/// falls punching to a floor).
 ///
-/// Called from `mesh_chunk`'s block loop as well as from the splash ring
-/// scan, because recording the impact is a property of the CELL and not
-/// of any face it happens to emit. It used to live inside
-/// `WaterState::of`, which only runs when a face survives culling — and
-/// an impact cell is the one water cell most likely to have every face
-/// culled: capped by the fall above it and ringed by the pool it just
-/// made. A player-built fall punching into its own pool therefore
-/// produced no impact at all, so no spray and no waterfall audio, while
-/// worldgen falls (which land in open air one cell above a pool, sides
-/// visible) worked and hid the bug.
+/// Called from `mesh_chunk`'s block loop as well as from the splash ring scan,
+/// because recording the impact is a property of the CELL and not of any face
+/// it happens to emit. Inside `WaterState::of` it only ran when a face survived
+/// culling — and an impact cell is the one water cell most likely to have every
+/// face culled, capped by the fall above and ringed by the pool it just made.
 pub(super) fn is_impact(input: &MeshInput, x: i32, y: i32, z: i32) -> bool {
 	if !BlockType::from_id(input.get(x, y, z)).is_falling() {
 		return false;

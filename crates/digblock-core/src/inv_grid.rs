@@ -117,30 +117,19 @@ impl InvGrid {
 	}
 }
 
-/// Repair the layout against the authoritative counts: slots whose type
-/// hit zero clear — on the BAR as well as in the grid — as do grid slots
-/// whose type moved to the bar; owned types placed nowhere go to a free
-/// bar slot first (the classic dig-credit auto-assign), overflowing into
-/// the first empty grid slot. Deliberate arrangements survive — a type
-/// the player parked in the grid stays in the grid.
+/// Repair the layout against the authoritative counts: exhausted slots clear
+/// on the BAR as well as in the grid, as do grid slots whose type moved to the
+/// bar; owned types placed nowhere go to a free bar slot first and overflow
+/// into the grid. Deliberate arrangements survive — a type parked in the grid
+/// stays there. The bar sweep runs first, so the slot an exhausted type gives
+/// up is free for the same pass to fill.
 ///
-/// The bar sweep runs first so the slot an exhausted type gives up is
-/// free for the same pass to fill. It cannot touch the WaterTool: the
-/// tool is not a `Block`, and `clear_slot` refuses it anyway.
-///
-/// A type that isn't [`BlockType::is_slottable`] is swept out of both
-/// bar and grid whatever its count says, and never filed back in. That
-/// is the ONE rule keeping water out of the item screens now that its
-/// count means "the bucket is charged" — and it doubles as the migration
-/// for saves and identity records written when water was an ordinary
-/// stack, whose slots clear on the first reconcile after loading.
-///
-/// An emptied slot is released rather than kept greyed at zero because
-/// the count IS the item — a bar advertising nine types you don't have
-/// is nine slots you can't use. The engine reconciles and mirrors the
-/// layout BEFORE the frame's clicks send edits (`engine.rs` update),
-/// so the edit that empties a stack is still validated against the
-/// layout that holds it; the slot clears on the next frame.
+/// A type that isn't [`BlockType::is_slottable`] is swept out of both whatever
+/// its count says — the ONE rule keeping water out of the item screens now
+/// that its count means "the bucket is charged", and also the migration for
+/// saves written when water was an ordinary stack. An emptied slot is RELEASED
+/// rather than kept greyed at zero, which is safe only because the engine
+/// reconciles and mirrors the layout BEFORE the frame's clicks send edits.
 pub fn reconcile_layout(inv: &Inventory, bar: &mut Hotbar, grid: &mut InvGrid) {
 	// The tool slot's second axis, which no sweep below can reach: the bar
 	// holds `WaterTool` while `Hotbar::active_tool` says WHICH tool, and

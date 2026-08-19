@@ -1,20 +1,17 @@
-//! Ore placement (SKILLS-DESIGN §5.3) — **derived, never stored**.
+//! Ore placement — **derived, never stored**.
 //!
 //! This module writes nothing: `build_column` returns exactly the bytes it
 //! returned before ore existed and the worldgen golden hash does not move,
-//! which is what lets veins appear retroactively in worlds that already
-//! exist. A deposit is a salted position hash over a coarse grid, the
+//! which is what lets veins appear retroactively in worlds that already exist.
+//! A deposit is a salted position hash over a coarse grid, the
 //! [`crate::decoration::structures_near`] pattern in three dimensions, so
 //! pockets span chunk borders with no pipeline state.
 //!
-//! Two consumers, two shapes, pinned to agree: [`ore_at`] answers ONE cell
-//! for the dig path, and [`deposits_near`] gathers a box's worth so the mesh
-//! stamp can test a whole padded shell against a short list.
+//! Two consumers, two shapes, pinned to agree: [`ore_at`] answers ONE cell for
+//! the dig path, and [`deposits_near`] gathers a box's worth so the mesh stamp
+//! can test a whole padded shell against a short list.
 //!
-//! **The unedited rule is the anti-dupe.** Ore manifests only in pristine
-//! Stone; without it, placing crafted Stone into a spent coordinate would
-//! regrow the vein. `JournalIndex::record` only ever inserts, so "has this
-//! cell ever been written" is monotone and cannot un-spend one.
+//! **The unedited rule is the anti-dupe** — see [`super::nodes`].
 
 use crate::block::BlockType;
 
@@ -38,25 +35,19 @@ const DEPOSIT_SALT: u64 = 0x0e5e_ee45_1c3d_b10b;
 /// measures what falls out of the pair and reports it.
 const DEPOSIT_IN_256: u64 = 200;
 
-/// The tiers, shallowest-first: `(block, floor, ceiling, weight)` — a
-/// deposit's CENTRE rolls a tier whose band contains its y, weighted among
-/// the bands open there.
+/// The tiers, shallowest-first: `(block, floor, ceiling, weight)` — a deposit's
+/// CENTRE rolls a tier whose band contains its y, weighted among the bands open
+/// there.
 ///
-/// Every band has a FLOOR as well as a ceiling, and adjacent bands overlap
-/// only at their seams. Bands used to run to bedrock (deep tiers merely
-/// rarer), which made the bottom of the world mostly first-tier ore again
-/// — a disappointment at the end of the longest dig in the game. With
-/// floors, depth predicts tier: Emberore is confined to surface-cave
-/// depths, and a find at the bottom is never common ore. The old
-/// "exclusive bands strand a shallow-tier miner at depth" concern is
-/// answered by the reveal ladder itself — you mine where your tier lives,
-/// and the seams still overlap.
+/// Every band has a FLOOR as well as a ceiling, and adjacent bands overlap only
+/// at their seams, so **depth predicts tier**: Emberore is confined to
+/// surface-cave depths and a find at the bottom is never common ore. Bands that
+/// ran to bedrock made the bottom of the world mostly first-tier ore again — a
+/// disappointment at the end of the longest dig in the game.
 ///
-/// Leystone is the SURFACE tier and not a Mining ore at all: it rides
-/// this same deposit stream and manifests in pristine Stone exactly as
-/// the ore tiers do, but its reveal keys on ALCHEMY
-/// (`unlock::alchemy_reveal`) — it is the Earth-essence node, the shallow
-/// find the deep tiers vacate their band for.
+/// Leystone is the SURFACE tier and not a Mining ore at all: it rides this same
+/// deposit stream and manifests in pristine Stone exactly as the ore tiers do,
+/// but its reveal keys on ALCHEMY.
 const TIERS: [(BlockType, i32, i32, u64); 5] = [
 	(BlockType::Leystone, 96, 200, 10),
 	(BlockType::Emberore, 64, 140, 8),
@@ -240,26 +231,21 @@ pub fn ore_at(x: i32, y: i32, z: i32, seed: f64) -> Option<BlockType> {
 	})
 }
 
-/// Does this vein cell carry a trace of Aether, on top of whatever its
-/// tier pays (`alchemy::field_yield`)?
+/// Does this vein cell carry a trace of Aether, on top of whatever its tier
+/// pays (`alchemy::field_yield`)?
 ///
 /// Pure in the cell and the world seed, exactly like [`rim_open`] and the
-/// deposit stream above it — so the server, the engine's offline arm and
-/// a rejoin a year later all agree about which seams were rich, with
-/// nothing stored, nothing on the wire and nothing to keep in step.
-/// Rolling it per draw instead would put the answer in whichever machine
-/// happened to ask, which for a value the server credits is no answer at
-/// all.
+/// deposit stream above it — so the server, the engine's offline arm and a
+/// rejoin a year later all agree about which seams were rich, with nothing
+/// stored and nothing on the wire. Rolling it per draw would put the answer in
+/// whichever machine happened to ask, which for a value the server credits is
+/// no answer at all.
 ///
-/// **Duskstone alone traces**, and that is the whole design of it. Aether
-/// is otherwise an endgame currency: the deepest tier is the only vein
-/// that reliably carries it and the foliage lines that trickle it sit near
-/// the top of the Alchemy ladder, while the Resonant Pick asks for some at
-/// the middle of it. [`crate::unlock::reveal`] puts a reliable supply at
-/// the level the pick's own swing widens; this is the luck beside that
-/// ladder — the chance that a player who has been working the middle tier
-/// all along walks up to the bench already holding what the pick wants,
-/// rather than a supply anyone can plan around.
+/// **Duskstone alone traces.** Aether is otherwise an endgame currency, while
+/// the Resonant Pick asks for some at the middle of the ladder. This is the
+/// luck beside that ladder — the chance a player working the middle tier walks
+/// up to the bench already holding what the pick wants, rather than a supply
+/// anyone can plan around.
 pub fn traces_aether(ore: BlockType, x: i32, y: i32, z: i32, seed: f64) -> bool {
 	ore == BlockType::Duskstone && mix(x, y, z, seed.to_bits(), TRACE_SALT) & 0xFF < TRACE_IN_256
 }
@@ -299,19 +285,15 @@ pub fn lowest_reveal() -> u32 {
 		.expect("four tiers")
 }
 
-/// The same question on the other axis: the lowest ALCHEMY level at which
-/// any tier in the deposit stream is visible. Its twin above walks
-/// [`ORES`] because Mining's tiers are exactly that list; this one walks
-/// [`TIERS`], because the stream also carries surface nodes that [`ORES`]
-/// deliberately excludes.
+/// The same question on the other axis: the lowest ALCHEMY level at which any
+/// tier in the deposit stream is visible. Its twin above walks [`ORES`] because
+/// Mining's tiers are exactly that list; this one walks [`TIERS`], because the
+/// stream also carries surface nodes that [`ORES`] deliberately excludes.
 ///
-/// Derived rather than naming the one tier that qualifies today. Both
-/// callers used to hardcode it, so a second Alchemy-revealed tier would
-/// have been stamped by nobody while the dig path revealed it anyway —
-/// a find you can see and cannot extract, from a one-word table edit.
-///
-/// [`u32::MAX`] when no tier answers to Alchemy at all, which reads
-/// correctly at every call site: no level reaches it.
+/// Derived rather than naming the one tier that qualifies today: hardcoded, a
+/// second Alchemy-revealed tier would be stamped by nobody while the dig path
+/// revealed it anyway — a find you can see and cannot extract, from a one-word
+/// table edit. [`u32::MAX`] when no tier answers to Alchemy at all.
 pub fn lowest_alchemy_reveal() -> u32 {
 	TIERS
 		.iter()
@@ -414,14 +396,9 @@ mod tests {
 	/// a test that only asks whether ore MOVED cannot catch ore that moved
 	/// somewhere bad, so this pins where it actually is.
 	///
-	/// These numbers moved once, deliberately, and the old set is worth
-	/// recording because it was pinning a bug rather than guarding
-	/// against one: nearly every cell in it sat in the first course above
-	/// the world floor, i.e. the first thing this golden ever described
-	/// was a vein packed against the undiggable floor. `deposit_in` guarded
-	/// only the deposit's CENTRE, so a blob reached [`MAX_RADIUS`] further down
-	/// into cells no dig can ever open. Everything here is now clear of
-	/// `BEDROCK_Y + MAX_RADIUS`, which
+	/// The set moved once, deliberately: the original was pinning a bug, with
+	/// nearly every cell in the first course above the world floor. Everything
+	/// here is now clear of `BEDROCK_Y + MAX_RADIUS`, which
 	/// `no_vein_reaches_the_undiggable_floor` enforces in general.
 	#[test]
 	fn ore_positions_are_pinned() {
@@ -452,16 +429,13 @@ mod tests {
 	/// No ore is ever placed where no dig can reach it.
 	///
 	/// Asked of the CELLS rather than the deposits, because that is the
-	/// property that matters and it is the one the centre-only guard
-	/// missed: `deposit_in` refused a centre at or below the floor, but
-	/// a blob reaches [`MAX_RADIUS`] further down, so a deposit seeded just
-	/// above it put ore IN it. There is no bedrock block — `column_block`
-	/// fills the floor with ordinary Stone — so the reveal saw a pristine
-	/// Stone cell and stamped it, and `dig_hardness` then refused every
-	/// hold on the seam forever.
+	/// property the centre-only guard missed: `deposit_in` refused a centre at
+	/// or below the floor, but a blob reaches [`MAX_RADIUS`] further down. There
+	/// is no bedrock block — `column_block` fills the floor with ordinary Stone
+	/// — so the reveal stamped a pristine cell and `dig_hardness` then refused
+	/// every hold on the seam forever.
 	///
-	/// Swept over several seeds because the failure is a hash away: one
-	/// seed's grid can easily have no deposit low enough to expose it.
+	/// Swept over several seeds because the failure is a hash away.
 	#[test]
 	fn no_vein_reaches_the_undiggable_floor() {
 		use crate::block::BEDROCK_Y;

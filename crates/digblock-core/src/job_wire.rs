@@ -1,27 +1,15 @@
-//! Byte codec for [`Job`] / [`JobResult`] — the wire between the main
-//! thread and a job pool that cannot share memory with it.
+//! Byte codec for [`Job`] / [`JobResult`] — the wire between the main thread
+//! and a job pool that cannot share memory with it. Native worker threads move
+//! these over a channel and never come here; a Web Worker is its own wasm
+//! instance with its own linear memory, so a job crosses as bytes. Everything
+//! is written out little-endian byte by byte rather than reinterpreted, so the
+//! format can never silently depend on the layout rustc chose.
 //!
-//! Native worker threads pass these by move over a channel and never come
-//! here. The browser's Web Workers can't: each worker is its own wasm
-//! instance with its own linear memory, so a job crosses as bytes in a
-//! transferable `ArrayBuffer`. That the pipeline's jobs are POD — the
-//! worker deliberately holds no `Arc` into the store — is what makes this
-//! a codec rather than a redesign.
-//!
-//! Everything is little-endian and explicit. Both endpoints are wasm
-//! (always LE) and so is every host this builds for, but the format is
-//! written out byte by byte rather than reinterpreted, so it can never
-//! silently depend on the layout `rustc` happened to choose.
-//!
-//! **The air sentinel is part of the format.** A generated column shares
-//! one [`AIR_CHUNK`] `Arc` for every sky chunk, and `is_air_chunk` tests
-//! that by POINTER — the pipeline skips meshing on it, and `drain_results`
-//! skips the neighbour re-dirty cascade. Encoding those chunks as a full
-//! block of zeroes each would decode into one distinct all-air chunk per
-//! level of the column — chunks that compare equal to air but aren't *the*
-//! air, and the mesher would start meshing the sky. So an air chunk
-//! travels as one flag byte and decodes back to a clone of the shared
-//! sentinel, which is what `generated_result_keeps_the_air_sentinel` pins.
+//! **The air sentinel is part of the format.** Sky chunks share one
+//! [`AIR_CHUNK`] `Arc` and `is_air_chunk` tests it by POINTER; encoding those
+//! as zeroes would decode into chunks that compare equal to air but are not
+//! *the* air, and the mesher would start meshing the sky. So an air chunk
+//! travels as one flag byte and decodes to a clone of the sentinel.
 
 use std::sync::Arc;
 

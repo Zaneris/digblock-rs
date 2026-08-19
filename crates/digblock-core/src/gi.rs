@@ -1,17 +1,15 @@
 //! GI-class classification for the RTGI voxel window (GI-DESIGN.md).
 //!
-//! The window is an R8Uint 3D texture, one texel per block, that the probe
-//! rays march. Classification is a pure function of the cell, so every
-//! consumer agrees by construction. For full cubes the class byte IS the
-//! block id; everything a ray needs per class lives in the render side's
-//! material LUT, so the window never re-uploads when a look is tuned.
+//! The window is an R8Uint 3D texture, one texel per block, that the probe rays
+//! march. Classification is a pure function of the cell, so every consumer
+//! agrees by construction. For full cubes the class byte IS the block id;
+//! everything a ray needs per class lives in the render side's material LUT, so
+//! the window never re-uploads when a look is tuned.
 //!
-//! Shaped cells get SYNTHETIC classes from [`SHAPE_CLASS_BASE`] up, one per
-//! distinct (block, occlusion geometry) pair, each carrying a TWO-BOX COVER
-//! of the shape's collision boxes: box 0 exactly, then the AABB union of the
-//! rest. The cover can only ever OVER-block, never under, and its worst case
-//! is the old full cell. A state whose collision is EMPTY — an open door —
-//! classifies as air, which is what lets light through a doorway.
+//! Shaped cells get SYNTHETIC classes from [`SHAPE_CLASS_BASE`] up, each
+//! carrying a TWO-BOX COVER of the shape's collision boxes: box 0 exactly, then
+//! the AABB union of the rest. A cover can only ever OVER-block, never under. A
+//! state whose collision is EMPTY — an open door — classifies as air.
 
 use std::sync::LazyLock;
 
@@ -41,22 +39,19 @@ pub struct GiChunk {
 	pub emitters: Vec<(u8, u8, u8, u8)>,
 }
 
-/// First class byte the shaped-variant classes occupy. Everything below is
-/// a plain block id (or air); everything from here up indexes
-/// [`shape_classes`]. The window texture is `R8Uint`, so one byte is the
-/// whole budget and this constant is where it is SPLIT.
+/// First class byte the shaped-variant classes occupy. Everything below is a
+/// plain block id (or air); everything from here up indexes [`shape_classes`].
+/// The window texture is `R8Uint`, so one byte is the whole budget and this
+/// constant is where it is SPLIT.
 ///
-/// **The price to know before adding a material: a dozen-odd classes per
-/// shaped material** (a cover per stair facing, per slab anchor and
-/// thickness, per closed door facing). `shape_classes_fit_the_byte` pins
-/// both ends and prints the remaining headroom rather than merely passing.
-///
-/// The free slots are NOT a material's worth of room — the pin holds a
-/// margin back so the build fails while there is still space to think in.
-/// The next shaped material has to move this split FIRST, and there is
-/// plenty to move: the full-cube half is only used up to the last block id,
-/// so every id between that and the base sits idle. A NEW shape family is
-/// the expensive case, costing its own covers in every material at once.
+/// **The price to know before adding a material: a dozen-odd classes per shaped
+/// material** (a cover per stair facing, per slab anchor and thickness, per
+/// closed door facing). `shape_classes_fit_the_byte` pins both ends and prints
+/// the remaining headroom rather than merely passing — and holds a margin back,
+/// so the free slots are NOT a material's worth of room. The next shaped
+/// material has to move this split first; the full-cube half is only used up to
+/// the last block id, so every id between that and the base sits idle. A NEW
+/// shape family is the expensive case, costing covers in every material at once.
 pub const SHAPE_CLASS_BASE: u8 = 112;
 
 /// One synthetic class: the block whose material the LUT entry borrows,
@@ -145,20 +140,17 @@ pub fn shape_classes() -> &'static [ShapeClass] {
 /// cell top, that leaves a visible flame over the top of the post.
 const EMISSIVE_BAND: f32 = 5.0 / 12.0;
 
-/// Where inside its cell an emitting class actually radiates from, in
-/// block units (0..1 per axis).
+/// Where inside its cell an emitting class actually radiates from, in block
+/// units (0..1 per axis).
 ///
-/// A full cube emits from its center. A shaped emitter does NOT: a torch
-/// is a slim post whose fire is the top of its height, so a center origin
-/// puts the point source down in the wooden handle, well below the flame
-/// the eye reads as the source. Under `LIGHT_NEAR` that costs no
-/// brightness — irradiance is flat in there — but the hard point shadows
-/// it casts project from the wrong height.
+/// A full cube emits from its center. A shaped emitter does not: a torch is a
+/// slim post whose fire is the top of its height, so a center origin puts the
+/// point source down in the wooden handle. Under `LIGHT_NEAR` that costs no
+/// brightness — irradiance is flat in there — but the hard point shadows it
+/// casts project from the wrong height.
 ///
-/// Horizontally the box center and the cell center agree for anything
-/// symmetric (the torch's post is centered), so this only really moves y
-/// today; it is written per-axis so a wall-mounted variant works when
-/// the state nibble arrives.
+/// Written per-axis though only y moves today, so a wall-mounted variant works
+/// when the state nibble arrives.
 pub fn light_origin(class: u8) -> [f32; 3] {
 	const MID: [f32; 3] = [0.5, 0.5, 0.5];
 	if class < SHAPE_CLASS_BASE {
@@ -197,48 +189,36 @@ pub fn light_origin(class: u8) -> [f32; 3] {
 /// pinned. See [`carried_origin`].
 pub const CARRY_DROP: f32 = 0.25;
 
-/// Where a light carried by a player whose eye is at `eye` radiates
-/// from.
+/// Where a light carried by a player whose eye is at `eye` radiates from.
 ///
-/// Deliberately a function of the player's POSITION alone and not of
-/// their facing, which costs one thing and buys two.
+/// Deliberately a function of POSITION alone and not of facing. The cost is
+/// that the light does not sit where the item is drawn — about half a block
+/// off, which against `LIGHT_RANGE` is nothing.
 ///
-/// What it costs: the light does not sit where the item is drawn. The
-/// viewmodel hangs its item off the hand and `players.wgsl` offsets the
-/// remote one by a yaw-rotated half block, so the light and the flame
-/// you can see are about that far apart. Against `LIGHT_RANGE` that is
-/// nothing.
-///
-/// What it buys, and neither is cosmetic. **Mouse-look never moves the
-/// light**, so a player standing still and turning is not a moving
-/// emitter: no invalidation fires, the resolve's screen history climbs
-/// back to `N_MAX`, and a lit room settles as deeply as one lit by a
-/// torch on the floor. A hand-anchored origin swings through half a
-/// block on every look and would hold the near field permanently short.
-/// And **the cell is guaranteed non-solid**: the player's own capsule
-/// occupies it, so nothing can bury the light inside geometry when they
-/// brush a wall — which would otherwise put the room out.
+/// What it buys, and neither is cosmetic. **Mouse-look never moves the light**,
+/// so a player standing still and turning is not a moving emitter: no
+/// invalidation fires, the resolve's screen history climbs back to `N_MAX`, and
+/// a lit room settles as deeply as one lit by a torch on the floor. And **the
+/// cell is guaranteed non-solid** — the player's own capsule occupies it — so
+/// nothing can bury the light inside geometry when they brush a wall.
 pub fn carried_origin(eye: glam::Vec3) -> glam::Vec3 {
 	eye - glam::Vec3::Y * CARRY_DROP
 }
 
 /// What a held emitter casts at, for a wielder at this Mining level.
 ///
-/// Every block answers with its own row and stops there — a torch in a
-/// hand is the torch on the floor, which is the whole of R28. The
-/// Resonant Pick is the one exception in the game, and it is a
-/// deliberate one: the tool that breaks a whole plane resonates hard
-/// enough to work by, so its glow steps up with the swing.
+/// Every block answers with its own row and stops there — a torch in a hand is
+/// the torch on the floor (R28). The Resonant Pick is the one exception, and a
+/// deliberate one: the tool that breaks a whole plane resonates hard enough to
+/// work by, so its glow steps up with the swing.
 ///
-/// Keyed on [`crate::unlock::pick_cells`] reaching
-/// [`crate::unlock::PICK_PLANE`] rather than on a level of its own,
-/// because two thresholds for one rank drift apart the first time
-/// either moves — and the point of the brighter glow is that it arrives
-/// on the swing the player just felt widen.
+/// Keyed on [`crate::unlock::pick_cells`] reaching [`crate::unlock::PICK_PLANE`]
+/// rather than a level of its own, because two thresholds for one rank drift
+/// apart the first time either moves.
 ///
-/// A remote's pick answers at its row's level: their skills are not in
-/// the snapshot, and inventing a rank for someone else's tool would put
-/// a light in the world that the player holding it cannot see.
+/// A remote's pick answers at its row's level: their skills are not in the
+/// snapshot, and inventing a rank for someone else's tool would put a light in
+/// the world that the player holding it cannot see.
 pub fn carried_light(b: BlockType, mining: u32) -> CarriedLight {
 	if b == BlockType::ResonantPick
 		&& crate::unlock::pick_cells(mining) == crate::unlock::PICK_PLANE

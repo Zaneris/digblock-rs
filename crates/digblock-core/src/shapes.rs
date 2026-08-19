@@ -1,22 +1,16 @@
-//! Sub-block shape registry: static geometry per (block id, state nibble)
-//! on a cubic sub-grid (`GRID` sub-cells per block edge, chosen so halves,
-//! thirds, quarters and sixths are all exact). Shapes are authored once as
-//! sub-box lists in a
-//! canonical facing and every variant (rotations, door open/half) is baked
-//! from them at first use — rasterize to a bitset, emit exposed sub-faces,
-//! greedy-merge into maximal quads — all pure integer ops, so the registry
-//! is deterministic across platforms and both sides of the wire.
+//! Sub-block shape registry: static geometry per (block id, state nibble) on a
+//! cubic sub-grid (`GRID` sub-cells per block edge, chosen so halves, thirds,
+//! quarters and sixths are all exact). Shapes are authored once as sub-box
+//! lists in a canonical facing and every variant is baked from them at first
+//! use — rasterize to a bitset, emit exposed sub-faces, greedy-merge into
+//! maximal quads — all pure integer ops, so the registry is deterministic
+//! across platforms and both sides of the wire.
 //!
-//! Layering: above block.rs/dir.rs, below the mesher. The mesher stamps
-//! the baked quad templates; physics consumes the collision boxes and the
-//! stair ramp tag; the server's edit validation consumes `state_valid`.
-//!
-//! Corner-slot and UV conventions deliberately mirror the mesher's
-//! `face_corners` (TL/TR/BL/BR slots, corner-code UV): the baker works in
-//! each face's (u, v) frame and inverts it back to positions, so a baked
-//! full-cube face is bit-identical to the mesher's full-block output —
-//! pinned by `full_cube_bakes_to_the_six_block_faces` here and a
-//! cross-check test in mesher.rs.
+//! Layering: above block.rs/dir.rs, below the mesher. Corner-slot and UV
+//! conventions deliberately mirror the mesher's `face_corners`, so a baked
+//! full-cube face is bit-identical to the mesher's full-block output — pinned
+//! here by `full_cube_bakes_to_the_six_block_faces` and cross-checked in
+//! mesher.rs.
 
 use crate::block::{BlockType, ShapeKind};
 use crate::chunk::{STATE_MASK, STATE_SHIFT, cell_id, cell_state};
@@ -365,26 +359,22 @@ pub fn draw_bounds(cell: u16) -> Option<SubBox> {
 	shape_of_cell(cell).map(|v| v.bounds)
 }
 
-/// The cell a whole OBJECT is anchored to, plus the box of best fit
-/// around all of it, in twelfths **of that anchor cell** — so a door
-/// hands back its LOWER half and a box two cells tall, and every
-/// single-cell block hands back itself and [`draw_bounds`].
-/// The caller must not assume the box fits inside one cell.
+/// The cell a whole OBJECT is anchored to, plus the box of best fit around all
+/// of it, in twelfths **of that anchor cell** — so a door hands back its LOWER
+/// half and a box two cells tall, and every single-cell block hands back itself
+/// and [`draw_bounds`]. **The caller must not assume the box fits inside one
+/// cell.**
 ///
-/// This is the crosshair outline's box, and it exists because a door is
-/// one object wearing two cells: boxing the half under the crosshair
-/// drew a frame around whichever panel you happened to aim at, which is
-/// not the thing the click acts on — dig either half and both go.
+/// This is the crosshair outline's box, and it exists because a door is one
+/// object wearing two cells: boxing the half under the crosshair drew a frame
+/// around whichever panel you aimed at, which is not the thing the click acts
+/// on — dig either half and both go.
 ///
-/// The partner's geometry is DERIVED (same id, same facing, same open
-/// bit, other half) rather than read out of the world, exactly as
-/// [`door_partner`] derives its cell: the pair is written in one tick and
-/// replayed per-cell LWW, so the two halves cannot disagree about which
-/// variant they are, and this stays a pure function of one cell value.
-///
-/// The union is a real union, not the lower half stretched: the handle
-/// protrudes past the leaf and the lites do not, so the two halves have
-/// different x extents and only one of them reaches the box's edge.
+/// The partner's geometry is DERIVED (same id, facing and open bit, other half)
+/// rather than read out of the world, exactly as [`door_partner`] derives its
+/// cell, so this stays a pure function of one cell value. The union is a real
+/// union, not the lower half stretched: the handle protrudes past the leaf and
+/// the lites do not.
 pub fn object_bounds(cell: (i32, i32, i32), value: u16) -> ((i32, i32, i32), Option<SubBox>) {
 	let b = BlockType::from_id(cell_id(value));
 	if !b.is_door() {
@@ -523,19 +513,15 @@ const SLAB_BOXES: [SubBox; 4] = [
 	SubBox::new([0, 4, 0], [12, 12, 12]),
 ];
 
-/// The torch: one centered post, square in section and stopping short of
-/// the cell's top. Floor-mounted, stateless — wall mounting is a state
-/// nibble away when wanted. Small enough that auto-step walks OVER it
-/// reads fine.
+/// The torch: one centered post, square in section and stopping short of the
+/// cell's top. Floor-mounted, stateless — wall mounting is a state nibble away
+/// when wanted. Small enough that auto-step walking OVER it reads fine.
 ///
-/// The post is as slim as a CENTERED box gets on this grid (an odd width
-/// can't straddle the middle), and the head is what came off to get
-/// here: it used to flare to twice that width over the top of the post,
-/// overhanging it on every side, which read as a mallet rather than a
-/// flame. Nothing is lost by dropping it — the flame is the TEXTURE's
-/// business, not the silhouette's: `torch_side` paints its upper rows as
-/// glow, so the same box carries wood below and fire above, and the top
-/// face is `TORCH_FLAME` either way.
+/// The post is as slim as a CENTERED box gets on this grid (an odd width can't
+/// straddle the middle), and it carries no head: a flare over the top read as a
+/// mallet rather than a flame, and the flame is the TEXTURE's business anyway —
+/// `torch_side` paints its upper rows as glow, so one box carries wood below
+/// and fire above.
 const TORCH_BOXES: [SubBox; 1] = [SubBox::new([5, 0, 5], [7, 10, 7])];
 
 /// A table: a full-footprint top on four corner legs.

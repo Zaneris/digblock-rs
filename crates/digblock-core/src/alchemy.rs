@@ -1,27 +1,14 @@
 //! The alchemy economy: node-draw yields, transmutation costs and the bench
-//! pace — every number the server and offline play must agree on
-//! (SKILLS-DESIGN §3–§4, §7). All integer math, no floats. The LEVELS that
-//! open each recipe are not here: every threshold lives in [`crate::unlock`],
-//! beside the gates that enforce it.
+//! pace — every number the server and offline play must agree on. All integer
+//! math. The LEVELS that open each recipe live in [`crate::unlock`].
 //!
-//! Three rules this module is pinned against:
-//!
-//! - **Nothing the world hands you may be transmuted** (§7.5), gated on
-//!   [`crate::block::BlockType::is_bench_only`] — so no recipe competes with
-//!   a shovel. Clean rock passes: the world is made of stone and still hands
-//!   you Rubble.
-//! - **No craft creates essence.** A craft only ever debits the pool;
-//!   [`field_yield`] is the one thing that credits it, and it lives over in
-//!   [`crate::worldgen::nodes`]. Faucet and drain in different modules is
-//!   what makes "no matter creation" structural rather than per-level.
-//! - **The essence tool costs no essence, ever.** Every essence is a siphon
-//!   draw, so an essence-priced siphon deadlocks the currency on the first
-//!   world where nobody has one. Its price, and the bucket's, is FEEDSTOCK
-//!   alone.
-//!
-//! Structural costs DERIVE from the material × shape grid ([`crate::material`]).
-//! The FUNCTIONAL roster — torches, lamps, tools — is hand-written, because
-//! §7.3 prices function by hand and matter by volume.
+//! Three rules this module is pinned against: nothing the world hands you may
+//! be transmuted, gated on [`crate::block::BlockType::is_bench_only`]; no
+//! craft creates essence, since [`crate::worldgen::nodes`] holds the only
+//! faucet and this module only ever debits; and the essence tool costs no
+//! essence, ever, or the currency deadlocks on the first world where nobody
+//! owns a siphon. Structural costs DERIVE from the material × shape grid; the
+//! functional roster is hand-priced, because function has no volume.
 
 use crate::block::{BlockType, Essence};
 use crate::material::cost_split;
@@ -46,25 +33,20 @@ pub fn node_yields(node: BlockType, level: u32) -> Vec<(Essence, u32)> {
 	})
 }
 
-/// What one FIELD draw pays into a player's stocks — a NODE drawn out where
-/// it stands, vein or heartwood or spring alike, with no item in between.
-/// The ONE answer the server's dig credit and the engine's offline arm both
-/// take, so a solo world and a server cannot pay differently.
+/// What one FIELD draw pays into a player's stocks — a NODE drawn out where it
+/// stands, vein or heartwood or spring alike, with no item in between. The ONE
+/// answer the server's dig credit and the engine's offline arm both take.
 ///
 /// Deliberately the ordinary [`node_yields`] and not a second table: the
-/// Alchemy level scales a draw the same way everywhere, and the node rows
-/// stay the single statement of what a kind is worth. Mining's capstone
+/// Alchemy level scales a draw the same way everywhere. Mining's capstone
 /// ([`crate::unlock::ore_mastery`]) MULTIPLIES the whole split rather than
-/// adding a line, which is what keeps "one extra vein's worth" true of a
-/// two-essence kind as well as a one-essence one — surface draws included,
-/// since the capstone is mastery of extraction itself.
+/// adding a line, which keeps "one extra vein's worth" true of a two-essence
+/// kind as well as a one-essence one.
 ///
 /// The one thing a table cannot say is the TRACE, which is why this takes a
-/// cell at all: [`crate::worldgen::ore::traces_aether`] is a chance per
-/// draw, and the finest an essence split can be cut is a whole unit. Being
-/// DERIVED from the cell rather than rolled is what lets it live here — a
-/// random line would make this function two different answers on two
-/// machines.
+/// cell at all: [`crate::worldgen::ore::traces_aether`] is a chance per draw,
+/// and being DERIVED from the cell rather than rolled is what lets it live here
+/// — a random line would make this two different answers on two machines.
 pub fn field_yield(
 	node: BlockType,
 	alchemy: u32,
@@ -155,21 +137,18 @@ pub fn functional_ideal(b: BlockType) -> Option<&'static [(Essence, u32)]> {
 	})
 }
 
-/// The BLOCKS a functional item consumes beside its essence lines —
-/// matter in, not currency in. Today it carries the two vessels, whose
-/// whole price it is:
+/// The BLOCKS a functional item consumes beside its essence lines — matter in,
+/// not currency in. Today it carries the two vessels, whose whole price it is:
 ///
-/// - **The siphon may never cost essence.** Every essence in the game is
-///   a siphon draw now, so an essence-priced siphon deadlocks the whole
-///   currency — the old no-Ferrum rule generalized, and pinned
+/// - **The siphon may never cost essence.** Every essence in the game is a
+///   siphon draw, so an essence-priced siphon deadlocks the whole currency
 ///   (`the_essence_tool_costs_no_essence`).
-/// - **The bucket is the same deadlock one step out**: it sits at the
-///   level everyone starts at, before the first draw, so its price has
-///   to be something a fresh player can go and chop.
+/// - **The bucket is the same deadlock one step out**: it sits at the level
+///   everyone starts at, before the first draw, so its price has to be
+///   something a fresh player can go and chop.
 ///
-/// Wood for both, because timber is the first thing the strength ladder
-/// opens beyond soil — "dig your way to the trees, fell a few, make your
-/// tools" IS the opening loop.
+/// Wood for both — "dig your way to the trees, fell a few, make your tools" IS
+/// the opening loop.
 pub fn functional_feedstock(b: BlockType) -> &'static [(BlockType, u32)] {
 	match b {
 		BlockType::Bucket => &[(BlockType::Wood, 6)],
@@ -208,19 +187,14 @@ pub fn craft_feedstock(b: BlockType) -> Vec<(BlockType, u32)> {
 		.unwrap_or_default()
 }
 
-/// Ideal (pre-waste) craft cost lines for anything craftable. `None` =
-/// not craftable. May be EMPTY for a craftable item whose whole price is
-/// feedstock ([`craft_feedstock`]) — `Some(vec![])` and `None` mean
-/// different things, which is why callers gate on this and not on the
-/// lines.
+/// Ideal (pre-waste) craft cost lines for anything craftable. `None` = not
+/// craftable. May be EMPTY for a craftable item whose whole price is feedstock
+/// ([`craft_feedstock`]) — `Some(vec![])` and `None` mean different things,
+/// which is why callers gate on this and not on the lines.
 ///
-/// Gated on [`BlockType::is_bench_only`] first, the twin of the same gate
-/// in [`crate::unlock::craft`] — nothing the world hands you has a price,
-/// because it has no recipe.
-///
-/// Derived for every structural block: the material's whole-cube split
-/// ([`crate::material::Material::craft_units`]) prorated UP to the
-/// shape's volume.
+/// Gated on [`BlockType::is_bench_only`] first, the twin of the same gate in
+/// [`crate::unlock::craft`]. Derived for every structural block: the material's
+/// whole-cube split prorated UP to the shape's volume.
 pub fn craft_ideal(b: BlockType) -> Option<Vec<(Essence, u32)>> {
 	if !b.is_bench_only() {
 		return None;
@@ -360,22 +334,19 @@ fn costliest_op_ticks(level: u32) -> u32 {
 	table[level.min(crate::skills::MAX_LEVEL) as usize]
 }
 
-/// The bench bucket's capacity in ticks at `level`: two reference ops'
-/// worth, or ONE costliest craft if that is more.
+/// The bench bucket's capacity in ticks at `level`: two reference ops' worth,
+/// or ONE costliest craft if that is more.
 ///
-/// The second half is not a nicety. The bucket banks ticks and an op
-/// spends its own pace, which scales with what that op is WORTH — while
-/// the burst is sized off the reference alone. The pick's forge is worth
-/// an order of magnitude more, so its pace exceeded a FULL bucket and
-/// `process_alchemy` refused it forever: no debit, no yield, no XP, just
-/// the standing rebase — online only, since offline is unpaced, which is
-/// the worst way to find out. `the_bucket_can_always_afford_the_costliest_op`
-/// pins the guarantee.
+/// The second half is not a nicety. The bucket banks ticks and an op spends its
+/// own pace, which scales with what that op is WORTH — while the burst is sized
+/// off the reference alone. The pick's forge is worth an order of magnitude
+/// more, so its pace exceeded a FULL bucket and `process_alchemy` refused it
+/// forever: no debit, no yield, no XP, just the standing rebase — online only,
+/// since offline is unpaced, which is the worst way to find out.
+/// `the_bucket_can_always_afford_the_costliest_op` pins the guarantee.
 ///
-/// Sustained throughput is untouched: the bucket still refills one tick
-/// per tick, so the drip is exactly as slow as the pace says. Only the
-/// bunching allowance grows, and only to what a single op actually costs
-/// at that level.
+/// Sustained throughput is untouched: the bucket still refills one tick per
+/// tick. Only the bunching allowance grows.
 pub fn bench_burst_ticks(level: u32) -> f32 {
 	let reference = BENCH_BURST * base_pace_ticks(level) as f32;
 	reference.max(costliest_op_ticks(level) as f32)
@@ -440,22 +411,19 @@ mod tests {
 		}
 	}
 
-	/// **Nothing the world hands you may be transmuted.** For every block
-	/// the world places, whatever a dig on one of them puts in a player's
-	/// hands has no recipe at any price — the bench makes what a fresh
-	/// world does not give away, and a recipe for dirt is the bench
-	/// competing with a shovel.
+	/// **Nothing the world hands you may be transmuted.** For every block the
+	/// world places, whatever a dig on one puts in a player's hands has no
+	/// recipe at any price — a recipe for dirt is the bench competing with a
+	/// shovel.
 	///
-	/// Checked against the hand-priced TABLE as well as against
-	/// `craft_ideal`, and that is the half with teeth. `craft_ideal` gates
-	/// on `is_bench_only` before it reads anything, so a stale
-	/// `functional_ideal` row for something the world gives would be
-	/// silently unreachable rather than wrong — which is exactly how a
-	/// retired price sits in a table for a year.
+	/// Checked against the hand-priced TABLE as well as against `craft_ideal`,
+	/// and that is the half with teeth: `craft_ideal` gates on `is_bench_only`
+	/// before it reads anything, so a stale `functional_ideal` row for
+	/// something the world gives would be silently unreachable rather than
+	/// wrong — which is exactly how a retired price sits in a table for a year.
 	///
-	/// Clean rock passes and is meant to: the world places Stone and
-	/// Sandstone but hands out Rubble, so neither is a block a dig can
-	/// give, and §7.1's economy is untouched.
+	/// Clean rock passes and is meant to: the world places Stone and Sandstone
+	/// but hands out Rubble.
 	#[test]
 	fn nothing_the_world_hands_you_can_be_transmuted() {
 		for &n in &BlockType::ALL {
@@ -847,30 +815,23 @@ mod tests {
 		}
 	}
 
-	/// **Every priced item is buildable by a player who has just earned
-	/// it.** For each essence its recipe names, some NODE that player can
-	/// already see and draw pays that essence; for each feedstock line, the
-	/// block is one the world hands out below the item's own level. A node
-	/// is the only faucet, so an essence with no reachable node is a price
-	/// nobody can pay.
+	/// **Every priced item is buildable by a player who has just earned it.**
+	/// For each essence its recipe names, some NODE that player can already see
+	/// and draw pays it; for each feedstock line, the block is one the world
+	/// hands out below the item's own level. A node is the only faucet, so an
+	/// essence with no reachable node is a price nobody can pay.
 	///
-	/// Three rules, each load-bearing:
+	/// Three rules, each load-bearing: the node's reveal is checked on its OWN
+	/// axis, since a Mining wall on the host is a different skill and the sweep
+	/// would have to invent a relationship the game does not promise (what that
+	/// coupling costs is pinned by [`essence_faucets_open_where_they_always_did`]);
+	/// only what a kind pays RELIABLY counts, so `node_yields` excludes the
+	/// Duskstone trace; and feedstock must be world-handed and ungated by
+	/// Alchemy, or the same deadlock nests one table deeper.
 	///
-	/// - **The node's reveal is checked on its own axis.** Mining walls on
-	///   the host are NOT checked and cannot be — the wall is a MINING level
-	///   and this is an ALCHEMY one, so the sweep would have to invent a
-	///   relationship the game does not promise. What that coupling actually
-	///   costs is pinned by name in
-	///   [`essence_faucets_open_where_they_always_did`].
-	/// - **Only what a kind pays RELIABLY.** `node_yields` excludes the
-	///   Duskstone trace: a price payable when the hash smiles is not
-	///   payable.
-	/// - **Feedstock must be world-handed and ungated by Alchemy**, or the
-	///   same deadlock nests one table deeper.
-	///
-	/// Swept over everything with a RECIPE, not just the hand-priced roster
-	/// — the grid's structural blocks each carry an essence catalyst only a
-	/// draw can pay.
+	/// Swept over everything with a RECIPE, not just the hand-priced roster —
+	/// the grid's structural blocks each carry an essence catalyst only a draw
+	/// can pay.
 	#[test]
 	fn every_price_has_a_source_at_its_own_level() {
 		for &item in &BlockType::ALL {
@@ -904,24 +865,19 @@ mod tests {
 		}
 	}
 
-	/// **Where each essence's faucet actually opens** — the first level at
-	/// which a player can both SEE a node paying it and legally swing at
-	/// the node's host.
+	/// **Where each essence's faucet actually opens** — the first level at which
+	/// a player can both SEE a node paying it and legally swing at the node's
+	/// host.
 	///
 	/// This is the cross-skill coupling `every_price_has_a_source_at_its_own_level`
-	/// deliberately does not assert, held as a golden instead of a rule
-	/// because it is a CONSEQUENCE of three tables that answer to two
-	/// different skills: the reveal, the host's strength wall
-	/// (`unlock::mine`, keyed on the dig family) and the yield split. None
-	/// of them knows about the others, so nothing stops a retune of one
-	/// pushing an essence out of reach of the recipes priced in it — and
-	/// the symptom is not a failure anywhere, just a catalog whose early
-	/// rows quietly cannot be bought.
-	///
-	/// Terra is the one to watch and the reason this exists. Its only
-	/// source is the node that manifests in STONE, so it is gated by the
-	/// ROCK wall however low its own reveal goes — a fact invisible in
-	/// every table that sets it.
+	/// deliberately does not assert, held as a golden instead of a rule because
+	/// it is a CONSEQUENCE of three tables answering to two different skills:
+	/// the reveal, the host's strength wall and the yield split. None of them
+	/// knows about the others, so nothing stops a retune of one pushing an
+	/// essence out of reach of the recipes priced in it — and the symptom is
+	/// not a failure anywhere, just a catalog whose early rows quietly cannot
+	/// be bought. Terra is the one to watch: its only source manifests in
+	/// STONE, so it is gated by the ROCK wall however low its own reveal goes.
 	#[test]
 	fn essence_faucets_open_where_they_always_did() {
 		let mut opens: Vec<(Essence, u32)> = Vec::new();

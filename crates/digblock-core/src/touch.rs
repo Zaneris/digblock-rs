@@ -1,26 +1,15 @@
-//! Touch controls — the Java World.processTouch scheme in normalized
-//! coordinates (0..1 of the window, y down), grown a dig verb:
-//! - left half: virtual joystick anchored at the touch-down point, never
-//!   re-anchored; `JOYSTICK_FULL_DEFLECTION` of the screen height is full
-//!   deflection (the Java scheme's joystick radius in virtual units)
-//! - right half: relative drag-look once a touch travels past `TAP_SLOP`;
-//!   a touch that instead stays put through `HOLD_DIG_MS` digs at the
-//!   crosshair until it lifts, and moving DURING the dig still looks, so
-//!   the crosshair steers the dig target
-//! - double-tap on the look side inside `DOUBLE_TAP_MS` = jump (the Java
-//!   feel, kept). Only clean taps chain: a touch that becomes a drag or a
-//!   dig stops counting as one, so flick-looking and mining never jump.
+//! Touch controls in normalized window coordinates (0..1, y down): a virtual
+//! joystick on the left half, anchored at touch-down and never re-anchored;
+//! relative drag-look on the right, with a touch that instead stays put
+//! through `HOLD_DIG_MS` digging at the crosshair — and moving during that dig
+//! still looks, so the crosshair steers the target. A double tap on the look
+//! side jumps, and only clean taps chain, so flick-looking and mining never
+//! jump. Placing is deliberately NOT a touch verb — a place tap's first touch
+//! is indistinguishable from a double-tap's — it belongs to a HUD button.
 //!
-//! Placing is deliberately NOT a touch verb here — a place tap's first
-//! touch would be indistinguishable from a double-tap's — it belongs to
-//! the on-screen HUD button.
-//!
-//! Time is injected (`now` parameters) rather than sampled, so every
-//! threshold is testable on a synthetic timeline. A stationary finger
-//! sends no Moved events, which is why the hold promotion needs `tick`.
-//!
-//! Edge/home-indicator conflicts are handled platform-side (the iOS window
-//! defers system edge gestures), so no inset logic is needed here.
+//! Time is injected rather than sampled, so every threshold is testable; a
+//! stationary finger sends no Moved events, which is why hold promotion needs
+//! `tick`. Edge-gesture conflicts are handled platform-side.
 
 use glam::Vec2;
 use web_time::Instant;

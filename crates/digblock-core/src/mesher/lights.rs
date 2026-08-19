@@ -1,21 +1,18 @@
 //! Surface emitters: turning a revealed vein into area lights (R31).
 //!
-//! A torch is a point in open air. A vein is not: most of it is buried,
-//! buried rock must light nothing, and the exposed part is a FACE — an area
-//! source, which is how path tracers have treated emissive geometry since
-//! they started doing next event estimation.
+//! A torch is a point in open air. A vein is not: most of it is buried, buried
+//! rock must light nothing, and the exposed part is a FACE — an area source.
 //!
 //! **Why this lives in the mesher**: it is the only pass holding all three
-//! inputs at once — the reveal has already run so the padded array holds real
-//! ore ids for exactly the tiers this player has levelled into; exposure is
-//! the question the mesher exists to answer; and the padded shell means a
-//! vein straddling a chunk edge does not go dark down one column.
+//! inputs at once — the reveal has already run, so the padded array holds real
+//! ore ids for exactly the tiers this player has levelled into; exposure is the
+//! question the mesher exists to answer; and the padded shell means a vein
+//! straddling a chunk edge does not go dark down one column.
 //! `crate::gi::classify_chunk` can do none of it, because it reads the raw
 //! store and the store holds Stone where a vein is.
 //!
 //! **Merging is not only an optimisation.** The resolve's NEE reservoir walks
-//! the whole light list *per pixel*, so a thirty-cell pocket would be thirty
-//! iterations for every shaded pixel. The merged rectangle is also the better
+//! the whole light list *per pixel*. The merged rectangle is also the better
 //! light: one quad with a cosine at its own surface, rather than a row of
 //! points each with its own hotspot.
 

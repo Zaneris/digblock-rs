@@ -1,37 +1,15 @@
-//! Edit-time water flow: a bounded relaxation over the Minecraft-style
-//! level rules encoded in the water block variants (block.rs). All state
-//! lives in the blocks themselves — the sim owns only a work queue of
-//! cells to recompute, so it costs nothing while the world is at rest.
+//! Edit-time water flow: a bounded relaxation over the level rules in the
+//! water block variants. All state lives in the blocks themselves — the sim
+//! owns only a work queue, so a world at rest costs nothing, and each queued
+//! cell recomputes what it should be from its neighbours.
 //!
-//! Rules, target-centric (each queued cell computes what it *should* be
-//! from its neighbors):
-//! - sources (`Water`) are terminal: infinite, never recomputed;
-//! - regen: an empty or flowing cell resting on a whole block (solid or
-//!   a full source) with ≥2 side-neighbor sources becomes a source itself —
-//!   pools and oceans heal after the water tool scoops from them, and a
-//!   2-source pool is renewable. Air must be eligible or deep-water
-//!   holes never heal (their side sources rest on water, so the flow
-//!   rule leaves the hole as air, never flow). Growth is bounded: the
-//!   level above two sources has no side sources, so regen can never
-//!   stack upward, and a lone source's spread never qualifies (needs 2);
-//! - a cell with water above it becomes `WaterFall` (full strength);
-//! - otherwise it takes half its strongest side-neighbor amount as
-//!   `WaterFlowN` (n ≥ 1), counting only *supported* neighbors — water
-//!   resting on a colliding block. Nothing standing over air or water
-//!   spreads outward, sources included: with no floor to run along, it
-//!   goes straight down. That is a deliberate rule, not an oversight of
-//!   the source case — a bucket emptied against a wall face pours down
-//!   the wall, and only the landing spreads;
-//! - anything else relaxes to `Air`, which is how removal drains: each
-//!   recompute lowers the region's total amount until it dries.
-//!
-//! Worldgen water follows the same physics but is emitted converged, and
-//! only edits schedule cells — so oceans and river cascades stay static
-//! until disturbed. One documented divergence: worldgen fall sheets are
-//! fed by pool-surface water (which rests on water, not on a colliding
-//! block), so a player-disturbed worldgen fall drains rather than
-//! re-forming. Player-built cascades (source on solid, spilling over an
-//! edge) form and persist correctly.
+//! Two rules read as bugs and are not: regen admits Air as well as flow, or a
+//! deep-water hole never heals; and water over air or water never spreads
+//! sideways, sources included, so a bucket emptied against a wall pours down
+//! it and only the landing spreads. Worldgen water is emitted converged and
+//! only edits schedule cells — which is also why disturbing a worldgen fall
+//! sheet drains it rather than re-forming it, while a player-built cascade
+//! holds.
 
 use std::collections::VecDeque;
 

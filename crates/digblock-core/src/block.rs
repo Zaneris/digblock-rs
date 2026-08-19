@@ -159,25 +159,19 @@ blocks! {
 	Table = 45 => dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT)), ShapeKind::Table), 30, DigFamily::Wood),
 	Chair = 46 => dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT)), ShapeKind::Chair), 25, DigFamily::Wood),
 	Bed = 47 => dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT)), ShapeKind::Bed), 35, DigFamily::Wood),
-	/// The four ores (SKILLS-DESIGN §5.3). These rows exist for the reveal
-	/// stamp and for nothing else you can hold: worldgen places none of
-	/// them, because ore is DERIVED — `build_column` still returns Stone
-	/// and the journal still carries Stone, which is what lets veins appear
-	/// in worlds that already exist. Not `crafted` either: the bench cannot
-	/// make ore, so gating its pickup would gate a thing with no recipe to
-	/// gate it by.
+	/// The four ores. These rows exist for the reveal stamp and nothing you can
+	/// hold: worldgen places none of them, because ore is DERIVED —
+	/// `build_column` still returns Stone and the journal still carries Stone,
+	/// which is what lets veins appear in worlds that already exist. Not
+	/// `crafted` either: the bench cannot make ore, so gating its pickup would
+	/// gate a thing with no recipe to gate it by.
 	///
-	/// **A vein is world geometry, never an item.** Siphoning it draws the
-	/// essence straight into your stocks and leaves the tier's own spent
-	/// rock standing (`ore::spent_rock`), and THAT is what you break and
-	/// carry home. So `is_slottable` is false for all four and nothing can
-	/// credit one — which is also why the question "does a placed ore block
-	/// glow?" has no answer to get wrong.
+	/// **A vein is world geometry, never an item.** A draw pays the essence
+	/// straight into your stocks and leaves the tier's spent rock
+	/// (`nodes::spent_block`) standing, and THAT is what you carry home.
 	///
-	/// All four `seams`: a revealed vein lights the room it opens into,
-	/// from the faces that open into it and no others. The two deep tiers
-	/// wore the ink already; the shallow pair join them here, which is what
-	/// their darkened texture bodies are for (GI-DESIGN.md R31).
+	/// All four `seams`: a revealed vein lights the room it opens into, from
+	/// the faces that open into it and no others (GI-DESIGN.md R31).
 	Emberore = 48 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::EMBERORE, tex::EMBERORE, tex::EMBERORE), 120, DigFamily::Rock), 2)), Material::Emberore),
 	Duskstone = 49 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::DUSKSTONE, tex::DUSKSTONE, tex::DUSKSTONE), 150, DigFamily::Rock), 4)), Material::Duskstone),
 	Glowvein = 50 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::GLOWVEIN, tex::GLOWVEIN, tex::GLOWVEIN), 190, DigFamily::Rock), 4)), Material::Glowvein),
@@ -193,27 +187,20 @@ blocks! {
 	/// them is edited and the conditional form would hand out a block that
 	/// has never been obtainable.
 	DepletedStone = 52 => mat(drops(dig(props(RenderClass::Opaque, true, tex::DEPLETED_STONE, tex::DEPLETED_STONE, tex::DEPLETED_STONE), 90, DigFamily::Rock), BlockType::Rubble), Material::DepletedStone),
-	/// The Essence Siphon (SKILLS-DESIGN §5.3/§7.3): an item-only tool row
-	/// like the bucket, but CRAFTED rather than owned from the start.
-	/// Held, a dig-hold on a revealed vein draws the ore out
-	/// and leaves DepletedStone; without it a revealed vein refuses the
-	/// hold entirely, so nobody stone-digs a seam away by accident.
+	/// The Essence Siphon: an item-only tool row like the bucket, but CRAFTED
+	/// rather than owned from the start. Held, a dig-hold on a revealed node
+	/// draws it; without it a revealed node refuses the hold entirely, so
+	/// nobody stone-digs a seam away by accident.
 	///
-	/// Its price carries no Ferrum, ever: ore needs the siphon and Ferrum
-	/// needs ore, so a Ferrum-priced siphon deadlocks the economy on the
-	/// first world where nobody has one.
+	/// Its price carries no Ferrum, ever: ore needs the siphon and Ferrum needs
+	/// ore, so a Ferrum-priced siphon deadlocks the economy on the first world
+	/// where nobody has one.
 	///
-	/// It CASTS, and only just: the barrel holds drawn essence and the
-	/// work it exists for happens at the bottom of a mine, but it is an
-	/// extraction tool that happens to glow rather than a lamp. A green
-	/// pool at the feet, and the Resonant Pick well above it — the tool
-	/// you MINE with is the one worth carrying for its light.
-	/// `emissive` is
-	/// deliberately NOT set — a tool is not fullbright, only the one face
-	/// `item_geom` marks as its glow is (the torch is one material and
-	/// can afford a per-block flag; a tool has a body worth shading).
-	/// The tint comes from the texture, which is the whole reason a row
-	/// that renders nothing carries one.
+	/// It CASTS, and only just — the tool you MINE with is the one worth
+	/// carrying for its light, so the Resonant Pick sits well above it.
+	/// `emissive` is deliberately NOT set: a tool is not fullbright, only the
+	/// one face `item_geom` marks as its glow. The tint comes from the texture,
+	/// which is why a row that renders nothing carries one.
 	EssenceSiphon = 53 => emits(props(RenderClass::None, false, tex::SIPHON_GLOW, tex::SIPHON_GLOW, tex::SIPHON_GLOW), 5),
 	/// The Resonant Pick (SKILLS-DESIGN §5.6): crafted and wielded at the
 	/// same level in either skill — the flagship cross-skill dependency,
@@ -292,20 +279,17 @@ blocks! {
 	DepletedDuskstone = 76 => mat(dig(props(RenderClass::Opaque, true, tex::DEPLETED_DUSKSTONE, tex::DEPLETED_DUSKSTONE, tex::DEPLETED_DUSKSTONE), 90, DigFamily::Rock), Material::DepletedDuskstone),
 	DepletedGlowvein = 77 => mat(dig(props(RenderClass::Opaque, true, tex::DEPLETED_GLOWVEIN, tex::DEPLETED_GLOWVEIN, tex::DEPLETED_GLOWVEIN), 90, DigFamily::Rock), Material::DepletedGlowvein),
 	DepletedAetherock = 78 => mat(dig(props(RenderClass::Opaque, true, tex::DEPLETED_AETHEROCK, tex::DEPLETED_AETHEROCK, tex::DEPLETED_AETHEROCK), 90, DigFamily::Rock), Material::DepletedAetherock),
-	/// The three SURFACE nodes (the essence redesign: essence is found,
-	/// not ground). Exactly the ore rows' standing, in a different host:
-	/// worldgen still places Wood, Stone and Sand — a node is DERIVED
-	/// (`worldgen::nodes`), revealed by the mesh stamp at an ALCHEMY
-	/// level, drawn in place with the siphon, and anti-duped by the same
-	/// edited-bit the ore reveal reads. So nodes appear retroactively in
-	/// worlds that already exist, and no journal or golden moves.
+	/// The three SURFACE nodes. Exactly the ore rows' standing in a different
+	/// host: worldgen still places Wood, Stone and Sand — a node is DERIVED
+	/// (`worldgen::nodes`), revealed by the mesh stamp at an ALCHEMY level,
+	/// drawn in place with the siphon, and anti-duped by the same edited bit
+	/// the ore reveal reads. So nodes appear retroactively in worlds that
+	/// already exist, and no journal or golden moves.
 	///
-	/// **A node is world geometry, never an item** — `is_slottable` is
-	/// false for all three, a draw credits essence, and what you carry
-	/// home is the spent face below, which drops itself: the trophy rule.
-	///
-	/// Heartwood is the living core of a worldgen tree — the first node a
-	/// fresh player can see, since the whole essence economy starts here.
+	/// **A node is world geometry, never an item** — `is_slottable` is false
+	/// for all three, a draw credits essence, and what you carry home is the
+	/// spent face below, which drops itself. Heartwood is the day-one node,
+	/// because the economy has to be able to begin.
 	Heartwood = 79 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::HEARTWOOD, tex::HEARTWOOD, tex::HEARTWOOD), 80, DigFamily::Wood), 2)), Material::Heartwood),
 	DrainedHeartwood = 80 => mat(dig(props(RenderClass::Opaque, true, tex::DRAINED_HEARTWOOD, tex::DRAINED_HEARTWOOD, tex::DRAINED_HEARTWOOD), 60, DigFamily::Wood), Material::DrainedHeartwood),
 	/// Leystone rides the ore deposit stream as its SURFACE tier — the
@@ -479,27 +463,20 @@ impl ShapeFamily {
 	}
 }
 
-/// The five reagents — what a siphon draws a NODE into (SKILLS-DESIGN
-/// §14). `repr` indices are a wire and persistence format (flagged
-/// inventory pairs `SUB_WIRE_FLAG | index`), APPEND-ONLY.
+/// The five reagents — what a siphon draws a NODE into (SKILLS-DESIGN §14).
+/// `repr` indices are a wire and persistence format (flagged inventory pairs
+/// `SUB_WIRE_FLAG | index`), APPEND-ONLY.
 ///
-/// **The indices are frozen; the names are not, and were not.** The
-/// redesign gave these their reagent identities and the source kept
-/// saying Flora/Earth/Aqua/Metal for a release, so the code and every
-/// screen spoke different words for one currency. Renaming the variants
-/// moves no byte anywhere: the discriminants below are explicit, nothing
-/// serializes an `Essence` by name (no serde, no `FromStr`), and the one
-/// place a name is parsed — `/give` — reads [`Essence::name`]. The
-/// one-time balance reset is NOT what made this safe, and it could not
-/// have: Aether survives it and must still decode at its own index, and
-/// these ride a live client/server wire that no reset touches.
+/// **The indices are frozen; the names are not.** Renaming a variant moves no
+/// byte: the discriminants are explicit, nothing serializes an `Essence` by
+/// name (no serde, no `FromStr`), and the one place a name is parsed —
+/// `/give` — reads [`Essence::name`].
 ///
-/// The first two indices deliberately keep the retired `Material`
-/// enum's numbering — Vitae sits where sub-wood (0) lived and Terra
-/// where sub-stone (1) did — so every record and save written under the
-/// old two-family economy decodes 1:1 into the right reagent with NO
-/// migration code anywhere. The design doc's decode-time migration is
-/// this numbering.
+/// The first two indices deliberately keep the retired `Material` enum's
+/// numbering — Vitae sits where sub-wood lived and Terra where sub-stone did —
+/// so every record written under the old two-family economy decodes 1:1 with
+/// NO migration code. The design doc's decode-time migration IS this
+/// numbering.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Essence {
 	/// Living matter, drawn from the heartwood in a trunk. Legacy
@@ -589,19 +566,17 @@ pub struct BlockProps {
 	/// Cave carving may replace this block (natural terrain, not
 	/// structures) — consumed by worldgen's cave pass.
 	pub carveable: bool,
-	/// Worldgen never PLACES one of these, so every one standing in a world
-	/// was crafted by somebody. That is what lets `unlock::pickup` refuse
-	/// the DIG below the block's own `unlock::craft` level — an item you
-	/// cannot make yet is an item you cannot mine your way around either.
-	/// Pinned against worldgen itself by
+	/// Worldgen never PLACES one of these, so every one standing in a world was
+	/// crafted by somebody — which is what lets `unlock::pickup` refuse the DIG
+	/// below the block's own `unlock::craft` level. Pinned against worldgen by
 	/// `worldgen_never_places_a_crafted_block`.
 	///
 	/// Not the same question as [`BlockType::is_bench_only`], which asks
-	/// whether the world ever HANDS you one, and which this implies without
-	/// being implied by. Clean rock is the gap: the world is made of stone
-	/// and every dig on it yields Rubble, so the bench is its only source
-	/// and it is still not `crafted` — a natural quarry would otherwise
-	/// stand behind the craft gate.
+	/// whether the world ever HANDS you one; this implies that without being
+	/// implied by it. Clean rock is the gap: the world is made of stone and
+	/// every dig yields Rubble, so the bench is its only source and it is still
+	/// not `crafted` — a natural quarry would otherwise stand behind the craft
+	/// gate.
 	pub crafted: bool,
 	/// Texture-array layer indices (order fixed by
 	/// digblock_assets::tex::LAYERS). u16 so the full MAX_TEX_LAYERS
@@ -617,21 +592,18 @@ pub struct BlockProps {
 	/// there; `dig_drop()` falls back to the block itself when diggable.
 	pub drops: Option<BlockType>,
 	/// Inventory credit override for the WORLD'S OWN copy of this block: it
-	/// comes apart in your hands, while one somebody placed hands itself
-	/// back (`dig_credit`). The difference between rock in a mountain and a
-	/// block on a shelf.
+	/// comes apart in your hands, while one somebody placed hands itself back
+	/// (`dig_credit`). The difference between rock in a mountain and a block
+	/// on a shelf.
 	///
 	/// This is what lets a substance the world is MADE of still be worked at
-	/// the bench without opening a loop. Clean stone is craftable, and a
-	/// natural one crumbles to Rubble — so the only clean stone a player can
-	/// ever hold came off the bench, which is exactly what
-	/// [`BlockType::is_bench_only`] tests and what makes its extraction pay
-	/// no XP. Were a bench stone to crumble too, craft → place → dig →
-	/// extract would launder a made block back into a world-given one and
-	/// collect the XP for it.
+	/// the bench without opening a loop: the only clean stone a player can
+	/// hold came off the bench, which is what [`BlockType::is_bench_only`]
+	/// tests. Were a bench stone to crumble too, craft → place → dig would
+	/// launder a made block back into a world-given one and collect the XP.
 	///
-	/// Mutually exclusive with [`Self::drops`] (pinned by `table_sanity`):
-	/// a row says either "always this" or "this, unless somebody made it".
+	/// Mutually exclusive with [`Self::drops`] (pinned by `table_sanity`): a
+	/// row says either "always this" or "this, unless somebody made it".
 	pub crumbles: Option<BlockType>,
 	/// Sub-block shape family; `Some` ⟺ `class == RenderClass::Shaped`
 	/// (pinned by `table_sanity`).
@@ -654,21 +626,19 @@ pub struct BlockProps {
 	/// Agrees across a material's shapes for the same reason
 	/// [`Self::emissive`] does.
 	pub light: u8,
-	/// This block radiates from its exposed FACES, not from the middle of
-	/// its cell — the difference between a lamp and a seam in a wall.
+	/// This block radiates from its exposed FACES, not from the middle of its
+	/// cell — the difference between a lamp and a seam in a wall.
 	///
-	/// A torch is a point: it stands in open air and throws light every way
-	/// at once, and one entry at its flame is the whole of it. A vein is
-	/// not. Most of a vein is buried, and buried rock must light nothing —
-	/// so a cell's worth of ore is a light only where it MEETS the air, and
-	/// what it lights is the room in front of that face. Setting this makes
-	/// the block's light a surface quantity: `gi::classify_chunk` declines
-	/// to place a point source for it, and the mesher — which is already
-	/// deciding, face by face, what is exposed — hands the renderer the
-	/// merged rectangles instead (GI-DESIGN.md R31).
+	/// A torch is a point: it stands in open air and one entry at its flame is
+	/// the whole of it. Most of a vein is buried, and **buried rock must light
+	/// nothing** — so a cell's worth of ore is a light only where it MEETS the
+	/// air. Setting this makes the block's light a surface quantity:
+	/// `gi::classify_chunk` places no point source, and the mesher, already
+	/// deciding face by face what is exposed, hands the renderer merged
+	/// rectangles instead (GI-DESIGN.md R31).
 	///
-	/// [`Self::light`] still says how bright, and the LUT still says in
-	/// what colour. This says only WHERE FROM.
+	/// [`Self::light`] still says how bright and the LUT in what colour. This
+	/// says only WHERE FROM.
 	pub surface_light: bool,
 	/// Which per-material dig-speed curve applies (SKILLS-DESIGN §5.1).
 	/// Set together with hardness by the `dig` builder so a diggable row
@@ -1072,18 +1042,14 @@ impl BlockType {
 	}
 
 	/// May a placement overwrite a cell holding this block? Air and water
-	/// yield; every real block must be dug first.
+	/// yield; every real block must be dug first. THE one authority, shared by
+	/// the client's prediction and the server's validation — the two must
+	/// agree exactly or a place either desyncs or is rejected after prediction.
 	///
-	/// THE one authority, shared by the client's prediction and the
-	/// server's validation — the two must agree exactly or a place either
-	/// desyncs or gets rejected after being predicted.
-	///
-	/// Deliberately not `!props().collides`, which is what the door's upper
-	/// half used to ask. An OPEN door has empty collision boxes, so that
-	/// test called it free: you could aim at the floor inside a doorway
-	/// (the plain ray passes through an open leaf), right-click, and
-	/// overwrite the door — no drop, no hold-to-dig timer, and its upper
-	/// half left behind as an orphan whose partner no longer resolves.
+	/// Deliberately not `!props().collides`, which the door's upper half used
+	/// to ask. An OPEN door has empty collision boxes, so that test called it
+	/// free: aim at the floor inside a doorway, right-click, and the door was
+	/// overwritten — no drop, no dig timer, and its upper half orphaned.
 	#[inline]
 	pub fn is_replaceable(self) -> bool {
 		matches!(self, BlockType::Air) || self.is_water()
@@ -1135,28 +1101,21 @@ impl BlockType {
 		Some(p.drops.or(p.crumbles).unwrap_or(self))
 	}
 
-	/// What a completed dig actually CREDITS: the world's own rock
-	/// crumbles, and a cell somebody wrote hands back what they put in it.
+	/// What a completed dig actually CREDITS: the world's own rock crumbles,
+	/// and a cell somebody wrote hands back what they put in it.
 	///
-	/// `edited` is whether that coordinate has ever been written — the
-	/// server reads its journal, the client its `EditOverlay` mirror of the
-	/// same, exactly as [`crate::worldgen::ore::revealed`] does and for the
-	/// same anti-dupe reason. An edited cell holding a `crumbles` block is
-	/// one somebody PLACED, since nothing can be written into solid rock,
-	/// so the block in it was made at the bench and comes back whole.
+	/// `edited` is whether that coordinate has ever been written — the server
+	/// reads its journal, the client its `EditOverlay` mirror, exactly as
+	/// [`crate::worldgen::nodes::revealed`] does and for the same anti-dupe
+	/// reason. Nothing can be written into solid rock, so an edited cell
+	/// holding a `crumbles` block is one somebody PLACED, and it comes back
+	/// whole. That is what shuts the craft-and-extract loop on a substance the
+	/// world is made of.
 	///
-	/// That is what closes the craft-and-extract loop on a substance the
-	/// world is made of: a made stone can never launder itself back into
-	/// the world-given Rubble that pays extraction XP. `alchemy` pins it as
-	/// `no_one_who_can_make_a_block_can_dig_it_into_xp`.
-	///
-	/// `alchemy` is the DIGGER'S level, and the crumble stands for anyone
-	/// who could not have made one — they are not undoing their own work,
-	/// so they get the rubble and the XP that goes with it. The loop stays
-	/// shut for a single player because the levels that can craft a block
-	/// are exactly the levels it hands back to. Asked through
-	/// [`crate::unlock::can_craft`] rather than compared here: no caller
-	/// holds an unlock number.
+	/// `alchemy` is the DIGGER'S level, and the crumble stands for anyone who
+	/// could not have made one — they are not undoing their own work. Asked
+	/// through [`crate::unlock::can_craft`] rather than compared here: no
+	/// caller holds an unlock number.
 	#[inline]
 	pub fn dig_credit(self, edited: bool, alchemy: u32) -> Option<BlockType> {
 		self.hardness_ticks()?;
@@ -1174,22 +1133,16 @@ impl BlockType {
 	/// world ever put one in a player's hands?
 	///
 	/// THE question the transmutation catalog is gated on: nothing the world
-	/// hands you may be transmuted. The gate itself lives in
-	/// `unlock`/`alchemy`; this is only the predicate.
+	/// hands you may be transmuted. The gate lives in `unlock`/`alchemy`;
+	/// this is only the predicate.
 	///
-	/// Derived, never listed: bench-only means nothing the world PLACES
-	/// crumbles or drops into it. That gets the awkward rows right without
-	/// anyone remembering them — a bucket scoop credits Water through this
-	/// same path so water falls out of the catalog on its own, a tool is
-	/// never dug, and an ore credits itself and is correctly refused a
-	/// recipe.
-	///
-	/// Strictly weaker than [`Self::is_crafted_only`], and the gap is the
-	/// whole design: the world is MADE of stone but hands you Rubble, so
-	/// clean stone is the one block the world places and never gives.
-	///
-	/// Memoized — a linear walk of the catalog per call, on a question that
-	/// is a property of the block table.
+	/// Derived, never listed — bench-only means nothing the world places
+	/// crumbles or drops into it — which gets the awkward rows right without
+	/// anyone remembering them: a bucket scoop credits Water through this same
+	/// path, a tool is never dug, an ore credits itself. Strictly weaker than
+	/// [`Self::is_crafted_only`], and the gap is the whole design: the world is
+	/// MADE of stone but hands you Rubble. Memoized, since a linear catalog
+	/// walk per call answers a property of the table.
 	pub fn is_bench_only(self) -> bool {
 		static BENCH: std::sync::OnceLock<Vec<bool>> = std::sync::OnceLock::new();
 		let bench = BENCH.get_or_init(|| {
@@ -1209,24 +1162,18 @@ impl BlockType {
 
 	/// Does holding this type claim a hotbar or inventory slot?
 	///
-	/// Two exceptions, and they are the same shape: a thing that exists in
-	/// the world but is never an item you arrange.
+	/// Two exceptions of the same shape — a thing that exists in the world but
+	/// is never an item you arrange. **Water**: the only water a player
+	/// carries is the water tool's one charge, and the tool has its own slot;
+	/// the count still lives in the [`crate::inventory::Inventory`], which is
+	/// where the charge is stored and persisted. **A live node**: world
+	/// geometry. A draw pays essence and leaves the kind's spent face, and the
+	/// spent face is what you break and carry.
 	///
-	/// **Water** — the only water a player can carry is the one charge in
-	/// the water tool, and the tool has its own permanent slot to show it
-	/// in. Its count still lives in the [`crate::inventory::Inventory`],
-	/// which is where the charge is stored, synced and persisted.
-	///
-	/// **A live node** — a vein or a surface node is world geometry.
-	/// Siphoning it pays essence straight into your stocks and leaves the
-	/// kind's spent face standing, and the spent face is the block you
-	/// break and carry (SKILLS-DESIGN §5.3). Nothing credits a node block,
-	/// so nothing may hold one.
-	///
-	/// [`crate::inv_grid::reconcile_layout`] is the enforcer in both cases,
-	/// which makes this the MIGRATION as well as the rule: a save written
-	/// while water was a stack, or while a siphon handed out ore, drops
-	/// those slots on the first reconcile rather than needing a version.
+	/// [`crate::inv_grid::reconcile_layout`] enforces both, which makes this
+	/// the MIGRATION as well as the rule: a save written while water was a
+	/// stack, or while a siphon handed out ore, drops those slots on the first
+	/// reconcile rather than needing a version.
 	#[inline]
 	pub fn is_slottable(self) -> bool {
 		self != BlockType::Water && !self.is_tool() && !self.is_node_block()
@@ -1249,19 +1196,15 @@ impl BlockType {
 	/// lighter rim that catches the light around it.
 	///
 	/// ONE authority for what a tier looks like. `texgen` paints the flecks
-	/// from it and paints the spent rock's dead flecks from it too, and the
-	/// GI material LUT casts the vein's light in the core colour — so a
-	/// retint moves the rock, its tapped sibling and the light it throws
-	/// together, and none of the three can drift.
+	/// and the spent rock's dead flecks from it, and the GI material LUT casts
+	/// the vein's light in the core colour — so a retint moves the rock, its
+	/// tapped sibling and the light together.
 	///
-	/// It has to be stated rather than measured, and that is worth knowing
-	/// before anyone tries to derive it: an emitter's tint is normally the
-	/// mean of its texture, which works for a torch because a torch's
-	/// texture is mostly flame. An ore texture is a wide grey field with a
-	/// few flecks on it, so its mean is STONE — near enough colourless on
-	/// every tier — and no weighting of that image recovers the hue, since
-	/// the problem is the composition and not the average (GI-DESIGN.md
-	/// R31).
+	/// It has to be STATED rather than measured. An emitter's tint is normally
+	/// the mean of its texture, which works for a torch because a torch is
+	/// mostly flame; an ore texture is a wide grey field with a few flecks, so
+	/// its mean is stone. No weighting recovers the hue — the problem is the
+	/// composition, not the average (GI-DESIGN.md R31).
 	#[inline]
 	pub const fn node_flecks(self) -> Option<([u8; 3], [u8; 3])> {
 		Some(match self {
@@ -1716,27 +1659,17 @@ mod tests {
 	}
 
 	/// Light is a property of the SUBSTANCE, not of the piece it was cut
-	/// into: a crystal slab is the same crystal as the cube it came off,
-	/// so it wears the same ink and casts the same level.
+	/// into: a crystal slab is the same crystal as the cube it came off, so it
+	/// wears the same ink and casts the same level.
 	///
-	/// This is the grid's one un-derived pair. The unlock level, the craft
-	/// cost, the extraction yield, the earned wall and the transmute family
-	/// all fall out of material × shape, but `emissive` and `light` stayed
-	/// per-ROW builders — and a per-row property on a grid axis drifts the
+	/// This is the grid's one un-derived pair — `emissive` and `light` stayed
+	/// per-ROW builders, and a per-row property on a grid axis drifts the
 	/// moment a material grows a second shape. It did: `Crystal` glowed and
-	/// `CrystalSlab` did not, so growing a slab stack through its third
-	/// third (`slab_grown` → `slab_base`) snapped the identical volume of
-	/// the identical stuff to fullbright in one frame.
-	///
-	/// The two properties are pinned SEPARATELY because they are genuinely
-	/// independent (see [`BlockProps::emissive`]): a deep seam wears ink
-	/// and casts nothing, and a recessed lamp could cast without glowing.
-	/// What neither may do is differ between a cube and its own slab.
-	///
-	/// FUNCTIONAL rows are outside this by construction rather than by
-	/// exemption — the torch and the two lamps carry no material at all
-	/// (`material_roster_is_pinned` spells that set out), so they are
-	/// hand-authored light with no sibling shape to agree with.
+	/// `CrystalSlab` did not, so growing a slab stack snapped the identical
+	/// volume of the identical stuff to fullbright in one frame. The two are
+	/// pinned SEPARATELY because they are genuinely independent; what neither
+	/// may do is differ between a cube and its own slab. FUNCTIONAL rows carry
+	/// no material at all, so they are outside this by construction.
 	#[test]
 	fn every_shape_of_a_material_agrees_on_light() {
 		let mut compared = 0;

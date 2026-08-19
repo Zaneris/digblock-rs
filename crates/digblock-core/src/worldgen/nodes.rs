@@ -1,21 +1,19 @@
-//! The unified NODE layer — every world source of essence behind one
-//! question. **Essence is found, not ground.**
+//! The unified NODE layer — every world source of essence behind one question.
+//! **Essence is found, not ground.**
 //!
-//! A node is a derived find: a salted hash or a pure worldgen query says
-//! where one stands, the mesh stamp reveals it at a skill level, the siphon
-//! draws it in place, and the draw leaves the kind's own SPENT face. Nothing
-//! is stored — worldgen still places the host block, and the golden hashes do
-//! not move, so nodes appear retroactively in existing worlds.
+//! A node is a derived find: a salted hash or a pure worldgen query says where
+//! one stands, the mesh stamp reveals it at a skill level, the siphon draws it
+//! in place, and the draw leaves the kind's own SPENT face. Nothing is stored,
+//! so nodes appear retroactively in existing worlds and the goldens do not move.
 //!
 //! Seven live faces, two reveal skills: the four ORE tiers in pristine deep
-//! Stone on MINING ([`crate::unlock::reveal`]); and Leystone, Heartwood and
-//! Springstone on ALCHEMY ([`crate::unlock::alchemy_reveal`]), so Alchemy
-//! owns the surface hunt the way Mining owns the deep one.
+//! Stone on MINING; and Leystone, Heartwood and Springstone on ALCHEMY, so
+//! Alchemy owns the surface hunt the way Mining owns the deep one.
 //!
-//! **The unedited rule is the anti-dupe**: a node manifests only where the
-//! cell still holds its pristine host and has never been written.
-//! `JournalIndex::record` only ever inserts, so a spent node cannot be
-//! regrown by placing the host back.
+//! **The unedited rule is the anti-dupe**: a node manifests only where the cell
+//! still holds its pristine host and has never been written.
+//! `JournalIndex::record` only ever inserts, so a spent node cannot be regrown
+//! by placing the host back.
 
 use crate::block::BlockType;
 use crate::worldgen::ore;
@@ -222,22 +220,17 @@ const HEART_CELLS: i32 = 2;
 /// Does this cell hold heartwood — the living core of a worldgen tree?
 ///
 /// Pure in `(x, y, z, seed)` like [`ore::ore_at`]: the trunk comes from
-/// [`crate::decoration::trunk_at`] (itself a pure candidate rule), and
-/// whether a tree HAS a heart is one salted roll on the tree's anchor
-/// column, so every cell of one trunk agrees. A landmark tree skips that
-/// roll and always has one — the rare giant is rare enough that meeting
-/// one should always be worth the detour — while an ordinary tree rolls
-/// for it. What a landmark does NOT get is a bigger heart: both carry it
-/// in the [`HEART_CELLS`] above the root, so the giant's reward is its
-/// four trunk columns and the certainty, not a seam the height of a tree.
-/// Paying by the cell, a full-trunk landmark was worth more Alchemy XP
-/// than the first dozen levels cost put together.
+/// [`crate::decoration::trunk_at`], and whether a tree HAS a heart is one
+/// salted roll on the tree's anchor column, so every cell of one trunk agrees.
+/// A landmark tree skips the roll and always has one. What it does NOT get is a
+/// bigger heart — both carry it in the [`HEART_CELLS`] above the root, so the
+/// giant's reward is its four trunk columns and the certainty. Paying by the
+/// cell, a full-trunk landmark was worth more Alchemy XP than the first dozen
+/// levels cost put together.
 ///
-/// Callers still need the LIVE cell to hold Wood and be unedited
-/// ([`revealed`] checks both): a canopy written first, a cliff that left
-/// the trunk cell unwritten, or a felled-and-rebuilt trunk are all cells
-/// this function cannot see, and the host check is what keeps the stamp,
-/// the dig and the draw agreeing anyway.
+/// Callers still need the LIVE cell to hold Wood and be unedited ([`revealed`]
+/// checks both): a canopy written first, a cliff that left the trunk cell
+/// unwritten, or a felled-and-rebuilt trunk are all cells this cannot see.
 pub fn heartwood_at(x: i32, y: i32, z: i32, seed: f64) -> bool {
 	let Some(t) = crate::decoration::trunk_at(x, z, seed) else {
 		return false;

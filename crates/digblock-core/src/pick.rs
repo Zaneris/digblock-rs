@@ -1,58 +1,40 @@
-//! The Resonant Pick's break pattern (SKILLS-DESIGN §5.6).
-//!
-//! One hold, several cells: the plane perpendicular to the face you hit,
-//! a row at the first Mining milestone and the full plane at the second. The
-//! pair is derived
-//! from the ray, never chosen by the client — the server re-raycasts and
-//! runs this same function over its own world, so there is no cheat
+//! The Resonant Pick's break pattern (SKILLS-DESIGN §5.6): one hold, several
+//! cells — the plane perpendicular to the face you hit, a row at the first
+//! Mining milestone and the full plane at the second. The set is derived from
+//! the ray on BOTH ends, never chosen by the client, so there is no cheat
 //! surface and no second opinion about which cells an action touched.
 //!
 //! Two rules make the rest of the machinery work unchanged:
 //!
-//! - **Every extra cell must pay the SAME credit.** That is not a
-//!   flavour rule. `PendingEdits::begin_multi` carries ONE `inv_delta`
-//!   for the whole group, so a homogeneous break is exactly what makes
-//!   `(block, +N)` a correct description of what the player gained — and
-//!   what lets a rejection revert it in one subtraction. The same block
-//!   id was the test until a cell's provenance began deciding what it
-//!   hands back (`BlockType::dig_credit`), and a plane straddling a
-//!   quarry face and a mason's wall holds one id while paying out two
-//!   items.
+//! - **Every extra cell must pay the SAME credit**, because
+//!   `PendingEdits::begin_multi` carries ONE `inv_delta` for the whole group —
+//!   which is also what lets a rejection revert it in one subtraction. Equal
+//!   block ids are not enough: provenance decides what a cell hands back
+//!   ([`BlockType::dig_credit`]), and a plane straddling a quarry face and a
+//!   mason's wall holds one id while paying out two items.
 //! - **The timing multiplier is level-only** ([`crate::skills`]), never
-//!   derived from how many cells actually qualify. A world-derived
-//!   multiplier would let client and server disagree by a factor of
-//!   three whenever their worlds differ by a single cell, which is far
-//!   outside what `dig_grace` absorbs: the honest outcomes are a free
-//!   completion or a `DigIncomplete` on a dig the player finished.
+//!   derived from how many cells actually qualify. A world-derived one would
+//!   let the two ends disagree by the whole multiplier over a single differing
+//!   cell, far outside what `dig_grace` absorbs.
 
 use crate::block::BlockType;
 use crate::chunk::cell_id;
 use crate::worldgen::nodes::DigMode;
 
-/// May this cell join the plane as an EXTRA? Asked of every candidate by
-/// both ends over their own worlds, so the two swings touch the same set.
+/// May this cell join the plane as an EXTRA? Asked of every candidate by both
+/// ends over their own worlds, so the two swings touch the same set. The AIMED
+/// cell is never asked — it is the only one allowed to be a slab shrink or a
+/// tapped vein. An extra must pay the same credit (see the header), be
+/// diggable at this y (so a nine-wide swing at a wall on bedrock excludes the
+/// world floor), be neither door nor slab (the extras loop writes bare air,
+/// and a door is one object across two cells), and be an ordinary break rather
+/// than a draw — a vein still HOLDS its host and passes the id test, so the
+/// plane would clear it for the host's credit and mark the cell edited, which
+/// the anti-dupe reads as spent forever.
 ///
-/// The AIMED cell is never asked — it has already been through `diggable`,
-/// the DigStart gates and the completion's own timing, and it is the only
-/// cell allowed to be a slab shrink or a tapped vein. An extra must be:
-///
-/// - **The same CREDIT**, because `begin_multi` carries ONE `inv_delta`.
-///   The same block ID is not enough on its own, since provenance decides
-///   what a cell hands back ([`BlockType::dig_credit`]) — but the id test
-///   stays beside it, because Stone and Sandstone both crumble to Rubble.
-/// - **Diggable at this y**, which keeps a nine-wide swing at a wall
-///   standing on bedrock from including the world floor.
-/// - **Not a door, and not a slab.** The extras loop writes bare air, and
-///   only the aimed cell has a value derived for it. A door is one object
-///   across two cells; a slab shrinks a third per hold.
-/// - **An ordinary break, never a draw.** A vein still HOLDS its host and
-///   passes the id test, so the plane would clear it for the host's credit
-///   and mark the cell edited — which the anti-dupe reads as spent forever.
-///
-/// A locked SPAWN is deliberately absent: it is server-only knowledge, and
-/// a locked cell in the plane must refuse the WHOLE swing
-/// (`a_protected_cell_refuses_the_whole_pick_swing`) on the grounds that
-/// nothing should partially break. The world floor is not policy.
+/// A locked SPAWN is deliberately absent: it is server-only knowledge, and a
+/// locked cell in the plane must refuse the WHOLE swing
+/// (`a_protected_cell_refuses_the_whole_pick_swing`).
 pub fn breaks_as_extra(
 	id: u16,
 	credit: Option<BlockType>,

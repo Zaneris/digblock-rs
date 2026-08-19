@@ -1,20 +1,15 @@
-//! Per-block-type inventory counts. One type serves both sides of the
-//! wire: the server's authoritative copy and the client's predicted copy
-//! are the same struct, so reconciliation is plain arithmetic. Sized for
-//! every block type — the hotbar is a *view* over this (a future
-//! overflow-inventory UI reads `iter_nonzero` directly).
+//! Per-block-type inventory counts. One type serves both sides of the wire, so
+//! reconciliation is plain arithmetic. Sized for every block type — the hotbar
+//! is a *view* over this.
 //!
-//! One count is not an item at all: water's, which is the water tool's
-//! charge (empty or full — see [`Inventory::bucket_full`]). Keeping it here
-//! rather than in a field of its own is deliberate; the bucket then
-//! predicts, rolls back on rejection, rebases and persists through the
-//! machinery that already does all four correctly for stacks.
+//! One count is not an item at all: water's, which is the water tool's charge
+//! (see [`Inventory::bucket_full`]). Keeping it here rather than in a field of
+//! its own is what lets the bucket predict, roll back on rejection, rebase and
+//! persist through machinery that already does all four correctly for stacks.
 //!
-//! Alchemy sub-materials (sub-wood, sub-stone) live in a parallel array
-//! and ride the SAME wire pairs as flagged ids (`SUB_WIRE_FLAG | family`)
-//! — so `InventoryFull`, the server's identity store, and both client
-//! save formats carry them with zero format changes; old readers drop
-//! the unknown ids harmlessly.
+//! Essences live in a parallel array and ride the SAME wire pairs as flagged
+//! ids (`SUB_WIRE_FLAG | index`), so every format carries them with no format
+//! change and old readers drop the unknown ids harmlessly.
 
 use crate::block::{BlockType, Essence};
 
@@ -178,21 +173,19 @@ impl Inventory {
 		self.subs[m as usize]
 	}
 
-	/// The essence redesign's one-time balance reset (SKILLS-DESIGN §14):
-	/// clear every essence EXCEPT Aether.
+	/// The essence redesign's one-time balance reset (SKILLS-DESIGN §14): clear
+	/// every essence EXCEPT Aether.
 	///
-	/// Pre-redesign balances were earned against an unbounded bench —
-	/// extraction against infinite matter — and carrying them into an
-	/// economy where essence is FOUND would hand exactly the players who
-	/// ground the old faucet hardest a head start over everyone who plays
-	/// the new game. Aether stays: it was always the scarce one, and
-	/// wiping the currency the sigil and the pick are saved up in would
-	/// punish the earning the redesign wants more of.
+	/// Pre-redesign balances were earned against an unbounded bench, and
+	/// carrying them into an economy where essence is FOUND would hand the
+	/// players who ground the old faucet hardest a head start over everyone
+	/// playing the new game. Aether stays: it was always the scarce one, and
+	/// wiping what the sigil and the pick are saved up in would punish the
+	/// earning the redesign wants more of.
 	///
-	/// Called from the two persistence migrations only (the server's
-	/// record reader below its version, the local save load below its
-	/// rev), never from live play — the trigger is the VERSION, so a
-	/// balance is cleared at most once and a fresh world never sees it.
+	/// Called from the two persistence migrations only, never from live play —
+	/// the trigger is the VERSION, so a balance is cleared at most once and a
+	/// fresh world never sees it.
 	pub fn clear_pre_redesign_essence(&mut self) {
 		for e in Essence::ALL {
 			if e != Essence::Aether {
@@ -321,25 +314,22 @@ pub fn apply_alchemy(inv: &mut Inventory, op: AlchemyOp, level: u32) -> bool {
 				return false;
 			}
 			// All-or-nothing across every cost line, essence and feedstock
-			// alike: check everything, then debit — a multi-line craft
-			// never half-charges. Waste applies to the essence half only;
-			// matter is matter, and a block in is a block in.
+			// alike: check everything, then debit. Waste applies to the
+			// essence half only; matter is matter.
 			//
-			// Summed per key BEFORE either half runs, so the amount
-			// checked and the amount debited are the same number rather
-			// than two walks that agree only while every line names a
-			// different currency. They used to be compared one line at a
-			// time against the whole balance, so a price naming one
-			// essence twice passed a check it could not pay; the debit's
-			// own guard was a `debug_assert!`, which compiles out, so a
-			// release build credited the item and took part of the price.
-			// Nothing forbids a duplicate line — `field_yield` merges them
-			// on the way in — and matter created from an underpaid price
-			// is the one thing this whole economy is built not to do.
+			// Summed per key BEFORE either half runs, so the amount checked
+			// and the amount debited are the same number rather than two
+			// walks that agree only while every line names a different
+			// currency. Compared one line at a time against the whole
+			// balance, a price naming one essence twice passed a check it
+			// could not pay, and the debit's own guard was a `debug_assert!`
+			// — so a release build credited the item and took part of the
+			// price. Nothing forbids a duplicate line; `field_yield` merges
+			// them on the way in.
 			//
 			// Costed first and summed second, never the reverse: waste
-			// rounds per line, so folding the raw units together would
-			// quietly re-price the craft.
+			// rounds per line, so folding raw units together would quietly
+			// re-price the craft.
 			let ideal = totals(
 				ideal
 					.iter()

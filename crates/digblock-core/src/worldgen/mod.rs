@@ -1,20 +1,17 @@
-//! Terrain generation. Two low-frequency control fields shape the world
-//! into coherent regions — a single fBm heightmap would scatter random
-//! peaks and pits everywhere instead:
+//! Terrain generation. Two low-frequency control fields shape the world into
+//! coherent regions — a single fBm heightmap would scatter random peaks and
+//! pits everywhere instead:
 //!
-//! - **continentalness** picks the base elevation through a spline (deep
-//!   ocean → shelf → coast → plains → highlands) and gates mountains to
-//!   well inland;
+//! - **continentalness** picks the base elevation through a spline and gates
+//!   mountains to well inland;
 //! - **roughness** gates where mountain relief appears at all;
-//! - a low-frequency **ridge** field draws the mountain forms themselves
-//!   (its absolute value creases into valleys at zero crossings and rounds
-//!   off over maxima, so ranges rise from their base with walkable slopes);
+//! - a low-frequency **ridge** field draws the mountain forms (its absolute
+//!   value creases into valleys at zero crossings and rounds off over maxima);
 //! - a mid-frequency **detail** fBm supplies the local relief.
 //!
-//! Every function here is a pure function of `(x, z, seed)` — column
-//! content never depends on generation order. The tuning surface lives in
-//! [`TerrainParams`]; the public entry points use `TerrainParams::DEFAULT`
-//! (the future "world type" seam threads a custom one).
+//! Every function here is a pure function of `(x, z, seed)` — column content
+//! never depends on generation order. The tuning surface lives in
+//! [`TerrainParams`]; the public entry points use `TerrainParams::DEFAULT`.
 
 mod caves;
 mod classify;

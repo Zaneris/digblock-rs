@@ -1,27 +1,14 @@
-//! Where players appear: the pristine anchor, and the edit-aware search
-//! that keeps them out of holes players have dug.
+//! Where players appear: the pristine anchor, and the edit-aware search that
+//! keeps them out of holes players have dug.
 //!
-//! Two layers, deliberately separated:
+//! [`anchor`] is a pure function of the seed — it never sees edits, so it is
+//! the fixed point everything else is measured from. [`resolve`] asks whether
+//! players have ruined it and searches outward if so. Anchoring every resolve
+//! at [`anchor`] rather than at the CURRENT spawn is what stops drift
+//! compounding: a griefer can push spawn aside but never walk it across the
+//! map, and a filled crater snaps it back. Nothing is stored.
 //!
-//! * [`anchor`] is the original seed-derived walk — a pure function of the
-//!   seed alone, scanning pristine worldgen for a spot that is dry, open,
-//!   and not a cave mouth. It never sees player edits, so it is stable for
-//!   the life of a world and is the fixed point everything else is
-//!   measured against.
-//! * [`resolve`] takes the anchor and asks whether players have since
-//!   ruined it, searching outward for the nearest intact column if so.
-//!
-//! Anchoring the search at [`anchor`] rather than at the *current* spawn
-//! is what stops drift compounding: every resolve is measured from the
-//! same fixed point, so a griefer can push spawn aside but never walk it
-//! across the map, and the moment their crater is filled or built over the
-//! spawn snaps back on its own. Nothing is stored — spawn is a pure
-//! function of `(seed, edits)`, so a restart reproduces whatever the live
-//! server picked.
-//!
-//! The search never looks downward. A dug-out spawn relocates sideways
-//! rather than descending into the hole, and [`SPAWN_FLOOR`] keeps it out
-//! of excavated pits regardless.
+//! The search never looks downward, and [`SPAWN_FLOOR`] keeps it out of pits.
 
 use crate::decoration::box_obstructed;
 use crate::protect::Region;
@@ -229,25 +216,20 @@ fn watery(cell: u16) -> bool {
 }
 
 /// Whether a player dropped at `eye` would stand on clear, level ground —
-/// judged from the world as it ACTUALLY is (terrain plus every landed
-/// edit), not from pristine worldgen.
+/// judged from the world as it ACTUALLY is (terrain plus every landed edit),
+/// not from pristine worldgen.
 ///
-/// The operator's half of the spawn rules. [`accepts`] can only judge a
-/// column whose *pristine* terrain is already level, which is right for an
-/// automatic search and useless for an admin who levelled a hillside. The
-/// cells read here are exactly [`lock_region`]'s, so "valid to set" and
-/// "protected by the lock" describe the same box — which is what makes
-/// locking a hand-picked spawn as permanent as locking a searched one.
+/// The operator's half of the spawn rules. [`accepts`] can only judge a column
+/// whose *pristine* terrain is already level, which is right for an automatic
+/// search and useless for an admin who levelled a hillside. The cells read here
+/// are exactly [`lock_region`]'s, so "valid to set" and "protected by the lock"
+/// describe the same box — which is what makes locking a hand-picked spawn as
+/// permanent as locking a searched one.
 ///
-/// Level ground falls out of the two rules rather than needing its own: a
-/// step up puts a solid cell in the capsule, a step down leaves a non-solid
-/// cell in the floor. `None` from `cell` means not resident, and is a
-/// rejection rather than a pass.
-///
-/// [`SPAWN_FLOOR`] is deliberately NOT applied — that rule stops the
-/// *search* descending into an excavated pit, and an operator aiming at a
-/// block has made a choice. The water rule is what keeps a hand-picked
-/// spawn out of the sea.
+/// Level ground falls out of the two rules rather than needing its own. `None`
+/// from `cell` means not resident, and is a rejection. [`SPAWN_FLOOR`] is
+/// deliberately NOT applied: that rule stops the *search* descending into a
+/// pit, and an operator aiming at a block has made a choice.
 pub fn stands_clear(eye: Vec3, cell: &dyn Fn(i32, i32, i32) -> Option<u16>) -> bool {
 	let (x, h, z) = column(eye);
 	for cz in z - CLEAR..=z + CLEAR {

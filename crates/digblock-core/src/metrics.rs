@@ -178,21 +178,19 @@ impl JobTiming {
 pub struct NetStats {
 	/// Smoothed input→ack round trip.
 	pub rtt_ms: f32,
-	/// The TRANSPORT's own round trip — QUIC's estimate, what a ping
-	/// reports, and the same quantity the server browser's probe shows.
-	/// Zero when the transport has none (loopback, the benchmark wires).
+	/// The TRANSPORT's own round trip — QUIC's estimate, what a ping reports,
+	/// and the same quantity the server browser's probe shows. Zero when the
+	/// transport has none (loopback, the benchmark wires).
 	///
 	/// Kept beside `rtt_ms` rather than replacing it because they answer
 	/// different questions: this one is "how far away is the server", and
-	/// `rtt_ms` is "how long until my action is authoritative", which
-	/// carries the tick boundary, the snapshot cadence and the input buffer
-	/// on top. Their DIFFERENCE is the server-side pipeline, which is the
-	/// part that responds to SNAPSHOT_DIVISOR and the send stride.
+	/// `rtt_ms` is "how long until my action is authoritative", which carries
+	/// the tick boundary, the snapshot cadence and the input buffer on top.
+	/// Their DIFFERENCE is the server-side pipeline.
 	///
-	/// Deriving one from the other by subtracting a constant does not work
-	/// and was measured not to: on a LAN every `rtt_ms` sample is either one
-	/// tick or two, and the wire itself is a small fraction of one such
-	/// quantum, so it simply is not present in the signal.
+	/// Deriving one from the other by subtracting a constant was measured not
+	/// to work: on a LAN every `rtt_ms` sample is one tick or two, and the wire
+	/// itself is not present in the signal.
 	pub wire_rtt_ms: f32,
 	/// Mean absolute deviation of the same signal — the number that says
 	/// whether an average RTT is trustworthy.

@@ -24,18 +24,16 @@ pub struct RayHit {
 }
 
 /// Walk the grid from `origin` along `dir` up to `max_dist`, returning the
-/// first colliding block. Unloaded (None) cells pass through, matching
-/// physics; water and air don't collide and are transparent to the ray.
+/// first colliding block. Unloaded (None) cells pass through, matching physics;
+/// water and air don't collide and are transparent to the ray.
 ///
 /// Shaped cells narrow-phase against their INTERACTION boxes, not their
-/// collision ones, and a miss past a stair's open region continues the
-/// walk. Picking and physics are different questions: an open door has
-/// no collision at all — you walk through the doorway — but it is still
-/// a block standing there, and a block you can see is a block you can
-/// aim at, highlight and dig. Keying the crosshair off collision made
-/// an open door unpickable (and un-diggable, since the server
-/// re-raycasts through here too), so the only way to remove one was to
-/// close it first. The two box sets are identical for every other shape.
+/// collision ones, and a miss past a stair's open region continues the walk.
+/// Picking and physics are different questions: an open door has no collision
+/// at all, but a block you can see is a block you can aim at, highlight and
+/// dig. Keying the crosshair off collision made an open door unpickable and
+/// un-diggable, since the server re-raycasts through here too. The two box sets
+/// are identical for every other shape.
 pub fn raycast(
 	origin: Vec3,
 	dir: Vec3,

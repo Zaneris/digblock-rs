@@ -73,20 +73,16 @@ impl Hotbar {
 	}
 
 	/// The active tool as the plain id the shared dig questions take
-	/// (`ore::dig_mode`, `skills::dig_required_with`) — `Air` whenever the
-	/// hand is not on the tool, which those functions already read as an
-	/// empty hand: it matches no tool arm and leaves the base hold
-	/// untouched. One helper, so client prediction and the server spell
-	/// the convention identically.
+	/// (`nodes::dig_mode`, `skills::dig_required_with`) — `Air` whenever the
+	/// hand is not on the tool, which those functions already read as an empty
+	/// hand. One helper, so client prediction and the server spell the
+	/// convention identically.
 	///
 	/// Holding a tool is TWO questions — which one the slot holds
-	/// ([`Self::active_tool`]), and whether that slot is the selected one
-	/// — and every gate but the bucket's used to ask only the first. The
-	/// tool axis persists across a block selection, so a player with dirt
-	/// in hand still drew veins with the siphon, still paid the pick's
-	/// hold multiplier and still broke its plane. `active_tool` answers
-	/// what the slot HOLDS; this answers what the player is SWINGING, and
-	/// the dig questions want the second.
+	/// ([`Self::active_tool`]), and whether that slot is the selected one — and
+	/// every gate but the bucket's used to ask only the first. The tool axis
+	/// persists across a block selection, so a player with dirt in hand still
+	/// drew veins with the siphon and still broke the pick's plane.
 	#[inline]
 	pub fn tool_in_hand(&self) -> BlockType {
 		match self.selected_item() {
