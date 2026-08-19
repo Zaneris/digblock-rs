@@ -1,6 +1,6 @@
 use super::*;
 use crate::block::BlockType;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 const SEED: f64 = 42.0;
 
@@ -8,6 +8,8 @@ const SEED: f64 = 42.0;
 struct Slab {
 	cells: FxHashMap<(i32, i32, i32), u16>,
 	fill: Option<u16>,
+	/// Cells `record` has touched — the stand-in for a host's journal.
+	edits: FxHashSet<(i32, i32, i32)>,
 }
 
 impl Slab {
@@ -15,19 +17,36 @@ impl Slab {
 		Self {
 			cells: FxHashMap::default(),
 			fill: Some(fill as u16),
+			edits: FxHashSet::default(),
 		}
 	}
 	fn empty() -> Self {
 		Self {
 			cells: FxHashMap::default(),
 			fill: None,
+			edits: FxHashSet::default(),
 		}
+	}
+	/// A host-style write: the cell changes AND the edit is recorded, so
+	/// a frontier sweep can find it — including the sweep's own writes,
+	/// which is the self-sustaining half the ring test leans on.
+	fn record(&mut self, at: (i32, i32, i32), cell: u16) {
+		self.cells.insert(at, cell);
+		self.edits.insert(at);
 	}
 }
 
 impl CellSource for Slab {
 	fn cell_at(&self, x: i32, y: i32, z: i32) -> Option<u16> {
 		self.cells.get(&(x, y, z)).copied().or(self.fill)
+	}
+	fn edited_cells(&self, cx: i32, cz: i32, f: &mut dyn FnMut(i32, i32, i32)) {
+		let s = CHUNK_SIZE as i32;
+		for &(x, y, z) in &self.edits {
+			if x.div_euclid(s) == cx && z.div_euclid(s) == cz {
+				f(x, y, z);
+			}
+		}
 	}
 }
 
@@ -39,6 +58,17 @@ struct Sprout {
 
 impl Sprout {
 	fn boxed(per_day: u32, radius_chunks: i32, y: (i32, i32)) -> Box<dyn WorldJob> {
+		Self::with(per_day, radius_chunks, y, Candidates::Band)
+	}
+	fn frontier(radius_chunks: i32, y: (i32, i32), surface_shell: bool) -> Box<dyn WorldJob> {
+		Self::with(1, radius_chunks, y, Candidates::Frontier { surface_shell })
+	}
+	fn with(
+		per_day: u32,
+		radius_chunks: i32,
+		y: (i32, i32),
+		candidates: Candidates,
+	) -> Box<dyn WorldJob> {
 		Box::new(Self {
 			sched: Schedule {
 				per_day,
@@ -48,6 +78,7 @@ impl Sprout {
 				blocks: &[BlockType::Dirt],
 				radius_chunks,
 				y,
+				candidates,
 			},
 		})
 	}
@@ -264,8 +295,19 @@ fn only_the_scoped_block_is_offered() {
 /// irreversibly. The registry refuses rather than trusting the author.
 #[test]
 fn a_node_host_scope_is_refused_at_registration() {
-	for host in [BlockType::Stone, BlockType::Wood, BlockType::Sand] {
-		struct Bad(BlockType);
+	for candidates in [
+		Candidates::Band,
+		Candidates::Frontier {
+			surface_shell: true,
+		},
+	] {
+		for host in [BlockType::Stone, BlockType::Wood, BlockType::Sand] {
+			refused(host, candidates);
+		}
+	}
+
+	fn refused(host: BlockType, candidates: Candidates) {
+		struct Bad(BlockType, Candidates);
 		impl WorldJob for Bad {
 			fn name(&self) -> &'static str {
 				"bad"
@@ -285,6 +327,7 @@ fn a_node_host_scope_is_refused_at_registration() {
 					},
 					radius_chunks: 0,
 					y: (0, 0),
+					candidates: self.1,
 				}
 			}
 			fn apply(&self, _: (i32, i32, i32), _: &dyn CellSource, _: f64, _: u64) -> Option<u16> {
@@ -292,7 +335,7 @@ fn a_node_host_scope_is_refused_at_registration() {
 			}
 		}
 		let r = std::panic::catch_unwind(move || {
-			Scheduler::new().register(Box::new(Bad(host)));
+			Scheduler::new().register(Box::new(Bad(host, candidates)));
 		});
 		assert!(r.is_err(), "{host:?} is a node host and must be refused");
 	}
@@ -346,4 +389,199 @@ fn a_node_host_is_never_sweepable() {
 			"{b:?}: node_host and revealed disagree ({witnesses} witnesses)"
 		);
 	}
+}
+
+/// The cube shell at exactly Chebyshev distance `d` from `c` — "ring N"
+/// of a spread that advances one neighborhood per run.
+fn ring(c: (i32, i32, i32), d: i32) -> FxHashSet<(i32, i32, i32)> {
+	let mut out = FxHashSet::default();
+	for dy in -d..=d {
+		for dz in -d..=d {
+			for dx in -d..=d {
+				if dx.abs().max(dy.abs()).max(dz.abs()) == d {
+					out.insert((c.0 + dx, c.1 + dy, c.2 + dz));
+				}
+			}
+		}
+	}
+	out
+}
+
+fn written(writes: &[Write]) -> FxHashSet<(i32, i32, i32)> {
+	writes.iter().map(|&(at, _)| at).collect()
+}
+
+#[test]
+fn a_frontier_sweep_offers_exactly_the_edit_neighborhood() {
+	let mut s = Scheduler::new();
+	s.register(Sprout::frontier(1, (0, 200), false));
+	let mut w = Slab::of(BlockType::Dirt);
+	// Two adjacent edits (overlapping neighborhoods dedup within the
+	// column), one at the column border (its neighborhood spills into the
+	// next chunk column), one beyond the radius (must not appear).
+	let near = [(3, 64, 3), (4, 64, 3), (15, 70, 8)];
+	let far = (-40, 90, 40);
+	for at in near.iter().copied().chain([far]) {
+		w.record(at, BlockType::Dirt as u16);
+	}
+	let (writes, _) = drain(&mut s, 0.0, &w);
+	let mut want = FxHashSet::default();
+	for at in near {
+		want.extend(ring(at, 0));
+		want.extend(ring(at, 1));
+	}
+	assert_eq!(written(&writes), want);
+	assert_eq!(writes.len(), want.len(), "a cell offered twice");
+	assert!(!want.is_empty(), "nothing was examined");
+}
+
+/// Turns Dirt to Grass only beside existing Grass — the shape of a real
+/// spread rule, minus the sun. What it pins is the runner, not the rule:
+/// judged against the pre-sweep world, its own writes cannot feed it
+/// mid-run.
+struct Creep;
+
+impl WorldJob for Creep {
+	fn name(&self) -> &'static str {
+		"creep"
+	}
+	fn schedule(&self) -> Schedule {
+		Schedule {
+			per_day: 1,
+			offset: 0.0,
+		}
+	}
+	fn scope(&self) -> Scope {
+		Scope {
+			blocks: &[BlockType::Dirt],
+			radius_chunks: 1,
+			y: (0, 200),
+			candidates: Candidates::Frontier {
+				surface_shell: false,
+			},
+		}
+	}
+	fn apply(&self, at: (i32, i32, i32), world: &dyn CellSource, _: f64, _: u64) -> Option<u16> {
+		ring(at, 1)
+			.into_iter()
+			.any(|(x, y, z)| {
+				world
+					.cell_at(x, y, z)
+					.is_some_and(|c| cell_id(c) == BlockType::Grass as u16)
+			})
+			.then_some(BlockType::Grass as u16)
+	}
+}
+
+#[test]
+fn a_frontier_run_advances_one_ring_never_two() {
+	let mut s = Scheduler::new();
+	s.register(Box::new(Creep));
+	let mut w = Slab::of(BlockType::Dirt);
+	let seed_cell = (0, 64, 0);
+	w.record(seed_cell, BlockType::Grass as u16);
+
+	// Run 1: exactly the seed's neighbors. Per-slice application would
+	// let ring 1's writes pull ring 2 in within the same run.
+	let (writes, _) = drain(&mut s, 0.0, &w);
+	assert_eq!(written(&writes), ring(seed_cell, 1));
+
+	// Apply as a host would — recorded, so the frontier sees them.
+	for &(at, val) in &writes {
+		w.record(at, val);
+	}
+
+	// Run 2, next slot: exactly one ring further.
+	let (writes2, _) = drain(&mut s, f64::from(DAY_SECS) * 1.5, &w);
+	assert_eq!(written(&writes2), ring(seed_cell, 2));
+}
+
+#[test]
+fn judgment_reads_the_presweep_world_and_emission_rechecks_it() {
+	let mut s = Scheduler::new();
+	s.register(Sprout::frontier(0, (0, 200), false));
+	let mut w = Slab::of(BlockType::Dirt);
+	let stomped = (2, 64, 2);
+	w.record(stomped, BlockType::Dirt as u16);
+
+	// One column, few candidates: judgment fits in the first slice and
+	// emits nothing.
+	let first = s.tick(0.0, SEED, &[(0, 64, 0)], &w);
+	assert!(first.is_empty(), "judgment slice must not emit");
+	assert!(s.sweeping().is_some(), "emission still owed");
+
+	// A player edit lands between the phases; its cell's write must die.
+	w.record(stomped, BlockType::Stone as u16);
+	let (rest, _) = drain(&mut s, 0.0, &w);
+	let mut want = ring(stomped, 1);
+	want.extend(ring(stomped, 0));
+	want.remove(&stomped);
+	assert_eq!(written(&rest), want);
+}
+
+#[test]
+fn abandon_between_phases_emits_nothing() {
+	let mut s = Scheduler::new();
+	s.register(Sprout::frontier(0, (0, 200), false));
+	let mut w = Slab::of(BlockType::Dirt);
+	w.record((2, 64, 2), BlockType::Dirt as u16);
+
+	assert!(s.tick(0.0, SEED, &[(0, 64, 0)], &w).is_empty());
+	assert!(s.sweeping().is_some(), "writes are judged and waiting");
+	s.abandon();
+	// Same slot: the run was consumed at start, so nothing resumes and
+	// the pending writes died with the sweep.
+	for _ in 0..50 {
+		assert!(s.tick(0.0, SEED, &[(0, 64, 0)], &w).is_empty());
+	}
+}
+
+#[test]
+fn no_frontier_slice_ever_exceeds_the_budget() {
+	let mut s = Scheduler::new();
+	s.register(Sprout::frontier(1, (0, 200), true));
+	let w = Slab::of(BlockType::Dirt);
+	let mut total = 0;
+	loop {
+		let n = s.tick(0.0, SEED, &[(0, 64, 0)], &w).len();
+		assert!(n <= CELLS_PER_TICK, "emitted {n} past the budget");
+		total += n;
+		if s.sweeping().is_none() {
+			break;
+		}
+	}
+	// The shell alone offers several columns' subsoil — enough that a
+	// single-slice emission could not have carried it.
+	assert!(
+		total > CELLS_PER_TICK,
+		"shell sweep too small to prove slicing"
+	);
+}
+
+#[test]
+fn an_unedited_world_costs_a_frontier_sweep_nothing() {
+	let mut s = Scheduler::new();
+	s.register(Sprout::frontier(2, (0, 200), false));
+	let (writes, _) = drain(&mut s, 0.0, &Slab::of(BlockType::Dirt));
+	assert!(writes.is_empty(), "no edits, no shell, no candidates");
+}
+
+#[test]
+fn the_shell_offers_exactly_the_subsoil_span() {
+	let mut s = Scheduler::new();
+	s.register(Sprout::frontier(0, (0, 200), true));
+	let (writes, _) = drain(&mut s, 0.0, &Slab::of(BlockType::Dirt));
+	// The eye's own chunk column, every block column's span, clamped to
+	// the job's band — derived from the same function the runner asks.
+	let mut want = FxHashSet::default();
+	for z in 0..CHUNK_SIZE as i32 {
+		for x in 0..CHUNK_SIZE as i32 {
+			let (lo, hi) = crate::worldgen::subsoil_span(x, z, SEED);
+			for y in lo.max(0)..=hi.min(200) {
+				want.insert((x, y, z));
+			}
+		}
+	}
+	assert_eq!(written(&writes), want);
+	assert!(!want.is_empty(), "the span sweep examined nothing");
 }

@@ -110,10 +110,12 @@ const TRACE_IN_256: u64 = 13;
 /// Splitmix64 over a 3D cell + the world seed, salted per stream — the
 /// three-axis sibling of `decoration::hash`. Each axis rides its own odd
 /// multiplier so a change on any one of them reaches every output bit.
-/// `pub(super)` so the surface-node streams in [`super::nodes`] draw from
-/// the same mixer with salts of their own.
+/// `pub(crate)` so every per-cell stream draws from the same mixer with a
+/// salt of its own — the surface nodes in [`super::nodes`], and the grass
+/// sweep's sun-ray jitter in `worldjob::grass` — rather than each copying
+/// the magic multipliers.
 #[inline]
-pub(super) fn mix(cx: i32, cy: i32, cz: i32, seed_bits: u64, salt: u64) -> u64 {
+pub(crate) fn mix(cx: i32, cy: i32, cz: i32, seed_bits: u64, salt: u64) -> u64 {
 	let mut h = u64::from(cx as u32).wrapping_mul(0x9e37_79b9_7f4a_7c15);
 	h ^= u64::from(cy as u32).wrapping_mul(0xc2b2_ae3d_27d4_eb4f);
 	h ^= u64::from(cz as u32).wrapping_mul(0x1656_67b1_9e37_79f9);

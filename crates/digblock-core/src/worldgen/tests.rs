@@ -325,3 +325,51 @@ fn regions_are_present_and_balanced() {
 		pct(mountain)
 	);
 }
+
+#[test]
+fn subsoil_span_bounds_every_pristine_dirt_cell() {
+	// The frontier sweep's surface shell scans exactly this span, so a
+	// Dirt cell outside it is a cell no scheduled rule can ever reach —
+	// cave-exposed dirt would silently stop greening over.
+	let seed = 11.0;
+	let n = CHUNK_SIZE as i32;
+	let (mut dirt, mut exposed) = (0u32, 0u32);
+	for cx in -4..4 {
+		for cz in -4..4 {
+			let stack = build_column(cx, cz, seed);
+			for lx in 0..CHUNK_SIZE {
+				for lz in 0..CHUNK_SIZE {
+					let (x, z) = (cx * n + lx as i32, cz * n + lz as i32);
+					let span = subsoil_span(x, z, seed);
+					for (cy, data) in stack.iter().enumerate() {
+						for ly in 0..CHUNK_SIZE {
+							if data.get(lx, ly, lz) != BlockType::Dirt {
+								continue;
+							}
+							let y = cy as i32 * n + ly as i32;
+							assert!(
+								(span.0..=span.1).contains(&y),
+								"dirt at ({x},{y},{z}) outside subsoil span {span:?}"
+							);
+							dirt += 1;
+							let above = if ly + 1 < CHUNK_SIZE {
+								stack[cy].get(lx, ly + 1, lz)
+							} else {
+								stack
+									.get(cy + 1)
+									.map_or(BlockType::Air, |d| d.get(lx, 0, lz))
+							};
+							if above == BlockType::Air {
+								exposed += 1;
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+	// Vacuity guards: the region must actually contain buried dirt AND
+	// cave-exposed dirt, or the sweep above proved nothing.
+	assert!(dirt > 1000, "only {dirt} dirt cells examined");
+	assert!(exposed > 0, "no cave-exposed dirt in the scanned region");
+}

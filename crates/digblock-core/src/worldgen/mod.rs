@@ -58,6 +58,18 @@ pub fn terrain_height(x: i32, z: i32, seed: f64) -> i32 {
 	column_shape(x, z, seed).height
 }
 
+/// The inclusive y span where pristine soil can live in this column: the
+/// surface cell plus `DIRT_DEPTH` of subsoil below it. Every pristine
+/// non-stone soil cell — cave-exposed ones included, since the carve
+/// removes cells rather than moving them — lies inside;
+/// `subsoil_span_bounds_every_pristine_dirt_cell` walks built columns to
+/// pin that, so a deeper soil layer fails a test instead of silently
+/// escaping callers that scan this span.
+pub fn subsoil_span(x: i32, z: i32, seed: f64) -> (i32, i32) {
+	let h = terrain_height(x, z, seed);
+	(h - DIRT_DEPTH + 1, h)
+}
+
 /// [`column_shape`], but rejecting on altitude from the centre field
 /// alone — one evaluation instead of five. Classification only ever
 /// LOWERS the discretized height (marsh puddles dip a block), so a centre
