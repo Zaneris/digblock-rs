@@ -1,23 +1,20 @@
-//! Carried lights: the per-frame list of emitters that hang on a body
-//! rather than in a cell (GI-DESIGN.md R28).
+//! Carried lights: the per-frame list of emitters that hang on a body rather
+//! than in a cell (GI-DESIGN.md R28).
 //!
-//! **A carried light is an ordinary entry in the same light list a placed
-//! torch uses** — there is no second lighting path, which is what gives one
-//! bounce, hard shadows, water response and a lit hand for free. It hangs at
-//! `gi::carried_origin`, a function of POSITION and not facing, so the cell
-//! is provably non-solid (the carrier's capsule occupies it) and mouse-look
-//! cannot move it: a player standing still with a torch is not a moving
-//! emitter, and their room converges as deeply as one lit from the floor.
+//! **A carried light is an ordinary entry in the same light list a placed torch
+//! uses** — there is no second lighting path, which is what gives one bounce,
+//! hard shadows, water response and a lit hand for free. It hangs at
+//! `gi::carried_origin`, a function of POSITION and not facing, so the cell is
+//! provably non-solid and mouse-look cannot move it.
 //!
-//! Motion is expressed as RE-PLACEMENT — travel `CARRY_INVAL_STEP` and it
-//! fires the same `gi_invalidate` a block edit fires. The trigger is a
-//! DISTANCE, never a cell crossing, which on a boundary would fire every
-//! frame for a player going nowhere. Putting a light OUT re-places it too,
-//! or the probes hold its bounce for seconds after the list has dropped it;
-//! that covers a swap, a disconnect and a remote leaving the snapshot.
+//! Motion is expressed as RE-PLACEMENT — travel `CARRY_INVAL_STEP` and it fires
+//! the same `gi_invalidate` a block edit fires. The trigger is a DISTANCE, never
+//! a cell crossing, which on a boundary would fire every frame for a player
+//! going nowhere. Putting a light OUT re-places it too, or the probes hold its
+//! bounce for seconds after the list has dropped it.
 //!
-//! Fires are banked by [`Carried::commit`] only once the renderer has
-//! actually queued them.
+//! Fires are banked by [`Carried::commit`] only once the renderer has actually
+//! queued them.
 
 use super::{held_icon, player_color};
 use digblock_core::BlockType;
@@ -85,37 +82,33 @@ pub(super) fn push_remote(
 	carried.push(r.key, pos, block, 0);
 }
 
-/// How near the camera a carried light has to be for its MOTION to be
-/// worth re-placing in the probe field.
+/// How near the camera a carried light has to be for its MOTION to be worth
+/// re-placing in the probe field.
 ///
-/// The light itself still reaches the list at any range — this is only
-/// about the invalidation sphere, and past this distance the wake it
-/// leaves is too dim and too far to read (a torch out there delivers less
-/// than one step of 8-bit output before albedo). `GiDraw::invalidate`
-/// drains a fixed few spheres a frame and shares that budget with world
-/// edits, so a crowd of distant carriers must not be able to spend it.
+/// The light itself still reaches the list at any range — this is only about the
+/// invalidation sphere, and past this distance the wake it leaves is too dim to
+/// read. `GiDraw::invalidate` drains a fixed few spheres a frame and shares that
+/// budget with world edits, so a crowd of distant carriers must not spend it.
 ///
-/// This gate is the ONLY bound applied here, deliberately. Past it the
-/// queue's own policy is already the right one: bounded, and dropping
-/// the OLDEST, because the newest position is the one whose light is
-/// most wrong. A second per-frame cap on top would either starve a
-/// carrier (skip it, and its last-fire position is already recorded) or
-/// hand the probes a position its carrier left seconds ago.
+/// This gate is the ONLY bound applied here, deliberately. Past it the queue's
+/// own policy is already right: bounded, and dropping the OLDEST, because the
+/// newest position is the one whose light is most wrong. A second per-frame cap
+/// would either starve a carrier or hand the probes a position its carrier left
+/// seconds ago.
 pub(super) const CARRIED_INVAL_DIST: f32 = 32.0;
 
-/// How far a carried light must travel before its motion is re-placed in
-/// the probe field.
+/// How far a carried light must travel before its motion is re-placed in the
+/// probe field.
 ///
-/// A DISTANCE since the last fire, deliberately **not** a cell crossing.
-/// A crossing test is phase-dependent and pathological: a player resting
-/// on a cell boundary with the sub-block wobble the tick lerp and the
-/// decaying reconciliation offset both produce crosses back and forth
-/// every frame, so somebody standing still would fire a sphere every
-/// frame. Distance has no such failure mode, is frame-rate independent,
-/// needs no hysteresis, and handles a teleport for free.
+/// A DISTANCE since the last fire, deliberately **not** a cell crossing. A
+/// crossing test is phase-dependent and pathological: a player resting on a cell
+/// boundary, with the sub-block wobble the tick lerp and the decaying
+/// reconciliation offset both produce, crosses back and forth every frame.
+/// Distance has no such failure mode, is frame-rate independent, needs no
+/// hysteresis, and handles a teleport for free.
 ///
-/// One C0 probe spacing, so a probe can never be more than its own cell
-/// stale between fires — pinned by `a_carrier_never_outruns_a_probe_cell`.
+/// One C0 probe spacing, so a probe can never be more than its own cell stale
+/// between fires — pinned by `a_carrier_never_outruns_a_probe_cell`.
 pub(super) const CARRY_INVAL_STEP: f32 = 2.0;
 
 /// This frame's carried lights, and the bookkeeping that turns a light
@@ -155,20 +148,18 @@ impl Carried {
 
 	/// Add one carrier if what they hold emits at all.
 	///
-	/// Derived, never special-cased: any block whose `emits` level is
-	/// nonzero is a light in a hand exactly as it is a light on the
-	/// ground, and it enters the list under the SAME class byte a placed
-	/// one does — so tint and cast level come from one LUT row and a
-	/// carried torch cannot drift from the torch beside it.
+	/// Derived, never special-cased: any block whose `emits` level is nonzero is
+	/// a light in a hand exactly as it is a light on the ground, and it enters
+	/// the list under the SAME class byte a placed one does — so tint and cast
+	/// level come from one LUT row and a carried torch cannot drift from the
+	/// torch beside it.
 	///
-	/// What it does NOT share is `gi::light_origin`. That is applied
-	/// CPU-side in `GiDraw::upload_chunk`, baked into a chunk emitter's
-	/// world position before it ever reaches the list, and it answers
-	/// "where inside its cell does this shape glow" — a question a
-	/// carried light has no cell to ask. `carried_origin` is the whole
-	/// answer here. Do not "unify" the two: removing the offset in
-	/// upload_chunk silently undoes R26 and puts every placed torch's
-	/// light back at its cell centre.
+	/// What it does NOT share is `gi::light_origin`, which is applied CPU-side
+	/// in `GiDraw::upload_chunk` and answers "where inside its cell does this
+	/// shape glow" — a question a carried light has no cell to ask.
+	/// `carried_origin` is the whole answer here. Do not "unify" the two:
+	/// removing the offset in upload_chunk silently undoes R26 and puts every
+	/// placed torch's light back at its cell centre.
 	pub(super) fn push(&mut self, key: u16, eye: Vec3, held: Option<BlockType>, mining: u32) {
 		let Some(b) = held.filter(|b| b.props().light > 0) else {
 			return;

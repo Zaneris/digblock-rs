@@ -1,20 +1,16 @@
-//! The shared look: every spacing token and panel color the screens
-//! draw with. One module, because a screen that invents its own padding
-//! — or worse, its own text size — reads as a different program bolted
-//! onto the same window. The alchemy screen did exactly that (an
-//! enlarged title and a continuous shrink-to-fit of its own glyph size)
-//! and the mismatch was visible at a glance next to the menu.
+//! The shared look: every spacing token and panel colour the screens draw with.
+//! One module, because a screen that invents its own padding — or worse, its own
+//! text size — reads as a different program bolted onto the same window.
 //!
 //! Two rules hold everything together:
 //!
-//! 1. **There is one text size per frame**, [`super::Style::glyph`],
-//!    derived from the UI scale by [`super::scale::glyph_px`]. Nothing
-//!    here scales text. The only deliberate exceptions in the whole UI
-//!    is [`super::scale::FIXED_GLYPH_PX`] (the debug overlay, which is a
-//!    diagnostic rather than UI), and
+//! 1. **There is one text size per frame**, [`super::Style::glyph`], derived
+//!    from the UI scale by [`super::scale::glyph_px`]. Nothing here scales text.
+//!    The only sanctioned exception is [`super::scale::FIXED_GLYPH_PX`] (the
+//!    debug overlay, a diagnostic rather than UI), and
 //!    `screens::every_screen_draws_text_at_one_size` pins that.
-//! 2. **Every constant here is a logical size** — multiply by
-//!    `Style::scale` exactly once, at the point of use.
+//! 2. **Every constant here is a logical size** — multiply by `Style::scale`
+//!    exactly once, at the point of use.
 
 use super::scale;
 
@@ -90,23 +86,20 @@ pub fn text_row_w(style: &super::Style, text: &str) -> f32 {
 	2.0 * scale::text_pad_x(style.scale) + style.measure(text)
 }
 
-/// Step `scale` down the fit ladder until the layout fits `budget`, and
-/// return the scale to draw at.
+/// Step `scale` down the fit ladder until the layout fits `budget`, and return
+/// the scale to draw at.
 ///
-/// `needed(scale)` re-measures the whole layout at a candidate scale —
-/// it has to be re-measured rather than divided, because `glyph_px`
-/// rounds to whole pixels and the layout's text is not a linear
-/// function of the scale.
+/// `needed(scale)` re-measures the whole layout at a candidate scale — it has to
+/// be re-measured rather than divided, because `glyph_px` rounds to whole pixels
+/// and the layout's text is not a linear function of the scale.
 ///
-/// Stepping is the point. The obvious implementation — multiply the
-/// style by `budget / needed` — produces text at some arbitrary fraction
-/// of the size the menu beside it draws at, which is exactly the mismatch
-/// this module exists to prevent. `STEP` is the same increment the
-/// derived half of [`scale::ui_scale`] moves in, so a shrunken panel is
-/// the page one smaller window would have drawn, not a
-/// differently-designed one.
-/// Bottoms out at [`FIT_FLOOR`], which is LOWER than the interface
-/// scale's own floor on purpose — see that constant.
+/// Stepping is the point. Multiplying the style by `budget / needed` produces
+/// text at some arbitrary fraction of the size the menu beside it draws at,
+/// which is exactly the mismatch this module exists to prevent. `STEP` is the
+/// same increment the derived half of [`scale::ui_scale`] moves in, so a
+/// shrunken panel is the page one smaller window would have drawn. Bottoms out
+/// at [`FIT_FLOOR`], which is LOWER than the interface scale's own floor on
+/// purpose — see that constant.
 pub fn fit_scale(scale: f32, budget: f32, needed: impl Fn(f32) -> f32) -> f32 {
 	const STEP: f32 = 0.25;
 	let mut s = scale;
@@ -116,35 +109,22 @@ pub fn fit_scale(scale: f32, budget: f32, needed: impl Fn(f32) -> f32) -> f32 {
 	s
 }
 
-/// How far the fit ladder may step, as distinct from
-/// [`scale::UI_SCALE_FLOOR`] — the smallest interface scale a player may
-/// CHOOSE.
+/// How far the fit ladder may step, as distinct from [`scale::UI_SCALE_FLOOR`],
+/// the smallest interface scale a player may CHOOSE.
 ///
-/// They were the same number until a screen stopped fitting at the
-/// interface floor, and the difference matters because the two floors
-/// answer different questions. The interface floor is a taste limit:
-/// below it text is unpleasantly small, so the slider does not go there.
-/// This one is a last resort, and its alternative is not "slightly
-/// bigger text" but a page whose bottom half is behind the hotbar —
-/// which is what the alchemy screen's extract tab does in a small window
-/// at a large interface scale, now that the inventory grid runs several
-/// rows deep.
+/// The two floors answer different questions. The interface floor is a taste
+/// limit: below it text is unpleasantly small, so the slider does not go there.
+/// This one is a last resort, and its alternative is not "slightly bigger text"
+/// but a page whose bottom half is behind the hotbar. A cramped page you can
+/// read all of beats a comfortable one you cannot reach the bottom of.
 ///
-/// A cramped page you can read all of beats a comfortable one you
-/// cannot reach the bottom of, so the ladder is allowed to step below
-/// where the slider stops. It is still a ladder: the whole style steps
-/// together and the glyph never lands on a fraction.
-///
-/// **This is as low as the ladder can usefully go**, and that is
-/// arithmetic rather than taste: [`scale::glyph_px`] clamps at a whole
-/// readable pixel size which this rung already sits on, so a rung below
-/// it takes a quarter off every box while the TEXT stays exactly where it
-/// was — boxes shrinking around fixed glyphs, and text-derived widths
-/// (`text_row_w`) frozen while the panel keeps narrowing. It went half a
-/// rung lower for one release when the inventory grid grew its seventh
-/// row; what a page that still does not fit needs is fewer ROWS, not
-/// smaller boxes around the same letters, and `InvScreen` reflows for
-/// that reason.
+/// **This is as low as the ladder can usefully go**, and that is arithmetic
+/// rather than taste: [`scale::glyph_px`] clamps at a whole readable pixel size
+/// which this rung already sits on, so a rung below takes a quarter off every
+/// box while the TEXT stays exactly where it was — boxes shrinking around fixed
+/// glyphs, and text-derived widths frozen while the panel keeps narrowing. What
+/// a page that still does not fit needs is fewer ROWS, which is why `InvScreen`
+/// reflows.
 pub const FIT_FLOOR: f32 = 0.5;
 
 #[cfg(test)]

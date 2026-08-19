@@ -30,19 +30,17 @@ pub enum FaceId {
 	Mono,
 }
 
-// Layout box height → em size. The UI face maps 1:1 — a box of a given
-// height is that many pixels of Inter, the ordinary reading of a UI type
-// size. Note this IS visibly smaller than the font it replaces: the old
-// bitmap face drew capitals filling nearly the whole box, where Inter's
-// sit well inside it. That is the intended new look rather than a bug,
-// and the interface-scale slider is there for anyone who wants the old
-// heft back.
+// Layout box height → em size. The UI face maps 1:1 — a box of a given height
+// is that many pixels of Inter, the ordinary reading of a UI type size. Note
+// this IS visibly smaller than the bitmap face it replaces, whose capitals
+// filled nearly the whole box; that is the intended look, and the
+// interface-scale slider is there for anyone who wants the old heft back.
 //
-// The mono face is trimmed slightly so its taller line box still fits
-// the debug panel's row pitch.
+// The mono face is trimmed slightly so its taller line box still fits the debug
+// panel's row pitch.
 //
-// These are THE tuning knobs for a font swap — nothing else depends on
-// their values.
+// These are THE tuning knobs for a font swap — nothing else depends on their
+// values.
 const UI_EM_RATIO: f32 = 1.0;
 const MONO_EM_RATIO: f32 = 0.95;
 

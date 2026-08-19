@@ -308,25 +308,19 @@ fn debug_lines(stats: &OverlayStats, scratch: &mut String, lines: &mut [(u32, St
 	// different questions and neither substitutes for the other.
 	//
 	// `ping` is the transport's own estimate — QUIC's, the same quantity the
-	// server browser shows, so the two finally agree. `rtt` is the INPUT→ACK
-	// loop: the wire PLUS the server's input buffer, the sim's tick boundary
-	// and the snapshot cadence, which is what the player actually feels when
-	// they turn or dig. Their gap is the server-side pipeline, and it is the
-	// part that moves when SNAPSHOT_DIVISOR or the send stride change.
+	// server browser shows. `rtt` is the INPUT→ACK loop: the wire PLUS the
+	// server's input buffer, the sim's tick boundary and the snapshot cadence,
+	// which is what the player feels when they turn or dig. Their gap is the
+	// server-side pipeline, the part that moves when SNAPSHOT_DIVISOR or the
+	// send stride change. Subtracting a constant from `rtt` was measured wrong:
+	// on a LAN every sample is one tick or two against a wire far shorter than a
+	// tick.
 	//
-	// Showing only `rtt` and subtracting a constant was considered and
-	// measured to be wrong: on a LAN every `rtt` sample is one tick or two
-	// against a wire far shorter than a tick, so the wire is a fraction of
-	// one quantum and no subtraction can recover it. `ping` is measured,
-	// not derived.
-	//
-	// `+-` is the mean deviation of `rtt` — an rtt without it is not a
-	// number you can act on. `rtt_last_ms` is deliberately NOT here: the
-	// smoothed pair says everything a single sample would, in half the
-	// columns, and the raw value is still in `NetStats` for the CSV. `lead`
-	// is how far ahead of the last acked tick prediction is running (the
-	// client's view of the jitter-buffer depth), and `rep` is replays per
-	// second, which should sit at 0.0 unless the server is rejecting claims.
+	// `+-` is the mean deviation of `rtt` — an rtt without it is not a number
+	// you can act on. `rtt_last_ms` is deliberately NOT here; the raw value is
+	// still in `NetStats` for the CSV. `lead` is how far ahead of the last acked
+	// tick prediction is running, and `rep` is replays per second, which should
+	// sit at 0.0 unless the server is rejecting claims.
 	match &s.net {
 		Some(n) => line(
 			6,
@@ -347,21 +341,19 @@ fn debug_lines(stats: &OverlayStats, scratch: &mut String, lines: &mut [(u32, St
 		),
 		None => line(6, DIM, format_args!("net  offline")),
 	}
-	// Where this frame was taken. Not a measurement — the reason it is on
-	// a performance panel is that a screenshot of a rendering bug is nearly
-	// useless without the world it happened in, and every field here is an
-	// argument the capture flags take:
+	// Where this frame was taken. Not a measurement — it is on a performance
+	// panel because a screenshot of a rendering bug is nearly useless without
+	// the world it happened in, and every field here is an argument the capture
+	// flags take:
 	//
 	//     --seed S --pos X Y Z --yaw Y --pitch P --tod T
 	//
-	// so photographing the panel is enough to reproduce the frame. The
-	// facing is the same eight-point compass the admin commands answer with
-	// (`core::compass`, east = sunrise = −x, north = −z) — a heading is what
-	// a player can actually report; a yaw in degrees is not.
+	// so photographing the panel is enough to reproduce the frame. The facing is
+	// the same eight-point compass the admin commands answer with
+	// (`core::compass`) — a heading is what a player can actually report.
 	//
-	// `seed` is the one unpadded field on the panel, deliberately — see
-	// [`seed_text`]. It cannot make the panel move: a seed is fixed for the
-	// whole session, and the width comes from DEBUG_COLS regardless.
+	// `seed` is the one unpadded field, deliberately; it cannot make the panel
+	// move, since the width comes from DEBUG_COLS regardless.
 	let w = &s.world;
 	let facing = digblock_core::compass::compass_abbrev(look_dir(w.yaw_deg, w.pitch_deg));
 	line(

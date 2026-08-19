@@ -3,27 +3,22 @@
 use digblock_core::player::TICK;
 use glam::Vec3;
 
-/// Interpolation anchor: the player position from *before* the most
-/// recent sim tick.
+/// Interpolation anchor: the player position from *before* the most recent sim
+/// tick.
 ///
-/// The player sim runs on a fixed-`TICK` accumulator while frames arrive
-/// at whatever rate the display and the frame budget allow. Drawing the
-/// raw post-tick position samples that sim at an unrelated rate, so a
-/// frame may run no tick, one, or several, and the camera alternates
-/// between not moving and moving double — aliasing that gets *worse* the
-/// further the refresh rate is from the sim rate (on a high-refresh panel
-/// whole frames draw no motion at all, and no amount of network tuning
-/// touches it).
+/// The player sim runs on a fixed-`TICK` accumulator while frames arrive at
+/// whatever rate the display allows. Drawing the raw post-tick position samples
+/// that sim at an unrelated rate, so a frame may run no tick, one, or several,
+/// and the camera alternates between not moving and moving double — aliasing
+/// that gets *worse* the further the refresh rate is from the sim rate, and that
+/// no amount of network tuning touches.
 ///
-/// The fix is the standard one — Fiedler's *Fix Your Timestep!*, Unity's
-/// `Rigidbody.interpolation`, Unreal's `ENetworkSmoothingMode` — draw
-/// between the two states by how far the accumulator has refilled. It
-/// costs half a tick of average visual latency; extrapolating forward
-/// instead would avoid that but overshoots into walls, which is much
-/// worse in a voxel world.
+/// The fix is the standard one (Fiedler's *Fix Your Timestep!*, Unity's
+/// `Rigidbody.interpolation`): draw between the two states by how far the
+/// accumulator has refilled. It costs half a tick of average visual latency;
+/// extrapolating forward instead overshoots into walls.
 ///
-/// Presentation only: gameplay (targeting, occupancy, the wire) reads the
-/// authoritative `Player::pos`, never this.
+/// Presentation only: gameplay reads the authoritative `Player::pos`.
 #[derive(Debug, Clone, Copy)]
 pub struct TickLerp {
 	prev: Vec3,
@@ -57,24 +52,19 @@ impl TickLerp {
 		self.prev -= error;
 	}
 
-	/// Where to draw, given the post-tick position and the leftover
-	/// accumulator. `accum` is always < `TICK` after the sim loop; the
-	/// clamp is a backstop, not a normal path.
+	/// Where to draw, given the post-tick position and the leftover accumulator.
+	/// `accum` is always < `TICK` after the sim loop; the clamp is a backstop.
 	///
 	/// Written out rather than `Vec3::lerp`, and the difference is not
-	/// stylistic. glam's lerp is `a*(1 - t) + b*t`, which is exact at
-	/// `t == 1` but NOT when `a == b`: two roundings of the same
-	/// coordinate need not sum back to it, and swept over the
-	/// accumulator's whole phase range it misses on a steady fraction of
-	/// frames at awkward coordinates (never at exact powers of two). A
-	/// player standing perfectly still therefore had a camera that
-	/// jittered in the last ulp every few frames. Nothing SEES that
-	/// directly — but `GiDraw::flush_lights` compares a carried light's
-	/// position for exact equality to decide whether the light list is
-	/// stale, so a still torch-bearer paid a full rebuild on a large share
-	/// of frames. `a + (b - a)*t` returns `a` bit-exactly when `a == b`,
-	/// which is the property that early-out actually rests on; `t == 1`
-	/// is the backstop path and is still correct to an ulp.
+	/// stylistic. glam's lerp is `a*(1 - t) + b*t`, which is exact at `t == 1`
+	/// but NOT when `a == b`: two roundings of the same coordinate need not sum
+	/// back to it, so a player standing perfectly still had a camera that
+	/// jittered in the last ulp every few frames. Nothing SEES that directly —
+	/// but `GiDraw::flush_lights` compares a carried light's position for exact
+	/// equality to decide whether the light list is stale, so a still
+	/// torch-bearer paid a full rebuild on a large share of frames.
+	/// `a + (b - a)*t` returns `a` bit-exactly when `a == b`, which is the
+	/// property that early-out rests on.
 	pub fn render_pos(&self, curr: Vec3, accum: f32) -> Vec3 {
 		let t = (accum / TICK).clamp(0.0, 1.0);
 		self.prev + (curr - self.prev) * t

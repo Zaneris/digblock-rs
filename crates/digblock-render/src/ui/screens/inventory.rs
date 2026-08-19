@@ -87,26 +87,23 @@ impl InvScreen {
 		}
 	}
 
-	/// How many columns to lay `GRID_SLOTS` out in, given the height
-	/// actually available for the grid.
+	/// How many columns to lay `GRID_SLOTS` out in, given the height actually
+	/// available for the grid.
 	///
-	/// Normally the bar's own count, which is what puts each column over
-	/// the slot it drops into. But the ladder bottoms out
-	/// ([`theme::FIT_FLOOR`]) and a small enough window at a large enough
-	/// interface scale still has no room for seven rows — and the page has
-	/// already given up bar alignment by then, because a fitted page
-	/// CENTRES (there is nothing left to align to once the two scales
-	/// differ). So the same slots go into fewer, longer rows instead.
+	/// Normally the bar's own count, which is what puts each column over the
+	/// slot it drops into. But the ladder bottoms out ([`theme::FIT_FLOOR`]) and
+	/// a small enough window at a large enough interface scale still has no room
+	/// for seven rows — and the page has already given up bar alignment by then,
+	/// because a fitted page CENTRES. So the same slots go into fewer, longer
+	/// rows instead.
 	///
-	/// Fewer rows and not smaller boxes, which is the whole argument: the
-	/// glyph size has a floor, so buying height by stepping the style
-	/// below that floor shrinks every box around text that cannot follow.
-	/// Re-shaping the grid costs nothing but the aspect of a page that is
-	/// already in an extreme configuration.
+	/// Fewer rows and not smaller boxes, which is the whole argument: the glyph
+	/// size has a floor, so buying height by stepping below it shrinks every box
+	/// around text that cannot follow.
 	///
 	/// Never NARROWER than the bar: a page with room to spare must lay out
-	/// exactly as it always did, so the normal case has to come out of the
-	/// same expression rather than being special-cased around it.
+	/// exactly as it always did, so the normal case comes out of the same
+	/// expression rather than being special-cased around it.
 	fn reflow(style: &Style, grid_budget: f32) -> usize {
 		let (cell, gap) = (hud::SLOT_PX * style.scale, hud::SLOT_GAP * style.scale);
 		let full_rows = GRID_SLOTS.div_ceil(HOTBAR_SLOTS);
@@ -151,20 +148,18 @@ impl InvScreen {
 			widgets::scaled_dim(theme::SCREEN_DIM, daylight),
 		);
 
-		// The slot rows and a title band make a page taller than a short
-		// window at a big interface scale has to give: the panel's top
-		// edge crosses the top of the window, and further up the scale the
-		// first row of slots goes with it and cannot be clicked at all.
-		// This screen grew into that when the grid gained its extra rows
-		// and simply ran off the TOP, because it positioned itself by
-		// subtraction from the bar and never checked.
+		// The slot rows and a title band make a page taller than a short window
+		// at a big interface scale has to give: the panel's top edge crosses
+		// the top of the window, and further up the scale the first row of
+		// slots goes with it and cannot be clicked at all. This screen ran off
+		// the TOP once the grid gained its extra rows, because it positioned
+		// itself by subtraction from the bar and never checked.
 		//
-		// So it walks the same ladder the alchemy screen does: the WHOLE
-		// style steps down a rung at a time until the page fits between
-		// the bar and the top margin, re-measured per rung, never a
-		// fractional glyph. The bar is not ours to shrink — it is drawn
-		// after us at the frame's own scale — so every measurement taken
-		// against it stays in `window_scale`.
+		// So it walks the same ladder the alchemy screen does: the WHOLE style
+		// steps down a rung at a time, re-measured per rung, never a fractional
+		// glyph. The bar is not ours to shrink — it is drawn after us at the
+		// frame's own scale — so every measurement taken against it stays in
+		// `window_scale`.
 		let bar = hud::row_grid(size, window_scale);
 		let budget = bar.origin.1 - (theme::GAP_ABOVE_BAR + theme::TOP_MARGIN) * window_scale;
 		let needed = |s: f32| Self::content_h(&Style::new(s)) + 2.0 * theme::PAD * s;
@@ -565,28 +560,24 @@ mod tests {
 		}
 	}
 
-	/// This panel takes the BAR's geometry instead of centring like every
-	/// other screen, and the alignment is the whole reason: its columns
-	/// have to sit over the slots they drop into. The tool slot is not one
-	/// of them — §6 stands it apart off the right-hand end — so the eight
-	/// block slots are what the claim is about. Both sides read the one
-	/// `hud::row_grid`, which is what makes the bar's re-centring move the
-	/// grid with it rather than away from it.
+	/// This panel takes the BAR's geometry instead of centring like every other
+	/// screen, and the alignment is the whole reason: its columns have to sit
+	/// over the slots they drop into. The tool slot is not one of them — §6
+	/// stands it apart off the right-hand end. Both sides read the one
+	/// `hud::row_grid`, which is what makes the bar's re-centring move the grid
+	/// with it rather than away from it.
 	///
-	/// Alignment holds exactly when the page draws at the frame's own
-	/// scale AND in the bar's own columns; the two escape hatches for a
-	/// page with no room — stepping the style, and `reflow`ing to longer
-	/// rows — each abandon it deliberately, and a fitted page centres
-	/// instead precisely because there is nothing left to align to.
+	/// Alignment holds exactly when the page draws at the frame's own scale AND
+	/// in the bar's own columns; the two escape hatches for a page with no room
+	/// — stepping the style, and `reflow`ing to longer rows — each abandon it
+	/// deliberately, and a fitted page centres because there is nothing left to
+	/// align to.
 	///
-	/// So the sweep is EVERY window and scale and the expectation is
-	/// DERIVED, rather than a hand-kept list of the configurations that
-	/// happen to have room. The list was the fragile part: the seventh
-	/// grid row pushed one entry over, and the entry was removed — which
-	/// reads as the rule still holding everywhere it is checked while the
-	/// place it stopped holding is simply no longer checked. Deriving it
-	/// means a layout change can move WHICH configurations align, and
-	/// still cannot quietly move whether they align when they should.
+	/// So the sweep is EVERY window and scale and the expectation is DERIVED. A
+	/// hand-kept list of the configurations that happen to have room is the
+	/// fragile part: the seventh grid row pushed one entry over and the entry
+	/// was removed, which reads as the rule still holding everywhere it is
+	/// checked while the place it stopped holding is no longer checked.
 	#[test]
 	fn the_grid_columns_sit_over_the_bar_slots_they_drop_into() {
 		let mut aligned = 0usize;

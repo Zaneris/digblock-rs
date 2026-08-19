@@ -33,21 +33,18 @@ pub const UI_SCALE_MIN: f32 = 0.70;
 pub const UI_SCALE_MAX: f32 = 1.50;
 pub const UI_SCALE_STEP: f32 = 0.05;
 
-/// Whole-UI scale: the display's own scale factor × a window-size factor
-/// × the user's preference. Reference: the design's own logical window
-/// at 1× with a neutral preference is exactly the pre-scaling design
-/// (scale 1.0); bigger windows, denser displays and a higher preference
-/// all grow the UI from there.
+/// Whole-UI scale: the display's own scale factor × a window-size factor × the
+/// user's preference. Reference: the design's own logical window at 1× with a
+/// neutral preference is exactly the pre-scaling design (scale 1.0).
 ///
-/// `scale_factor` is the OS's own setting, straight from the window — a
-/// display at 125% arrives here as 1.25 and is applied as-is, which is
-/// why the slider reads a *multiplier* and not an absolute size.
+/// `scale_factor` is the OS's own setting, straight from the window — a display
+/// at 125% arrives here as 1.25 and is applied as-is, which is why the slider
+/// reads a *multiplier* and not an absolute size.
 ///
-/// Only the derived half (`sf × win`) is quantized, onto a coarse grid:
-/// that half moves continuously as a window is dragged or crosses onto
-/// another display, and unquantized it shimmers. The user's preference
-/// is a deliberate discrete choice, so it is applied exactly — a notch
-/// of the slider must not silently round away to the notch above.
+/// Only the derived half (`sf × win`) is quantized, onto a coarse grid: that
+/// half moves continuously as a window is dragged or crosses onto another
+/// display, and unquantized it shimmers. The user's preference is a deliberate
+/// discrete choice, so it is applied exactly.
 pub fn ui_scale(size: (u32, u32), scale_factor: f32, user: f32) -> f32 {
 	let sf = scale_factor.max(0.5);
 	let (lw, lh) = (size.0 as f32 / sf, size.1 as f32 / sf);

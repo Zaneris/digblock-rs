@@ -208,22 +208,18 @@ mod tests {
 					);
 					assert!(px <= want, "{name} grew its text: {px} > {want}");
 					if name.starts_with("alchemy") || name == "inventory" {
-						// The screens that can outgrow their window, so a
-						// fit pass may step the whole page down. Both draw
-						// the same inventory grid — the inventory screen
-						// with a title row on top, which makes it the
-						// TALLER of the two, and it went without a ladder
-						// long enough to hang its first row off the top of
-						// an ordinary window.
+						// The screens that can outgrow their window, so a fit
+						// pass may step the whole page down. Both draw the
+						// same inventory grid — the inventory screen with a
+						// title row on top, which makes it the TALLER of the
+						// two, and it went without a ladder long enough to
+						// hang its first row off the top of an ordinary
+						// window.
 						//
-						// What a fit pass may not do is invent a size:
-						// every step is one `theme::fit_scale` rung off the
-						// frame's own scale, not a fraction of it, and the
-						// last one is the floor it bottoms out on —
-						// `theme::FIT_FLOOR`, which sits BELOW the
-						// interface scale's own floor because the
-						// alternative to a cramped page is an unreachable
-						// one.
+						// What a fit pass may not do is invent a size: every
+						// step is one `theme::fit_scale` rung off the frame's
+						// own scale, not a fraction of it, and the last one is
+						// `theme::FIT_FLOOR`.
 						let mut rungs: Vec<f32> = (0..16)
 							.map(|k| scale::glyph_px(s - k as f32 * 0.25))
 							.collect();

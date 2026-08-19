@@ -14,21 +14,18 @@ use digblock_platform::Gpu;
 /// One instance: cell + progress, box lo + seed, box hi + spare.
 const INSTANCE_BYTES: wgpu::BufferAddress = 48;
 
-/// The crosshair target the decal wraps: the anchor cell, the box around
-/// the whole object relative to it, and the dig progress (`None` = idle
-/// outline, no crack).
+/// The crosshair target the decal wraps: the anchor cell, the box around the
+/// whole object relative to it, and the dig progress (`None` = idle outline, no
+/// crack).
 ///
-/// The box is what makes a shaped block outline at its own size. It comes
-/// from `shapes::object_bounds`, i.e. from the geometry the mesher
-/// actually drew — a full cube's is the whole cell, which is why every
-/// unshaped block looks exactly as it always did.
+/// The box is what makes a shaped block outline at its own size. It comes from
+/// `shapes::object_bounds`, i.e. from the geometry the mesher actually drew — a
+/// full cube's is the whole cell.
 ///
-/// A door is the one thing here that is bigger than its cell: `cell` is
-/// its LOWER half whichever half the ray hit, and the box runs 0..2 in y.
-/// Both halves therefore produce an identical target — same outline, and
-/// (since the crack seed is the cell) the same fracture — which is what
-/// makes it read as one object, and matches the click, since digging
-/// either half takes both.
+/// A door is the one thing here bigger than its cell: `cell` is its LOWER half
+/// whichever half the ray hit, and the box runs 0..2 in y. Both halves therefore
+/// produce an identical target — same outline, same fracture — which is what
+/// makes it read as one object, and matches the click.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct HighlightTarget {
 	/// The cell the box is anchored to — the targeted cell for everything

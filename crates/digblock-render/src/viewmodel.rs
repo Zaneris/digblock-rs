@@ -1,21 +1,17 @@
-//! The first-person viewmodel: the item in your own hand. Remote
-//! players have carried a held-item cube since protocol v10; this is
-//! the same idea for the player who can't see themselves.
+//! The first-person viewmodel: the item in your own hand.
 //!
-//! Two halves, as elsewhere in this crate. The pure half authors the
-//! item **in view space** — the camera is the origin looking down −z,
-//! so there is no camera basis to derive, no yaw/pitch to reconstruct,
-//! and the pose is a function of walk phase and swing alone. It also
-//! carries its OWN projection — a fixed field and near plane of its own
-//! — so the item's on-screen size never moves when the world FOV or the
-//! window does, and so nothing this close can clip the world's near
-//! plane.
+//! Two halves, as elsewhere in this crate. The pure half authors the item **in
+//! view space** — the camera is the origin looking down −z, so there is no
+//! camera basis to derive and the pose is a function of walk phase and swing
+//! alone. It also carries its OWN projection, a fixed field and near plane, so
+//! the item's on-screen size never moves when the world FOV or the window does,
+//! and nothing this close can clip the world's near plane.
 //!
-//! The GPU half draws [`item_geom`] faces through the shared quad index
-//! pattern in a pass of its own, over the finished frame with a freshly
-//! cleared depth buffer. That is what makes the item immune to walking
-//! into a wall while still occluding itself correctly — a staircase in
-//! hand is not convex, and back-face culling alone would not sort it.
+//! The GPU half draws [`item_geom`] faces through the shared quad index pattern
+//! in a pass of its own, over the finished frame with a freshly cleared depth
+//! buffer. That is what makes the item immune to walking into a wall while still
+//! occluding itself correctly — a staircase in hand is not convex, and back-face
+//! culling alone would not sort it.
 
 use glam::camera::rh::proj::directx::perspective;
 use glam::{Mat4, Vec3};

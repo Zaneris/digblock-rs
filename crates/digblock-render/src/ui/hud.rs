@@ -15,26 +15,20 @@ pub const SLOT_PX: f32 = 56.0;
 pub const SLOT_GAP: f32 = 4.0;
 pub const ICON_PX: f32 = 48.0;
 pub const BOTTOM_MARGIN: f32 = 12.0;
-/// EXTRA space before the last slot (SKILLS-DESIGN §6): the tool slot is
-/// not the ninth block slot, and standing it apart is the whole of how a
-/// player is told so — the icon in it is a tool whatever the bar holds.
+/// EXTRA space before the last slot (SKILLS-DESIGN §6): the tool slot is not the
+/// ninth block slot, and standing it apart is the whole of how a player is told
+/// so.
 ///
-/// It is added to ONE slot at DRAW time ([`bar_slot_rect`]) rather than
-/// to [`row_grid`]'s spacing, which stays the uniform lattice every panel
-/// measures itself against: the inventory grid's columns keep landing on
-/// the block slots they drop into, and the split is what the tool slot
-/// hangs off the right-hand end by.
+/// It is added to ONE slot at DRAW time ([`bar_slot_rect`]) rather than to
+/// [`row_grid`]'s spacing, which stays the uniform lattice every panel measures
+/// itself against, so the inventory grid's columns keep landing on the block
+/// slots they drop into.
 ///
-/// [`row_grid`]'s CENTRING is the one thing that has to know about it,
-/// though, and briefly didn't: the drawn row is a split wider than the
-/// lattice, so centring the lattice alone left the row sitting half a
-/// split right of centre, with its right edge crossing the window edge
-/// before its left edge did — the tool slot's selection ring clipped and
-/// the whole tool rail gone, on a small window at a large interface
-/// scale. The origin therefore
-/// centres `lattice + split` and the lattice keeps its uniform spacing;
-/// everything anchored to the bar simply moves left with it by half a
-/// split.
+/// [`row_grid`]'s CENTRING is the one thing that has to know about it: the drawn
+/// row is a split wider than the lattice, so centring the lattice alone left the
+/// row sitting half a split right of centre, with the tool slot's selection ring
+/// clipped and the whole tool rail gone on a small window at a large interface
+/// scale. The origin therefore centres `lattice + split`.
 pub const TOOL_SPLIT: f32 = 20.0;
 
 const FULL_TINT: u32 = 0xFFFF_FFFF;
@@ -130,19 +124,16 @@ pub fn item_icon(item: HotbarItem, tool_full: bool) -> (IconKind, u32) {
 
 /// The block behind an icon.
 ///
-/// The inverse of [`item_icon`] / [`tool_icon`], and the ONE place "which
-/// block is this icon" is answered. Both questions derived from it are
-/// properties of the block and never a special case on a type: whether
-/// the item draws as fullbright ink (`props().emissive`) and whether
-/// holding it lights the room (`props().light > 0`).
+/// The inverse of [`item_icon`] / [`tool_icon`], and the ONE place "which block
+/// is this icon" is answered. Both questions derived from it are properties of
+/// the block and never a special case on a type: whether the item draws as
+/// fullbright ink (`props().emissive`) and whether holding it lights the room
+/// (`props().light > 0`).
 ///
-/// **Every icon has a row, tools included** — they are item-only rows,
-/// but they are rows, and asking one is exactly how those two questions
-/// stay properties of the block. No tool glows or emits today, so this
-/// answers the same thing absence did; a row that starts to needs no
-/// change here, which is the whole point of routing through it. `None`
-/// is left for an icon with genuinely nothing behind it rather than
-/// standing for "this is a tool".
+/// **Every icon has a row, tools included** — they are item-only rows, but they
+/// are rows, and asking one is exactly how those two questions stay properties
+/// of the block. `None` is left for an icon with genuinely nothing behind it
+/// rather than standing for "this is a tool".
 pub fn icon_block(kind: IconKind) -> Option<BlockType> {
 	match kind {
 		IconKind::Cube(b) | IconKind::Shaped(b) => Some(b),
@@ -734,19 +725,16 @@ mod tests {
 
 	const SIZE: (u32, u32) = (1280, 720);
 
-	/// `icon_block` is a HAND-WRITTEN inverse, and the compiler only
-	/// checks that an arm exists. `IconKind` is closed, so a new variant
-	/// cannot be forgotten — but naming the wrong block in one compiles
-	/// perfectly, and the two questions this answers are exactly the ones
-	/// nobody would notice being wrong: an item would wear another item's
-	/// fullbright ink, and carry another item's light. A lamp icon
-	/// pointing at an unlit row simply stops lighting the room, in the
-	/// hand and on every remote player at once.
+	/// `icon_block` is a HAND-WRITTEN inverse, and the compiler only checks that
+	/// an arm exists. `IconKind` is closed, so a new variant cannot be
+	/// forgotten — but naming the wrong block in one compiles perfectly, and the
+	/// two questions this answers are the ones nobody would notice being wrong:
+	/// an item would wear another item's fullbright ink, and carry another
+	/// item's light.
 	///
-	/// So walk the real catalog both ways rather than restating the
-	/// match. Tools go through `tool_icon` because that is the function
-	/// keyed by BLOCK; `item_icon(WaterTool, _)` is keyed by the SLOT,
-	/// whose active tool is a separate axis and need not be the bucket.
+	/// So walk the real catalog both ways rather than restating the match. Tools
+	/// go through `tool_icon` because that is the function keyed by BLOCK;
+	/// `item_icon(WaterTool, _)` is keyed by the SLOT.
 	#[test]
 	fn icon_block_names_the_block_its_icon_was_built_from() {
 		for b in BlockType::ALL {
@@ -812,22 +800,17 @@ mod tests {
 		emit_at(SIZE, scale)
 	}
 
-	/// The DRAWN row is centered — and the drawn row is the block-slot
-	/// lattice PLUS the split the tool slot steps out by, which is a real
-	/// [`TOOL_SPLIT`] wider than anything that measures the lattice. The
-	/// block slots sit on that lattice, which is what keeps the inventory
-	/// grid's columns over the slots they drop into.
+	/// The DRAWN row is centered — and the drawn row is the block-slot lattice
+	/// PLUS the split the tool slot steps out by, which is a real
+	/// [`TOOL_SPLIT`] wider than anything that measures the lattice.
 	///
 	/// `right` has to come off the LAST DRAWN SLOT. Taking it from
-	/// `grid.origin.0 + grid.extent(HOTBAR_SLOTS).0` instead reduces
-	/// algebraically to `left`, so the assertion becomes `left - left == 0`
-	/// and cannot fail — which is exactly how the split shipped folded
-	/// into the drawing but not into the centring, leaving the row half a
-	/// split right of centre with its right edge off the window first.
-	/// Swept over sizes and scales for the same reason
-	/// [`the_tool_rail_never_runs_off_the_window`] is: the bar takes more
-	/// of the window as the interface scale grows, so the narrow windows
-	/// are where an asymmetry costs something.
+	/// `grid.origin.0 + grid.extent(HOTBAR_SLOTS).0` reduces algebraically to
+	/// `left`, so the assertion becomes `left - left == 0` and cannot fail —
+	/// which is exactly how the split shipped folded into the drawing but not
+	/// into the centring, leaving the row half a split right of centre with its
+	/// right edge off the window first. Swept over sizes and scales because the
+	/// bar takes more of the window as the interface scale grows.
 	#[test]
 	fn row_is_bottom_centered_and_scales() {
 		for size in [

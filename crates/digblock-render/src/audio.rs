@@ -114,22 +114,18 @@ pub enum Material {
 	Wood,
 }
 
-/// Which material a block sounds like — derived from what the block IS,
-/// never from a roster.
+/// Which material a block sounds like — derived from what the block IS, never
+/// from a roster.
 ///
-/// §7.2's substance axis answers this for every real block, and it is
-/// already the thing that decides a block's price, yield and unlock, so
-/// it can hardly be wrong about what it sounds like. Functional items
-/// (the torch, the lamps) have no substance by design; those fall to the
-/// `DigFamily` their row declares.
+/// §7.2's substance axis answers this for every real block, and it is already
+/// what decides a block's price, yield and unlock. Functional items have no
+/// substance by design; those fall to the `DigFamily` their row declares.
 ///
-/// Both matches are EXHAUSTIVE on purpose. This used to be a hand-listed
-/// roster ending in `_ => Earth`, and it silently missed every one of the
-/// rows §7.2 added: mining an Aetherock seam, breaking crystal or
-/// walking a metal floor all played the sound of digging soil. With no
-/// catch-all arm, a new material or a new dig family fails the BUILD
-/// instead — which is the same protection `dig_families_are_pinned` gives
-/// the table this reads from.
+/// Both matches are EXHAUSTIVE on purpose. A hand-listed roster ending in
+/// `_ => Earth` silently missed every row §7.2 added: mining an Aetherock seam,
+/// breaking crystal or walking a metal floor all played the sound of digging
+/// soil. With no catch-all arm, a new material or dig family fails the BUILD
+/// instead.
 pub fn material_of(b: BlockType) -> Material {
 	use digblock_core::block::DigFamily;
 	use digblock_core::material::Material as Subst;
@@ -202,21 +198,19 @@ pub fn break_sfx(m: Material) -> Sfx {
 	}
 }
 
-/// The two sounds a hold speaks: the loop while it runs, and the one-shot
-/// it lands on. `extracting` says whether this hold is a field extraction
-/// rather than a dig.
+/// The two sounds a hold speaks: the loop while it runs, and the one-shot it
+/// lands on. `extracting` says whether this hold is a field draw rather than a
+/// dig.
 ///
-/// One function because the pair has to agree with itself — a hold that
-/// hums and then shatters is worse than one that does neither — and
-/// because the pair is exactly what a draw has to override. Both halves
-/// used to resolve through [`material_of`], which for an ore is rock, so
-/// drawing a seam sounded precisely like quarrying one out: the same
-/// thing the dig crack says visually, and the reason `dig_progress`
-/// declines to draw one over a vein.
+/// One function because the pair has to agree with itself — a hold that hums and
+/// then shatters is worse than one that does neither — and because the pair is
+/// exactly what a draw has to override. Resolving both halves through
+/// [`material_of`], which for an ore is rock, made drawing a seam sound
+/// precisely like quarrying one out.
 ///
-/// The `block` each half is asked about is still the caller's, because
-/// the two are read at different moments — the loop at the hold's start,
-/// the finish against the cell as it stood when it gave way.
+/// The `block` each half is asked about is still the caller's, because the two
+/// are read at different moments: the loop at the hold's start, the finish
+/// against the cell as it stood when it gave way.
 pub fn dig_voice(extracting: bool, block: BlockType) -> (Sfx, Sfx) {
 	if extracting {
 		(Sfx::SiphonDraw, Sfx::SiphonTake)

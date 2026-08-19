@@ -1,16 +1,15 @@
-//! What an item looks like, as geometry — the one authority shared by
-//! the 2D inventory icons (`ui/shaped_icon.rs`, which keeps the three
-//! camera-facing quads and projects them dimetrically) and the 3D
-//! first-person viewmodel (`viewmodel.rs`, which needs all six).
+//! What an item looks like, as geometry — the one authority shared by the 2D
+//! inventory icons (`ui/shaped_icon.rs`, which keeps the three camera-facing
+//! quads and projects them dimetrically) and the 3D first-person viewmodel
+//! (`viewmodel.rs`, which needs all six).
 //!
-//! Blocks project the SAME baked `shapes` templates the world renders,
-//! so icon, hand and world can never disagree about geometry. The water
-//! tool has no block behind it, so its bucket is authored here as a
-//! sub-box list in the same twelfths — and authored as boxes rather
-//! than as loose faces precisely so it is solid from every angle: the
-//! hand turns it, the icon never did. It is the one item with a STATE:
-//! charged or empty, which is geometry (a source in the pail) rather
-//! than a tint, because it decides what both mouse buttons do.
+//! Blocks project the SAME baked `shapes` templates the world renders, so icon,
+//! hand and world can never disagree about geometry. The water tool has no block
+//! behind it, so its bucket is authored here as a sub-box list in the same
+//! twelfths — as boxes rather than loose faces precisely so it is solid from
+//! every angle, since the hand turns it and the icon never did. It is the one
+//! item with a STATE: charged or empty, which is geometry rather than a tint,
+//! because it decides what both mouse buttons do.
 //!
 //! Everything is pure integer twelfths; f32 appears only in UVs.
 
@@ -187,22 +186,19 @@ fn bucket_faces(full: bool, out: &mut Vec<ItemFace>) {
 	}
 }
 
-/// The Essence Siphon: a funnel that swallows the rock face, a neck
-/// rising out of it, and the glowing vessel the drawn essence collects
-/// in, capped with a collar.
+/// The Essence Siphon: a funnel that swallows the rock face, a neck rising out
+/// of it, and the glowing vessel the drawn essence collects in, capped with a
+/// collar.
 ///
-/// **The taper is the item.** The first version was a flat plate, a
-/// straight stem and a cube on top, and it read as a rubber stamp: three
-/// slabs of decreasing width say "pressed onto something", while a cone
-/// says "drawing out of it". The funnel is stepped rather than smooth
-/// because everything here is axis boxes in twelfths — at the size this
-/// is ever seen, three steps read as a taper and the silhouette is the
-/// whole message.
+/// **The taper is the item.** A flat plate, a straight stem and a cube on top
+/// read as a rubber stamp: three slabs of decreasing width say "pressed onto
+/// something", while a cone says "drawing out of it". The funnel is stepped
+/// rather than smooth because everything here is axis boxes in twelfths — at the
+/// size this is ever seen, three steps read as a taper.
 ///
-/// The vessel is what makes it name itself at hotbar size, and its glow
-/// is authored: `SIPHON_GLOW` is the siphon row's own texture, so the
-/// light this tool casts is the colour of the thing you can see it
-/// collecting.
+/// The vessel is what makes it name itself at hotbar size, and its glow is
+/// authored: `SIPHON_GLOW` is the siphon row's own texture, so the light this
+/// tool casts is the colour of the thing you can see it collecting.
 fn siphon_faces(out: &mut Vec<ItemFace>) {
 	let metal = digblock_core::block::tex::METAL;
 	let grip = digblock_core::block::tex::LUMBER_DARK;

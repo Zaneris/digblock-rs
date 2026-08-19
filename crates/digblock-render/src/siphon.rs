@@ -1,34 +1,30 @@
-//! The essence draw: what the Essence Siphon looks like while it works.
-//! Motes of the vein's own colour lift off the rock face and stream into
-//! the tool, over a kindle on the face they leave from.
+//! The essence draw: what the Essence Siphon looks like while it works. Motes
+//! of the vein's own colour lift off the rock face and stream into the tool,
+//! over a kindle on the face they leave from.
 //!
-//! It exists because the field extraction is the one action in the game
-//! that takes a block apart without breaking it, so the feedback every
-//! other hold uses says the wrong thing: the dig crack is a web of
-//! fractures spreading across rock that is about to fall, and a drawn
-//! seam leaves the mountain standing. `Engine::dig_progress` has always
-//! declined to draw one here. This is what it declines in favour of.
+//! It exists because a field draw is the one action in the game that takes a
+//! block apart without breaking it, so the feedback every other hold uses says
+//! the wrong thing: the dig crack is a web of fractures spreading across rock
+//! about to fall, and a drawn seam leaves the mountain standing.
+//! `Engine::dig_progress` declines to draw one here; this is what it declines in
+//! favour of.
 //!
-//! The CPU owns one instance and an envelope; every mote's flight is a
-//! pure function of that instance and the shared animation clock, in
-//! siphon.wgsl — [`crate::spray`]'s arrangement, and [`crate::confetti`]'s
-//! packing. There is no particle state to lose on suspend and nothing to
-//! rebuild on device loss but the pipeline.
+//! The CPU owns one instance and an envelope; every mote's flight is a pure
+//! function of that instance and the shared animation clock, in siphon.wgsl —
+//! [`crate::spray`]'s arrangement and [`crate::confetti`]'s packing. There is no
+//! particle state to lose on suspend and nothing to rebuild on device loss but
+//! the pipeline.
 //!
-//! Where the motes GO is the one decision here worth writing down. They
-//! converge on `digblock_core::gi::carried_origin` — the point a light in
-//! a hand radiates from — handed over by the engine rather than
-//! recomputed, so the stream ends exactly where the siphon's own green
-//! glow hangs and the two cannot drift apart. Deriving the drop here
-//! instead would put a second copy of a core constant on the far side of
-//! the CPU/GPU boundary, which is the kind of pair that only ever
-//! disagrees.
+//! The motes converge on `digblock_core::gi::carried_origin` — the point a light
+//! in a hand radiates from — handed over by the engine rather than recomputed,
+//! so the stream ends exactly where the siphon's own green glow hangs. Deriving
+//! the drop here would put a second copy of a core constant on the far side of
+//! the CPU/GPU boundary.
 //!
 //! One documented v1 limit: this is YOUR draw only. A snapshot carries a
-//! remote's held item but nothing about a hold — not which cell, not how
-//! far in — so watching somebody else work a seam shows their glowing
-//! tool and no stream. Fixing it is a protocol field for a cosmetic, and
-//! it is not obviously worth one.
+//! remote's held item but nothing about a hold, so watching somebody else work a
+//! seam shows their glowing tool and no stream. Fixing it is a protocol field
+//! for a cosmetic.
 
 use digblock_platform::Gpu;
 

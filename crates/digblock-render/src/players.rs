@@ -1,18 +1,14 @@
-//! Remote-player rendering: instanced eye-anchored boxes, drawn in the
-//! scene pass (depth-writing, opaque) so terrain occlusion, sky, water,
-//! and fog all interact correctly for free. The body follows the
-//! spray.rs shape: no geometry buffer, one instance-stepped attribute
-//! pair.
+//! Remote-player rendering: instanced eye-anchored boxes, drawn in the scene
+//! pass (depth-writing, opaque) so terrain occlusion, sky, water and fog all
+//! interact correctly for free. The body follows the spray.rs shape: no geometry
+//! buffer, one instance-stepped attribute pair.
 //!
-//! The item in their HAND is a second draw over the same pipeline
-//! layout, because it needs the two things the body's generator cannot
-//! give it: a vertex buffer (item geometry is not a box) and the
-//! opposite `cull`. Its geometry comes from `item_geom` by way of
-//! `viewmodel::build` — the one authority your own hand and the
-//! inventory icons already share — so a remote's torch is a torch, a
-//! bucket shows its charge, and a stair is a stair. It used to be one
-//! small cube textured with whatever `tex_side` the item happened to
-//! have.
+//! The item in their HAND is a second draw over the same pipeline layout,
+//! because it needs the two things the body's generator cannot give it: a vertex
+//! buffer (item geometry is not a box) and the opposite `cull`. Its geometry
+//! comes from `item_geom` by way of `viewmodel::build` — the one authority your
+//! own hand and the inventory icons already share — so a remote's bucket shows
+//! its charge and a stair is a stair.
 
 use digblock_platform::Gpu;
 

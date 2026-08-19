@@ -177,25 +177,22 @@ pub struct EngineConfig {
 	/// Benchmark mode: inputs ignored, deterministic scripted camera
 	/// flight, run summary logged on exit.
 	pub bench: bool,
-	/// Is a PERSON at this keyboard? False for every capture path —
-	/// bench, `--screenshot`, `--drill` — and it governs two things that
-	/// have to move together: whether [`Engine::input`] listens at all,
-	/// and whether the shell is allowed to take the mouse pointer.
+	/// Is a PERSON at this keyboard? False for every capture path — bench,
+	/// `--screenshot`, `--drill` — and it governs two things that have to move
+	/// together: whether [`Engine::input`] listens at all, and whether the shell
+	/// is allowed to take the mouse pointer.
 	///
-	/// The pointer half is the one that bit. A capture sets `menu:
-	/// false`, so no UI surface is open, so `wants_cursor_grab` answered
-	/// true on the first frame and the desktop shell locked the cursor
-	/// and hid it — for the whole run, on a window the operator never
-	/// asked to play. Every keystroke they made meanwhile went into the
-	/// world: a stray `E` opened the inventory into the shot, a stray
-	/// mouse move spun the camera off the pose. `bench` alone did not
-	/// cover it, because `--screenshot`/`--frames`/`--exit` runs are
-	/// captures that never set it — which is exactly the class of run a
-	/// person sits and watches.
+	/// The pointer half is the one that bit. A capture sets `menu: false`, so no
+	/// UI surface is open, so `wants_cursor_grab` answered true on the first
+	/// frame and the desktop shell locked and hid the cursor for the whole run —
+	/// on a window the operator never asked to play, with every keystroke going
+	/// into the world. `bench` alone did not cover it, because
+	/// `--screenshot`/`--frames`/`--exit` runs are captures that never set it,
+	/// and those are exactly the runs a person sits and watches.
 	///
-	/// The launcher already computes this predicate to decide the menu,
-	/// audio, the master URL and whether saved settings load; this field
-	/// is that same answer reaching the engine, not a second opinion.
+	/// The launcher already computes this predicate to decide the menu, audio,
+	/// the master URL and whether saved settings load; this field is that same
+	/// answer reaching the engine, not a second opinion.
 	pub interactive: bool,
 	/// Capture harness: run the bench flight for this many frames, then
 	/// FREEZE the camera there. Every capture in this engine is a still,
@@ -661,25 +658,20 @@ const UPLOAD_BYTES_MAX_CONSTRAINED: usize = 768 << 10;
 /// Evicted chunks released per frame even with the budget spent, so a
 /// player who keeps walking can't outrun the release queue.
 const EVICT_MIN: usize = 8;
-/// Share of one display interval `pump_net` may spend applying
-/// authoritative edits. Each costs a copy-on-write cell write plus up to
-/// eight mesh-heap pushes, so a join sync's worth of them in one frame is
-/// a visible stall; spread over frames it is invisible, and the world
-/// simply fills in as fast as meshing can keep up anyway.
+/// Share of one display interval `pump_net` may spend applying authoritative
+/// edits. Each costs a copy-on-write cell write plus up to eight mesh-heap
+/// pushes, so a join sync's worth of them in one frame is a visible stall;
+/// spread over frames it is invisible.
 ///
-/// A COUNT could not express that, which is what this replaced. What one
-/// edit costs swings by more than an order of magnitude — whether its
-/// chunk is still shared decides a whole-chunk copy-on-write — and the mesh
-/// jobs it queues are charged to this same thread later in the same frame
-/// even with a Web Worker pool up — feeding one encodes and copies the
-/// padded snapshot, and absorbing the result is main-thread work by
-/// definition — so the apply is only half of what a burst actually spends.
-/// With no pool (a 1–2 core device, a browser that refused workers,
-/// `?workers=0`) they run here outright. The COUNT it replaced was sized
-/// against a native frame with worker threads behind it, while a
-/// high-refresh web frame is a fraction of that. Pricing the slice in TIME
-/// makes the same code back off on the platform that cannot afford it, with
-/// no constant to retune per display.
+/// A COUNT could not express that. What one edit costs swings by more than an
+/// order of magnitude — whether its chunk is still shared decides a whole-chunk
+/// copy-on-write — and the mesh jobs it queues are charged to this same thread
+/// later in the same frame even with a Web Worker pool up, since feeding one
+/// encodes and copies the padded snapshot and absorbing the result is
+/// main-thread work by definition. With no pool they run here outright, and the
+/// COUNT this replaced was sized against a native frame with worker threads
+/// behind it. Pricing the slice in TIME makes the same code back off on the
+/// platform that cannot afford it, with no constant to retune per display.
 const NET_EDIT_SHARE: f32 = 0.15;
 /// Edits that land before the clock is consulted at all — the guarantee
 /// that a frame already over budget still drains rather than parking the
@@ -1579,18 +1571,16 @@ impl Engine {
 				}
 			}
 		}
-		// ONE sync, after every scene has had its say. The pipeline stamps
-		// nodes at the levels it was last handed, and `nodes::revealed`
-		// answers at the live ones, so a grant the pipeline never hears
-		// about meshes a cell as its host while the dig path calls it a
-		// node — the mesh and the dig disagreeing, which is the failure
-		// this whole layer is built to make impossible.
+		// ONE sync, after every scene has had its say. The pipeline stamps nodes
+		// at the levels it was last handed, and `nodes::revealed` answers at the
+		// live ones, so a grant the pipeline never hears about meshes a cell as
+		// its host while the dig path calls it a node — the mesh and the dig
+		// disagreeing, which is the failure this whole layer exists to make
+		// impossible.
 		//
-		// Here rather than in each block because it kept being forgotten:
-		// three scenes called it, and `debug_doors` and half the
-		// `DIG_SCREEN` roster did not, which is exactly the split you get
-		// when the call belongs to whoever remembers it. Every grant is
-		// above this line, so a new scene is covered by standing where the
+		// Here rather than in each block because it kept being forgotten: three
+		// scenes called it and half the `DIG_SCREEN` roster did not. Every grant
+		// is above this line, so a new scene is covered by standing where the
 		// others do. Silent: a capture is not a discovery.
 		engine.sync_node_reveal(false);
 		engine
@@ -1959,20 +1949,16 @@ impl Engine {
 		// The server's InventoryFull (right behind JournalDone) is the
 		// authoritative base; local single-player stock must not leak in.
 		self.inventory = Inventory::default();
-		// Its `Skills` (always sent, right behind `Layout`) is the same
-		// kind of base, and clearing these is not about the stale NUMBER
-		// — it is about who reads it before the real one lands.
-		// `reset_world_transients` below hands the Mining level straight
-		// to the pipeline we just installed (`sync_node_reveal`), so a
-		// previous world's level would stamp veins into THIS world's
-		// terrain for the whole window between `Welcome` and `Skills`. In
-		// that window `ore_dig_mode` answers `NeedsSiphon` on cells the
-		// server calls plain stone, so `diggable` refuses holds the server
-		// would have accepted — and the correction, when `Skills` arrives,
-		// costs a full `remesh_all`. Level 1 is the honest guess: it
-		// under-reveals rather than over-, and every reveal it misses
-		// arrives moments later with the real totals. Toasts go with the
-		// totals they animate, exactly as in the other two entry points.
+		// Its `Skills` (always sent, right behind `Layout`) is the same kind of
+		// base, and clearing these is not about the stale NUMBER — it is about
+		// who reads it before the real one lands. `reset_world_transients`
+		// below hands the Mining level straight to the pipeline we just
+		// installed, so a previous world's level would stamp veins into THIS
+		// world's terrain for the whole window between `Welcome` and `Skills`.
+		// In that window `dig_mode` answers `NeedsSiphon` on cells the server
+		// calls plain stone, and the correction costs a full `remesh_all`.
+		// Level 1 is the honest guess: it under-reveals rather than over-, and
+		// every reveal it misses arrives moments later with the real totals.
 		self.skills = Default::default();
 		self.xp_toasts.clear();
 		self.reset_world_transients(spawn, true);
@@ -2044,19 +2030,17 @@ impl Engine {
 		self.view_bob.reset();
 		self.view_swing.reset();
 		self.view_swap.reset();
-		// The tool slot's handover animates whenever the active tool
-		// changes, which is right for a cycle and wrong for a world entry:
-		// the bar we are about to draw is state ARRIVING, not an exchange
-		// anybody performed. Advancing by a full window completes whatever
-		// was in flight and adopts the tool the bar holds now, so the
-		// first frame draws it at rest. A bare `Default::default()` will
-		// not do — it shows the BUCKET, which is the wrong half of the
-		// problem: entering a save whose layout makes any other tool
-		// active would still grow that tool in from a bucket that was
-		// never in the hand. Callers install the layout first
-		// (`enter_local_world` reconciles before it calls here); a join
-		// has none yet, and the server `Layout` rebase animating when it
-		// lands is the behaviour `ToolSwap` documents.
+		// The tool slot's handover animates whenever the active tool changes,
+		// which is right for a cycle and wrong for a world entry: the bar we
+		// are about to draw is state ARRIVING, not an exchange anybody
+		// performed. Advancing by a full window completes whatever was in
+		// flight and adopts the tool the bar holds now.
+		//
+		// A bare `Default::default()` will not do — it shows the BUCKET, so
+		// entering a save whose layout makes any other tool active would grow
+		// that tool in from a bucket that was never in the hand. Callers
+		// install the layout first; a join has none yet, and the server
+		// `Layout` rebase animating when it lands is what `ToolSwap` documents.
 		self.tool_swap
 			.advance(crate::hotbar::ToolSwap::SECS, self.hotbar.active_tool());
 		// A replaced pipeline starts with no Mining level at all, so a
@@ -2286,21 +2270,18 @@ impl Engine {
 		self.menu.set_world_list(rows);
 	}
 
-	/// Hold the world after an arrival — a join or a teleport — until the
-	/// server reports the journaled columns around the destination sent
+	/// Hold the world after an arrival — a join or a teleport — until the server
+	/// reports the journaled columns around the destination sent
 	/// (`NetEvent::AreaReady`), or the wait runs out.
 	///
-	/// Offline arrivals never hold: a local world's edits are already in
-	/// the overlay before the pipeline classifies air, so there is nothing
-	/// in flight to wait for and a cover would be a pause for its own sake.
-	/// That is guaranteed by the CALL SITES — both are `pump_net` arms, and
-	/// an offline session produces no `NetEvent`s at all. It must not be
-	/// guarded on `self.net` here: `pump_net` owns the connection by value
-	/// for the whole drain (`self.net.take()`), so `is_some()` reads false
-	/// on exactly the two paths that need the hold. That guard armed
-	/// nothing, and since `Welcome` no longer closes the Connecting screen
-	/// itself, it stranded every join on "Joining world..." forever — the
-	/// timeout escape hatch cannot fire on a hold that was never set.
+	/// Offline arrivals never hold: a local world's edits are already in the
+	/// overlay before the pipeline classifies air. That is guaranteed by the
+	/// CALL SITES — both are `pump_net` arms, and an offline session produces no
+	/// `NetEvent`s at all. It must not be guarded on `self.net` here: `pump_net`
+	/// owns the connection by value for the whole drain, so `is_some()` reads
+	/// false on exactly the two paths that need the hold, which stranded every
+	/// join on "Joining world..." forever — a timeout escape hatch cannot fire
+	/// on a hold that was never set.
 	fn begin_arrival_hold(&mut self) {
 		self.arrival_hold = Some(digblock_net::protocol::AREA_SYNC_TIMEOUT_SECS);
 	}
@@ -2893,20 +2874,17 @@ impl Engine {
 			.pipeline
 			.maintain(center, usize::MAX, Some(deadline), allowance);
 		self.pending.maintain_ms = ms_since(t_maintain);
-		// RTGI: scroll the window to the camera (re-dirtying whatever
-		// just entered coverage), pull freshly-dirty chunks into the
-		// re-upload queue, then feed the voxel window under a byte budget
-		// — a fraction of the mesh-upload ceiling — AND the shared
+		// RTGI: scroll the window to the camera (re-dirtying whatever just
+		// entered coverage), pull freshly-dirty chunks into the re-upload
+		// queue, then feed the voxel window under a byte budget AND the shared
 		// streaming deadline (GI-DESIGN.md).
 		//
-		// The clock matters as much as the bytes: `classify_gi` walks
-		// every cell of a chunk, and the byte cap alone permits many
-		// chunks' worth of that in one frame. This was the only streaming
-		// stage that ignored `deadline`, and the only one charged to no
-		// phase — a classify burst landed in `busy_ms` with nothing to
-		// attribute it to. `GI_UPLOAD_MIN` is the same minimum-progress
-		// floor the mesh loop uses, so a frame that is already over budget
-		// still makes headway instead of starving the window forever.
+		// The clock matters as much as the bytes: `classify_gi` walks every
+		// cell of a chunk, and the byte cap alone permits many chunks' worth of
+		// that in one frame. This was the only streaming stage that ignored
+		// `deadline`, and the only one charged to no phase, so a classify burst
+		// landed in `busy_ms` with nothing to attribute it to. `GI_UPLOAD_MIN`
+		// is the same minimum-progress floor the mesh loop uses.
 		let t_gi = web_time::Instant::now();
 		// The window AS BUILT, never the live draw distance. Raising draw
 		// distance from the settings screen mutates `config.draw_dist`
@@ -3456,20 +3434,17 @@ impl Engine {
 		}
 	}
 
-	/// Stop digging, but KEEP what the hold banked: progress bleeds back
-	/// to untouched over `skills::DIG_DECAY_TICKS` and a hold resumed
-	/// inside that window inherits what is left, so a thumb slipping off
-	/// the button no longer costs the whole block. Called once per sim
-	/// step while not digging — that repetition is what advances the
-	/// decay, and dropping the record at zero is what keeps a spent hold
-	/// from being resumed for free.
+	/// Stop digging, but KEEP what the hold banked: progress bleeds back to
+	/// untouched over `skills::DIG_DECAY_TICKS` and a hold resumed inside that
+	/// window inherits what is left, so a thumb slipping off the button no
+	/// longer costs the whole block. Called once per sim step while not digging
+	/// — that repetition is what advances the decay, and dropping the record at
+	/// zero is what keeps a spent hold from being resumed for free.
 	///
-	/// The server is told once, on the transition, and runs the identical
-	/// decay from ITS release to ITS resume. Those two windows are the
-	/// same interval on a stable link — both ends are shifted by the same
-	/// one-way delay — so only the JITTER between the cancel and the next
-	/// start separates them, which is what `dig_grace` already exists to
-	/// absorb.
+	/// The server is told once, on the transition, and runs the identical decay
+	/// from ITS release to ITS resume. Those two windows are the same interval
+	/// on a stable link, so only the JITTER separates them, which is what
+	/// `dig_grace` already exists to absorb.
 	fn release_dig(&mut self) {
 		let Some(d) = self.dig.as_mut() else {
 			return;
@@ -3622,27 +3597,21 @@ impl Engine {
 			pos: Some(cell_center(hit.cell)),
 			gain: end_gain,
 		});
-		// No swing is started here: the arc that began with this hold is
-		// running out on this very frame, and re-striking it is what used
-		// to bolt a whole second stroke onto a finished scoop.
-		// One credit even for the two-cell door.
+		// No swing is started here: the arc that began with this hold is running
+		// out on this very frame, and re-striking it bolts a whole second
+		// stroke onto a finished scoop. One credit even for the two-cell door.
 		//
-		// An extraction credits NOTHING here, and that is not an omission.
-		// A drawn seam pays essence (`alchemy::field_yield`) rather than a
-		// block — the cell is Stone and Stone hands out Rubble, which is
-		// exactly what quarrying should give and exactly what drawing a
-		// seam should not — and essence arrives as a SPLIT, which a
-		// `PendingEdit`'s single `inv_delta` cannot carry. So online it is
-		// deliberately un-predicted and the server's `InventoryFull` rebase
-		// is the answer, the same path `ClientMsg::Alchemy` already takes;
-		// offline the arm below pays it, where the engine is the authority.
-		// The CELL is predicted on both, so the vein turns spent under the
-		// player's hand with no latency either way.
+		// An extraction credits NOTHING here, and that is not an omission. A
+		// drawn seam pays essence (`alchemy::field_yield`) rather than a block,
+		// and essence arrives as a SPLIT, which a `PendingEdit`'s single
+		// `inv_delta` cannot carry. So online it is deliberately un-predicted
+		// and the server's `InventoryFull` rebase is the answer, the same path
+		// `ClientMsg::Alchemy` takes; offline the arm below pays it, where the
+		// engine is the authority. The CELL is predicted on both, so the vein
+		// turns spent under the player's hand with no latency either way.
 		//
-		// Everything else pays the `credit` resolved above the write: a
-		// stone somebody MADE comes back whole where the mountain's
-		// crumbles, so quarrying still hands out rubble and taking a
-		// mason's wall apart returns the wall.
+		// Everything else pays the `credit` resolved above the write: a stone
+		// somebody MADE comes back whole where the mountain's crumbles.
 		let drop = if extracting.is_some() { None } else { credit };
 		if let Some(d) = drop {
 			self.inventory.add(d, broken);
@@ -4271,18 +4240,17 @@ impl Engine {
 
 	/// Advance WHICH item is in the hand, and the swap dip between two.
 	///
-	/// Its own method because it has to run on three paths: once at the
-	/// tail of the interactive update, where it must follow
-	/// `reconcile_layout`; and once before each scripted-flight return,
-	/// because the hand is part of the frame a capture photographs. The
-	/// viewmodel draws `Swap::shown()` and a carried light hangs off it,
-	/// so a harness that never advances this can neither draw a held item
-	/// nor measure one — `--bench` could do neither, and the first attempt
-	/// at R28's cost bracket read both `ginee` and `emitters` as empty and
-	/// looked like a correct result. Costs the old baselines nothing: they
-	/// fly with an empty bar, so `selected` is None and `shown` stays
-	/// None. The bob and the swing stay interactive-only, since they are
-	/// driven by motion the scripted camera does not have.
+	/// Its own method because it has to run on three paths: at the tail of the
+	/// interactive update, where it must follow `reconcile_layout`, and before
+	/// each scripted-flight return, because the hand is part of the frame a
+	/// capture photographs. The viewmodel draws `Swap::shown()` and a carried
+	/// light hangs off it, so a harness that never advances this can neither
+	/// draw a held item nor measure one — the first attempt at R28's cost
+	/// bracket read both `ginee` and `emitters` as empty and looked correct.
+	///
+	/// Costs the old baselines nothing: they fly with an empty bar. The bob and
+	/// the swing stay interactive-only, being driven by motion the scripted
+	/// camera does not have.
 	fn advance_hand(&mut self, dt: f32) {
 		let full = self.inventory.bucket_full();
 		self.tool_swap.advance(dt, self.hotbar.active_tool());
@@ -7063,19 +7031,9 @@ mod dig_decay_tests {
 		}
 	}
 
-	/// A capture ignores the keyboard AND leaves the mouse alone.
-	///
-	/// Both halves, because the second is the one that hurt: a capture
-	/// opens with no menu, so `wants_cursor_grab` used to answer true on
-	/// frame one and the desktop shell locked and hid the operator's
-	/// cursor for the whole run — on a window nobody asked to play. The
-	/// keystrokes they made in the meantime went into the world, and a
-	/// stray `I` opened the inventory into the shot.
-	///
-	/// `bench` alone did not cover it. `--screenshot`/`--frames`/`--exit`
-	/// runs are captures that never set `bench`, and those are precisely
-	/// the runs somebody sits and watches, so the flag this asserts on is
-	/// the launcher's own `interactive` predicate.
+	/// A capture ignores the keyboard AND leaves the mouse alone — see the
+	/// `interactive` field's own doc for why the second half is the one that
+	/// hurt, and why `bench` alone does not cover it.
 	#[test]
 	fn a_capture_takes_neither_the_keyboard_nor_the_pointer() {
 		use digblock_platform::{InputEvent, Key};
@@ -7227,25 +7185,21 @@ mod ore_capture_tests {
 	/// the plate's footprint can be reasoned about from outside it.
 	const R: i32 = 5;
 
-	/// DIG_ORE's one rule, and the only one that makes the scene work at
-	/// all: the plan must not write over a single cell the deposit
-	/// claims. A write reaches the anti-dupe for real — the plan is
-	/// applied through `pipeline.set_cell`, which records into the
-	/// `EditOverlay`, and `ore::revealed` answers None for an edited cell
-	/// forever — so a stray write deletes the subject of the photograph
-	/// permanently, and silently, because the chamber still looks right.
+	/// DIG_ORE's one rule, and the only one that makes the scene work at all:
+	/// the plan must not write over a single cell the deposit claims. A write
+	/// reaches the anti-dupe for real — the plan is applied through
+	/// `pipeline.set_cell`, which records into the `EditOverlay`, and
+	/// `nodes::revealed` answers None for an edited cell forever — so a stray
+	/// write deletes the subject of the photograph permanently and silently,
+	/// because the chamber still looks right.
 	///
-	/// The carve loop always guarded this. The floor plate did not, and it
-	/// is laid BELOW the deposit centre, straight through the lowest rim of
-	/// a max-radius blob: the cell directly under the centre sits at
-	/// `d2 == r2`, so `Deposit::contains` falls through to `rim_open` and
-	/// keeps it more often than not.
+	/// The carve loop always guarded this; the floor plate did not, and it is
+	/// laid BELOW the deposit centre, straight through the lowest rim of a
+	/// max-radius blob.
 	///
-	/// `crossings` is what stops this going vacuous. It counts the vein
-	/// cells lying IN the plate's plane, so a sample that never puts one
-	/// there fails as loudly as a plan that paves over them — and the
-	/// plate is asserted to be exactly the plane minus those cells, which
-	/// pins that the guard skips the vein and nothing else.
+	/// `crossings` is what stops this going vacuous: it counts the vein cells
+	/// lying IN the plate's plane, so a sample that never puts one there fails
+	/// as loudly as a plan that paves over them.
 	#[test]
 	fn the_ore_capture_plan_never_writes_over_the_vein() {
 		let mut crossings = 0usize;
@@ -7305,21 +7259,18 @@ mod ore_capture_tests {
 		);
 	}
 
-	/// **The deposit the scene picks is one the stamp can actually
-	/// reveal.** A vein manifests only in pristine STONE, so a deposit
-	/// rolled into open air — or under a lake — reveals nothing at any
-	/// level, and DIG_ORE photographs an empty stone-plated box that reads
-	/// as a bug in the reveal rather than in the scene.
+	/// **The deposit the scene picks is one the stamp can actually reveal.** A
+	/// vein manifests only in pristine STONE, so a deposit rolled into open air
+	/// — or under a lake — reveals nothing at any level, and DIG_ORE photographs
+	/// an empty stone-plated box that reads as a bug in the reveal rather than
+	/// in the scene. Nothing above catches it:
+	/// `the_ore_capture_plan_never_writes_over_the_vein` asserts only that the
+	/// carve spares the vein's cells, which is just as true when there is no
+	/// rock around them.
 	///
-	/// Nothing above catches it: `the_ore_capture_plan_never_writes_over_the_vein`
-	/// asserts only that the carve spares the vein's cells, which is just
-	/// as true when there is no rock around them.
-	///
-	/// The search picked by horizontal distance alone, which was survivable
-	/// while every band ran to the bottom of the world; the redesign gave
-	/// each band a FLOOR, and shallow tiers then routinely rolled above the
-	/// terrain. Both live surface-hosted kinds are swept, since the same
-	/// search serves DIG_NODE=leystone.
+	/// Searching by horizontal distance alone was survivable while every band
+	/// ran to the bottom of the world; the redesign gave each band a FLOOR, and
+	/// shallow tiers then routinely rolled above the terrain.
 	#[test]
 	fn every_capture_deposit_stands_in_rock() {
 		let mut checked = 0usize;

@@ -1053,20 +1053,18 @@ impl Menu {
 	/// Ask the master whether the typed name is free.
 	///
 	/// Considered per keystroke, but AT MOST ONE is ever out at a time: a
-	/// keystroke landing while a check is in flight sets nothing going, and
-	/// the reply re-fires for whatever the text says by then (see
-	/// `name_answered`). That is a debounce without a clock — which the menu
-	/// does not have and deliberately does not want — and it bounds a burst
-	/// of typing to one outstanding request instead of one per character.
+	/// keystroke landing while a check is in flight sets nothing going, and the
+	/// reply re-fires for whatever the text says by then (see `name_answered`).
+	/// That is a debounce without a clock — which the menu does not have and
+	/// deliberately does not want.
 	///
-	/// It has to be here rather than in a filler. Both fillers serve
-	/// commands in order, and the desktop one does so on a single blocking
-	/// thread, so N queued checks put N sequential HTTP calls (10 s timeout
-	/// apiece) ahead of the Join the player presses next.
+	/// It has to be here rather than in a filler. Both fillers serve commands in
+	/// order, and the desktop one does so on a single blocking thread, so N
+	/// queued checks put N sequential HTTP calls ahead of the Join the player
+	/// presses next.
 	///
-	/// Short prefixes are skipped outright: every name passes through "a",
-	/// "ab" on the way to "abc", and asking about those is three round trips
-	/// per name that could never have been claimed anyway.
+	/// Short prefixes are skipped outright: every name passes through "a", "ab"
+	/// on the way to "abc".
 	fn check_typed_name(&mut self) {
 		let Some(Screen::ChooseName(n)) = &mut self.screen else {
 			return;
@@ -2729,20 +2727,17 @@ mod tests {
 		}
 	}
 
-	/// Every page a finger can reach, for the two touch rules that have to
-	/// hold on all of them: it can be backed out of, and it never names a
-	/// key.
+	/// Every page a finger can reach, for the two touch rules that have to hold
+	/// on all of them: it can be backed out of, and it never names a key.
 	///
-	/// Swept rather than spot-checked because both rules are about the
-	/// pages nobody thought of. The server browser was the one that bit —
-	/// its only exit was an Escape it advertised in a hint line, on a
-	/// device with no Escape and no hint worth reading.
+	/// Swept rather than spot-checked because both rules are about the pages
+	/// nobody thought of. The server browser was the one that bit — its only
+	/// exit was an Escape it advertised in a hint line, on a device with no
+	/// Escape and no hint worth reading.
 	///
-	/// The sweep proves its own completeness at the end: every `Screen`
-	/// variant `screen_name` knows about has to have been visited. A page
-	/// added later fails to compile there and fails the coverage assert
-	/// here, which is the only arrangement in which "the pages nobody
-	/// thought of" is a claim rather than a hope.
+	/// The sweep proves its own completeness at the end: every `Screen` variant
+	/// `screen_name` knows about has to have been visited, so a page added later
+	/// fails to compile there and fails the coverage assert here.
 	fn every_touch_page(mut visit: impl FnMut(&mut Menu, &str)) {
 		use std::collections::BTreeSet;
 		let mut seen: BTreeSet<&'static str> = BTreeSet::new();

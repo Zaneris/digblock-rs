@@ -32,16 +32,12 @@ pub const RENDER_SCALE_STEP: f32 = 0.05;
 /// GI-scale notches: the GI resolve and à-trous run at
 /// `render_size / GI_SCALE_DIVISORS[i]`.
 ///
-/// DIVISORS, not a continuous slider, and that is forced rather than
-/// chosen: `chunk.wgsl`'s bilateral upsample is a 4-tap gather at render
-/// resolution, so the render:GI ratio has to be a clean integer or the
-/// footprint it walks stops matching the texels it reads. It is also why
-/// GI scale is expressed against the RENDER size and not the surface —
-/// anchored to native instead, a fractional render scale under a halved GI
-/// would ask for a ratio that is not an integer at all.
-///
-/// [`GI_SCALE_DEFAULT`] is the shipped notch, so a default frame is
-/// unchanged.
+/// DIVISORS, not a continuous slider, and that is forced rather than chosen:
+/// `chunk.wgsl`'s bilateral upsample is a 4-tap gather at render resolution, so
+/// the render:GI ratio has to be a clean integer or the footprint it walks stops
+/// matching the texels it reads. It is also why GI scale is expressed against
+/// the RENDER size and not the surface — anchored to native instead, a fractional
+/// render scale under a halved GI would ask for a non-integer ratio.
 pub const GI_SCALE_DIVISORS: [u32; 4] = [1, 2, 3, 4];
 pub const GI_SCALE_DEFAULT: u32 = 2;
 
@@ -105,19 +101,17 @@ impl Default for Settings {
 	}
 }
 
-/// The `gi_scale_div` to START an interactive session at, from the
-/// display's backing scale. Applied once, and only when the player has
-/// expressed no preference — see `EngineConfig::gfx_defaults_auto`.
+/// The `gi_scale_div` to START an interactive session at, from the display's
+/// backing scale. Applied once, and only when the player has expressed no
+/// preference — see `EngineConfig::gfx_defaults_auto`.
 ///
-/// A high-density panel spends a multiple of its logical window's pixels,
-/// and the GI resolve is the largest term in that frame, so something has
-/// to give there. **Which** term gives is a measured call, not a taste one:
-/// the interleaved A/B in BENCH.md 2026-08-12 has a render-scale notch and
-/// a GI-scale notch buying the SAME time, with the GI notch costing orders
-/// of magnitude less picture — because the a-trous filter and the bilateral
-/// upsample already reconstruct that signal. So a dense display keeps the
-/// world at NATIVE resolution and drops lighting detail instead. Render
-/// scale is not a knob players have at all today; see `RENDER_SCALE_MIN`.
+/// A high-density panel spends a multiple of its logical window's pixels, and
+/// the GI resolve is the largest term in that frame. **Which** term gives is a
+/// measured call, not a taste one: the interleaved A/B in BENCH.md 2026-08-12
+/// has a render-scale notch and a GI-scale notch buying the SAME time, with the
+/// GI notch costing orders of magnitude less picture, because the a-trous filter
+/// and the bilateral upsample already reconstruct that signal. So a dense
+/// display keeps the world at NATIVE resolution and drops lighting detail.
 pub fn density_gi_div(backing_scale: f32) -> u32 {
 	if backing_scale >= 1.5 {
 		3

@@ -68,19 +68,16 @@ pub struct Emitter {
 	/// reason the level is: the class byte is shared by every copy of the
 	/// tool in the world, and this one belongs to who is holding it.
 	pub whitened: bool,
-	/// The rectangle this light radiates from, for a SURFACE emitter — a
-	/// revealed vein's exposed face, merged by `mesher::lights`. `None`
-	/// is a point source: a torch, a lamp, a light in somebody's hand.
+	/// The rectangle this light radiates from, for a SURFACE emitter — a revealed
+	/// vein's exposed face, merged by `mesher::lights`. `None` is a point source:
+	/// a torch, a lamp, a light in somebody's hand.
 	///
-	/// This is the one thing about an entry that changes how the estimator
-	/// works rather than merely what it is worth, so it is worth being
-	/// plain about what it buys. A point approximating a patch of glowing
-	/// rock is wrong in the two places you look at it from: standing at the
-	/// wall it is a hotspot rather than an even wash, and it has no cosine
-	/// at its own surface, so it spills light around the corner of the rock
-	/// it is supposed to be sitting IN. Sampling the rectangle fixes both,
-	/// which is why path tracers have extracted light polygons from
-	/// emissive geometry since NEE was new (GI-DESIGN.md R31).
+	/// This is the one thing about an entry that changes how the estimator WORKS
+	/// rather than merely what it is worth. A point approximating a patch of
+	/// glowing rock is wrong in the two places you look at it from: standing at
+	/// the wall it is a hotspot rather than an even wash, and it has no cosine at
+	/// its own surface, so it spills light around the corner of the rock it is
+	/// supposed to be sitting IN (GI-DESIGN.md R31).
 	pub face: Option<Face>,
 }
 
@@ -101,19 +98,16 @@ pub struct Face {
 	pub ext: [f32; 2],
 }
 
-/// The flag riding above the class byte in a light entry's packed `w`
-/// word: this light is being CARRIED. The class byte occupies the low
-/// bits and every shader reader masks, exactly as the resolve's history
-/// length rides its face code.
+/// The flag riding above the class byte in a light entry's packed `w` word: this
+/// light is being CARRIED. The class byte occupies the low bits and every shader
+/// reader masks.
 ///
-/// It exists for one reason, and it is not cosmetic: `gi_light_margin`
-/// is how far short of a light its shadow ray stops, derived from the
-/// light's position WITHIN ITS CELL. That bound is only tolerable
-/// because a placed emitter sits at a known offset inside one — even a
-/// torch's flame, the worst of them, stays well inside its own cell. A
-/// carried light hangs on its carrier's capsule axis, so a carrier
-/// standing on a block top lands on the degenerate maximum and the
-/// margin grows to swallow a whole wall they are standing against.
+/// It exists for one reason, and it is not cosmetic: `gi_light_margin` is how
+/// far short of a light its shadow ray stops, derived from the light's position
+/// WITHIN ITS CELL. That bound is only tolerable because a placed emitter sits
+/// at a known offset inside one. A carried light hangs on its carrier's capsule
+/// axis, so a carrier standing on a block top lands on the degenerate maximum
+/// and the margin grows to swallow a whole wall they are standing against.
 /// Pinned against the WGSL twin by `the_carried_flag_matches_the_shaders`.
 const LIGHT_CARRIED: u32 = 256;
 
@@ -153,31 +147,23 @@ const LIGHT_WHITENED: u32 = 8192;
 /// Pinned against the WGSL twin by `the_carried_flag_matches_the_shaders`.
 const LIGHT_QUAD: u32 = 16384;
 
-/// Cosine of the sun cone's half-angle for the per-pixel shadow ray.
-/// The real sun's disc is a fraction of a degree across; this cone is
-/// deliberately wider, which buys a penumbra that is sharp at contact
-/// and softens with distance to the occluder — the thing a shadow map
-/// never had — at no extra ray. Widen it and shadows get mushy AND
-/// noisier, since one sample has to cover more solid angle.
-/// Format of the two ping-ponged resolve targets — BOTH of which hold a
-/// running average, which is the whole constraint. rgba8 was tried first
-/// and could not: at full history length each frame contributes one
-/// `N_MAX`-th of a difference and in 8 bits that rounds to zero, so the
-/// average stopped moving. rgba16f then failed the SAME way, one format
-/// up, and it took a capture harness that can see motion to notice —
-/// half-float's 10-bit mantissa puts the ulp near a stored value of one
-/// above what `hi + (indirect - hi)/n` contributes, so the update rounds
-/// away unless the difference is a large fraction of the signal range.
-/// That whole fraction never converged: every pixel froze where it stood
-/// when the camera stopped, leaving a pattern locked to the path walked,
-/// permanently — measurable as a large stalled share of the frame after a
-/// long stillness (GI-DESIGN.md "Measuring motion").
+/// Cosine of the sun cone's half-angle for the per-pixel shadow ray. The real
+/// sun's disc is a fraction of a degree across; this cone is deliberately wider,
+/// which buys a penumbra that is sharp at contact and softens with distance to
+/// the occluder at no extra ray. Widen it and shadows get mushy AND noisier,
+/// since one sample has to cover more solid angle.
+/// Format of the two ping-ponged resolve targets — BOTH of which hold a running
+/// average, which is the whole constraint. rgba8 was tried first and could not:
+/// at full history length each frame contributes one `N_MAX`-th of a difference
+/// and in 8 bits that rounds to zero. rgba16f then failed the SAME way, one
+/// format up, and it took a capture harness that can see motion to notice —
+/// every pixel froze where it stood when the camera stopped, leaving a pattern
+/// locked to the path walked, permanently.
 ///
-/// So the rule is not "use a float format", it is that the format's
-/// mantissa has to carry the smallest increment the history length asks
-/// for: alpha of 1/N stalls once the residual falls under ~N ulps. f32's
-/// 24-bit mantissa puts that floor far below one output LSB, which is
-/// invisible; f16's put it inside the signal.
+/// So the rule is not "use a float format", it is that the format's mantissa has
+/// to carry the smallest increment the history length asks for: alpha of 1/N
+/// stalls once the residual falls under ~N ulps. f32's 24-bit mantissa puts that
+/// floor far below one output LSB; f16's put it inside the signal.
 pub const GI_ACC_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
 
 // The a-trous tap strides, one entry per iteration. Doubling the stride
@@ -322,20 +308,16 @@ pub struct GiDraw {
 	/// rather than a world edit — see `resolve_inval` for the only thing
 	/// that flag changes.
 	inval_queue: Vec<([f32; 3], bool)>,
-	/// Spheres the probe pass consumed, held live so the RESOLVE keeps
-	/// capping screen history around them while the probes re-converge
-	/// (position + remaining frames + the moving flag; bounded by the
-	/// uniform's sphere slots).
+	/// Spheres the probe pass consumed, held live so the RESOLVE keeps capping
+	/// screen history around them while the probes re-converge.
 	///
-	/// Eviction is per-KIND, and that is load-bearing rather than tidy. A
-	/// world edit fires once; a carried light fires every
-	/// `CARRY_INVAL_STEP` of travel, which at `WALK_SPEED` is several
-	/// times a second — so against a plain newest-wins ring one walking
-	/// torch-bearer holds nearly every slot continuously (that rate
-	/// against `RESOLVE_INVAL_FRAMES` of life) and turns them over faster
-	/// than an edit's window. Making each stream recycle its OWN oldest
-	/// slot bounds the moving one without a second constant: an edit that
-	/// wins a slot keeps it for its full life however far anybody walks.
+	/// Eviction is per-KIND, and that is load-bearing rather than tidy. A world
+	/// edit fires once; a carried light fires every `CARRY_INVAL_STEP` of
+	/// travel, which at `WALK_SPEED` is several times a second — so against a
+	/// plain newest-wins ring one walking torch-bearer holds nearly every slot
+	/// continuously and turns them over faster than an edit's window. Making
+	/// each stream recycle its OWN oldest slot bounds the moving one without a
+	/// second constant.
 	resolve_inval: Vec<([f32; 3], u32, bool)>,
 	/// The half-res resolve pass (gi_resolve.wgsl): probes + per-pixel
 	/// sun DDA → the scene's two lighting inputs.
@@ -387,20 +369,17 @@ fn material_lut(layer_means: &[[u8; 3]]) -> [[u32; 4]; 256] {
 	};
 	// Word 1: the cast level in the low byte, the cast COLOUR above it.
 	//
-	// The colour is normally just the albedo — a torch glows its own warm
-	// tone, and one authored texture deciding both how a thing looks and
-	// what its light looks like is the rule R30 was built on. An ore seam
-	// is the one row that cannot honour it, and not for want of trying: an
-	// ore texture is a wide grey field with a few bright flecks on it, so
-	// its mean IS stone. Measured, all four tiers land within a few percent
-	// of colourless (an ember seam would light a tunnel white), weighting
-	// the mean by the ink gain moves it almost not at all, and darkening
-	// the body cannot help — Aetherock was already dark and no more
-	// coloured for it. The problem is the texture's composition, not the
-	// average taken over it, so the ore rows state their cast colour
-	// instead. It is still one table: `ore_flecks` is the same palette
-	// texgen paints the flecks and their spent siblings from, so a retint
-	// moves the rock and its light together (GI-DESIGN.md R31).
+	// The colour is normally just the albedo — one authored texture deciding
+	// both how a thing looks and what its light looks like is the rule R30 was
+	// built on. An ore seam is the one row that cannot honour it: an ore
+	// texture is a wide grey field with a few bright flecks, so its mean IS
+	// stone. Measured, all four tiers land within a few percent of colourless
+	// (an ember seam would light a tunnel white), weighting the mean by the ink
+	// gain moves it almost not at all, and darkening the body cannot help. The
+	// problem is the texture's composition, not the average taken over it, so
+	// the ore rows state their cast colour instead. Still one table:
+	// `ore_flecks` is the same palette texgen paints the flecks and their spent
+	// siblings from (GI-DESIGN.md R31).
 	let emit_word = |b: BlockType| -> u32 {
 		let t = b.node_flecks().map_or_else(|| albedo(b), |(core, _)| core);
 		u32::from(b.props().light)
@@ -439,47 +418,38 @@ fn material_lut(layer_means: &[[u8; 3]]) -> [[u32; 4]; 256] {
 	lut
 }
 
-/// The window's sky ceiling (R18): the highest coarse brick row holding
-/// anything at all, as a cell y. A non-descending ray above it is proven
-/// lit/sky in one float compare, which is what ends the sun march's
-/// climb at the tallest local hill instead of at the top of the world —
-/// proving open sky one brick skip at a time cost a dependent texture
-/// load per skip, most of a river scene's sun cost. Scanned top down, so
-/// a settled world answers in one slice; negative when the mirror is
-/// still empty (rays find nothing either way).
-/// The CPU twin of `gi_lateral_max` in gi_dda.wgsl — the lateral bound
-/// EVERY march breaks at, in blocks from the camera. `flush_lights` uses
-/// it to drop emitters no ray could reach; the two must agree or the
-/// light list either hides a torch the shader would have traced or wastes
-/// a `MAX_LIGHTS` slot on one it would not. Pinned by
-/// `the_light_reach_matches_the_shaders_bound`.
+/// The window's sky ceiling (R18): the highest coarse brick row holding anything
+/// at all, as a cell y. A non-descending ray above it is proven lit/sky in one
+/// float compare, which ends the sun march's climb at the tallest local hill
+/// instead of at the top of the world — proving open sky one brick skip at a
+/// time cost a dependent texture load per skip, most of a river scene's sun
+/// cost. Scanned top down; negative when the mirror is still empty.
+/// The CPU twin of `gi_lateral_max` in gi_dda.wgsl — the lateral bound EVERY
+/// march breaks at, in blocks from the camera. `flush_lights` uses it to drop
+/// emitters no ray could reach; the two must agree or the light list either
+/// hides a torch the shader would have traced or wastes a `MAX_LIGHTS` slot on
+/// one it would not. Pinned by `the_light_reach_matches_the_shaders_bound`.
 fn lateral_max(window_chunks: u32) -> f32 {
 	(window_chunks * 16) as f32 * 0.5 - 1.0
 }
 
-/// The light list's payload: every reachable emitter, at most the
-/// `MAX_LIGHTS` nearest `cam`, in the GPU entry form
-/// (`[x, y, z, bitcast(class)]`).
+/// The light list's payload: every reachable emitter, at most the `MAX_LIGHTS`
+/// nearest `cam`, in the GPU entry form (`[x, y, z, bitcast(class)]`).
 ///
-/// Split out of `flush_lights` because that needs a `Gpu` to upload and
-/// this is the part with a rule in it.
+/// Split out of `flush_lights` because that needs a `Gpu` to upload and this is
+/// the part with a rule in it.
 ///
-/// Carried lights — a player holding a torch — are simply more
-/// candidates. There is no reservation and no separate cap, because the
-/// distance rule already does the right thing at both ends: a carrier's
-/// own light sits half a block from the camera and can never be the one
-/// dropped however many torches a world has, and a distant player's
-/// torch losing its slot to a full list of nearer emitters is the correct
-/// answer under the same rule that governs everything else here.
+/// Carried lights are simply more candidates. There is no reservation and no
+/// separate cap, because the distance rule already does the right thing at both
+/// ends: a carrier's own light sits half a block from the camera and can never
+/// be the one dropped, and a distant player's torch losing its slot to nearer
+/// emitters is the correct answer under the same rule.
 ///
-/// Selection, NOT ordering. The doc on `flush_lights` records why: no
-/// reader cares about the order, so the only thing the distance is for
-/// is deciding which ones survive the cap. Under the cap nothing
-/// survives-or-doesn't and the list goes out unordered; over it,
+/// Selection, NOT ordering. No reader cares about the order, so the only thing
+/// the distance is for is deciding which ones survive the cap:
 /// `select_nth_unstable_by` partitions in O(n) rather than sorting in
-/// O(n log n). That matters now in a way it did not before: a carried
-/// light moves, so this runs EVERY frame while anyone is walking, over
-/// every emitter within `lateral_max`.
+/// O(n log n). That matters now in a way it did not before — a carried light
+/// moves, so this runs EVERY frame while anyone is walking.
 fn select_lights(
 	emitters: impl Iterator<Item = Emitter>,
 	carried: &[Emitter],
@@ -538,20 +508,18 @@ fn select_lights(
 
 /// Could any cell of this chunk be within `reach` of `cam` laterally?
 ///
-/// The per-EMITTER reach test is what decides the light list; this is the
-/// same question asked of a whole chunk first, so a chunk well outside the
-/// traceable window costs one compare instead of one per entry it holds.
+/// The per-EMITTER reach test is what decides the light list; this is the same
+/// question asked of a whole chunk first, so a chunk well outside the traceable
+/// window costs one compare instead of one per entry it holds.
 ///
-/// That distinction did not matter while emitters were torches. It matters
-/// now: a revealed vein contributes a rectangle per exposed face, caves are
-/// made of exposed faces, and residency reaches roughly twice as far as
-/// `gi_lateral_max` in every direction — so most of the map is chunks no
-/// march can reach, and `flush_lights` walks the map every frame anyone is
-/// moving.
+/// That distinction did not matter while emitters were torches. It matters now:
+/// a revealed vein contributes a rectangle per exposed face, caves are made of
+/// exposed faces, and residency reaches roughly twice as far as
+/// `gi_lateral_max` in every direction.
 ///
-/// Conservative by construction: it measures to the chunk's nearest EDGE,
-/// so it can only ever admit a chunk the per-emitter test then rejects,
-/// never drop one that held a reachable light.
+/// Conservative by construction: it measures to the chunk's nearest EDGE, so it
+/// can only ever admit a chunk the per-emitter test then rejects, never drop one
+/// that held a reachable light.
 fn chunk_in_reach(pos: ChunkPos, cam: [f32; 3], reach: f32) -> bool {
 	let n = digblock_core::chunk::CHUNK_SIZE as f32;
 	let axis = |lo: f32, c: f32| (lo - c).max(c - (lo + n)).max(0.0);
@@ -1815,18 +1783,15 @@ impl GiDraw {
 	/// Forget an evicted chunk's emitters.
 	///
 	/// Nothing used to prune this map: the only removal was a chunk
-	/// re-classifying to zero emitters, so every torch ever seen stayed in
-	/// it for the process's life and a world swap carried the previous
-	/// world's forward. `flush_lights` walks the whole map every frame
-	/// before its early-out, and past `MAX_LIGHTS` a stale entry can
-	/// out-sort a live one.
+	/// re-classifying to zero emitters, so every torch ever seen stayed for the
+	/// process's life and a world swap carried the previous world's forward.
+	/// `flush_lights` walks the whole map every frame before its early-out, and
+	/// past `MAX_LIGHTS` a stale entry can out-sort a live one.
 	///
-	/// Deliberately does NOT touch the coarse mirror. The window is
-	/// TOROIDAL and much smaller than residency, so an evicted chunk's
-	/// `rem_euclid` slot is very likely owned by a different, live chunk
-	/// by now — clearing it would erase real occupancy. (And it would buy
-	/// nothing: the drill in BENCH.md 2026-08-12 rebuilt `sky_y` to the
-	/// same value with frame time unmoved.)
+	/// Deliberately does NOT touch the coarse mirror. The window is TOROIDAL and
+	/// much smaller than residency, so an evicted chunk's `rem_euclid` slot is
+	/// very likely owned by a different, live chunk by now — clearing it would
+	/// erase real occupancy, and it would buy nothing (BENCH.md 2026-08-12).
 	pub fn remove_chunk(&mut self, pos: ChunkPos) {
 		if self.emitters.remove(&pos).is_some() | self.surfaces.remove(&pos).is_some() {
 			self.lights_dirty = true;
@@ -1962,23 +1927,19 @@ impl GiDraw {
 		// A carried light moves with its carrier, so the list is stale the
 		// moment one does. EXACT equality, not an epsilon, and that is the
 		// load-bearing part: at rest the presentation eye is bit-identical
-		// frame to frame (`TickLerp::render_pos` interpolates as
-		// `prev + (curr - prev) * t`, which returns `prev` exactly when
-		// `prev == curr` — pinned by `a_resting_camera_does_not_drift`,
-		// because the `a*(1-t) + b*t` form it replaced does NOT and left a
-		// still player re-uploading on a steady share of frames — and
+		// frame to frame (`TickLerp::render_pos` returns `prev` exactly when
+		// `prev == curr` — pinned by `a_resting_camera_does_not_drift` — and
 		// the reconciliation offset snaps to zero rather than decaying
-		// forever). So a player standing still with a torch keeps the
-		// early-out and a room lit by it converges as deeply as one lit
-		// from the floor. An epsilon would be inventing tolerance for a
-		// quantity that has none, and the number chosen would quietly
-		// decide when a slow creep stops lighting the room.
+		// forever). So a player standing still with a torch keeps the early-out
+		// and a room lit by it converges as deeply as one lit from the floor.
+		// An epsilon would invent tolerance for a quantity that has none, and
+		// the number chosen would quietly decide when a slow creep stops
+		// lighting the room.
 		//
-		// Compared AFTER the reach filter, which is not a detail: remotes
-		// ride snapshots out to the client's whole draw distance while
-		// `reach` is a fraction of it, so an unfiltered compare lets a
-		// torch-bearer nobody can be lit by defeat the early-out on every
-		// single frame and re-upload a byte-identical buffer.
+		// Compared AFTER the reach filter, which is not a detail: remotes ride
+		// snapshots out to the client's whole draw distance while `reach` is a
+		// fraction of it, so an unfiltered compare lets a torch-bearer nobody
+		// can be lit by defeat the early-out every frame.
 		let carried_moved = !carried
 			.iter()
 			.copied()
@@ -2613,19 +2574,16 @@ mod tests {
 		}
 	}
 
-	/// The history format must be able to REPRESENT the increment its
-	/// history length asks for. Twice now it could not: rgba8 first, then
-	/// rgba16f, both of which let `hi + (x - hi)/N_MAX` round to zero and
-	/// froze the running average at whatever it held — permanently, per
-	/// pixel, in a pattern locked to wherever the player had walked. It
-	/// took a capture harness that can see motion to notice either time,
-	/// because a still has already converged.
+	/// The history format must be able to REPRESENT the increment its history
+	/// length asks for. Twice now it could not: rgba8 first, then rgba16f, both
+	/// of which let `hi + (x - hi)/N_MAX` round to zero and froze the running
+	/// average at whatever it held — permanently, per pixel, in a pattern locked
+	/// to wherever the player had walked. It took a capture harness that can see
+	/// motion to notice either time, because a still has already converged.
 	///
-	/// So the two knobs are pinned against each other. Blending at alpha
-	/// 1/N stalls once the residual falls under about N ulps of the stored
-	/// value; below one 8-bit output LSB that is invisible, and above it
-	/// the picture keeps a stale ghost. Raising N_MAX or dropping the
-	/// format now fails here instead.
+	/// So the two knobs are pinned against each other: blending at alpha 1/N
+	/// stalls once the residual falls under about N ulps of the stored value.
+	/// Raising N_MAX or dropping the format now fails here instead.
 	#[test]
 	fn history_format_resolves_the_accumulator() {
 		// N_MAX lives in the shader; read it rather than duplicating it,

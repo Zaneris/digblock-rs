@@ -1,40 +1,30 @@
-//! The alchemy screen (SKILLS-DESIGN §8.1, reshaped by the essence
-//! redesign): ONE page under a header that always shows the Alchemy
-//! level, its XP bar, and the essence holdings. The EXTRACT tab is gone —
-//! matter never becomes essence at a bench any more; the siphon draws
-//! nodes in the field, and this screen is where the essence is SPENT.
+//! The alchemy screen: ONE page under a header that always shows the Alchemy
+//! level, its XP bar and the essence holdings. Matter never becomes essence at
+//! a bench — the siphon draws nodes in the field, and this screen is where the
+//! essence is SPENT.
 //!
-//! The page is a row of FAMILY tiles whose icons slowly rotate through
-//! their members, the selected family's members wrapped into the
-//! inventory grid's columns beneath (locked ones dim with an unlock
-//! badge, affordable ones count-badged), a detail strip, and the page's
-//! ONE `TRANSMUTE` button — CLICK 1 · SHIFT 10 · CTRL 100 clamped to what
-//! the holdings afford.
+//! The page is a row of FAMILY tiles whose icons slowly rotate through their
+//! members, the selected family's members wrapped into the inventory grid's
+//! columns beneath, a detail strip, and the page's ONE `TRANSMUTE` button,
+//! clamped to what the holdings afford.
 //!
-//! **The page shows what you have and one tier of what is coming, and
-//! nothing else** ([`member_visible`]): a member is drawn only if its
-//! recipe is unlocked or sits at the catalog's NEXT unlock level — every
-//! item sharing that level shows together — and a family with nothing on
-//! the page hides entirely. A fresh player reads three tiles, not the
-//! whole catalog as a wall of locks; the hidden depth is the character
-//! screen's job to tease. The families are DERIVED from §7.2's shape axis
-//! rather than mirrored by hand, and
-//! `every_craftable_appears_in_exactly_one_family` holds the derivation
-//! to the core catalog, so a new craftable cannot silently miss the
-//! screen.
+//! **The page shows what you have and one tier of what is coming, and nothing
+//! else** ([`member_visible`]): a member is drawn only if its recipe is unlocked
+//! or sits at the catalog's NEXT unlock level — every item sharing that level
+//! shows together — and a family with nothing on the page hides entirely. The
+//! families are DERIVED from §7.2's shape axis rather than mirrored by hand, and
+//! `every_craftable_appears_in_exactly_one_family` holds the derivation to the
+//! core catalog, so a new craftable cannot silently miss the screen.
 //!
 //! The button QUEUES that count rather than buying it: crafting drips at
-//! `craft_pace_ticks`, with the batch's progress and what is left of it
-//! in the row beneath the button, and the button itself standing as the
-//! batch's CANCEL. It used to answer instantly, which made the bench's
-//! one immediate action also its fastest XP — a hundred crafts paid in a
-//! frame. Crafting pays what it always paid; it now takes the time the
-//! work takes. The bench keeps working with the screen closed (§13.4's
-//! background bench); only leaving the world abandons.
+//! `craft_pace_ticks`, and the button itself stands as the batch's CANCEL.
+//! Answering instantly made the bench's one immediate action also its fastest
+//! XP — a hundred crafts paid in a frame. The bench keeps working with the
+//! screen closed; only leaving the world abandons.
 //!
-//! The screen never mutates game state: `handle_input`/`tick` return
-//! actions; the engine applies them locally offline or sends them to
-//! the server online (the `InventoryFull` echo is the rebase).
+//! The screen never mutates game state: `handle_input`/`tick` return actions,
+//! and the engine applies them locally offline or sends them to the server
+//! online (the `InventoryFull` echo is the rebase).
 
 use digblock_core::alchemy;
 use digblock_core::block::{BlockType, Essence, ShapeFamily};
@@ -1456,20 +1446,18 @@ mod tests {
 		}
 	}
 
-	/// The essence readout stays INSIDE the panel, at every rung of the
-	/// fit ladder and with the holdings at their widest.
+	/// The essence readout stays INSIDE the panel, at every rung of the fit
+	/// ladder and with the holdings at their widest.
 	///
-	/// It is the one row on the page whose width is data, and it does not
+	/// It is the one row on the page whose width is DATA, and it does not
 	/// shrink with the panel: `glyph_px` floors at a whole pixel, so the
-	/// ladder's bottom rungs take a quarter off every box while the text
-	/// stays where it is. The page used to size itself on the inventory
-	/// grid's extent alone and draw this row at that width, so on a small
-	/// window at a large interface scale it spilled past the panel edge
-	/// onto the dimmed world — unclipped, and growing with the digits.
+	/// ladder's bottom rungs take a quarter off every box while the text stays
+	/// where it is. Sizing the page on the inventory grid's extent alone spilled
+	/// this row past the panel edge onto the dimmed world, unclipped and growing
+	/// with the digits.
 	///
-	/// Swept at the scales the fit ladder actually reaches, and with a
-	/// full stack of every essence so the string is as long as the game
-	/// can make it.
+	/// Swept at the scales the fit ladder actually reaches, with a full stack of
+	/// every essence so the string is as long as the game can make it.
 	#[test]
 	fn the_essence_readout_never_spills_out_of_its_panel() {
 		let mut inv = Inventory::default();

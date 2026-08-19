@@ -647,22 +647,19 @@ struct FrameTargets {
 	depth_blit_bg: wgpu::BindGroup,
 	/// GI lighting pairs, half res: indirect rgb + view distance, and sun
 	/// visibility + normal code + water path + history length. Format is
-	/// `gi::GI_ACC_FORMAT` because both hold a RUNNING AVERAGE — rgba8 and
-	/// then rgba16f each failed the same way, their mantissa too short to
-	/// resolve an update of one part in the longest history the accumulator
-	/// reaches, which froze every pixel where it stood.
+	/// `gi::GI_ACC_FORMAT` because both hold a RUNNING AVERAGE — rgba8 and then
+	/// rgba16f each failed the same way, their mantissa too short to resolve an
+	/// update of one part in the longest history the accumulator reaches.
 	///
-	/// The roles are FIXED, not ping-ponged, because the a-trous filter
-	/// gives the frame a natural cycle:
+	/// The roles are FIXED, not ping-ponged, because the a-trous filter gives the
+	/// frame a natural cycle:
 	///
 	///   [0] <- resolve            [0] -> atrous(stride 1) -> [1]
 	///   [1] -> atrous(stride 2) -> [0] -> the scene pass
 	///
-	/// so [1] holds the once-filtered image at the end of every frame, and
-	/// that is exactly what the next frame wants as history (SVGF feeds the
-	/// first iteration's output back, which converges faster than feeding
-	/// back the raw accumulation). Two pairs cover it with no copy and no
-	/// alternating index.
+	/// so [1] holds the once-filtered image at the end of every frame, which is
+	/// exactly what the next frame wants as history (SVGF feeds the first
+	/// iteration's output back). Two pairs cover it with no copy.
 	gi_indirect_view: [wgpu::TextureView; 2],
 	gi_sun_view: [wgpu::TextureView; 2],
 	/// Scene group 2: pair [0], the one chunk.wgsl textureLoad's.
@@ -1958,19 +1955,16 @@ impl Renderer {
 				stats.draw_calls += 1;
 			}
 
-			// Water pass, in place on the scene target: transparent water in
-			// two subpasses — a depth-only prepass records the nearest water
-			// surface, then the color pass (no depth write, double-sided)
-			// shades only fragments at that depth, one blended layer per
-			// pixel. Depth is discarded at the end: nothing after this pass
-			// reads it.
+			// Water pass, in place on the scene target: transparent water in two
+			// subpasses — a depth-only prepass records the nearest water
+			// surface, then the colour pass (no depth write, double-sided)
+			// shades only fragments at that depth, one blended layer per pixel.
+			// Depth is discarded at the end: nothing after this reads it.
 			//
-			// This used to target the SWAPCHAIN. It now targets `post_view`
-			// at RENDER resolution and one upscale pass at the end takes
-			// that to the surface — so the opening blit did not disappear,
-			// it just composites scene → post at render res instead of at
-			// native. It cannot be dropped: water SAMPLES `scene_view`, so
-			// the pass needs a destination that is not its source.
+			// It targets `post_view` at RENDER resolution and one upscale pass
+			// at the end takes that to the surface. The opening blit cannot be
+			// dropped: water SAMPLES `scene_view`, so the pass needs a
+			// destination that is not its source.
 			{
 				let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
 					label: Some("water"),
@@ -2273,25 +2267,21 @@ mod tests {
 
 	/// Every pipeline this renderer builds, validated with no GPU present.
 	///
-	/// The shader test in `digblock-assets` parses each WGSL file ALONE, so
-	/// it can only see that a shader is well-formed. It cannot see the seam
-	/// that actually breaks: a shader's bindings against the
-	/// `BindGroupLayout` the Rust side hand-wrote for it, a vertex buffer's
-	/// formats against the attributes the vertex stage declares, a
-	/// fragment's outputs against the target formats. All three are checked
-	/// at `create_render_pipeline` and nowhere earlier, which used to mean
-	/// "when somebody runs the game".
+	/// The shader test in `digblock-assets` parses each WGSL file ALONE, so it
+	/// can only see that a shader is well-formed. It cannot see the seam that
+	/// actually breaks: a shader's bindings against the `BindGroupLayout` the
+	/// Rust side hand-wrote for it, a vertex buffer's formats against the
+	/// attributes the vertex stage declares, a fragment's outputs against the
+	/// target formats. All three are checked at `create_render_pipeline` and
+	/// nowhere earlier.
 	///
-	/// wgpu's noop backend stubs the HAL — nothing is compiled and nothing
-	/// is allocated — but `wgpu-core` runs its full validation first,
-	/// backend-independent. So this constructs the real `Renderer` on a
-	/// device that does not exist and gets the real errors, in the time a
-	/// unit test takes.
+	/// wgpu's noop backend stubs the HAL, but `wgpu-core` runs its full
+	/// validation first, backend-independent — so this constructs the real
+	/// `Renderer` on a device that does not exist and gets the real errors.
 	///
-	/// What it does NOT cover: naga is the permissive front end, and the
-	/// browser's is Tint. A shader that passes here can still invalidate a
-	/// pipeline in Chrome (see the `highlight.wgsl` precedence bug), so
-	/// this is not a substitute for loading the page.
+	/// What it does NOT cover: naga is the permissive front end and the
+	/// browser's is Tint, so a shader that passes here can still invalidate a
+	/// pipeline in Chrome.
 	#[cfg(not(target_arch = "wasm32"))]
 	#[test]
 	fn every_pipeline_builds_without_a_gpu() {

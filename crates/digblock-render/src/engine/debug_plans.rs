@@ -163,26 +163,22 @@ pub(super) fn debug_ore_plan(
 ) -> (Vec3, Vec<(i32, i32, i32, u16)>) {
 	use digblock_core::worldgen::{self, ore};
 	let (sx, sz) = (spawn.x.floor() as i32, spawn.z.floor() as i32);
-	// Nearest deposit of the tier — a search box wide enough that even
-	// Aetherock (one deposit in fifteen, and only in the bottom two grid
-	// rows) is found from any spawn.
+	// Nearest deposit of the tier — a search box wide enough that even the
+	// rarest tier is found from any spawn.
 	//
-	// It has to be BURIED, and that is not automatic: a deposit is placed
-	// by a hash over a grid that knows nothing about terrain, so a shallow
-	// band routinely rolls one into open air above the surface — or under
-	// a lake. `apply_nodes` stamps only cells that hold pristine Stone, so
-	// such a deposit reveals nothing whatever level is granted, and the
-	// capture is an empty stone-plated box that looks like a stamp bug.
-	// Every band grew a floor in the redesign, which is what made this
-	// common enough to notice: probed across four seeds, the nearest
-	// leystone was in air or water on all four.
+	// It has to be BURIED, and that is not automatic: a deposit is placed by a
+	// hash over a grid that knows nothing about terrain, so a shallow band
+	// routinely rolls one into open air above the surface — or under a lake.
+	// `apply_nodes` stamps only cells that hold pristine Stone, so such a
+	// deposit reveals nothing whatever level is granted, and the capture is an
+	// empty stone-plated box that looks like a stamp bug. Every band grew a
+	// floor in the redesign, which is what made this common.
 	//
 	// Distance is 3D for the same reason it is a scene at all: with the
-	// vertical term the pick prefers a deposit at eye height over one the
-	// same distance away and 80 blocks down, and the two are otherwise
-	// indistinguishable to a search that only reads x and z.
-	// The chamber: a box around the vein, minus the vein itself. Stood
-	// off far enough on -z that the camera is outside it looking in.
+	// vertical term the pick prefers a deposit at eye height over one the same
+	// distance away and 80 blocks down.
+	// The chamber: a box around the vein, minus the vein itself. Stood off far
+	// enough on -z that the camera is outside it looking in.
 	const R: i32 = 5;
 	let buried = |d: &ore::Deposit| {
 		// Clear of the surface by the CHAMBER's reach, not the blob's: the
@@ -227,39 +223,27 @@ pub(super) fn debug_ore_plan(
 			}
 		}
 	}
-	// A floor two below the vein, so a standing player's EYE lands level
-	// with it — physics drops the camera onto that floor within a frame
-	// or two of a capture starting, and a pose that has to be looked up
-	// at is a pose nobody frames correctly.
+	// A floor two below the vein, so a standing player's EYE lands level with
+	// it — physics drops the camera onto that floor within a frame or two, and
+	// a pose that has to be looked up at is a pose nobody frames correctly.
 	//
-	// Guarded exactly like the carve, and for the same reason: this plate
-	// is laid THROUGH the blob. A max-radius deposit reaches
-	// `ore::MAX_RADIUS` straight down, so the cell right under the
-	// centre sits on the rim and `rim_open` keeps it more often than not —
-	// and the plan is applied through `pipeline.set_cell`, which records
-	// into the `EditOverlay`, after which `ore::revealed` answers None for
-	// that cell forever. An unguarded plate quietly deletes the vein it
-	// was laid down to photograph.
+	// Guarded exactly like the carve, and for the same reason: this plate is
+	// laid THROUGH the blob. A max-radius deposit reaches `ore::MAX_RADIUS`
+	// straight down, so the cell right under the centre sits on the rim, and
+	// the plan is applied through `pipeline.set_cell`, after which
+	// `nodes::revealed` answers None for that cell forever. An unguarded plate
+	// quietly deletes the vein it was laid down to photograph.
 	//
-	// Dropping the whole plane clear of the deposit instead (`d.y -
-	// MAX_RADIUS - 1`) would not replace this guard and would cost the
-	// pose: `ore_at` answers for every deposit in the 3×3×3 apron and not
-	// just this one, so a neighbour's blob can cross whatever plane we
-	// pick, and a floor a block lower puts the eye UNDER the vein — the
-	// one thing this scene exists to get right. Where a vein does cross,
-	// the cell keeps its pristine worldgen value, which is the ore-bearing
-	// Stone itself: the floor stays walkable and the seam simply runs
-	// through it. Only a cave cell a deposit happens to claim leaves a
-	// real gap, and that is the same hazard the carve above already
-	// accepts.
-	// Never at or below the world floor. `deposit_in` now keeps a whole
-	// BLOB clear of `BEDROCK_Y + MAX_RADIUS`, so this `max` cannot bite
-	// today — it is here because that is a coupling two modules apart,
-	// and the plate must not silently start writing the one plane the
-	// game promises is untouchable if the ore constraint is ever
-	// loosened. Clamped rather than skipped so the plate stays whole: a
-	// floor with holes in it is a worse capture than a floor one block
-	// high.
+	// Dropping the whole plane clear of the deposit instead would not replace
+	// this guard and would cost the pose: `ore_at` answers for every deposit in
+	// the 3x3x3 apron, so a neighbour's blob can cross whatever plane we pick,
+	// and a floor a block lower puts the eye UNDER the vein. Where a vein does
+	// cross, the cell keeps its pristine worldgen value — ore-bearing Stone —
+	// so the floor stays walkable and the seam runs through it.
+	// Never at or below the world floor. `deposit_in` keeps a whole BLOB clear
+	// of `BEDROCK_Y + MAX_RADIUS`, so this `max` cannot bite today; it is here
+	// because that is a coupling two modules apart. Clamped rather than skipped
+	// so the plate stays whole.
 	let floor = (d.y - 2).max(digblock_core::block::BEDROCK_Y + 1);
 	for z in (d.z - R)..=(d.z + R) {
 		for x in (d.x - R)..=(d.x + R) {
@@ -615,26 +599,21 @@ pub(super) fn debug_crack_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 	out
 }
 
-/// DIG_DOORS=1 layout: a rank of door pairs standing three cells ahead
-/// of the spawn camera with nothing in front of them, plus a plain
-/// Lumber column beside them as the tint reference.
+/// DIG_DOORS=1 layout: a rank of door pairs standing three cells ahead of the
+/// spawn camera with nothing in front of them, plus a plain Lumber column beside
+/// them as the tint reference.
 ///
-/// DIG_SHAPES already stands every door variant, so this looks like a
-/// duplicate and is not: it stands them EIGHT blocks out behind three
-/// rows of stairs sharing their x columns, and from eye height a
-/// one-block stair projects straight over the lower half of the door
-/// behind it. The seam between a door's two cells is the one thing a
-/// door has to be judged on — it is one object wearing two cells, so the
-/// tint has to match across it and the outline has to wrap both — and it
-/// is the one thing that scene cannot show. Three cells out also puts
-/// the pair inside the interact ray, which is what makes the outline
-/// photographable at all.
+/// DIG_SHAPES already stands every door variant, so this looks like a duplicate
+/// and is not: it stands them EIGHT blocks out behind three rows of stairs
+/// sharing their x columns, and from eye height a one-block stair projects
+/// straight over the lower half of the door behind it. The seam between a door's
+/// two cells is the one thing a door has to be judged on — one object wearing
+/// two cells, so the tint has to match across it and the outline has to wrap
+/// both. Three cells out also puts the pair inside the interact ray.
 ///
-/// The reference column is deliberately the door's OWN material: the
-/// leaf must read as one piece of timber down its own middle while still
-/// differing from the timber beside it, and a capture that only proves
-/// the first half of that would pass just as well if the tint had been
-/// switched off.
+/// The reference column is deliberately the door's OWN material: the leaf must
+/// read as one piece of timber down its own middle while still differing from
+/// the timber beside it.
 pub(super) fn debug_doors_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 	use digblock_core::block::BlockType as B;
 	use digblock_core::chunk::make_cell;
@@ -690,25 +669,20 @@ pub(super) fn debug_roof_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 	out
 }
 
-/// DIG_TORCHES=&lt;n&gt; layout: an open-topped stone courtyard ahead of
-/// spawn with `n` torches clustered at its near end and forty blocks of
-/// bare floor running away from them.
+/// DIG_TORCHES=&lt;n&gt; layout: an open-topped stone courtyard ahead of spawn
+/// with `n` torches clustered at its near end and forty blocks of bare floor
+/// running away from them.
 ///
-/// DIG_VAULT cannot photograph the remaining local-light noise, and the
-/// two reasons are the whole point of this scene. Its room is eleven
-/// blocks deep, so every surface in it sits inside `LIGHT_RANGE` and
-/// well inside the near-field clamp — there is no "far from the torch"
-/// band at all. And it holds exactly ONE torch, which is the single case
-/// the resolve's dominant-light NEE covers completely: with one emitter
-/// in range the deterministic ray is the whole direct term and the
-/// gather's emitter-hit lottery is suppressed for it.
+/// DIG_VAULT cannot photograph the remaining local-light noise, for two reasons
+/// that are the whole point of this scene. Its room is eleven blocks deep, so
+/// every surface sits inside `LIGHT_RANGE` and well inside the near-field clamp
+/// — there is no "far from the torch" band at all. And it holds exactly ONE
+/// torch, the single case the resolve's NEE covers completely.
 ///
-/// So: `n` is a knob (1 vs 8 with the geometry held fixed) and the floor
-/// runs well past `LIGHT_RANGE`, so a capture crosses that edge with
-/// the same material and the same face code either side of it. No roof —
-/// the report is about NIGHT, where the sky is a dim second source
-/// rather than absent, so `--tod 180` is the pose and `--tod 0` is the
-/// control that shows the sun masking it.
+/// So: `n` is a knob (1 vs 8 with the geometry held fixed) and the floor runs
+/// well past `LIGHT_RANGE`, so a capture crosses that edge with the same
+/// material and face code either side. No roof — the report is about NIGHT, so
+/// `--tod 180` is the pose and `--tod 0` the control.
 pub(super) fn debug_torches_plan(
 	spawn: Vec3,
 	n: i32,
