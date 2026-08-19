@@ -394,7 +394,23 @@ check:
 	cargo fmt --all --check
 	just check-md
 	cargo clippy --workspace --all-targets -- -D warnings
-	cargo test --workspace
+	just test
+
+# --no-fail-fast is the point: cargo stops after the first failing test
+# BINARY, so a retune that moves a golden in three crates costs three runs to
+# find all three.
+#
+# The whole suite; `just test <filter>` for one of them.
+test *ARGS:
+	cargo test --workspace --no-fail-fast {{ARGS}}
+
+# The web half needs Chrome, the other two need Docker.
+#
+# Every gate in one word, so "am I done" is not three remembered commands.
+gate:
+	just check
+	just check-ios
+	just check-web
 
 # Fast "is iOS still green" gate — no Xcode required.
 check-ios:
