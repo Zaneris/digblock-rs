@@ -1,5 +1,5 @@
+use digblock_client::{Engine, EngineConfig};
 use digblock_platform::RunOptions;
-use digblock_render::{Engine, EngineConfig};
 
 /// Called from main.m. winit's run_app invokes UIApplicationMain internally
 /// and never returns.

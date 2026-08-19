@@ -1,10 +1,10 @@
 //! Persisted user settings: the launcher-side serde mirror of
-//! `digblock_render::settings::Settings` (the engine crate stays
+//! `digblock_client::settings::Settings` (the engine crate stays
 //! serde- and IO-free). JSON in the user's data dir next to the
 //! identity file; unknown fields ignored, missing fields default —
 //! a future field degrades gracefully in both directions.
 
-use digblock_render::settings::Settings;
+use digblock_client::settings::Settings;
 
 #[derive(serde::Serialize, serde::Deserialize, Default)]
 #[serde(default)]

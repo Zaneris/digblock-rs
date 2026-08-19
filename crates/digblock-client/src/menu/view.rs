@@ -287,7 +287,7 @@ impl Menu {
 					&mut y,
 					RowSpec {
 						// The build's version, right-aligned on the credits
-						// row. `env!` here is digblock-render's version, which
+						// row. `env!` here is digblock-client's version, which
 						// inherits [workspace.package] like every other crate.
 						right: Some((format!("v{}", env!("CARGO_PKG_VERSION")), C_DIM)),
 						..RowSpec::dim("Created by @Zaneris (GitHub/X)")

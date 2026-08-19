@@ -39,7 +39,7 @@ Debug keys: **F7** re-queue GI · **F8** screenshot · **F9** suspend/resume dri
 | Crate                                  | What it is                                                                                                            |
 | -------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
 | `crates/digblock-core`                 | Pure logic — worldgen, chunks, meshing, fluid, physics, skills, economy. No GPU or windowing deps; testable headless. |
-| `crates/digblock-render`               | The client: wgpu renderer, GI, UI, menus, audio, and the engine that drives them.                                     |
+| `crates/digblock-client`               | The client: wgpu renderer, GI, UI, menus, audio, and the engine that drives them.                                     |
 | `crates/digblock-platform`             | The winit shell and lifecycle state machine. The only crate that may touch `winit` or `wgpu::Surface`.                |
 | `crates/digblock-assets`               | Compile-time embedded textures, WGSL and fonts.                                                                       |
 | `crates/digblock-net`                  | Protocol and client netcode, sans-IO and wasm-clean.                                                                  |

@@ -369,7 +369,7 @@ check-shaders:
 #
 # Fast "is the web client still green" gate — wasm32 clippy plus check-shaders.
 check-web:
-	cargo clippy -p digblock-web -p digblock-web-worker -p digblock-render \
+	cargo clippy -p digblock-web -p digblock-web-worker -p digblock-client \
 		-p digblock-platform --target wasm32-unknown-unknown -- -D warnings
 	just check-shaders
 

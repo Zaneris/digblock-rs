@@ -11,7 +11,7 @@ crate-type = ["cdylib", "rlib"]
 # so `just check` builds it without pulling wasm-only deps.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 digblock-core.workspace = true
-digblock-render.workspace = true
+digblock-client.workspace = true
 digblock-platform.workspace = true
 digblock-net.workspace = true
 digblock-net-web.workspace = true

@@ -2,7 +2,7 @@
 resolver = "2"
 members = [
 	"crates/digblock-core",
-	"crates/digblock-render",
+	"crates/digblock-client",
 	"crates/digblock-assets",
 	"crates/digblock-platform",
 	"crates/digblock-net",
@@ -34,7 +34,7 @@ unreachable_pub = "deny"
 
 [workspace.dependencies]
 digblock-core = { path = "crates/digblock-core" }
-digblock-render = { path = "crates/digblock-render" }
+digblock-client = { path = "crates/digblock-client" }
 digblock-assets = { path = "crates/digblock-assets" }
 digblock-platform = { path = "crates/digblock-platform" }
 digblock-net = { path = "crates/digblock-net" }

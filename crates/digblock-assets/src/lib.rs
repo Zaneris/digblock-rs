@@ -97,7 +97,7 @@ pub mod tex {
 	/// else, so it is not a wire or save format and the list may be
 	/// reordered. What it may not do is drift from the core mirror, which
 	/// would silently texture blocks with each other's PNGs. A `const`
-	/// assert in digblock-render (`texture.rs`, the only file that can see
+	/// assert in digblock-client (`texture.rs`, the only file that can see
 	/// both crates) fails the BUILD on a length skew, so move them
 	/// together.
 	pub const LAYERS: [&[u8]; 47] = [
@@ -212,7 +212,7 @@ pub mod sfx {
 
 pub mod font {
 	//! Embedded UI typefaces: static, Latin-subset TTFs. Rasterization
-	//! happens in digblock-render (this crate stays dependency-free).
+	//! happens in digblock-client (this crate stays dependency-free).
 	//! Provenance, repertoire, and the subsetting recipe are in
 	//! assets/fonts/SOURCES.md.
 	//!

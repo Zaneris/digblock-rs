@@ -13,7 +13,7 @@
 use std::sync::mpsc;
 
 use crate::auth::{self, Session};
-use digblock_render::{AccountView, MenuCommand, MenuResponse, MenuServices, ServerEntry};
+use digblock_client::{AccountView, MenuCommand, MenuResponse, MenuServices, ServerEntry};
 use serde::Deserialize as _;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;

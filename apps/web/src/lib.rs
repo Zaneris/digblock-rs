@@ -1,9 +1,9 @@
 //! Thin wasm launcher — the browser analogue of apps/desktop/src/main.rs.
-//! All real work lives in digblock-render/digblock-platform; this file
+//! All real work lives in digblock-client/digblock-platform; this file
 //! parses URL query params into an `EngineConfig` and starts the loop.
 #![cfg(target_arch = "wasm32")]
 
-use digblock_render::{Engine, EngineConfig};
+use digblock_client::{Engine, EngineConfig};
 use wasm_bindgen::prelude::*;
 
 mod audio;
@@ -144,7 +144,7 @@ async fn boot() -> Result<(), JsValue> {
 	// win over both (URL > saved > default — the desktop CLI precedence).
 	// A capture keeps the shipped defaults, which is what makes two runs of
 	// the same arm comparable on a browser that has ever been played on.
-	let defaults = digblock_render::settings::Settings {
+	let defaults = digblock_client::settings::Settings {
 		draw_dist: config.draw_dist,
 		music_vol: config.music_vol,
 		sfx_vol: config.sfx_vol,
@@ -179,20 +179,20 @@ async fn boot() -> Result<(), JsValue> {
 	config.gi_scale_div = saved.gi_scale_div;
 	if let Some(r) = param::<f32>(&params, "renderscale") {
 		config.render_scale = r.clamp(
-			digblock_render::settings::RENDER_SCALE_MIN,
-			digblock_render::settings::RENDER_SCALE_MAX,
+			digblock_client::settings::RENDER_SCALE_MIN,
+			digblock_client::settings::RENDER_SCALE_MAX,
 		);
 	}
 	if let Some(d) = param::<u32>(&params, "giscale")
-		&& digblock_render::settings::GI_SCALE_DIVISORS.contains(&d)
+		&& digblock_client::settings::GI_SCALE_DIVISORS.contains(&d)
 	{
 		config.gi_scale_div = d;
 		config.gfx_defaults_auto = false;
 	}
 	if let Some(d) = param::<i32>(&params, "draw") {
 		config.draw_dist = d.clamp(
-			digblock_render::settings::DRAW_MIN,
-			digblock_render::settings::DRAW_MAX,
+			digblock_client::settings::DRAW_MIN,
+			digblock_client::settings::DRAW_MAX,
 		);
 	}
 	if params.get("ssr").is_some() {
@@ -200,8 +200,8 @@ async fn boot() -> Result<(), JsValue> {
 	}
 	if let Some(u) = param::<f32>(&params, "uiscale") {
 		config.ui_scale = u.clamp(
-			digblock_render::settings::UI_SCALE_MIN,
-			digblock_render::settings::UI_SCALE_MAX,
+			digblock_client::settings::UI_SCALE_MIN,
+			digblock_client::settings::UI_SCALE_MAX,
 		);
 	}
 	// The menu's Fullscreen row, only where the API actually exists — the
@@ -281,7 +281,7 @@ async fn boot() -> Result<(), JsValue> {
 		_ => session,
 	};
 	config.player_name = session.as_ref().and_then(|s| s.display_name.clone());
-	config.account = session.as_ref().map(|s| digblock_render::AccountView {
+	config.account = session.as_ref().map(|s| digblock_client::AccountView {
 		id: s.account_id.clone(),
 		name: s.display_name.clone(),
 	});
@@ -357,7 +357,7 @@ async fn boot() -> Result<(), JsValue> {
 /// the standard route. Read once at boot: the common mobile posture is
 /// one orientation per session, and a rotation merely costs the HUD its
 /// inset margin until reload.
-fn safe_area_insets() -> Option<digblock_render::ui::hud::SafeArea> {
+fn safe_area_insets() -> Option<digblock_client::ui::hud::SafeArea> {
 	let window = web_sys::window()?;
 	let document = window.document()?;
 	let probe = document.create_element("div").ok()?;
@@ -381,7 +381,7 @@ fn safe_area_insets() -> Option<digblock_render::ui::hud::SafeArea> {
 			.unwrap_or(0.0)
 	};
 	let dpr = window.device_pixel_ratio() as f32;
-	let insets = digblock_render::ui::hud::SafeArea {
+	let insets = digblock_client::ui::hud::SafeArea {
 		top: read("padding-top") * dpr,
 		right: read("padding-right") * dpr,
 		bottom: read("padding-bottom") * dpr,

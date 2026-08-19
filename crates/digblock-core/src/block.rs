@@ -889,7 +889,7 @@ pub mod tex {
 
 	/// Layers in the array, i.e. `digblock_assets::tex::LAYERS.len()`.
 	/// Pinned against it by `every_block_texture_layer_is_uploaded` in
-	/// digblock-render, the one crate that can see both.
+	/// digblock-client, the one crate that can see both.
 	pub const COUNT: u16 = SPENT_SPRINGSTONE + 1;
 }
 

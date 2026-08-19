@@ -9,7 +9,7 @@ name = "digblock_ios"
 crate-type = ["staticlib"]
 
 [dependencies]
-digblock-render.workspace = true
+digblock-client.workspace = true
 digblock-platform.workspace = true
 env_logger.workspace = true
 

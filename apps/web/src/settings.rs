@@ -3,7 +3,7 @@
 //! identity-secret pattern). Blocked storage (private mode) degrades
 //! to per-session settings.
 
-use digblock_render::settings::Settings;
+use digblock_client::settings::Settings;
 
 const KEY: &str = "digblock.settings";
 

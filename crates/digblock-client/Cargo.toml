@@ -1,5 +1,5 @@
 [package]
-name = "digblock-render"
+name = "digblock-client"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

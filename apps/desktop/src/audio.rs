@@ -15,7 +15,7 @@
 //!
 //! Music: fetched from the master server (never embedded) by a helper thread.
 
-use digblock_render::audio::{AudioCmd, AudioSink, LoopId, Sfx, bytes};
+use digblock_client::audio::{AudioCmd, AudioSink, LoopId, Sfx, bytes};
 use rodio::source::{Buffered, Source};
 use rodio::{Decoder, MixerDeviceSink, Player, SpatialPlayer};
 use std::collections::HashMap;
@@ -124,7 +124,7 @@ struct Pool {
 impl Pool {
 	fn push(&mut self, bytes: Vec<u8>) {
 		self.tracks.push(bytes);
-		self.order = digblock_render::audio::shuffle_order(self.seed, self.tracks.len());
+		self.order = digblock_client::audio::shuffle_order(self.seed, self.tracks.len());
 		self.next = 0;
 	}
 
@@ -199,7 +199,7 @@ fn run(rx: mpsc::Receiver<AudioCmd>, music_rx: mpsc::Receiver<(bool, Vec<u8>)>) 
 	// Decode every embedded SFX once, up front — the whole set is small
 	// enough to hold decoded for the process's life.
 	let mut cache: HashMap<Sfx, Cached> = HashMap::new();
-	for s in digblock_render::audio::ALL_SFX {
+	for s in digblock_client::audio::ALL_SFX {
 		match Decoder::new(Cursor::new(bytes(s))) {
 			Ok(d) => {
 				cache.insert(s, d.buffered());
@@ -431,7 +431,7 @@ mod tests {
 	/// touches the bytes at all.
 	#[test]
 	fn every_sfx_decodes_through_rodio() {
-		for s in digblock_render::audio::ALL_SFX {
+		for s in digblock_client::audio::ALL_SFX {
 			let d = Decoder::new(Cursor::new(bytes(s)))
 				.unwrap_or_else(|e| panic!("{s:?} failed to decode: {e}"));
 			let rate = d.sample_rate().get();

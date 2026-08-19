@@ -129,7 +129,7 @@ Eight crates, thin launchers, a dedicated server, and a .NET master. The boundar
 - **`digblock-core`** — pure game logic. No GPU or windowing deps; everything testable headless.
 - **`digblock-platform`** — the winit shell around a headless-tested lifecycle state machine. The **only** crate allowed
   to touch `winit` or `wgpu::Surface`. Defines `Game` and `Gpu`.
-- **`digblock-render`** — the client: world state, renderer, UI, menus, audio. Renders into `&TextureView`s borrowed per
+- **`digblock-client`** — the client: world state, renderer, UI, menus, audio. Renders into `&TextureView`s borrowed per
   `render()` call and **never sees the surface**, so it can't hold a stale swapchain texture across a suspend.
 - **`digblock-assets`** — compile-time embedded textures, WGSL and fonts. Shaders are validated **twice, by two
   different front ends**: `cargo test` runs naga (permissive, no GPU); `just check-shaders` hands every entry of
@@ -253,7 +253,7 @@ physics contracts are documented at the code in `shapes.rs` and `player.rs`; the
   `dig_credit(edited, alchemy)` is what an actual dig pays.
 - The texture layer index is RUNTIME ONLY (mesh vertex bits, never the wire or a save), so the list may be reordered —
   what it may not do is drift from `digblock_core::block::tex`, which mirrors it position for position; a `const` assert
-  in `digblock-render/src/texture.rs` fails the BUILD on a skew. **`LOG`/`LOG_TOP` is the tree; the `LUMBER_*` set is
+  in `digblock-client/src/texture.rs` fails the BUILD on a skew. **`LOG`/`LOG_TOP` is the tree; the `LUMBER_*` set is
   planed timber.** Derived textures come from `tools/texgen`, outputs committed — a run rewrites EVERY output and the
   noisy recipes share one rng, so adding a `save` rerolls everything after it.
 - Chunk cells are `u16` end-to-end: 10-bit id, spare bits, STATE nibble, travelling wire and journal as-is. Mesher,

@@ -1,8 +1,8 @@
-use digblock_platform::RunOptions;
-use digblock_render::settings::{
+use digblock_client::settings::{
 	GI_SCALE_DIVISORS, RENDER_SCALE_MAX, RENDER_SCALE_MIN, UI_SCALE_MAX, UI_SCALE_MIN,
 };
-use digblock_render::{Engine, EngineConfig};
+use digblock_client::{Engine, EngineConfig};
+use digblock_platform::RunOptions;
 
 mod audio;
 mod auth;
@@ -314,7 +314,7 @@ fn main() {
 	if let Some(v) = std::env::var_os("DIG_PLAYERBOX") {
 		// var_os, not var: a value that is not UTF-8 is a typo like any
 		// other and must be fatal, not silently drop the scene.
-		match v.to_str().and_then(digblock_render::parse_held_item) {
+		match v.to_str().and_then(digblock_client::parse_held_item) {
 			Some(id) => config.debug_playerbox = Some(id),
 			None => {
 				eprintln!(
@@ -352,7 +352,7 @@ fn main() {
 	// An unknown kind is FATAL rather than a silent open-terrain capture,
 	// like every other capture flag here.
 	config.debug_node = std::env::var("DIG_NODE").ok().map(|v| {
-		digblock_render::parse_node_kind(&v)
+		digblock_client::parse_node_kind(&v)
 			.unwrap_or_else(|| panic!("DIG_NODE: unknown node kind {v:?}"))
 	});
 	// DIG_MINING=<level>: start there. Everything a level gates is
@@ -399,12 +399,12 @@ fn main() {
 	// measures the un-stubbed build is precisely the mistake this exists
 	// to stop.
 	if let Ok(v) = std::env::var("DIG_STUB") {
-		let (mask, bad) = digblock_render::stub::parse(&v);
+		let (mask, bad) = digblock_client::stub::parse(&v);
 		if !bad.is_empty() {
 			eprintln!(
 				"unknown DIG_STUB term(s): {} — known: {}",
 				bad.join(", "),
-				digblock_render::stub::names()
+				digblock_client::stub::names()
 					.collect::<Vec<_>>()
 					.join(", ")
 			);
@@ -428,7 +428,7 @@ fn main() {
 	// are otherwise reachable only through live input).
 	config.debug_screen = std::env::var("DIG_SCREEN")
 		.ok()
-		.and_then(|v| digblock_render::DebugScreen::parse(&v));
+		.and_then(|v| digblock_client::DebugScreen::parse(&v));
 	// DIG_SIPHON=<percent>: pin the essence draw at that progress on the vein
 	// under the crosshair. A PERCENT, and meant as a SWEEP, for DIG_CRACK's
 	// reason — one still cannot tell a stream that thickens from one that
@@ -455,7 +455,7 @@ fn main() {
 			std::process::exit(2);
 		}
 		config.debug_screen.get_or_insert_with(|| {
-			digblock_render::DebugScreen::parse("siphon")
+			digblock_client::DebugScreen::parse("siphon")
 				.expect("DIG_SCREEN knows the siphon by name")
 		});
 		// And it has to be AIMED at the vein, which the default camera is
@@ -490,7 +490,7 @@ fn main() {
 	// Saved settings apply to interactive runs only (captures must not be
 	// perturbed by user preferences), then explicit CLI flags win.
 	if interactive {
-		let saved = settings::load(digblock_render::settings::Settings {
+		let saved = settings::load(digblock_client::settings::Settings {
 			draw_dist: config.draw_dist,
 			music_vol: config.music_vol,
 			sfx_vol: config.sfx_vol,
@@ -539,7 +539,7 @@ fn main() {
 	config.menu = !join && interactive;
 	// ...except for a DIG_SCREEN=menu capture, whose whole point is to
 	// photograph the menu a screenshot run would otherwise suppress.
-	config.menu |= config.debug_screen == Some(digblock_render::DebugScreen::Menu);
+	config.menu |= config.debug_screen == Some(digblock_client::DebugScreen::Menu);
 
 	// Audio rides interactive runs only (the engine's sink stays None
 	// elsewhere).

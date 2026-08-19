@@ -17,7 +17,7 @@
 //!
 //! **What it does NOT cover.** Shader modules only. A module that compiles can
 //! still fail at pipeline creation, where bindings are matched against layouts;
-//! `every_pipeline_builds_without_a_gpu` in digblock-render is the other half,
+//! `every_pipeline_builds_without_a_gpu` in digblock-client is the other half,
 //! and it runs on naga. Neither subsumes the other.
 
 use std::path::PathBuf;

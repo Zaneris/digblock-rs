@@ -18,7 +18,7 @@
 // simpler than the AudioParam automation equivalents.
 #![allow(deprecated)]
 
-use digblock_render::audio::{ALL_SFX, AudioCmd, AudioSink, LoopId, Sfx, bytes};
+use digblock_client::audio::{ALL_SFX, AudioCmd, AudioSink, LoopId, Sfx, bytes};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -74,7 +74,7 @@ struct Pool {
 impl Pool {
 	fn push(&mut self, buf: AudioBuffer) {
 		self.tracks.push(buf);
-		self.order = digblock_render::audio::shuffle_order(self.seed, self.tracks.len());
+		self.order = digblock_client::audio::shuffle_order(self.seed, self.tracks.len());
 		self.next = 0;
 	}
 
