@@ -400,9 +400,9 @@ presentation can't drift.
 ## Lighting (RTGI)
 
 Lighting is probe-traced GI and it is the **only** render path — no flag. The raster stack it replaced is deleted
-(shadow.rs/shadow.wgsl, light.rs and the Stage-B nibble field, baked AO, all fog, LIGHT-DESIGN.md); with AO gone the
-mesher's quad winding is fixed rather than AO-keyed, and the vertex words are repacked (w0 carries position, normal and
-corner; w1 the texture layer, uv and the emissive bit — field order and widths live with the packing code).
+(shadow.rs/shadow.wgsl, light.rs and the Stage-B nibble field, baked AO, all fog); with AO gone the mesher's quad
+winding is fixed rather than AO-keyed, and the vertex words are repacked (w0 carries position, normal and corner; w1 the
+texture layer, uv and the emissive bit — field order and widths live with the packing code).
 
 **`GI-DESIGN.md` is the reference** — data model, pass order, every tuned constant, R8–R27 release notes with their
 measurements, and a "What is NOT built" section. Read it before changing lighting. Several plausible ideas in there were

@@ -2,7 +2,7 @@
 
 Status: **M4 landed on `feat/rtgi`.** RTGI is the only lighting path and there is no flag. The raster stack it replaced
 is DELETED, not dormant: shadow.rs/shadow.wgsl and the cascades, core/light.rs and the Stage-B BFS voxel light field,
-baked per-vertex AO, all fog, the hand-tuned water look, and per-block tint jitter. LIGHT-DESIGN.md went with them. The
+baked per-vertex AO, all fog, the hand-tuned water look, and per-block tint jitter. Their design doc went with them. The
 tint is the one item on that list that came BACK (R23) — as an albedo property in chunk.wgsl's `fs`, which is a
 different thing in a different place from the vertex-packed step folded into AO that died here.
 
@@ -1477,4 +1477,4 @@ P0 compute infra + this doc + `rtgi` flag (gate: flag-off bench parity) · P1 vo
   (gate: probe visualization capture) · P3 depth prepass + GI resolve + chunk.wgsl (gate: A/B captures; USER LOOK
   SIGN-OFF) · P4 water/players/ viewmodel/spray/underwater · P5 perf + metrics + bench + web verify · P6 remove the old
   system — DONE at M1 (shadow.rs, shadow.wgsl, core light.rs, mesher light plumbing, cascade VPs, the pinned tests that
-  went with them, LIGHT-DESIGN.md, the flag itself).
+  went with them, their design doc, the flag itself).
