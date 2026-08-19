@@ -32,6 +32,7 @@ pub mod sun;
 pub mod touch;
 pub mod unlock;
 pub mod worldgen;
+pub mod worldjob;
 
 // Root re-exports: only what consumers actually reach through the crate
 // root (everything stays reachable at its module path).
