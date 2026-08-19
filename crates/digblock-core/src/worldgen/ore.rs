@@ -1,34 +1,20 @@
 //! Ore placement (SKILLS-DESIGN §5.3) — **derived, never stored**.
 //!
-//! This module writes nothing. `build_column` returns exactly the bytes it
-//! returned before ore existed, the journal carries no ore cells, and the
-//! worldgen golden hash does not move — which is what lets veins appear
-//! retroactively in worlds that already exist, and why shipping ore stales
-//! nobody's save.
+//! This module writes nothing: `build_column` returns exactly the bytes it
+//! returned before ore existed and the worldgen golden hash does not move,
+//! which is what lets veins appear retroactively in worlds that already
+//! exist. A deposit is a salted position hash over a coarse grid, the
+//! [`crate::decoration::structures_near`] pattern in three dimensions, so
+//! pockets span chunk borders with no pipeline state.
 //!
-//! A deposit is a salted position hash over a coarse grid, judged by pure
-//! per-cell functions — the [`crate::decoration::structures_near`] pattern
-//! in three dimensions. Every chunk within a deposit's reach computes the
-//! identical deposit independently, so pockets span chunk borders with no
-//! pipeline state and no generation-order dependence.
+//! Two consumers, two shapes, pinned to agree: [`ore_at`] answers ONE cell
+//! for the dig path, and [`deposits_near`] gathers a box's worth so the mesh
+//! stamp can test a whole padded shell against a short list.
 //!
-//! Two consumers, two shapes, and they must agree (pinned):
-//!
-//! - [`ore_at`] answers ONE cell. The dig path asks it once per action.
-//! - [`deposits_near`] gathers a box's worth of deposits so a caller can
-//!   test thousands of cells against a short list. The mesh stamp asks it
-//!   once per chunk, because a hash per neighbouring grid cell over a
-//!   whole padded shell is a millisecond of a worker's frame and a list
-//!   walk is nothing.
-//!
-//! **The unedited rule is the anti-dupe, and it is load-bearing.** Ore
-//! manifests only where the cell is still pristine Stone. Without that,
-//! placing crafted Stone back into a spent vein coordinate would turn one
-//! block's Earth into a vein's worth of Metal, and Metal has no other
-//! source. Both sides can answer it: the server from the journal's
-//! per-cell map, the client from the same map streamed to it.
-//! `JournalIndex::record` only ever inserts, so "has this cell ever been
-//! written" is monotone and cannot un-spend a vein.
+//! **The unedited rule is the anti-dupe.** Ore manifests only in pristine
+//! Stone; without it, placing crafted Stone into a spent coordinate would
+//! regrow the vein. `JournalIndex::record` only ever inserts, so "has this
+//! cell ever been written" is monotone and cannot un-spend one.
 
 use crate::block::BlockType;
 

@@ -1,42 +1,20 @@
 //! The MATERIAL axis of SKILLS-DESIGN §7.2's material × shape grid.
 //!
-//! A structural block is a *substance* worked into a *form*: Stone stairs
-//! are Stone in the Stairs shape, a lumber slab is planed timber in the
-//! Slab shape. Before this module the pair was hand-tabled four separate
-//! times — in `unlock::craft`, in `unlock::mine`, in `shapes::craft_recipe`
-//! and in the transmute screen's `FAMILIES` — and the four disagreed: the
-//! wood slab opened at the very first Alchemy level while the wood *block*
-//! waited most of the ladder, and `unlock::craft`'s own doc comment claimed
-//! the `max(shape, material)` rule it did not implement.
+//! A structural block is a *substance* worked into a *form*: Stone stairs are
+//! Stone in the Stairs shape. A block declares its material once (the `mat`
+//! builder in `block.rs`) and four things then DERIVE from the pair rather
+//! than being tabled separately, which is what stopped them disagreeing:
 //!
-//! So a block declares its material once (the `mat` builder in `block.rs`,
-//! read back through [`crate::block::BlockType::material`]) and everything
-//! else derives:
+//! - **Unlock level** = `max(shape, material)` — [`crate::unlock::craft`].
+//! - **Craft cost** — [`crate::alchemy::craft_ideal`].
+//! - **The earned half of the strength wall** — [`crate::unlock::mine`].
+//! - **The transmute tab's families** — one per shape, in material order.
 //!
-//! - **Unlock level** = `max(shape level, material level)` — [`crate::unlock::craft`],
-//!   for the cells the bench is allowed to make at all (§7.5 keeps
-//!   everything the world hands you off it, the felled log and the loose
-//!   ground included). A substance keeps its level and its price either
-//!   way: those are what a shape of it WOULD cost, and authoring one is
-//!   meant to be a block row and a PNG.
-//! - **Craft cost** = the material's whole-cube split, prorated to the shape's
-//!   volume — [`crate::alchemy::craft_ideal`].
-//! - **The earned half of the strength wall** = the material's own Mining
-//!   level, layered over its dig family's — [`crate::unlock::mine`].
-//! - **The transmute tab's families** = one per shape, members in material
-//!   order.
-//!
-//! The essence redesign retired the extraction side of this axis: matter
-//! never becomes essence at the bench any more. What remains structural
-//! here is the split between prices and payouts — [`Material::craft_units`]
-//! is what a substance COSTS and [`Material::node_units`] is what a live
-//! NODE of it pays at a siphon draw, and no material carries both, so
-//! essence cannot be manufactured from essence by construction.
-//!
-//! Functional items — torches, lamps, tools, the bucket charge, the bed —
-//! have NO material. §7.3's standing rule is that matter is priced by
-//! volume and function is priced by hand, so they are gated and costed by
-//! their own small tables in `unlock` and `alchemy`.
+//! [`Material::craft_units`] is what a substance COSTS and
+//! [`Material::node_units`] is what a live node of it PAYS at a draw. No
+//! material carries both, so essence cannot be manufactured from essence by
+//! construction. Functional items have NO material: §7.3 prices function by
+//! hand, in `unlock` and `alchemy`'s own small tables.
 
 use crate::block::{BlockType, Essence};
 

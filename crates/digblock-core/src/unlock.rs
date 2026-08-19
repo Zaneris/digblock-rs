@@ -1,31 +1,22 @@
-//! Every level threshold in the game, and the one question each gate
-//! asks. Nothing else may hold an unlock number.
+//! Every level threshold in the game, and the one question each gate asks.
+//! Nothing else may hold an unlock number, and no caller compares levels
+//! itself.
 //!
-//! Progression used to be spread across the modules that consumed it —
-//! craft and extraction levels in `alchemy`, the strength wall in `skills`,
-//! and each call site re-deriving "may this player do this?" by hand from
-//! two tables and a comparison. Five copies of a comparison is five
-//! chances to add a third gate and miss one. So the tables live here
-//! together, and so does the question:
+//! - **The levels** — [`shape`] and [`material`] (§7.2's two grid axes),
+//!   [`functional`] for the hand-priced items, plus [`mine`] and the two
+//!   reveal axes. Each is the sole authority for its own axis, and the two
+//!   questions players actually ask are DERIVED: [`craft`] is
+//!   `max(shape, material)` and [`pickup`] reads `craft` of the drop.
+//! - **The questions** — [`can_craft`], [`dig_blocked`]. The dig gates are
+//!   asked identically by client prediction, the server's `DigStart`
+//!   backstop, the bot's target filter and the test harness, so all four
+//!   agree by construction rather than by review.
+//! - **What a level opens** — [`opens`], DERIVED from those tables rather
+//!   than restated, so retuning a threshold moves the level-up fanfare and
+//!   the character screen's teasers with it.
 //!
-//! - **The levels** — [`shape`] and [`material`] (SKILLS-DESIGN §7.2's two
-//!   grid axes), [`functional`] for the hand-priced items, plus [`mine`].
-//!   Each is the sole authority for its own axis, and the two questions
-//!   players actually ask are DERIVED from them: [`craft`] is
-//!   `max(shape, material)` and [`pickup`] reads `craft` of the drop. That
-//!   is what stopped the wood slab opening nineteen levels before wood.
-//! - **The questions** — [`can_craft`], [`dig_blocked`]. Callers ask
-//!   these; they do not compare levels themselves. The dig gates in
-//!   particular are asked identically by client prediction, the server's
-//!   `DigStart` backstop, the bot's target filter and the test harness,
-//!   so all four agree by construction rather than by review.
-//! - **What a level opens** — [`opens`], DERIVED from the tables above
-//!   plus alchemy's own yield tables rather than restated as a list, so
-//!   retuning any threshold moves the level-up fanfare and the character
-//!   screen's teasers with it.
-//!
-//! The refusal wording lives here too ([`Kind::message`]): prediction and
-//! the server's verdict speak the same sentence because there is only one.
+//! The refusal wording lives here too ([`Kind::message`]): prediction and the
+//! server's verdict speak the same sentence because there is only one.
 
 use crate::block::{BlockType, ShapeFamily};
 use crate::material::Material;

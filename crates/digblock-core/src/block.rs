@@ -1173,27 +1173,23 @@ impl BlockType {
 	/// Is the bench this block's only source — can no dig in an untouched
 	/// world ever put one in a player's hands?
 	///
-	/// THE question the transmutation catalog is gated on (nothing the
-	/// world hands you may be transmuted) and the one extraction XP is paid
-	/// against (what the bench made pays nothing back). Both in
+	/// THE question the transmutation catalog is gated on: nothing the world
+	/// hands you may be transmuted. The gate itself lives in
 	/// `unlock`/`alchemy`; this is only the predicate.
 	///
-	/// Derived, never listed: a block is bench-only when nothing the world
-	/// PLACES ([`Self::is_crafted_only`] is the inverse claim, pinned
-	/// against worldgen itself) crumbles or drops into it. That gets the
-	/// awkward rows right without anyone remembering them — the bucket
-	/// scoop credits Water through this same path, so water falls out of
-	/// the catalog on its own; a tool is never dug, so it credits nothing
-	/// and stays bench-only; an ore credits itself and is correctly refused
-	/// a recipe.
+	/// Derived, never listed: bench-only means nothing the world PLACES
+	/// crumbles or drops into it. That gets the awkward rows right without
+	/// anyone remembering them — a bucket scoop credits Water through this
+	/// same path so water falls out of the catalog on its own, a tool is
+	/// never dug, and an ore credits itself and is correctly refused a
+	/// recipe.
 	///
-	/// It is also strictly weaker than [`Self::is_crafted_only`], and the
-	/// gap is the whole design: the world is MADE of stone but hands you
-	/// Rubble, so clean stone is the one block the world places and never
-	/// gives.
+	/// Strictly weaker than [`Self::is_crafted_only`], and the gap is the
+	/// whole design: the world is MADE of stone but hands you Rubble, so
+	/// clean stone is the one block the world places and never gives.
 	///
-	/// Memoized like [`Self::from_grid`] — a linear walk of the catalog per
-	/// call, on a question that is a property of the block table.
+	/// Memoized — a linear walk of the catalog per call, on a question that
+	/// is a property of the block table.
 	pub fn is_bench_only(self) -> bool {
 		static BENCH: std::sync::OnceLock<Vec<bool>> = std::sync::OnceLock::new();
 		let bench = BENCH.get_or_init(|| {

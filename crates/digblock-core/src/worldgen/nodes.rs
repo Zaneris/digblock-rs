@@ -1,28 +1,21 @@
 //! The unified NODE layer — every world source of essence behind one
-//! question (the essence redesign: **essence is found, not ground**).
+//! question. **Essence is found, not ground.**
 //!
 //! A node is a derived find: a salted hash or a pure worldgen query says
-//! where one stands, the mesh stamp reveals it at a skill level, the
-//! siphon draws it in place, and the draw leaves the kind's own SPENT
-//! face. Nothing is stored: worldgen still places the host block (Stone,
-//! Wood, Sand), the journal never carries a node cell, and the golden
-//! worldgen hashes do not move — so nodes appear retroactively in worlds
-//! that already exist, exactly as ore always has.
+//! where one stands, the mesh stamp reveals it at a skill level, the siphon
+//! draws it in place, and the draw leaves the kind's own SPENT face. Nothing
+//! is stored — worldgen still places the host block, and the golden hashes do
+//! not move, so nodes appear retroactively in existing worlds.
 //!
-//! Seven live faces, two reveal skills:
+//! Seven live faces, two reveal skills: the four ORE tiers in pristine deep
+//! Stone on MINING ([`crate::unlock::reveal`]); and Leystone, Heartwood and
+//! Springstone on ALCHEMY ([`crate::unlock::alchemy_reveal`]), so Alchemy
+//! owns the surface hunt the way Mining owns the deep one.
 //!
-//! - the four ORE tiers ([`ore`]), in pristine deep Stone, revealed by
-//!   MINING ([`crate::unlock::reveal`]);
-//! - **Leystone**, riding the same deposit stream in the shallow band the
-//!   deep tiers vacate, **Heartwood** in the trunks of worldgen trees, and
-//!   **Springstone** in pristine lake and river beds — all revealed by
-//!   ALCHEMY ([`crate::unlock::alchemy_reveal`]), so Alchemy owns the
-//!   surface hunt the way Mining owns the deep one.
-//!
-//! **The unedited rule is the anti-dupe**, unchanged and load-bearing:
-//! a node manifests only where the cell still holds its pristine host and
-//! has never been written. `JournalIndex::record` only ever inserts, so a
-//! spent node cannot be regrown by placing the host back.
+//! **The unedited rule is the anti-dupe**: a node manifests only where the
+//! cell still holds its pristine host and has never been written.
+//! `JournalIndex::record` only ever inserts, so a spent node cannot be
+//! regrown by placing the host back.
 
 use crate::block::BlockType;
 use crate::worldgen::ore;

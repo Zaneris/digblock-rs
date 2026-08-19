@@ -1,43 +1,23 @@
-//! Surface emitters: turning a revealed vein into area lights
-//! (GI-DESIGN.md R31).
+//! Surface emitters: turning a revealed vein into area lights (R31).
 //!
-//! A torch is a point. It stands in open air, throws light every way at
-//! once, and one light-list entry at its flame is the whole truth of it. A
-//! vein is not a torch. Most of a vein is buried, buried rock must light
-//! nothing, and the part that isn't buried is a FACE — a flat patch of
-//! glowing rock in a wall, lighting the room it opens into and nothing
-//! behind it. That is an area source, and path-traced renderers have
-//! treated emissive geometry that way for as long as they have done next
-//! event estimation: Q2RTX extracts "light polygons" from its emissive
-//! surfaces rather than approximating them with points.
+//! A torch is a point in open air. A vein is not: most of it is buried,
+//! buried rock must light nothing, and the exposed part is a FACE — an area
+//! source, which is how path tracers have treated emissive geometry since
+//! they started doing next event estimation.
 //!
-//! **Why this lives in the mesher**, of all places, and not beside the
-//! rest of the GI in `crate::gi`: everything the job needs is already
-//! here, and nowhere else has all three at once.
+//! **Why this lives in the mesher**: it is the only pass holding all three
+//! inputs at once — the reveal has already run so the padded array holds real
+//! ore ids for exactly the tiers this player has levelled into; exposure is
+//! the question the mesher exists to answer; and the padded shell means a
+//! vein straddling a chunk edge does not go dark down one column.
+//! `crate::gi::classify_chunk` can do none of it, because it reads the raw
+//! store and the store holds Stone where a vein is.
 //!
-//! - The **reveal** has already run ([`super::MeshInput::apply_ore`]), so
-//!   the padded array holds real ore ids — and holds them only for tiers
-//!   this player has levelled into, every other one already reverted to
-//!   stone. "If it has been unlocked" costs nothing.
-//! - **Exposure** is the question the mesher exists to answer. A face that
-//!   gets a quad is a face you can see. "If the player can see it" costs
-//!   nothing either.
-//! - The padded **shell** means a cell on the chunk boundary knows what is
-//!   on the other side, so a vein straddling a chunk edge does not go dark
-//!   down one column.
-//!
-//! `crate::gi::classify_chunk`, which builds the point-light list, can do
-//! none of it: it reads the raw chunk store, and the store holds Stone
-//! where a vein is. Ore is derived and never written, which is the whole
-//! reason veins can appear in worlds that already exist.
-//!
-//! **Merging is not an optimisation here, or not only one.** The resolve's
-//! NEE reservoir is a pass over the whole light list *per pixel*, so a
-//! thirty-cell pocket costing thirty entries is thirty iterations for
-//! every shaded pixel on screen. Greedy-merging the exposed faces into
-//! rectangles collapses a seam in a tunnel wall to a handful, and the
-//! merged rectangle is also the BETTER light: one quad with a cosine at
-//! its own surface, rather than a row of points each with its own hotspot.
+//! **Merging is not only an optimisation.** The resolve's NEE reservoir walks
+//! the whole light list *per pixel*, so a thirty-cell pocket would be thirty
+//! iterations for every shaded pixel. The merged rectangle is also the better
+//! light: one quad with a cosine at its own surface, rather than a row of
+//! points each with its own hotspot.
 
 use crate::block::BlockType;
 use crate::chunk::CHUNK_SIZE;

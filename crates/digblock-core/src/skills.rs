@@ -450,23 +450,20 @@ pub fn depth_xp_permille(y: i32) -> u32 {
 ///
 /// `prev` is the journaled truth about the cell that was replaced (never the
 /// raycast hit), `broken` how many cells the one hold cleared, and `y` the
-/// ANCHOR cell's: a wide pick swing against a vertical face spans several
-/// rows, and the anchor is the one cell both ends provably agree on, since
-/// the server validates the request against its own ray. The whole swing is
-/// scaled once rather than cell by cell — it is one action, and one rounding.
+/// ANCHOR cell's — a wide pick swing spans several rows, and the anchor is
+/// the one cell both ends provably agree on. The whole swing is scaled once
+/// rather than cell by cell: one action, one rounding.
 ///
 /// **Only the aimed cell pays in full**; every other cell the swing took
 /// pays [`PICK_EXTRA_PERMILLE`] of one. A door pair is still ONE block and
 /// never reaches that arm, since `broken` counts blocks rather than cells.
 ///
-/// A field extraction pays §5.4's per-tier figure in BOTH skills instead,
-/// and the depth reward deliberately does not touch it. The ore tiers are
-/// depth-banded already — Aetherock is worth what it is worth *because* it
-/// sits just off bedrock — so scaling them by depth would count the same
-/// axis twice, and §5.3 wants those figures to stay a decision rather than a
-/// consequence. Nothing is lost by leaving them out: an extraction excavates
-/// nothing, and clearing the DepletedStone face it leaves behind is an
-/// ordinary dig that scales like any other.
+/// A field draw pays §5.4's per-kind figure in BOTH skills instead, and the
+/// depth reward deliberately does not touch it: the ore tiers are
+/// depth-banded already, so scaling them by depth would count the same axis
+/// twice and turn §5.3's authored figures into a consequence. Nothing is
+/// lost — a draw excavates nothing, and clearing the spent face it leaves is
+/// an ordinary dig that scales like any other.
 pub fn dig_award(
 	prev: BlockType,
 	extracting: Option<BlockType>,

@@ -440,35 +440,28 @@ fn xz_outside(pos: Vec3, lo: Vec3, hi: Vec3) -> bool {
 }
 
 /// Auto-step: convert a would-be wall contact into a mount — the same
-/// pure-vertical ground contact the stair ramp emits, so the walk keeps
-/// its full horizontal speed and the feet ride up.
+/// pure-vertical ground contact the stair ramp emits, so the walk keeps its
+/// full horizontal speed and the feet ride up. Cube/Boxes cells only; the
+/// Ramp arm negotiates its own lift.
 ///
 /// The lift is capped at the tick's remaining `budget` ([`MOUNT_RATE`]),
-/// which is what turns a step from a one-tick teleport into the same
-/// glide a stair gives: the mount takes several ticks, the capsule is
-/// briefly inside the box's side (`step_mount` is mirrored in
-/// `overlaps_solid` for exactly this window, as the ramp run-out is),
-/// and it always terminates — the feet only ever rise. A spent budget
-/// yields a zero-depth contact rather than the wall, so the box still
-/// doesn't push back mid-mount.
+/// which turns a step from a one-tick teleport into the same glide a stair
+/// gives. The capsule is briefly inside the box's side, which is why
+/// `step_mount` is mirrored in `overlaps_solid`; a spent budget yields a
+/// zero-depth contact rather than the wall, so the box still doesn't push
+/// back mid-mount. It always terminates — the feet only ever rise.
 ///
-/// Cube/Boxes cells only — the Ramp arm negotiates its own lift, and its
-/// slope never asks for more than the budget anyway.
+/// **The vertical-velocity window is what separates a step from a
+/// landing.** Rising is never a mount, and neither is arriving downward
+/// faster than a mount climbs — that is a fall onto the box's edge, and it
+/// keeps the flat-bottomed snap so a landing never sinks into what it lands
+/// on.
 ///
-/// The vertical-velocity window is what separates a step from a landing.
-/// Rising is never a mount (`out_y > 0`, the ramp-gate precedent).
-/// Neither is arriving downward faster than a mount climbs: that is a
-/// fall onto the box's edge, and it keeps the flat-bottomed snap so a
-/// landing never sinks into what it lands on. A walk carries at most one
-/// tick of gravity, far inside the window, and a mount in progress is
-/// re-zeroed by its own ground contact every tick.
-///
-/// This has to claim CORNER contacts that already read as ground, not
-/// just wall-normal ones: partway up, the contact normal on the box's top
-/// edge rounds past `GROUND_NORMAL_Y`, and letting the generic ground
-/// branch have it would snap the rest of the rise in one tick — the very
+/// This must claim CORNER contacts that already read as ground: partway up,
+/// the normal on the box's top edge rounds past `GROUND_NORMAL_Y`, and the
+/// generic ground branch would snap the rest of the rise in one tick — the
 /// pop the budget exists to spread. Genuine top-of-box contacts can't be
-/// caught by mistake: `step_mount` requires the axis to be off the box.
+/// caught by mistake, since `step_mount` requires the axis to be off the box.
 fn step_contact(
 	pos: Vec3,
 	out_y: f32,

@@ -1,28 +1,17 @@
 //! GI-class classification for the RTGI voxel window (GI-DESIGN.md).
 //!
-//! The window is an R8Uint 3D texture, one texel per block, that the
-//! probe rays march. Classification is a pure function of the cell so
-//! every consumer (arrival uploads, edit re-uploads, tests) agrees by
-//! construction. For full cubes the class byte IS the block id (ids fit
-//! u8 with room to spare — pinned below); everything a ray needs per
-//! class — opacity, albedo, emission — lives in the render side's
-//! material LUT, one entry per class, so the window never re-uploads when
-//! a material's look is tuned.
+//! The window is an R8Uint 3D texture, one texel per block, that the probe
+//! rays march. Classification is a pure function of the cell, so every
+//! consumer agrees by construction. For full cubes the class byte IS the
+//! block id; everything a ray needs per class lives in the render side's
+//! material LUT, so the window never re-uploads when a look is tuned.
 //!
-//! Shaped cells get SYNTHETIC classes from [`SHAPE_CLASS_BASE`] up, one
-//! per distinct (block, occlusion geometry) pair, because the v1 rule —
-//! "Shaped blocks rays whole" — is exactly why a thin slab cast a
-//! full-block shadow onto the slab beside it and a torch post shaded
-//! like a pillar. Each synthetic class carries a TWO-BOX COVER of the
-//! shape's collision boxes (in sub-grid units): the first box is
-//! collision box 0 exactly, the second the AABB union of the rest. For
-//! slabs and torches that cover is the exact geometry; a stair's L gains
-//! only its top rear quarter; a door leaf keeps its thinness. The cover
-//! can only ever OVER-block — never under — and the worst case is the
-//! old full cell, so every shape strictly improves. The DDA tests the boxes
-//! against the ray's in-cell span (Laine & Karras' ESVO "contours");
-//! a state whose collision is EMPTY (an open door) classifies as air,
-//! which is what lets light through a doorway.
+//! Shaped cells get SYNTHETIC classes from [`SHAPE_CLASS_BASE`] up, one per
+//! distinct (block, occlusion geometry) pair, each carrying a TWO-BOX COVER
+//! of the shape's collision boxes: box 0 exactly, then the AABB union of the
+//! rest. The cover can only ever OVER-block, never under, and its worst case
+//! is the old full cell. A state whose collision is EMPTY — an open door —
+//! classifies as air, which is what lets light through a doorway.
 
 use std::sync::LazyLock;
 
@@ -52,34 +41,22 @@ pub struct GiChunk {
 	pub emitters: Vec<(u8, u8, u8, u8)>,
 }
 
-/// First class byte the shaped-variant classes occupy. Everything below
-/// is a plain block id (or air); everything from here up indexes
-/// [`shape_classes`]. The two ranges can never collide —
-/// `shape_classes_fit_the_byte` pins both ends.
+/// First class byte the shaped-variant classes occupy. Everything below is
+/// a plain block id (or air); everything from here up indexes
+/// [`shape_classes`]. The window texture is `R8Uint`, so one byte is the
+/// whole budget and this constant is where it is SPLIT.
 ///
-/// The window texture is `R8Uint`, so one byte of classes is the whole
-/// budget and this constant is where it is SPLIT. It sat far higher while
-/// there were only a handful of shaped rows — and SKILLS-DESIGN §7.2's
-/// grid spends the shaped side per MATERIAL (a timber's stairs, slab and
-/// door between them), so the third timber overflowed it. Full cubes need
-/// far less room than that split gave them: it moved down to leave the
-/// shaped side the space the catalog actually grows into. Both halves are
-/// pinned, and the pin reports the headroom rather than merely passing.
-///
-/// The price to know before adding a material: **a dozen-odd classes per
+/// **The price to know before adding a material: a dozen-odd classes per
 /// shaped material** (a cover per stair facing, per slab anchor and
-/// thickness, and per closed door facing) — `shape_classes_fit_the_byte`
-/// prints where the roster currently stands.
+/// thickness, per closed door facing). `shape_classes_fit_the_byte` pins
+/// both ends and prints the remaining headroom rather than merely passing.
 ///
-/// The free slots left are NOT a material's worth of room. The pin holds a
-/// margin back deliberately, so the build fails while there is still space
-/// to think in rather than at the panic — which leaves **less spendable
-/// than one more full material costs**. The next shaped material therefore
-/// has to move the split FIRST, and there is plenty to move: the full-cube
-/// half is only used up to the last block id, so every id between that and
-/// the base sits idle. A NEW shape family is the expensive case, since it
-/// costs its own covers in every material at once — a fence or a pane is
-/// far more than a fourth timber.
+/// The free slots are NOT a material's worth of room — the pin holds a
+/// margin back so the build fails while there is still space to think in.
+/// The next shaped material has to move this split FIRST, and there is
+/// plenty to move: the full-cube half is only used up to the last block id,
+/// so every id between that and the base sits idle. A NEW shape family is
+/// the expensive case, costing its own covers in every material at once.
 pub const SHAPE_CLASS_BASE: u8 = 112;
 
 /// One synthetic class: the block whose material the LUT entry borrows,

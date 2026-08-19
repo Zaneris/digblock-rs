@@ -232,28 +232,22 @@ fn watery(cell: u16) -> bool {
 /// judged from the world as it ACTUALLY is (terrain plus every landed
 /// edit), not from pristine worldgen.
 ///
-/// This is the operator's half of the spawn rules, for a hand-picked
-/// spawn. [`accepts`] can only judge a column whose *pristine* terrain is
-/// already level, which is exactly right for an automatic search over
-/// untouched land and useless for an admin who levelled a hillside or
-/// built a platform. The cells read here are exactly [`lock_region`]'s, so
-/// "valid to set" and "protected by the lock" describe the same box —
-/// which is what makes locking a hand-picked spawn as permanent as
-/// locking a searched one.
+/// The operator's half of the spawn rules. [`accepts`] can only judge a
+/// column whose *pristine* terrain is already level, which is right for an
+/// automatic search and useless for an admin who levelled a hillside. The
+/// cells read here are exactly [`lock_region`]'s, so "valid to set" and
+/// "protected by the lock" describe the same box — which is what makes
+/// locking a hand-picked spawn as permanent as locking a searched one.
 ///
-/// Level ground falls out of the two rules rather than needing its own:
-/// a step up puts a solid cell in the capsule, a step down leaves a
-/// non-solid cell in the floor.
+/// Level ground falls out of the two rules rather than needing its own: a
+/// step up puts a solid cell in the capsule, a step down leaves a non-solid
+/// cell in the floor. `None` from `cell` means not resident, and is a
+/// rejection rather than a pass.
 ///
-/// `cell` answers the world; `None` means the cell cannot be read (not
-/// resident) and is a rejection, not a pass. Callers pick a spot within
-/// a few blocks of a live player, where everything is loaded.
-///
-/// [`SPAWN_FLOOR`] is deliberately NOT applied. That rule exists to stop
-/// the *search* descending into a pit players excavated; an operator
-/// aiming at a specific block has made a choice, and a hall cut into a
-/// mountain is a perfectly good spawn. The water rule is what actually
-/// keeps a hand-picked spawn out of the sea.
+/// [`SPAWN_FLOOR`] is deliberately NOT applied — that rule stops the
+/// *search* descending into an excavated pit, and an operator aiming at a
+/// block has made a choice. The water rule is what keeps a hand-picked
+/// spawn out of the sea.
 pub fn stands_clear(eye: Vec3, cell: &dyn Fn(i32, i32, i32) -> Option<u16>) -> bool {
 	let (x, h, z) = column(eye);
 	for cz in z - CLEAR..=z + CLEAR {

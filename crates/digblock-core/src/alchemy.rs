@@ -1,38 +1,27 @@
-//! The alchemy economy: node-draw yields, transmutation costs, and the
-//! bench pace — every number the server and offline play must agree on
-//! (SKILLS-DESIGN §3–§4, §7, reshaped by the essence redesign). All
-//! integer math, no floats: yields and costs are cross-side constants.
-//! The LEVELS that open each recipe are not here: every threshold in the
-//! game lives in [`crate::unlock`], beside the gates that enforce it.
+//! The alchemy economy: node-draw yields, transmutation costs and the bench
+//! pace — every number the server and offline play must agree on
+//! (SKILLS-DESIGN §3–§4, §7). All integer math, no floats. The LEVELS that
+//! open each recipe are not here: every threshold lives in [`crate::unlock`],
+//! beside the gates that enforce it.
 //!
-//! **Essence is found, not ground.** Bench extraction is gone: matter
-//! never becomes essence at a bench, and the siphon's field draw
-//! ([`field_yield`], over [`crate::worldgen::nodes`]) is the only faucet
-//! the currency has. The invariants that used to police the
-//! extract→craft loop are structural now — there is no extract — and the
-//! ones that remain are pinned by tests here:
+//! Three rules this module is pinned against:
 //!
-//! - **Nothing the world hands you may be transmuted** (§7.5). The
-//!   catalog is what a fresh world does NOT give away, gated on
-//!   [`BlockType::is_bench_only`] — so no recipe competes with a shovel.
-//!   Clean rock passes: the world is made of stone and still hands you
-//!   Rubble.
-//! - **No craft creates essence.** A craft only ever debits the essence
-//!   pool; nothing anywhere credits it but a draw. With the faucet and
-//!   the drain in different modules, "no matter creation" needs no
-//!   per-level proof any more.
-//! - **The essence tool costs no essence, ever.** Every essence is a
-//!   siphon draw, so a siphon priced in essence would deadlock the whole
-//!   currency on the first world where nobody has one — the old
-//!   no-Ferrum-in-the-siphon rule, generalized. Its price (and the
-//!   bucket's, for the same day-one reason) is FEEDSTOCK alone: blocks,
-//!   which a fresh player can go and chop.
+//! - **Nothing the world hands you may be transmuted** (§7.5), gated on
+//!   [`crate::block::BlockType::is_bench_only`] — so no recipe competes with
+//!   a shovel. Clean rock passes: the world is made of stone and still hands
+//!   you Rubble.
+//! - **No craft creates essence.** A craft only ever debits the pool;
+//!   [`field_yield`] is the one thing that credits it, and it lives over in
+//!   [`crate::worldgen::nodes`]. Faucet and drain in different modules is
+//!   what makes "no matter creation" structural rather than per-level.
+//! - **The essence tool costs no essence, ever.** Every essence is a siphon
+//!   draw, so an essence-priced siphon deadlocks the currency on the first
+//!   world where nobody has one. Its price, and the bucket's, is FEEDSTOCK
+//!   alone.
 //!
-//! Costs still derive. A structural block is a MATERIAL in a SHAPE
-//! (SKILLS-DESIGN §7.2, [`crate::material`]), so its price prorates the
-//! material's whole-cube split by the shape's volume. What remains
-//! hand-written is the FUNCTIONAL roster: torches, lamps and tools, which
-//! §7.3 prices by hand precisely because they are not matter.
+//! Structural costs DERIVE from the material × shape grid ([`crate::material`]).
+//! The FUNCTIONAL roster — torches, lamps, tools — is hand-written, because
+//! §7.3 prices function by hand and matter by volume.
 
 use crate::block::{BlockType, Essence};
 use crate::material::cost_split;
@@ -57,34 +46,25 @@ pub fn node_yields(node: BlockType, level: u32) -> Vec<(Essence, u32)> {
 	})
 }
 
-/// What one FIELD draw pays into a player's stocks (SKILLS-DESIGN §5.3,
-/// generalized by the essence redesign) — a NODE drawn out where it
-/// stands, vein or heartwood or spring alike, with no item in between.
+/// What one FIELD draw pays into a player's stocks — a NODE drawn out where
+/// it stands, vein or heartwood or spring alike, with no item in between.
+/// The ONE answer the server's dig credit and the engine's offline arm both
+/// take, so a solo world and a server cannot pay differently.
 ///
-/// The siphon is the economy's one faucet, so this is deliberately the
-/// ordinary [`node_yields`] and not a second table: the Alchemy level
-/// scales a draw the same way everywhere, and the node rows' yields stay
-/// the single statement of what a kind is worth.
+/// Deliberately the ordinary [`node_yields`] and not a second table: the
+/// Alchemy level scales a draw the same way everywhere, and the node rows
+/// stay the single statement of what a kind is worth. Mining's capstone
+/// ([`crate::unlock::ore_mastery`]) MULTIPLIES the whole split rather than
+/// adding a line, which is what keeps "one extra vein's worth" true of a
+/// two-essence kind as well as a one-essence one — surface draws included,
+/// since the capstone is mastery of extraction itself.
 ///
-/// Mining's capstone ([`crate::unlock::ore_mastery`]) multiplies the whole
-/// split rather than adding a line to it, which is what keeps "one extra
-/// vein's worth" true of Aetherock's two essences as well as of the kinds
-/// that pay in one. It multiplies SURFACE draws too, deliberately: the
-/// capstone is mastery of extraction itself, and a second table for where
-/// the extraction happened is exactly the drift this function exists to
-/// prevent.
-///
-/// The one thing a table cannot say is the TRACE, which is why this takes
-/// a cell at all: [`crate::worldgen::ore::traces_aether`] is a chance per
-/// draw, and the finest an essence split can be cut is a whole unit. It
-/// rides the capstone multiplier with everything else, because a trace is
-/// part of what that vein was worth and the capstone is worded as another
-/// vein's worth. Being derived from the cell rather than rolled is what
-/// lets it live in here at all — a random line would make this function
-/// two different answers on two machines.
-///
-/// The ONE answer the server's dig credit and the engine's offline arm
-/// both take, so a solo world and a server cannot pay differently.
+/// The one thing a table cannot say is the TRACE, which is why this takes a
+/// cell at all: [`crate::worldgen::ore::traces_aether`] is a chance per
+/// draw, and the finest an essence split can be cut is a whole unit. Being
+/// DERIVED from the cell rather than rolled is what lets it live here — a
+/// random line would make this function two different answers on two
+/// machines.
 pub fn field_yield(
 	node: BlockType,
 	alchemy: u32,
@@ -869,41 +849,28 @@ mod tests {
 
 	/// **Every priced item is buildable by a player who has just earned
 	/// it.** For each essence its recipe names, some NODE that player can
-	/// already see and draw pays that essence; for each feedstock line,
-	/// the block is one the world hands out below the item's own level.
+	/// already see and draw pays that essence; for each feedstock line, the
+	/// block is one the world hands out below the item's own level. A node
+	/// is the only faucet, so an essence with no reachable node is a price
+	/// nobody can pay.
 	///
-	/// This is the pin that was missing when the Resonant Pick shipped:
-	/// the twins guaranteed a price had a level, and nothing asked whether
-	/// the price was PAYABLE at it. With extraction gone the question is
-	/// sharper — a node is the only faucet, so an essence with no
-	/// reachable node is a price nobody can pay.
+	/// Three rules, each load-bearing:
 	///
-	/// What counts as reachable, and why each rule is load-bearing:
-	///
-	/// - **The node's reveal must be met on its own axis** at the item's
-	///   level, read as a player levelling both skills together — a find
-	///   you cannot SEE is not a source.
-	///   Mining walls on the host are NOT checked here, and cannot be: the
-	///   wall is a MINING level and this is an ALCHEMY one, so the sweep
-	///   would have to invent a relationship the game does not promise —
-	///   heartwood reveals at the level everyone starts at and sits behind
-	///   the timber wall, which would fail every day-one recipe for a
-	///   sequencing fact rather than a deadlock. What that coupling
-	///   actually costs is pinned instead, by name and in one place, by
+	/// - **The node's reveal is checked on its own axis.** Mining walls on
+	///   the host are NOT checked and cannot be — the wall is a MINING level
+	///   and this is an ALCHEMY one, so the sweep would have to invent a
+	///   relationship the game does not promise. What that coupling actually
+	///   costs is pinned by name in
 	///   [`essence_faucets_open_where_they_always_did`].
-	/// - **Only what a kind pays RELIABLY.** The Duskstone trace is a
-	///   chance, and `node_yields` deliberately excludes it — a price
-	///   payable when the hash smiles is not payable.
-	/// - **Feedstock must be world-handed and ungated by Alchemy**: a
-	///   craft-only feedstock below its own recipe's level would nest the
-	///   same deadlock one table deeper.
+	/// - **Only what a kind pays RELIABLY.** `node_yields` excludes the
+	///   Duskstone trace: a price payable when the hash smiles is not
+	///   payable.
+	/// - **Feedstock must be world-handed and ungated by Alchemy**, or the
+	///   same deadlock nests one table deeper.
 	///
-	/// Swept over everything with a RECIPE, not just the hand-priced
-	/// roster. It used to `continue` on anything `unlock::functional` did
-	/// not answer for, which was every structural block on the grid — and
-	/// the redesign gave each of those an essence catalyst that only a
-	/// node draw can pay, so the half the pin skipped became the half that
-	/// most needed it.
+	/// Swept over everything with a RECIPE, not just the hand-priced roster
+	/// — the grid's structural blocks each carry an essence catalyst only a
+	/// draw can pay.
 	#[test]
 	fn every_price_has_a_source_at_its_own_level() {
 		for &item in &BlockType::ALL {

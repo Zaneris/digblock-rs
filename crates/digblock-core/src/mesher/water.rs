@@ -81,35 +81,25 @@ fn surface_amount(input: &MeshInput, x: i32, y: i32, z: i32, b: BlockType) -> Op
 	}
 }
 
-/// Water surface drop code at horizontal lattice corner (lx, lz) for
-/// water cells at height y: the corner touches up to four cells.
-/// Priority: if any touching column has water at y + 1, or holds a
-/// covered water cell (water at y with a non-air block above — it
-/// renders as a full cube), the surface is pinned full (no drop at all)
-/// — a submerged neighbor, water hanging over a step this corner must
-/// rise to meet, or a ceiling-pressed cell to knit against. Else, if any
-/// touching cell is open air with water directly below, the surface
-/// continues a step down and this corner plunges the whole block (the
-/// maximum drop), so cascades render as connected ramps instead of
-/// stacked cliff slivers — but a resting SOURCE touching the corner
-/// outranks that, because a full block has to keep looking full exactly
-/// where it spills outward (see `a_spilling_source_keeps_its_full_height`).
-/// Else the drop is the whole-block code minus the STRONGEST touching
-/// amount.
+/// Water surface drop code at horizontal lattice corner (lx, lz) for water
+/// cells at height y: the corner touches up to four cells. In priority
+/// order — water at y + 1 or a covered water cell in any touching column
+/// pins the surface full; else an open-air cell with water directly below
+/// plunges the whole block, so cascades render as connected ramps rather
+/// than stacked slivers, UNLESS a resting SOURCE touches the corner, since
+/// a full block must keep looking full exactly where it spills outward
+/// (`a_spilling_source_keeps_its_full_height`); else the whole-block code
+/// minus the STRONGEST touching amount.
 ///
 /// Strongest, not the mean: the sim halves the amount on every spread, so
-/// averaging pulled every corner down toward the thinner water beyond
-/// it — a source flanked by its own thinning flows averaged well under
-/// full and sank its own top face deep into the block, and the Flow4
-/// beside it then ran from that sunken lip clear past its own level
-/// instead of stopping at it. Taking the max makes each cell's top face
-/// span exactly from its uphill neighbour's level down to its own, so the
-/// rendered surface reproduces the level ladder the sim actually
-/// computed. It also subsumes what used to be a separate source pin: a
-/// source contributes the highest amount there is.
+/// averaging drags every corner toward the thinner water beyond it. The max
+/// makes each cell's top face span exactly from its uphill neighbour's
+/// level down to its own, reproducing the ladder the sim computed, and it
+/// subsumes the old separate source pin.
 ///
-/// Adjacent cells sharing the corner agree, so surfaces knit without
-/// cracks — including across chunk borders via the padded shell.
+/// A pure function of the CORNER, never of the cell emitting the face —
+/// which is what lets adjacent cells agree and knit without cracks,
+/// including across chunk borders via the padded shell.
 fn corner_drop(input: &MeshInput, lx: i32, y: i32, lz: i32) -> u32 {
 	let mut best = 0u8;
 	let mut plunge = false;

@@ -801,29 +801,22 @@ impl Pipeline {
 		// frames anyway).
 		//
 		// The deadline is deliberately NOT extended by what the jobs spent.
-		// It used to be, because a column-gen job could outlast the whole
-		// stream budget on its own and leave the drain nothing — but paying
-		// for that by handing the drain a fresh full budget made the stages
-		// ADD UP (jobs, drain and uploads each spending a budget of their
-		// own, plus overshoot), which is the miss the budget exists to
-		// avoid. Job slicing bounds the overrun at the source now, and each
-		// stage keeps a minimum-progress floor (the drain always pulls one
-		// result, the upload loop always does `UPLOAD_MIN`), so a blown
-		// deadline delays work without ever starving it.
+		// Extending it makes the stages ADD UP — jobs, drain and uploads
+		// each spending a budget of their own, plus overshoot — which is
+		// the miss the budget exists to avoid. Job slicing bounds the
+		// overrun at the source, and each stage keeps a minimum-progress
+		// floor (the drain always pulls one result, the upload loop always
+		// does `UPLOAD_MIN`), so a blown deadline delays work without ever
+		// starving it.
 		//
 		// An external pool's results arrived as their own event-loop tasks
 		// while this thread was elsewhere; pull them into the queue the
 		// drain reads first, so budgeting, staleness and `has_pending` stay
-		// identical for every executor.
-		//
-		// Under the deadline, because the pull is not free: every `poll`
-		// decodes, and a `Generated` column is a whole stack of chunks of
-		// bounds-checked u16 reads, one fresh allocation each, on the one
-		// thread this whole change exists to protect. Always at least one,
-		// the same minimum-progress floor every other stage keeps — a frame
-		// already
-		// over budget must still absorb something, or the pool's inbox only
-		// grows.
+		// identical for every executor. Under the deadline, because the
+		// pull is not free — every `poll` decodes, and a `Generated` column
+		// is a whole stack of chunks of bounds-checked u16 reads with a
+		// fresh allocation each. Always at least one, or the pool's inbox
+		// only grows.
 		let mut lost: Vec<JobKey> = Vec::new();
 		// The pull can stop with replies still in the pool, which
 		// `has_pending` — which sees only the decoded queue — cannot know.
@@ -1088,33 +1081,28 @@ impl Pipeline {
 								self.mesh_heap.push((Reverse(d), (pos.x, pos.y, pos.z)));
 							}
 						}
-						// The Rust equivalent of Java's cross-border re-dirty:
-						// every Ready neighbor re-meshes from fresh snapshots.
-						// Diagonals only shade existing faces via the padded
-						// shell, so they're skipped for air chunks (no shell
-						// content) — without this the buried bulk of the
-						// world remeshes 26-ways on every generation.
+						// Cross-border re-dirty: every Ready neighbor
+						// re-meshes from fresh snapshots. Diagonals only
+						// shade existing faces via the padded shell, so
+						// they're skipped for air chunks — without this the
+						// buried bulk of the world remeshes 26-ways on every
+						// generation.
 						//
 						// The empty-mesh and queued-remesh skips below apply
-						// to FACES too, not just diagonals. Both are sound
-						// specifically because this is the ARRIVAL path: the
-						// shell here goes from all-air (a missing neighbour
-						// reads as zero) to this chunk's real cells, so
-						// coverage only ever INCREASES. A face is emitted
-						// where a solid cell meets a non-covering neighbour,
-						// so more coverage can only cull faces, never create
-						// them — a neighbour that already meshed to nothing
-						// stays nothing. (This does NOT hold for edits, where
+						// to FACES too, and are sound specifically because
+						// this is the ARRIVAL path: the shell goes from
+						// all-air to this chunk's real cells, so coverage
+						// only ever INCREASES, and more coverage can only
+						// cull faces. This does NOT hold for edits, where
 						// digging removes coverage; `set_cell` has its own
-						// unconditional bump.)
+						// unconditional bump.
 						//
-						// "Meshed to nothing" is narrower than it looks, and
-						// `empty_mesh_gen` is where that narrowness lives: a
+						// "Meshed to nothing" is narrower than it looks: a
 						// missing FACE neighbour also suppresses its whole
 						// border, so a chunk empty for THAT reason is not
 						// empty once the neighbour lands, and the slot
-						// declines to record it. Read its doc before widening
-						// this skip.
+						// declines to record it. Read `empty_mesh_gen`'s doc
+						// before widening this skip.
 						for oy in -1..=1 {
 							for oz in -1..=1i32 {
 								for ox in -1..=1i32 {
@@ -1420,44 +1408,31 @@ impl Pipeline {
 		input
 	}
 
-	/// The node reveal's per-job parcel (SKILLS-DESIGN §5.3, generalized),
-	/// or `None` when this chunk cannot show a node at all.
+	/// The node reveal's per-job parcel, or `None` when this chunk cannot
+	/// show a node at all. The edited-cell list is gathered HERE because
+	/// this is the only place holding the map — the worker has a snapshot
+	/// of block ids and nothing else.
 	///
-	/// The edited-cell list is gathered HERE because this is the only
-	/// place that has the map — the worker holds a snapshot of block ids
-	/// and nothing else.
+	/// Runs on the MAIN thread once per mesh job, out of the streaming
+	/// budget, which is why both guards exist:
 	///
-	/// This runs on the MAIN thread, once per mesh job, so its cost is
-	/// spent out of the same budget streaming is, and both of its guards
-	/// exist for that reason:
-	///
-	/// - No node source reaching the box means nothing to reveal and
-	///   nothing to suppress, so there is no stamp at all. The deposit
+	/// - No node source reaching the box means no stamp at all. The deposit
 	///   half asks worldgen (the same box `apply_nodes` walks, so the two
-	///   agree by construction); the surface halves ask the freshly built
-	///   SNAPSHOT for host blocks, because a chunk with no Wood holds no
-	///   trunk and a chunk with no Sand holds no bed — a scan of the box
-	///   is fixed-cost where the worldgen queries are not. The verdict
-	///   rides the stamp as [`crate::mesher::NodeHosts`], because the
-	///   worker needs the same answer and re-deriving it there is a
-	///   second walk of the same array.
-	/// - For the rest, the edited-cell walk is whichever of the two is
-	///   smaller. The map walk is O(every edit ever made in the
-	///   overlapping columns), and `EditOverlay` has no eviction;
-	///   multiplayer keeps one too, fed by every broadcast edit including
-	///   the server's fluid churn. So in exactly the places players
-	///   build, a column holds tens of thousands of entries and the box
-	///   holds one padded snapshot — and an F7 or a reveal-threshold
-	///   `remesh_all` pays it for every resident chunk at once. Probing
-	///   the box instead is a fixed cost with the same answer.
+	///   agree by construction); the surface halves scan the freshly built
+	///   SNAPSHOT for host blocks, a fixed cost where the worldgen queries
+	///   are not. The verdict rides the stamp as
+	///   [`crate::mesher::NodeHosts`] rather than being re-derived in the
+	///   worker.
+	/// - Otherwise the edited-cell walk takes whichever side is smaller.
+	///   `EditOverlay` has no eviction and multiplayer keeps one too, fed by
+	///   every broadcast edit including fluid churn — so exactly where
+	///   players build, a column holds tens of thousands of entries, and an
+	///   F7 or a reveal-threshold `remesh_all` pays it for every resident
+	///   chunk at once.
 	///
-	/// What is NOT a guard, and was written as one: the reveal LEVELS.
-	/// They pruned the whole walk while every node was earned, and the
-	/// redesign ended that — the first surface node reveals at the level
-	/// everyone starts at, so the level test is true for every player
-	/// alive and can only ever narrow WHICH hosts are worth recognizing,
-	/// never skip the scan. The host scan is the gate; a box of sky or
-	/// water still leaves before the expensive halves.
+	/// The reveal LEVELS are NOT a guard, though they were written as one:
+	/// the first surface node reveals at the level everyone starts at, so
+	/// the test is true for every player alive. The host scan is the gate.
 	fn node_stamp(
 		&self,
 		pos: ChunkPos,
