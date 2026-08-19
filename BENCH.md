@@ -1,5 +1,35 @@
 # Bench baseline & hotspot analysis
 
+## 2026-08-19 — the structure refactor moves nothing
+
+`pre-cleanup` (68ffdc9) against `a170bfe`: the comment sweep, the impl splits, the `Engine` field grouping, the
+`digblock-render` -> `digblock-client` rename and the scheduled-sweep seam. Every commit in the range is a code move or
+a new module nothing registers with, so any movement here would be a real finding.
+
+Release, M2 Max, built from a detached worktree at the tag so both binaries see the same deps. `just bench`'s default
+flight and seed, two runs per build, alternating. The Phase 0 capture kept from before the range is NOT usable and was
+discarded: one row at t = 4.4 s with `refresh_ms 0.00`, which is the occluded-window stall the recipe warns about.
+
+**Display-paced** (the default), values from the t = 15 s row:
+
+| build  | fps          | avg_ms     | p95_ms     | p99_ms       | busy_ms    |
+| ------ | ------------ | ---------- | ---------- | ------------ | ---------- |
+| before | 120.1, 119.6 | 8.33, 8.36 | 9.43, 9.48 | 11.68, 11.89 | 3.64, 3.74 |
+| after  | 119.8, 119.8 | 8.35, 8.35 | 9.41, 9.83 | 11.65, 11.72 | 3.74, 3.74 |
+
+**Uncapped** (`--no-vsync`), whole-run summaries, because a 120 Hz cap cannot show a CPU regression under 8.3 ms:
+
+| build  | fps          | avg        | p95          | p99          |
+| ------ | ------------ | ---------- | ------------ | ------------ |
+| before | 145.9, 162.2 | 6.84, 6.12 | 10.76, 10.94 | 17.03, 16.61 |
+| after  | 167.1, 146.2 | 5.93, 6.83 | 9.60, 11.61  | 17.54, 16.99 |
+
+Every delta is inside the same build's run-to-run spread, and the two builds straddle each other in both directions.
+Uncapped is the noisy pass on this machine (+/-30 fps within one build), so the load-bearing evidence is the paced one
+and the CPU phases the refactor actually touched — `upd_ms`, `mnt_ms`, `gi_ms`, `upl_ms` are flat to three decimals
+across all four runs. `resident` is 20704 in every run and the job counts agree to 0.3%, so it is the same streaming
+regime and not merely the same frame time.
+
 ## 2026-08-17 — a ray per light on players and confetti (R34): free where it matters, unpriceable where it might not be
 
 The dither fix (GI-DESIGN R34) trades the resolve's one resampled shadow ray for one at each of the brightest
