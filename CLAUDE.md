@@ -532,8 +532,10 @@ Two colour targets are mandatory: water samples the scene it blends over, so its
 Persistence is a launcher-injected `SettingsStore`; precedence is CLI/query > saved > platform default, and
 non-interactive runs skip load AND save so captures stay hermetic. `Settings` is serde-free; each launcher owns a
 mirror. Named local worlds live in `crates/digblock-persist`: the journal (shared `VERSION` — a worldgen retune stales
-server volumes and client saves together) plus the `WorldStore` trait. Web uses localStorage **not IndexedDB**, because
-`flush` must run inside synchronous `on_suspend`. Client saves are **refused, never archived** on a version mismatch.
+server volumes and client saves together; the one exception is a provably ADDITIVE decoration change, which rides a
+`PROTOCOL_VERSION` bump with saves kept — `landmark_fallback_only_adds` is the shape of the proof) plus the `WorldStore`
+trait. Web uses localStorage **not IndexedDB**, because `flush` must run inside synchronous `on_suspend`. Client saves
+are **refused, never archived** on a version mismatch.
 
 `Pipeline`'s `EditOverlay` re-applies cells before air classification, so edits survive hard eviction even in unsaved
 worlds — **in multiplayer too**, where it mirrors the server's journal. That half is not a nicety: a re-entered column

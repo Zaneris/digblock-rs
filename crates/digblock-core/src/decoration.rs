@@ -35,6 +35,9 @@ pub const MAX_STRUCTURE_HEIGHT: i32 = 10; // trunk + canopy cap + headroom
 /// apart that meeting one feels like an event. The canopy's horizontal
 /// reach around the trunk stays within STRUCTURE_APRON.
 const LANDMARK_CELL: i32 = 64;
+/// Fallback-scan stride: the probe grid a rolled cell is searched on
+/// when its first position fails validation.
+const LANDMARK_STRIDE: i32 = 8;
 const LANDMARK_PCT: u64 = 25; // of 1000
 pub const MAX_LANDMARK_HEIGHT: i32 = 13; // trunk + cap + headroom
 /// Boulder / bush per-cell candidate percentages.
@@ -256,16 +259,48 @@ impl Structure {
 	}
 }
 
-/// The landmark candidate (if any) of one coarse-grid cell: all four
-/// trunk columns must be tree-valid grass within one block of height,
-/// uncarved, with headroom.
+/// The landmark candidate (if any) of one coarse-grid cell.
+///
+/// Two-stage placement, and the ORDER is load-bearing: the first
+/// attempt is the original single-roll position, verbatim, so every
+/// landmark that stood before the fallback existed still stands at its
+/// exact spot — which is what lets the fallback ride a protocol bump
+/// with saves kept (`landmark_fallback_only_adds` is the proof). The
+/// scan runs only where that attempt fails, so it can only ADD trees.
 fn cell_landmark(cell_x: i32, cell_z: i32, seed: f64) -> Option<Landmark> {
 	let h = hash(cell_x, cell_z, seed, LANDMARK_SALT);
 	if h % 1000 >= LANDMARK_PCT {
 		return None;
 	}
-	let x = cell_x * LANDMARK_CELL + ((h >> 8) % LANDMARK_CELL as u64) as i32;
-	let z = cell_z * LANDMARK_CELL + ((h >> 16) % LANDMARK_CELL as u64) as i32;
+	let x0 = cell_x * LANDMARK_CELL + ((h >> 8) % LANDMARK_CELL as u64) as i32;
+	let z0 = cell_z * LANDMARK_CELL + ((h >> 16) % LANDMARK_CELL as u64) as i32;
+	if let Some(l) = landmark_at(x0, z0, h, seed) {
+		return Some(l);
+	}
+	// Half the single rolls died to water or bare ground the rest of
+	// the cell didn't share, so the cell gets a full look on a
+	// `LANDMARK_STRIDE` grid before it is given up on. The hash jitter
+	// keeps cells off one global lattice.
+	let jx = ((h >> 8) % LANDMARK_STRIDE as u64) as i32;
+	let jz = ((h >> 16) % LANDMARK_STRIDE as u64) as i32;
+	for sx in 0..LANDMARK_CELL / LANDMARK_STRIDE {
+		for sz in 0..LANDMARK_CELL / LANDMARK_STRIDE {
+			let x = cell_x * LANDMARK_CELL + jx + sx * LANDMARK_STRIDE;
+			let z = cell_z * LANDMARK_CELL + jz + sz * LANDMARK_STRIDE;
+			if let Some(l) = landmark_at(x, z, h, seed) {
+				return Some(l);
+			}
+		}
+	}
+	None
+}
+
+/// One position validated: all four trunk columns must be tree-valid
+/// grass within one block of height, uncarved, with headroom. `h` is
+/// the CELL's roll — trunk height and salt ride it, not the position,
+/// so a fallback tree is the same tree the first position would have
+/// grown.
+fn landmark_at(x: i32, z: i32, h: u64, seed: f64) -> Option<Landmark> {
 	let mut hmin = i32::MAX;
 	let mut hmax = i32::MIN;
 	for (dx, dz) in [(0, 0), (1, 0), (0, 1), (1, 1)] {

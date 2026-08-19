@@ -306,3 +306,77 @@ fn conifer_and_acacia_shapes() {
 		}
 	}
 }
+
+/// The landmark fallback may only ADD trees. Every anchor the original
+/// single-roll placement produced (captured 2026-08-19 over the block
+/// range ±768, eight seeds) must still hold a landmark at its exact
+/// spot — existing worlds keep every tree they had, which is the whole
+/// argument for shipping this on a protocol bump with saves kept. If a
+/// placement edit moves one of these, that edit is a save-staling
+/// worldgen retune and needs the journal `VERSION` bump this change
+/// deliberately avoided.
+#[test]
+fn landmark_fallback_only_adds() {
+	const KEPT: &[(f64, i32, i32)] = &[
+		(42.0, -223, -609),
+		(42.0, 129, 552),
+		(42.0, 151, -504),
+		(42.0, 302, 623),
+		(1.0, 79, -271),
+		(1.0, 295, -547),
+		(1.0, 422, 480),
+		(7.5, -601, -407),
+		(7.5, -217, -541),
+		(7.5, 13, -579),
+		(7.5, 144, -591),
+		(7.5, 394, -232),
+		(7.5, 625, -767),
+		(123.0, -703, 708),
+		(123.0, -528, 486),
+		(123.0, -501, -43),
+		(123.0, -366, 423),
+		(123.0, -296, 197),
+		(123.0, -283, 748),
+		(123.0, 612, -412),
+		(999.25, -149, 718),
+		(999.25, -25, 632),
+		(2024.0, 546, -560),
+		(2024.0, 555, -354),
+		(5.0, -22, 169),
+		(5.0, 611, -130),
+		(77.0, -208, -453),
+		(77.0, 449, 631),
+		(77.0, 607, 566),
+		(77.0, 734, 566),
+	];
+	for &(seed, x, z) in KEPT {
+		let t = trunk_at(x, z, seed)
+			.unwrap_or_else(|| panic!("({x},{z}) at seed {seed} lost its landmark"));
+		assert!(
+			t.landmark,
+			"({x},{z}) at seed {seed} is no longer a landmark"
+		);
+		assert_eq!(t.anchor, (x, z), "the landmark at ({x},{z}) moved");
+	}
+
+	// And the fallback must actually add: the same region holds strictly
+	// more landmarks than the single roll placed there. Two seeds keep
+	// the sweep cheap; the mechanism is seed-blind.
+	for (seed, single_roll_count) in [(42.0, 4usize), (999.25, 2)] {
+		let mut anchors = std::collections::HashSet::new();
+		for x in -768..768 {
+			for z in -768..768 {
+				if let Some(t) = trunk_at(x, z, seed)
+					&& t.landmark
+				{
+					anchors.insert(t.anchor);
+				}
+			}
+		}
+		assert!(
+			anchors.len() > single_roll_count,
+			"seed {seed}: fallback added nothing ({} landmarks)",
+			anchors.len()
+		);
+	}
+}
