@@ -100,7 +100,7 @@ blocks! {
 	WoodSlab = 25 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LOG, tex::LOG_TOP, tex::LOG_TOP)), ShapeKind::Slab), 20, DigFamily::Wood), Material::Wood),
 	StoneSlab = 26 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::STONE, tex::STONE, tex::STONE)), ShapeKind::Slab), 30, DigFamily::Rock), Material::Stone),
 	/// What mined rock actually is (SKILLS-DESIGN §7.1): cracked, fully
-	/// placeable, and the mass Earth feedstock at the bench. Placed, it
+	/// placeable, and the mass Terra feedstock at the bench. Placed, it
 	/// reads as rough cobble — the free rustic building material. Drops
 	/// itself, so it round-trips.
 	Rubble = 27 => mat(dig(props(RenderClass::Opaque, true, tex::RUBBLE, tex::RUBBLE, tex::RUBBLE), 90, DigFamily::Rock), Material::Rubble),
@@ -199,8 +199,8 @@ blocks! {
 	/// and leaves DepletedStone; without it a revealed vein refuses the
 	/// hold entirely, so nobody stone-digs a seam away by accident.
 	///
-	/// Its price carries no Metal, ever: ore needs the siphon and Metal
-	/// needs ore, so a Metal-priced siphon deadlocks the economy on the
+	/// Its price carries no Ferrum, ever: ore needs the siphon and Ferrum
+	/// needs ore, so a Ferrum-priced siphon deadlocks the economy on the
 	/// first world where nobody has one.
 	///
 	/// It CASTS, and only just: the barrel holds drawn essence and the
@@ -265,7 +265,7 @@ blocks! {
 	/// frame. `every_shape_of_a_material_agrees_on_light` is the pin.
 	Crystal = 70 => mat(glows(dig(crafted(props(RenderClass::Opaque, true, tex::CRYSTAL, tex::CRYSTAL, tex::CRYSTAL)), 120, DigFamily::Rock)), Material::Crystal),
 	CrystalSlab = 71 => mat(glows(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::CRYSTAL, tex::CRYSTAL, tex::CRYSTAL)), ShapeKind::Slab), 40, DigFamily::Rock)), Material::Crystal),
-	/// §7.3's lamps: the first Metal sink outside tools, and the
+	/// §7.3's lamps: the first Ferrum sink outside tools, and the
 	/// standing Aether one. Both are FUNCTIONAL — a lamp is a thing, not
 	/// a form — so both are hand-priced, and both cast real light as well
 	/// as wearing the ink.
@@ -479,36 +479,52 @@ impl ShapeFamily {
 	}
 }
 
-/// Alchemy essence families — what blocks extract INTO at the bench
-/// (SKILLS-DESIGN §3). `repr` indices are a wire and persistence format
-/// (flagged inventory pairs `SUB_WIRE_FLAG | index`), APPEND-ONLY.
+/// The five reagents — what a siphon draws a NODE into (SKILLS-DESIGN
+/// §14). `repr` indices are a wire and persistence format (flagged
+/// inventory pairs `SUB_WIRE_FLAG | index`), APPEND-ONLY.
+///
+/// **The indices are frozen; the names are not, and were not.** The
+/// redesign gave these their reagent identities and the source kept
+/// saying Flora/Earth/Aqua/Metal for a release, so the code and every
+/// screen spoke different words for one currency. Renaming the variants
+/// moves no byte anywhere: the discriminants below are explicit, nothing
+/// serializes an `Essence` by name (no serde, no `FromStr`), and the one
+/// place a name is parsed — `/give` — reads [`Essence::name`]. The
+/// one-time balance reset is NOT what made this safe, and it could not
+/// have: Aether survives it and must still decode at its own index, and
+/// these ride a live client/server wire that no reset touches.
 ///
 /// The first two indices deliberately keep the retired `Material`
-/// enum's numbering — Flora sits where sub-wood (0) lived and Earth
+/// enum's numbering — Vitae sits where sub-wood (0) lived and Terra
 /// where sub-stone (1) did — so every record and save written under the
-/// old two-family economy decodes 1:1 into the right essence with NO
+/// old two-family economy decodes 1:1 into the right reagent with NO
 /// migration code anywhere. The design doc's decode-time migration is
 /// this numbering.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Essence {
-	/// Living matter: wood, grass tops, leaves. Legacy sub-wood's slot.
-	Flora = 0,
-	/// Mineral bulk: stone, sand, dirt. Legacy sub-stone's slot.
-	Earth = 1,
-	Aqua = 2,
-	/// Refined ore (bench-processed) — arrives with the ore milestone.
-	Metal = 3,
-	/// The rare one: cannot be transmuted into, ever.
+	/// Living matter, drawn from the heartwood in a trunk. Legacy
+	/// sub-wood's slot.
+	Vitae = 0,
+	/// Mineral bulk, drawn from leystone in pristine deep stone. Legacy
+	/// sub-stone's slot.
+	Terra = 1,
+	/// Water, drawn from springstone in a fresh bed — under the surface
+	/// of a lake or a river, which is what makes reaching it the trip.
+	Unda = 2,
+	/// Metal, drawn from the ore tiers.
+	Ferrum = 3,
+	/// The rare one: cannot be transmuted into, ever, and the only
+	/// balance the redesign's one-time reset lets a player keep.
 	Aether = 4,
 }
 
 impl Essence {
 	pub const COUNT: usize = 5;
 	pub const ALL: [Essence; Self::COUNT] = [
-		Essence::Flora,
-		Essence::Earth,
-		Essence::Aqua,
-		Essence::Metal,
+		Essence::Vitae,
+		Essence::Terra,
+		Essence::Unda,
+		Essence::Ferrum,
 		Essence::Aether,
 	];
 
@@ -521,18 +537,17 @@ impl Essence {
 	/// The screens' all-caps label — and, via `/give`'s parser, the name
 	/// an operator types, so the command and the UI cannot drift.
 	///
-	/// The essence redesign renamed the DISPLAY identities (the variant
-	/// names and their wire indices are frozen forever): the currencies
-	/// read as reagents now that each is a FIND — Vitae in heartwood,
-	/// Terra in leystone, Unda in springstone, Ferrum in the ore tiers —
-	/// rather than as categories of stuff a bench dissolved. Aether keeps
-	/// the name that was always right.
+	/// Still a function rather than a `Debug` of the variant, now that the
+	/// two agree: the label is the ALL-CAPS form, and letting a screen
+	/// derive it from the identifier would make the identifier a display
+	/// format — which is the coupling that stopped these being renamed for
+	/// a release in the first place.
 	pub fn name(self) -> &'static str {
 		match self {
-			Essence::Flora => "VITAE",
-			Essence::Earth => "TERRA",
-			Essence::Aqua => "UNDA",
-			Essence::Metal => "FERRUM",
+			Essence::Vitae => "VITAE",
+			Essence::Terra => "TERRA",
+			Essence::Unda => "UNDA",
+			Essence::Ferrum => "FERRUM",
 			Essence::Aether => "AETHER",
 		}
 	}

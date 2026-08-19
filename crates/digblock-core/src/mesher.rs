@@ -66,17 +66,42 @@ pub struct NodeStamp {
 	/// World position of the padded array's low corner — the shell cell,
 	/// not the chunk's own origin.
 	pub origin: (i32, i32, i32),
-	/// The looker's Mining level — the ore tiers' reveal axis. Two
-	/// players standing in the same cave mesh the same chunk differently,
-	/// which is the feature.
-	pub mining: u32,
-	/// The looker's Alchemy level — the surface nodes' reveal axis
-	/// (leystone, heartwood, springstone).
-	pub alchemy: u32,
+	/// The looker's two reveal levels — Mining for the ore tiers, Alchemy
+	/// for the surface nodes. Two players standing in the same cave mesh
+	/// the same chunk differently, which is the feature.
+	pub levels: crate::worldgen::nodes::Levels,
+	/// Which host families this box was found to hold, decided on the
+	/// main thread while the snapshot was being assembled.
+	///
+	/// Carried rather than re-derived because the answer is already in
+	/// hand: `Pipeline::node_stamp` has to walk the ids to know whether a
+	/// stamp is worth making at all, so asking again in the worker is a
+	/// second full scan of the same array for a question already
+	/// answered. It is also the ONLY gate that prunes anything — the
+	/// reveal levels cannot, now that the first surface node reveals at
+	/// the level everyone starts at.
+	pub hosts: NodeHosts,
 	/// Padded indices of cells this world has ever written, SORTED — the
 	/// anti-dupe's edit gate. Almost always empty, and bounded by the
 	/// edits inside one padded box even in a heavily built area.
 	pub edited: Vec<u16>,
+}
+
+/// Which of the node layer's three HOST families a padded box holds: only
+/// a Stone cell can carry a deposit, only Wood a heart, only Sand a
+/// spring. Every false is a whole pass [`MeshInput::apply_nodes`] skips.
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+pub struct NodeHosts {
+	pub deposits: bool,
+	pub heartwood: bool,
+	pub springs: bool,
+}
+
+impl NodeHosts {
+	/// Nothing to stamp: the caller should make no stamp at all.
+	pub fn is_empty(self) -> bool {
+		!self.deposits && !self.heartwood && !self.springs
+	}
 }
 
 /// Padded flat index over the shell-inclusive coordinate range — same
@@ -199,23 +224,26 @@ impl MeshInput {
 		let stone = BlockType::Stone as u16;
 		let inside = |v: i32, base: i32| (v - base).clamp(0, span);
 		let idx = |x: i32, y: i32, z: i32| ((y * PADDED as i32 + z) * PADDED as i32 + x) as usize;
-		let hidden = |b: BlockType| {
-			crate::unlock::reveal(b).is_some_and(|need| stamp.mining < need)
-				|| crate::unlock::alchemy_reveal(b).is_some_and(|need| stamp.alchemy < need)
-		};
+		// ONE reveal predicate, shared with the dig path — see
+		// `nodes::reveal_met`, which is the authority precisely so a
+		// second spelling here cannot answer differently about a block in
+		// neither table. Pass two below reverts a claim on this answer,
+		// and a claim left standing that the dig path calls plain stone is
+		// the worst outcome this whole system has.
+		let hidden = |b: BlockType| !nodes::reveal_met(b, stamp.levels);
 		// ---- the deposit stream (Stone hosts: the ore tiers + leystone).
 		//
 		// Runs deposit-major, not cell-major: a chunk sits under a few
 		// dozen deposits and holds thousands of padded cells, so walking
 		// the blobs is orders of magnitude less work than asking every
-		// cell. The lowest ORE reveal still early-outs the whole walk for
-		// a player who has reached no reveal on either axis; leystone's
-		// own reveal is low enough that this is mostly the fresh-account
-		// case.
-		let any_deposit_visible = stamp.mining >= ore::lowest_reveal()
-			|| crate::unlock::alchemy_reveal(BlockType::Leystone)
-				.is_some_and(|need| stamp.alchemy >= need);
-		if any_deposit_visible && oy <= ore::MAX_DEPOSIT_Y + ore::MAX_RADIUS {
+		// cell. The lowest reveal across the whole TIERS table still
+		// early-outs the walk for a player who has reached none of them on
+		// either axis; the surface tier's own reveal is low enough that
+		// this is mostly the fresh-account case.
+		let any_deposit_visible = stamp.levels.mining >= ore::lowest_reveal()
+			|| stamp.levels.alchemy >= ore::lowest_alchemy_reveal();
+		if stamp.hosts.deposits && any_deposit_visible && oy <= ore::MAX_DEPOSIT_Y + ore::MAX_RADIUS
+		{
 			// Pass one: every deposit CLAIMS its cells, revealed or not, in
 			// the same grid order `ore::ore_at` walks — so the first deposit
 			// to reach a shared cell wins on both sides. A claim that turns
@@ -263,7 +291,7 @@ impl MeshInput {
 		// a few hundred memo hits — and only for columns that hold Wood at
 		// all, which prunes everything but forest.
 		let wood = BlockType::Wood as u16;
-		if !hidden(BlockType::Heartwood) {
+		if stamp.hosts.heartwood && !hidden(BlockType::Heartwood) {
 			for z in 0..=span {
 				for x in 0..=span {
 					if !(0..=span).any(|y| self.blocks[idx(x, y, z)] == wood) {
@@ -285,8 +313,15 @@ impl MeshInput {
 				}
 			}
 		}
-		// ---- springstone (Sand hosts). Cell-major over the Sand cells,
-		// asking `springstone_bed` and nothing else.
+		// ---- springstone (Sand hosts). Column-major, exactly like the
+		// heartwood pass above it: a bed is a property of the COLUMN, so
+		// one `springstone_bed` answers for the whole of it and the only
+		// question left is whether the y it names is in this box.
+		//
+		// Cell-major is what this was, and it asked `springstone_bed` once
+		// per SAND CELL for an answer keyed on (x, z) alone — so a beach
+		// chunk re-ran the classification's field evaluations for every
+		// cell of every column it had already classified.
 		//
 		// It used to pre-filter on the cell ABOVE being water — cheaper
 		// than the rate hash, and true of every bed worldgen makes. But
@@ -299,18 +334,26 @@ impl MeshInput {
 		// own five field evaluations and prunes nearly everything, which
 		// is what makes asking the real question affordable here.
 		let sand = BlockType::Sand as u16;
-		if !hidden(BlockType::Springstone) {
-			for y in 0..=span {
-				for z in 0..=span {
-					for x in 0..=span {
-						let i = idx(x, y, z);
-						if self.blocks[i] != sand || stamp.edited.binary_search(&(i as u16)).is_ok()
-						{
-							continue;
-						}
-						if nodes::springstone_bed(ox + x, oz + z, stamp.seed) == Some(oy + y) {
-							self.blocks[i] = BlockType::Springstone as u16;
-						}
+		if stamp.hosts.springs && !hidden(BlockType::Springstone) {
+			for z in 0..=span {
+				for x in 0..=span {
+					// The host prefilter first, so an unsanded column
+					// never reaches worldgen at all — the same shape the
+					// heartwood pass uses, and cheap array reads either
+					// way.
+					if !(0..=span).any(|y| self.blocks[idx(x, y, z)] == sand) {
+						continue;
+					}
+					let Some(bed) = nodes::springstone_bed(ox + x, oz + z, stamp.seed) else {
+						continue;
+					};
+					let y = bed - oy;
+					if !(0..=span).contains(&y) {
+						continue;
+					}
+					let i = idx(x, y, z);
+					if self.blocks[i] == sand && stamp.edited.binary_search(&(i as u16)).is_err() {
+						self.blocks[i] = BlockType::Springstone as u16;
 					}
 				}
 			}
@@ -687,6 +730,16 @@ mod tests {
 		d
 	}
 
+	/// The host mask `Pipeline::node_stamp` would hand a padded box filled
+	/// with one block — the tests stand in for the main thread's scan.
+	fn hosts_of(host: B) -> NodeHosts {
+		NodeHosts {
+			deposits: host == B::Stone,
+			heartwood: host == B::Wood,
+			springs: host == B::Sand,
+		}
+	}
+
 	/// Every neighbor missing — the old ALL_MISSING fixture.
 	fn isolated(d: &ChunkData) -> MeshInput {
 		MeshInput::build(d, |_, _, _| Src::Missing)
@@ -718,10 +771,15 @@ mod tests {
 		let max = crate::skills::MAX_LEVEL;
 		// Every host a node can manifest in, each filling a whole box.
 		let hosts = [B::Stone, B::Wood, B::Sand];
-		// Did the sweep actually STAMP a surface node anywhere? An
+		// Which hosts the sweep actually STAMPED something in. An
 		// agreement test over boxes that hold none is green for the wrong
 		// reason, which is what let a Sand-pass divergence live here.
-		let mut seen_surface = false;
+		//
+		// Per host, and that is the whole point: it was one bool OR-ed
+		// across all three, so the springstone box satisfied it alone and
+		// the Wood pass — which stamped nothing anywhere in the sweep —
+		// was covered by a guard written to prove it was covered.
+		let mut stamped_host = std::collections::HashSet::new();
 		// Boxes straddling the bands' edges, both reveal axes stepped —
 		// mixed tiers, edited cells, and the leystone band's seam with the
 		// deep tiers all in one sweep.
@@ -744,6 +802,15 @@ mod tests {
 			// exactly how the snapshot prefilter survived this test.
 			((8, 146, -400), max, max, vec![]),
 			((8, 146, -400), max, 11, vec![]),
+			// And one holding a real HEARTWOOD trunk, for the same
+			// reason and found the same way. Without it the Wood pass
+			// stamped nothing anywhere in this sweep, so every case
+			// agreed trivially at "neither side sees a node" and the
+			// pass was untested by the test that claims to cover it.
+			// The second entry is the day-one reveal: heartwood is
+			// visible at the level everyone starts at.
+			((-481, 127, -481), max, max, vec![]),
+			((-481, 127, -481), 1, 1, vec![]),
 			// Below every reveal on both axes nothing may be stamped.
 			((-24, 1, -4), 9, 1, vec![]),
 		] {
@@ -754,14 +821,14 @@ mod tests {
 					nodes: Some(NodeStamp {
 						seed,
 						origin,
-						mining,
-						alchemy,
+						levels: Levels { mining, alchemy },
+						hosts: hosts_of(host),
 						edited: edited.clone(),
 					}),
 				};
 				input.apply_nodes();
-				if host != B::Stone {
-					seen_surface |= input.blocks.iter().any(|&c| c != host as u16);
+				if input.blocks.iter().any(|&c| c != host as u16) {
+					stamped_host.insert(host as u16);
 				}
 				let levels = Levels { mining, alchemy };
 				for ly in 0..=span {
@@ -782,11 +849,13 @@ mod tests {
 				}
 			}
 		}
-		assert!(
-			seen_surface,
-			"the sweep stamped no surface node — the Wood and Sand passes \
-			 are not being exercised, so this test proves nothing about them"
-		);
+		for host in hosts {
+			assert!(
+				stamped_host.contains(&(host as u16)),
+				"the sweep stamped nothing in {host:?} — that pass is not \
+				 being exercised, so this test proves nothing about it"
+			);
+		}
 	}
 
 	/// The stamp only ever touches PRISTINE stone: air stays air, a spent
@@ -804,7 +873,7 @@ mod tests {
 	/// stone for every visitor below the tier.
 	#[test]
 	fn the_reveal_stamp_leaves_everything_else_alone() {
-		use crate::worldgen::ore;
+		use crate::worldgen::{nodes::Levels, ore};
 		let seed = 42.0;
 		let origin = (-24, 1, -4);
 		let others = [
@@ -830,8 +899,11 @@ mod tests {
 				nodes: Some(NodeStamp {
 					seed,
 					origin,
-					mining,
-					alchemy: crate::skills::MAX_LEVEL,
+					levels: Levels {
+						mining,
+						alchemy: crate::skills::MAX_LEVEL,
+					},
+					hosts: hosts_of(B::Stone),
 					edited: Vec::new(),
 				}),
 			};

@@ -26,7 +26,7 @@
 use std::sync::Arc;
 
 use crate::chunk::{AIR_CHUNK, ChunkData, ChunkPos};
-use crate::mesher::{MeshData, MeshInput, NodeStamp, PADDED_VOLUME};
+use crate::mesher::{MeshData, MeshInput, NodeHosts, NodeStamp, PADDED_VOLUME};
 use crate::pipeline::{Job, JobResult, MeshOutput};
 
 const TAG_GENERATE: u8 = 0;
@@ -133,10 +133,10 @@ impl Job {
 		match self {
 			Job::Generate { .. } => 17,
 			// The node stamp is a flag byte when absent, and otherwise
-			// seed + origin + both levels + count + two bytes an edited
-			// cell.
+			// seed + origin + both levels + the host mask + count + two
+			// bytes an edited cell.
 			Job::Mesh { input, .. } => {
-				let nodes = input.nodes.as_ref().map_or(1, |o| 33 + o.edited.len() * 2);
+				let nodes = input.nodes.as_ref().map_or(1, |o| 34 + o.edited.len() * 2);
 				26 + nodes + PADDED_VOLUME * 2
 			}
 		}
@@ -180,8 +180,17 @@ impl Job {
 						out.extend_from_slice(&o.origin.0.to_le_bytes());
 						out.extend_from_slice(&o.origin.1.to_le_bytes());
 						out.extend_from_slice(&o.origin.2.to_le_bytes());
-						out.extend_from_slice(&o.mining.to_le_bytes());
-						out.extend_from_slice(&o.alchemy.to_le_bytes());
+						out.extend_from_slice(&o.levels.mining.to_le_bytes());
+						out.extend_from_slice(&o.levels.alchemy.to_le_bytes());
+						// Which hosts the main thread found in the box, one
+						// bit each — the only thing that prunes a pass, so
+						// it has to cross with the levels rather than being
+						// asked again over the same array in the worker.
+						out.push(
+							u8::from(o.hosts.deposits)
+								| u8::from(o.hosts.heartwood) << 1
+								| u8::from(o.hosts.springs) << 2,
+						);
 						// The edit gate. Bounded by the edits inside one
 						// padded snapshot, so a u32 count is never the limit, but
 						// dropping it would let the anti-dupe re-reveal a
@@ -217,8 +226,16 @@ impl Job {
 					1 => {
 						let seed = r.f64()?;
 						let origin = (r.i32()?, r.i32()?, r.i32()?);
-						let mining = r.u32()?;
-						let alchemy = r.u32()?;
+						let levels = crate::worldgen::nodes::Levels {
+							mining: r.u32()?,
+							alchemy: r.u32()?,
+						};
+						let mask = r.u8()?;
+						let hosts = NodeHosts {
+							deposits: mask & 1 != 0,
+							heartwood: mask & 2 != 0,
+							springs: mask & 4 != 0,
+						};
 						let n = r.u32()? as usize;
 						let mut edited = Vec::with_capacity(n.min(PADDED_VOLUME));
 						for _ in 0..n {
@@ -227,8 +244,8 @@ impl Job {
 						Some(NodeStamp {
 							seed,
 							origin,
-							mining,
-							alchemy,
+							levels,
+							hosts,
 							edited,
 						})
 					}
@@ -405,8 +422,17 @@ mod tests {
 				nodes: Some(NodeStamp {
 					seed: -8123.5,
 					origin: (-32, 64, 4096),
-					mining: 47,
-					alchemy: 12,
+					levels: crate::worldgen::nodes::Levels {
+						mining: 47,
+						alchemy: 12,
+					},
+					// A mixed mask, so a bit dropped or shifted in the
+					// codec cannot pass as the value beside it.
+					hosts: NodeHosts {
+						deposits: true,
+						heartwood: false,
+						springs: true,
+					},
 					edited: vec![3, 17, 2044, 5831],
 				}),
 				..*input
@@ -423,9 +449,20 @@ mod tests {
 		assert_eq!(nodes.seed, -8123.5);
 		assert_eq!(nodes.origin, (-32, 64, 4096));
 		assert_eq!(
-			(nodes.mining, nodes.alchemy),
+			(nodes.levels.mining, nodes.levels.alchemy),
 			(47, 12),
 			"two lookers mesh the same chunk differently, on either axis"
+		);
+		assert_eq!(
+			nodes.hosts,
+			NodeHosts {
+				deposits: true,
+				heartwood: false,
+				springs: true,
+			},
+			"the host mask is the only thing that prunes a pass — a chunk \
+			 that arrives claiming hosts it has not got pays every one of \
+			 them for nothing"
 		);
 		assert_eq!(
 			nodes.edited,

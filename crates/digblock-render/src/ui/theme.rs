@@ -135,13 +135,17 @@ pub fn fit_scale(scale: f32, budget: f32, needed: impl Fn(f32) -> f32) -> f32 {
 /// where the slider stops. It is still a ladder: the whole style steps
 /// together and the glyph never lands on a fraction.
 ///
-/// Half a rung lower again since the inventory grid grew its seventh row
-/// (the node redesign's spent faces pushed the ownable roster past six):
-/// the smallest window at the largest interface scale needs one more
-/// step before the page clears the hotbar. The real fix that comment has
-/// always promised is a scrolling grid, and this floor is the ladder
-/// buying time until someone builds it.
-pub const FIT_FLOOR: f32 = 0.375;
+/// **This is as low as the ladder can usefully go**, and that is
+/// arithmetic rather than taste: [`scale::glyph_px`] clamps at a whole
+/// readable pixel size which this rung already sits on, so a rung below
+/// it takes a quarter off every box while the TEXT stays exactly where it
+/// was — boxes shrinking around fixed glyphs, and text-derived widths
+/// (`text_row_w`) frozen while the panel keeps narrowing. It went half a
+/// rung lower for one release when the inventory grid grew its seventh
+/// row; what a page that still does not fit needs is fewer ROWS, not
+/// smaller boxes around the same letters, and `InvScreen` reflows for
+/// that reason.
+pub const FIT_FLOOR: f32 = 0.5;
 
 #[cfg(test)]
 mod tests {

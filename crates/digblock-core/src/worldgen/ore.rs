@@ -313,6 +313,27 @@ pub fn lowest_reveal() -> u32 {
 		.expect("four tiers")
 }
 
+/// The same question on the other axis: the lowest ALCHEMY level at which
+/// any tier in the deposit stream is visible. Its twin above walks
+/// [`ORES`] because Mining's tiers are exactly that list; this one walks
+/// [`TIERS`], because the stream also carries surface nodes that [`ORES`]
+/// deliberately excludes.
+///
+/// Derived rather than naming the one tier that qualifies today. Both
+/// callers used to hardcode it, so a second Alchemy-revealed tier would
+/// have been stamped by nobody while the dig path revealed it anyway —
+/// a find you can see and cannot extract, from a one-word table edit.
+///
+/// [`u32::MAX`] when no tier answers to Alchemy at all, which reads
+/// correctly at every call site: no level reaches it.
+pub fn lowest_alchemy_reveal() -> u32 {
+	TIERS
+		.iter()
+		.filter_map(|&(b, ..)| crate::unlock::alchemy_reveal(b))
+		.min()
+		.unwrap_or(u32::MAX)
+}
+
 /// The nearest deposit within the sense's own reach
 /// ([`crate::unlock::prospect_range`], which widens with the Mining
 /// level) whose tier this miner cannot yet SEE — the prospector's sense
@@ -640,6 +661,39 @@ mod tests {
 			|mining, alchemy| revealed(stone, (x, y, z), seed, Levels { mining, alchemy }, false);
 		assert_eq!(at(crate::skills::MAX_LEVEL, need - 1), None, "leystone");
 		assert_eq!(at(1, need), Some(BlockType::Leystone), "leystone");
+	}
+
+	/// **Every tier in the stream is reachable by the gate that decides
+	/// whether the stamp runs at all.** A player standing at exactly a
+	/// tier's reveal level, and nothing else, must get past
+	/// [`lowest_reveal`] / [`lowest_alchemy_reveal`] — or the mesh stamp
+	/// skips the whole deposit pass while `nodes::revealed` reveals the
+	/// tier anyway, which is a find you can see and cannot extract.
+	///
+	/// Both gates used to name Leystone by hand, in two files, because
+	/// [`ORES`] is the Mining roster and [`TIERS`] is the stream. A second
+	/// Alchemy-revealed tier would have been stamped by nobody, and the
+	/// only symptom is rock that looks ordinary and refuses every hold.
+	#[test]
+	fn the_stamps_gate_admits_every_tier_at_its_own_reveal() {
+		for &(tier, ..) in &TIERS {
+			let (mining, alchemy) = (
+				crate::unlock::reveal(tier),
+				crate::unlock::alchemy_reveal(tier),
+			);
+			assert!(
+				mining.is_some() != alchemy.is_some(),
+				"{tier:?} must answer to exactly one reveal skill"
+			);
+			// Level 1 on the axis this tier does NOT use: the gate has to
+			// open on the tier's own axis alone.
+			let opens = mining.is_some_and(|need| need >= lowest_reveal())
+				|| alchemy.is_some_and(|need| need >= lowest_alchemy_reveal());
+			assert!(
+				opens,
+				"{tier:?} reveals at a level the stamp's own gate refuses"
+			);
+		}
 	}
 
 	/// The prospector's sense hears only what it CANNOT see: a vein

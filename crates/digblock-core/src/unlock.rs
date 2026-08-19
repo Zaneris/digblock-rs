@@ -82,7 +82,7 @@ pub fn material(m: Material) -> Option<u32> {
 		M::Sandstone | M::Snow | M::Grass | M::Mud | M::Glass => 21,
 		M::RedLumber => 27,
 		M::PolishedStone | M::SandstoneBrick => 30,
-		// Scarce by construction: Metal comes only from ore.
+		// Scarce by construction: Ferrum comes only from ore.
 		M::Metal => 33,
 		M::Crystal => 40,
 		M::Rubble
@@ -122,14 +122,14 @@ pub fn functional(b: BlockType) -> Option<u32> {
 		// first craft beat rather than a level-up.
 		BlockType::Bucket => 1,
 		// First light, pre-ore on purpose (§7.3) — and past the leystone
-		// reveal, since its price names Earth and Earth is a leystone draw
+		// reveal, since its price names Terra and Terra is a leystone draw
 		// now.
 		BlockType::Torch => 10,
 		// THE essence tool (the redesign made it the skill's identity):
 		// every essence in the game is a siphon draw, so the siphon sits
 		// at the level everyone starts at, gated by its feedstock price
 		// alone — "make your siphon" is the game's first craft beat. Its
-		// price may never name an essence, the no-Metal deadlock rule
+		// price may never name an essence, the no-Ferrum deadlock rule
 		// generalized to the whole currency.
 		BlockType::EssenceSiphon => 1,
 		// Furniture: the first things you make because you want them
@@ -137,14 +137,14 @@ pub fn functional(b: BlockType) -> Option<u32> {
 		// timber set that supplies them.
 		BlockType::Chair => 14,
 		BlockType::Table => 14,
-		// The bed waits for the Aqua economy it costs, which is the whole
+		// The bed waits for the Unda economy it costs, which is the whole
 		// reason its price crosses families.
 		BlockType::Bed => 24,
 		// The pick: crafted here, usable at the near-matching MINING level
-		// (`pick_cells`) — two skills, one item, and the reason Metal is
+		// (`pick_cells`) — two skills, one item, and the reason Ferrum is
 		// worth mining at all.
 		BlockType::ResonantPick => 36,
-		// The lamps: the first Metal sink outside tools, and the standing
+		// The lamps: the first Ferrum sink outside tools, and the standing
 		// Aether one — a repeatable per-lamp sink is what keeps Aetherock
 		// worth mining late, where the pick and the sigil are both
 		// one-offs.
@@ -233,10 +233,10 @@ pub fn alchemy_reveal(b: BlockType) -> Option<u32> {
 		// beat it feeds is the siphon, whose feedstock-only price is what
 		// actually gates the first draw.
 		BlockType::Heartwood => 1,
-		// The Earth node — early, but past the first heartwood draws, so
+		// The Terra node — early, but past the first heartwood draws, so
 		// the surface ladder has an actual first reveal event.
 		BlockType::Leystone => 5,
-		// The Aqua node, under water on purpose: reaching it is the trip.
+		// The Unda node, under water on purpose: reaching it is the trip.
 		BlockType::Springstone => 12,
 		_ => return None,
 	})

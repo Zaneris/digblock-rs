@@ -24,7 +24,7 @@
 //! - **The essence tool costs no essence, ever.** Every essence is a
 //!   siphon draw, so a siphon priced in essence would deadlock the whole
 //!   currency on the first world where nobody has one — the old
-//!   no-Metal-in-the-siphon rule, generalized. Its price (and the
+//!   no-Ferrum-in-the-siphon rule, generalized. Its price (and the
 //!   bucket's, for the same day-one reason) is FEEDSTOCK alone: blocks,
 //!   which a fresh player can go and chop.
 //!
@@ -154,23 +154,23 @@ pub fn functional_ideal(b: BlockType) -> Option<&'static [(Essence, u32)]> {
 		// empty splits stay in this table because the twin pin reads it:
 		// a level and a price are one decision.
 		B::Bucket | B::EssenceSiphon => &[],
-		B::Torch => &[(E::Flora, 2), (E::Earth, 2)],
-		// The game's biggest sink, and the only thing that makes Metal a
+		B::Torch => &[(E::Vitae, 2), (E::Terra, 2)],
+		// The game's biggest sink, and the only thing that makes Ferrum a
 		// goal rather than a number. The Aether line is what
 		// keeps Aetherock worth reaching for before the lamps arrive.
-		B::ResonantPick => &[(E::Metal, 240), (E::Earth, 60), (E::Aether, 12)],
-		B::Lantern => &[(E::Metal, 8), (E::Earth, 6)],
-		B::Aetherlamp => &[(E::Metal, 12), (E::Aether, 3)],
+		B::ResonantPick => &[(E::Ferrum, 240), (E::Terra, 60), (E::Aether, 12)],
+		B::Lantern => &[(E::Ferrum, 8), (E::Terra, 6)],
+		B::Aetherlamp => &[(E::Ferrum, 12), (E::Aether, 3)],
 		B::MastersSigil => &[(E::Aether, 99)],
 		// Furniture is a timber feedstock and a living catalyst — chosen,
 		// not measured: a chair is mostly air and still costs a chair.
-		B::Chair => &[(E::Flora, 2)],
-		B::Table => &[(E::Flora, 2)],
+		B::Chair => &[(E::Vitae, 2)],
+		B::Table => &[(E::Vitae, 2)],
 		// The bed is the catalog's first genuinely cross-family price:
-		// a timber frame AND the bedding on it. Aqua is the essence with
+		// a timber frame AND the bedding on it. Unda is the reagent with
 		// the fewest sources — the springstone node is the whole of it —
 		// which is what makes diving for one worth doing.
-		B::Bed => &[(E::Flora, 4), (E::Aqua, 6)],
+		B::Bed => &[(E::Vitae, 4), (E::Unda, 6)],
 		_ => return None,
 	})
 }
@@ -181,7 +181,7 @@ pub fn functional_ideal(b: BlockType) -> Option<&'static [(Essence, u32)]> {
 ///
 /// - **The siphon may never cost essence.** Every essence in the game is
 ///   a siphon draw now, so an essence-priced siphon deadlocks the whole
-///   currency — the old no-Metal rule generalized, and pinned
+///   currency — the old no-Ferrum rule generalized, and pinned
 ///   (`the_essence_tool_costs_no_essence`).
 /// - **The bucket is the same deadlock one step out**: it sits at the
 ///   level everyone starts at, before the first draw, so its price has
@@ -334,9 +334,9 @@ pub fn craft_worth(item: BlockType) -> u32 {
 /// A craft used to be instant, and it was the last place in the economy
 /// where XP arrived in a click: the transmute tab's CTRL multiplier paid a
 /// hundred crafts' worth in one frame. Pacing it is not a nerf to the
-/// award (crafting still pays what it always paid) — it is what makes the
-/// award take the time the work takes. The catalog's biggest price is
-/// also its longest hold, which is the reading a forge should have.
+/// award — it is what makes the award take the time the work takes. The
+/// catalog's biggest price is also its longest hold, which is the reading
+/// a forge should have.
 pub fn craft_pace_ticks(item: BlockType, level: u32) -> u32 {
 	pace_ticks(craft_worth(item), level)
 }
@@ -618,22 +618,22 @@ mod tests {
 		);
 		// block, feedstock, catalyst, batch.
 		let cases: &[Row] = &[
-			(B::WoodStairs, &[(B::Wood, 1)], &[(E::Flora, 3)], 1),
-			(B::StoneStairs, &[(B::Rubble, 1)], &[(E::Earth, 3)], 1),
-			(B::LumberDoor, &[(B::Wood, 1)], &[(E::Flora, 3)], 2),
-			(B::WoodSlab, &[(B::Wood, 1)], &[(E::Flora, 3)], 3),
-			(B::StoneSlab, &[(B::Rubble, 1)], &[(E::Earth, 3)], 3),
-			(B::Lumber, &[(B::Wood, 1)], &[(E::Flora, 3)], 1),
-			(B::Stone, &[(B::Rubble, 1)], &[(E::Earth, 3)], 1),
-			(B::Sandstone, &[(B::Sand, 1)], &[(E::Earth, 3)], 1),
-			(B::Glass, &[(B::Sand, 1)], &[(E::Earth, 3)], 1),
-			(B::StoneDoor, &[(B::Rubble, 1)], &[(E::Earth, 3)], 2),
-			(B::DarkLumber, &[(B::Wood, 1)], &[(E::Flora, 3)], 1),
-			(B::RedLumberStairs, &[(B::Wood, 1)], &[(E::Flora, 3)], 1),
+			(B::WoodStairs, &[(B::Wood, 1)], &[(E::Vitae, 3)], 1),
+			(B::StoneStairs, &[(B::Rubble, 1)], &[(E::Terra, 3)], 1),
+			(B::LumberDoor, &[(B::Wood, 1)], &[(E::Vitae, 3)], 2),
+			(B::WoodSlab, &[(B::Wood, 1)], &[(E::Vitae, 3)], 3),
+			(B::StoneSlab, &[(B::Rubble, 1)], &[(E::Terra, 3)], 3),
+			(B::Lumber, &[(B::Wood, 1)], &[(E::Vitae, 3)], 1),
+			(B::Stone, &[(B::Rubble, 1)], &[(E::Terra, 3)], 1),
+			(B::Sandstone, &[(B::Sand, 1)], &[(E::Terra, 3)], 1),
+			(B::Glass, &[(B::Sand, 1)], &[(E::Terra, 3)], 1),
+			(B::StoneDoor, &[(B::Rubble, 1)], &[(E::Terra, 3)], 2),
+			(B::DarkLumber, &[(B::Wood, 1)], &[(E::Vitae, 3)], 1),
+			(B::RedLumberStairs, &[(B::Wood, 1)], &[(E::Vitae, 3)], 1),
 			// The essence-only substances: no feedstock, the volume rule.
-			(B::Metal, &[], &[(E::Metal, 27)], 1),
-			(B::MetalSlab, &[], &[(E::Metal, 9)], 1),
-			(B::Crystal, &[], &[(E::Aether, 18), (E::Metal, 9)], 1),
+			(B::Metal, &[], &[(E::Ferrum, 27)], 1),
+			(B::MetalSlab, &[], &[(E::Ferrum, 9)], 1),
+			(B::Crystal, &[], &[(E::Aether, 18), (E::Ferrum, 9)], 1),
 			// And the vessels, feedstock alone.
 			(B::Bucket, &[(B::Wood, 6)], &[], 1),
 			(B::EssenceSiphon, &[(B::Wood, 8)], &[], 1),
@@ -641,7 +641,7 @@ mod tests {
 			(
 				B::Torch,
 				&[(B::Wood, 1)],
-				&[(E::Flora, 2), (E::Earth, 2)],
+				&[(E::Vitae, 2), (E::Terra, 2)],
 				1,
 			),
 		];
@@ -882,24 +882,35 @@ mod tests {
 	///
 	/// - **The node's reveal must be met on its own axis** at the item's
 	///   level, read as a player levelling both skills together — a find
-	///   you cannot SEE is not a source. Mining walls on the host are NOT
-	///   checked: soil is ungated, so Mining is self-serve by digging, and
-	///   an item's Alchemy level says nothing about how much rock its
-	///   owner has broken.
+	///   you cannot SEE is not a source.
+	///   Mining walls on the host are NOT checked here, and cannot be: the
+	///   wall is a MINING level and this is an ALCHEMY one, so the sweep
+	///   would have to invent a relationship the game does not promise —
+	///   heartwood reveals at the level everyone starts at and sits behind
+	///   the timber wall, which would fail every day-one recipe for a
+	///   sequencing fact rather than a deadlock. What that coupling
+	///   actually costs is pinned instead, by name and in one place, by
+	///   [`essence_faucets_open_where_they_always_did`].
 	/// - **Only what a kind pays RELIABLY.** The Duskstone trace is a
 	///   chance, and `node_yields` deliberately excludes it — a price
 	///   payable when the hash smiles is not payable.
 	/// - **Feedstock must be world-handed and ungated by Alchemy**: a
 	///   craft-only feedstock below its own recipe's level would nest the
 	///   same deadlock one table deeper.
+	///
+	/// Swept over everything with a RECIPE, not just the hand-priced
+	/// roster. It used to `continue` on anything `unlock::functional` did
+	/// not answer for, which was every structural block on the grid — and
+	/// the redesign gave each of those an essence catalyst that only a
+	/// node draw can pay, so the half the pin skipped became the half that
+	/// most needed it.
 	#[test]
-	fn every_functional_price_has_a_source_at_its_own_level() {
+	fn every_price_has_a_source_at_its_own_level() {
 		for &item in &BlockType::ALL {
-			let Some(level) = crate::unlock::functional(item) else {
+			let (Some(level), Some(price)) = (crate::unlock::craft(item), craft_ideal(item)) else {
 				continue;
 			};
-			let price = functional_ideal(item).expect("the twin pin guarantees one");
-			for &(essence, _) in price {
+			for &(essence, _) in &price {
 				let source = crate::worldgen::nodes::NODES.iter().copied().find(|&n| {
 					if crate::unlock::reveal(n).is_some_and(|r| r > level)
 						|| crate::unlock::alchemy_reveal(n).is_some_and(|r| r > level)
@@ -924,5 +935,59 @@ mod tests {
 				);
 			}
 		}
+	}
+
+	/// **Where each essence's faucet actually opens** — the first level at
+	/// which a player can both SEE a node paying it and legally swing at
+	/// the node's host.
+	///
+	/// This is the cross-skill coupling `every_price_has_a_source_at_its_own_level`
+	/// deliberately does not assert, held as a golden instead of a rule
+	/// because it is a CONSEQUENCE of three tables that answer to two
+	/// different skills: the reveal, the host's strength wall
+	/// (`unlock::mine`, keyed on the dig family) and the yield split. None
+	/// of them knows about the others, so nothing stops a retune of one
+	/// pushing an essence out of reach of the recipes priced in it — and
+	/// the symptom is not a failure anywhere, just a catalog whose early
+	/// rows quietly cannot be bought.
+	///
+	/// Terra is the one to watch and the reason this exists. Its only
+	/// source is the node that manifests in STONE, so it is gated by the
+	/// ROCK wall however low its own reveal goes — a fact invisible in
+	/// every table that sets it.
+	#[test]
+	fn essence_faucets_open_where_they_always_did() {
+		let mut opens: Vec<(Essence, u32)> = Vec::new();
+		for &e in &Essence::ALL {
+			let at = crate::worldgen::nodes::NODES
+				.iter()
+				.filter(|&&n| {
+					node_yields(n, crate::skills::MAX_LEVEL)
+						.iter()
+						.any(|&(y, amount)| y == e && amount > 0)
+				})
+				.filter_map(|&n| {
+					// The node's own reveal, on whichever axis owns it,
+					// against the wall on the host it stands in — a draw is
+					// a hold like any other and `dig_blocked` gates it.
+					let seen = crate::unlock::reveal(n).or(crate::unlock::alchemy_reveal(n))?;
+					Some(seen.max(crate::unlock::mine(n)))
+				})
+				.min()
+				.unwrap_or(u32::MAX);
+			opens.push((e, at));
+		}
+		assert_eq!(
+			opens,
+			vec![
+				(Essence::Vitae, 5),
+				(Essence::Terra, 10),
+				(Essence::Unda, 12),
+				(Essence::Ferrum, 15),
+				(Essence::Aether, 33),
+			],
+			"an essence's faucet moved — check every recipe priced in it \
+			 still has a level a player can reach it at"
+		);
 	}
 }

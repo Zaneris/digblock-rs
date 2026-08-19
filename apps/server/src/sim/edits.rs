@@ -3449,10 +3449,10 @@ mod tests {
 		let mut sim = flat_sim("alchemy");
 		let mut c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
-		// One timber cube plus enough Flora for one slab craft's catalyst
+		// One timber cube plus enough Vitae for one slab craft's catalyst
 		// at the level-1 waste, with the remainder asserted below.
 		sim.test_grant(1, BlockType::Wood, 1);
-		sim.test_grant_essence(1, Essence::Flora, 10);
+		sim.test_grant_essence(1, Essence::Vitae, 10);
 
 		// Craft + place, both queued in ONE tick: wire order must debit
 		// before the place's stock gate runs. The WOOD slab is the craft a
@@ -3503,7 +3503,7 @@ mod tests {
 			c.msgs
 		);
 		// The level-1 economy: the craft spends the timber cube and the
-		// catalyst at that level's waste, leaving the Flora remainder
+		// catalyst at that level's waste, leaving the Vitae remainder
 		// asserted below.
 		assert!(
 			c.msgs.iter().any(|m| matches!(
@@ -3511,7 +3511,7 @@ mod tests {
 				ServerMsg::InventoryFull { counts }
 					if counts.contains(&(0x8000, 5))
 			)),
-			"Flora remainder in the rebase: {:?}",
+			"Vitae remainder in the rebase: {:?}",
 			c.msgs
 		);
 

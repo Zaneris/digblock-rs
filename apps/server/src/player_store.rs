@@ -1195,7 +1195,7 @@ mod tests {
 				// clear — all but Aether — and records at the current
 				// version keep exactly what they stored.
 				use digblock_core::block::Essence;
-				let flora = r.inventory.sub_count(Essence::Flora);
+				let flora = r.inventory.sub_count(Essence::Vitae);
 				let aether = r.inventory.sub_count(Essence::Aether);
 				if version < FIRST_FOUND_ESSENCE_VERSION {
 					assert_eq!(flora, 0, "v{version}: pre-redesign balances clear");

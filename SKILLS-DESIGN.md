@@ -1316,9 +1316,13 @@ golden hashes untouched.
   (`inventories.bin`'s reader server-side, `SAVE_REV` in local saves; `Inventory::clear_pre_redesign_essence` is the one
   shared rule). Aether stays because it was always the scarce, honestly-earned one, and it is the currency the sigil and
   the pick are saved up in. Stacks, tools, XP and arrangements are untouched.
-- **The reagent identities.** The five essences kept their frozen wire indices and took display names that read as
-  reagents now that each one is a find: VITAE (heartwood), TERRA (leystone), UNDA (springstone), FERRUM (the ore tiers),
-  AETHER unchanged. §12's "display name for Metal" question closes with this.
+- **The reagent identities.** The five essences kept their frozen wire indices and took names that read as reagents now
+  that each one is a find: VITAE (heartwood), TERRA (leystone), UNDA (springstone), FERRUM (the ore tiers), AETHER
+  unchanged. §12's "display name for Metal" question closes with this. The rename shipped as display labels ONLY and the
+  source went on saying Flora/Earth/Aqua/Metal for a release, so the code and every screen spoke different words for one
+  currency; the variants carry the reagent names now too. Renaming them moved no byte — the discriminants are explicit
+  and nothing serializes an essence by name — which is a different question from the indices, and the one-time balance
+  reset settles neither.
 - **Captures**: `DIG_NODE=<heartwood|leystone|springstone>` is `DIG_ORE`'s surface twin — pose at the nearest node with
   its reveal granted; leystone reuses the generalized ore chamber, and the surface kinds deliberately write nothing.
 

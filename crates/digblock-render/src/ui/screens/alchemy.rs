@@ -1194,7 +1194,7 @@ mod tests {
 	fn a_transmute_batch_drips_instead_of_paying_at_once() {
 		let mut r = rig_at(20, |inv| {
 			inv.add(B::Wood, 50);
-			inv.add_sub(Essence::Flora, 500);
+			inv.add_sub(Essence::Vitae, 500);
 		});
 		let slabs = center(r.hits.rect_of(family(&r, "SLABS")).unwrap());
 		press(&mut r, slabs);
@@ -1253,9 +1253,9 @@ mod tests {
 		// Spend the essence out from under it: the queue withdraws exactly
 		// where the button would have greyed, rather than running on
 		// against a rebase that can no longer pay.
-		let flora = r.inv.sub_count(Essence::Flora);
+		let flora = r.inv.sub_count(Essence::Vitae);
 		assert!(
-			r.inv.try_take_sub(Essence::Flora, flora),
+			r.inv.try_take_sub(Essence::Vitae, flora),
 			"drain the holdings"
 		);
 		rebuild(&mut r);
@@ -1281,7 +1281,7 @@ mod tests {
 		// no Earth in hand) AND a locked one (DarkLumber) at once.
 		let mut r = rig_at(15, |inv| {
 			inv.add(B::Wood, 50);
-			inv.add_sub(Essence::Flora, 500);
+			inv.add_sub(Essence::Vitae, 500);
 		});
 
 		// It opens on the family row alone: no member is pre-picked, so
@@ -1298,7 +1298,7 @@ mod tests {
 
 		// SLABS leads (the shape axis first, cheapest form first, the
 		// hand-priced ones after). Its first unlocked member is the
-		// WoodSlab the Flora affords; Ctrl asks for its whole batch and
+		// WoodSlab the Vitae affords; Ctrl asks for its whole batch and
 		// the holdings clamp it.
 		let slabs = center(r.hits.rect_of(family(&r, "SLABS")).unwrap());
 		press(&mut r, slabs);

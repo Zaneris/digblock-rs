@@ -1265,29 +1265,61 @@ fn debug_shapes_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 /// naively would delete the very thing being photographed. Every cell the
 /// deposit claims is left exactly as worldgen made it.
 fn debug_ore_plan(spawn: Vec3, seed: f64, want: BlockType) -> (Vec3, Vec<(i32, i32, i32, u16)>) {
-	use digblock_core::worldgen::ore;
+	use digblock_core::worldgen::{self, ore};
 	let (sx, sz) = (spawn.x.floor() as i32, spawn.z.floor() as i32);
-	// Nearest deposit of the tier, horizontally — a search box wide
-	// enough that even Aetherock (one deposit in fifteen, and only in the
-	// bottom two grid rows) is found from any spawn.
+	// Nearest deposit of the tier — a search box wide enough that even
+	// Aetherock (one deposit in fifteen, and only in the bottom two grid
+	// rows) is found from any spawn.
+	//
+	// It has to be BURIED, and that is not automatic: a deposit is placed
+	// by a hash over a grid that knows nothing about terrain, so a shallow
+	// band routinely rolls one into open air above the surface — or under
+	// a lake. `apply_nodes` stamps only cells that hold pristine Stone, so
+	// such a deposit reveals nothing whatever level is granted, and the
+	// capture is an empty stone-plated box that looks like a stamp bug.
+	// Every band grew a floor in the redesign, which is what made this
+	// common enough to notice: probed across four seeds, the nearest
+	// leystone was in air or water on all four.
+	//
+	// Distance is 3D for the same reason it is a scene at all: with the
+	// vertical term the pick prefers a deposit at eye height over one the
+	// same distance away and 80 blocks down, and the two are otherwise
+	// indistinguishable to a search that only reads x and z.
+	// The chamber: a box around the vein, minus the vein itself. Stood
+	// off far enough on -z that the camera is outside it looking in.
+	const R: i32 = 5;
+	let buried = |d: &ore::Deposit| {
+		// Clear of the surface by the CHAMBER's reach, not the blob's: the
+		// carve is what would open the room to the sky, and it reaches
+		// further than the vein does.
+		//
+		// Against `height` alone, which is the whole of the question.
+		// Water fills `height + 1 ..= water` and never below, so a cell
+		// under the surface is under rock whatever the column's water
+		// says — testing `min(height, water)` instead would refuse every
+		// dry deposit inside a hill standing above SEA_LEVEL, which is
+		// most of the shallow band.
+		d.y + R < worldgen::column_shape(d.x, d.z, seed).height
+	};
 	let mut best: Option<(i64, ore::Deposit)> = None;
 	for d in ore::deposits_near((sx - 320, 1, sz - 320), (sx + 320, 200, sz + 320), seed) {
-		if d.ore != want {
+		if d.ore != want || !buried(&d) {
 			continue;
 		}
-		let (dx, dz) = (i64::from(d.x - sx), i64::from(d.z - sz));
-		let d2 = dx * dx + dz * dz;
+		let (dx, dy, dz) = (
+			i64::from(d.x - sx),
+			i64::from(d.y - spawn.y.floor() as i32),
+			i64::from(d.z - sz),
+		);
+		let d2 = dx * dx + dy * dy + dz * dz;
 		if best.is_none_or(|(b, _)| d2 < b) {
 			best = Some((d2, d));
 		}
 	}
 	let Some((_, d)) = best else {
-		log::warn!("DIG_ORE: no {want:?} within reach of spawn");
+		log::warn!("DIG_ORE: no buried {want:?} within reach of spawn");
 		return (spawn, Vec::new());
 	};
-	// The chamber: a box around the vein, minus the vein itself. Stood
-	// off far enough on -z that the camera is outside it looking in.
-	const R: i32 = 5;
 	let mut plan = Vec::new();
 	for y in (d.y - R)..=(d.y + R) {
 		for z in (d.z - R)..=(d.z + R) {
@@ -2493,15 +2525,14 @@ impl Engine {
 			// The scene exists to photograph a tier, so it grants exactly
 			// the level that reveals that tier — read out of the unlock
 			// table rather than written down, so retuning a reveal moves
-			// the capture with it. `sync_node_reveal` then hands the
-			// level to the pipeline, which is what makes the stamp fire.
+			// the capture with it. The sync below every scene is what then
+			// hands the level to the pipeline and makes the stamp fire.
 			let ore = digblock_core::worldgen::ore::ORES[engine.config.debug_ore.clamp(1, 4) - 1];
 			let need = digblock_core::unlock::reveal(ore).unwrap_or(1);
 			engine.skills.set_total(
 				digblock_core::skills::Skill::Mining,
 				digblock_core::skills::total_xp_for(need),
 			);
-			engine.sync_node_reveal(false);
 		}
 		if let Some(node) = engine.config.debug_node {
 			// The surface twin of the DIG_ORE grant: exactly the Alchemy
@@ -2517,7 +2548,6 @@ impl Engine {
 				digblock_core::skills::Skill::Mining,
 				digblock_core::skills::total_xp_for(digblock_core::unlock::mine(node)),
 			);
-			engine.sync_node_reveal(false);
 		}
 		if engine.config.debug_mining > 0 {
 			// Last, so an explicit level overrides the one `debug_ore`
@@ -2528,7 +2558,6 @@ impl Engine {
 				digblock_core::skills::Skill::Mining,
 				digblock_core::skills::total_xp_for(engine.config.debug_mining),
 			);
-			engine.sync_node_reveal(false);
 		}
 		if let Some(screen) = engine.config.debug_screen {
 			for (block, n) in [
@@ -2541,18 +2570,18 @@ impl Engine {
 			engine.inventory.add(BlockType::Rubble, 24);
 			engine
 				.inventory
-				.add_sub(digblock_core::block::Essence::Flora, 54);
+				.add_sub(digblock_core::block::Essence::Vitae, 54);
 			engine
 				.inventory
-				.add_sub(digblock_core::block::Essence::Earth, 120);
+				.add_sub(digblock_core::block::Essence::Terra, 120);
 			engine
 				.inventory
-				.add_sub(digblock_core::block::Essence::Aqua, 7);
+				.add_sub(digblock_core::block::Essence::Unda, 7);
 			// Metal/Aether too, so the header's five columns photograph
 			// populated — two dead zeros read as a layout bug in shots.
 			engine
 				.inventory
-				.add_sub(digblock_core::block::Essence::Metal, 12);
+				.add_sub(digblock_core::block::Essence::Ferrum, 12);
 			engine
 				.inventory
 				.add_sub(digblock_core::block::Essence::Aether, 3);
@@ -2643,6 +2672,20 @@ impl Engine {
 				}
 			}
 		}
+		// ONE sync, after every scene has had its say. The pipeline stamps
+		// nodes at the levels it was last handed, and `nodes::revealed`
+		// answers at the live ones, so a grant the pipeline never hears
+		// about meshes a cell as its host while the dig path calls it a
+		// node — the mesh and the dig disagreeing, which is the failure
+		// this whole layer is built to make impossible.
+		//
+		// Here rather than in each block because it kept being forgotten:
+		// three scenes called it, and `debug_doors` and half the
+		// `DIG_SCREEN` roster did not, which is exactly the split you get
+		// when the call belongs to whoever remembers it. Every grant is
+		// above this line, so a new scene is covered by standing where the
+		// others do. Silent: a capture is not a discovery.
+		engine.sync_node_reveal(false);
 		engine
 	}
 
@@ -7656,7 +7699,7 @@ mod store_tests {
 			"a rev-0 save keeps its implicit bucket"
 		);
 		assert_eq!(
-			engine.inventory.sub_count(Essence::Flora),
+			engine.inventory.sub_count(Essence::Vitae),
 			0,
 			"pre-redesign balances clear"
 		);
@@ -8089,14 +8132,20 @@ mod craft_gate_tests {
 		engine.dig_held = false;
 		engine.refused_cell = None;
 
-		engine.skills.set_total(Skill::Alchemy, total_xp_for(9));
+		// Read out of the unlock table, never written down: every
+		// threshold in the game lives in `unlock`, and this pair had to be
+		// hand-edited the last time the torch moved.
+		let need = digblock_core::unlock::pickup(BlockType::Torch);
+		engine
+			.skills
+			.set_total(Skill::Alchemy, total_xp_for(need - 1));
 		engine.update_target();
 		assert!(
 			!engine.diggable(&engine.target.unwrap()),
 			"one level short of the recipe is still short"
 		);
 
-		engine.skills.set_total(Skill::Alchemy, total_xp_for(10));
+		engine.skills.set_total(Skill::Alchemy, total_xp_for(need));
 		engine.update_target();
 		assert!(
 			engine.diggable(&engine.target.unwrap()),
@@ -8635,5 +8684,51 @@ mod ore_capture_tests {
 			"no vein crossed a floor plane in {plans} plans — this sample \
 			 cannot tell a guarded plate from an unguarded one"
 		);
+	}
+
+	/// **The deposit the scene picks is one the stamp can actually
+	/// reveal.** A vein manifests only in pristine STONE, so a deposit
+	/// rolled into open air — or under a lake — reveals nothing at any
+	/// level, and DIG_ORE photographs an empty stone-plated box that reads
+	/// as a bug in the reveal rather than in the scene.
+	///
+	/// Nothing above catches it: `the_ore_capture_plan_never_writes_over_the_vein`
+	/// asserts only that the carve spares the vein's cells, which is just
+	/// as true when there is no rock around them.
+	///
+	/// The search picked by horizontal distance alone, which was survivable
+	/// while every band ran to the bottom of the world; the redesign gave
+	/// each band a FLOOR, and shallow tiers then routinely rolled above the
+	/// terrain. Both live surface-hosted kinds are swept, since the same
+	/// search serves DIG_NODE=leystone.
+	#[test]
+	fn every_capture_deposit_stands_in_rock() {
+		let mut checked = 0usize;
+		for i in 0..20 {
+			let seed = 1000.0 + f64::from(i) * 37.5;
+			let spawn = Vec3::new(0.0, 90.0, 0.0);
+			for &want in ore::ORES.iter().chain([BlockType::Leystone].iter()) {
+				let (pos, plan) = debug_ore_plan(spawn, seed, want);
+				if plan.is_empty() {
+					continue;
+				}
+				// The pose is authored off the deposit centre, so the
+				// centre column is recoverable from it — and the centre is
+				// in the blob by construction.
+				let (cx, cz) = ((pos.x - 0.5) as i32, (pos.z + 4.5) as i32);
+				let col = digblock_core::worldgen::column_shape(cx, cz, seed);
+				let cy = (0..digblock_core::chunk::WORLD_VBLOCK)
+					.find(|&y| ore::ore_at(cx, y, cz, seed) == Some(want))
+					.unwrap_or_else(|| panic!("seed {seed} {want:?}: no vein under the pose"));
+				assert!(
+					cy < col.height,
+					"seed {seed} {want:?}: the scene stands at y {cy} under a surface \
+					 at {} — the vein is in open air and the stamp will never fire",
+					col.height
+				);
+				checked += 1;
+			}
+		}
+		assert!(checked > 50, "the sample found deposits to photograph");
 	}
 }

@@ -595,10 +595,12 @@ and `apply_alchemy(inv, op, level)` is level-aware. Six load-bearing rules:
    structural, and bulk building costs mostly the rock you quarried. Metal and Crystal are the essence-only exceptions
    (no feedstock, a cube's worth of currency, shapes prorated as ever): transmutation proper, for the substances nothing
    in the world is made of. Waste (`waste_permille`) applies to the catalyst alone.
-5. **The essence indices ARE the migration** — `Essence { Flora=0, Earth=1, … }` keeps the retired Material enum's
-   numbering so legacy pairs decode 1:1. Never renumber. The DISPLAY identities are the redesign's reagent names
-   (`Essence::name`: VITAE, TERRA, UNDA, FERRUM, AETHER) — `/give` parses those same labels, so command and UI move
-   together.
+5. **The essence indices ARE the migration** — `Essence { Vitae=0, Terra=1, … }` keeps the retired Material enum's
+   numbering so legacy pairs decode 1:1. **Never renumber; renaming is free.** The two are independent and were
+   conflated for a release: the indices are a wire and persistence format, while the identifiers are a format nowhere —
+   no serde, no `FromStr`, explicit discriminants, and `/give` parses `Essence::name` (VITAE, TERRA, UNDA, FERRUM,
+   AETHER) so command and UI move together. The redesign's one-time balance reset is NOT what licenses a rename and
+   could not be: Aether survives it and must still decode at its own index.
 6. **A price must be payable at its own level** (`every_functional_price_has_a_source_at_its_own_level`): for every
    essence a hand-priced row names, some NODE a player at that level can see pays it (each kind's reveal checked on its
    own axis; Mining walls are self-serve by digging), and every feedstock line names a block whose `pickup` gate sits at
@@ -620,7 +622,7 @@ items show together — and hides everything past it, empty families included; t
 indices, so hiding never shifts hit identity (`the_page_hides_everything_past_the_next_unlock`). **The button QUEUES
 that count rather than buying it**: crafting drips one `Craft{count:1}` per `craft_pace_ticks(item, level)` — the pace
 scales with `craft_worth`, catalyst and feedstock both, so the biggest price is the longest hold — with the batch's
-progress in the row under the button, which is also its CANCEL. Craft XP is HALF the worth (`craft_xp`), and with
+progress in the row under the button, which is also its CANCEL. A craft pays its full worth (`craft_xp`), and with
 extraction gone it is the bench's only award; the rest of Alchemy's XP is field draws (`skills::field_xp`).
 
 Polish invariants: everything sits on ONE left column; `widgets::slot` carries hover plus a two-weight ring

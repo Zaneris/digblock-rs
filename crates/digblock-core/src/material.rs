@@ -209,20 +209,20 @@ impl Material {
 		use Material as M;
 		Some(match self {
 			// Catalysts, matching each substance's essence identity.
-			M::Wood | M::Lumber | M::DarkLumber | M::RedLumber => &[(E::Flora, 3)],
-			M::Stone | M::Sand | M::Sandstone => &[(E::Earth, 3)],
-			M::StoneBrick | M::PolishedStone | M::SandstoneBrick => &[(E::Earth, 3)],
-			M::Glass => &[(E::Earth, 3)],
-			M::Dirt => &[(E::Earth, 3), (E::Flora, 1)],
-			M::Grass => &[(E::Earth, 2), (E::Flora, 1)],
-			M::Mud => &[(E::Earth, 2), (E::Flora, 1), (E::Aqua, 1)],
-			M::Snow => &[(E::Aqua, 3)],
+			M::Wood | M::Lumber | M::DarkLumber | M::RedLumber => &[(E::Vitae, 3)],
+			M::Stone | M::Sand | M::Sandstone => &[(E::Terra, 3)],
+			M::StoneBrick | M::PolishedStone | M::SandstoneBrick => &[(E::Terra, 3)],
+			M::Glass => &[(E::Terra, 3)],
+			M::Dirt => &[(E::Terra, 3), (E::Vitae, 1)],
+			M::Grass => &[(E::Terra, 2), (E::Vitae, 1)],
+			M::Mud => &[(E::Terra, 2), (E::Vitae, 1), (E::Unda, 1)],
+			M::Snow => &[(E::Unda, 3)],
 			// The essence-only substances: transmutation proper, a whole
 			// cube's worth of the currency.
-			M::Metal => &[(E::Metal, 27)],
+			M::Metal => &[(E::Ferrum, 27)],
 			// Aether-bound, with a metal lattice to hold it: the only
 			// repeatable Aether sink big enough to matter in the endgame.
-			M::Crystal => &[(E::Aether, 18), (E::Metal, 9)],
+			M::Crystal => &[(E::Aether, 18), (E::Ferrum, 9)],
 			M::Rubble
 			| M::Gravel
 			| M::DryGrass
@@ -257,8 +257,8 @@ impl Material {
 		match self {
 			// The ore tiers, drawn whole at the rock face: concentrates,
 			// rising steeply with depth.
-			M::Emberore => &[(E::Metal, 18)],
-			M::Duskstone => &[(E::Metal, 36)],
+			M::Emberore => &[(E::Ferrum, 18)],
+			M::Duskstone => &[(E::Ferrum, 36)],
 			// The first tier that pays Aether at all, and the reason the
 			// Resonant Pick's Aether line is payable by anyone who has
 			// earned the pick: this vein reveals at exactly the Mining
@@ -267,14 +267,14 @@ impl Material {
 			// row existed the only reliable Aether in the game sat behind
 			// the deepest tier, and the pick was unlocked for a long
 			// stretch in which it could not be built.
-			M::Glowvein => &[(E::Metal, 60), (E::Aether, 1)],
-			M::Aetherock => &[(E::Metal, 90), (E::Aether, 9)],
+			M::Glowvein => &[(E::Ferrum, 60), (E::Aether, 1)],
+			M::Aetherock => &[(E::Ferrum, 90), (E::Aether, 9)],
 			// The surface nodes: concentrates like the ore tiers, each in
 			// its own single essence — a find must out-pay the bulk matter
 			// around it or it is not one.
-			M::Heartwood => &[(E::Flora, 36)],
-			M::Leystone => &[(E::Earth, 36)],
-			M::Springstone => &[(E::Aqua, 36)],
+			M::Heartwood => &[(E::Vitae, 36)],
+			M::Leystone => &[(E::Terra, 36)],
+			M::Springstone => &[(E::Unda, 36)],
 			// Everything else — bulk matter, worked blocks, spent faces —
 			// yields nothing: a spent node is a find already taken, and a
 			// block is a block. The bench transmutes; only the siphon

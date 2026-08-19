@@ -1429,7 +1429,10 @@ impl Pipeline {
 	///   agree by construction); the surface halves ask the freshly built
 	///   SNAPSHOT for host blocks, because a chunk with no Wood holds no
 	///   trunk and a chunk with no Sand holds no bed — a scan of the box
-	///   is fixed-cost where the worldgen queries are not.
+	///   is fixed-cost where the worldgen queries are not. The verdict
+	///   rides the stamp as [`crate::mesher::NodeHosts`], because the
+	///   worker needs the same answer and re-deriving it there is a
+	///   second walk of the same array.
 	/// - For the rest, the edited-cell walk is whichever of the two is
 	///   smaller. The map walk is O(every edit ever made in the
 	///   overlapping columns), and `EditOverlay` has no eviction;
@@ -1439,6 +1442,14 @@ impl Pipeline {
 	///   holds one padded snapshot — and an F7 or a reveal-threshold
 	///   `remesh_all` pays it for every resident chunk at once. Probing
 	///   the box instead is a fixed cost with the same answer.
+	///
+	/// What is NOT a guard, and was written as one: the reveal LEVELS.
+	/// They pruned the whole walk while every node was earned, and the
+	/// redesign ended that — the first surface node reveals at the level
+	/// everyone starts at, so the level test is true for every player
+	/// alive and can only ever narrow WHICH hosts are worth recognizing,
+	/// never skip the scan. The host scan is the gate; a box of sky or
+	/// water still leaves before the expensive halves.
 	fn node_stamp(
 		&self,
 		pos: ChunkPos,
@@ -1449,22 +1460,15 @@ impl Pipeline {
 		let origin = (pos.x * n - 1, pos.y * n - 1, pos.z * n - 1);
 		let span = crate::mesher::PADDED as i32 - 1;
 		let far = (origin.0 + span, origin.1 + span, origin.2 + span);
-		let reveal_met = |b: crate::block::BlockType| {
-			crate::unlock::reveal(b).is_some_and(|need| self.levels.mining >= need)
-				|| crate::unlock::alchemy_reveal(b).is_some_and(|need| self.levels.alchemy >= need)
-		};
-		// Which hosts could matter HERE, before the scan rather than
-		// after it. The scan is a walk of the whole padded box on the
-		// main thread inside `STREAM_BUDGET_MS`, once per mesh job, and
-		// it used to run ahead of these tests — which was affordable only
-		// while the reveal gate could still return early for a low-level
-		// player. It cannot any more: the first surface node reveals at
-		// the level everyone starts at, so the early-out was dead and
-		// every job paid the full walk. Asking the levels and the depth
-		// first is what puts it back.
+		// Which hosts could matter HERE — the levels and the depth, asked
+		// before the scan so the scan only has to recognize ids that are
+		// still in play. Deposits are the one half a level test can still
+		// skip outright, and the depth test beside it is the half that
+		// really pays: most of a world is nowhere near the bands.
+		let reveal_met = |b| crate::worldgen::nodes::reveal_met(b, self.levels);
 		let want_deposits = origin.1 <= ore::MAX_DEPOSIT_Y + ore::MAX_RADIUS
 			&& (self.levels.mining >= ore::lowest_reveal()
-				|| reveal_met(crate::block::BlockType::Leystone));
+				|| self.levels.alchemy >= ore::lowest_alchemy_reveal());
 		let want_heartwood = reveal_met(crate::block::BlockType::Heartwood);
 		let want_springs = reveal_met(crate::block::BlockType::Springstone);
 		if !want_deposits && !want_heartwood && !want_springs {
@@ -1482,10 +1486,12 @@ impl Pipeline {
 		}
 		// `deposits_near` is the expensive half and asks worldgen, so it
 		// waits until a host has actually been seen.
-		let deposits = stone && !ore::deposits_near(origin, far, self.seed).is_empty();
-		let heartwood = wood;
-		let springs = sand;
-		if !deposits && !heartwood && !springs {
+		let hosts = crate::mesher::NodeHosts {
+			deposits: stone && !ore::deposits_near(origin, far, self.seed).is_empty(),
+			heartwood: wood,
+			springs: sand,
+		};
+		if hosts.is_empty() {
 			return None;
 		}
 		let mut cols = Vec::new();
@@ -1540,8 +1546,8 @@ impl Pipeline {
 		Some(crate::mesher::NodeStamp {
 			seed: self.seed,
 			origin,
-			mining: self.levels.mining,
-			alchemy: self.levels.alchemy,
+			levels: self.levels,
+			hosts,
 			edited,
 		})
 	}

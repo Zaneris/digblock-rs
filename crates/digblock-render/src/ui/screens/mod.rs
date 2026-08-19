@@ -19,8 +19,8 @@ mod tests {
 		inv.add(B::Wood, 5);
 		inv.add(B::Stone, 11);
 		inv.add(B::Rubble, 24);
-		inv.add_sub(Essence::Flora, 54);
-		inv.add_sub(Essence::Earth, 120);
+		inv.add_sub(Essence::Vitae, 54);
+		inv.add_sub(Essence::Terra, 120);
 		inv
 	}
 

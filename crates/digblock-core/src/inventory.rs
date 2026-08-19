@@ -277,6 +277,20 @@ pub enum AlchemyOp {
 /// arithmetic far from u32 range even at MAX_STACK holdings.
 pub const ALCHEMY_MAX_COUNT: u32 = 999;
 
+/// Fold cost lines so each key appears once, keeping first-seen order.
+/// The lists are a handful of entries, so the linear scan is cheaper than
+/// anything that would need a hasher — and this runs once per craft.
+fn totals<K: Copy + PartialEq>(lines: impl IntoIterator<Item = (K, u32)>) -> Vec<(K, u32)> {
+	let mut out: Vec<(K, u32)> = Vec::new();
+	for (k, n) in lines {
+		match out.iter_mut().find(|(seen, _)| *seen == k) {
+			Some((_, sum)) => *sum += n,
+			None => out.push((k, n)),
+		}
+	}
+	out
+}
+
 /// THE alchemy rule, shared verbatim by the server's validation and the
 /// offline engine (single-player must match multiplayer bit-for-bit).
 /// `level` is the actor's Alchemy level — costs key on it
@@ -310,8 +324,30 @@ pub fn apply_alchemy(inv: &mut Inventory, op: AlchemyOp, level: u32) -> bool {
 			// alike: check everything, then debit — a multi-line craft
 			// never half-charges. Waste applies to the essence half only;
 			// matter is matter, and a block in is a block in.
+			//
+			// Summed per key BEFORE either half runs, so the amount
+			// checked and the amount debited are the same number rather
+			// than two walks that agree only while every line names a
+			// different currency. They used to be compared one line at a
+			// time against the whole balance, so a price naming one
+			// essence twice passed a check it could not pay; the debit's
+			// own guard was a `debug_assert!`, which compiles out, so a
+			// release build credited the item and took part of the price.
+			// Nothing forbids a duplicate line — `field_yield` merges them
+			// on the way in — and matter created from an underpaid price
+			// is the one thing this whole economy is built not to do.
+			//
+			// Costed first and summed second, never the reverse: waste
+			// rounds per line, so folding the raw units together would
+			// quietly re-price the craft.
+			let ideal = totals(
+				ideal
+					.iter()
+					.map(|&(e, n)| (e, alchemy::craft_cost(n, level))),
+			);
+			let feedstock = totals(feedstock.iter().map(|&(f, n)| (f, n)));
 			for &(e, n) in &ideal {
-				if inv.sub_count(e) < alchemy::craft_cost(n, level) * count {
+				if inv.sub_count(e) < n * count {
 					return false;
 				}
 			}
@@ -321,7 +357,7 @@ pub fn apply_alchemy(inv: &mut Inventory, op: AlchemyOp, level: u32) -> bool {
 				}
 			}
 			for &(e, n) in &ideal {
-				let taken = inv.try_take_sub(e, alchemy::craft_cost(n, level) * count);
+				let taken = inv.try_take_sub(e, n * count);
 				debug_assert!(taken, "checked above");
 			}
 			for &(f, n) in &feedstock {
@@ -338,6 +374,27 @@ pub fn apply_alchemy(inv: &mut Inventory, op: AlchemyOp, level: u32) -> bool {
 mod tests {
 	use super::*;
 
+	/// A price naming one key twice costs the SUM of its lines. Checking
+	/// them one at a time against the whole balance is what
+	/// [`apply_alchemy`] used to do, and it passed on half the price —
+	/// then debited through a `debug_assert!` that compiles out, so a
+	/// release build handed over the item and took what it could.
+	#[test]
+	fn totals_folds_a_repeated_key() {
+		use crate::block::Essence as E;
+		assert_eq!(
+			totals([(E::Vitae, 2), (E::Terra, 3), (E::Vitae, 5)]),
+			vec![(E::Vitae, 7), (E::Terra, 3)],
+			"first-seen order, summed"
+		);
+		assert_eq!(
+			totals([(E::Unda, 1)]),
+			vec![(E::Unda, 1)],
+			"the common case"
+		);
+		assert!(totals(std::iter::empty::<(E, u32)>()).is_empty());
+	}
+
 	/// The legacy-character migration's inventory rule: two piles one
 	/// player owns become one, and every cap still holds.
 	///
@@ -349,14 +406,14 @@ mod tests {
 		let mut mine = Inventory::default();
 		mine.add(BlockType::Dirt, 5);
 		mine.add(BlockType::Bucket, 1);
-		mine.add_sub(Essence::Earth, 40);
+		mine.add_sub(Essence::Terra, 40);
 
 		let mut old = Inventory::default();
 		old.add(BlockType::Dirt, 7);
 		old.add(BlockType::Stone, 3);
 		old.add(BlockType::Bucket, 1);
-		old.add_sub(Essence::Earth, 60);
-		old.add_sub(Essence::Flora, 2);
+		old.add_sub(Essence::Terra, 60);
+		old.add_sub(Essence::Vitae, 2);
 
 		mine.merge_from(&old);
 		assert_eq!(mine.count(BlockType::Dirt), 12, "stacks add");
@@ -366,8 +423,8 @@ mod tests {
 			cap(BlockType::Bucket),
 			"a tool owned on both sides is still one tool"
 		);
-		assert_eq!(mine.sub_count(Essence::Earth), 100, "essence adds too");
-		assert_eq!(mine.sub_count(Essence::Flora), 2);
+		assert_eq!(mine.sub_count(Essence::Terra), 100, "essence adds too");
+		assert_eq!(mine.sub_count(Essence::Vitae), 2);
 
 		// Merging with nothing changes nothing, which is the common case:
 		// most players have no old character on most servers.
@@ -429,11 +486,11 @@ mod tests {
 	fn essences_ride_the_wire_as_flagged_ids() {
 		let mut inv = Inventory::default();
 		inv.add(BlockType::Wood, 3);
-		inv.add_sub(Essence::Flora, 54);
-		inv.add_sub(Essence::Earth, 1);
+		inv.add_sub(Essence::Vitae, 54);
+		inv.add_sub(Essence::Terra, 1);
 		inv.add_sub(Essence::Aether, 2);
 		let wire = inv.to_wire();
-		assert!(wire.contains(&(SUB_WIRE_FLAG, 54)), "Flora flagged at 0");
+		assert!(wire.contains(&(SUB_WIRE_FLAG, 54)), "Vitae flagged at 0");
 		assert!(wire.contains(&(SUB_WIRE_FLAG | 1, 1)), "Earth flagged at 1");
 		assert!(
 			wire.contains(&(SUB_WIRE_FLAG | 4, 2)),
@@ -443,11 +500,11 @@ mod tests {
 
 		// THE legacy migration, which is a numbering choice rather than
 		// code: a record written under the two-family Material economy
-		// (sub-wood at 0, sub-stone at 1) decodes 1:1 into Flora and
-		// Earth because the Essence enum kept those indices.
+		// (sub-wood at 0, sub-stone at 1) decodes 1:1 into Vitae and
+		// Terra because the Essence enum kept those indices.
 		let legacy = Inventory::from_wire(&[(SUB_WIRE_FLAG, 54), (SUB_WIRE_FLAG | 1, 27)]);
-		assert_eq!(legacy.sub_count(Essence::Flora), 54, "sub-wood → Flora");
-		assert_eq!(legacy.sub_count(Essence::Earth), 27, "sub-stone → Earth");
+		assert_eq!(legacy.sub_count(Essence::Vitae), 54, "sub-wood → Vitae");
+		assert_eq!(legacy.sub_count(Essence::Terra), 27, "sub-stone → Earth");
 
 		// Unknown families (incl. the hotbar's u16::MAX-area sentinels,
 		// which never belong in inventory pairs) drop harmlessly.
@@ -459,7 +516,7 @@ mod tests {
 	fn alchemy_craft_scales_with_level() {
 		let mut inv = Inventory::default();
 		inv.add(BlockType::Wood, 3);
-		inv.add_sub(Essence::Flora, 20);
+		inv.add_sub(Essence::Vitae, 20);
 
 		// Craft a door batch and two stairs: each craft consumes one
 		// timber cube and the catalyst at mastery's smallest waste markup;
@@ -484,7 +541,7 @@ mod tests {
 		assert_eq!(inv.count(BlockType::WoodStairs), 2);
 		assert_eq!(inv.count(BlockType::Wood), 0, "three cubes consumed");
 		assert_eq!(
-			inv.sub_count(Essence::Flora),
+			inv.sub_count(Essence::Vitae),
 			20 - 3 * 4,
 			"ceil(3·1.05) each"
 		);
@@ -493,7 +550,7 @@ mod tests {
 		// buys less — and no timber refuses outright.
 		let mut low = Inventory::default();
 		low.add(BlockType::Wood, 1);
-		low.add_sub(Essence::Flora, 4);
+		low.add_sub(Essence::Vitae, 4);
 		assert!(
 			!apply_alchemy(
 				&mut low,
@@ -505,7 +562,7 @@ mod tests {
 			),
 			"the catalyst costs ceil(3·1.60) = 5 > 4"
 		);
-		low.add_sub(Essence::Flora, 1);
+		low.add_sub(Essence::Vitae, 1);
 		assert!(apply_alchemy(
 			&mut low,
 			AlchemyOp::Craft {
@@ -597,14 +654,14 @@ mod tests {
 		}
 	}
 
-	/// A multi-essence craft (a torch = Flora + Earth) debits every line or
+	/// A multi-reagent craft (a torch = Vitae + Terra) debits every line or
 	/// none: short on the SECOND line must not consume the first.
 	#[test]
 	fn multi_essence_crafts_never_half_charge() {
 		let mut inv = Inventory::default();
 		inv.add(BlockType::Wood, 1);
-		inv.add_sub(Essence::Flora, 100);
-		inv.add_sub(Essence::Earth, 1); // deliberately short of the torch's Earth line
+		inv.add_sub(Essence::Vitae, 100);
+		inv.add_sub(Essence::Terra, 1); // deliberately short of the torch's Terra line
 		let before = inv.clone();
 		assert!(!apply_alchemy(
 			&mut inv,
@@ -615,7 +672,7 @@ mod tests {
 			99
 		));
 		assert_eq!(inv, before, "no partial debit — the timber included");
-		inv.add_sub(Essence::Earth, 5);
+		inv.add_sub(Essence::Terra, 5);
 		assert!(apply_alchemy(
 			&mut inv,
 			AlchemyOp::Craft {
@@ -626,19 +683,19 @@ mod tests {
 		));
 		assert_eq!(inv.count(BlockType::Torch), 1);
 		assert_eq!(inv.count(BlockType::Wood), 0, "the stick is spent");
-		assert_eq!(inv.sub_count(Essence::Flora), 100 - 3, "ceil(2·1.05)");
-		assert_eq!(inv.sub_count(Essence::Earth), 6 - 3, "ceil(2·1.05)");
+		assert_eq!(inv.sub_count(Essence::Vitae), 100 - 3, "ceil(2·1.05)");
+		assert_eq!(inv.sub_count(Essence::Terra), 6 - 3, "ceil(2·1.05)");
 	}
 
 	/// The bucket charge is never crafted: water is something the world
-	/// hands you, so no amount of Aqua buys a charge at any level — the
+	/// hands you, so no amount of Unda buys a charge at any level — the
 	/// only way to fill the tool is to go and scoop one. (Its old
 	/// extraction half left with the bench's extract slot: the springstone
-	/// node is the Aqua economy now.)
+	/// node is the Unda economy now.)
 	#[test]
 	fn the_bucket_charge_is_never_crafted() {
 		let mut inv = Inventory::default();
-		inv.add_sub(Essence::Aqua, 100_000);
+		inv.add_sub(Essence::Unda, 100_000);
 		let before = inv.clone();
 		assert!(!apply_alchemy(
 			&mut inv,

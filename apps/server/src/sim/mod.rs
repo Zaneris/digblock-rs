@@ -3044,14 +3044,20 @@ mod tests {
 		);
 		assert_eq!(sim.test_digging(1), None, "no hold opened");
 
-		// One level short is still short — the gate is the recipe's level.
-		sim.bench_set_alchemy_level(1, 9);
+		// One level short is still short — the gate is the recipe's level,
+		// read out of the unlock table rather than written down here.
+		let need = digblock_core::unlock::pickup(BlockType::Torch);
+		sim.bench_set_alchemy_level(1, need - 1);
 		start(&mut sim);
-		assert_eq!(sim.test_digging(1), None, "still gated at Alchemy 9");
+		assert_eq!(sim.test_digging(1), None, "still gated one level short");
 
-		sim.bench_set_alchemy_level(1, 10);
+		sim.bench_set_alchemy_level(1, need);
 		start(&mut sim);
-		assert_eq!(sim.test_digging(1), Some(cell), "gate cleared at 10");
+		assert_eq!(
+			sim.test_digging(1),
+			Some(cell),
+			"gate cleared at the recipe"
+		);
 
 		// The stone underneath was never the craft gate's business.
 		sim.test_set_cell(cell.0, cell.1, cell.2, BlockType::Air as u16);
@@ -3240,7 +3246,7 @@ mod tests {
 		let level = digblock_core::unlock::craft(BlockType::LumberSlab).expect("a recipe");
 		sim.bench_set_alchemy_level(1, level);
 		sim.test_grant(1, BlockType::Wood, 100_000);
-		sim.test_grant_essence(1, Essence::Flora, 100_000);
+		sim.test_grant_essence(1, Essence::Vitae, 100_000);
 		let pace = digblock_core::alchemy::craft_pace_ticks(BlockType::LumberSlab, level);
 		let burst = digblock_core::alchemy::bench_burst_ticks(level);
 		let admits = (burst / pace as f32) as u32;

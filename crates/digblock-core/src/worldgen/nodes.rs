@@ -62,8 +62,15 @@ impl Levels {
 /// Does this player SEE this node kind at all? Each kind answers to
 /// exactly one skill's reveal table; a block in neither table is not a
 /// node and is never revealed.
+///
+/// Public because it must be the ONLY spelling of the question. The mesh
+/// stamp used to carry its own, written as a disjunction rather than this
+/// if/else — which answers the opposite way for a block in neither table,
+/// and the stamp's second pass reverts a claim on exactly that answer. A
+/// tier shipped or retired without a reveal entry would have been left
+/// standing in the picture and refused at the dig.
 #[inline]
-fn reveal_met(node: BlockType, levels: Levels) -> bool {
+pub fn reveal_met(node: BlockType, levels: Levels) -> bool {
 	if let Some(need) = crate::unlock::reveal(node) {
 		levels.mining >= need
 	} else if let Some(need) = crate::unlock::alchemy_reveal(node) {
@@ -209,9 +216,14 @@ const HEARTWOOD_SALT: u64 = 0x8ea7_c0de_57ee_d001;
 /// walks between finds.
 const HEARTWOOD_IN_100: u64 = 12;
 
-/// How many trunk cells of an ordinary heartwood tree manifest, counted
-/// up from the cell above the root — the heart sits low, at eye height,
-/// where a standing player's crosshair naturally lands.
+/// How many trunk cells of a heartwood tree manifest, counted up from the
+/// cell above the root — the heart sits low, at eye height, where a
+/// standing player's crosshair naturally lands.
+///
+/// Every trunk column that carries a heart carries this much of one, a
+/// landmark's four included: what the giant is worth is settled by its
+/// footprint and by never rolling, and a heart that also grew with the
+/// trunk would make one tree worth a session.
 const HEART_CELLS: i32 = 2;
 
 /// Does this cell hold heartwood — the living core of a worldgen tree?
@@ -219,10 +231,14 @@ const HEART_CELLS: i32 = 2;
 /// Pure in `(x, y, z, seed)` like [`ore::ore_at`]: the trunk comes from
 /// [`crate::decoration::trunk_at`] (itself a pure candidate rule), and
 /// whether a tree HAS a heart is one salted roll on the tree's anchor
-/// column, so every cell of one trunk agrees. A landmark tree always has
-/// one, trunk entire — the rare giant is rare enough that meeting one
-/// should always be worth the detour — while an ordinary tree rolls, and
-/// carries its heart in the [`HEART_CELLS`] above the root.
+/// column, so every cell of one trunk agrees. A landmark tree skips that
+/// roll and always has one — the rare giant is rare enough that meeting
+/// one should always be worth the detour — while an ordinary tree rolls
+/// for it. What a landmark does NOT get is a bigger heart: both carry it
+/// in the [`HEART_CELLS`] above the root, so the giant's reward is its
+/// four trunk columns and the certainty, not a seam the height of a tree.
+/// Paying by the cell, a full-trunk landmark was worth more Alchemy XP
+/// than the first dozen levels cost put together.
 ///
 /// Callers still need the LIVE cell to hold Wood and be unedited
 /// ([`revealed`] checks both): a canopy written first, a cliff that left
@@ -233,13 +249,11 @@ pub fn heartwood_at(x: i32, y: i32, z: i32, seed: f64) -> bool {
 	let Some(t) = crate::decoration::trunk_at(x, z, seed) else {
 		return false;
 	};
-	if t.landmark {
-		return (t.y0..=t.y1).contains(&y);
-	}
 	let heart = (t.y0 + 1)..=(t.y0 + HEART_CELLS).min(t.y1);
 	heart.contains(&y)
-		&& ore::mix(t.anchor.0, 0, t.anchor.1, seed.to_bits(), HEARTWOOD_SALT) % 100
-			< HEARTWOOD_IN_100
+		&& (t.landmark
+			|| ore::mix(t.anchor.0, 0, t.anchor.1, seed.to_bits(), HEARTWOOD_SALT) % 100
+				< HEARTWOOD_IN_100)
 }
 
 /// Salt for the springstone stream.
@@ -500,8 +514,13 @@ mod tests {
 		}
 	}
 
-	/// A landmark's whole trunk is heartwood — the rare giant is always
+	/// A landmark never rolls for its heart — the rare giant is always
 	/// worth the detour — while ordinary trees roll, and most decline.
+	///
+	/// The heart is the same SIZE either way, and that half is asserted
+	/// too: a landmark's four trunk columns each carry [`HEART_CELLS`] and
+	/// nothing above them. It used to be the whole trunk, which paid more
+	/// Alchemy XP off one tree than the first dozen levels cost.
 	#[test]
 	fn landmarks_always_carry_a_heart_and_most_trees_do_not() {
 		let mut landmark_checked = false;
@@ -516,7 +535,12 @@ mod tests {
 							continue;
 						}
 						for y in t.y0..=t.y1 {
-							assert!(heartwood_at(x, y, z, SEED), "landmark trunk at {x},{y},{z}");
+							let heart = (t.y0 + 1..=t.y0 + HEART_CELLS).contains(&y);
+							assert_eq!(
+								heartwood_at(x, y, z, SEED),
+								heart,
+								"landmark trunk at {x},{y},{z}"
+							);
 						}
 						landmark_checked = true;
 						break 'l;
