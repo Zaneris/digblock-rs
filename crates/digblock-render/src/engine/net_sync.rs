@@ -30,12 +30,12 @@ impl Engine {
 			vel: Vec3::ZERO,
 		});
 		self.camera.pos = pos;
-		self.correction_offset = Vec3::ZERO;
-		self.pending_ack = None;
+		self.session.correction_offset = Vec3::ZERO;
+		self.session.pending_ack = None;
 		self.audio.prev_player_pos = pos;
 		self.audio.prev_wet = true;
 		self.audio.fall_from_y = pos.y;
-		self.tick_lerp.reset(pos);
+		self.session.tick_lerp.reset(pos);
 		self.dig = None;
 		if look != Vec3::ZERO {
 			self.face(look);
@@ -64,10 +64,10 @@ impl Engine {
 	/// Feed line in a specific 0xAABBGGRR color (chat is tinted per
 	/// player, matching the sender's body color).
 	pub(super) fn push_feed_colored(&mut self, text: String, color: u32) {
-		if self.feed.len() >= FEED_MAX {
-			self.feed.remove(0);
+		if self.session.feed.len() >= FEED_MAX {
+			self.session.feed.remove(0);
 		}
-		self.feed.push((text, FEED_TTL_SECS, color));
+		self.session.feed.push((text, FEED_TTL_SECS, color));
 	}
 
 	/// Hang up deliberately: say goodbye, then drop the connection.
@@ -79,7 +79,7 @@ impl Engine {
 	/// waits out an idle timeout before they can rejoin, since one
 	/// account may hold only one live connection.
 	pub(super) fn leave_server(&mut self) -> bool {
-		let Some(mut net) = self.net.take() else {
+		let Some(mut net) = self.session.client.take() else {
 			return false;
 		};
 		net.disconnect();
@@ -89,14 +89,14 @@ impl Engine {
 	/// Drain the network: remote edits into the pipeline, acks stashed
 	/// for the walk branch, disconnects fall back to single-player.
 	pub(super) fn pump_net(&mut self, dt: f32) {
-		let Some(mut net) = self.net.take() else {
+		let Some(mut net) = self.session.client.take() else {
 			// Single player: no connection to report on. Without this the
 			// overlay would keep showing the last session's numbers.
-			self.metrics.net = None;
+			self.bench.metrics.net = None;
 			return;
 		};
 		net.remotes.advance(dt);
-		let mut events = std::mem::take(&mut self.net_events);
+		let mut events = std::mem::take(&mut self.session.net_events);
 		events.clear();
 		net.poll(&mut events, dt);
 		use digblock_net::NetEvent;
@@ -111,7 +111,7 @@ impl Engine {
 		// the frame they arrive is a multi-hundred-millisecond stall right
 		// at the moment the world appears. Fluid broadcasts are the same
 		// shape, smaller and recurring.
-		let mut queue = std::mem::take(&mut self.net_backlog);
+		let mut queue = std::mem::take(&mut self.session.net_backlog);
 		for ev in events.drain(..) {
 			match ev {
 				// Acks are the one event with NO ordering dependency on
@@ -128,7 +128,7 @@ impl Engine {
 				NetEvent::Ack {
 					acked_input_tick,
 					me,
-				} => self.pending_ack = Some((acked_input_tick, me)),
+				} => self.session.pending_ack = Some((acked_input_tick, me)),
 				other => queue.push_back(other),
 			}
 		}
@@ -137,7 +137,7 @@ impl Engine {
 		// Stopping still parks the WHOLE remaining queue rather than
 		// letting cheap events overtake — the ordering rule above is what
 		// makes that mandatory, and it is unchanged by the budget's units.
-		let edit_deadline = net_edit_budget_ms(self.metrics.refresh_ms());
+		let edit_deadline = net_edit_budget_ms(self.bench.metrics.refresh_ms());
 		let t_edits = web_time::Instant::now();
 		let mut edits_applied = 0usize;
 		let mut drop_net = false;
@@ -166,7 +166,7 @@ impl Engine {
 					spawn_look,
 					..
 				} => {
-					self.my_player_id = Some(player_id);
+					self.session.my_player_id = Some(player_id);
 					// NOT `menu.on_welcome()` yet: the Connecting screen IS
 					// the join's loading cover, and closing it here is what
 					// used to show the player pristine worldgen for the
@@ -191,7 +191,7 @@ impl Engine {
 				NetEvent::Ack {
 					acked_input_tick,
 					me,
-				} => self.pending_ack = Some((acked_input_tick, me)),
+				} => self.session.pending_ack = Some((acked_input_tick, me)),
 				NetEvent::Edit {
 					cell,
 					cell_value,
@@ -325,7 +325,7 @@ impl Engine {
 					// sanitized copy); the reconcile below normally lands on
 					// exactly this, and any divergence gets reported by the
 					// per-frame layout sync.
-					self.last_layout_sent = Some((
+					self.session.last_layout_sent = Some((
 						self.hotbar.to_wire().to_vec(),
 						self.inv_grid.to_wire().to_vec(),
 					));
@@ -366,6 +366,7 @@ impl Engine {
 					}
 					if let Some(s) = digblock_core::skills::Skill::try_from_index(skill) {
 						let who = self
+							.session
 							.player_names
 							.get(&player)
 							.cloned()
@@ -375,10 +376,11 @@ impl Engine {
 				}
 				NetEvent::PlayerJoined { id, name } => {
 					self.push_feed(format!("{name} joined the server."));
-					self.player_names.insert(id, name);
+					self.session.player_names.insert(id, name);
 				}
 				NetEvent::PlayerLeft { id } => {
 					let name = self
+						.session
 						.player_names
 						.remove(&id)
 						.unwrap_or_else(|| format!("player {id}"));
@@ -394,7 +396,7 @@ impl Engine {
 				// Hard-set: inter-beat drift is microscopic, and after a
 				// paused clock (backgrounded tab) a snap is what we want.
 				NetEvent::TimeOfDay { tod } => self.sun.tod = tod,
-				NetEvent::AdminCommands { commands } => self.chat.set_commands(commands),
+				NetEvent::AdminCommands { commands } => self.ui.chat.set_commands(commands),
 				NetEvent::Chat { from, text } => {
 					if from == digblock_net::protocol::SERVER_ID {
 						// Server-authored line (admin command replies):
@@ -404,13 +406,14 @@ impl Engine {
 					}
 					// Our own echo: the roster never carries ourselves, so
 					// resolve through the session name instead.
-					let name = if Some(from) == self.my_player_id {
+					let name = if Some(from) == self.session.my_player_id {
 						self.config
 							.player_name
 							.clone()
 							.unwrap_or_else(|| "me".into())
 					} else {
-						self.player_names
+						self.session
+							.player_names
 							.get(&from)
 							.cloned()
 							.unwrap_or_else(|| format!("player {from}"))
@@ -421,39 +424,39 @@ impl Engine {
 				NetEvent::Refused { reason } => {
 					self.push_feed(format!("Server refused: {reason}."));
 					log::warn!("server refused: {reason}; continuing single-player");
-					self.menu.on_net_failed(&reason);
+					self.ui.menu.on_net_failed(&reason);
 					drop_net = true;
 				}
 				NetEvent::Disconnected { reason } => {
 					self.push_feed(format!("Disconnected: {reason}."));
 					log::warn!("disconnected: {reason}; continuing single-player");
-					self.menu.on_net_failed(&reason);
+					self.ui.menu.on_net_failed(&reason);
 					drop_net = true;
 				}
 			}
 		}
-		self.net_events = events;
+		self.session.net_events = events;
 		// A disconnect voids everything still queued; keeping it would
 		// apply a dead session's edits to whatever world comes next.
 		if drop_net {
 			queue.clear();
 		}
-		self.metrics.gauges.net_backlog = queue.len() as u32;
-		self.net_backlog = queue;
+		self.bench.metrics.gauges.net_backlog = queue.len() as u32;
+		self.session.net_backlog = queue;
 
 		// Cleared on the way out, so the overlay reads "offline" the moment
 		// a session ends rather than freezing on its last numbers.
-		self.metrics.net = (!drop_net).then(|| net.stats());
+		self.bench.metrics.net = (!drop_net).then(|| net.stats());
 		if !drop_net {
-			self.net = Some(net);
+			self.session.client = Some(net);
 		} else {
-			self.pending_ack = None;
-			self.correction_offset = Vec3::ZERO;
-			self.my_player_id = None;
-			self.last_layout_sent = None;
+			self.session.pending_ack = None;
+			self.session.correction_offset = Vec3::ZERO;
+			self.session.my_player_id = None;
+			self.session.last_layout_sent = None;
 			// No one left to talk to: discard any half-typed chat line.
-			if self.chat.is_open() {
-				self.chat.handle_input(&InputEvent::Key {
+			if self.ui.chat.is_open() {
+				self.ui.chat.handle_input(&InputEvent::Key {
 					key: Key::Escape,
 					pressed: true,
 				});

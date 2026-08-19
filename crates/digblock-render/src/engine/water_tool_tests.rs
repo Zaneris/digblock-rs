@@ -108,7 +108,7 @@ fn right_click_pours_the_charge_and_only_the_charge() {
 
 	// Empty: the click is consumed and nothing happens.
 	engine.update_target();
-	engine.click_place = true;
+	engine.input.click_place = true;
 	engine.apply_place();
 	assert_eq!(
 		engine.pipeline.block_at(target.0, target.1, target.2),
@@ -118,7 +118,7 @@ fn right_click_pours_the_charge_and_only_the_charge() {
 
 	engine.inventory.add(BlockType::Water, 1);
 	engine.update_target();
-	engine.click_place = true;
+	engine.input.click_place = true;
 	engine.apply_place();
 	assert_eq!(
 		engine.pipeline.block_at(target.0, target.1, target.2),

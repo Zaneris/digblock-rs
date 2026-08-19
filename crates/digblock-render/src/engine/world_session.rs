@@ -10,7 +10,7 @@ impl Engine {
 	pub(super) fn swap_world(&mut self, seed: f64, spawn: Vec3) {
 		log::info!("joining server world: seed {seed}");
 		self.close_local_save();
-		self.player_names.clear();
+		self.session.player_names.clear();
 		self.push_feed("Connected to server.".into());
 		self.seed = seed;
 		self.save.spawn_pos = spawn;
@@ -51,16 +51,16 @@ impl Engine {
 		// A sweep in flight names columns of the world being left.
 		self.world_jobs.abandon();
 		self.tick_accum = 0.0;
-		self.pending_ack = None;
-		self.correction_offset = Vec3::ZERO;
+		self.session.pending_ack = None;
+		self.session.correction_offset = Vec3::ZERO;
 		// Parked net events belong to the session that queued them. `pump_net`
 		// clears the backlog when IT observes a disconnect, but a menu-driven
-		// Leave Server drops `self.net` outright, so `pump_net` returns early
+		// Leave Server drops `self.session.client` outright, so `pump_net` returns early
 		// and the queue simply freezes — thousands of a half-streamed join
 		// sync's edits waiting to be applied to whatever world comes next.
 		// (A stale `Welcome` in there re-swaps the world to the old seed; a
 		// stale `Disconnected` kills the fresh connection on arrival.)
-		self.net_backlog.clear();
+		self.session.net_backlog.clear();
 		// Likewise session state: a cell one server refused stays refused at
 		// the same coordinates in the next world otherwise, because the only
 		// other clear needs the dig button held AND aimed elsewhere.
@@ -74,8 +74,8 @@ impl Engine {
 		// And the bench job, which survives the SCREEN closing but not
 		// the world: it points at this world's stacks and this server's
 		// bucket, neither of which exists in whatever comes next.
-		self.alch_screen.abandon();
-		self.tick_lerp.reset(pos);
+		self.ui.alch_screen.abandon();
+		self.session.tick_lerp.reset(pos);
 		// A reused pipeline (entering the world already streamed behind
 		// the menu) keeps its meshes and waterfall voices — the world is
 		// identical, clearing would only force a full re-upload.
@@ -119,7 +119,8 @@ impl Engine {
 		// that tool in from a bucket that was never in the hand. Callers
 		// install the layout first; a join has none yet, and the server
 		// `Layout` rebase animating when it lands is what `ToolSwap` documents.
-		self.tool_swap
+		self.input
+			.tool_swap
 			.advance(crate::hotbar::ToolSwap::SECS, self.hotbar.active_tool());
 		// A replaced pipeline starts with no Mining level at all, so a
 		// world entry has to hand it the level again or a high-level miner
@@ -175,10 +176,10 @@ impl Engine {
 		self.inventory = Inventory::default();
 		self.skills = Default::default();
 		self.vfx.xp_toasts.clear();
-		self.player_names.clear();
+		self.session.player_names.clear();
 		self.reset_world_transients(spawn, true);
 		self.save.in_local_save = false;
-		self.menu.on_returned_to_title();
+		self.ui.menu.on_returned_to_title();
 	}
 
 	/// Enter an opened named save: rebuild the world around its seed +
@@ -190,7 +191,7 @@ impl Engine {
 			save.meta.name,
 			save.meta.seed
 		);
-		self.player_names.clear();
+		self.session.player_names.clear();
 		let spawn = digblock_core::player::spawn(save.meta.seed);
 		self.save.spawn_pos = spawn;
 		let overlay: digblock_core::overlay::EditOverlay = save.edits.into_iter().collect();
@@ -201,7 +202,7 @@ impl Engine {
 		// window is when the player would otherwise stand over an empty
 		// world (held by the walk gate, seconds long on web's inline
 		// executor).
-		let reuse = self.net.is_none()
+		let reuse = self.session.client.is_none()
 			&& save.meta.seed == self.seed
 			&& overlay.is_empty()
 			&& self.pipeline.overlay().is_some_and(|o| o.is_empty());
@@ -262,7 +263,7 @@ impl Engine {
 		self.reset_world_transients(start, !reuse);
 		self.save.in_local_save = true;
 		self.save.player_save_accum = 0.0;
-		self.menu.on_world_entered();
+		self.ui.menu.on_world_entered();
 	}
 
 	/// Handle one menu world intent against the injected store.
@@ -277,7 +278,7 @@ impl Engine {
 				// keeps the already-streamed pipeline instead of
 				// regenerating it from scratch. Otherwise a fresh
 				// clock-derived seed (no `rand` — wasm cleanliness).
-				let seed = if self.net.is_none() && !self.save.in_local_save {
+				let seed = if self.session.client.is_none() && !self.save.in_local_save {
 					self.seed
 				} else {
 					let nanos = web_time::SystemTime::now()
@@ -296,7 +297,7 @@ impl Engine {
 						self.enter_local_world(save);
 					}
 					Some(Err(e)) => {
-						self.menu.set_worlds_status(e);
+						self.ui.menu.set_worlds_status(e);
 						self.push_world_list();
 					}
 					None => {}
@@ -309,7 +310,7 @@ impl Engine {
 				let opened = self.save.world_store.as_mut().map(|s| s.open_world(&id));
 				match opened {
 					Some(Ok(save)) => self.enter_local_world(save),
-					Some(Err(e)) => self.menu.set_worlds_status(e),
+					Some(Err(e)) => self.ui.menu.set_worlds_status(e),
 					None => {}
 				}
 			}
@@ -345,7 +346,7 @@ impl Engine {
 				compatible: w.compatible,
 			})
 			.collect();
-		self.menu.set_world_list(rows);
+		self.ui.menu.set_world_list(rows);
 	}
 
 	/// Hold the world after an arrival — a join or a teleport — until the server
@@ -355,7 +356,7 @@ impl Engine {
 	/// Offline arrivals never hold: a local world's edits are already in the
 	/// overlay before the pipeline classifies air. That is guaranteed by the
 	/// CALL SITES — both are `pump_net` arms, and an offline session produces no
-	/// `NetEvent`s at all. It must not be guarded on `self.net` here: `pump_net`
+	/// `NetEvent`s at all. It must not be guarded on `self.session.client` here: `pump_net`
 	/// owns the connection by value for the whole drain, so `is_some()` reads
 	/// false on exactly the two paths that need the hold, which stranded every
 	/// join on "Joining world..." forever — a timeout escape hatch cannot fire
@@ -370,12 +371,12 @@ impl Engine {
 	/// menu already gone.
 	pub(super) fn end_arrival_hold(&mut self) {
 		if self.save.arrival_hold.take().is_some() {
-			self.menu.on_welcome();
+			self.ui.menu.on_welcome();
 			// The pose we are about to start simulating from is the one the
 			// server gave us, now standing on the real world rather than on
 			// worldgen. Re-anchor so the first drawn frame does not
 			// interpolate out of wherever the held frames left the lerp.
-			self.tick_lerp.reset(self.player.pos);
+			self.session.tick_lerp.reset(self.player.pos);
 			self.audio.prev_player_pos = self.player.pos;
 		}
 	}

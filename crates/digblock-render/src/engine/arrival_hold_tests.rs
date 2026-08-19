@@ -31,8 +31,8 @@ fn welcome() -> ServerMsg {
 /// cannot fire on a hold that was never set.
 ///
 /// This shipped broken because `begin_arrival_hold` asked
-/// `self.net.is_some()`, and its only two call sites are `pump_net`
-/// arms — where the connection is owned by value (`self.net.take()`)
+/// `self.session.client.is_some()`, and its only two call sites are `pump_net`
+/// arms — where the connection is owned by value (`self.session.client.take()`)
 /// and the field always reads `None`. So drive the real event path
 /// rather than calling the helper: a unit test of the helper alone
 /// passes against exactly the bug it is meant to catch.

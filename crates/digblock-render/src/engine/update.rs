@@ -15,8 +15,8 @@ impl Engine {
 		// CSV rows either side are the same pose in the same thermal state
 		// with only the GI's derived age differing — which is the only way
 		// to separate "the ceiling ratcheted" from "the view got busier".
-		self.frames_seen += 1;
-		if self.config.gi_drill_at == Some(self.frames_seen) {
+		self.bench.frames_seen += 1;
+		if self.config.gi_drill_at == Some(self.bench.frames_seen) {
 			let (sky, emit) = self.renderer_gi_state();
 			if let Some(r) = self.renderer.as_mut() {
 				r.gi_clear_derived_state();
@@ -24,7 +24,7 @@ impl Engine {
 			self.pipeline.gi_redirty_all();
 			log::info!(
 				"GI drill at frame {}: cleared (sky_y {sky:.0}, {emit} emitters)",
-				self.frames_seen
+				self.bench.frames_seen
 			);
 		}
 		// DIG_SHAPES showcase: chunks stream in asynchronously, so retry
@@ -57,12 +57,12 @@ impl Engine {
 			// that path opens the menu, loads the user's SAVED settings,
 			// turns audio on and dials the master. A measurement taken
 			// there is not hermetic and not comparable to anything.
-			if self.config.fly.is_none_or(|n| self.fly_frames < n) {
+			if self.config.fly.is_none_or(|n| self.bench.fly_frames < n) {
 				self.fly_step();
-				self.fly_frames += 1;
+				self.bench.fly_frames += 1;
 			}
 			self.advance_hand(dt);
-			self.pending.update_ms = ms_since(t_update);
+			self.bench.pending.update_ms = ms_since(t_update);
 			return;
 		}
 		if let Some(n) = self.config.fly {
@@ -73,45 +73,45 @@ impl Engine {
 			// differs in the last ulp, which is a subpixel shift across the
 			// whole frame and would swamp the diff the harness exists to
 			// read.
-			while self.fly_frames < n {
+			while self.bench.fly_frames < n {
 				self.fly_step();
-				self.fly_frames += 1;
+				self.bench.fly_frames += 1;
 				if !self.config.warp {
 					break;
 				}
 			}
 			self.advance_hand(dt);
-			self.pending.update_ms = ms_since(t_update);
+			self.bench.pending.update_ms = ms_since(t_update);
 			return;
 		}
 
 		const LOOK_SENS: f32 = 0.12; // degrees per raw mouse unit
-		let (lx, ly) = std::mem::take(&mut self.look_accum);
-		let touch_look = self.touch.take_look();
+		let (lx, ly) = std::mem::take(&mut self.input.look_accum);
+		let touch_look = self.input.touch.take_look();
 		self.camera
 			.look(lx * LOOK_SENS + touch_look.x, ly * LOOK_SENS + touch_look.y);
 
 		// Menu plumbing: service responses in, commands out, disconnect
 		// intents applied. The world (and any live connection) keeps
 		// running underneath the open menu.
-		self.menu.set_connected(self.net.is_some());
+		self.ui.menu.set_connected(self.session.client.is_some());
 		let responses: Vec<crate::menu::MenuResponse> = self
 			.services
 			.as_ref()
 			.map(|s| s.resp_rx.try_iter().collect())
 			.unwrap_or_default();
 		for resp in responses {
-			if let Some((transport, token)) = self.menu.on_response(resp) {
+			if let Some((transport, token)) = self.ui.menu.on_response(resp) {
 				self.set_transport_with_token(transport, token);
 			}
 		}
-		for intent in self.menu.take_world_intents() {
+		for intent in self.ui.menu.take_world_intents() {
 			self.handle_world_intent(intent);
 		}
-		if self.menu.take_disconnect() && self.leave_server() {
-			self.pending_ack = None;
-			self.correction_offset = Vec3::ZERO;
-			self.my_player_id = None;
+		if self.ui.menu.take_disconnect() && self.leave_server() {
+			self.session.pending_ack = None;
+			self.session.correction_offset = Vec3::ZERO;
+			self.session.my_player_id = None;
 			self.push_feed("Left the server.".into());
 			// Without a store there is no save list to return to, so a
 			// store-less run keeps playing the server's seed offline
@@ -123,7 +123,7 @@ impl Engine {
 		// The local-world counterpart: flush the save first, then take the
 		// same road back to the title. Unconditional — a store-less
 		// ephemeral "Play Local" world has a title menu to go back to.
-		if self.menu.take_leave_world() {
+		if self.ui.menu.take_leave_world() {
 			self.close_local_save();
 			self.push_feed("Left the world.".into());
 			self.return_to_title();
@@ -132,27 +132,28 @@ impl Engine {
 		// Connected, the server teleports us (Teleported lands in
 		// pump_net); local play resolves and lands immediately.
 		self.save.spawn_cooldown = (self.save.spawn_cooldown - dt).max(0.0);
-		self.menu
+		self.ui
+			.menu
 			.set_spawn_cooldown(self.save.spawn_cooldown.ceil() as u32);
 		// The menu's Inventory/Alchemy rows: the menu closed itself; the
 		// screen takes over the free cursor seamlessly.
-		if self.menu.take_inventory() {
-			self.inv_screen.open();
+		if self.ui.menu.take_inventory() {
+			self.ui.inv_screen.open();
 		}
-		if self.menu.take_alchemy() {
-			self.alch_screen.open();
+		if self.ui.menu.take_alchemy() {
+			self.ui.alch_screen.open();
 		}
-		if self.menu.take_character() {
-			self.char_screen.open();
+		if self.ui.menu.take_character() {
+			self.ui.char_screen.open();
 		}
-		let spawn_requested =
-			self.menu.take_return_spawn() | std::mem::take(&mut self.save.return_spawn_requested);
+		let spawn_requested = self.ui.menu.take_return_spawn()
+			| std::mem::take(&mut self.save.return_spawn_requested);
 		if spawn_requested && self.save.spawn_cooldown == 0.0 {
 			self.save.spawn_cooldown = digblock_net::protocol::RETURN_SPAWN_COOLDOWN_SECS as f32;
 			// Set before the arms: it is what the teleport that lands —
 			// this frame locally, or a round trip later — words itself by.
 			self.save.spawn_return_pending = true;
-			match self.net.as_mut() {
+			match self.session.client.as_mut() {
 				Some(net) if net.ready() => net.send_return_to_spawn(),
 				_ => {
 					// Same rule the server runs: relocate sideways out of
@@ -166,24 +167,24 @@ impl Engine {
 			}
 		}
 		if let Some(services) = &self.services {
-			for cmd in self.menu.take_commands() {
+			for cmd in self.ui.menu.take_commands() {
 				// The account's name becomes the session name, so the Hello
 				// introduces us consistently. It is a courtesy only: the
 				// server overwrites it with the master's answer, which is
 				// now the same string by construction.
 				if matches!(cmd, crate::menu::MenuCommand::Join { .. }) {
-					self.config.player_name = self.menu.account().and_then(|a| a.name.clone());
+					self.config.player_name = self.ui.menu.account().and_then(|a| a.name.clone());
 				}
 				let _ = services.cmd_tx.send(cmd);
 			}
 		}
-		if let Some(s) = self.menu.take_settings_change() {
+		if let Some(s) = self.ui.menu.take_settings_change() {
 			self.apply_settings(s);
 		}
 
 		let t_net = web_time::Instant::now();
 		self.pump_net(dt);
-		self.pending.net_ms = ms_since(t_net);
+		self.bench.pending.net_ms = ms_since(t_net);
 		// Keep the arrangement invariants (a type lives on the bar or in
 		// the grid, never both; nothing owned is unplaced) and mirror any
 		// change to the server BEFORE this frame's clicks send edits —
@@ -194,14 +195,14 @@ impl Engine {
 			&mut self.hotbar,
 			&mut self.inv_grid,
 		);
-		if let Some(net) = self.net.as_mut()
+		if let Some(net) = self.session.client.as_mut()
 			&& net.ready()
 		{
 			net.predictor.active_slot = self.hotbar.selected_index() as u8;
 			// First send only after the join-sync `ServerMsg::Layout`
 			// primed the dedup — reporting a pre-sync default would
 			// overwrite the identity's stored arrangement.
-			if let Some((last_bar, last_grid)) = self.last_layout_sent.as_ref() {
+			if let Some((last_bar, last_grid)) = self.session.last_layout_sent.as_ref() {
 				// `to_wire` returns arrays, so the comparison is free;
 				// only an actual change pays for the Vecs.
 				let bar = self.hotbar.to_wire();
@@ -209,7 +210,7 @@ impl Engine {
 				if last_bar.as_slice() != bar.as_slice() || last_grid.as_slice() != grid.as_slice()
 				{
 					net.send_layout(&bar, &grid);
-					self.last_layout_sent = Some((bar.to_vec(), grid.to_vec()));
+					self.session.last_layout_sent = Some((bar.to_vec(), grid.to_vec()));
 				}
 			}
 		}
@@ -217,7 +218,7 @@ impl Engine {
 		// history while you type, and there is nothing to show if the only
 		// copy was thrown away the moment it faded. `feed` is capped at
 		// FEED_MAX either way, so this is a fixed-size ring.
-		for m in &mut self.feed {
+		for m in &mut self.session.feed {
 			m.1 = (m.1 - dt).max(FEED_TTL_FLOOR);
 		}
 		// XP toasts fade out and drop (unlike the feed, nothing rereads
@@ -248,31 +249,31 @@ impl Engine {
 		// enough that standing at the bench for it would be idle time,
 		// so the job runs while you play and only leaving the world
 		// abandons it.
-		if self.alch_screen.is_open() || self.alch_screen.busy() {
+		if self.ui.alch_screen.is_open() || self.ui.alch_screen.busy() {
 			let view = crate::ui::screens::alchemy::AlchView::build(&self.inventory, &self.skills);
-			if let Some(act) = self.alch_screen.tick(dt, &view) {
+			if let Some(act) = self.ui.alch_screen.tick(dt, &view) {
 				self.apply_alchemy_action(act);
 			}
 		}
-		if let Some(net) = self.net.as_ref() {
+		if let Some(net) = self.session.client.as_ref() {
 			// Reconciliation health line, on the metrics cadence.
-			self.net_log_timer += dt;
-			if self.net_log_timer >= 5.0 && net.ready() {
-				let avg = if self.net_corrections > 0 {
-					self.net_error_accum / self.net_corrections as f32
+			self.session.net_log_timer += dt;
+			if self.session.net_log_timer >= 5.0 && net.ready() {
+				let avg = if self.session.net_corrections > 0 {
+					self.session.net_error_accum / self.session.net_corrections as f32
 				} else {
 					0.0
 				};
 				log::info!(
 					"net: {} corrections (avg {:.3} blocks), {} pending edits, {} deferred",
-					self.net_corrections,
+					self.session.net_corrections,
 					avg,
 					net.edits.len(),
 					self.pipeline.deferred_edits(),
 				);
-				self.net_log_timer = 0.0;
-				self.net_corrections = 0;
-				self.net_error_accum = 0.0;
+				self.session.net_log_timer = 0.0;
+				self.session.net_corrections = 0;
+				self.session.net_error_accum = 0.0;
 			}
 		}
 
@@ -285,7 +286,7 @@ impl Engine {
 		self.apply_place();
 		// A stationary touch hold sends no events, so its promotion to
 		// digging has to be polled — ahead of the dig ticks that read it.
-		self.touch.tick(web_time::Instant::now());
+		self.input.touch.tick(web_time::Instant::now());
 		self.dig_accum = (self.dig_accum + dt).min(0.25);
 		while self.dig_accum >= TICK {
 			self.dig_accum -= TICK;
@@ -300,7 +301,7 @@ impl Engine {
 		// the walk/fly camera mode; idle (empty queue) it costs nothing.
 		// Connected, the server owns fluid — its results arrive as edits.
 		let t_sim = web_time::Instant::now();
-		if self.net.is_none() {
+		if self.session.client.is_none() {
 			use digblock_core::fluid::{FLOW_BUDGET, FLOW_STEP_SECS};
 			self.flow_accum = (self.flow_accum + dt).min(1.0);
 			while self.flow_accum >= FLOW_STEP_SECS {
@@ -310,7 +311,7 @@ impl Engine {
 			}
 			self.step_world_jobs();
 		}
-		self.pending.sim_ms = ms_since(t_sim);
+		self.bench.pending.sim_ms = ms_since(t_sim);
 
 		// Named-save persistence, after every world mutation this frame
 		// (dig, place, fluid): forward recorded edits, throttle player
@@ -319,7 +320,7 @@ impl Engine {
 		let t_persist = web_time::Instant::now();
 		let recorded = self.pipeline.take_recorded_edits();
 		if let Some(store) = self.save.world_store.as_mut() {
-			if self.save.in_local_save && self.net.is_none() {
+			if self.save.in_local_save && self.session.client.is_none() {
 				for (x, y, z, cell) in recorded {
 					store.append_edit(x, y, z, cell);
 				}
@@ -341,7 +342,7 @@ impl Engine {
 			}
 			store.maintain(self.pipeline.overlay());
 		}
-		self.pending.persist_ms = ms_since(t_persist);
+		self.bench.pending.persist_ms = ms_since(t_persist);
 
 		// Arrival hold: run the wait down and give up on it if the marker
 		// never lands. A server that wedges mid-sync, or one whose outbound
@@ -356,7 +357,7 @@ impl Engine {
 			// the timeout run out over a server that is already gone. This
 			// covers every drop path at once (menu disconnect, refusal,
 			// timeout, `return_to_title`) instead of one hook each.
-			if self.net.is_none() {
+			if self.session.client.is_none() {
 				self.end_arrival_hold();
 			} else if left <= 0.0 {
 				log::warn!(
@@ -369,24 +370,24 @@ impl Engine {
 			}
 		}
 
-		if self.walking {
+		if self.input.walking {
 			// Fixed-rate player simulation (Java feel was tuned per-frame at
 			// that same rate; the accumulator preserves it at any display rate).
 			// Always drained, honoured only in double-tap mode — an undrained
 			// edge would fire the moment the setting flipped back.
-			let touch_jump = self.touch.take_jump();
-			let jump = self.keys.up
+			let touch_jump = self.input.touch.take_jump();
+			let jump = self.input.keys.up
 				|| if self.config.touch_jump_button {
-					self.hud_jump_held
+					self.input.hud_jump_held
 				} else {
 					touch_jump
 				};
 			let key_axis = Vec2::new(
-				(self.keys.d as i32 - self.keys.a as i32) as f32,
-				(self.keys.w as i32 - self.keys.s as i32) as f32,
+				(self.input.keys.d as i32 - self.input.keys.a as i32) as f32,
+				(self.input.keys.w as i32 - self.input.keys.s as i32) as f32,
 			);
 			let intent = PlayerIntent {
-				move_axis: key_axis + self.touch.move_axis(),
+				move_axis: key_axis + self.input.touch.move_axis(),
 				jump,
 			};
 			let dir = self.camera.dir();
@@ -422,28 +423,28 @@ impl Engine {
 				self.tick_accum = 0.0;
 				// Zeroing the accumulator parks the lerp at alpha = 0, which
 				// would draw a whole tick BACKWARDS; hold in place instead.
-				self.tick_lerp.reset(self.player.pos);
+				self.session.tick_lerp.reset(self.player.pos);
 			}
-			match self.net.as_mut() {
+			match self.session.client.as_mut() {
 				_ if !world_ready => {}
 				Some(net) if net.ready() => {
 					// Reconcile against the latest snapshot before predicting
 					// this frame's ticks; corrections land as a decaying
 					// visual offset, not a camera snap.
-					if let Some((tick, state)) = self.pending_ack.take() {
+					if let Some((tick, state)) = self.session.pending_ack.take() {
 						use digblock_net::predict::Reconciled;
 						let outcome =
 							net.predictor
 								.reconcile(&mut self.player, tick, state, &cell_at);
 						if let Reconciled::Replayed { error } = outcome {
-							self.correction_offset += error;
+							self.session.correction_offset += error;
 							// The rewind moved the player by -error; the lerp
 							// anchor has to travel with it or the next frame
 							// interpolates from the pre-rewind position and
 							// re-injects the jump the offset exists to hide.
-							self.tick_lerp.rewind(error);
-							self.net_corrections += 1;
-							self.net_error_accum += error.length();
+							self.session.tick_lerp.rewind(error);
+							self.session.net_corrections += 1;
+							self.session.net_error_accum += error.length();
 						}
 						// The ack that drove this reconcile is also the RTT
 						// sample — the overlay's ping comes from here.
@@ -451,7 +452,7 @@ impl Engine {
 					}
 					while self.tick_accum >= TICK {
 						self.tick_accum -= TICK;
-						self.tick_lerp.before_tick(self.player.pos);
+						self.session.tick_lerp.before_tick(self.player.pos);
 						net.predictor
 							.predict(&mut self.player, intent, dir, &cell_at);
 					}
@@ -460,20 +461,23 @@ impl Engine {
 				_ => {
 					while self.tick_accum >= TICK {
 						self.tick_accum -= TICK;
-						self.tick_lerp.before_tick(self.player.pos);
+						self.session.tick_lerp.before_tick(self.player.pos);
 						self.player.tick(TICK, dir, intent, &cell_at);
 					}
 				}
 			}
 			// Sub-second exponential decay; snapped off once imperceptible.
-			self.correction_offset *= (-dt / 0.2).exp();
-			if self.correction_offset.length_squared() < 1e-6 {
-				self.correction_offset = Vec3::ZERO;
+			self.session.correction_offset *= (-dt / 0.2).exp();
+			if self.session.correction_offset.length_squared() < 1e-6 {
+				self.session.correction_offset = Vec3::ZERO;
 			}
 			// Presentation only: `player.pos` stays the authority for
 			// occupancy, the wire, and the save.
-			self.camera.pos = self.tick_lerp.render_pos(self.player.pos, self.tick_accum)
-				+ self.correction_offset;
+			self.camera.pos = self
+				.session
+				.tick_lerp
+				.render_pos(self.player.pos, self.tick_accum)
+				+ self.session.correction_offset;
 		} else {
 			// Debug fly camera.
 			let speed = 24.0 * dt;
@@ -481,22 +485,22 @@ impl Engine {
 			let flat = Vec3::new(dir.x, 0.0, dir.z).normalize_or_zero();
 			let right = flat.cross(Vec3::Y);
 			let mut mv = Vec3::ZERO;
-			if self.keys.w {
+			if self.input.keys.w {
 				mv += flat;
 			}
-			if self.keys.s {
+			if self.input.keys.s {
 				mv -= flat;
 			}
-			if self.keys.d {
+			if self.input.keys.d {
 				mv += right;
 			}
-			if self.keys.a {
+			if self.input.keys.a {
 				mv -= right;
 			}
-			if self.keys.up {
+			if self.input.keys.up {
 				mv += Vec3::Y;
 			}
-			if self.keys.down {
+			if self.input.keys.down {
 				mv -= Vec3::Y;
 			}
 			self.camera.pos += mv.normalize_or_zero() * speed;
@@ -524,6 +528,6 @@ impl Engine {
 		self.advance_hand(dt);
 		self.step_audio(dt);
 		self.audio.prev_player_pos = self.player.pos;
-		self.pending.update_ms = ms_since(t_update);
+		self.bench.pending.update_ms = ms_since(t_update);
 	}
 }

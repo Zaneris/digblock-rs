@@ -61,7 +61,7 @@ impl Engine {
 			item: item as u16,
 			count,
 		};
-		match self.net.as_mut() {
+		match self.session.client.as_mut() {
 			Some(net) if net.ready() => net.send_alchemy(wire_op),
 			_ => {
 				let level = self.skills.level(digblock_core::skills::Skill::Alchemy);

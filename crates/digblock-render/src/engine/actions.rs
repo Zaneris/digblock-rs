@@ -42,7 +42,7 @@ impl Engine {
 	/// simulated position, so a camera-based answer mispredicts. Aim rays
 	/// still come from the camera: you hit what you see.
 	pub(super) fn body_pos(&self) -> Vec3 {
-		if self.walking {
+		if self.input.walking {
 			self.player.pos
 		} else {
 			self.camera.pos // fly leaves player.pos stale
@@ -211,16 +211,16 @@ impl Engine {
 	/// "touches are gone" site makes (focus loss, a screen opening), so a
 	/// held button can never survive its own finger.
 	pub(super) fn clear_touch_state(&mut self) {
-		self.touch.clear();
-		self.hud_touches.clear();
-		self.hud_jump_held = false;
+		self.input.touch.clear();
+		self.input.hud_touches.clear();
+		self.input.hud_jump_held = false;
 	}
 
 	/// Physical-px display cutouts (notch, home indicator) the touch HUD
 	/// keeps its buttons clear of. Shell-forwarded; zero when the shell
 	/// cannot measure any.
 	pub fn set_safe_area(&mut self, insets: crate::ui::hud::SafeArea) {
-		self.safe_area = insets;
+		self.input.safe_area = insets;
 	}
 
 	/// Mouse hold or touch hold — the one question the dig machinery asks.
@@ -229,7 +229,7 @@ impl Engine {
 	/// whose touch half the driver's own `clear` already covers, and two
 	/// writers to one flag would have to agree at every one of them.
 	pub(super) fn dig_active(&self) -> bool {
-		self.dig_held || self.touch.dig_held()
+		self.input.dig_held || self.input.touch.dig_held()
 	}
 
 	/// One fixed-rate step of the hold-to-dig state machine. Purely
@@ -336,7 +336,7 @@ impl Engine {
 			// tool gates read it, and the input path that otherwise
 			// carries the selection is jitter-buffered behind this frame.
 			let slot = self.hotbar.selected_index() as u8;
-			if let Some(net) = self.net.as_mut()
+			if let Some(net) = self.session.client.as_mut()
 				&& net.ready()
 			{
 				net.send_dig_start(hit.cell, slot);
@@ -417,7 +417,7 @@ impl Engine {
 			self.dig = None;
 		}
 		if stopping {
-			if let Some(net) = self.net.as_mut()
+			if let Some(net) = self.session.client.as_mut()
 				&& net.ready()
 			{
 				net.send_dig_cancel();
@@ -433,7 +433,7 @@ impl Engine {
 	/// path (button up, target momentarily lost) is `release_dig`.
 	pub(super) fn cancel_dig(&mut self) {
 		if self.dig.take().is_some() {
-			if let Some(net) = self.net.as_mut()
+			if let Some(net) = self.session.client.as_mut()
 				&& net.ready()
 			{
 				net.send_dig_cancel();
@@ -580,7 +580,7 @@ impl Engine {
 			self.hotbar.auto_assign(d);
 		}
 		let (origin, dir) = (self.camera.pos, self.camera.dir());
-		match self.net.as_mut() {
+		match self.session.client.as_mut() {
 			Some(net) if net.ready() => {
 				// `tool` is `water_tool_selected` — the SLOT is not enough.
 				// It is the same predicate `diggable` and the scoop ray use,
@@ -641,7 +641,7 @@ impl Engine {
 	/// crosshair toggles; otherwise placement against the target, gated
 	/// on stock ("you can only place what you gathered").
 	pub(super) fn apply_place(&mut self) {
-		if !std::mem::take(&mut self.click_place) {
+		if !std::mem::take(&mut self.input.click_place) {
 			return;
 		}
 		let Some(hit) = self.target else { return };
@@ -788,7 +788,7 @@ impl Engine {
 			pos: Some(cell_center(target)),
 			gain: if poured { 0.6 } else { 0.9 },
 		});
-		match self.net.as_mut() {
+		match self.session.client.as_mut() {
 			Some(net) if net.ready() => {
 				let tick = net.predictor.current_tick();
 				let seq = net.edits.begin_multi(&entries, tick, Some((block, -1)));
@@ -868,7 +868,7 @@ impl Engine {
 			gain: 0.6,
 		});
 		let (origin, dir) = (self.camera.pos, self.camera.dir());
-		if let Some(net) = self.net.as_mut()
+		if let Some(net) = self.session.client.as_mut()
 			&& net.ready()
 		{
 			let tick = net.predictor.current_tick();

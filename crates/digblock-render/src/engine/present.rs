@@ -138,7 +138,7 @@ impl Engine {
 	/// camera does not have.
 	pub(super) fn advance_hand(&mut self, dt: f32) {
 		let full = self.inventory.bucket_full();
-		self.tool_swap.advance(dt, self.hotbar.active_tool());
+		self.input.tool_swap.advance(dt, self.hotbar.active_tool());
 		let selected = self.hotbar.selected_item().and_then(|i| match i {
 			// `HotbarItem::WaterTool` names the SLOT, not what is in it,
 			// so the hand has to ask which tool is active — otherwise
@@ -147,6 +147,7 @@ impl Engine {
 			// over together — and a BARE slot (no vessel crafted yet)
 			// holds nothing, so the hand is empty on it.
 			HotbarItem::WaterTool => self
+				.input
 				.tool_swap
 				.shown()
 				.map(|t| crate::ui::hud::tool_icon(t, full)),
@@ -240,7 +241,7 @@ impl Engine {
 	}
 
 	pub(super) fn frame_uniforms(&self) -> FrameUniforms {
-		let aspect = self.size.0 as f32 / self.size.1.max(1) as f32;
+		let aspect = self.ui.size.0 as f32 / self.ui.size.1.max(1) as f32;
 		let vp = self.camera.view_proj(aspect);
 		let caster = self.sun.caster();
 		let atmos = digblock_core::sky::Atmosphere::sample(self.sun.elevation());

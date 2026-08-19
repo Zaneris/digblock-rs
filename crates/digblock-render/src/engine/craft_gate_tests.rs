@@ -73,20 +73,21 @@ fn a_craft_only_block_refuses_the_dig_until_its_recipe_opens() {
 	);
 
 	// Holding the button explains itself, once per aim.
-	engine.dig_held = true;
+	engine.input.dig_held = true;
 	engine.step_dig();
 	engine.step_dig();
 	assert!(engine.dig.is_none(), "no hold opened");
 	let spoken = |e: &Engine| {
-		e.feed
+		e.session
+			.feed
 			.iter()
 			.filter(|(t, ..)| t.as_str() == Kind::Recipe.message())
 			.count()
 	};
-	assert_eq!(spoken(&engine), 1, "latched: {:?}", engine.feed);
+	assert_eq!(spoken(&engine), 1, "latched: {:?}", engine.session.feed);
 
 	// Aiming away and back is what clears the latch in play.
-	engine.dig_held = false;
+	engine.input.dig_held = false;
 	engine.refused_cell = None;
 
 	// Read out of the unlock table, never written down: every
@@ -113,7 +114,7 @@ fn a_craft_only_block_refuses_the_dig_until_its_recipe_opens() {
 		Some(cell),
 		"and the outline is back"
 	);
-	engine.dig_held = true;
+	engine.input.dig_held = true;
 	engine.step_dig();
 	assert_eq!(
 		engine.dig.as_ref().map(|d| d.cell),

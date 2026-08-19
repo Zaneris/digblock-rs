@@ -101,8 +101,19 @@ impl Engine {
 			menu.set_fullscreen_hint();
 		}
 		let mut engine = Self {
-			menu,
-			chat: crate::chat::Chat::default(),
+			ui: UiState {
+				size: (1, 1),
+				scale_factor: 1.0,
+				ui_scale: 1.0,
+				ui_dl: crate::ui::DrawList::default(),
+				ui_hits: crate::ui::HitMap::default(),
+				inv_screen: Default::default(),
+				alch_screen: Default::default(),
+				char_screen: Default::default(),
+				menu,
+				chat: crate::chat::Chat::default(),
+				overlay_visible,
+			},
 			audio: AudioState {
 				sink: None,
 				water_audio: crate::water_audio::WaterAudio::default(),
@@ -193,48 +204,62 @@ impl Engine {
 			pipeline,
 			camera,
 			player: Player::new(spawn),
-			touch: TouchDriver::new(),
-			ui_touch: None,
-			hud_touches: Vec::new(),
-			hud_jump_held: false,
-			fullscreen_requested: false,
-			safe_area: crate::ui::hud::SafeArea::default(),
-			walking: true,
-			fly_key_down: false,
-			overlay_key_down: false,
-			gi_drill_key_down: false,
-			frames_seen: 0,
+			input: InputState {
+				touch: TouchDriver::new(),
+				ui_touch: None,
+				hud_touches: Vec::new(),
+				hud_jump_held: false,
+				fullscreen_requested: false,
+				safe_area: crate::ui::hud::SafeArea::default(),
+				walking: true,
+				fly_key_down: false,
+				overlay_key_down: false,
+				gi_drill_key_down: false,
+				keys: HeldKeys::default(),
+				look_accum: (0.0, 0.0),
+				dig_held: false,
+				click_place: false,
+				tool_swap: crate::hotbar::ToolSwap::default(),
+			},
+			bench: BenchState {
+				metrics,
+				bench_reported: false,
+				pending: FrameTimings::default(),
+				frame_start: None,
+				prep_start: None,
+				bench_t: 0.0,
+				fly_frames: 0,
+				walk_origin: None,
+				frames_seen: 0,
+			},
 			tick_accum: 0.0,
 			sun,
-			keys: HeldKeys::default(),
-			look_accum: (0.0, 0.0),
-			dig_held: false,
 			refused_cell: None,
 			drawn_cell: None,
-			click_place: false,
 			dig: None,
 			dig_accum: 0.0,
 			target: None,
 			inventory: Inventory::default(),
 			hotbar: Hotbar::new(),
-			tool_swap: crate::hotbar::ToolSwap::default(),
 			fluid: digblock_core::fluid::FluidSim::new(),
 			world_jobs: digblock_core::worldjob::Scheduler::new(),
 			flow_accum: 0.0,
 			time_secs: 0.0,
-			net: None,
-			net_events: Vec::new(),
-			net_backlog: std::collections::VecDeque::new(),
-			pending_ack: None,
-			correction_offset: Vec3::ZERO,
-			tick_lerp: crate::smoothing::TickLerp::new(spawn),
-			net_corrections: 0,
-			net_error_accum: 0.0,
-			net_log_timer: 0.0,
-			feed: Vec::new(),
-			player_names: rustc_hash::FxHashMap::default(),
-			my_player_id: None,
-			metrics,
+			session: NetSession {
+				client: None,
+				net_events: Vec::new(),
+				net_backlog: std::collections::VecDeque::new(),
+				pending_ack: None,
+				correction_offset: Vec3::ZERO,
+				tick_lerp: crate::smoothing::TickLerp::new(spawn),
+				net_corrections: 0,
+				net_error_accum: 0.0,
+				net_log_timer: 0.0,
+				feed: Vec::new(),
+				player_names: rustc_hash::FxHashMap::default(),
+				my_player_id: None,
+				last_layout_sent: None,
+			},
 			stream: StreamQueues {
 				pending_uploads: std::collections::VecDeque::new(),
 				pending_evicts: std::collections::VecDeque::new(),
@@ -244,26 +269,9 @@ impl Engine {
 				upload_sort_center: ChunkPos::new(i32::MAX, 0, i32::MAX),
 				stream_budget: digblock_core::stream_budget::StreamBudget::new(stream_floor),
 			},
-			pending: FrameTimings::default(),
-			frame_start: None,
-			prep_start: None,
 			ambient_height: None,
-			overlay_visible,
-			bench_t: 0.0,
-			fly_frames: 0,
-			bench_reported: false,
-			walk_origin: None,
-			size: (1, 1),
-			scale_factor: 1.0,
-			ui_scale: 1.0,
-			ui_dl: crate::ui::DrawList::default(),
-			ui_hits: crate::ui::HitMap::default(),
-			inv_screen: Default::default(),
-			alch_screen: Default::default(),
-			char_screen: Default::default(),
 			skills: Default::default(),
 			inv_grid: Default::default(),
-			last_layout_sent: None,
 		};
 		// DIG_SCREEN: open a UI screen at startup, stocked, so
 		// `--screenshot` can capture it. Screens are input-driven, which
@@ -407,14 +415,14 @@ impl Engine {
 						engine.hotbar.select_digit(i as u8 + 1);
 					}
 				}
-				DebugScreen::Inventory => engine.inv_screen.open(),
+				DebugScreen::Inventory => engine.ui.inv_screen.open(),
 				DebugScreen::Alchemy | DebugScreen::Transmute | DebugScreen::Transmuting => {
 					// A mid-curve level so the header's bar, the pace,
 					// and a mix of locked/unlocked rows all photograph.
 					engine
 						.skills
 						.add_xp(digblock_core::skills::Skill::Alchemy, 20_000);
-					engine.alch_screen.open();
+					engine.ui.alch_screen.open();
 					if screen == DebugScreen::Transmuting {
 						// Stocked well past the batch, so the row reads as
 						// a batch running rather than as one about to be
@@ -423,6 +431,7 @@ impl Engine {
 							engine.inventory.add_sub(e, 5_000);
 						}
 						engine
+							.ui
 							.alch_screen
 							.debug_batch(BlockType::LumberSlab, 7, 0.45);
 					}
@@ -432,7 +441,7 @@ impl Engine {
 					use digblock_core::skills::Skill;
 					engine.skills.add_xp(Skill::Mining, 150_000);
 					engine.skills.add_xp(Skill::Alchemy, 30_000);
-					engine.char_screen.open();
+					engine.ui.char_screen.open();
 				}
 			}
 		}
@@ -474,7 +483,7 @@ impl Engine {
 		// connection the server has not noticed yet would make the JOIN
 		// WE ARE ABOUT TO MAKE the duplicate, and refuse it.
 		self.leave_server();
-		self.net = Some(digblock_net::NetClient::new(
+		self.session.client = Some(digblock_net::NetClient::new(
 			transport,
 			digblock_net::client::NetClientConfig {
 				name,
@@ -485,16 +494,16 @@ impl Engine {
 		));
 		// Fresh connection: the layout dedup re-primes from the server's
 		// join-sync Layout.
-		self.last_layout_sent = None;
+		self.session.last_layout_sent = None;
 		// The server has no fly physics; walk is the only multiplayer mode.
-		self.walking = true;
+		self.input.walking = true;
 	}
 
 	/// Wire the launcher's master-server services (list fetch, pings, token
 	/// mint + connect). Enables the Multiplayer entry in the menu.
 	pub fn set_menu_services(&mut self, services: crate::menu::MenuServices) {
 		self.services = Some(services);
-		self.menu.set_services_available();
+		self.ui.menu.set_services_available();
 	}
 
 	/// Inject the platform audio backend (launcher-owned, like
@@ -550,7 +559,7 @@ impl Engine {
 	/// localStorage). Root's "Play Local" becomes "Singleplayer".
 	pub fn set_world_store(&mut self, store: Box<dyn digblock_persist::WorldStore>) {
 		self.save.world_store = Some(store);
-		self.menu.set_store_available();
+		self.ui.menu.set_store_available();
 	}
 
 	/// Window size, display density and the user's preference all feed
@@ -558,8 +567,8 @@ impl Engine {
 	/// through here — miss one and the settings slider appears to do
 	/// nothing until the window is resized.
 	pub(super) fn recompute_ui_scale(&mut self) {
-		self.ui_scale =
-			crate::ui::scale::ui_scale(self.size, self.scale_factor, self.config.ui_scale);
+		self.ui.ui_scale =
+			crate::ui::scale::ui_scale(self.ui.size, self.ui.scale_factor, self.config.ui_scale);
 	}
 
 	/// Apply a settings change batch at runtime, then persist it. SSR is
@@ -589,7 +598,7 @@ impl Engine {
 			self.config.draw_dist = s.draw_dist;
 			self.camera.far = far_plane(s.draw_dist);
 			self.pipeline.set_draw_dist(s.draw_dist);
-			if let Some(net) = self.net.as_mut()
+			if let Some(net) = self.session.client.as_mut()
 				&& net.ready()
 			{
 				net.send_set_draw_dist(s.draw_dist);

@@ -55,13 +55,13 @@ impl Engine {
 		const WALK_AMP: f32 = 1.0; // blocks either side of the origin
 		const WALK_PERIOD: f32 = 1.5; // seconds — its peak speed is a walk
 		const WALK_PITCH: f32 = -25.0; // puts the ground just ahead of the eye
-		self.bench_t += TICK;
+		self.bench.bench_t += TICK;
 		if self.config.walk {
 			// Anchored on wherever the camera started, so the walk happens
 			// at spawn — which is where DIG_SHAPES/DIG_VAULT put geometry
 			// worth casting a shadow.
-			let o = *self.walk_origin.get_or_insert(self.camera.pos);
-			let phase = std::f32::consts::TAU * self.bench_t / WALK_PERIOD;
+			let o = *self.bench.walk_origin.get_or_insert(self.camera.pos);
+			let phase = std::f32::consts::TAU * self.bench.bench_t / WALK_PERIOD;
 			self.camera.pos = Vec3::new(o.x, o.y, o.z + WALK_AMP * phase.sin());
 			self.camera.yaw_deg = 0.0;
 			self.camera.pitch_deg = WALK_PITCH;
@@ -69,7 +69,7 @@ impl Engine {
 		}
 		// Altitude follows the terrain so worldgen retunes can't put the
 		// flight underground; still a pure function of the step count.
-		let x = self.config.bench_speed * self.bench_t;
+		let x = self.config.bench_speed * self.bench.bench_t;
 		let h = digblock_core::worldgen::terrain_height(x as i32, 8, self.seed);
 		self.camera.pos = Vec3::new(x, h as f32 + 12.0, 8.0);
 		self.camera.look(BENCH_YAW * TICK, 0.0);
@@ -91,21 +91,21 @@ impl Engine {
 			// run) — one frame of lag, and the floor batch still runs
 			// regardless.
 			self.stream.stream_budget.on_frame(
-				self.metrics.last.total_ms,
-				self.metrics.last.busy_ms,
+				self.bench.metrics.last.total_ms,
+				self.bench.metrics.last.busy_ms,
 				self.pipeline.stream_urgency(),
 			)
 		} else {
 			self.config.stream_budget_ms
 		};
-		self.metrics.stream_budget_ms = budget_ms;
+		self.bench.metrics.stream_budget_ms = budget_ms;
 		// Sampled every frame from the executor rather than set once from
 		// the config, because the config is a REQUEST. A web pool that
 		// failed to start, hasn't finished its handshake, or has had every
 		// worker written off reports 0 here and streams inline — and a run
 		// that streamed inline must not be recorded in BENCH.md as a
 		// pooled arm, which is what the `?workers=` table is selected by.
-		self.metrics.workers = self.pipeline.worker_count() as u32;
+		self.bench.metrics.workers = self.pipeline.worker_count() as u32;
 		// ONE deadline for jobs, drain, evictions and uploads together.
 		// Previously each stage got its own slice of the budget and they
 		// summed to more than it; now they consume from the same clock, and the
@@ -120,7 +120,7 @@ impl Engine {
 		let m = self
 			.pipeline
 			.maintain(center, usize::MAX, Some(deadline), allowance);
-		self.pending.maintain_ms = ms_since(t_maintain);
+		self.bench.pending.maintain_ms = ms_since(t_maintain);
 		// RTGI: scroll the window to the camera (re-dirtying whatever just
 		// entered coverage), pull freshly-dirty chunks into the re-upload
 		// queue, then feed the voxel window under a byte budget AND the shared
@@ -172,19 +172,19 @@ impl Engine {
 				gi_uploads += 1;
 			}
 		}
-		self.pending.gi_ms = ms_since(t_gi);
+		self.bench.pending.gi_ms = ms_since(t_gi);
 		// Overlay-restored water resumes flowing (the client twin of the
 		// sim's ReadyColumn handling). A server world restores the same
 		// cells — the overlay is re-applied there too — but its fluid is
 		// the server's, and relaxing it here would predict a flow nobody
 		// asked us to.
-		if self.net.is_none() {
+		if self.session.client.is_none() {
 			for &(x, y, z) in &m.overlaid_water {
 				self.fluid.schedule_around(x, y, z);
 			}
 		}
 		let t_upload = web_time::Instant::now();
-		self.metrics.evicted += m.evicted.len() as u32;
+		self.bench.metrics.evicted += m.evicted.len() as u32;
 		if !m.evicted.is_empty() {
 			// A boundary crossing evicts a whole rim arc at once —
 			// hundreds of chunks. Membership has to be a hash lookup, not
@@ -265,16 +265,16 @@ impl Engine {
 				break;
 			}
 		}
-		self.pending.upload_ms = ms_since(t_upload);
-		self.metrics.chunks_generated += m.generated;
-		self.metrics.meshes_uploaded += uploads;
-		self.metrics.upload_kb += (bytes / 1024) as u32;
-		self.metrics.gen_jobs.merge(m.gen_jobs);
-		self.metrics.mesh_jobs.merge(m.mesh_jobs);
-		self.metrics.stale_dropped += m.stale_dropped;
-		self.metrics.requeued += m.requeued;
-		self.metrics.upload_saturated += m.saturated as u32;
-		self.metrics.gauges = PipelineGauges {
+		self.bench.pending.upload_ms = ms_since(t_upload);
+		self.bench.metrics.chunks_generated += m.generated;
+		self.bench.metrics.meshes_uploaded += uploads;
+		self.bench.metrics.upload_kb += (bytes / 1024) as u32;
+		self.bench.metrics.gen_jobs.merge(m.gen_jobs);
+		self.bench.metrics.mesh_jobs.merge(m.mesh_jobs);
+		self.bench.metrics.stale_dropped += m.stale_dropped;
+		self.bench.metrics.requeued += m.requeued;
+		self.bench.metrics.upload_saturated += m.saturated as u32;
+		self.bench.metrics.gauges = PipelineGauges {
 			gen_queue: m.gen_queue,
 			mesh_queue: m.mesh_queue,
 			in_flight: m.in_flight,
@@ -283,7 +283,7 @@ impl Engine {
 			evict_backlog: self.stream.pending_evicts.len() as u32,
 			// Written by pump_net earlier this frame; preserved here
 			// because the gauges are replaced wholesale.
-			net_backlog: self.net_backlog.len() as u32,
+			net_backlog: self.session.net_backlog.len() as u32,
 			// The bytes the loop above just handed over — the number the
 			// byte cap actually governs, and the only per-frame signal for
 			// a staging transfer `upload_ms` structurally cannot time.
@@ -297,7 +297,7 @@ impl Engine {
 			&& m.in_flight == 0
 			&& self.stream.pending_uploads.is_empty()
 		{
-			self.metrics.mark_streamed();
+			self.bench.metrics.mark_streamed();
 		}
 	}
 }

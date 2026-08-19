@@ -148,36 +148,12 @@ pub struct Engine {
 	pipeline: Pipeline,
 	camera: FlyCamera,
 	player: Player,
-	touch: TouchDriver,
-	/// The primary touch currently driving UI-surface pointer synthesis
-	/// (see the Touch arm at the top of `input`).
-	ui_touch: Option<u64>,
-	/// Touches claimed by HUD buttons (`touch_hud`), consumed to their
-	/// end so a held button never becomes look or movement. A Vec, not a
-	/// single slot: a place tap while the jump button is held is two
-	/// simultaneous claims.
-	hud_touches: Vec<(u64, crate::ui::hud::HudButton)>,
-	/// The on-screen jump button is held (Button jump mode only).
-	hud_jump_held: bool,
-	/// The menu's Fullscreen row fired; the shell drains it right after
-	/// this input dispatch, while the gesture is still on the stack.
-	fullscreen_requested: bool,
-	/// Shell-forwarded display cutouts the touch HUD keeps clear of.
-	safe_area: crate::ui::hud::SafeArea,
-	/// Walk (player physics) vs debug fly camera; F toggles.
-	walking: bool,
-	fly_key_down: bool,
-	overlay_key_down: bool,
-	/// F7 edge latch — the GI ratchet drill fires once per press.
-	gi_drill_key_down: bool,
-	/// Frames through `update`, for `--gi-drill-at`.
-	frames_seen: u32,
+	/// See [`InputState`].
+	input: InputState,
+	/// See [`BenchState`].
+	bench: BenchState,
 	tick_accum: f32,
 	sun: Sun,
-	keys: HeldKeys,
-	look_accum: (f32, f32),
-	/// Left mouse button currently held (hold-to-dig); right stays an edge.
-	dig_held: bool,
 	/// Cell whose dig was refused — locally (world floor) or by the
 	/// server (a spawn lock it never told us about). Held until the aim
 	/// moves elsewhere, and load-bearing in two ways: it explains itself
@@ -195,7 +171,6 @@ pub struct Engine {
 	/// because the latch names one cell and an extraction is never
 	/// refused by it.
 	drawn_cell: Option<(i32, i32, i32)>,
-	click_place: bool,
 	/// In-progress hold-to-dig, advanced at the fixed sim rate while
 	/// `dig_held` stays on a valid, unchanged target.
 	dig: Option<DigProgress>,
@@ -210,10 +185,6 @@ pub struct Engine {
 	/// confirms/rejects keep it honest. Offline it is simply the truth.
 	inventory: Inventory,
 	hotbar: Hotbar,
-	/// The tool slot's handover animation — presentation only, and it
-	/// watches `hotbar.active_tool()` rather than being told, so every
-	/// way the tool can change animates the same way.
-	tool_swap: crate::hotbar::ToolSwap,
 	/// Edit-time water flow (digblock-core fluid rules); idle unless
 	/// edits schedule cells.
 	fluid: digblock_core::fluid::FluidSim,
@@ -224,87 +195,17 @@ pub struct Engine {
 	/// Shader animation clock, wrapped on a long period (carried in the
 	/// otherwise unused light_color.w — no uniform layout change).
 	time_secs: f32,
-	/// Multiplayer client; None = single-player (every connected branch
-	/// below is dead in that case).
-	net: Option<digblock_net::NetClient>,
-	net_events: Vec<digblock_net::NetEvent>,
-	/// Inbound events past this frame's edit budget, applied in order on
-	/// later frames (see `NET_EDIT_BUDGET`).
-	net_backlog: std::collections::VecDeque<digblock_net::NetEvent>,
-	/// Snapshot ack carried from the net drain to the walk branch (the
-	/// reconcile needs the physics `block_at` borrow).
-	pending_ack: Option<(u32, digblock_core::player::PlayerState)>,
-	/// Visual-only reconciliation smoothing: camera = player + offset,
-	/// decaying over a fraction of a second so corrections nudge instead of
-	/// teleport.
-	correction_offset: Vec3,
-	/// Visual-only sampling of the fixed-rate player sim: the camera
-	/// draws between the last two tick states instead of snapping to the
-	/// newest one. Without it frame-pacing jitter IS position jitter —
-	/// measurably the dominant stutter source, well ahead of anything the
-	/// network does.
-	tick_lerp: crate::smoothing::TickLerp,
+	/// See [`NetSession`].
+	session: NetSession,
 	/// See [`Vfx`].
 	vfx: Vfx,
-	/// Reconciliation health, logged on a slow cadence while connected.
-	net_corrections: u32,
-	net_error_accum: f32,
-	net_log_timer: f32,
-	/// Server-message feed (join/leave/disconnect/chat) as
-	/// (text, ttl, 0xAABBGGRR color), drawn by the overlay
-	/// above the HUD; (text, seconds left) — fades over the last second.
-	feed: Vec<(String, f32, u32)>,
-	/// id → name, learned from PlayerJoined (roster + live joins), so
-	/// PlayerLeft (id-only on the wire) can be displayed by name.
-	player_names: rustc_hash::FxHashMap<u8, String>,
-	/// Our own id from Welcome. The roster never includes ourselves, so
-	/// our chat echo resolves through this + config.player_name.
-	my_player_id: Option<u8>,
-	metrics: Metrics,
 	/// See [`StreamQueues`].
 	stream: StreamQueues,
-	/// The bench summary has been emitted; a second call would report a
-	/// different (fallback) line, because `bench_summary` consumes the run
-	/// history. Two exits can reach it — `Game::on_exit` and `Drop` — and
-	/// which one fires depends on the platform.
-	bench_reported: bool,
-	/// Phase timings for the in-progress frame, handed to metrics at the
-	/// end of render().
-	pending: FrameTimings,
-	/// Redraw-handler entry, opened by `frame_started` and closed in
-	/// `render` to yield `busy_ms`.
-	frame_start: Option<web_time::Instant>,
-	/// Start of the post-streaming, pre-encode span (see `prep_ms`).
-	prep_start: Option<web_time::Instant>,
 	/// Memoized worldgen surface height for the ambient-zone test, keyed by
 	/// the camera's block column.
 	ambient_height: Option<((i32, i32), i32)>,
-	overlay_visible: bool,
-	/// Scripted-flight clock (bench mode), in fixed sim ticks.
-	bench_t: f32,
-	/// Steps of the scripted flight already taken, against `config.fly`.
-	fly_frames: u32,
-	/// Where `config.walk`'s oscillation is anchored: the camera's pose at
-	/// the first step, latched so `--fly` and `--warp` share it.
-	walk_origin: Option<Vec3>,
-	size: (u32, u32),
-	/// Device pixels per logical pixel (shell-reported; unscaled until told).
-	scale_factor: f32,
-	/// Whole-UI scale derived from `size` + `scale_factor` each time
-	/// either changes.
-	ui_scale: f32,
-	/// Per-frame UI draw commands (HUD, screens), rebuilt in `render`.
-	ui_dl: crate::ui::DrawList,
-	/// Hit regions from the same emission pass (hotbar slots double as
-	/// the inventory screen's drop targets).
-	ui_hits: crate::ui::HitMap<crate::ui::InvId>,
-	/// The drag-and-drop overflow inventory screen (I toggles).
-	inv_screen: crate::ui::screens::inventory::InvScreen,
-	/// The alchemy screen (K toggles): block → sub-material conversion
-	/// and shaped-item crafting.
-	alch_screen: crate::ui::screens::alchemy::AlchScreen,
-	/// The character screen (C toggles): per-skill levels + XP bars.
-	char_screen: crate::ui::screens::character::CharScreen,
+	/// See [`UiState`].
+	ui: UiState,
 	/// Per-skill XP totals: adopted from the server online
 	/// (`Skills`/`XpGain` — never client-claimed), computed through the
 	/// same core award functions offline.
@@ -315,14 +216,6 @@ pub struct Engine {
 	/// assignments; counts stay in `inventory`). Kept consistent by
 	/// `reconcile_layout` every frame.
 	inv_grid: digblock_core::inv_grid::InvGrid,
-	/// The last layout wire pair sent to the server — any difference
-	/// triggers a `ClientMsg::Layout` (before this frame's edits, so the
-	/// server's slot enforcement always sees the current arrangement).
-	last_layout_sent: Option<(Vec<u16>, Vec<u16>)>,
-	/// Startup/pause menu state (pure; overlay renders its view).
-	menu: crate::menu::Menu,
-	/// Chat input line (pure; overlay renders its view).
-	chat: crate::chat::Chat,
 	/// See [`AudioState`].
 	audio: AudioState,
 	/// Launcher-owned HTTP/probe services the menu talks to; None = no
@@ -511,6 +404,188 @@ struct SaveSession {
 	arrival_hold: Option<f32>,
 }
 
+/// Held keys, accumulated look, and the touch driver. While ANY UI
+/// surface is open, cursor and left-button are synthesized from the
+/// primary touch at the top of `handle_input`.
+struct InputState {
+	touch: TouchDriver,
+
+	/// The primary touch currently driving UI-surface pointer synthesis
+	/// (see the Touch arm at the top of `input`).
+	ui_touch: Option<u64>,
+
+	/// Touches claimed by HUD buttons (`touch_hud`), consumed to their
+	/// end so a held button never becomes look or movement. A Vec, not a
+	/// single slot: a place tap while the jump button is held is two
+	/// simultaneous claims.
+	hud_touches: Vec<(u64, crate::ui::hud::HudButton)>,
+
+	/// The on-screen jump button is held (Button jump mode only).
+	hud_jump_held: bool,
+
+	/// The menu's Fullscreen row fired; the shell drains it right after
+	/// this input dispatch, while the gesture is still on the stack.
+	fullscreen_requested: bool,
+
+	/// Shell-forwarded display cutouts the touch HUD keeps clear of.
+	safe_area: crate::ui::hud::SafeArea,
+
+	/// Walk (player physics) vs debug fly camera; F toggles.
+	walking: bool,
+
+	fly_key_down: bool,
+
+	overlay_key_down: bool,
+
+	/// F7 edge latch — the GI ratchet drill fires once per press.
+	gi_drill_key_down: bool,
+
+	keys: HeldKeys,
+
+	look_accum: (f32, f32),
+
+	/// Left mouse button currently held (hold-to-dig); right stays an edge.
+	dig_held: bool,
+
+	click_place: bool,
+
+	/// The tool slot's handover animation — presentation only, and it
+	/// watches `hotbar.active_tool()` rather than being told, so every
+	/// way the tool can change animates the same way.
+	tool_swap: crate::hotbar::ToolSwap,
+}
+
+/// The multiplayer session. `client` is `None` in a local world and
+/// every field beside it is meaningless while it is, which is why
+/// `reset_world_transients` clears them together.
+struct NetSession {
+	/// Multiplayer client; None = single-player (every connected branch
+	/// below is dead in that case).
+	client: Option<digblock_net::NetClient>,
+
+	net_events: Vec<digblock_net::NetEvent>,
+
+	/// Inbound events past this frame's edit budget, applied in order on
+	/// later frames (see `NET_EDIT_BUDGET`).
+	net_backlog: std::collections::VecDeque<digblock_net::NetEvent>,
+
+	/// Snapshot ack carried from the net drain to the walk branch (the
+	/// reconcile needs the physics `block_at` borrow).
+	pending_ack: Option<(u32, digblock_core::player::PlayerState)>,
+
+	/// Visual-only reconciliation smoothing: camera = player + offset,
+	/// decaying over a fraction of a second so corrections nudge instead of
+	/// teleport.
+	correction_offset: Vec3,
+
+	/// Visual-only sampling of the fixed-rate player sim: the camera
+	/// draws between the last two tick states instead of snapping to the
+	/// newest one. Without it frame-pacing jitter IS position jitter —
+	/// measurably the dominant stutter source, well ahead of anything the
+	/// network does.
+	tick_lerp: crate::smoothing::TickLerp,
+
+	/// Reconciliation health, logged on a slow cadence while connected.
+	net_corrections: u32,
+
+	net_error_accum: f32,
+
+	net_log_timer: f32,
+
+	/// Server-message feed (join/leave/disconnect/chat) as
+	/// (text, ttl, 0xAABBGGRR color), drawn by the overlay
+	/// above the HUD; (text, seconds left) — fades over the last second.
+	feed: Vec<(String, f32, u32)>,
+
+	/// id → name, learned from PlayerJoined (roster + live joins), so
+	/// PlayerLeft (id-only on the wire) can be displayed by name.
+	player_names: rustc_hash::FxHashMap<u8, String>,
+
+	/// Our own id from Welcome. The roster never includes ourselves, so
+	/// our chat echo resolves through this + config.player_name.
+	my_player_id: Option<u8>,
+
+	/// The last layout wire pair sent to the server — any difference
+	/// triggers a `ClientMsg::Layout` (before this frame's edits, so the
+	/// server's slot enforcement always sees the current arrangement).
+	last_layout_sent: Option<(Vec<u16>, Vec<u16>)>,
+}
+
+/// Measurement, and the scripted flight `--fly`/`--walk` drive. None
+/// of it runs in an ordinary session.
+struct BenchState {
+	metrics: Metrics,
+
+	/// The bench summary has been emitted; a second call would report a
+	/// different (fallback) line, because `bench_summary` consumes the run
+	/// history. Two exits can reach it — `Game::on_exit` and `Drop` — and
+	/// which one fires depends on the platform.
+	bench_reported: bool,
+
+	/// Phase timings for the in-progress frame, handed to metrics at the
+	/// end of render().
+	pending: FrameTimings,
+
+	/// Redraw-handler entry, opened by `frame_started` and closed in
+	/// `render` to yield `busy_ms`.
+	frame_start: Option<web_time::Instant>,
+
+	/// Start of the post-streaming, pre-encode span (see `prep_ms`).
+	prep_start: Option<web_time::Instant>,
+
+	/// Scripted-flight clock (bench mode), in fixed sim ticks.
+	bench_t: f32,
+
+	/// Steps of the scripted flight already taken, against `config.fly`.
+	fly_frames: u32,
+
+	/// Where `config.walk`'s oscillation is anchored: the camera's pose at
+	/// the first step, latched so `--fly` and `--warp` share it.
+	walk_origin: Option<Vec3>,
+
+	/// Frames through `update`, for `--gi-drill-at`.
+	frames_seen: u32,
+}
+
+/// The screens and the frame's UI scratch. A frame has exactly one
+/// text size and one panel colour over one dim; `ui::theme` owns both
+/// and every screen is swept for them.
+struct UiState {
+	size: (u32, u32),
+
+	/// Device pixels per logical pixel (shell-reported; unscaled until told).
+	scale_factor: f32,
+
+	/// Whole-UI scale derived from `size` + `scale_factor` each time
+	/// either changes.
+	ui_scale: f32,
+
+	/// Per-frame UI draw commands (HUD, screens), rebuilt in `render`.
+	ui_dl: crate::ui::DrawList,
+
+	/// Hit regions from the same emission pass (hotbar slots double as
+	/// the inventory screen's drop targets).
+	ui_hits: crate::ui::HitMap<crate::ui::InvId>,
+
+	/// The drag-and-drop overflow inventory screen (I toggles).
+	inv_screen: crate::ui::screens::inventory::InvScreen,
+
+	/// The alchemy screen (K toggles): block → sub-material conversion
+	/// and shaped-item crafting.
+	alch_screen: crate::ui::screens::alchemy::AlchScreen,
+
+	/// The character screen (C toggles): per-skill levels + XP bars.
+	char_screen: crate::ui::screens::character::CharScreen,
+
+	/// Startup/pause menu state (pure; overlay renders its view).
+	menu: crate::menu::Menu,
+
+	/// Chat input line (pure; overlay renders its view).
+	chat: crate::chat::Chat,
+
+	overlay_visible: bool,
+}
+
 struct DigProgress {
 	cell: (i32, i32, i32),
 	/// Full cell value at hold start: any content change (id OR state —
@@ -659,11 +734,11 @@ impl Engine {
 	/// unwinds through JS and `Drop` may never run — which is why `?bench`
 	/// produced no output there at all before this existed.
 	fn report_bench(&mut self) {
-		if !self.config.bench || self.bench_reported {
+		if !self.config.bench || self.bench.bench_reported {
 			return;
 		}
-		self.bench_reported = true;
-		if let Some(line) = self.metrics.bench_summary() {
+		self.bench.bench_reported = true;
+		if let Some(line) = self.bench.metrics.bench_summary() {
 			log::info!("{line}");
 		}
 	}
@@ -677,7 +752,7 @@ impl Drop for Engine {
 
 impl Game for Engine {
 	fn init(&mut self, gpu: &Gpu, surface_format: wgpu::TextureFormat, size: (u32, u32)) {
-		self.size = size;
+		self.ui.size = size;
 		self.recompute_ui_scale();
 		self.build_renderer(gpu, surface_format);
 		log::info!(
@@ -687,12 +762,12 @@ impl Game for Engine {
 	}
 
 	fn resize(&mut self, _gpu: &Gpu, size: (u32, u32)) {
-		self.size = size;
+		self.ui.size = size;
 		self.recompute_ui_scale();
 	}
 
 	fn set_scale_factor(&mut self, scale_factor: f32) {
-		self.scale_factor = scale_factor;
+		self.ui.scale_factor = scale_factor;
 		// The density-derived graphics defaults, applied here because this
 		// is the FIRST point anything knows the display's backing scale —
 		// the launcher resolves settings before a window exists.
@@ -704,7 +779,7 @@ impl Game for Engine {
 			let gi = crate::settings::density_gi_div(scale_factor);
 			self.config.gi_scale_div = gi;
 			// Keep the settings screen showing what is actually in use.
-			self.menu.set_gi_scale(gi);
+			self.ui.menu.set_gi_scale(gi);
 			log::info!("display scale {scale_factor}x: lighting detail /{gi}");
 		}
 		self.recompute_ui_scale();
@@ -715,11 +790,11 @@ impl Game for Engine {
 	}
 
 	fn frame_started(&mut self) {
-		self.frame_start = Some(web_time::Instant::now());
+		self.bench.frame_start = Some(web_time::Instant::now());
 	}
 
 	fn frame_acquired(&mut self, acquire_wait: Duration) {
-		self.pending.acquire_ms = acquire_wait.as_secs_f32() * 1000.0;
+		self.bench.pending.acquire_ms = acquire_wait.as_secs_f32() * 1000.0;
 	}
 
 	fn update(&mut self, dt: Duration) {
@@ -738,22 +813,22 @@ impl Game for Engine {
 	/// in the meantime landed in the world.
 	fn wants_cursor_grab(&self) -> bool {
 		self.config.interactive
-			&& !self.menu.is_open()
-			&& !self.inv_screen.is_open()
-			&& !self.alch_screen.is_open()
-			&& !self.char_screen.is_open()
+			&& !self.ui.menu.is_open()
+			&& !self.ui.inv_screen.is_open()
+			&& !self.ui.alch_screen.is_open()
+			&& !self.ui.char_screen.is_open()
 	}
 
 	fn wants_text_input(&self) -> bool {
-		self.config.interactive && self.chat.is_open()
+		self.config.interactive && self.ui.chat.is_open()
 	}
 
 	fn take_fullscreen_request(&mut self) -> bool {
-		std::mem::take(&mut self.fullscreen_requested)
+		std::mem::take(&mut self.input.fullscreen_requested)
 	}
 
 	fn text_entry_active(&self) -> bool {
-		self.config.interactive && (self.chat.is_open() || self.menu.text_field_open())
+		self.config.interactive && (self.ui.chat.is_open() || self.ui.menu.text_field_open())
 	}
 
 	/// The window closed, the page is unloading, or a capture ran out its
@@ -770,7 +845,7 @@ impl Game for Engine {
 
 	fn on_suspend(&mut self) {
 		log::info!("engine: on_suspend (state save point)");
-		self.metrics.pause();
+		self.bench.metrics.pause();
 		self.stream.stream_budget.reset();
 		// One cheap synchronous send — honors the on_suspend contract.
 		self.emit(crate::audio::AudioCmd::Pause);

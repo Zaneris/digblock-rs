@@ -4,7 +4,7 @@ use digblock_core::skills::DIG_DECAY_TICKS;
 
 /// Aimed at a diggable block with the button down, stepped `n` times.
 fn hold(engine: &mut Engine, n: u32) {
-	engine.dig_held = true;
+	engine.input.dig_held = true;
 	for _ in 0..n {
 		engine.update_target();
 		engine.step_dig();
@@ -13,7 +13,7 @@ fn hold(engine: &mut Engine, n: u32) {
 
 /// Button up, stepped `n` times — the decay's only clock.
 fn release(engine: &mut Engine, n: u32) {
-	engine.dig_held = false;
+	engine.input.dig_held = false;
 	for _ in 0..n {
 		engine.update_target();
 		engine.step_dig();
@@ -87,7 +87,7 @@ fn a_drawn_cell_needs_a_fresh_press_before_it_breaks() {
 
 	// Aiming away and back is NOT a release — the latch is about the
 	// press, not the aim.
-	engine.dig_held = false;
+	engine.input.dig_held = false;
 	engine.drawn_cell = Some(cell);
 	hold(&mut engine, 1);
 	assert!(engine.dig.is_none(), "still latched");
@@ -162,10 +162,10 @@ fn a_capture_takes_neither_the_keyboard_nor_the_pointer() {
 		Engine::new(config)
 	};
 	let any_screen_open = |e: &Engine| {
-		e.menu.is_open()
-			|| e.inv_screen.is_open()
-			|| e.alch_screen.is_open()
-			|| e.char_screen.is_open()
+		e.ui.menu.is_open()
+			|| e.ui.inv_screen.is_open()
+			|| e.ui.alch_screen.is_open()
+			|| e.ui.char_screen.is_open()
 	};
 	// One key per engine. Pressing all four in sequence cancels
 	// itself — `I` opens the inventory, which then swallows `K` and
@@ -190,7 +190,7 @@ fn a_capture_takes_neither_the_keyboard_nor_the_pointer() {
 			dx: 240.0,
 			dy: 90.0,
 		});
-		e.look_accum != (0.0, 0.0)
+		e.input.look_accum != (0.0, 0.0)
 	};
 
 	// The three that were genuinely reachable. `Escape` is asserted

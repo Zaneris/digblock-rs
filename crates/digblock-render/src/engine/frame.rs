@@ -6,14 +6,14 @@ use super::*;
 
 impl Engine {
 	pub(super) fn draw(&mut self, gpu: &Gpu, target: &wgpu::TextureView, size: (u32, u32)) {
-		self.size = size;
+		self.ui.size = size;
 		self.recompute_ui_scale();
 		// Streaming happens here (not update) because uploads need the GPU.
 		self.pump_pipeline(gpu);
 		// Everything from here to the encode — remote sampling, name tags,
 		// menu/UI rebuild, frame uniforms — used to be untimed, so a spike
 		// in any of it showed up in `total_ms` and in no phase at all.
-		self.prep_start = Some(web_time::Instant::now());
+		self.bench.prep_start = Some(web_time::Instant::now());
 		// Remote players, sampled an interpolation delay in the past;
 		// the instance list rides FrameScene and re-uploads every frame.
 		self.vfx.remote_instances.clear();
@@ -35,7 +35,7 @@ impl Engine {
 				.and_then(crate::ui::hud::icon_block),
 			self.skills.level(digblock_core::skills::Skill::Mining),
 		);
-		if let Some(net) = self.net.as_ref() {
+		if let Some(net) = self.session.client.as_ref() {
 			net.remotes.sample(&mut self.vfx.remote_scratch);
 			for i in 0..self.vfx.remote_scratch.len() {
 				let d = self.vfx.remote_scratch[i];
@@ -91,7 +91,7 @@ impl Engine {
 		// live slice is `[..tags]`.
 		let mut tags = 0usize;
 		for d in &self.vfx.remote_scratch {
-			if self.net.is_none() || d.pos.distance(self.camera.pos) > NAMETAG_RANGE {
+			if self.session.client.is_none() || d.pos.distance(self.camera.pos) > NAMETAG_RANGE {
 				continue;
 			}
 			// Remote pos is the eye; the box top sits just above it, and the
@@ -119,7 +119,7 @@ impl Engine {
 			tag.y = (1.0 - (ndc.y * 0.5 + 0.5)) * size.1 as f32;
 			tag.color = pack_rgb(player_color(d.id));
 			tag.text.clear();
-			match self.player_names.get(&d.id) {
+			match self.session.player_names.get(&d.id) {
 				Some(n) => tag.text.push_str(n),
 				None => {
 					use std::fmt::Write;
@@ -132,10 +132,11 @@ impl Engine {
 		// Overlay data is last frame's numbers (metrics.frame() runs at the
 		// end of this fn) and GPU ms lags the readback ring — fine for a
 		// debug HUD.
-		let overlay_stats = if self.overlay_visible {
-			self.metrics
+		let overlay_stats = if self.ui.overlay_visible {
+			self.bench
+				.metrics
 				.history_tail(crate::overlay::GRAPH_FRAMES, &mut self.vfx.history_scratch);
-			let mut stats = self.metrics.overlay_stats();
+			let mut stats = self.bench.metrics.overlay_stats();
 			// The reproduction line. `body_pos` and not `camera.pos`: the
 			// camera carries the tick lerp and the reconciliation offset,
 			// and the number here has to be the one `--pos` takes back.
@@ -150,10 +151,10 @@ impl Engine {
 		} else {
 			None
 		};
-		let menu_view = self.menu.is_open().then(|| {
-			self.menu.view(
+		let menu_view = self.ui.menu.is_open().then(|| {
+			self.ui.menu.view(
 				size,
-				self.ui_scale,
+				self.ui.ui_scale,
 				((self.time_secs * 2.0) as u32).is_multiple_of(2),
 			)
 		});
@@ -161,8 +162,8 @@ impl Engine {
 		// bench captures' default state comparability is preserved (bench
 		// never digs, hotbar renders its fixed default row).
 		let in_game = menu_view.is_none();
-		self.ui_dl.clear();
-		self.ui_hits.clear();
+		self.ui.ui_dl.clear();
+		self.ui.ui_hits.clear();
 		// The menus' full-screen dim fades with the world's own darkness
 		// (night scenes shouldn't be double-darkened); the sample is pure
 		// and cheap, so re-deriving it here beats plumbing it out of
@@ -171,8 +172,8 @@ impl Engine {
 			1.0 - digblock_core::sky::Atmosphere::sample(self.sun.elevation()).star_intensity;
 		if let Some(view) = &menu_view {
 			view.emit(
-				&mut self.ui_dl,
-				&crate::ui::Style::new(self.ui_scale),
+				&mut self.ui.ui_dl,
+				&crate::ui::Style::new(self.ui.ui_scale),
 				size,
 				daylight,
 			);
@@ -180,39 +181,43 @@ impl Engine {
 			// button the in-game screens close with, so one control means
 			// one thing everywhere. Drawn after the panel so it sits over
 			// the dim, and only where Escape has somewhere to go.
-			if self.config.touch_hud && self.menu.can_go_back() {
+			if self.config.touch_hud && self.ui.menu.can_go_back() {
 				crate::ui::hud::corner_button(
-					&mut self.ui_dl,
-					self.ui_scale,
+					&mut self.ui.ui_dl,
+					self.ui.ui_scale,
 					size,
-					&self.safe_area,
+					&self.input.safe_area,
 					true,
 				);
 			}
 		}
 		if in_game {
-			let hotbar_view =
-				crate::hotbar::HotbarView::build(&self.hotbar, &self.inventory, &self.tool_swap);
+			let hotbar_view = crate::hotbar::HotbarView::build(
+				&self.hotbar,
+				&self.inventory,
+				&self.input.tool_swap,
+			);
 			let owned_tools = self.owned_tools();
 			let mut ui = crate::ui::Ui {
-				dl: &mut self.ui_dl,
-				hits: &mut self.ui_hits,
-				style: crate::ui::Style::new(self.ui_scale),
+				dl: &mut self.ui.ui_dl,
+				hits: &mut self.ui.ui_hits,
+				style: crate::ui::Style::new(self.ui.ui_scale),
 			};
-			if self.inv_screen.is_open() {
+			if self.ui.inv_screen.is_open() {
 				// Screen first: its dim/panel sit under the bar's quads.
-				self.inv_screen
+				self.ui
+					.inv_screen
 					.build(&mut ui, size, &self.inv_grid, &self.inventory, daylight);
-			} else if self.alch_screen.is_open() {
+			} else if self.ui.alch_screen.is_open() {
 				let view =
 					crate::ui::screens::alchemy::AlchView::build(&self.inventory, &self.skills);
-				self.alch_screen.build(&mut ui, size, &view, daylight);
-			} else if self.char_screen.is_open() {
+				self.ui.alch_screen.build(&mut ui, size, &view, daylight);
+			} else if self.ui.char_screen.is_open() {
 				let view = crate::ui::screens::character::CharView::build(
 					&self.skills,
 					self.camera.pos.y.floor() as i32,
 				);
-				self.char_screen.build(&mut ui, size, &view, daylight);
+				self.ui.char_screen.build(&mut ui, size, &view, daylight);
 			} else {
 				crate::ui::hud::crosshair(ui.dl, size, ui.style.scale);
 			}
@@ -223,8 +228,8 @@ impl Engine {
 			// The background bench's tell: only while a job runs with the
 			// screen CLOSED — open, the screen's own progress row is the
 			// richer version of the same fact.
-			if !self.alch_screen.is_open()
-				&& let Some(job) = self.alch_screen.job()
+			if !self.ui.alch_screen.is_open()
+				&& let Some(job) = self.ui.alch_screen.job()
 			{
 				use crate::ui::screens::alchemy::{BenchJob, block_name};
 				let BenchJob::Craft(item, left) = job;
@@ -236,25 +241,25 @@ impl Engine {
 				&ui.style,
 				size,
 				&owned_tools,
-				self.tool_swap.shown(),
+				self.input.tool_swap.shown(),
 				self.inventory.bucket_full(),
-				self.tool_swap.present(),
+				self.input.tool_swap.present(),
 			);
 			// The touch HUD draws last so its corner button sits over an
 			// open screen's dim — it is that screen's close control.
 			if self.config.touch_hud {
-				let screen_open = self.inv_screen.is_open()
-					|| self.alch_screen.is_open()
-					|| self.char_screen.is_open();
+				let screen_open = self.ui.inv_screen.is_open()
+					|| self.ui.alch_screen.is_open()
+					|| self.ui.char_screen.is_open();
 				crate::ui::hud::touch_buttons(
 					ui.dl,
 					ui.style.scale,
 					size,
-					&self.safe_area,
+					&self.input.safe_area,
 					screen_open,
 					self.config.touch_jump_button,
 				);
-				if !screen_open && let Some((anchor, finger)) = self.touch.joystick() {
+				if !screen_open && let Some((anchor, finger)) = self.input.touch.joystick() {
 					let to_px = |v: glam::Vec2| (v.x * size.0 as f32, v.y * size.1 as f32);
 					crate::ui::hud::joystick_overlay(
 						ui.dl,
@@ -271,8 +276,8 @@ impl Engine {
 		// screen simply stays up), so this is the in-game one — a teleport.
 		if self.save.arrival_hold.is_some() && in_game {
 			crate::ui::hud::arrival_cover(
-				&mut self.ui_dl,
-				&crate::ui::Style::new(self.ui_scale),
+				&mut self.ui.ui_dl,
+				&crate::ui::Style::new(self.ui.ui_scale),
 				size,
 				"Loading world...",
 			);
@@ -281,12 +286,17 @@ impl Engine {
 		// The hand is part of playing, not part of reading a screen: a
 		// menu, the inventory or the alchemy page all put it away.
 		let viewmodel = (in_game
-			&& !self.inv_screen.is_open()
-			&& !self.alch_screen.is_open()
-			&& !self.char_screen.is_open())
+			&& !self.ui.inv_screen.is_open()
+			&& !self.ui.alch_screen.is_open()
+			&& !self.ui.char_screen.is_open())
 		.then(|| self.viewmodel_frame(&frame))
 		.flatten();
-		self.pending.prep_ms = self.prep_start.take().map(ms_since).unwrap_or_default();
+		self.bench.pending.prep_ms = self
+			.bench
+			.prep_start
+			.take()
+			.map(ms_since)
+			.unwrap_or_default();
 		if let Some(r) = self.renderer.as_mut() {
 			// A carried light that has travelled — or has just gone out —
 			// re-places itself through the same hook a block edit uses, so
@@ -306,7 +316,7 @@ impl Engine {
 					render: self.config.render_scale,
 					gi_div: self.config.gi_scale_div,
 				},
-				ui_scale: self.ui_scale,
+				ui_scale: self.ui.ui_scale,
 				players: &self.vfx.remote_instances,
 				held: &self.vfx.held_instances,
 				carried: &self.vfx.carried.lights,
@@ -327,32 +337,36 @@ impl Engine {
 				overlay: overlay_stats
 					.as_ref()
 					.map(|s| (s, self.vfx.history_scratch.as_slice())),
-				feed: &self.feed,
+				feed: &self.session.feed,
 				target: highlight_target,
 				viewmodel,
-				ui: &self.ui_dl,
-				chat: (in_game && self.chat.is_open()).then(|| {
-					self.chat
+				ui: &self.ui.ui_dl,
+				chat: (in_game && self.ui.chat.is_open()).then(|| {
+					self.ui
+						.chat
 						.view(((self.time_secs * 2.0) as u32).is_multiple_of(2))
 				}),
 				nametags: &self.vfx.nametag_scratch[..self.vfx.nametag_count],
 			};
 			let stats = r.render(gpu, target, &scene);
-			self.pending.encode_ms = ms_since(t_encode);
-			self.metrics.render = stats;
-			self.metrics.gpu = r.gpu_pass_ms();
-			self.metrics.gpu_buffer_bytes = r.gpu_buffer_bytes;
+			self.bench.pending.encode_ms = ms_since(t_encode);
+			self.bench.metrics.render = stats;
+			self.bench.metrics.gpu = r.gpu_pass_ms();
+			self.bench.metrics.gpu_buffer_bytes = r.gpu_buffer_bytes;
 		}
 		// Occupancy: the whole handler span minus the vsync wait that blocks
 		// inside it on native (and is effectively absent on the web). Closed
 		// here rather than by the platform after `render` so it reaches this
 		// frame's record instead of the next one's.
-		self.pending.busy_ms = self
+		self.bench.pending.busy_ms = self
+			.bench
 			.frame_start
 			.take()
-			.map(|t| (ms_since(t) - self.pending.acquire_ms).max(0.0))
+			.map(|t| (ms_since(t) - self.bench.pending.acquire_ms).max(0.0))
 			.unwrap_or_default();
 		// total_ms is measured inside frame() from the frame-to-frame delta.
-		self.metrics.frame(std::mem::take(&mut self.pending));
+		self.bench
+			.metrics
+			.frame(std::mem::take(&mut self.bench.pending));
 	}
 }

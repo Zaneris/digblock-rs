@@ -57,7 +57,7 @@ impl Engine {
 			.block_at(bx, feet.floor() as i32, bz)
 			.is_some_and(|b| b.is_water());
 		let wet = submerged || feet_wet;
-		if self.walking {
+		if self.input.walking {
 			let moved = Vec3::new(d.x, 0.0, d.z).length();
 			if let Some((m, gain)) = self.audio.footsteps.advance(moved, grounded, below, wet) {
 				self.emit(AudioCmd::Sfx {
@@ -92,7 +92,7 @@ impl Engine {
 			}
 		}
 		self.audio.prev_wet = wet;
-		self.audio.fall_from_y = if grounded || wet || !self.walking {
+		self.audio.fall_from_y = if grounded || wet || !self.input.walking {
 			feet
 		} else {
 			self.audio.fall_from_y.max(feet)
