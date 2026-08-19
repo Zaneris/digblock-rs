@@ -224,6 +224,20 @@ pub fn alchemy_reveal(b: BlockType) -> Option<u32> {
 	})
 }
 
+/// Where the bench first quickens. A level that changes a NUMBER rather
+/// than opening a recipe, so [`opens`] deliberately does not report it —
+/// but it is still a level, and every level lives here. `alchemy` owns
+/// what it steps TO ([`crate::alchemy::base_pace_ticks`]).
+pub const BENCH_FASTER_AT: u32 = 25;
+
+/// Where the bench reaches its fastest pace.
+pub const BENCH_FASTEST_AT: u32 = 45;
+
+/// Where transmutation waste steps down — just past where the catalog tops
+/// out, so the post-content stretch has a felt gain of its own
+/// ([`crate::alchemy::waste_permille`] owns the floor it clamps to).
+pub const WASTE_DIP_AT: u32 = 56;
+
 /// How many cells one hold breaks with the Resonant Pick in hand
 /// (SKILLS-DESIGN §5.6): a single cell below the tool's own Mining level,
 /// then a row, then the full square plane.
@@ -233,15 +247,25 @@ pub fn alchemy_reveal(b: BlockType) -> Option<u32> {
 /// beside it in `skills` steps with it.
 pub fn pick_cells(level: u32) -> usize {
 	match level {
-		// The plane sits deep in the post-catalog tail ON PURPOSE — the one
-		// functional unlock out there, a long-haul goal past where the
-		// content ladder ends (SKILLS-DESIGN: the 1–60 compression keeps
-		// exactly this exception).
-		l if l >= 85 => PICK_PLANE,
-		l if l >= 33 => 3,
+		l if l >= PICK_PLANE_AT => PICK_PLANE,
+		l if l >= PICK_WIDE_AT => 3,
 		_ => 1,
 	}
 }
+
+/// The Mining level the swing widens to a row at.
+///
+/// Named rather than left inside [`pick_cells`]'s match, and that is the
+/// rule for every threshold in this file: one nothing can NAME is one
+/// every reader writes down again — the character screen's teasers and
+/// two test suites were each carrying their own copy.
+pub const PICK_WIDE_AT: u32 = 33;
+
+/// The Mining level the swing reaches [`PICK_PLANE`] at. Deep in the
+/// post-catalog tail ON PURPOSE — the one functional unlock out there, a
+/// long-haul goal past where the content ladder ends (SKILLS-DESIGN: the
+/// 1–60 compression keeps exactly this exception).
+pub const PICK_PLANE_AT: u32 = 85;
 
 /// The pick's second rank: the full plane, the widest it ever breaks.
 ///
@@ -266,11 +290,19 @@ pub fn prospector(level: u32) -> bool {
 /// near-goal for exactly the levels with no threshold otherwise in sight.
 pub fn prospect_range(level: u32) -> Option<i32> {
 	match level {
-		l if l >= 43 => Some(8),
-		l if l >= 18 => Some(4),
+		l if l >= PROSPECT_SHARP_AT => Some(8),
+		l if l >= PROSPECT_FAINT_AT => Some(4),
 		_ => None,
 	}
 }
+
+/// Where the sense comes in faint — just past the first reveal, so it
+/// teases the tier you cannot yet see.
+pub const PROSPECT_FAINT_AT: u32 = 18;
+
+/// Where it sharpens: the stretch before the deepest reveal, which has no
+/// other threshold in sight.
+pub const PROSPECT_SHARP_AT: u32 = 43;
 
 /// The Mining mastery capstone (§5.5): every field extraction draws one
 /// extra vein's worth of essence. It crowns the CONTENT ladder — the
@@ -281,8 +313,12 @@ pub fn prospect_range(level: u32) -> Option<i32> {
 /// spends it as: a tier that pays in two essences has to get more of both,
 /// or the capstone would quietly favour whichever line was listed first.
 pub fn ore_mastery(level: u32) -> u32 {
-	u32::from(level >= 60)
+	u32::from(level >= MASTERY_AT)
 }
+
+/// Where mastery lands: the level the last reveal's stretch ends at, which
+/// is the top of the CONTENT ladder rather than the level cap.
+pub const MASTERY_AT: u32 = 60;
 
 // There is deliberately NO per-substance draw gate. The reveal IS the
 // gate: a node you cannot see draws as its host, and one you can needs

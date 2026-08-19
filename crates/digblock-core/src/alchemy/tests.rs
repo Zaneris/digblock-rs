@@ -13,7 +13,7 @@ fn efficiency_and_waste_hit_their_pinned_endpoints() {
 	// just past where the catalog tops out.
 	assert_eq!(waste_permille(1), 1600);
 	assert_eq!(waste_permille(99), 1050);
-	assert!(waste_permille(56) <= 1250);
+	assert!(waste_permille(crate::unlock::WASTE_DIP_AT) <= 1250);
 	for l in 2..=99 {
 		assert!(
 			waste_permille(l) <= waste_permille(l - 1),
@@ -158,8 +158,8 @@ fn mined_rock_is_always_rubble() {
 #[test]
 fn pace_steps_and_the_catalog_are_pinned() {
 	assert_eq!(base_pace_ticks(1), 120);
-	assert_eq!(base_pace_ticks(25), 84);
-	assert_eq!(base_pace_ticks(45), 60);
+	assert_eq!(base_pace_ticks(crate::unlock::BENCH_FASTER_AT), 84);
+	assert_eq!(base_pace_ticks(crate::unlock::BENCH_FASTEST_AT), 60);
 	// The display order is derived, so it can neither list something
 	// uncraftable nor miss something craftable — but it must still be
 	// a permutation, with nothing doubled by a grid cell claimed twice.

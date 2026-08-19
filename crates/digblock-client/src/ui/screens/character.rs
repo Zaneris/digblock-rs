@@ -441,10 +441,11 @@ mod tests {
 		);
 		// The number-only levels, which `opens` deliberately does not
 		// report: the bench's two pace steps and the waste dip.
-		assert!(alchemy::base_pace_ticks(25) < alchemy::base_pace_ticks(24));
-		assert!(alchemy::base_pace_ticks(45) < alchemy::base_pace_ticks(44));
-		assert!(alchemy::waste_permille(56) < alchemy::waste_permille(55));
-		for l in [25, 45, 56] {
+		use unlock::{BENCH_FASTER_AT as FASTER, BENCH_FASTEST_AT as FASTEST, WASTE_DIP_AT as DIP};
+		assert!(alchemy::base_pace_ticks(FASTER) < alchemy::base_pace_ticks(FASTER - 1));
+		assert!(alchemy::base_pace_ticks(FASTEST) < alchemy::base_pace_ticks(FASTEST - 1));
+		assert!(alchemy::waste_permille(DIP) < alchemy::waste_permille(DIP - 1));
+		for l in [FASTER, FASTEST, DIP] {
 			assert!(
 				ALCH_TEASERS.iter().any(|&(t, _)| t == l),
 				"no teaser at {l}"

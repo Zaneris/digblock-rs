@@ -425,7 +425,7 @@ mod carried_tests {
 	/// tool.
 	#[test]
 	fn the_pick_brightens_at_the_rank_that_widens_it() {
-		use digblock_core::unlock::{PICK_PLANE, pick_cells};
+		use digblock_core::unlock::PICK_PLANE_AT;
 		let eye = Vec3::new(64.0, 70.0, 64.0);
 		let base = BlockType::ResonantPick.props().light;
 		let level_at = |mining| {
@@ -434,11 +434,9 @@ mod carried_tests {
 			c.push(CARRIER_SELF, eye, Some(BlockType::ResonantPick), mining);
 			c.lights[0].level
 		};
-		// The rank boundary is asked of `pick_cells`, never restated: one
+		// The rank boundary is read from `unlock`, never restated: one
 		// threshold, and this test moves with it.
-		let plane = (1..=100u32)
-			.find(|&l| pick_cells(l) == PICK_PLANE)
-			.expect("the pick reaches its plane rank somewhere on the ladder");
+		let plane = PICK_PLANE_AT;
 		assert_eq!(
 			level_at(plane - 1),
 			0,

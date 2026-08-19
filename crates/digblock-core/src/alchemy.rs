@@ -89,7 +89,11 @@ pub fn waste_permille(level: u32) -> u32 {
 	// linear curve catches back up a handful of levels later and carries
 	// the tail from there, so the post-content levels keep their small
 	// per-level gains.
-	if level >= 56 { lin.min(1250) } else { lin }
+	if level >= crate::unlock::WASTE_DIP_AT {
+		lin.min(1250)
+	} else {
+		lin
+	}
 }
 
 /// One cost line at `level`: `ceil(ideal · waste)`.
@@ -241,9 +245,9 @@ pub fn craft_order() -> Vec<BlockType> {
 /// The bench's pace for a reference-worth op — the base interval every
 /// craft's own worth scales. It quickens at two Alchemy milestones.
 pub fn base_pace_ticks(level: u32) -> u32 {
-	if level >= 45 {
+	if level >= crate::unlock::BENCH_FASTEST_AT {
 		60
-	} else if level >= 25 {
+	} else if level >= crate::unlock::BENCH_FASTER_AT {
 		84
 	} else {
 		120

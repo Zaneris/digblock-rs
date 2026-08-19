@@ -356,7 +356,7 @@ fn nothing_writes_the_world_floor() {
 			swing_hit.cell,
 			swing_hit.normal,
 			swing.to_array(),
-			digblock_core::unlock::pick_cells(85),
+			digblock_core::unlock::pick_cells(digblock_core::unlock::PICK_PLANE_AT),
 			|_| true,
 		)
 		.contains(&(px, FLOOR, sz)),
