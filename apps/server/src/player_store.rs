@@ -3,69 +3,34 @@
 //! journal is cell-keyed and its compaction discards authorship, so
 //! player-keyed state lives in this separate, much smaller file.
 //!
-//! The key used to be a hash of a secret the CLIENT chose and sent in its
-//! Hello. It is now the account id the master returns from
-//! `/api/tokens/verify`, which changes two things beyond the bytes: a
-//! player's character follows their account rather than their machine, so
-//! signing in on a second device finds it — and a record can no longer be
-//! created, claimed, or flooded by anyone who simply picks a number.
-//!
 //! Records are tiny, so the format is a whole-file snapshot rewritten
-//! atomically (tmp + fsync + rename) at most once per [`FLUSH_INTERVAL`].
-//! A hard crash loses at most the last interval of changes — deliberate:
-//! blocks themselves are journaled, counts are low-stakes.
+//! atomically at most once per [`FLUSH_INTERVAL`]. A hard crash loses at most
+//! that interval — deliberate, since blocks themselves are journaled. The
+//! rewrite runs on a dedicated writer thread ([`StoreWriter`]): encoding
+//! stays on the caller's thread because it needs the live map, but the fsync
+//! does not, and on a container or network volume that is several dropped
+//! ticks every interval. Only shutdown waits for the writer.
 //!
-//! The rewrite happens on a dedicated writer thread ([`StoreWriter`]).
-//! Encoding stays on the caller's thread — it needs the live map — but the
-//! fsync does not, and that is the expensive half: milliseconds on local
-//! SSD, tens of milliseconds on a container or network volume, which on the
-//! sim thread is several dropped ticks every interval. Disconnects go through
-//! [`PlayerStore::sync_soon`], which coalesces onto the same cadence
-//! instead of forcing a write each; only shutdown
-//! ([`PlayerStore::sync`]) waits for the writer.
+//! Unlike the journal, a store that cannot write does NOT refuse edits: the
+//! world stays consistent either way, only persistence degrades.
 //!
-//! Unlike the journal, a store that cannot write does NOT refuse edits:
-//! the world stays consistent either way, only persistence degrades. It
-//! logs loudly and keeps serving from memory.
+//! **Every version this project has written still loads**, because the
+//! archive-and-start-fresh path is reserved for actual corruption — using it
+//! for a routine upgrade would wipe every player's inventory. Two shapes
+//! keep that true:
 //!
-//! Format v2 appended an optional item layout (hotbar + grid wire
-//! arrangements) per record; v3 the player's last position and
-//! return-to-spawn cooldown; v4 per-skill XP totals. Each was an append,
-//! read behind a `version >=` guard, because the archive-and-start-fresh
-//! path is reserved for actual corruption and never a routine upgrade —
-//! it would wipe every player's inventory.
-//!
-//! **v5 changed what the 16-byte key MEANS** — from a hash of a device
-//! secret to a master account id — without changing a single byte of a
-//! record's body. A v1–v4 record is therefore structurally fine and
-//! semantically orphaned: nothing on this server can say which account
-//! held that device.
-//!
-//! **v6 is the answer to that**, and it is why the archive path went back
-//! to being corruption-only. The file now has TWO sections — records
-//! keyed by account, and [`Self::legacy`] records still keyed by the old
-//! device hash, held in quarantine. A quarantined record is inert: it
-//! belongs to nobody, no join reads it, and the only thing that can
-//! happen to it is [`PlayerStore::claim_legacy`], where the player who
-//! still holds that device secret folds it into their account and the
-//! quarantined copy is deleted. Every version is read: v1–v4 land wholly
-//! in quarantine, v5 wholly in the account map, v6 carries both.
-//!
-//! The quarantine only ever SHRINKS. Nothing writes into it after load —
-//! there is no path that creates a device-keyed record any more — so it
-//! needs no cap of its own beyond the one the file it came from already
-//! had, and every claim is one entry gone for good.
-//!
-//! The layout blob is SELF-DESCRIBING, which is what keeps growing the
-//! inventory grid out of the version field entirely. Its leading byte is
-//! a shape tag, not a bare present/absent flag: [`LAYOUT_ABSENT`], or
-//! [`LAYOUT_SIZED`] followed by a length-prefixed pair the reader pads or
-//! truncates into whatever the current constants are. So a `GRID_SLOTS`
-//! change is a no-op here — no version bump, no archive path, and no
-//! silent re-interpretation of somebody's stored arrangement, which is
-//! the failure this shape exists to make impossible. That property is why
-//! the tag survived the key change: the reasons the two exist are
-//! unrelated, and only one of them was ever about the version field.
+//! - **The file has TWO sections**: records keyed by account, and
+//!   [`Self::legacy`] records still keyed by the pre-account device hash,
+//!   held in quarantine. A quarantined record is inert — it belongs to
+//!   nobody and no join reads it — and the only thing that can happen to it
+//!   is [`PlayerStore::claim_legacy`]. The quarantine only ever SHRINKS:
+//!   nothing creates a device-keyed record any more, so it needs no cap of
+//!   its own.
+//! - **The layout blob is SELF-DESCRIBING**, which keeps growing the
+//!   inventory grid out of the version field entirely. Its leading byte is a
+//!   shape tag, not a present/absent flag, so a `GRID_SLOTS` change is a
+//!   no-op here — no version bump, no archive path, and no silent
+//!   re-interpretation of somebody's stored arrangement.
 
 use digblock_core::hotbar::{HOTBAR_SLOTS, WIRE_EMPTY};
 use digblock_core::inv_grid::GRID_SLOTS;

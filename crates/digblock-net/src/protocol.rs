@@ -16,144 +16,13 @@ pub const SERVER_ID: PlayerId = u8::MAX;
 /// multiplayer, music) instead.
 pub const DEFAULT_MASTER_URL: &str = "https://master.digblock.net";
 
-/// v7: server-dictated time of day (`Welcome.tod` + the periodic
-/// `ServerMsg::TimeOfDay` heartbeat).
-/// v8: sub-block shapes — `EditKind::Interact` (door toggles),
-/// `ClientMsg::Alchemy`, placements may carry valid state nibbles
-/// (`shapes::state_valid` replaces the all-state-bits-refused rule), and
-/// `InventoryFull` may carry flagged sub-material ids.
-/// v9: server admin — `Teleported.look` (facing on teleport, zero =
-/// keep current view) and `ServerMsg::AdminCommands` (the server
-/// advertises its command set to the admin for chat autocomplete).
-/// v10: item layout — `ClientMsg::Layout`/`ServerMsg::Layout` (hotbar
-/// and grid arrangements, server-persisted per identity); also
-/// `EditRequest.slot` with `RejectReason::WrongSlot` (place/collect must
-/// use the declared slot's item), `InputTick.active_slot`, and
-/// `NetPlayerState.held` (the held item rides snapshots for remote
-/// rendering).
-/// v11: protected cells — `RejectReason::Protected` (the world floor, and
-/// the spawn lock's region when an admin has enabled it), plus
-/// `ServerMsg::DigRefused` so a hold on a protected cell is refused when
-/// it STARTS rather than silently running the full timer and failing at
-/// the completing edit.
-/// v12: the water tool became stateful — water is no longer an item in
-/// any slot, its inventory count is the tool's one charge, and the
-/// wire gains `messages::HELD_TOOL_FULL` (so a remote player's bucket
-/// renders charged or empty) plus `RejectReason::BucketFull`. A v11
-/// client would place water from a water slot the server no longer lets
-/// it keep, so this one is a break, not an append.
-/// v13: spawn facing — `Welcome.spawn_look`, the direction an admin set
-/// with `/set-spawn-dir`, applied when a player actually spawns (never on
-/// a resume in place). Zero = keep the current view, the same convention
-/// as `Teleported.look`, which carries it on return-to-spawn. A pure
-/// append, but the version still moves: a v13 client's decoder needs the
-/// field, so it cannot read a v12 server's Welcome.
-/// v14: the snapshot split. `NetPlayerState` — one shape for you and for
-/// everyone else — became `SelfState` (full-precision pos/vel, no look, no
-/// id) plus `RemoteState` (f32 pos, i16 velocity in thousandths, u16 yaw,
-/// held). The old struct spent a whole look vector on a pitch nothing has
-/// ever read, and a full-precision velocity on an extrapolation capped at
-/// [`EXTRAP_CAP_TICKS`]: far more wire per player than a client consumes.
-/// A break, not an append — `Snapshot`'s fields changed shape.
-/// v15: slabs gained a ceiling anchor — a slab cell's state nibble carries
-/// an anchor bit saying it hangs from its cell's top instead of standing
-/// on its floor, so a slab can be built against a ceiling and grows and
-/// shrinks from the end it is NOT anchored to. Not a message change at
-/// all: cells travel as they always have, and the anchor is still
-/// server-derived from the verified normal (a placement request carries
-/// the canonical base state as before). It is a break because a v14 peer
-/// masks the new bit off and
-/// so puts the block somewhere else — and geometry that disagrees
-/// between the two ends is collision that disagrees, which the movement
-/// adoption envelope would fight tick by tick.
-/// v16: skills — `ServerMsg::Skills` (full per-skill XP totals, sent in
-/// join sync after `Layout`) and `ServerMsg::XpGain` (one skill's new
-/// TOTAL after an award — idempotent and reorder-safe, the client
-/// animates the delta itself). XP is server-computed at the two award
-/// chokepoints (dig credit, alchemy) and never client-claimed; levels
-/// derive from the shared curve in `digblock_core::skills`. Pure
-/// appends, but the version still moves: a v16 client's join flow
-/// expects the skills sync a v15 server never sends.
-/// v17: the rock gate — `RejectReason::SkillGated` appended (a dig
-/// refused at `DigStart` because `unlock::mine` exceeds the
-/// digger's Mining level). Rides the existing `DigRefused` machinery;
-/// the append moves the version because a v16 peer can't decode the new
-/// variant index (and SIM v12 pairs with it anyway).
-/// v18: `ServerMsg::LevelUp` — another player crossed a level, so
-/// everyone in earshot can throw confetti over their head. Broadcast to
-/// everyone BUT the author, who already learns it from their own
-/// `XpGain` total and celebrates locally; a level is derived from the
-/// shared curve on both sides, so the message carries the answer rather
-/// than the XP that implies it. An append, but the version moves for the
-/// usual reason: a v17 peer can't decode the new variant index.
-/// v19: the craft gate — `RejectReason::NotUnlocked` appended (a dig
-/// refused at `DigStart` because the block is craft-only and
-/// `unlock::craft` level exceeds the digger's Alchemy level). The
-/// sibling of v17's rock gate on the other skill, on the same DigRefused
-/// machinery; the append moves the version because a v18 peer can't
-/// decode the new variant index (and SIM v13 pairs with it anyway).
-/// v20: the arrival hold — `ServerMsg::AreaReady` appended. Same reason
-/// again: a v19 peer can't decode the new variant index.
-/// v21: ore's tool gate — `RejectReason::NeedsTool` appended, sent at
-/// `DigStart` when a revealed vein meets the wrong tool (SKILLS-DESIGN
-/// §5.3). Same reason a third time; SIM v15 pairs with it. Field
-/// extraction itself needs NO new wire: both ends derive it from
-/// `ore::dig_mode` over data they already share, so `EditRequest` is
-/// untouched.
-/// v22: the bench paces BOTH halves. `AlchemyOp::Craft` now draws on the
-/// same per-player tick bucket `Convert` always did, charged the item's
-/// own `alchemy::craft_pace_ticks` — so a bulk `Craft { count: 100 }`,
-/// which a v21 client sends on one press of the transmute button, no
-/// longer fits and is refused whole. Nothing was appended and no field
-/// moved; what changed is what an existing message BUYS, which is
-/// exactly the kind of break the handshake exists to catch — a v21 peer
-/// would press TRANSMUTE and watch nothing happen, forever. The paired
-/// client sends the same op one item at a time, as it already does for
-/// `Convert`.
-/// v23: accounts. `Hello.identity` REMOVED — the first field this
-/// protocol has ever taken away rather than appended, which is why
-/// `MIN_PROTOCOL` moves with it instead of the usual one-way ratchet.
-/// It was a client-chosen bearer secret keying the server's persisted
-/// records; a player is now identified by the account id the MASTER
-/// returns from `/api/tokens/verify`, so the wire carries no claim about
-/// who anyone is. See AUTH-DESIGN.md.
-/// v24: the legacy claim — `ClientMsg::ClaimLegacy` appended, the
-/// one-time transfer of a pre-account character onto the account that
-/// now owns it. An ordinary append (a v23 peer can't decode the new
-/// variant index), so `MIN_PROTOCOL` stays where v23 put it: a v23
-/// client can still play, it simply never migrates.
-/// v25: the crafted bucket (SKILLS-DESIGN §13.5). No frame changed
-/// shape — the tool slot's `WIRE_EMPTY` was always encodable — but a
-/// fresh player owns NO tool until the first vessel is crafted, and an
-/// older client assumes the bucket into every hand: it draws one, casts
-/// the scoop ray with it, and sends Collects the server refuses forever.
-/// The v22 class of break — what an existing message BUYS — so the
-/// floor rises to meet it.
-/// v26: the datagram fallback — `ClientMsg::NoDatagrams`,
-/// `ClientMsg::Unreliable` and `ServerMsg::Unreliable` appended, so a
-/// browser whose WebTransport has no datagram channel can carry its
-/// snapshots and inputs on the reliable stream instead. Three ordinary
-/// appends; the floor stays where v25 put it, and a client that never
-/// announces the capability is byte-identical to a v25 one on the wire.
-/// v27: `ClientMsg::DigStart` gains the hotbar `slot` the hold is made
-/// with, the twin of `EditRequest.slot` and for the same reason — the
-/// server's tool gates now ask whether the hand is ON the tool
-/// (SIM v20's `Hotbar::tool_in_hand`), and the selection otherwise
-/// reaches it on the jitter-buffered input path, so switching to the
-/// siphon and holding on a vein in one motion met a `NeedsTool` refusal
-/// aimed at the previous hand. A field appended INSIDE an existing
-/// variant rather than a new variant, so an older peer's `DigStart` is a
-/// byte short and the floor rises with it.
-/// v28: the essence redesign — bench extraction retired. No frame
-/// changed shape: `AlchemyOp::Convert` still decodes and the server now
-/// refuses it outright (nothing debited, the standing rebase as the
-/// answer), essence enters the world only through the siphon's field
-/// draw, and the surface nodes reveal on the ALCHEMY level, which now
-/// rides the mesh stamp beside Mining's. The v22 class of break — what
-/// existing messages BUY — twice over: a v27 client extracts into a wall
-/// of silent refusals and never sees a surface node at all, so the
-/// floor rises to meet it. SIM v21 pairs with it (node cells change what
-/// a dig IS).
+/// The wire contract both ends must agree on. Exchanged in the handshake
+/// preamble; a peer outside `MIN_PROTOCOL..=PROTOCOL_VERSION` is refused.
+///
+/// Bump on ANY change to a message's shape or meaning. Postcard encodes enum
+/// discriminants by declaration order, so variants and fields are
+/// APPEND-ONLY — never reorder, never remove. `git log -S PROTOCOL_VERSION`
+/// is the history of what each bump carried.
 pub const PROTOCOL_VERSION: u16 = 28;
 
 /// Chunk-column radius around an arrival — a join or a teleport — whose
@@ -178,33 +47,18 @@ pub const AREA_SYNC_RADIUS: i32 = 3;
 /// the few ticks the radius needs on a healthy link, and the fallback is
 /// exactly today's behaviour.
 pub const AREA_SYNC_TIMEOUT_SECS: f32 = 5.0;
-/// Oldest protocol this build still speaks. The handshake refuses peers
-/// outside `MIN_PROTOCOL..=PROTOCOL_VERSION`; from v2 on, `Hello` and
-/// `Welcome` are append-only across the supported range so a decoder for
-/// version N can read any peer ≥ N (postcard tolerates trailing bytes).
+/// Oldest protocol this build still speaks. From v2 on, `Hello` and
+/// `Welcome` are append-only across the supported range, so a decoder for
+/// version N can read any peer >= N (postcard tolerates trailing bytes).
 ///
-/// The floor has moved twice, and neither move was routine. v22 (the
-/// bench pacing BOTH halves) was the first break that is not about
-/// DECODING: a v21 peer reads every v22 frame perfectly and simply cannot
-/// transmute in bulk any more, its transmute button working for a single
-/// press and silently doing nothing under CTRL. Refusing the handshake is
-/// the honest answer, since a range that admits a peer whose buttons don't
-/// work is worse than a narrow one. v23 then LOST a field: `Hello` dropped
-/// `identity`, so a v22 decoder reading a v23 Hello would run off the end
-/// of the message, and the floor has to rise again to meet it. No
-/// compatibility loss worth mourning there either — an older client's join
-/// token came from an unauthenticated `/api/join` that no longer exists.
-/// v24 (the legacy claim) is an ordinary append and leaves the floor where
-/// v23 put it. v25 (the crafted bucket) is another v22-class break: an
-/// older peer decodes everything and still plays a fresh character with a
-/// phantom bucket in hand and a scoop that never lands, so the floor
-/// rises again. v26 (the datagram fallback) is three ordinary appends and
-/// leaves it exactly there. v27 is the v23 class rather than the v22 one:
-/// `DigStart` gained a field INSIDE the variant, so a v27 decoder reading
-/// a v26 hold runs off the end of the frame, and the floor has to rise to
-/// meet it. v28 (the essence redesign) is the v22 class once more — an
-/// older peer's whole extract tab buys nothing — so the floor rises
-/// again.
+/// Two kinds of break raise this floor, and only one of them is about
+/// decoding. A field REMOVED from, or added INSIDE, an existing variant
+/// makes an older decoder run off the end of the frame. The subtler kind is
+/// a peer that decodes everything perfectly and finds its buttons no longer
+/// buy anything — a client whose bulk craft silently does nothing, or whose
+/// fresh character holds a phantom bucket. Refusing the handshake is the
+/// honest answer to both: a range that admits a peer whose UI lies is worse
+/// than a narrow one.
 pub const MIN_PROTOCOL: u16 = 28;
 
 // ---- handshake preamble ----------------------------------------------
