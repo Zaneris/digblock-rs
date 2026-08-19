@@ -417,6 +417,24 @@ not the mean: the sim halves the amount on each spread, so averaging drags every
 it. `water.wgsl` maps that code to a height **linearly** — the two halves are one invariant, so any change to how
 corners are chosen must be checked against the mapping and not just the codes.
 
+## Scheduled world jobs
+
+`digblock-core/src/worldjob.rs` is a seam with no rule in it yet: a `WorldJob` runs on a clock over blocks of a given
+type near active players (grass creeping onto dirt is the shape). **This is not fluid and must not be built on it** —
+fluid is a continuous per-tick sim over cells in flight, this is a rare batch sweep. They share only their write path.
+
+- **The clock is the GAME's day** (`sun::DAY_SECS`), fixed by `Schedule` rather than chosen per job — a server's local
+  09:00 means nothing to a player elsewhere, and the game clock is already dictated to every client.
+- **The anti-dupe is enforced, not documented.** A journal write sets the cell's monotone edited bit and
+  `nodes::revealed` reads it as spent, so a sweep over a node host would destroy every reveal in a band around every
+  player. `Scheduler::register` refuses such a scope, and `a_node_host_is_never_sweepable` walks every block to keep
+  `worldjob::node_host` and `revealed` naming one set. **Watch it when a new block becomes a node host.**
+- Core is IO-free: `tick` reads through `CellSource` and RETURNS writes, so each side applies them through its own
+  authoritative path — the server's `apply_write` (journal, protection, LWW, broadcast) and the engine's
+  `Pipeline::set_cell` offline. Both arms run the same scheduler, or a rule forks.
+- Catch-up is capped at one run (`last_run` advances when a sweep STARTS); one sweep at a time; the column set is
+  snapshotted at the start, because players move and a shifting set gives uneven coverage.
+
 ## Spawn & protected cells
 
 Both modules carry thorough `//!` docs. What those don't say, and what bites:
