@@ -542,86 +542,29 @@ impl EngineConfig {
 		}
 	}
 
-	pub fn mobile() -> Self {
+	/// The quality knobs a small, battery-powered device wants, applied over
+	/// any base profile. Both mobile profiles go through here so a retune is
+	/// made ONCE — `mobile()` was a verbatim copy of `desktop()` differing in
+	/// six fields, and `web_mobile()` re-listed four of them a third time.
+	fn mobile_quality(base: Self) -> Self {
 		Self {
 			draw_dist: 10,
-			workers: 2,
-			seed: None,
-			tod: None,
-			yaw: None,
-			pitch: None,
-			start_pos: None,
-			metrics_csv: None,
-			// iOS has no keyboard toggle; flip this for device profiling.
-			overlay: false,
-			bench: false,
-			// Launchers narrow this; the DEFAULT has to be the safe one.
-			// A capture that forgets to set it merely accepts input it
-			// will not get; an interactive run that forgets is a game
-			// that ignores its player.
-			interactive: true,
-			fly: None,
-			warp: false,
-			walk: false,
-			render_scale: 1.0,
-			gfx_defaults_auto: false,
-			gi_scale_div: crate::settings::GI_SCALE_DEFAULT,
-			bench_speed: 30.0,
-			gi_drill_at: None,
 			ssr: false,
-			ui_scale: 1.0,
-			music_vol: 1.0,
-			sfx_vol: 1.0,
-			player_name: None,
-			debug_playerbox: None,
-			debug_confetti: false,
-			debug_crack: None,
-			debug_siphon: None,
-			debug_shapes: false,
-			debug_doors: false,
-			debug_vault: false,
-			debug_node: None,
-			debug_ore: 0,
-			debug_mining: 0,
-			debug_vault_dark: false,
-			debug_roof: false,
-			debug_tunnel: false,
-			debug_dive: false,
-			debug_river: false,
-			debug_torches: 0,
-			debug_torches_far: 0,
-			debug_torches_wall: false,
-			stub: 0,
-			debug_screen: None,
 			spray_droplets: 48,
-			stream_budget_ms: STREAM_BUDGET_MS,
-			adaptive_stream: false,
-			chunk_slots_override: None,
-			menu: false,
 			touch_hud: true,
-			touch_jump_button: false,
-			fullscreen_button: false,
-			fullscreen_hint: false,
-			auto_join: None,
-			account: None,
-			legacy_identity: None,
-			spike_log: false,
-			upload_bytes_max: UPLOAD_BYTES_MAX_CONSTRAINED,
-			debug_gi: false,
-			debug_gi_probes: false,
+			..base
 		}
 	}
 
-	/// Browser client: full desktop quality (Chrome-on-WebGPU hardware
-	/// handles it — verified at the desktop draw distance with SSR on), and
-	/// the menu opens by default like a desktop interactive run. URL params
-	/// (?draw= ?ssr=0 ?shadow=) opt weaker hardware down.
-	///
-	/// `workers: 0` here is the FLOOR, not the shipped setting: wasm has
-	/// no std threads, so a pipeline built from this config runs jobs
-	/// inline. The launcher overwrites the field with what it intends to
-	/// spawn and attaches a Web Worker pool afterwards (`apps/web/jobs.rs`),
-	/// which the pipeline upgrades to when its first worker answers.
+	/// The iOS profile.
+	pub fn mobile() -> Self {
+		Self {
+			workers: 2,
+			upload_bytes_max: UPLOAD_BYTES_MAX_CONSTRAINED,
+			..Self::mobile_quality(Self::desktop())
+		}
+	}
+
 	pub fn web() -> Self {
 		Self {
 			workers: 0,
@@ -642,15 +585,11 @@ impl EngineConfig {
 	/// order, exactly as they do over `web()`.
 	pub fn web_mobile() -> Self {
 		Self {
-			draw_dist: 10,
-			ssr: false,
 			gi_scale_div: 3, // the Settings screen's "Medium" notch
-			spray_droplets: 48,
-			touch_hud: true,
 			touch_jump_button: false,
 			fullscreen_button: false,
 			fullscreen_hint: false,
-			..Self::web()
+			..Self::mobile_quality(Self::web())
 		}
 	}
 
