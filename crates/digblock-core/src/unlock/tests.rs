@@ -395,24 +395,28 @@ fn one_question_answers_every_dig_gate() {
 		s.set_total(Skill::Alchemy, total_xp_for(alchemy));
 		s
 	};
-	// A fresh player: soil yes, rock no, other people's torches no.
+	// A fresh player: soil yes, rock no, other people's torches no. The
+	// LEVELS are read from the tables rather than spelled again — they are
+	// pinned by `the_strength_wall_is_the_dig_family` and
+	// `craft_levels_are_pinned`, and what is under test here is that one
+	// question reports them, not what they are.
 	let fresh = at(1, 1);
 	assert_eq!(dig_blocked(B::Dirt, &fresh), None);
 	assert_eq!(
 		dig_blocked(B::Wood, &fresh).map(|r| (r.skill, r.level, r.kind)),
-		Some((Skill::Mining, 3, Kind::Strength)),
+		Some((Skill::Mining, mine(B::Wood), Kind::Strength)),
 		"timber is the second rung"
 	);
 	for b in [B::Gravel, B::Stone] {
 		assert_eq!(
 			dig_blocked(b, &fresh).map(|r| (r.skill, r.level, r.kind)),
-			Some((Skill::Mining, 10, Kind::Strength)),
+			Some((Skill::Mining, mine(B::Stone), Kind::Strength)),
 			"{b:?} is the third rung"
 		);
 	}
 	assert_eq!(
 		dig_blocked(B::Torch, &fresh).map(|r| (r.skill, r.level, r.kind)),
-		Some((Skill::Alchemy, 10, Kind::Recipe))
+		Some((Skill::Alchemy, pickup(B::Torch), Kind::Recipe))
 	);
 	// A stone stair asks BOTH; strength is reported first, and clearing
 	// it exposes the recipe underneath rather than opening the dig.
@@ -420,11 +424,16 @@ fn one_question_answers_every_dig_gate() {
 		dig_blocked(B::StoneStairs, &fresh).map(|r| r.kind),
 		Some(Kind::Strength)
 	);
+	let (rock, recipe) = (mine(B::StoneStairs), pickup(B::StoneStairs));
 	assert_eq!(
-		dig_blocked(B::StoneStairs, &at(10, 1)).map(|r| (r.level, r.kind)),
-		Some((15, Kind::Recipe))
+		dig_blocked(B::StoneStairs, &at(rock, 1)).map(|r| (r.level, r.kind)),
+		Some((recipe, Kind::Recipe))
 	);
-	assert_eq!(dig_blocked(B::StoneStairs, &at(10, 15)), None, "both met");
+	assert_eq!(
+		dig_blocked(B::StoneStairs, &at(rock, recipe)),
+		None,
+		"both met"
+	);
 	// Every requirement any block has is one `dig_blocked` reports:
 	// satisfy the others and fall one level short of this one.
 	for &b in &BlockType::ALL {
@@ -456,11 +465,17 @@ fn one_question_answers_every_dig_gate() {
 	// and look up — and the two gates never share one, because each
 	// names its own skill.
 	let strength = dig_blocked(B::Wood, &fresh).expect("gated").message();
-	assert_eq!(strength, "wood needs Mining level 3");
-	let recipe = dig_blocked(B::StoneStairs, &at(10, 1))
+	assert_eq!(
+		strength,
+		format!("wood needs Mining level {}", mine(B::Wood))
+	);
+	let recipe_line = dig_blocked(B::StoneStairs, &at(rock, 1))
 		.expect("gated")
 		.message();
-	assert_eq!(recipe, "stone stairs needs Alchemy level 15");
+	assert_eq!(
+		recipe_line,
+		format!("stone stairs needs Alchemy level {recipe}")
+	);
 	// And a verdict that names only a GATE recovers the same sentence,
 	// which is what lets the wire send a reason and never a sentence.
 	assert_eq!(

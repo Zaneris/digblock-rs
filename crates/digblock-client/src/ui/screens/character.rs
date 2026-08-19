@@ -3,7 +3,10 @@
 //! state and registers no hit regions. The engine owns opening and
 //! closing it like every other screen.
 
+use digblock_core::block::{BlockType, ShapeFamily};
+use digblock_core::material::Material;
 use digblock_core::skills::{self, Skill, SkillSet};
+use digblock_core::unlock;
 
 use crate::ui::draw::Layer;
 use crate::ui::widgets::{self, DIM, Style, Ui, WHITE};
@@ -59,61 +62,115 @@ impl CharView {
 	}
 }
 
-/// The §8.2 teaser tables: what the next level threshold above `level`
-/// opens. Screen-local prose over the CORE's numbers — the pin test
-/// holds every named level to the function that enforces it, so the
-/// strings can't drift from the tables.
-const ALCH_TEASERS: &[(u32, &str)] = &[
-	(
-		5,
-		"the stairs shape; leystone reveals — terra in shallow rock",
-	),
-	(10, "the torch"),
-	(
-		12,
-		"planed lumber and its joinery; springstone reveals — unda under fresh water",
-	),
-	(14, "furniture: the table and the chair"),
-	(15, "clean stone — every learned shape at once"),
-	(18, "dark lumber and stone brick"),
-	(21, "sandstone and glass"),
-	(24, "the bed — timber and bedding both"),
-	(25, "a faster bench"),
-	(27, "red lumber"),
-	(28, "the lantern"),
-	(30, "polished stone and sandstone brick"),
-	(33, "FERRUM's block — the prestige material"),
-	(36, "the resonant pick"),
-	(40, "crystal, grown from aether"),
-	(45, "the fastest bench"),
-	(50, "the aetherlamp — the standing aether sink"),
-	(56, "the waste dip — your process tightens early"),
-	(99, "the master's sigil"),
-];
+/// The §8.2 teasers: what the next threshold above `level` opens. The
+/// prose is the screen's; every LEVEL is READ from `unlock`, never
+/// restated, so a retune moves the screen with it — the pin below then
+/// only has to check the set still matches [`unlock::opens`].
+///
+/// Where several things land on one level, the row asks for the one its
+/// sentence leads with.
+fn teasers(skill: Skill) -> Vec<(u32, &'static str)> {
+	match skill {
+		Skill::Mining => mining_teasers(),
+		Skill::Alchemy => alch_teasers(),
+	}
+}
 
-/// Mining's teasers: the strength wall's two rungs, then the ore reveals
-/// and the sense that forewarns them — the levels the whole skill is
-/// shaped around. Content tops at mastery; the pick's plane stands alone
-/// in the tail on purpose.
-const MINING_TEASERS: &[(u32, &str)] = &[
-	(3, "timber gives — trees and planed wood"),
-	(10, "rock gives — gravel, sandstone, stone"),
-	(15, "emberore reveals — bring a siphon"),
-	(
-		18,
-		"prospector's sense — faint, but you hear what you can't see",
-	),
-	(23, "duskstone reveals"),
-	(
-		33,
-		"glowvein reveals; the resonant pick swings wide; ferrum's block opens",
-	),
-	(40, "crystal opens"),
-	(43, "the prospector's sense sharpens"),
-	(50, "aetherock reveals"),
-	(60, "mastery: every vein gives one more"),
-	(85, "the pick's full nine"),
-];
+/// Mining's: the strength wall's two rungs, then the ore reveals and the
+/// sense that forewarns them — the levels the whole skill is shaped
+/// around. Content tops at mastery; the pick's plane stands alone in the
+/// tail on purpose.
+fn mining_teasers() -> Vec<(u32, &'static str)> {
+	use BlockType as B;
+	vec![
+		(
+			unlock::mine(B::Wood),
+			"timber gives — trees and planed wood",
+		),
+		(
+			unlock::mine(B::Stone),
+			"rock gives — gravel, sandstone, stone",
+		),
+		(reveal_at(B::Emberore), "emberore reveals — bring a siphon"),
+		(
+			unlock::PROSPECT_FAINT_AT,
+			"prospector's sense — faint, but you hear what you can't see",
+		),
+		(reveal_at(B::Duskstone), "duskstone reveals"),
+		(
+			reveal_at(B::Glowvein),
+			"glowvein reveals; the resonant pick swings wide; ferrum's block opens",
+		),
+		(unlock::mine(B::Crystal), "crystal opens"),
+		(unlock::PROSPECT_SHARP_AT, "the prospector's sense sharpens"),
+		(reveal_at(B::Aetherock), "aetherock reveals"),
+		(unlock::MASTERY_AT, "mastery: every vein gives one more"),
+		(unlock::PICK_PLANE_AT, "the pick's full nine"),
+	]
+}
+
+/// Alchemy's: the shape and material unlocks, the hand-priced items, the
+/// surface-node reveals, and the three levels that change a bench NUMBER
+/// rather than opening a recipe.
+fn alch_teasers() -> Vec<(u32, &'static str)> {
+	use BlockType as B;
+	use Material as M;
+	vec![
+		(
+			unlock::shape(ShapeFamily::Stairs),
+			"the stairs shape; leystone reveals — terra in shallow rock",
+		),
+		(item_at(B::Torch), "the torch"),
+		(
+			mat_at(M::Lumber),
+			"planed lumber and its joinery; springstone reveals — unda under fresh water",
+		),
+		(item_at(B::Table), "furniture: the table and the chair"),
+		(
+			mat_at(M::Stone),
+			"clean stone — every learned shape at once",
+		),
+		(mat_at(M::DarkLumber), "dark lumber and stone brick"),
+		(mat_at(M::Sandstone), "sandstone and glass"),
+		(item_at(B::Bed), "the bed — timber and bedding both"),
+		(unlock::BENCH_FASTER_AT, "a faster bench"),
+		(mat_at(M::RedLumber), "red lumber"),
+		(item_at(B::Lantern), "the lantern"),
+		(
+			mat_at(M::PolishedStone),
+			"polished stone and sandstone brick",
+		),
+		(mat_at(M::Metal), "FERRUM's block — the prestige material"),
+		(item_at(B::ResonantPick), "the resonant pick"),
+		(mat_at(M::Crystal), "crystal, grown from aether"),
+		(unlock::BENCH_FASTEST_AT, "the fastest bench"),
+		(
+			item_at(B::Aetherlamp),
+			"the aetherlamp — the standing aether sink",
+		),
+		(
+			unlock::WASTE_DIP_AT,
+			"the waste dip — your process tightens early",
+		),
+		(item_at(B::MastersSigil), "the master's sigil"),
+	]
+}
+
+// The three `Option` levels, with the case that cannot happen stated: an
+// ore reveals, a listed material is workable, a hand-priced item has a
+// price. A wrong argument is loud at the first character screen rather
+// than a row quietly sitting at the first level.
+fn reveal_at(b: BlockType) -> u32 {
+	unlock::reveal(b).expect("an ore has a reveal level")
+}
+
+fn mat_at(m: Material) -> u32 {
+	unlock::material(m).expect("a workable material has a level")
+}
+
+fn item_at(b: BlockType) -> u32 {
+	unlock::functional(b).expect("a hand-priced item has a level")
+}
 
 /// The depth-reward readout: the live percentage once there is one to
 /// show, and the DIRECTION before that. Rounding decides which — the top of
@@ -127,11 +184,7 @@ fn depth_bonus_line(eye_y: i32) -> String {
 }
 
 fn next_unlock(skill: Skill, level: u32) -> Option<(u32, &'static str)> {
-	let table = match skill {
-		Skill::Mining => MINING_TEASERS,
-		Skill::Alchemy => ALCH_TEASERS,
-	};
-	table.iter().find(|&&(lvl, _)| lvl > level).copied()
+	teasers(skill).into_iter().find(|&(lvl, _)| lvl > level)
 }
 
 /// Thousands-grouped decimal ("1,103,585") — XP totals get big enough
@@ -408,12 +461,9 @@ mod tests {
 	/// recipe, so they are ours alone.
 	#[test]
 	fn every_unlock_level_has_prose() {
-		use digblock_core::{alchemy, unlock};
+		use digblock_core::alchemy;
 		for skill in Skill::ALL {
-			let table = match skill {
-				Skill::Mining => MINING_TEASERS,
-				Skill::Alchemy => ALCH_TEASERS,
-			};
+			let table = teasers(skill);
 			for level in 1..=skills::MAX_LEVEL {
 				if unlock::opens(skill, level) {
 					assert!(
@@ -434,7 +484,7 @@ mod tests {
 		// promise the game breaks. Read off `opens` rather than written
 		// down: the levels live in `unlock`, this table owns the wording.
 		assert_eq!(
-			MINING_TEASERS.iter().map(|&(l, _)| l).collect::<Vec<_>>(),
+			mining_teasers().iter().map(|&(l, _)| l).collect::<Vec<_>>(),
 			(1..=skills::MAX_LEVEL)
 				.filter(|&l| unlock::opens(Skill::Mining, l))
 				.collect::<Vec<_>>()
@@ -447,7 +497,7 @@ mod tests {
 		assert!(alchemy::waste_permille(DIP) < alchemy::waste_permille(DIP - 1));
 		for l in [FASTER, FASTEST, DIP] {
 			assert!(
-				ALCH_TEASERS.iter().any(|&(t, _)| t == l),
+				alch_teasers().iter().any(|&(t, _)| t == l),
 				"no teaser at {l}"
 			);
 		}
@@ -455,16 +505,25 @@ mod tests {
 		// And the rows actually render: a fresh character teases the first
 		// thresholds; past the last Mining gate, Mining shows none.
 		let fresh = texts(&emit(&SkillSet::default())).join("\n");
-		assert!(
-			fresh.contains("next: LV 3 — timber gives — trees and planed wood"),
-			"{fresh}"
+		let timber = format!("next: LV {} — timber gives", unlock::mine(BlockType::Wood));
+		let stairs = format!(
+			"next: LV {} — the stairs shape",
+			unlock::shape(ShapeFamily::Stairs)
 		);
-		assert!(fresh.contains("next: LV 5 — the stairs shape"), "{fresh}");
+		let ore = format!(
+			"next: LV {} — emberore reveals",
+			reveal_at(BlockType::Emberore)
+		);
+		assert!(fresh.contains(&timber), "{fresh}");
+		assert!(fresh.contains(&stairs), "{fresh}");
 		let mut leveled = SkillSet::default();
-		leveled.set_total(Skill::Mining, skills::total_xp_for(10));
+		leveled.set_total(
+			Skill::Mining,
+			skills::total_xp_for(unlock::mine(BlockType::Stone)),
+		);
 		let all = texts(&emit(&leveled)).join("\n");
-		assert!(!all.contains("next: LV 3 — timber"), "{all}");
-		assert!(all.contains("next: LV 15 — emberore reveals"), "{all}");
+		assert!(!all.contains(&timber), "{all}");
+		assert!(all.contains(&ore), "{all}");
 	}
 
 	#[test]
