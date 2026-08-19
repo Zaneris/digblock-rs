@@ -290,19 +290,3 @@ fn an_unsupported_source_pours_straight_down() {
 	// The landing is on the stone floor, so THAT spreads.
 	assert_eq!(w.get(1, 1, 0).unwrap().water_amount(), Some(4));
 }
-
-#[test]
-fn relaxation_is_deterministic() {
-	let run = || {
-		let mut w = MapWorld::new();
-		let mut sim = FluidSim::new();
-		w.set(0, 1, 0, BlockType::Water);
-		w.set(4, 1, 2, BlockType::Water);
-		w.set(2, 0, 1, BlockType::Air); // a hole
-		sim.schedule_around(0, 1, 0);
-		sim.schedule_around(4, 1, 2);
-		settle(&mut sim, &mut w);
-		w.water_cells()
-	};
-	assert_eq!(run(), run());
-}

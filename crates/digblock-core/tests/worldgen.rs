@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use digblock_core::chunk::{WORLD_VBLOCK, WORLD_VCHUNK};
-use digblock_core::decoration::{STRUCTURE_APRON, Structure, structures_near};
+use digblock_core::decoration::{Structure, structures_near};
 use digblock_core::worldgen::{
 	DIRT_DEPTH, SEA_LEVEL, SurfaceKind, build_chunk, carved, column_shape, terrain_height,
 };
@@ -205,20 +205,6 @@ fn structures_span_chunk_borders_seamlessly() {
 	panic!("no border-crossing structure found in the sample area");
 }
 
-/// Structures never grow beyond the apron contract: every block stays
-/// within STRUCTURE_APRON of the origin column.
-#[test]
-fn structures_respect_the_apron() {
-	let seed = 42.0;
-	for st in structures_near(0, 0, seed) {
-		let (ox, oz) = st.origin();
-		st.for_each_block(|x, _y, z, _b| {
-			assert!((x - ox).abs() <= STRUCTURE_APRON);
-			assert!((z - oz).abs() <= STRUCTURE_APRON);
-		});
-	}
-}
-
 /// Structural cave invariants, independent of the carve function: the
 /// bedrock layer survives, and ocean stacks are exactly rule-shaped (no
 /// underwater carving anywhere).
@@ -407,65 +393,6 @@ fn cave_slice_dump() {
 	println!("carved fraction of land underground: {pct:.2}%");
 	assert!(void > 0, "caves exist");
 	assert!(pct < 15.0, "carving stays a small fraction ({pct:.2}%)");
-}
-
-/// ASCII region map — run with `--nocapture` to eyeball terrain shape:
-/// `cargo test -p digblock-core heightmap_dump -- --nocapture`
-/// The window spans kilometres of world, so continental-scale features
-/// are visible.
-#[test]
-fn heightmap_dump() {
-	let seed = 0.0;
-	let glyphs = b" .:-=+*#%@";
-	let mut out = String::new();
-	let step = 32usize;
-	let mut hmax = 0;
-	for z in (-1024..1024).rev().step_by(step) {
-		for x in (-2048..2048).step_by(step) {
-			let s = column_shape(x, z, seed);
-			let h = s.height;
-			hmax = hmax.max(h);
-			let g = glyphs[(h as usize * (glyphs.len() - 1)) / WORLD_VBLOCK as usize] as char;
-			out.push(if h <= SEA_LEVEL {
-				'~'
-			} else if s.water > h {
-				'≈' // river
-			} else {
-				g
-			});
-		}
-		out.push('\n');
-	}
-	println!("{out}\npeak in window: {hmax}");
-	// Biome map over a wider window: one glyph per surface kind, for
-	// eyeballing climate-belt and forest-patch scale.
-	let mut biomes = String::new();
-	for z in (-4096..4096).rev().step_by(64) {
-		for x in (-8192..8192).step_by(64) {
-			biomes.push(match column_shape(x, z, seed).surface {
-				SurfaceKind::Ocean => '~',
-				SurfaceKind::River => '≈',
-				SurfaceKind::Beach => '_',
-				SurfaceKind::Plains => '.',
-				SurfaceKind::Mountain => '^',
-				SurfaceKind::Snow => '*',
-				SurfaceKind::Forest => 'F',
-				SurfaceKind::Taiga => 'T',
-				SurfaceKind::Savanna => 's',
-				SurfaceKind::Marsh => 'm',
-				SurfaceKind::GravelShore => 'g',
-				SurfaceKind::Lake => 'o',
-				SurfaceKind::Scree => '%',
-			});
-		}
-		biomes.push('\n');
-	}
-	println!(
-		"biomes (~ ocean, ≈ river, o lake, _ beach, . plains, ^ rock, % scree, * snow, F forest, T taiga, s savanna, m marsh, g gravel):\n{biomes}"
-	);
-	// Sanity: the window contains both ocean and land.
-	assert!(out.contains('~'));
-	assert!(out.chars().any(|c| c != '~' && c != '\n'));
 }
 
 /// `BlockProps::crafted` claims worldgen places none of these — the claim

@@ -33,6 +33,11 @@ pub struct CasterState {
 	pub is_moon: bool,
 }
 
+/// How much of the sun's strength the moon casts at. Below 1 so a night
+/// reads as a night; named because the twilight-handoff test must assert
+/// the cap it was given rather than a number beside it.
+pub const MOON_STRENGTH: f32 = 0.6;
+
 pub struct Sun {
 	pub tod: f32,
 }
@@ -117,7 +122,7 @@ impl Sun {
 		let ramp = t * t * (3.0 - 2.0 * t);
 		CasterState {
 			dir: Self::dir_of(Self::caster_tod(self.tod)),
-			strength: ramp * if is_moon { 0.6 } else { 1.0 },
+			strength: ramp * if is_moon { MOON_STRENGTH } else { 1.0 },
 			is_moon,
 		}
 	}
@@ -198,7 +203,7 @@ mod tests {
 		let caster = sun.caster();
 		assert!(caster.is_moon);
 		assert!((caster.dir - Vec3::new(0.0, -1.0, 0.0)).length() < 1e-5);
-		assert!((caster.strength - 0.6).abs() < 1e-6);
+		assert!((caster.strength - MOON_STRENGTH).abs() < 1e-6);
 		// Mid-day: sun casts at full strength.
 		let caster = Sun::with_tod(30.0).caster();
 		assert!(!caster.is_moon);

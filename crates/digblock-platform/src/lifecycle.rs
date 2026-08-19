@@ -202,6 +202,20 @@ mod tests {
 		l.on(ev).into_iter().collect()
 	}
 
+	/// Spend the whole fatal-retry allowance and assert it ends in an
+	/// exit. Walked rather than spelled out, so the three tests that
+	/// exhaust the budget move together when it is retuned.
+	fn spend_the_fatal_budget(l: &mut Lifecycle) {
+		for i in 0..MAX_FATAL_RETRIES {
+			assert_eq!(
+				acts(l, Event::SurfaceFatal),
+				vec![Action::RetryNextFrame],
+				"retry {i} of the allowance"
+			);
+		}
+		assert_eq!(acts(l, Event::SurfaceFatal), vec![Action::Exit]);
+	}
+
 	#[test]
 	fn launch_suspend_resume_cycle() {
 		let mut l = Lifecycle::new();
@@ -274,16 +288,11 @@ mod tests {
 				vec![Action::IdleThenRetry]
 			);
 		}
-		// Fatal is loss-suspect: bounded retries, then exit.
-		assert_eq!(
-			acts(&mut l, Event::SurfaceFatal),
-			vec![Action::RetryNextFrame]
-		);
-		assert_eq!(
-			acts(&mut l, Event::SurfaceFatal),
-			vec![Action::RetryNextFrame]
-		);
-		assert_eq!(acts(&mut l, Event::SurfaceFatal), vec![Action::Exit]);
+		// Fatal is loss-suspect: bounded retries, then exit. Giving up
+		// is an Exit ACTION, not a phase change — the app is still
+		// Running when it is handed one, and the caller decides.
+		spend_the_fatal_budget(&mut l);
+		assert_eq!(l.phase(), Phase::Running);
 	}
 
 	#[test]
@@ -329,23 +338,6 @@ mod tests {
 	}
 
 	#[test]
-	fn fatal_acquire_is_loss_suspect_then_exits() {
-		let mut l = Lifecycle::new();
-		l.on(Event::OsResumed);
-		// No DeviceLost ever arrives: the whole retry budget, then give up.
-		assert_eq!(
-			acts(&mut l, Event::SurfaceFatal),
-			vec![Action::RetryNextFrame]
-		);
-		assert_eq!(
-			acts(&mut l, Event::SurfaceFatal),
-			vec![Action::RetryNextFrame]
-		);
-		assert_eq!(acts(&mut l, Event::SurfaceFatal), vec![Action::Exit]);
-		assert_eq!(l.phase(), Phase::Running);
-	}
-
-	#[test]
 	fn surface_fatal_then_late_device_lost_recovers() {
 		// The real destroy ordering: the acquire fails before the lost
 		// callback is pumped, then DeviceLost lands a frame later.
@@ -376,16 +368,9 @@ mod tests {
 		);
 		l.on(Event::OsSuspended);
 		l.on(Event::OsResumed);
-		// Fresh budget after the resume: the full allowance again before exit.
-		assert_eq!(
-			acts(&mut l, Event::SurfaceFatal),
-			vec![Action::RetryNextFrame]
-		);
-		assert_eq!(
-			acts(&mut l, Event::SurfaceFatal),
-			vec![Action::RetryNextFrame]
-		);
-		assert_eq!(acts(&mut l, Event::SurfaceFatal), vec![Action::Exit]);
+		// Fresh budget after the resume: the full allowance again, even
+		// though one retry was already spent before the suspend.
+		spend_the_fatal_budget(&mut l);
 	}
 
 	/// Exhaustive phase × event walk: no combination panics, and the

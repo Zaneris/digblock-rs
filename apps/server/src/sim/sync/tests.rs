@@ -35,7 +35,6 @@ fn walk(tick: u32, dz: f32) -> InputTick {
 fn columns_before_area_ready(sim: &mut Sim, c: &mut TestClient) -> usize {
 	for _ in 0..600 {
 		sim.tick_once(vec![]);
-		std::thread::sleep(std::time::Duration::from_millis(1));
 		c.drain();
 		if let Some(at) = c
 			.msgs

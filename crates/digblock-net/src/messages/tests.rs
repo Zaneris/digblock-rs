@@ -664,3 +664,35 @@ fn golden_interact_and_alchemy_encoding() {
 		vec![8, 1, 128, 128, 2, 1]
 	);
 }
+
+/// Golden bytes for the v29 admin reply. Same contract as the goldens
+/// above: a failure means the wire encoding moved, and moving it needs
+/// a `PROTOCOL_VERSION` bump.
+///
+/// The point of the variant is that the ARGUMENTS cross, not a
+/// sentence — so the bytes are the arguments, and a server that spelled
+/// the line out again would be visibly longer here.
+#[test]
+fn golden_admin_reply_encoding() {
+	let s = ServerMsg::Admin(AdminReply::Teleported { x: 40, z: -20 });
+	assert_eq!(
+		postcard::to_stdvec(&s).unwrap(),
+		// ServerMsg variant tag, AdminReply tag, then two zigzag varints
+		vec![20, 6, 80, 39]
+	);
+
+	// A usage line is one byte of payload: which command, no prose.
+	let u = ServerMsg::Admin(AdminReply::Usage(AdminUsage::Give));
+	assert_eq!(postcard::to_stdvec(&u).unwrap(), vec![20, 0, 6]);
+
+	// And a reason travels as a tag beside the name it is about.
+	let n = ServerMsg::Admin(AdminReply::NoSuchPlayer {
+		name: "ada".into(),
+		why: NoPlayer::NotOnline,
+	});
+	assert_eq!(
+		postcard::to_stdvec(&n).unwrap(),
+		// tag, variant, name length, "ada", then the reason's own tag
+		vec![20, 4, 3, 97, 100, 97, 2]
+	);
+}

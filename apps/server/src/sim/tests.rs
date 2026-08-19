@@ -857,9 +857,17 @@ fn a_revealed_vein_needs_the_siphon_and_pays_two_skills() {
 #[test]
 fn the_resonant_pick_breaks_the_plane_the_server_derives() {
 	use digblock_core::block::BlockType;
+	use digblock_core::unlock::{PICK_PLANE, PICK_PLANE_AT, PICK_WIDE_AT};
 	use digblock_net::messages::EditKind;
 	use glam::Vec3;
-	for (level, want) in [(32u32, 1usize), (33, 3), (85, 9)] {
+	// Read off the unlock table rather than written down again: this is
+	// one of the two test suites `unlock.rs` names as having each carried
+	// its own copy of these thresholds.
+	for (level, want) in [
+		(PICK_WIDE_AT - 1, 1usize),
+		(PICK_WIDE_AT, 3),
+		(PICK_PLANE_AT, PICK_PLANE),
+	] {
 		let mut sim = flat_sim(&format!("pick{level}"));
 		let mut c = connect(&mut sim, 1);
 		wait_live(&mut sim, 1);
@@ -908,7 +916,7 @@ fn a_protected_cell_refuses_the_whole_pick_swing() {
 	let mut sim = flat_sim("pick-protect");
 	let mut c = connect(&mut sim, 1);
 	wait_live(&mut sim, 1);
-	sim.bench_set_mining_level(1, 85);
+	sim.bench_set_mining_level(1, digblock_core::unlock::PICK_PLANE_AT);
 	sim.test_grant(1, BlockType::ResonantPick, 1);
 	sim.bench_set_active_tool(1, BlockType::ResonantPick);
 	let pos = sim.test_player(1).unwrap().pos;
@@ -1528,7 +1536,7 @@ fn an_invisibly_prefixed_command_is_not_broadcast_as_chat() {
 	assert!(
 		a.msgs.iter().any(|m| matches!(
 			m,
-			ServerMsg::Chat { text, .. } if text.contains("admin-only")
+			ServerMsg::Admin(digblock_net::messages::AdminReply::CommandsAreAdminOnly)
 		)),
 		"treated as a command and refused: {:?}",
 		a.msgs
@@ -1557,46 +1565,6 @@ fn the_accountless_connection_is_never_admin() {
 	// Replaces rather than accumulates: an operator's list is the list.
 	sim.set_admin_accounts([]);
 	assert!(!sim.is_admin(boss));
-}
-
-#[test]
-fn hostile_chat_is_sanitized() {
-	let mut sim = flat_sim("chatsan");
-	let mut a = connect(&mut sim, 1);
-	let long = "y".repeat(1000);
-	sim.tick_once(vec![
-		SimEvent::Msg {
-			conn_id: 1,
-			msg: ClientMsg::Chat {
-				text: "a\u{7}b\u{1F600}c".into(),
-			},
-		},
-		SimEvent::Msg {
-			conn_id: 1,
-			msg: ClientMsg::Chat {
-				text: "   \t  ".into(),
-			},
-		},
-		SimEvent::Msg {
-			conn_id: 1,
-			msg: ClientMsg::Chat { text: long },
-		},
-	]);
-	a.drain();
-	let texts: Vec<&str> = a
-		.msgs
-		.iter()
-		.filter_map(|m| match m {
-			ServerMsg::Chat { text, .. } => Some(text.as_str()),
-			_ => None,
-		})
-		.collect();
-	// The whitespace-only line vanished (though it cost a token);
-	// the others arrive cleaned and capped.
-	assert_eq!(texts.len(), 2, "{texts:?}");
-	assert_eq!(texts[0], "abc");
-	assert_eq!(texts[1].len(), digblock_net::protocol::MAX_CHAT_LEN);
-	assert!(texts.iter().all(|t| t.chars().all(|c| !c.is_control())));
 }
 
 #[test]

@@ -156,6 +156,13 @@ pub(super) fn debug_shapes_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 /// cell never shows ore (that is the anti-dupe), so hollowing the box
 /// naively would delete the very thing being photographed. Every cell the
 /// deposit claims is left exactly as worldgen made it.
+/// The reach of `DIG_ORE`'s chamber, in cells either side of the vein.
+///
+/// Module-scoped so the capture test can read the footprint it has to
+/// reason about instead of keeping a copy — a copy that drifted would
+/// have the test checking a box the plan never carved.
+pub(super) const ORE_CHAMBER_R: i32 = 5;
+
 pub(super) fn debug_ore_plan(
 	spawn: Vec3,
 	seed: f64,
@@ -179,7 +186,7 @@ pub(super) fn debug_ore_plan(
 	// distance away and 80 blocks down.
 	// The chamber: a box around the vein, minus the vein itself. Stood off far
 	// enough on -z that the camera is outside it looking in.
-	const R: i32 = 5;
+	const R: i32 = ORE_CHAMBER_R;
 	let buried = |d: &ore::Deposit| {
 		// Clear of the surface by the CHAMBER's reach, not the blob's: the
 		// carve is what would open the room to the sky, and it reaches

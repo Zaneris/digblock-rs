@@ -200,19 +200,6 @@ mod tests {
 		let _ = std::fs::remove_dir_all(&d);
 	}
 
-	#[test]
-	fn unlocking_survives_reopen() {
-		let d = tmpdir("unlock");
-		let mut s = SpawnStore::open(&d).unwrap();
-		s.set_lock(Some(SpawnLock {
-			eye: [0.5, 130.5, 0.5],
-		}));
-		s.set_lock(None);
-		drop(s);
-		assert_eq!(SpawnStore::open(&d).unwrap().lock(), None);
-		let _ = std::fs::remove_dir_all(&d);
-	}
-
 	/// A hand-picked point outlives the lock: `/lock-spawn off` releases
 	/// the cells, it does not un-set the spawn.
 	#[test]

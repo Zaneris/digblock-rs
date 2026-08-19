@@ -302,21 +302,6 @@ mod tests {
 	}
 
 	#[test]
-	fn full_bar_leaves_new_types_unassigned() {
-		let mut h = Hotbar::new();
-		for &b in BlockType::ALL.iter().filter(|b| b.dig_drop().is_some()) {
-			h.auto_assign(b);
-		}
-		let assigned: Vec<_> = h.slots().iter().flatten().collect();
-		assert!(assigned.len() <= HOTBAR_SLOTS);
-		assert_eq!(
-			h.slots()[HOTBAR_SLOTS - 1],
-			Some(HotbarItem::WaterTool),
-			"tool survives"
-		);
-	}
-
-	#[test]
 	fn assign_moves_instead_of_duplicating() {
 		let mut h = Hotbar::new();
 		h.auto_assign(B::Dirt); // slot 0

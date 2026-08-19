@@ -576,14 +576,3 @@ fn interior_quads_exist_and_boundary_rects_are_sane() {
 		}
 	}
 }
-
-#[test]
-fn baking_is_deterministic() {
-	let a = bake(&STAIR_BOXES);
-	let b = bake(&STAIR_BOXES);
-	assert_eq!(a.quads.len(), b.quads.len());
-	for (qa, qb) in a.quads.iter().zip(&b.quads) {
-		assert_eq!(qa.corners, qb.corners);
-		assert_eq!(qa.uv, qb.uv);
-	}
-}

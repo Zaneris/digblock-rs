@@ -20,7 +20,7 @@ a decision or rebuilding something:
   NOT built" list, and §5's standing record of the seven trust-model findings.
 - `DELVE-DESIGN.md`, `SOCIAL-DESIGN.md` — design-only, not built.
 
-## Three writing rules
+## Four writing rules
 
 **A number lives in exactly one place: the code that defines it.** Comments, doc comments and Markdown name constants
 and describe relationships; they never restate what a constant equals, so a retune touches the `const` and nothing else.
@@ -39,7 +39,21 @@ typed arguments, one template row in `voice::en`, rendered at DRAW time — `Eng
 literal cannot reach the feed, and a locale can reorder or re-case what a call site could not. Core NAMES things
 (`BlockType::name`, `Skill::name`, `Essence::name`) in ONE stored case and a screen that shouts calls `to_uppercase`
 where it draws; screens still own their own labels, which are layout as much as text. An identifier is not a label
-(`Essence::ident`), and a design doc names the message rather than quoting the sentence.
+(`Essence::ident`), and a design doc names the message rather than quoting the sentence. The server holds no player
+prose either: an admin command answers with a typed `AdminReply` and `voice` chooses the words.
+
+**A test asserts a relationship, not a definition — and never a sentence.** An expectation is DERIVED from whatever
+defines it: `unlock::mine(Wood)`, not `3`; `b.hardness_ticks()`, not the hold length; the `Msg` variant, not the line it
+renders to. So a retune moves the `const` and the suite still passes, a rewording moves `voice::en` and the suite still
+passes, and a test that fails is reporting a bug rather than an echo. Watch for the three shapes that look like tests
+and are not: one that restates the arithmetic of the function under test (`waste_permille(1) == 1600`), one the types
+already guarantee (`assert!(v.len() <= N)` over an `[_; N]`), and one whose name promises more than its body checks —
+that last is worse than a tautology, because it advertises a guarantee nobody wrote. Prefer the shape that cannot be
+fooled: sweep every row instead of spot-checking, assert an ordering or a round-trip instead of a value, and where a
+sweep could pass vacuously, count what it examined and assert the count. Exempt, because the value IS the contract and
+nothing in Rust can derive it: wire and save-format goldens, WGSL mirrors, RFC vectors, and the derived-output pins that
+catch a curve changing SHAPE (`xp_curve_table_is_pinned`, the taper goldens, `worldgen_golden_hash_pins_sim_version`). A
+pin earns its place by naming a bug a derived test would miss.
 
 **Comments carry invariants, not history.** Say what breaks if the reader changes this, and what alternative was
 rejected — in a sentence, not a story. `crates/digblock-core/src/stream_budget.rs` is the house style. Do not write: the
@@ -305,14 +319,16 @@ Two skills (Mining, Alchemy), designed in `SKILLS-DESIGN.md`. Everything shared 
 and no caller compares levels itself, including the step ones a match arm used to hide (`PICK_PLANE_AT`,
 `PROSPECT_FAINT_AT`, `MASTERY_AT`, `BENCH_FASTER_AT`, `WASTE_DIP_AT`). Retuning one is that line plus whatever
 deliberate pins fire — `unlock/tests.rs`, and the faucet golden in `alchemy/tests.rs` for a Mining level — and one
-`just test` names all of them at once. Nothing else should move: the character screen's teasers READ their levels.
-`craft` and `pickup` are DERIVED, never tabled. Two dig gates, one pattern: `mine` is the strength wall keyed on the
-`DigFamily`, so every block of a family opens together; `mine_material` is a SECOND gate, and `mine` takes the later of
-the two, so a material can only push a block later, never earlier. `pickup` refuses a **craft-only** block below its own
-craft level, keying on the DROP and on craft-*only*, never craftability — `Wood` has a recipe and grows on trees.
-Everything asks `dig_blocked`, which returns the first unmet `Requirement` — the block, the skill and the level. No
-wording lives in core: the client's `voice` turns one into the ONE sentence that gate speaks, naming the block and the
-level that opens it, which is why the wire sends a reason and never a sentence.
+`just test` names all of them at once. That claim is checkable, and worth re-checking after any change here: bump a
+threshold, run the suite, and every test that fails should be a pin. One that is not is a copy somebody wrote down.
+Nothing else should move: the character screen's teasers READ their levels. `craft` and `pickup` are DERIVED, never
+tabled. Two dig gates, one pattern: `mine` is the strength wall keyed on the `DigFamily`, so every block of a family
+opens together; `mine_material` is a SECOND gate, and `mine` takes the later of the two, so a material can only push a
+block later, never earlier. `pickup` refuses a **craft-only** block below its own craft level, keying on the DROP and on
+craft-*only*, never craftability — `Wood` has a recipe and grows on trees. Everything asks `dig_blocked`, which returns
+the first unmet `Requirement` — the block, the skill and the level. No wording lives in core: the client's `voice` turns
+one into the ONE sentence that gate speaks, naming the block and the level that opens it, which is why the wire sends a
+reason and never a sentence.
 
 **XP is server-computed at exactly two chokepoints** — the dig-credit block in `sim/edits.rs` and `process_alchemy` —
 and reaches the client as `ServerMsg::XpGain` carrying the new **TOTAL** (idempotent, reorder-safe). Join sync always

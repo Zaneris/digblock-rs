@@ -463,6 +463,8 @@ mod tests {
 		let mut scratch = Vec::new();
 		for kind in every_kind() {
 			crate::viewmodel::build(kind, &mut scratch);
+			assert!(!scratch.is_empty(), "{kind:?} drew nothing");
+			assert_eq!(scratch.len() % 4, 0, "{kind:?} emits whole quads");
 			let quads = scratch.len() / 4;
 			assert!(
 				quads <= crate::viewmodel::MAX_QUADS,

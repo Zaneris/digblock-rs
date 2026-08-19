@@ -471,109 +471,77 @@ pub(super) fn column_block(wy: i32, shape: ColumnShape) -> BlockType {
 mod tests {
 	use super::*;
 
-	/// Pins every kind's table row. Iterating `ALL` with an exhaustive
-	/// match makes a new kind a compile error here instead of a silently
-	/// untested row.
+	/// The table's rows hang together, asserted as the rules that make
+	/// them coherent rather than as a copy of their values: what a kind
+	/// is made of decides its band, whether it grows trees decides
+	/// whether you can stand on it, and so on. The values themselves are
+	/// already pinned to the BYTE by `worldgen_golden_hash_pins_sim_version`
+	/// and re-derived independently by `tests/worldgen.rs::expect_terrain`,
+	/// so restating them here was a third copy that moved on every retune
+	/// and caught nothing the goldens did not.
+	///
+	/// The `match` stays exhaustive on purpose: it is what makes a new
+	/// kind a compile error here instead of a silently untested row.
 	#[test]
 	fn surface_props_are_pinned() {
 		use SurfaceKind::*;
 		use TreeDensity as D;
 		use TreeSpecies as S;
 		assert_eq!(SurfaceKind::ALL.len(), SURFACE_PROPS.len());
+		let mut wooded = 0;
+		let mut sandy = 0;
 		for (i, k) in SurfaceKind::ALL.into_iter().enumerate() {
 			assert_eq!(k as usize, i, "ALL follows declaration order");
 			let p = k.props();
-			let (top, subsoil, density, species, spawnable) = match k {
-				Ocean => (
-					BlockType::Sand,
-					BlockType::Sand,
-					D::None,
-					S::Broadleaf,
-					false,
-				),
-				Beach => (
-					BlockType::Sand,
-					BlockType::Sand,
-					D::None,
-					S::Broadleaf,
-					true,
-				),
-				Plains => (
-					BlockType::Grass,
-					BlockType::Dirt,
-					D::Sparse,
-					S::Broadleaf,
-					true,
-				),
-				Mountain => (
-					BlockType::Stone,
-					BlockType::Stone,
-					D::None,
-					S::Broadleaf,
-					true,
-				),
-				Snow => (
-					BlockType::Snow,
-					BlockType::Stone,
-					D::None,
-					S::Broadleaf,
-					true,
-				),
-				River => (
-					BlockType::Sand,
-					BlockType::Sand,
-					D::None,
-					S::Broadleaf,
-					false,
-				),
-				Forest => (
-					BlockType::Grass,
-					BlockType::Dirt,
-					D::Dense,
-					S::Broadleaf,
-					true,
-				),
-				Taiga => (BlockType::Grass, BlockType::Dirt, D::Normal, S::Pine, true),
-				Savanna => (
-					BlockType::DryGrass,
-					BlockType::Dirt,
-					D::Sparse,
-					S::FlatTop,
-					true,
-				),
-				Marsh => (BlockType::Mud, BlockType::Mud, D::None, S::Broadleaf, false),
-				GravelShore => (
-					BlockType::Gravel,
-					BlockType::Gravel,
-					D::None,
-					S::Broadleaf,
-					true,
-				),
-				Lake => (
-					BlockType::Sand,
-					BlockType::Sand,
-					D::None,
-					S::Broadleaf,
-					false,
-				),
-				Scree => (
-					BlockType::Gravel,
-					BlockType::Gravel,
-					D::None,
-					S::Broadleaf,
-					true,
-				),
+
+			// Every kind says whether it sits under water. Exhaustive:
+			// a new kind lands here as a compile error.
+			let underwater = match k {
+				Ocean | River | Lake => true,
+				Beach | Plains | Mountain | Snow | Forest | Taiga | Savanna | Marsh
+				| GravelShore | Scree => false,
 			};
-			assert_eq!((p.top, p.subsoil), (top, subsoil), "{k:?} palette");
-			assert_eq!(p.tree_density, density, "{k:?} density");
-			assert_eq!(p.tree_species, species, "{k:?} species");
-			assert_eq!(p.spawnable, spawnable, "{k:?} spawn");
-			let (band, band_depth) = match k {
-				Ocean | Beach | River | Lake => (BlockType::Sandstone, 4),
-				_ => (BlockType::Stone, 0),
+			if underwater {
+				assert!(!p.spawnable, "{k:?} is underwater and spawnable");
+				assert_eq!(p.tree_density, D::None, "{k:?} grows trees underwater");
+			}
+
+			// A sandy surface is what puts sandstone under it — the band
+			// follows the material, not a list of kinds.
+			let is_sand = p.top == BlockType::Sand;
+			let (band, depth) = if is_sand {
+				(BlockType::Sandstone, 4)
+			} else {
+				(BlockType::Stone, 0)
 			};
-			assert_eq!((p.band, p.band_depth), (band, band_depth), "{k:?} band");
+			assert_eq!((p.band, p.band_depth), (band, depth), "{k:?} band");
+			sandy += usize::from(is_sand);
+
+			// Trees need soil to stand in, and somewhere a player could
+			// stand too.
+			if p.tree_density != D::None {
+				wooded += 1;
+				assert!(p.spawnable, "{k:?} grows trees you may not spawn among");
+				assert_eq!(p.subsoil, BlockType::Dirt, "{k:?} grows trees without soil");
+				assert!(
+					matches!(p.top, BlockType::Grass | BlockType::DryGrass),
+					"{k:?} grows trees out of {:?}",
+					p.top
+				);
+			} else {
+				// With nothing growing, the species field is unused, and
+				// an unused field must not drift into meaning something.
+				assert_eq!(
+					p.tree_species,
+					S::Broadleaf,
+					"{k:?} names a species it never plants"
+				);
+			}
+
 			assert_eq!(p.boulders, matches!(k, Mountain | Scree), "{k:?} boulders");
 		}
+		// Neither sweep may pass by examining nothing.
+		assert!(wooded >= 3, "only {wooded} kinds grow trees");
+		assert!(sandy >= 3, "only {sandy} kinds are sandy");
 	}
 }

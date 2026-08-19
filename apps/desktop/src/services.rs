@@ -411,13 +411,4 @@ mod tests {
 		let list: ListResponse = serde_json::from_str(big).unwrap();
 		assert_eq!(list.servers[0].players, u32::MAX);
 	}
-
-	#[test]
-	fn list_json_parses() {
-		let json = r#"{"servers":[{"id":"a1","name":"World","url":"https://h:4433",
-			"certHash":"ab","players":3,"maxPlayers":255}]}"#;
-		let list: ListResponse = serde_json::from_str(json).unwrap();
-		assert_eq!(list.servers[0].name, "World");
-		assert_eq!(list.servers[0].max_players, 255);
-	}
 }

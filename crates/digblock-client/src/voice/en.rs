@@ -8,6 +8,8 @@
 //! something happened.
 
 use super::Msg;
+use digblock_core::block::Essence;
+use digblock_net::messages::{AdminReply, AdminUsage, NoPlayer};
 use digblock_net::protocol::PlayerId;
 
 pub(super) fn line(msg: &Msg) -> String {
@@ -49,6 +51,145 @@ pub(super) fn line(msg: &Msg) -> String {
 		Msg::ServerNotice { text } => format!("[server] {text}"),
 		Msg::Chat { name, text } => format!("{name}: {text}"),
 		Msg::CommandHint { usage, desc } => format!("{usage} - {desc}"),
+		Msg::Admin(reply) => admin(reply),
+	}
+}
+
+/// The usage line for one command. The `/give` line names the essences
+/// out of `Essence::ALL` at the moment it is drawn, which is why the
+/// advertisement and `parse_essence` cannot come to disagree — they read
+/// one vocabulary from opposite ends of the wire.
+fn usage(u: AdminUsage) -> String {
+	match u {
+		AdminUsage::Tp => "usage: /tp <x> <z> [n|s|e|w] (~ or ~<d> = relative)".into(),
+		AdminUsage::SetSpawn => "usage: /set-spawn (aim at the block to stand on)".into(),
+		AdminUsage::SetSpawnDir => {
+			"usage: /set-spawn-dir [n|s|e|w] (no argument = your facing)".into()
+		}
+		AdminUsage::LockSpawn => "usage: /lock-spawn [on|off]".into(),
+		AdminUsage::Goto => "usage: /goto <name>".into(),
+		AdminUsage::Bring => "usage: /bring <name>".into(),
+		AdminUsage::Give => {
+			let names = Essence::ALL.map(|e| e.ident()).join("|");
+			format!("usage: /give <name> <{names}> [n]")
+		}
+		AdminUsage::Time => {
+			"usage: /time <hh:mm> (24h; 6:00 sunrise, 12:00 noon, 18:00 sunset)".into()
+		}
+		AdminUsage::Reset => "usage: /reset <name>".into(),
+		AdminUsage::Ban => "usage: /ban <name>".into(),
+		AdminUsage::BanName => "usage: /ban <name> (a player display name)".into(),
+		AdminUsage::Unban => "usage: /unban <name-or-ip>".into(),
+	}
+}
+
+/// An essence's label by wire index. An index the catalog does not know
+/// is a server ahead of this client; naming it plainly beats dropping
+/// the line.
+fn essence(index: u16) -> String {
+	Essence::try_from_index(index).map_or_else(|| format!("essence {index}"), |e| e.name().into())
+}
+
+fn cell(c: &[i32; 3]) -> String {
+	format!("{} {} {}", c[0], c[1], c[2])
+}
+
+/// Admin replies. Lower case and terse like the refusals: this is the
+/// game answering a command, not telling you something happened.
+fn admin(r: &AdminReply) -> String {
+	match r {
+		AdminReply::Usage(u) => usage(*u),
+		AdminReply::CommandHint { usage, desc } => format!("{usage} - {desc}"),
+		AdminReply::UnknownCommand { typed } => format!("unknown command {typed} - try /help"),
+		AdminReply::CompassHint => "compass: e = sunrise (-x), n = -z".into(),
+		AdminReply::NoSuchPlayer { name, why } => match why {
+			NoPlayer::NotAName => format!("{name} is not a player display name"),
+			NoPlayer::StillJoining => format!("{name} is still joining"),
+			NoPlayer::NotOnline => format!("{name} is not online"),
+			NoPlayer::Ambiguous { count } => format!("{count} players named {name}"),
+		},
+		AdminReply::ThatIsYou => "that's you".into(),
+		AdminReply::Teleported { x, z } => format!("teleported to {x} {z}"),
+		AdminReply::TeleportedTo { name } => format!("teleported to {name}"),
+		AdminReply::Brought { name } => format!("brought {name}"),
+		AdminReply::TeleportedYouBy { admin } => format!("{admin} teleported you"),
+		AdminReply::NotLookingAtBlock => "not looking at a block".into(),
+		AdminReply::NotLookingAtTopFace => {
+			"not looking at the top of a block - aim at the surface to stand on".into()
+		}
+		AdminReply::SpawnNotClear { clear, capsule } => format!(
+			"not a valid spawn - needs solid ground {clear} blocks out, \
+			 with {capsule} clear and dry above it"
+		),
+		AdminReply::SpawnPointSet { cell: c } => format!("spawn point set to {}", cell(c)),
+		AdminReply::NotFacingAnywhere => {
+			"not facing anywhere - look along the ground, or name a direction".into()
+		}
+		AdminReply::SpawnFacingSet { compass } => format!("players will spawn facing {compass}"),
+		AdminReply::SpawnLocked {
+			cell: c,
+			region,
+			already,
+		} => {
+			let [x0, x1, y0, y1, z0, z1] = region;
+			let head = if *already { "already " } else { "" };
+			format!(
+				"{head}spawn locked at {} (protecting x {x0}..{x1}, y {y0}..{y1}, z {z0}..{z1})",
+				cell(c)
+			)
+		}
+		AdminReply::SpawnSetButUnlocked { cell: c } => format!(
+			"spawn is set at {} but unlocked (its cells can be dug)",
+			cell(c)
+		),
+		AdminReply::NoClearSpawnToLock => "no clear spawn to lock — nowhere within range is \
+			 intact; fill in the excavation and try again"
+			.into(),
+		AdminReply::SpawnAlreadyUnlocked => {
+			"spawn is unlocked (it moves aside if players dig it out)".into()
+		}
+		AdminReply::SpawnUnlocked => "spawn unlocked - its cells are editable again".into(),
+		AdminReply::NotAnEssence { typed } => {
+			format!("{typed} is not an essence - {}", usage(AdminUsage::Give))
+		}
+		AdminReply::Gave {
+			name,
+			essence: e,
+			gained,
+			asked,
+			held,
+		} => {
+			let what = essence(*e);
+			// The cap is only worth mentioning when it bit.
+			let short = if gained < asked {
+				format!(" ({name} is at the {what} cap; {asked} asked)")
+			} else {
+				String::new()
+			};
+			format!("gave {name} {gained} {what} - now {held}{short}")
+		}
+		AdminReply::WereGiven { essence: e, gained } => {
+			format!("you were given {gained} {}", essence(*e))
+		}
+		AdminReply::TimeIs { hour, minute } => format!("time is {hour:02}:{minute:02}"),
+		AdminReply::TimeSet { hour, minute } => format!("time set to {hour:02}:{minute:02}"),
+		AdminReply::ResetPlayer { name } => {
+			format!("reset {name} - skills zeroed, inventory wiped")
+		}
+		AdminReply::YouWereReset => "your skills and inventory were reset".into(),
+		AdminReply::NotBanningYourself => "not banning yourself".into(),
+		AdminReply::SharesYourIp { name } => format!("{name} shares your IP - not banning it"),
+		AdminReply::Banned { name, ip } => format!("banned {name} ({ip})"),
+		AdminReply::NoBans => "no bans".into(),
+		AdminReply::BanEntry { name, ip } => format!("{name} - {ip}"),
+		AdminReply::Unbanned { arg, removed } => {
+			format!("unbanned {arg} ({removed} entry(s))")
+		}
+		AdminReply::NoBanMatches { arg } => format!("no ban matches {arg}"),
+		AdminReply::LegacyCharacterClaimed => {
+			"your pre-account character on this server has been added to your account".into()
+		}
+		AdminReply::CommandsAreAdminOnly => "commands are admin-only".into(),
 	}
 }
 

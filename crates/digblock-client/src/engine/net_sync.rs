@@ -412,9 +412,11 @@ impl Engine {
 				// paused clock (backgrounded tab) a snap is what we want.
 				NetEvent::TimeOfDay { tod } => self.sun.tod = tod,
 				NetEvent::AdminCommands { commands } => self.ui.chat.set_commands(commands),
+				NetEvent::AdminReply(reply) => self.push_feed(Msg::Admin(reply)),
 				NetEvent::Chat { from, text } => {
 					if from == digblock_net::protocol::SERVER_ID {
-						// Server-authored line (admin command replies):
+						// Server-authored free-form line (admin replies are
+						// typed and arrive as `AdminReply` above):
 						// bracketed, neutral white — not a player voice.
 						self.push_feed(Msg::ServerNotice { text });
 						continue;

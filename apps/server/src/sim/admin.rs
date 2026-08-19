@@ -1,7 +1,7 @@
 //! Admin chat commands (`--admin <account-id>`): dispatched from the Chat
 //! arm for slash-lines from an admin ACCOUNT, never broadcast. Every
-//! outcome is
-//! answered with a private `SERVER_ID` chat reply. The command table is
+//! outcome is answered with a private typed `AdminReply` — the server
+//! names what happened and `voice` chooses the words. The command table is
 //! the single source of truth: it drives the dispatcher, `/help`, and
 //! the `AdminCommands` advertisement the client autocompletes from.
 
@@ -9,8 +9,8 @@ use super::{OutMsg, Sim, SpawnLock, client_send};
 use digblock_core::block::Essence;
 use digblock_core::compass::{cardinal, compass};
 use digblock_core::raycast::{REACH, raycast};
-use digblock_net::messages::ServerMsg;
-use digblock_net::protocol::{MAX_CHAT_LEN, SERVER_ID, validate_name};
+use digblock_net::messages::{AdminReply, AdminUsage, NoPlayer, ServerMsg};
+use digblock_net::protocol::validate_name;
 use glam::Vec3;
 
 /// `(usage, description)` — usage's first token is the dispatch key and
@@ -61,38 +61,35 @@ const TP_LIMIT: i64 = 1_000_000;
 /// An admin who aimed at a block and got told a number two higher would
 /// reasonably think the command missed, and it is the same y the lock
 /// region reports as `y0`.
-fn at(eye: Vec3) -> String {
-	format!(
-		"{} {} {}",
-		eye.x.floor(),
-		eye.y.floor() - 2.0,
-		eye.z.floor()
-	)
+/// The block a spawn eye stands on, as a cell.
+fn at(eye: Vec3) -> [i32; 3] {
+	[
+		eye.x.floor() as i32,
+		eye.y.floor() as i32 - 2,
+		eye.z.floor() as i32,
+	]
 }
 
 /// The one wording for "spawn is locked here", shared by `/lock-spawn`
 /// and by `/set-spawn` reporting the lock it dragged along.
-fn describe_lock(eye: Vec3) -> String {
+/// The lock's own description, as the cell it stands on and the box it
+/// protects. `already` distinguishes reporting a standing lock from
+/// announcing a new one — the two differ only in wording, which is
+/// exactly why the server must not be the one choosing between them.
+fn describe_lock(eye: Vec3, already: bool) -> AdminReply {
 	let r = digblock_core::spawn::lock_region(eye);
-	format!(
-		"spawn locked at {} (protecting x {}..{}, y {}..{}, z {}..{})",
-		at(eye),
-		r.x0,
-		r.x1,
-		r.y0,
-		r.y1,
-		r.z0,
-		r.z1,
-	)
+	AdminReply::SpawnLocked {
+		cell: at(eye),
+		region: [r.x0, r.x1, r.y0, r.y1, r.z0, r.z1],
+		already,
+	}
 }
 
-/// A private server→player chat line (the client renders SERVER_ID as
-/// an unnamed system line).
-pub(super) fn server_reply(text: &str) -> ServerMsg {
-	ServerMsg::Chat {
-		from: SERVER_ID,
-		text: text.into(),
-	}
+/// A private server→player answer. Typed rather than composed: the
+/// words are `voice`'s, and the server has no business holding a
+/// sentence a player reads.
+pub(super) fn server_reply(r: AdminReply) -> ServerMsg {
+	ServerMsg::Admin(r)
 }
 
 /// The advertisement sent to the admin at join.
@@ -122,9 +119,11 @@ fn parse_clock(arg: &str) -> Option<(u32, u32)> {
 }
 
 /// The inverse of `tod_of_clock`, for the no-argument query.
-fn clock_of_tod(tod: f32) -> String {
+/// The inverse of [`tod_of_clock`], as `(hour, minute)`. The colon
+/// between them is punctuation, and punctuation is the client's.
+fn clock_of_tod(tod: f32) -> (u32, u32) {
 	let mins = (((180.0 - tod) / 15.0 * 60.0).round() as i64).rem_euclid(24 * 60);
-	format!("{:02}:{:02}", mins / 60, mins % 60)
+	((mins / 60) as u32, (mins % 60) as u32)
 }
 
 /// An essence by name, case-insensitively.
@@ -171,9 +170,15 @@ impl Sim {
 		match cmd {
 			"/help" => {
 				for (usage, desc) in COMMANDS {
-					self.reply(conn_id, &format!("{usage} - {desc}"));
+					self.reply(
+						conn_id,
+						AdminReply::CommandHint {
+							usage: (*usage).to_string(),
+							desc: (*desc).to_string(),
+						},
+					);
 				}
-				self.reply(conn_id, "compass: e = sunrise (-x), n = -z");
+				self.reply(conn_id, AdminReply::CompassHint);
 			}
 			"/tp" => self.cmd_tp(conn_id, &args),
 			"/goto" => self.cmd_goto(conn_id, &args),
@@ -187,38 +192,41 @@ impl Sim {
 			"/set-spawn" => self.cmd_set_spawn(conn_id, &args),
 			"/set-spawn-dir" => self.cmd_set_spawn_dir(conn_id, &args),
 			"/lock-spawn" => self.cmd_lock_spawn(conn_id, &args),
-			other => self.reply(conn_id, &format!("unknown command {other} - try /help")),
+			other => self.reply(
+				conn_id,
+				AdminReply::UnknownCommand {
+					typed: other.to_string(),
+				},
+			),
 		}
 	}
 
-	/// Private reply, chunked to the chat length cap so nothing is
-	/// silently truncated client-side.
-	fn reply(&self, conn_id: u64, text: &str) {
+	/// Private reply. No chunking any more: the sentence is composed at
+	/// the client, so how long it runs is a rendering concern there and
+	/// not a chat-length cap here.
+	fn reply(&self, conn_id: u64, r: AdminReply) {
 		let Some(client) = self.clients.get(&conn_id) else {
 			return;
 		};
-		let chars: Vec<char> = text.chars().collect();
-		for chunk in chars.chunks(MAX_CHAT_LEN) {
-			client_send(client, &server_reply(&chunk.iter().collect::<String>()));
-		}
+		client_send(client, &server_reply(r));
 	}
 
 	fn cmd_tp(&mut self, conn_id: u64, args: &[&str]) {
-		let usage = "usage: /tp <x> <z> [n|s|e|w] (~ or ~<d> = relative)";
+		let usage = AdminReply::Usage(AdminUsage::Tp);
 		if !(args.len() == 2 || args.len() == 3) {
-			return self.reply(conn_id, usage);
+			return self.reply(conn_id, usage.clone());
 		}
 		let Some(cur) = self.clients.get(&conn_id).map(|c| c.player.pos) else {
 			return;
 		};
 		let (Some(x), Some(z)) = (parse_coord(args[0], cur.x), parse_coord(args[1], cur.z)) else {
-			return self.reply(conn_id, usage);
+			return self.reply(conn_id, usage.clone());
 		};
 		let look = match args.get(2) {
 			None => Vec3::ZERO,
 			Some(d) => match cardinal(&d.to_ascii_lowercase()) {
 				Some(v) => v,
-				None => return self.reply(conn_id, usage),
+				None => return self.reply(conn_id, usage.clone()),
 			},
 		};
 		// Land on the topmost block: pristine terrain height, then the
@@ -231,7 +239,7 @@ impl Sim {
 		if let Some(client) = self.clients.get(&conn_id) {
 			log::info!("admin {} teleported to {x} {z}", client.name);
 		}
-		self.reply(conn_id, &format!("teleported to {x} {z}"));
+		self.reply(conn_id, AdminReply::Teleported { x, z });
 	}
 
 	/// Hand-pick the spawn: the block under the admin's crosshair becomes the
@@ -247,7 +255,7 @@ impl Sim {
 	/// have chosen.
 	fn cmd_set_spawn(&mut self, conn_id: u64, args: &[&str]) {
 		if !args.is_empty() {
-			return self.reply(conn_id, "usage: /set-spawn (aim at the block to stand on)");
+			return self.reply(conn_id, AdminReply::Usage(AdminUsage::SetSpawn));
 		}
 		let Some((pos, look)) = self
 			.clients
@@ -258,13 +266,10 @@ impl Sim {
 			return;
 		};
 		let Some(hit) = raycast(pos, look, REACH, &|x, y, z| self.world_cell(x, y, z)) else {
-			return self.reply(conn_id, "not looking at a block");
+			return self.reply(conn_id, AdminReply::NotLookingAtBlock);
 		};
 		if hit.normal != (0, 1, 0) {
-			return self.reply(
-				conn_id,
-				"not looking at the top of a block - aim at the surface to stand on",
-			);
+			return self.reply(conn_id, AdminReply::NotLookingAtTopFace);
 		}
 		// The hit cell is the floor; the eye sits centred above it, at
 		// exactly the offset `spawn::anchor` uses over a surface block.
@@ -276,21 +281,19 @@ impl Sim {
 		if !digblock_core::spawn::stands_clear(eye, &|x, y, z| self.world_cell(x, y, z)) {
 			return self.reply(
 				conn_id,
-				&format!(
-					"not a valid spawn - needs solid ground {} blocks out, \
-					 with {} clear and dry above it",
-					digblock_core::spawn::CLEAR,
-					digblock_core::spawn::CAPSULE,
-				),
+				AdminReply::SpawnNotClear {
+					clear: digblock_core::spawn::CLEAR as u32,
+					capsule: digblock_core::spawn::CAPSULE as u32,
+				},
 			);
 		}
 		let relocked = self.spawn_store.lock().is_some();
 		self.spawn_store.set_point(eye.to_array());
 		log::info!("admin set spawn to {eye}");
-		self.reply(conn_id, &format!("spawn point set to {}", at(eye)));
+		self.reply(conn_id, AdminReply::SpawnPointSet { cell: at(eye) });
 		if relocked {
 			// The lock came along: the old cells are editable again.
-			self.reply(conn_id, &describe_lock(eye));
+			self.reply(conn_id, describe_lock(eye, false));
 		}
 	}
 
@@ -303,7 +306,7 @@ impl Sim {
 	/// The client levels the pitch on arrival either way, so storing one
 	/// would only be a value that never comes back out.
 	fn cmd_set_spawn_dir(&mut self, conn_id: u64, args: &[&str]) {
-		let usage = "usage: /set-spawn-dir [n|s|e|w] (no argument = your facing)";
+		let usage = AdminReply::Usage(AdminUsage::SetSpawnDir);
 		let dir = match args {
 			[] => {
 				let Some(look) = self
@@ -318,22 +321,21 @@ impl Sim {
 			}
 			[d] => match cardinal(&d.to_ascii_lowercase()) {
 				Some(v) => v,
-				None => return self.reply(conn_id, usage),
+				None => return self.reply(conn_id, usage.clone()),
 			},
-			_ => return self.reply(conn_id, usage),
+			_ => return self.reply(conn_id, usage.clone()),
 		};
 		if dir == Vec3::ZERO {
 			// Straight up or straight down: there is no yaw to keep.
-			return self.reply(
-				conn_id,
-				"not facing anywhere - look along the ground, or name a direction",
-			);
+			return self.reply(conn_id, AdminReply::NotFacingAnywhere);
 		}
 		self.spawn_store.set_dir(dir.to_array());
 		log::info!("admin set spawn facing to {dir}");
 		self.reply(
 			conn_id,
-			&format!("players will spawn facing {}", compass(dir)),
+			AdminReply::SpawnFacingSet {
+				compass: compass(dir).to_string(),
+			},
 		);
 	}
 
@@ -347,64 +349,59 @@ impl Sim {
 	/// command refuses rather than pinning a bad answer. A hand-picked
 	/// spawn resolves to itself and locks as-is — see `spawn_valid`.
 	fn cmd_lock_spawn(&mut self, conn_id: u64, args: &[&str]) {
-		let usage = "usage: /lock-spawn [on|off]";
+		let usage = AdminReply::Usage(AdminUsage::LockSpawn);
 		let arg = args.first().map(|s| s.to_ascii_lowercase());
 		if args.len() > 1 {
-			return self.reply(conn_id, usage);
+			return self.reply(conn_id, usage.clone());
 		}
 		match arg.as_deref() {
 			None => {
-				let line = match (self.spawn_store.lock(), self.spawn_store.point()) {
-					(Some(l), _) => describe_lock(Vec3::from_array(l.eye)),
+				let state = match (self.spawn_store.lock(), self.spawn_store.point()) {
+					(Some(l), _) => describe_lock(Vec3::from_array(l.eye), true),
 					// Unlocked, but pinned by hand: it stays put, it just
 					// isn't protected from being dug out from under itself.
-					(None, Some(p)) => format!(
-						"spawn is set at {} but unlocked (its cells can be dug)",
-						at(Vec3::from_array(p))
-					),
-					(None, None) => {
-						"spawn is unlocked (it moves aside if players dig it out)".into()
-					}
+					(None, Some(p)) => AdminReply::SpawnSetButUnlocked {
+						cell: at(Vec3::from_array(p)),
+					},
+					(None, None) => AdminReply::SpawnAlreadyUnlocked,
 				};
-				self.reply(conn_id, &line);
+				self.reply(conn_id, state);
 			}
 			Some("on") => {
 				if let Some(l) = self.spawn_store.lock() {
-					let line = describe_lock(Vec3::from_array(l.eye));
-					return self.reply(conn_id, &format!("already {line}"));
+					return self.reply(conn_id, describe_lock(Vec3::from_array(l.eye), true));
 				}
 				let eye = self.spawn_point();
 				if !self.spawn_valid(eye) {
-					return self.reply(
-						conn_id,
-						"no clear spawn to lock — nowhere within range is intact; \
-						 fill in the excavation and try again",
-					);
+					return self.reply(conn_id, AdminReply::NoClearSpawnToLock);
 				}
 				self.spawn_store.set_lock(Some(SpawnLock {
 					eye: eye.to_array(),
 				}));
 				log::info!("admin locked spawn at {eye}");
-				let line = describe_lock(eye);
-				self.reply(conn_id, &line);
+				self.reply(conn_id, describe_lock(eye, false));
 			}
 			Some("off") => {
 				if self.spawn_store.lock().is_none() {
-					return self.reply(conn_id, "spawn is already unlocked");
+					return self.reply(conn_id, AdminReply::SpawnAlreadyUnlocked);
 				}
 				self.spawn_store.set_lock(None);
 				log::info!("admin unlocked spawn");
-				self.reply(conn_id, "spawn unlocked - its cells are editable again");
+				self.reply(conn_id, AdminReply::SpawnUnlocked);
 			}
-			Some(_) => self.reply(conn_id, usage),
+			Some(_) => self.reply(conn_id, usage.clone()),
 		}
 	}
 
 	/// Resolve a display name to exactly one live connection, or a
 	/// reply-ready error line. Case-insensitive, same as `/ban`.
-	fn find_live_player(&self, name: &str) -> Result<u64, String> {
+	fn find_live_player(&self, name: &str) -> Result<u64, AdminReply> {
+		let no = |why| AdminReply::NoSuchPlayer {
+			name: name.to_string(),
+			why,
+		};
 		if validate_name(name).is_err() {
-			return Err(format!("{name} is not a player display name"));
+			return Err(no(NoPlayer::NotAName));
 		}
 		let matches: Vec<u64> = self
 			.clients
@@ -414,22 +411,24 @@ impl Sim {
 			.collect();
 		match matches[..] {
 			[id] if self.clients[&id].live => Ok(id),
-			[_] => Err(format!("{name} is still joining")),
-			[] => Err(format!("{name} is not online")),
-			_ => Err(format!("{} players named {name}", matches.len())),
+			[_] => Err(no(NoPlayer::StillJoining)),
+			[] => Err(no(NoPlayer::NotOnline)),
+			_ => Err(no(NoPlayer::Ambiguous {
+				count: matches.len() as u32,
+			})),
 		}
 	}
 
 	fn cmd_goto(&mut self, conn_id: u64, args: &[&str]) {
 		let [name] = args else {
-			return self.reply(conn_id, "usage: /goto <name>");
+			return self.reply(conn_id, AdminReply::Usage(AdminUsage::Goto));
 		};
 		let target = match self.find_live_player(name) {
 			Ok(id) => id,
-			Err(msg) => return self.reply(conn_id, &msg),
+			Err(why) => return self.reply(conn_id, why),
 		};
 		if target == conn_id {
-			return self.reply(conn_id, "that's you");
+			return self.reply(conn_id, AdminReply::ThatIsYou);
 		}
 		// The target's position already holds a player capsule, so it
 		// lands clear — no ascent needed.
@@ -441,19 +440,19 @@ impl Sim {
 		if let Some(client) = self.clients.get(&conn_id) {
 			log::info!("admin {} teleported to {target_name}", client.name);
 		}
-		self.reply(conn_id, &format!("teleported to {target_name}"));
+		self.reply(conn_id, AdminReply::TeleportedTo { name: target_name });
 	}
 
 	fn cmd_bring(&mut self, conn_id: u64, args: &[&str]) {
 		let [name] = args else {
-			return self.reply(conn_id, "usage: /bring <name>");
+			return self.reply(conn_id, AdminReply::Usage(AdminUsage::Bring));
 		};
 		let target = match self.find_live_player(name) {
 			Ok(id) => id,
-			Err(msg) => return self.reply(conn_id, &msg),
+			Err(why) => return self.reply(conn_id, why),
 		};
 		if target == conn_id {
-			return self.reply(conn_id, "that's you");
+			return self.reply(conn_id, AdminReply::ThatIsYou);
 		}
 		let Some((pos, admin_name)) = self
 			.clients
@@ -464,9 +463,9 @@ impl Sim {
 		};
 		let target_name = self.clients[&target].name.clone();
 		self.teleport_client(target, pos, Vec3::ZERO);
-		self.reply(target, &format!("{admin_name} teleported you"));
 		log::info!("admin {admin_name} brought {target_name}");
-		self.reply(conn_id, &format!("brought {target_name}"));
+		self.reply(target, AdminReply::TeleportedYouBy { admin: admin_name });
+		self.reply(conn_id, AdminReply::Brought { name: target_name });
 	}
 
 	/// `/give` — the one admin command that writes a player's stocks.
@@ -486,27 +485,33 @@ impl Sim {
 		// their reagent names moved only the parser — leaving `/help` and
 		// this line advertising four words the command now refuses, in a
 		// refusal that repeated the word it had just rejected.
-		let names = Essence::ALL.map(|e| e.ident()).join("|");
-		let usage = format!("usage: /give <name> <{names}> [n]");
-		let usage = usage.as_str();
+		// The usage line names the essences at the point it is RENDERED,
+		// out of `Essence::ALL` — so the advertisement and `parse_essence`
+		// read one vocabulary and cannot drift apart.
+		let usage = AdminReply::Usage(AdminUsage::Give);
 		if !(args.len() == 2 || args.len() == 3) {
-			return self.reply(conn_id, usage);
+			return self.reply(conn_id, usage.clone());
 		}
 		let Some(essence) = parse_essence(args[1]) else {
-			return self.reply(conn_id, &format!("{} is not an essence - {usage}", args[1]));
+			return self.reply(
+				conn_id,
+				AdminReply::NotAnEssence {
+					typed: args[1].to_string(),
+				},
+			);
 		};
 		let n: u32 = match args.get(2) {
 			None => 1,
 			Some(s) => match s.parse() {
 				Ok(n) if n > 0 => n,
-				_ => return self.reply(conn_id, usage),
+				_ => return self.reply(conn_id, usage.clone()),
 			},
 		};
 		// Giving to yourself is the ordinary case here, unlike `/goto` and
 		// `/bring` where it is a no-op worth refusing.
 		let target = match self.find_live_player(args[0]) {
 			Ok(id) => id,
-			Err(msg) => return self.reply(conn_id, &msg),
+			Err(why) => return self.reply(conn_id, why),
 		};
 		let (gained, held, target_name) = {
 			let Some(client) = self.clients.get_mut(&target) else {
@@ -527,32 +532,49 @@ impl Sim {
 		if let Some(admin) = self.clients.get(&conn_id) {
 			log::info!("admin {} gave {target_name} {gained} {name}", admin.name);
 		}
+		let index = essence as u16;
 		if target != conn_id {
-			self.reply(target, &format!("you were given {gained} {name}"));
+			self.reply(
+				target,
+				AdminReply::WereGiven {
+					essence: index,
+					gained,
+				},
+			);
 		}
-		let short = if gained < n {
-			format!(" ({target_name} is at the {name} cap; {n} asked)")
-		} else {
-			String::new()
-		};
+		// `asked` rides along beside `gained`: at the cap they differ, and
+		// an admin told only the larger number would have no way to find
+		// out. Which of the two the line mentions is the client's call.
 		self.reply(
 			conn_id,
-			&format!("gave {target_name} {gained} {name} - now {held}{short}"),
+			AdminReply::Gave {
+				name: target_name,
+				essence: index,
+				gained,
+				asked: n,
+				held,
+			},
 		);
 	}
 
 	fn cmd_time(&mut self, conn_id: u64, args: &[&str]) {
-		let usage = "usage: /time <hh:mm> (24h; 6:00 sunrise, 12:00 noon, 18:00 sunset)";
+		let usage = AdminReply::Usage(AdminUsage::Time);
 		let (h, m) = match args {
 			[] => {
 				let clock = clock_of_tod(self.current_tod());
-				return self.reply(conn_id, &format!("time is {clock}"));
+				return self.reply(
+					conn_id,
+					AdminReply::TimeIs {
+						hour: clock.0,
+						minute: clock.1,
+					},
+				);
 			}
 			[arg] => match parse_clock(arg) {
 				Some(t) => t,
-				None => return self.reply(conn_id, usage),
+				None => return self.reply(conn_id, usage.clone()),
 			},
-			_ => return self.reply(conn_id, usage),
+			_ => return self.reply(conn_id, usage.clone()),
 		};
 		// tod falls as time advances, so shifting the clock forward by
 		// (current − target) degrees lands on the target; the offset
@@ -567,7 +589,7 @@ impl Sim {
 		};
 		self.broadcast(&msg);
 		log::info!("admin set time to {h:02}:{m:02}");
-		self.reply(conn_id, &format!("time set to {h:02}:{m:02}"));
+		self.reply(conn_id, AdminReply::TimeSet { hour: h, minute: m });
 	}
 
 	/// `/reset` — the testing lever: a named player back to minute one. Zeroes
@@ -581,15 +603,15 @@ impl Sim {
 	/// `InventoryFull` rebase — both ends run the same `reconcile_layout` over
 	/// the zeroed counts, so every slot sweeps with no Layout frame needed.
 	fn cmd_reset(&mut self, conn_id: u64, args: &[&str]) {
-		let usage = "usage: /reset <name>";
+		let usage = AdminReply::Usage(AdminUsage::Reset);
 		let [name] = args else {
-			return self.reply(conn_id, usage);
+			return self.reply(conn_id, usage.clone());
 		};
 		// Resetting yourself is the ordinary case, as with /give: the
 		// tester wiping their own character is what the command is FOR.
 		let target = match self.find_live_player(name) {
 			Ok(id) => id,
-			Err(msg) => return self.reply(conn_id, &msg),
+			Err(why) => return self.reply(conn_id, why),
 		};
 		let target_name = {
 			let Some(client) = self.clients.get_mut(&target) else {
@@ -618,20 +640,17 @@ impl Sim {
 			log::info!("admin {} reset {target_name}", admin.name);
 		}
 		if target != conn_id {
-			self.reply(target, "your skills and inventory were reset");
+			self.reply(target, AdminReply::YouWereReset);
 		}
-		self.reply(
-			conn_id,
-			&format!("reset {target_name} - skills zeroed, inventory wiped"),
-		);
+		self.reply(conn_id, AdminReply::ResetPlayer { name: target_name });
 	}
 
 	fn cmd_ban(&mut self, conn_id: u64, args: &[&str]) {
 		let [name] = args else {
-			return self.reply(conn_id, "usage: /ban <name>");
+			return self.reply(conn_id, AdminReply::Usage(AdminUsage::Ban));
 		};
 		if validate_name(name).is_err() {
-			return self.reply(conn_id, "usage: /ban <name> (a player display name)");
+			return self.reply(conn_id, AdminReply::Usage(AdminUsage::BanName));
 		}
 		let matches: Vec<u64> = self
 			.clients
@@ -640,20 +659,28 @@ impl Sim {
 			.map(|(&id, _)| id)
 			.collect();
 		let [target] = matches[..] else {
-			let msg = if matches.is_empty() {
-				format!("{name} is not online (bans need the player's address)")
+			// Names are unique per account at the master now, so two live
+			// matches means two connections of the same account — which
+			// handle_hello already refuses. Kept as a guard rather than
+			// deleted: this branch is the difference between refusing and
+			// banning the wrong person.
+			let why = if matches.is_empty() {
+				NoPlayer::NotOnline
 			} else {
-				// Names are unique per account at the master now, so two
-				// live matches means two connections of the same account —
-				// which handle_hello already refuses. Kept as a guard rather
-				// than deleted: this branch is the difference between
-				// refusing and banning the wrong person.
-				format!("{} players named {name} - can't ban by name", matches.len())
+				NoPlayer::Ambiguous {
+					count: matches.len() as u32,
+				}
 			};
-			return self.reply(conn_id, &msg);
+			return self.reply(
+				conn_id,
+				AdminReply::NoSuchPlayer {
+					name: name.to_string(),
+					why,
+				},
+			);
 		};
 		if target == conn_id {
-			return self.reply(conn_id, "not banning yourself");
+			return self.reply(conn_id, AdminReply::NotBanningYourself);
 		}
 		let (ip, stored_name, account) = {
 			let c = &self.clients[&target];
@@ -662,7 +689,12 @@ impl Sim {
 		if self.clients[&conn_id].addr.ip() == ip {
 			// Kicking every connection on the banned IP would include the
 			// admin — almost certainly two names from one household/NAT.
-			return self.reply(conn_id, &format!("{name} shares your IP - not banning it"));
+			return self.reply(
+				conn_id,
+				AdminReply::SharesYourIp {
+					name: name.to_string(),
+				},
+			);
 		}
 		self.ban_store.ban(&stored_name, ip, account);
 		// Kick every connection from the banned IP, not just the named one.
@@ -686,36 +718,52 @@ impl Sim {
 			self.drop_client(id);
 		}
 		log::info!("admin banned {stored_name} ({ip})");
-		self.reply(conn_id, &format!("banned {stored_name} ({ip})"));
+		self.reply(
+			conn_id,
+			AdminReply::Banned {
+				name: stored_name,
+				ip: ip.to_string(),
+			},
+		);
 	}
 
 	fn cmd_ban_list(&mut self, conn_id: u64) {
 		if self.ban_store.entries().is_empty() {
-			return self.reply(conn_id, "no bans");
+			return self.reply(conn_id, AdminReply::NoBans);
 		}
-		let lines: Vec<String> = self
+		let rows: Vec<AdminReply> = self
 			.ban_store
 			.entries()
 			.iter()
-			.map(|e| format!("{} - {}", e.name, e.ip))
+			.map(|e| AdminReply::BanEntry {
+				name: e.name.clone(),
+				ip: e.ip.to_string(),
+			})
 			.collect();
-		for line in lines {
-			self.reply(conn_id, &line);
+		for row in rows {
+			self.reply(conn_id, row);
 		}
 	}
 
 	fn cmd_unban(&mut self, conn_id: u64, args: &[&str]) {
 		let [arg] = args else {
-			return self.reply(conn_id, "usage: /unban <name-or-ip>");
+			return self.reply(conn_id, AdminReply::Usage(AdminUsage::Unban));
 		};
 		let removed = self.ban_store.unban_matching(arg);
-		let msg = if removed == 0 {
-			format!("no ban matches {arg}")
-		} else {
-			format!("unbanned {arg} ({removed} entry(s))")
-		};
 		log::info!("admin unban {arg}: {removed} removed");
-		self.reply(conn_id, &msg);
+		self.reply(
+			conn_id,
+			if removed == 0 {
+				AdminReply::NoBanMatches {
+					arg: arg.to_string(),
+				}
+			} else {
+				AdminReply::Unbanned {
+					arg: arg.to_string(),
+					removed: removed as u32,
+				}
+			},
+		);
 	}
 }
 

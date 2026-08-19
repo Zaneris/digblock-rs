@@ -586,7 +586,10 @@ fn the_lut_carries_the_shape_covers() {
 	// And the torch's emitting class is synthetic now — the light
 	// list names classes, so the level has to ride along.
 	let torch = digblock_core::gi::gi_class(BlockType::Torch as u16);
-	assert_eq!(lut[torch as usize][1] & 0xff, 14);
+	assert_eq!(
+		lut[torch as usize][1] & 0xff,
+		u32::from(BlockType::Torch.props().light)
+	);
 }
 
 /// Word 1 carries the cast COLOUR above the level, and for every row

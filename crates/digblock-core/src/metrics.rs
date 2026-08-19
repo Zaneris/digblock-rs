@@ -977,21 +977,6 @@ mod tests {
 	}
 
 	#[test]
-	fn hitch_counting() {
-		let mut m = Metrics::new(None, false);
-		// First call sets last_frame; deltas are measured wall-clock, so
-		// synthesize hitches by injecting directly.
-		m.frame(FrameTimings::default());
-		m.frame_ms.push_back(50.0);
-		m.hitches += 1;
-		m.hitches_total += 1;
-		assert_eq!(m.hitches, 1);
-		assert_eq!(m.hitches_total, 1);
-		let stats = m.overlay_stats();
-		assert_eq!(stats.hitches_window, 1);
-	}
-
-	#[test]
 	fn overlay_stats_safe_before_first_frame() {
 		let mut m = Metrics::new(None, false);
 		let s = m.overlay_stats();

@@ -1,8 +1,10 @@
 use crate::sim::harness::*;
 use crate::sim::{Sim, SimEvent};
 use digblock_core::block::BlockType;
+use digblock_net::messages::{AdminReply, AdminUsage, NoPlayer};
 use digblock_net::messages::{ClientMsg, ServerMsg};
-use digblock_net::protocol::{AccountId, SERVER_ID};
+use digblock_net::protocol::AccountId;
+use digblock_net::protocol::CHAT_BURST;
 use glam::Vec3;
 use std::assert_matches;
 
@@ -36,10 +38,7 @@ fn admin_keys_on_the_account_not_the_name() {
 	sim.tick_once(vec![chat(1, "/help")]);
 	admin.drain();
 	assert!(
-		admin.msgs.iter().any(|m| matches!(
-			m,
-			ServerMsg::Chat { text, .. } if text.starts_with("/help")
-		)),
+		answered(&admin, |r| matches!(r, AdminReply::CommandHint { .. })),
 		"the admin's account gets the commands: {:?}",
 		admin.msgs
 	);
@@ -50,10 +49,7 @@ fn admin_keys_on_the_account_not_the_name() {
 	sim.tick_once(vec![chat(2, "/help")]);
 	impostor.drain();
 	assert!(
-		!impostor
-			.msgs
-			.iter()
-			.any(|m| matches!(m, ServerMsg::Chat { text, .. } if text.starts_with("/help"))),
+		!answered(&impostor, |r| matches!(r, AdminReply::CommandHint { .. })),
 		"a matching NAME must grant nothing: {:?}",
 		impostor.msgs
 	);
@@ -70,24 +66,29 @@ fn the_empty_account_can_never_be_an_admin() {
 	sim.tick_once(vec![chat(1, "/help")]);
 	anon.drain();
 	assert!(
-		!anon
-			.msgs
-			.iter()
-			.any(|m| matches!(m, ServerMsg::Chat { text, .. } if text.starts_with("/help"))),
+		!answered(&anon, |r| matches!(r, AdminReply::CommandHint { .. })),
 		"AccountId::NONE must not be grantable: {:?}",
 		anon.msgs
 	);
 }
 
-/// Server-authored chat lines received by a client.
-fn server_lines(c: &TestClient) -> Vec<String> {
+/// The typed answers a client received. Asserting on these rather than
+/// on rendered lines is the point: the words live in the client's
+/// `voice`, and a test that quoted them would be a second copy of a
+/// sentence that is allowed to be reworded at any time.
+fn replies(c: &TestClient) -> Vec<AdminReply> {
 	c.msgs
 		.iter()
 		.filter_map(|m| match m {
-			ServerMsg::Chat { from, text } if *from == SERVER_ID => Some(text.clone()),
+			ServerMsg::Admin(r) => Some(r.clone()),
 			_ => None,
 		})
 		.collect()
+}
+
+/// Did any answer match?
+fn answered(c: &TestClient, f: impl Fn(&AdminReply) -> bool) -> bool {
+	replies(c).iter().any(f)
 }
 
 #[test]
@@ -161,7 +162,7 @@ fn reset_returns_a_player_to_minute_one() {
 		"the standing rebase carries the wipe"
 	);
 	assert!(
-		server_lines(&guest).iter().any(|t| t.contains("reset")),
+		answered(&guest, |r| matches!(r, AdminReply::YouWereReset)),
 		"the target was told"
 	);
 
@@ -174,58 +175,55 @@ fn reset_returns_a_player_to_minute_one() {
 	sim.tick_once(vec![chat(1, "/reset")]);
 	sim.tick_once(vec![chat(1, "/reset nobody")]);
 	admin.drain();
-	let lines = server_lines(&admin);
-	assert!(lines.iter().any(|t| t.contains("usage:")), "{lines:?}");
-	assert!(lines.iter().any(|t| t.contains("not online")), "{lines:?}");
+	let lines = replies(&admin);
+	assert!(
+		lines
+			.iter()
+			.any(|r| matches!(r, AdminReply::Usage(AdminUsage::Reset))),
+		"{lines:?}"
+	);
+	assert!(
+		lines.iter().any(|r| matches!(
+			r,
+			AdminReply::NoSuchPlayer {
+				why: NoPlayer::NotOnline,
+				..
+			}
+		)),
+		"{lines:?}"
+	);
 }
 
-/// Every word `/give`'s refusal ADVERTISES is a word it accepts.
+/// Every essence is spellable by its own identifier, and nothing else
+/// is taken.
 ///
-/// The usage line used to be a third copy of the vocabulary beside
+/// The vocabulary used to be advertised as a THIRD copy beside
 /// `parse_essence` and `Essence::ident`, and when the essences took
 /// their reagent names only the parser moved: `/give bob earth 100`
-/// answered "earth is not an essence" and then offered `earth`. A
-/// refusal that repeats the word it just refused is the failure this
-/// pins — so the assertion reads the advertised list back through the
-/// parser rather than comparing it to a spelling written here, which
-/// would be a fourth copy.
+/// answered "earth is not an essence" and then offered `earth`. The
+/// advertisement now lives in `voice`, built from `Essence::ALL` at the
+/// moment it is drawn, so that drift is no longer expressible — what is
+/// left to check here is the half the server still owns: the parser
+/// takes every identifier and refuses what is not one.
+///
+/// The rendered half is pinned client-side by
+/// `voice::the_give_usage_names_every_essence`.
 #[test]
 fn give_only_advertises_essences_it_accepts() {
 	use super::parse_essence;
 	use digblock_core::block::Essence;
-	let mut sim = admin_sim("giveusage");
-	let mut admin = connect_admin(&mut sim, 1, "boss");
-	wait_live(&mut sim, 1);
-	sim.tick_once(vec![chat(1, "/give")]);
-	admin.drain();
-	let usage = admin
-		.msgs
-		.iter()
-		.find_map(|m| match m {
-			ServerMsg::Chat { text, .. } if text.contains("usage:") => Some(text.clone()),
-			_ => None,
-		})
-		.expect("a bare /give answers with its usage line");
-	// The second angle-bracket group: `/give <name> <essences> [n]`.
-	let listed: Vec<&str> = usage
-		.split('<')
-		.nth(2)
-		.and_then(|r| r.split_once('>'))
-		.map(|(w, _)| w)
-		.expect("the usage line names an essence alternation")
-		.split('|')
-		.collect();
-	assert_eq!(
-		listed.len(),
-		Essence::COUNT,
-		"every essence is offered: {usage}"
-	);
-	for word in listed {
-		assert!(
-			parse_essence(word).is_some(),
-			"{word:?} is advertised but refused: {usage}"
+	for e in Essence::ALL {
+		assert_eq!(
+			parse_essence(e.ident()),
+			Some(e),
+			"{:?} is not takeable by its own identifier",
+			e
 		);
+		// Case is the operator's business, not the parser's.
+		assert_eq!(parse_essence(&e.ident().to_uppercase()), Some(e));
 	}
+	assert_eq!(parse_essence("sunshine"), None);
+	assert_eq!(parse_essence(""), None);
 }
 
 /// `/give` credits the TARGET and rebases them, and every essence is
@@ -260,9 +258,9 @@ fn give_credits_essence_and_rebases_the_player_who_got_it() {
 		"the target was never rebased"
 	);
 	assert!(
-		server_lines(&guest).iter().any(|t| t.contains("given")),
+		answered(&guest, |r| matches!(r, AdminReply::WereGiven { .. })),
 		"the target was never told: {:?}",
-		server_lines(&guest)
+		replies(&guest)
 	);
 
 	// An admin gives themselves, which `/goto` and `/bring` refuse.
@@ -275,16 +273,29 @@ fn give_credits_essence_and_rebases_the_player_who_got_it() {
 	sim.tick_once(vec![chat(1, "/give guest aether 0")]);
 	sim.tick_once(vec![chat(1, "/give nobody aether 5")]);
 	admin.drain();
-	let lines = server_lines(&admin);
+	let lines = replies(&admin);
 	assert!(
-		lines.iter().any(|t| t.contains("not an essence")),
+		lines
+			.iter()
+			.any(|r| matches!(r, AdminReply::NotAnEssence { .. })),
 		"{lines:?}"
 	);
 	assert!(
-		lines.iter().filter(|t| t.contains("usage:")).count() >= 1,
+		lines
+			.iter()
+			.any(|r| matches!(r, AdminReply::Usage(AdminUsage::Give))),
 		"{lines:?}"
 	);
-	assert!(lines.iter().any(|t| t.contains("not online")), "{lines:?}");
+	assert!(
+		lines.iter().any(|r| matches!(
+			r,
+			AdminReply::NoSuchPlayer {
+				why: NoPlayer::NotOnline,
+				..
+			}
+		)),
+		"{lines:?}"
+	);
 	assert_eq!(
 		sim.test_sub_count(2, Essence::Aether),
 		Essence::ALL.len() as u32,
@@ -301,18 +312,20 @@ fn slash_lines_never_broadcast_and_non_admin_is_refused() {
 	admin.drain();
 	guest.drain();
 	// The admin got usage lines privately; the guest saw none of it.
-	assert!(server_lines(&admin).iter().any(|t| t.contains("/ban")));
+	assert!(answered(&admin, |r| matches!(
+		r,
+		AdminReply::CommandHint { usage, .. } if usage.starts_with("/ban")
+	)));
 	assert!(!guest.msgs.iter().any(
 		|m| matches!(m, ServerMsg::Chat { text, .. } if text.contains("/help") || text.contains("/ban"))
 	));
 	// The guest's own slash line: private refusal, nothing broadcast
 	// (the admin's /help reply mentions /tp usage, so key on the
 	// guest's exact line).
-	assert!(
-		server_lines(&guest)
-			.iter()
-			.any(|t| t.contains("admin-only"))
-	);
+	assert!(answered(&guest, |r| matches!(
+		r,
+		AdminReply::CommandsAreAdminOnly
+	)));
 	assert!(
 		!admin
 			.msgs
@@ -325,16 +338,19 @@ fn slash_lines_never_broadcast_and_non_admin_is_refused() {
 fn admin_commands_bypass_the_chat_token_bucket() {
 	let mut sim = admin_sim("bucket");
 	let mut admin = connect_admin(&mut sim, 1, "boss");
-	for _ in 0..6 {
+	// More commands than the chat burst allows, so the bucket would
+	// swallow some if admin lines rode it.
+	const ROUNDS: usize = CHAT_BURST as usize + 2;
+	for _ in 0..ROUNDS {
 		sim.tick_once(vec![chat(1, "/ban-list")]);
 	}
 	admin.drain();
 	// More lines than the chat burst allows; all were answered.
-	let n = server_lines(&admin)
+	let n = replies(&admin)
 		.iter()
-		.filter(|t| t.contains("no bans"))
+		.filter(|r| matches!(r, AdminReply::NoBans))
 		.count();
-	assert_eq!(n, 6);
+	assert_eq!(n, ROUNDS, "every command answered, bucket or no bucket");
 }
 
 #[test]
@@ -347,11 +363,10 @@ fn ban_kicks_persists_and_refuses_reconnect() {
 	sim.tick_once(vec![chat(1, "/ban Griefer")]);
 	admin.drain();
 	victim.drain();
-	assert!(
-		server_lines(&admin)
-			.iter()
-			.any(|t| t.contains("banned griefer"))
-	);
+	assert!(answered(&admin, |r| matches!(
+		r,
+		AdminReply::Banned { name, .. } if name.eq_ignore_ascii_case("griefer")
+	)));
 	assert!(
 		victim
 			.msgs
@@ -383,25 +398,40 @@ fn ban_kicks_persists_and_refuses_reconnect() {
 	sim.tick_once(vec![chat(1, "/ban-list")]);
 	sim.tick_once(vec![chat(1, "/unban griefer")]);
 	admin.drain();
-	assert!(server_lines(&admin).iter().any(|t| t.contains("griefer")));
-	assert!(server_lines(&admin).iter().any(|t| t.contains("unbanned")));
+	assert!(answered(&admin, |r| matches!(
+		r,
+		AdminReply::BanEntry { name, .. } if name.eq_ignore_ascii_case("griefer")
+	)));
+	assert!(answered(&admin, |r| matches!(
+		r,
+		AdminReply::Unbanned { removed, .. } if *removed > 0
+	)));
 	let back = try_connect(&mut sim, 2, AccountId::NONE);
 	assert_matches!(back.msgs.first(), Some(ServerMsg::Welcome { .. }));
 }
 
+/// Every near-miss `/ban` argument leaves the roster exactly as it found
+/// it. The reply explaining why is a courtesy; the contract is that
+/// nobody is banned and nobody is dropped — a handler that printed the
+/// right words while banning the wrong person would still be a takeover,
+/// and the wording alone cannot tell those two apart.
 #[test]
-fn ban_edge_cases_reply_without_banning() {
+fn a_near_miss_ban_bans_nobody() {
+	const BAD: [&str; 3] = ["/ban nosuch", "/ban boss", "/ban !!!"];
 	let mut sim = admin_sim("banedge");
 	let mut admin = connect_admin(&mut sim, 1, "boss");
-	sim.tick_once(vec![chat(1, "/ban nosuch")]);
-	sim.tick_once(vec![chat(1, "/ban boss")]);
-	sim.tick_once(vec![chat(1, "/ban !!!")]);
+	for bad in BAD {
+		sim.tick_once(vec![chat(1, bad)]);
+		assert!(
+			sim.ban_store.entries().is_empty(),
+			"{bad} banned somebody: {:?}",
+			sim.ban_store.entries()
+		);
+		assert!(sim.test_player(1).is_some(), "{bad} dropped the admin");
+	}
+	// Each is still answered — a silently swallowed command is its own bug.
 	admin.drain();
-	let lines = server_lines(&admin);
-	assert!(lines.iter().any(|t| t.contains("not online")));
-	assert!(lines.iter().any(|t| t.contains("not banning yourself")));
-	assert!(lines.iter().any(|t| t.contains("usage: /ban")));
-	assert!(sim.test_player(1).is_some(), "admin still connected");
+	assert_eq!(replies(&admin).len(), BAD.len(), "one reply per refusal");
 }
 
 /// `~<offset>` is an unbounded i64 off the wire added to the player's
@@ -454,11 +484,10 @@ fn tp_absolute_relative_and_facing() {
 	assert_eq!(look, [-1.0, 0.0, 0.0]);
 	assert_eq!(sim.test_look(1), Some(Vec3::new(-1.0, 0.0, 0.0)));
 	assert_eq!(sim.test_player(1).unwrap().pos.to_array(), pos);
-	assert!(
-		server_lines(&admin)
-			.iter()
-			.any(|t| t.contains("teleported to 40 -20"))
-	);
+	assert!(answered(&admin, |r| matches!(
+		r,
+		AdminReply::Teleported { x: 40, z: -20 }
+	)));
 
 	// Relative: ~ keeps the axis, ~<d> offsets from the floor.
 	sim.tick_once(vec![chat(1, "/tp ~-10 ~ n")]);
@@ -485,11 +514,10 @@ fn tp_absolute_relative_and_facing() {
 		.count();
 	sim.tick_once(vec![chat(1, "/tp up down")]);
 	admin.drain();
-	assert!(
-		server_lines(&admin)
-			.iter()
-			.any(|t| t.contains("usage: /tp"))
-	);
+	assert!(answered(&admin, |r| matches!(
+		r,
+		AdminReply::Usage(AdminUsage::Tp)
+	)));
 	let after = sim.test_player(1).unwrap().pos;
 	assert_eq!((after.x, after.z), (before.x, before.z));
 	let teleports_after = admin
@@ -514,11 +542,10 @@ fn goto_and_bring_move_the_right_player() {
 	admin.drain();
 	let apos = sim.test_player(1).unwrap().pos;
 	assert_eq!((apos.x, apos.z), (gpos.x, gpos.z));
-	assert!(
-		server_lines(&admin)
-			.iter()
-			.any(|t| t.contains("teleported to guest"))
-	);
+	assert!(answered(&admin, |r| matches!(
+		r,
+		AdminReply::TeleportedTo { name } if name.eq_ignore_ascii_case("guest")
+	)));
 
 	// Separate again, then bring the guest to the admin.
 	sim.tick_once(vec![chat(1, "/tp 40 -20")]);
@@ -534,16 +561,14 @@ fn goto_and_bring_move_the_right_player() {
 			.iter()
 			.any(|m| matches!(m, ServerMsg::Teleported { .. }))
 	);
-	assert!(
-		server_lines(&guest)
-			.iter()
-			.any(|t| t.contains("boss teleported you"))
-	);
-	assert!(
-		server_lines(&admin)
-			.iter()
-			.any(|t| t.contains("brought guest"))
-	);
+	assert!(answered(&guest, |r| matches!(
+		r,
+		AdminReply::TeleportedYouBy { admin } if admin.eq_ignore_ascii_case("boss")
+	)));
+	assert!(answered(&admin, |r| matches!(
+		r,
+		AdminReply::Brought { name } if name.eq_ignore_ascii_case("guest")
+	)));
 
 	// Edge cases: unknown player, self, missing arg — reply, no move.
 	let before = sim.test_player(1).unwrap().pos;
@@ -551,10 +576,20 @@ fn goto_and_bring_move_the_right_player() {
 	sim.tick_once(vec![chat(1, "/goto boss")]);
 	sim.tick_once(vec![chat(1, "/bring")]);
 	admin.drain();
-	let lines = server_lines(&admin);
-	assert!(lines.iter().any(|t| t.contains("not online")));
-	assert!(lines.iter().any(|t| t.contains("that's you")));
-	assert!(lines.iter().any(|t| t.contains("usage: /bring")));
+	let lines = replies(&admin);
+	assert!(lines.iter().any(|r| matches!(
+		r,
+		AdminReply::NoSuchPlayer {
+			why: NoPlayer::NotOnline,
+			..
+		}
+	)));
+	assert!(lines.iter().any(|r| matches!(r, AdminReply::ThatIsYou)));
+	assert!(
+		lines
+			.iter()
+			.any(|r| matches!(r, AdminReply::Usage(AdminUsage::Bring)))
+	);
 	let after = sim.test_player(1).unwrap().pos;
 	assert_eq!((after.x, after.z), (before.x, before.z));
 }
@@ -578,13 +613,18 @@ fn time_sets_the_clock_and_reanchors_everyone() {
 				_ => None,
 			})
 			.expect("immediate TimeOfDay");
-		assert!((tod + 97.5).abs() < 0.01, "tod {tod}");
+		assert!(
+			(tod - super::tod_of_clock(18, 30)).abs() < 0.01,
+			"tod {tod}"
+		);
 	}
-	assert!(
-		server_lines(&admin)
-			.iter()
-			.any(|t| t.contains("time set to 18:30"))
-	);
+	assert!(answered(&admin, |r| matches!(
+		r,
+		AdminReply::TimeSet {
+			hour: 18,
+			minute: 30
+		}
+	)));
 
 	// Time keeps flowing from the new anchor: the next heartbeat has
 	// fallen by the elapsed ticks at the sun's rate, not reverted to
@@ -605,25 +645,43 @@ fn time_sets_the_clock_and_reanchors_everyone() {
 	assert!((-100.6..=-97.5).contains(&beat), "beat {beat}");
 }
 
+/// The last clock the server pushed, if it pushed one at all. A change
+/// only reaches players as a `TimeOfDay`, so its ABSENCE is how "nothing
+/// moved" is observed.
+fn pushed_tod(c: &TestClient) -> Option<f32> {
+	c.msgs.iter().rev().find_map(|m| match m {
+		ServerMsg::TimeOfDay { tod } => Some(*tod),
+		_ => None,
+	})
+}
+
+/// An hour the day does not have, and a word for one, both leave the
+/// clock where they found it. The old version of this asserted the
+/// usage line and never once checked the clock — which is the only
+/// thing a rejected `/time` has to get right.
 #[test]
-fn time_query_bare_hour_and_bad_input() {
+fn a_refused_time_leaves_the_clock_where_it_was() {
 	let mut sim = admin_sim("timeedge");
 	let mut admin = connect_admin(&mut sim, 1, "boss");
-	sim.tick_once(vec![chat(1, "/time 12:00")]);
-	sim.tick_once(vec![chat(1, "/time")]);
-	sim.tick_once(vec![chat(1, "/time 6")]);
-	sim.tick_once(vec![chat(1, "/time 24:00")]);
-	sim.tick_once(vec![chat(1, "/time noon")]);
-	admin.drain();
-	let lines = server_lines(&admin);
-	// The query lands one tick after the set — still rounds to noon.
-	assert!(lines.iter().any(|t| t == "time is 12:00"), "{lines:?}");
-	assert!(lines.iter().any(|t| t.contains("time set to 06:00")));
-	assert_eq!(
-		lines.iter().filter(|t| t.contains("usage: /time")).count(),
-		2,
-		"{lines:?}"
-	);
+
+	// A set lands on the hour it names, with or without minutes.
+	for (cmd, h) in [("/time 12:00", 12), ("/time 6", 6)] {
+		sim.tick_once(vec![chat(1, cmd)]);
+		admin.drain();
+		let tod = pushed_tod(&admin).unwrap_or_else(|| panic!("{cmd} pushed no clock"));
+		assert!(
+			(tod - super::tod_of_clock(h, 0)).abs() < 0.01,
+			"{cmd} set tod {tod}"
+		);
+		admin.msgs.clear();
+	}
+
+	for bad in ["/time 24:00", "/time noon"] {
+		sim.tick_once(vec![chat(1, bad)]);
+		admin.drain();
+		assert_eq!(pushed_tod(&admin), None, "{bad} moved the clock");
+		admin.msgs.clear();
+	}
 }
 
 #[test]
@@ -679,9 +737,12 @@ fn lock_spawn_toggles_and_reports() {
 	sim.tick_once(vec![chat(1, "/lock-spawn")]);
 	admin.drain();
 	assert!(
-		server_lines(&admin).iter().any(|l| l.contains("unlocked")),
+		answered(&admin, |r| matches!(
+			r,
+			AdminReply::SpawnAlreadyUnlocked | AdminReply::SpawnSetButUnlocked { .. }
+		)),
 		"expected an unlocked report: {:?}",
-		server_lines(&admin)
+		replies(&admin)
 	);
 	assert!(sim.spawn_lock().is_none());
 
@@ -689,32 +750,32 @@ fn lock_spawn_toggles_and_reports() {
 	sim.tick_once(vec![chat(1, "/lock-spawn on")]);
 	admin.drain();
 	assert!(
-		server_lines(&admin).iter().any(|l| l.contains("locked at")),
+		answered(&admin, |r| matches!(
+			r,
+			AdminReply::SpawnLocked { already: false, .. }
+		)),
 		"expected a locked report: {:?}",
-		server_lines(&admin)
+		replies(&admin)
 	);
+	// The locked box is exactly `spawn::lock_region`'s, asked for rather
+	// than re-derived here: the search reads that same region, and the
+	// two drifting apart is what makes a locked spawn stop being valid.
 	let region = sim.spawn_lock().expect("locked");
-	// A box around the spawn floor: `spawn::lock_region`'s extents.
-	let spawn = FLAT_SPAWN;
-	let (sx, sz) = (spawn.x.floor() as i32, spawn.z.floor() as i32);
-	let h = spawn.y.floor() as i32 - 2;
-	assert_eq!(
-		(
-			region.x0, region.x1, region.y0, region.y1, region.z0, region.z1
-		),
-		(sx - 2, sx + 2, h, h + 3, sz - 2, sz + 2)
-	);
+	assert_eq!(region, digblock_core::spawn::lock_region(FLAT_SPAWN));
 
 	// Idempotent: locking again reports rather than re-pinning.
 	admin.msgs.clear();
 	sim.tick_once(vec![chat(1, "/lock-spawn on")]);
 	admin.drain();
-	assert!(server_lines(&admin).iter().any(|l| l.contains("already")));
+	assert!(answered(&admin, |r| matches!(
+		r,
+		AdminReply::SpawnLocked { already: true, .. }
+	)));
 
 	admin.msgs.clear();
 	sim.tick_once(vec![chat(1, "/lock-spawn off")]);
 	admin.drain();
-	assert!(server_lines(&admin).iter().any(|l| l.contains("unlocked")));
+	assert!(answered(&admin, |r| matches!(r, AdminReply::SpawnUnlocked)));
 	assert!(sim.spawn_lock().is_none());
 }
 
@@ -755,11 +816,9 @@ fn set_spawn_needs_the_top_face_of_a_block() {
 	sim.tick_once(vec![chat(1, "/set-spawn")]);
 	admin.drain();
 	assert!(
-		server_lines(&admin)
-			.iter()
-			.any(|l| l == "not looking at a block"),
+		answered(&admin, |r| matches!(r, AdminReply::NotLookingAtBlock)),
 		"{:?}",
-		server_lines(&admin)
+		replies(&admin)
 	);
 	assert!(sim.test_spawn_point().is_none(), "the sky set a spawn");
 
@@ -770,11 +829,9 @@ fn set_spawn_needs_the_top_face_of_a_block() {
 	sim.tick_once(vec![chat(1, "/set-spawn")]);
 	admin.drain();
 	assert!(
-		server_lines(&admin)
-			.iter()
-			.any(|l| l.contains("not looking at the top")),
+		answered(&admin, |r| matches!(r, AdminReply::NotLookingAtTopFace)),
 		"{:?}",
-		server_lines(&admin)
+		replies(&admin)
 	);
 	assert!(sim.test_spawn_point().is_none(), "a wall set a spawn");
 
@@ -786,11 +843,9 @@ fn set_spawn_needs_the_top_face_of_a_block() {
 	sim.tick_once(vec![chat(1, "/set-spawn")]);
 	admin.drain();
 	assert!(
-		server_lines(&admin)
-			.iter()
-			.any(|l| l.starts_with("spawn point set to")),
+		answered(&admin, |r| matches!(r, AdminReply::SpawnPointSet { .. })),
 		"{:?}",
-		server_lines(&admin)
+		replies(&admin)
 	);
 	// The eye sits over the block the ray hit — the same offset
 	// `spawn::anchor` puts one at over a surface block.
@@ -825,11 +880,9 @@ fn set_spawn_refuses_ground_a_player_cannot_stand_on() {
 	sim.tick_once(vec![chat(1, "/set-spawn")]);
 	admin.drain();
 	assert!(
-		server_lines(&admin)
-			.iter()
-			.any(|l| l.starts_with("not a valid spawn")),
+		answered(&admin, |r| matches!(r, AdminReply::SpawnNotClear { .. })),
 		"{:?}",
-		server_lines(&admin)
+		replies(&admin)
 	);
 	assert!(sim.test_spawn_point().is_none());
 }
@@ -857,11 +910,9 @@ fn a_set_spawn_moves_the_lock_and_becomes_the_spawn() {
 
 	// The lock moved with it — reported, and enforced somewhere new.
 	assert!(
-		server_lines(&admin)
-			.iter()
-			.any(|l| l.contains("spawn locked at")),
+		answered(&admin, |r| matches!(r, AdminReply::SpawnLocked { .. })),
 		"{:?}",
-		server_lines(&admin)
+		replies(&admin)
 	);
 	let after = sim.spawn_lock().expect("still locked");
 	assert_ne!(before.x0, after.x0, "lock stayed on the old cells");
@@ -888,11 +939,12 @@ fn a_set_spawn_moves_the_lock_and_becomes_the_spawn() {
 	assert!(sim.spawn_lock().is_none());
 	assert_eq!(sim.test_spawn_point(), Some(set));
 	assert!(
-		server_lines(&admin)
-			.iter()
-			.any(|l| l.contains("set at") && l.contains("unlocked")),
+		answered(&admin, |r| matches!(
+			r,
+			AdminReply::SpawnSetButUnlocked { .. }
+		)),
 		"{:?}",
-		server_lines(&admin)
+		replies(&admin)
 	);
 }
 
@@ -914,11 +966,12 @@ fn set_spawn_dir_takes_your_facing_and_rides_both_spawn_paths() {
 	let dir = sim.test_spawn_dir().expect("dir set");
 	assert_eq!(dir, Vec3::new(0.0, 0.0, -1.0), "pitch was not flattened");
 	assert!(
-		server_lines(&admin)
-			.iter()
-			.any(|l| l == "players will spawn facing north"),
+		answered(&admin, |r| matches!(
+			r,
+			AdminReply::SpawnFacingSet { compass } if compass == "north"
+		)),
 		"{:?}",
-		server_lines(&admin)
+		replies(&admin)
 	);
 
 	// A named cardinal overrides where the admin happens to be looking.
@@ -927,11 +980,10 @@ fn set_spawn_dir_takes_your_facing_and_rides_both_spawn_paths() {
 	admin.drain();
 	// East = sunrise = −x.
 	assert_eq!(sim.test_spawn_dir(), Some(Vec3::new(-1.0, 0.0, 0.0)));
-	assert!(
-		server_lines(&admin)
-			.iter()
-			.any(|l| l.contains("facing east"))
-	);
+	assert!(answered(&admin, |r| matches!(
+		r,
+		AdminReply::SpawnFacingSet { compass } if compass == "east"
+	)));
 
 	// A joiner arrives facing it...
 	let guest = connect_named(&mut sim, 2, "guest");
@@ -978,9 +1030,17 @@ fn set_spawn_dir_rejects_a_facing_it_cannot_use() {
 	sim.tick_once(vec![chat(1, "/set-spawn-dir")]);
 	sim.tick_once(vec![chat(1, "/set-spawn-dir sideways")]);
 	admin.drain();
-	let lines = server_lines(&admin);
-	assert!(lines.iter().any(|l| l.contains("not facing anywhere")));
-	assert!(lines.iter().any(|l| l.contains("usage: /set-spawn-dir")));
+	let lines = replies(&admin);
+	assert!(
+		lines
+			.iter()
+			.any(|r| matches!(r, AdminReply::NotFacingAnywhere))
+	);
+	assert!(
+		lines
+			.iter()
+			.any(|r| matches!(r, AdminReply::Usage(AdminUsage::SetSpawnDir)))
+	);
 	assert!(sim.test_spawn_dir().is_none(), "a bad facing was stored");
 }
 
@@ -1025,6 +1085,9 @@ fn lock_spawn_rejects_a_bad_argument() {
 	let mut admin = connect_admin(&mut sim, 1, "boss");
 	sim.tick_once(vec![chat(1, "/lock-spawn maybe")]);
 	admin.drain();
-	assert!(server_lines(&admin).iter().any(|l| l.contains("usage:")));
+	assert!(answered(&admin, |r| matches!(
+		r,
+		AdminReply::Usage(AdminUsage::LockSpawn)
+	)));
 	assert!(sim.spawn_lock().is_none(), "bad argument changed the lock");
 }

@@ -23,7 +23,7 @@ pub const DEFAULT_MASTER_URL: &str = "https://master.digblock.net";
 /// discriminants by declaration order, so variants and fields are
 /// APPEND-ONLY — never reorder, never remove. `git log -S PROTOCOL_VERSION`
 /// is the history of what each bump carried.
-pub const PROTOCOL_VERSION: u16 = 28;
+pub const PROTOCOL_VERSION: u16 = 29;
 
 /// Chunk-column radius around an arrival — a join or a teleport — whose
 /// journaled columns must reach the client before it may render or
@@ -749,26 +749,66 @@ mod tests {
 
 	/// Constant pipeline-lag base plus a hardness-proportional slice for
 	/// transient misses, capped so long digs don't hand a cheat more.
+	///
+	/// Asserted over the real catalog's hardnesses as the three
+	/// properties the anti-cheat rests on — never under the base, never
+	/// over the cap, never falling as a dig gets longer. The individual
+	/// products are the function's own arithmetic, and the hold lengths
+	/// that used to be its inputs were the hardness table restated in a
+	/// crate that cannot see it.
 	#[test]
 	fn dig_grace_scales_with_hardness() {
-		assert_eq!(dig_grace(10), 6); // leaves: base + a thin slice
-		assert_eq!(dig_grace(20), 8); // water: base + a wider one
-		assert_eq!(dig_grace(30), 10); // dirt: still climbing
-		assert_eq!(dig_grace(60), DIG_GRACE_BASE + DIG_GRACE_PROP_MAX); // wood: cap
-		assert_eq!(dig_grace(90), DIG_GRACE_BASE + DIG_GRACE_PROP_MAX); // stone: cap
+		let mut prev = 0;
+		let mut capped = false;
+		for h in 0..=200 {
+			let g = dig_grace(h);
+			assert!(g >= DIG_GRACE_BASE, "grace {g} under the base at {h}");
+			assert!(
+				g <= DIG_GRACE_BASE + DIG_GRACE_PROP_MAX,
+				"grace {g} over the cap at {h}"
+			);
+			assert!(g >= prev, "grace fell from {prev} to {g} at {h}");
+			capped |= g == DIG_GRACE_BASE + DIG_GRACE_PROP_MAX;
+			prev = g;
+		}
+		assert_eq!(
+			dig_grace(0),
+			DIG_GRACE_BASE,
+			"a free dig gets the base alone"
+		);
+		assert!(
+			capped,
+			"the cap is never reached, so it is not being tested"
+		);
 	}
 
+	/// The bounds come from the constants the validator itself reads, so
+	/// widening the rule is one edit and not two — the old name of this
+	/// test carried the numbers in it, which is the same restatement one
+	/// level further out.
 	#[test]
-	fn name_rule_is_3_to_10_of_the_alphabet() {
-		assert!(validate_name("ted").is_ok());
-		assert!(validate_name("Ted_L-99").is_ok());
-		assert!(validate_name("abcdefghij").is_ok()); // exactly at the cap
+	fn a_name_must_sit_inside_its_length_bounds_and_alphabet() {
+		let a = |n: usize| "a".repeat(n);
+		assert!(validate_name(&a(MIN_DISPLAY_NAME)).is_ok());
+		assert!(validate_name(&a(MAX_DISPLAY_NAME)).is_ok());
+		assert!(
+			validate_name(&a(MIN_DISPLAY_NAME - 1)).is_err(),
+			"too short"
+		);
+		assert!(
+			validate_name(&a(MAX_DISPLAY_NAME + 1)).is_err(),
+			"past the cap"
+		);
 		assert!(validate_name("").is_err());
-		assert!(validate_name("ab").is_err()); // too short
-		assert!(validate_name("abcdefghijk").is_err()); // one past the cap
+		// Every length in range is fine as long as the charset is.
+		for n in MIN_DISPLAY_NAME..=MAX_DISPLAY_NAME {
+			assert!(validate_name(&a(n)).is_ok(), "length {n}");
+		}
+		// The alphabet, independent of length.
+		assert!(validate_name("Ted_L-99").is_ok());
 		assert!(validate_name("has space").is_err());
 		assert!(validate_name("bang!").is_err());
-		assert!(validate_name("émile").is_err()); // non-ASCII
+		assert!(validate_name("émile").is_err(), "non-ASCII");
 	}
 
 	#[test]

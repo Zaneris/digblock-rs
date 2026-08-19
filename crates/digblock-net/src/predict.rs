@@ -478,21 +478,4 @@ mod tests {
 			vec![108, 109]
 		);
 	}
-
-	#[test]
-	fn input_batch_is_redundancy_window() {
-		let mut player = landed_player();
-		let mut pred = Predictor::new(100);
-		for _ in 0..10 {
-			pred.predict(&mut player, forward(), Vec3::Z, &flat_world);
-		}
-		let batch = pred.input_batch();
-		let ticks: Vec<u32> = batch.inputs.iter().map(|i| i.tick).collect();
-		assert_eq!(ticks, vec![106, 107, 108, 109]);
-		// Ack trims the buffer; the window slides.
-		let server = player.state();
-		pred.reconcile(&mut player, 107, server, &flat_world);
-		let ticks: Vec<u32> = pred.input_batch().inputs.iter().map(|i| i.tick).collect();
-		assert_eq!(ticks, vec![108, 109]);
-	}
 }

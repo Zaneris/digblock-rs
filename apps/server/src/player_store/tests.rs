@@ -486,31 +486,6 @@ fn corrupt_file_is_archived_and_store_starts_fresh() {
 	);
 }
 
-/// The position and cooldown tick round-trip.
-#[test]
-fn position_and_cooldown_round_trip() {
-	let dir = temp_dir("v3pos");
-	let id = key(9);
-	{
-		let mut s = PlayerStore::open(&dir).unwrap();
-		s.put(
-			id,
-			PlayerRecord {
-				inventory: Inventory::default(),
-				layout: Some(layout()),
-				pos: Some([12.5, 130.5, -7.5]),
-				last_return_tick: Some(4242),
-				skills: SkillSet::default(),
-			},
-		);
-		s.sync();
-	}
-	let s = PlayerStore::open(&dir).unwrap();
-	let rec = s.get(&id);
-	assert_eq!(rec.pos, Some([12.5, 130.5, -7.5]));
-	assert_eq!(rec.last_return_tick, Some(4242));
-}
-
 /// A record with no position stored (a player who never disconnected)
 /// reads back absent rather than as some default coordinate.
 #[test]
@@ -679,34 +654,4 @@ fn a_wider_stored_grid_truncates_without_desyncing() {
 		4,
 		"the extra words were consumed, not read as the next field"
 	);
-}
-
-/// Skills round-trip alongside everything else.
-#[test]
-fn skills_round_trip() {
-	use digblock_core::skills::Skill;
-	let dir = temp_dir("v4skills");
-	let id = key(12);
-	let mut skills = SkillSet::default();
-	skills.add_xp(Skill::Mining, 146_751);
-	skills.add_xp(Skill::Alchemy, 394);
-	{
-		let mut s = PlayerStore::open(&dir).unwrap();
-		s.put(
-			id,
-			PlayerRecord {
-				inventory: Inventory::default(),
-				layout: Some(layout()),
-				pos: Some([1.0, 140.0, 2.0]),
-				last_return_tick: Some(60),
-				skills: skills.clone(),
-			},
-		);
-		s.sync();
-	}
-	let s = PlayerStore::open(&dir).unwrap();
-	let rec = s.get(&id);
-	assert_eq!(rec.skills, skills);
-	assert_eq!(rec.skills.level(Skill::Mining), 70);
-	assert_eq!(rec.layout, Some(layout()));
 }

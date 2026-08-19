@@ -1,9 +1,10 @@
 use super::*;
 use digblock_core::worldgen::ore;
 
-/// The chamber's own radius, mirrored from `debug_ore_plan`'s `R` so
-/// the plate's footprint can be reasoned about from outside it.
-const R: i32 = 5;
+/// The chamber's own radius, read from the plan rather than mirrored:
+/// a copy that drifted would have this test checking a box the plan
+/// never carved.
+use super::debug_plans::ORE_CHAMBER_R as R;
 
 /// DIG_ORE's one rule, and the only one that makes the scene work at all:
 /// the plan must not write over a single cell the deposit claims. A write

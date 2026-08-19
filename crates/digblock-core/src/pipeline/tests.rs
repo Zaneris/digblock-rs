@@ -1182,19 +1182,24 @@ fn inline_executor_matches_worker_pool() {
 /// the inline gen job overran the drain deadline every frame, so
 /// generated columns piled up undrained while the player fell through
 /// a world that existed but never landed.
+///
+/// Walked for both allowances, because a zero allowance is the FLOOR
+/// and not a stall — the unconditional first batch still runs — and
+/// the two used to be separate tests differing only in this argument.
 #[test]
 fn inline_drain_progresses_past_expired_deadline() {
-	let center = ChunkPos::new(0, 0, 0);
-	let mut p = Pipeline::new(7.5, 12, 0);
-	for frame in 0..3 {
-		let expired = web_time::Instant::now() - std::time::Duration::from_millis(1);
-		p.maintain(center, usize::MAX, Some(expired), None);
-		let _ = frame;
+	for allowance in [None, Some(std::time::Duration::ZERO)] {
+		let center = ChunkPos::new(0, 0, 0);
+		let mut p = Pipeline::new(7.5, 12, 0);
+		for _ in 0..3 {
+			let expired = web_time::Instant::now() - std::time::Duration::from_millis(1);
+			p.maintain(center, usize::MAX, Some(expired), allowance);
+		}
+		assert!(
+			p.cell_at(8, 100, 8).is_some(),
+			"center column must land within the first frames, allowance {allowance:?}"
+		);
 	}
-	assert!(
-		p.cell_at(8, 100, 8).is_some(),
-		"center column must land within the first frames"
-	);
 }
 
 /// Without an allowance the inline executor keeps today's exact batch
@@ -1238,28 +1243,6 @@ fn inline_allowance_extends_batch() {
 		m.gen_jobs.count > 1,
 		"allowance extends past the floor (ran {})",
 		m.gen_jobs.count
-	);
-}
-
-/// A zero allowance is the floor, not a stall: the unconditional
-/// first batch still runs and the center column still lands (the
-/// spawn fall-through guarantee, now under the adaptive path).
-#[test]
-fn inline_allowance_zero_keeps_floor_guarantee() {
-	let center = ChunkPos::new(0, 0, 0);
-	let mut p = Pipeline::new(7.5, 12, 0);
-	for _ in 0..3 {
-		let expired = web_time::Instant::now() - std::time::Duration::from_millis(1);
-		p.maintain(
-			center,
-			usize::MAX,
-			Some(expired),
-			Some(std::time::Duration::ZERO),
-		);
-	}
-	assert!(
-		p.cell_at(8, 100, 8).is_some(),
-		"center column must land within the first frames"
 	);
 }
 

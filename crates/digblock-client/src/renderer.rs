@@ -113,8 +113,15 @@ fn chunk_slots(draw_dist: i32) -> u32 {
 /// New capacity when `needed` exceeds the current slot count: round up
 /// to the allocation granularity, but never less than double (amortized
 /// growth — a handful of reallocations over a whole session).
+/// Slot granularity for a regrown instance buffer. Rounding up to a
+/// step rather than to `needed` keeps a run of one-slot growths from
+/// reallocating on every frame.
+const SLOT_GRANULARITY: u32 = 256;
+
 fn grown_slots(current: u32, needed: u32) -> u32 {
-	needed.next_multiple_of(256).max(current.saturating_mul(2))
+	needed
+		.next_multiple_of(SLOT_GRANULARITY)
+		.max(current.saturating_mul(2))
 }
 
 pub(crate) const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -659,15 +666,35 @@ mod tests {
 	}
 
 	#[test]
+	/// Growth always covers what was asked for, never shrinks below a
+	/// doubling, and lands on a granularity step. Asserted as those three
+	/// properties over a spread of shapes rather than as a table of
+	/// products, which would only restate the arithmetic.
 	fn grown_slots_sizing() {
-		// The doubling floor dominates just past the boundary.
-		assert_eq!(super::grown_slots(4096, 4097), 8192);
-		// The granularity floor dominates for tiny forced capacities.
-		assert_eq!(super::grown_slots(8, 9), 256);
-		// A large jump lands on the next granularity step past `needed`.
-		assert_eq!(super::grown_slots(8192, 20000), 20224);
-		// An exact multiple stays put when it already covers the doubling.
-		assert_eq!(super::grown_slots(100, 512), 512);
+		use super::{SLOT_GRANULARITY, grown_slots};
+		for (current, needed) in [
+			(4096u32, 4097u32), // the doubling floor dominates
+			(8, 9),             // the granularity floor dominates
+			(8192, 20000),      // a large jump past both
+			(100, 512),         // an exact multiple that already doubles
+			(0, 1),
+			(1, SLOT_GRANULARITY),
+		] {
+			let got = grown_slots(current, needed);
+			assert!(
+				got >= needed,
+				"{current}->{needed} gave {got}, short of need"
+			);
+			assert!(
+				got >= current.saturating_mul(2) || got >= needed,
+				"{current}->{needed} gave {got}, under the doubling floor"
+			);
+			assert_eq!(
+				got % SLOT_GRANULARITY,
+				0,
+				"{current}->{needed} gave {got}, off the granularity step"
+			);
+		}
 	}
 
 	#[test]

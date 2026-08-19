@@ -829,7 +829,12 @@ impl Sim {
 						if is_admin {
 							self.handle_admin_command(conn_id, &text);
 						} else if let Some(c) = self.clients.get(&conn_id) {
-							client_send(c, &admin::server_reply("commands are admin-only"));
+							client_send(
+								c,
+								&admin::server_reply(
+									digblock_net::messages::AdminReply::CommandsAreAdminOnly,
+								),
+							);
 						}
 						return;
 					}

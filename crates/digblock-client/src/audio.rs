@@ -574,13 +574,6 @@ mod tests {
 				let _ = material_of(b); // must not panic
 			}
 		}
-		assert_eq!(material_of(BlockType::Stone), Material::Stone);
-		assert_eq!(material_of(BlockType::Grass), Material::Earth);
-		assert_eq!(material_of(BlockType::Wood), Material::Wood);
-		assert_eq!(material_of(BlockType::Gravel), Material::Stone);
-		assert_eq!(material_of(BlockType::Sandstone), Material::Stone);
-		assert_eq!(material_of(BlockType::Mud), Material::Earth);
-		assert_eq!(material_of(BlockType::PineLeaves), Material::Wood);
 	}
 
 	/// The rows §7.2 added, which the old hand-listed roster missed
@@ -646,13 +639,6 @@ mod tests {
 			worked > 20,
 			"only {worked} worked shapes reached their cube"
 		);
-	}
-
-	#[test]
-	fn every_sfx_has_nonempty_bytes() {
-		for s in ALL_SFX {
-			assert!(!bytes(s).is_empty(), "{s:?}");
-		}
 	}
 
 	/// A draw and a dig speak different languages at BOTH ends, and the

@@ -70,12 +70,16 @@ pub(crate) enum Msg {
 	ReturnedToSpawn,
 
 	// ---- text that arrives as text ----
-	/// An admin command's reply, authored server-side. Never translated:
-	/// it crosses the wire as a sentence (see the design docs' note on
-	/// what localization would still need).
+	/// A free-form server line. What remains here after admin replies
+	/// were typed: text a server operator authored, which nothing on
+	/// this side can translate because nothing on this side knows what
+	/// it says.
 	ServerNotice {
 		text: String,
 	},
+	/// An admin command's answer. Typed all the way across the wire, so
+	/// the words are chosen here like every other line a player reads.
+	Admin(digblock_net::messages::AdminReply),
 	/// Another player's chat. The NAME and the TEXT are theirs; only the
 	/// punctuation between them is ours.
 	Chat {

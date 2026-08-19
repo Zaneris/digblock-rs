@@ -241,17 +241,21 @@ fn root_play_local_closes_and_escape_reopens() {
 #[test]
 fn multiplayer_requires_services() {
 	let mut menu = Menu::new(true, Settings::default(), None, None);
-	// Startup, without services: Play Local + Settings only.
-	assert_eq!(menu.acts().len(), 2);
+	// Startup, without services: no way through to multiplayer at all.
+	assert!(!offers(&menu, |a| matches!(a, Act::OpenMultiplayer)));
 	menu.set_services_available();
 	// Multiplayer joins them. No Account row while signed out — the
 	// Multiplayer row IS the way in, and two doors to one place is
 	// worse than one.
-	assert_eq!(menu.acts().len(), 3);
+	assert!(offers(&menu, |a| matches!(a, Act::OpenMultiplayer)));
+	assert!(!offers(&menu, |a| matches!(a, Act::OpenAccount)));
 
 	let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
 	menu.set_services_available();
-	assert_eq!(menu.acts().len(), 4, "signed in, Account joins the list");
+	assert!(
+		offers(&menu, |a| matches!(a, Act::OpenAccount)),
+		"signed in, Account joins the list"
+	);
 }
 
 #[test]
@@ -498,15 +502,11 @@ fn click_hits_rows() {
 fn leave_server_appears_when_connected() {
 	let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
 	menu.set_connected(true);
-	let acts = menu.acts();
-	// Back to Game + Return to Spawn + Inventory + Alchemy +
-	// Character + Leave Server + Settings (no services).
-	assert_eq!(acts.len(), 7);
-	menu.handle_key(Key::Down); // Return to Spawn
-	menu.handle_key(Key::Down); // Inventory
-	menu.handle_key(Key::Down); // Alchemy
-	menu.handle_key(Key::Down); // Character
-	menu.handle_key(Key::Down); // Leave Server
+	// Connected, so leaving the SERVER is what the row offers — never
+	// leaving a local world.
+	assert!(offers(&menu, |a| matches!(a, Act::LeaveServer)));
+	assert!(!offers(&menu, |a| matches!(a, Act::LeaveWorld)));
+	select_act(&mut menu, |a| matches!(a, Act::LeaveServer));
 	menu.handle_key(Key::Enter);
 	assert!(menu.take_disconnect());
 	assert!(!menu.is_open());
@@ -584,10 +584,9 @@ fn return_to_spawn_ready_activates_and_cooldown_greys() {
 		!acts.iter().any(|(id, _)| *id == RowId::RootItem(3)),
 		"greyed spawn row is not an act"
 	);
-	assert_eq!(
-		acts.len(),
-		6,
-		"Back to Game + Inventory + Alchemy + Character + Leave World + Settings"
+	assert!(
+		!acts.iter().any(|(_, a)| matches!(a, Act::ReturnSpawn)),
+		"a greyed row must raise no act at all"
 	);
 	let view = menu.view(SIZE, 1.0, false);
 	assert!(
@@ -612,13 +611,33 @@ fn return_to_spawn_ready_activates_and_cooldown_greys() {
 	// Cooldown over: selectable again.
 	menu.open();
 	menu.set_spawn_cooldown(0);
-	assert_eq!(menu.acts().len(), 7, "spawn row is back");
+	assert!(
+		offers(&menu, |a| matches!(a, Act::ReturnSpawn)),
+		"spawn row is back"
+	);
+}
+
+/// Does the menu offer an act matching `f`?
+///
+/// Rows are found by what they DO, never by counting them: a count says
+/// nothing about which row appeared, and every one of these tests broke
+/// whenever an unrelated row was inserted.
+fn offers(menu: &Menu, f: impl Fn(&Act) -> bool) -> bool {
+	menu.acts().iter().any(|(_, a)| f(a))
+}
+
+/// Select the act matching `f`, so a test never counts `Key::Down`s.
+fn select_act(menu: &mut Menu, f: impl Fn(&Act) -> bool) {
+	let at = menu
+		.acts()
+		.iter()
+		.position(|(_, a)| f(a))
+		.expect("the act is not on offer");
+	menu.set_sel(at);
 }
 
 fn open_settings(menu: &mut Menu) {
-	// The Settings row is always the last act on Root.
-	let last = menu.acts().len() - 1;
-	menu.set_sel(last);
+	select_act(menu, |a| matches!(a, Act::OpenSettings));
 	menu.handle_key(Key::Enter);
 }
 
@@ -634,7 +653,7 @@ fn settings_adjust_clamp_and_dirty_once() {
 	// Draw distance: sel 0, one step per press, clamped at DRAW_MAX.
 	menu.handle_key(Key::Right);
 	let s = menu.take_settings_change().expect("dirty after adjust");
-	assert_eq!(s.draw_dist, 22);
+	assert_eq!(s.draw_dist, Settings::default().draw_dist + DRAW_STEP);
 	assert!(menu.take_settings_change().is_none(), "drained once");
 	for _ in 0..40 {
 		menu.handle_key(Key::Right);
@@ -650,7 +669,18 @@ fn settings_adjust_clamp_and_dirty_once() {
 	// coarser — so it ends on the largest divisor, not the smallest.
 	menu.handle_key(Key::Down);
 	menu.handle_key(Key::Left);
-	assert_eq!(menu.take_settings_change().unwrap().gi_scale_div, 3);
+	// One notch coarser than wherever the default sits, read off the
+	// divisor list rather than written down: the default moves with the
+	// display's density, so a literal here would be a second answer to a
+	// question `density_defaults` already answers.
+	let coarser = {
+		let at = GI_SCALE_DIVISORS
+			.iter()
+			.position(|d| *d == Settings::default().gi_scale_div)
+			.expect("the default is a listed divisor");
+		GI_SCALE_DIVISORS[at + 1]
+	};
+	assert_eq!(menu.take_settings_change().unwrap().gi_scale_div, coarser);
 	for _ in 0..10 {
 		menu.handle_key(Key::Left);
 	}
@@ -671,9 +701,25 @@ fn settings_adjust_clamp_and_dirty_once() {
 	menu.handle_key(Key::Down);
 	menu.handle_key(Key::Left);
 	let s = menu.take_settings_change().unwrap();
+	// One Left is one notch DOWN THE GRID, which is not the same as
+	// "the default minus a step": the default need not sit on the grid,
+	// and when it does not, the first press lands on the notch below it.
+	let before = Settings::default().ui_scale;
 	assert!(
-		(s.ui_scale - (1.0 - UI_SCALE_STEP)).abs() < 1e-4,
-		"{}",
+		s.ui_scale < before,
+		"Left must lower the scale: {}",
+		s.ui_scale
+	);
+	assert!(
+		before - s.ui_scale <= UI_SCALE_STEP + 1e-4,
+		"Left moved more than one notch: {} -> {}",
+		before,
+		s.ui_scale
+	);
+	let notches = (s.ui_scale - UI_SCALE_MIN) / UI_SCALE_STEP;
+	assert!(
+		(notches - notches.round()).abs() < 1e-3,
+		"{} is off the notch grid",
 		s.ui_scale
 	);
 	for _ in 0..40 {
@@ -683,11 +729,11 @@ fn settings_adjust_clamp_and_dirty_once() {
 	menu.handle_key(Key::Left);
 	assert!(menu.take_settings_change().is_none(), "already at the min");
 
-	// Music volume: sel 3, one notch down from full, floor at silence.
+	// Music volume: sel 3, one notch below the default, floor at silence.
 	menu.handle_key(Key::Down);
 	menu.handle_key(Key::Left);
 	let s = menu.take_settings_change().unwrap();
-	assert!((s.music_vol - 0.9).abs() < 1e-4);
+	assert!((s.music_vol - (Settings::default().music_vol - VOL_STEP)).abs() < 1e-4);
 	for _ in 0..40 {
 		menu.handle_key(Key::Left);
 	}
@@ -708,7 +754,7 @@ fn settings_adjust_clamp_and_dirty_once() {
 	assert!(
 		view.rows
 			.iter()
-			.any(|r| r.text.contains("Draw Distance: 32"))
+			.any(|r| r.text.contains(&format!("Draw Distance: {DRAW_MAX}")))
 	);
 	assert!(
 		view.rows
@@ -752,13 +798,30 @@ fn ui_scale_slider_walks_its_whole_range_without_drift() {
 	for (i, got) in seen.iter().enumerate() {
 		let want = UI_SCALE_MIN + i as f32 * UI_SCALE_STEP;
 		assert!((got - want).abs() < 1e-6, "notch {i}: {got} vs {want}");
-		// The label rounds to whole percent; no two notches may print
-		// the same number.
-		assert_eq!(
-			format!("{:.0}", got * 100.0).parse::<i32>().unwrap(),
-			70 + 5 * i as i32
-		);
 	}
+	// The label rounds to whole percent, and no two notches may print the
+	// same number — which is the drift this exists to catch. Asserted as
+	// that property rather than as the percentages themselves, so a finer
+	// step is a retune of one constant and not of this list.
+	let mut printed: Vec<i32> = seen
+		.iter()
+		.map(|v| format!("{:.0}", v * 100.0).parse::<i32>().unwrap())
+		.collect();
+	let distinct = {
+		let mut d = printed.clone();
+		d.dedup();
+		d.len()
+	};
+	assert_eq!(
+		distinct,
+		printed.len(),
+		"two notches print alike: {printed:?}"
+	);
+	let sorted = {
+		printed.sort_unstable();
+		printed.clone()
+	};
+	assert_eq!(sorted, printed, "the labels do not climb with the notches");
 }
 
 #[test]
@@ -992,7 +1055,14 @@ fn create_world_text_entry_and_intent() {
 	// World names take the full text alphabet (space and punctuation
 	// included — they never leave this machine), filled to the cap,
 	// minus the backspace.
-	assert_eq!(name, "My World!abcdef");
+	// Filled to the cap, minus the backspace — derived, so widening the
+	// cap is one constant and not this literal too.
+	let typed: String = "My World!abcdefghijklmnop"
+		.chars()
+		.take(WORLD_NAME_MAX)
+		.collect();
+	let expect: String = typed.chars().take(WORLD_NAME_MAX - 1).collect();
+	assert_eq!(name, &expect);
 	menu.handle_key(Key::Enter);
 	assert_matches!(
 		menu.take_world_intents().as_slice(),
@@ -1035,7 +1105,14 @@ fn incompatible_world_offers_delete_only() {
 	open_worlds(&mut menu, vec![world_row("w1", "Old", false)]);
 	menu.handle_key(Key::Enter); // actions
 	let acts = menu.acts();
-	assert_eq!(acts.len(), 2, "Delete + Back only");
+	assert!(
+		acts.iter().any(|(_, a)| matches!(a, Act::DeleteWorld)),
+		"an incompatible save may still be deleted"
+	);
+	assert!(
+		!acts.iter().any(|(_, a)| matches!(a, Act::EnterWorld)),
+		"but never entered"
+	);
 	assert!(!acts.iter().any(|(id, _)| *id == RowId::WorldAction(0)));
 	// Enter on row 0 must be Delete (→ confirm), never EnterWorld.
 	menu.handle_key(Key::Enter);

@@ -403,26 +403,6 @@ fn the_bob_stops_swinging_in_the_air() {
 	assert!(peak <= BREATH_Y + 1e-5, "only the breath is left: {peak}");
 }
 
-/// Every item must fit the buffer the pass allocates — a door is
-/// the worst case, and silently truncating one would drop faces.
-#[test]
-fn every_item_fits_the_vertex_buffer() {
-	let mut v = Vec::new();
-	for kind in [
-		IconKind::Cube(BlockType::Dirt),
-		IconKind::Shaped(BlockType::WoodStairs),
-		IconKind::Shaped(BlockType::WoodSlab),
-		IconKind::Shaped(BlockType::LumberDoor),
-		IconKind::WaterTool { full: true },
-		IconKind::WaterTool { full: false },
-	] {
-		build(kind, &mut v);
-		assert_eq!(v.len() % 4, 0, "{kind:?} emits whole quads");
-		assert!(v.len() / 4 <= MAX_QUADS, "{kind:?}: {} quads", v.len() / 4);
-		assert!(!v.is_empty(), "{kind:?} drew nothing");
-	}
-}
-
 /// The shading rig has to survive the trip into item space: a light
 /// coming from above the camera must still read as "from above" in
 /// whatever frame the shader dots it against.

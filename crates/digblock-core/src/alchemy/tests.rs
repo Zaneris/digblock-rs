@@ -1,25 +1,56 @@
 use super::*;
 
+/// §3.2's yield curve and §4.2's waste curve, asserted as the shape a
+/// player feels rather than as their arithmetic: mastery keeps
+/// everything, the first level keeps less, neither curve ever moves the
+/// wrong way, and a craft never returns MORE than its ideal. The
+/// endpoint values themselves are the curve's own expressions evaluated
+/// by hand — writing them down here restates the formula and moves on
+/// every retune without catching anything.
 #[test]
 fn efficiency_and_waste_hit_their_pinned_endpoints() {
-	// §3.2's curve, now scaling node draws: a fraction of the base at
-	// the first level, all of it at the cap, never more.
-	assert_eq!(scaled_yield(18, 1), 7);
-	assert_eq!(scaled_yield(9, 1), 3);
-	assert_eq!(scaled_yield(18, 99), 18);
-	assert_eq!(scaled_yield(9, 99), 9);
-	assert_eq!(scaled_yield(27, 99), 27, "100% at the cap, never more");
-	// §4.2: 1.60× at 1 → 1.05× at 99, with the clamp's dip arriving
-	// just past where the catalog tops out.
-	assert_eq!(waste_permille(1), 1600);
-	assert_eq!(waste_permille(99), 1050);
-	assert!(waste_permille(crate::unlock::WASTE_DIP_AT) <= 1250);
-	for l in 2..=99 {
+	use crate::skills::MAX_LEVEL;
+	const BASES: [u32; 4] = [3, 9, 18, 27];
+
+	for base in BASES {
+		assert_eq!(
+			scaled_yield(base, MAX_LEVEL),
+			base,
+			"mastery keeps all of a {base} draw, and never more"
+		);
+		assert!(
+			scaled_yield(base, 1) < base,
+			"a novice must waste some of a {base} draw"
+		);
+		assert!(scaled_yield(base, 1) >= 1, "a draw never rounds to nothing");
+	}
+
+	// Waste is an overhead: always at least the ideal, never below it,
+	// and strictly cheaper at mastery than at the first level.
+	assert!(
+		waste_permille(MAX_LEVEL) < waste_permille(1),
+		"waste never improves"
+	);
+	for l in 1..=MAX_LEVEL {
+		assert!(
+			waste_permille(l) >= 1000,
+			"a craft cannot pay back more than ideal"
+		);
+	}
+	// The clamp is a felt STEP: the dip level is cheaper than the linear
+	// curve alone would have made it.
+	assert!(
+		waste_permille(crate::unlock::WASTE_DIP_AT)
+			< waste_permille(crate::unlock::WASTE_DIP_AT - 1),
+		"the dip must actually dip"
+	);
+
+	for l in 2..=MAX_LEVEL {
 		assert!(
 			waste_permille(l) <= waste_permille(l - 1),
 			"waste never rises ({l})"
 		);
-		for base in [3, 9, 18, 27] {
+		for base in BASES {
 			assert!(
 				scaled_yield(base, l) >= scaled_yield(base, l - 1),
 				"yield never falls ({base}@{l})"
@@ -139,27 +170,24 @@ fn the_essence_tool_costs_no_essence() {
 	}
 }
 
-/// §7.1's loop half that survives the redesign: mined rock is Rubble,
-/// and clean rock is bench work — the crumble is what keeps the mason's
-/// unlock meaning something.
-#[test]
-fn mined_rock_is_always_rubble() {
-	use BlockType as B;
-	for rock in [B::Stone, B::Sandstone] {
-		assert_eq!(rock.dig_drop(), Some(B::Rubble), "{rock:?}");
-	}
-	assert_eq!(B::Rubble.dig_drop(), Some(B::Rubble), "rubble round-trips");
-	assert!(craft_ideal(B::Rubble).is_none(), "rubble is never crafted");
-}
-
 /// The bench's pace steps, and the catalog: the LEVELS that open each
 /// recipe live in `crate::unlock`, which pins them beside the gates
 /// they feed — here we only hold the catalog to the recipe table.
 #[test]
 fn pace_steps_and_the_catalog_are_pinned() {
-	assert_eq!(base_pace_ticks(1), 120);
-	assert_eq!(base_pace_ticks(crate::unlock::BENCH_FASTER_AT), 84);
-	assert_eq!(base_pace_ticks(crate::unlock::BENCH_FASTEST_AT), 60);
+	// The pace drops at exactly the two levels that name it, and holds
+	// flat everywhere else — the durations themselves are the if-chain's
+	// own arms, so asserting them back would only restate the function.
+	use crate::skills::MAX_LEVEL;
+	use crate::unlock::{BENCH_FASTER_AT, BENCH_FASTEST_AT};
+	for l in 2..=MAX_LEVEL {
+		let (prev, now) = (base_pace_ticks(l - 1), base_pace_ticks(l));
+		if l == BENCH_FASTER_AT || l == BENCH_FASTEST_AT {
+			assert!(now < prev, "the bench must speed up at {l}");
+		} else {
+			assert_eq!(now, prev, "the bench must hold flat at {l}");
+		}
+	}
 	// The display order is derived, so it can neither list something
 	// uncraftable nor miss something craftable — but it must still be
 	// a permutation, with nothing doubled by a grid cell claimed twice.

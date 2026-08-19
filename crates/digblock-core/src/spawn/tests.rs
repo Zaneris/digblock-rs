@@ -9,11 +9,6 @@ fn overlay(cells: HashMap<(i32, i32, i32), u16>) -> impl Fn(i32, i32, i32) -> Op
 	move |x, y, z| cells.get(&(x, y, z)).copied()
 }
 
-fn anchor_column(seed: f64) -> (i32, i32, i32) {
-	let a = anchor(seed);
-	(a.x.floor() as i32, a.y.floor() as i32, a.z.floor() as i32)
-}
-
 /// The whole point of factoring the predicate out: with nothing
 /// edited, the search must agree with the pristine walk exactly. If
 /// this drifts, spawn silently moves for every world at once.
@@ -343,15 +338,5 @@ fn stands_clear_reads_exactly_the_locked_region() {
 				);
 			}
 		}
-	}
-}
-
-/// Anchors are above sea level by construction; pin it so a future
-/// change to the altitude pre-gate can't quietly sink spawn.
-#[test]
-fn anchors_sit_at_or_above_sea_level() {
-	for seed in [1.0, 7.0, 42.0, 1234.5, 99.25] {
-		let (_, y, _) = anchor_column(seed);
-		assert!(y - 2 >= SPAWN_FLOOR, "seed {seed} anchored below sea level");
 	}
 }

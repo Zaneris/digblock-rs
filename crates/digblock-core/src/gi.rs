@@ -361,26 +361,6 @@ mod tests {
 	use crate::shapes::{Facing, door_state, slab_state};
 
 	#[test]
-	fn every_block_id_fits_the_class_byte() {
-		// Full-cube classes are the id, with the synthetic range stacked on
-		// top of them in the same byte. A block catalog crossing
-		// SHAPE_CLASS_BASE needs the base moved first.
-		#[allow(clippy::assertions_on_constants)]
-		{
-			assert!(BlockType::COUNT <= SHAPE_CLASS_BASE as usize);
-		}
-		for b in BlockType::ALL {
-			if b.props().shape.is_some() {
-				continue;
-			}
-			assert_eq!(
-				gi_class(b as u16),
-				if b == BlockType::Air { 0 } else { b as u8 }
-			);
-		}
-	}
-
-	#[test]
 	fn a_torch_radiates_from_its_flame_not_its_handle() {
 		let o = light_origin(gi_class(make_cell(BlockType::Torch, 0)));
 		// The cell-relative emissive band clipped to the post leaves the

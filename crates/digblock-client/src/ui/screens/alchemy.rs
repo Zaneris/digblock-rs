@@ -87,6 +87,71 @@ pub struct AlchView {
 	pub headroom: [u32; BlockType::COUNT],
 }
 
+/// The one thing missing before a craft can go ahead.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ShortOf {
+	Feedstock(BlockType),
+	Essence(Essence),
+}
+
+/// Why the transmute strip says what it says.
+///
+/// Extracted from the words so a test can ask which case a tile is in
+/// without quoting the line: the wording is this screen's own label and
+/// may be reworded freely, but WHICH case applies is a rule — and the
+/// one that matters most, a full cap reading as a shortfall, sent the
+/// player off to gather something that could not help.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum StripReason {
+	/// Nothing can be added: a tool already made, or a vessel already
+	/// charged. `apply_alchemy` refuses on exactly this, so the offer
+	/// has to close here too or it is a lie the player pays for.
+	AtCap { tool: bool },
+	/// The first shortfall, and how much more of it is wanted.
+	Short { of: ShortOf, more: u32 },
+	/// Affordable: how many batches the stock buys.
+	Affords(u32),
+	/// Craftable and paid for, but the craft would add nothing.
+	NothingToCharge,
+}
+
+/// Which case the strip is in for `item`, at this view's level and
+/// stock. One answer, shared by the line that is drawn and the tests
+/// that check the rule.
+pub fn strip_reason(view: &AlchView, item: BlockType) -> StripReason {
+	let batches = view.affordable(item);
+	if batches > 0 {
+		return StripReason::Affords(batches);
+	}
+	if view.headroom[item as usize] == 0 {
+		return StripReason::AtCap {
+			tool: item.is_tool(),
+		};
+	}
+	let feedstock = alchemy::craft_feedstock(item);
+	if let Some((f, more)) = feedstock.iter().find_map(|&(f, n)| {
+		let have = view.counts[f as usize];
+		(have < n).then(|| (f, n - have))
+	}) {
+		return StripReason::Short {
+			of: ShortOf::Feedstock(f),
+			more,
+		};
+	}
+	let ideal = alchemy::craft_ideal(item).expect("members are craftable");
+	if let Some((e, more)) = ideal.iter().find_map(|&(e, n)| {
+		let cost = alchemy::craft_cost(n, view.level);
+		let have = view.subs[e as usize];
+		(have < cost).then(|| (e, cost - have))
+	}) {
+		return StripReason::Short {
+			of: ShortOf::Essence(e),
+			more,
+		};
+	}
+	StripReason::NothingToCharge
+}
+
 impl AlchView {
 	pub fn build(inv: &Inventory, skills_set: &SkillSet) -> Self {
 		let level = skills_set.level(Skill::Alchemy);
@@ -799,38 +864,20 @@ impl AlchScreen {
 				}))
 				.collect::<Vec<_>>()
 				.join(" + ");
-			let tail = match batches {
-				// A full cap is not a shortfall, and naming a cost here
-				// would send the player off to gather something that
-				// cannot help. Tools are a yes/no; the bucket holds one
-				// charge.
-				0 if view.headroom[item as usize] == 0 => {
-					if item.is_tool() {
-						"ALREADY OWNED".to_string()
-					} else {
-						"ALREADY CHARGED".to_string()
-					}
+			// The case is decided once, in `strip_reason`; this only
+			// chooses words for it.
+			let tail = match strip_reason(view, item) {
+				StripReason::AtCap { tool: true } => "ALREADY OWNED".to_string(),
+				StripReason::AtCap { tool: false } => "ALREADY CHARGED".to_string(),
+				StripReason::Short { of, more } => {
+					let what = match of {
+						ShortOf::Feedstock(f) => f.name().to_uppercase(),
+						ShortOf::Essence(e) => e.name().to_uppercase(),
+					};
+					format!("NEED {more} MORE {what}")
 				}
-				// Name the first shortfall so the player knows what to go
-				// find — a feedstock block or an essence alike.
-				0 => feedstock
-					.iter()
-					.find_map(|&(f, n)| {
-						let have = view.counts[f as usize];
-						(have < n)
-							.then(|| format!("NEED {} MORE {}", n - have, f.name().to_uppercase()))
-					})
-					.or_else(|| {
-						ideal.iter().find_map(|&(e, n)| {
-							let cost = alchemy::craft_cost(n, view.level);
-							let have = view.subs[e as usize];
-							(have < cost).then(|| {
-								format!("NEED {} MORE {}", cost - have, e.name().to_uppercase())
-							})
-						})
-					})
-					.unwrap_or_else(|| "NOTHING TO CHARGE".into()),
-				n => format!("×{n}"),
+				StripReason::NothingToCharge => "NOTHING TO CHARGE".to_string(),
+				StripReason::Affords(n) => format!("×{n}"),
 			};
 			// The TAIL is what has to survive: a price is a static fact
 			// the player can go and read, but "why can't I" is this

@@ -5,6 +5,168 @@
 use crate::protocol::PlayerId;
 use serde::{Deserialize, Serialize};
 
+// ---- admin command replies -------------------------------------------
+
+/// Why a display name did not resolve to one live player.
+///
+/// Carried instead of a sentence so the words stay in `voice` with every
+/// other line a player reads. Append-only, like everything else here.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NoPlayer {
+	NotAName,
+	StillJoining,
+	NotOnline,
+	/// More than one live player answers to the name.
+	Ambiguous {
+		count: u32,
+	},
+}
+
+/// Which command a usage line is for.
+///
+/// The COMMAND is the server's fact; the line describing it is the
+/// client's. Naming the command rather than sending its prose is what
+/// lets `/give` advertise the essences from `Essence::ALL` at the point
+/// of rendering, so the advertisement and the parser cannot drift.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdminUsage {
+	Tp,
+	SetSpawn,
+	SetSpawnDir,
+	LockSpawn,
+	Goto,
+	Bring,
+	Give,
+	Time,
+	Reset,
+	Ban,
+	BanName,
+	Unban,
+}
+
+/// An admin command's answer, as typed data rather than a sentence.
+///
+/// Admin replies used to cross the wire as English inside
+/// `ServerMsg::Chat` from `SERVER_ID`, which put player-visible text in
+/// the server — the one place the third writing rule says it may not
+/// live — and left every test asserting the words a handler prints
+/// rather than what it did. Appended in v29.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub enum AdminReply {
+	Usage(AdminUsage),
+	/// One row of the command catalog, echoed by `/help`. Carries the
+	/// catalog's own strings rather than a variant: the usage stem is the
+	/// dispatch key AND the client's autocomplete stem, so it is an
+	/// identifier the client needs verbatim, not a sentence to translate.
+	CommandHint {
+		usage: String,
+		desc: String,
+	},
+	UnknownCommand {
+		typed: String,
+	},
+	CompassHint,
+	NoSuchPlayer {
+		name: String,
+		why: NoPlayer,
+	},
+	ThatIsYou,
+	Teleported {
+		x: i64,
+		z: i64,
+	},
+	TeleportedTo {
+		name: String,
+	},
+	Brought {
+		name: String,
+	},
+	TeleportedYouBy {
+		admin: String,
+	},
+	NotLookingAtBlock,
+	NotLookingAtTopFace,
+	/// The aimed spot cannot hold a spawn: the clearance it would need
+	/// rides along so the line can state it without knowing the rule.
+	SpawnNotClear {
+		clear: u32,
+		capsule: u32,
+	},
+	SpawnPointSet {
+		cell: [i32; 3],
+	},
+	NotFacingAnywhere,
+	SpawnFacingSet {
+		compass: String,
+	},
+	/// `cell` is the block stood on; `region` is x0,x1,y0,y1,z0,z1.
+	SpawnLocked {
+		cell: [i32; 3],
+		region: [i32; 6],
+		already: bool,
+	},
+	NoClearSpawnToLock,
+	/// Pinned by hand but not protected: the point stays put, its cells
+	/// can still be dug.
+	SpawnSetButUnlocked {
+		cell: [i32; 3],
+	},
+	SpawnAlreadyUnlocked,
+	SpawnUnlocked,
+	NotAnEssence {
+		typed: String,
+	},
+	/// `essence` is an `Essence` index; `held` is the total after the gift.
+	Gave {
+		name: String,
+		essence: u16,
+		gained: u32,
+		asked: u32,
+		held: u32,
+	},
+	WereGiven {
+		essence: u16,
+		gained: u32,
+	},
+	TimeIs {
+		hour: u32,
+		minute: u32,
+	},
+	TimeSet {
+		hour: u32,
+		minute: u32,
+	},
+	ResetPlayer {
+		name: String,
+	},
+	YouWereReset,
+	NotBanningYourself,
+	SharesYourIp {
+		name: String,
+	},
+	Banned {
+		name: String,
+		ip: String,
+	},
+	NoBans,
+	BanEntry {
+		name: String,
+		ip: String,
+	},
+	Unbanned {
+		arg: String,
+		removed: u32,
+	},
+	NoBanMatches {
+		arg: String,
+	},
+	/// A pre-account character on this server was folded into the account
+	/// that just joined (AUTH-DESIGN §6).
+	LegacyCharacterClaimed,
+	/// A slash line from a player who is not an admin.
+	CommandsAreAdminOnly,
+}
+
 // ---- unreliable datagrams --------------------------------------------
 
 /// One QUIC datagram = one `Datagram`, raw postcard, no length prefix.
@@ -559,6 +721,10 @@ pub enum ServerMsg {
 	/// when the queue refuses it, and a stalled reader must not be killed
 	/// by the one message class that has always tolerated a stall.
 	Unreliable(Vec<u8>),
+	/// An admin command's answer, as typed data. Replaces the English
+	/// that used to ride `Chat` from `SERVER_ID`; the sentence is now
+	/// `voice`'s. Appended in v29.
+	Admin(AdminReply),
 }
 
 #[cfg(test)]

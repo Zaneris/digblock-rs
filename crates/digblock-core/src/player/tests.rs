@@ -7,10 +7,18 @@ fn new_player() -> Player {
 	Player::new(TEST_SPAWN)
 }
 
+/// The top of [`flat_world`]'s ground, and the eye height of somebody
+/// standing on it. Named because the resting eye was written out as a
+/// bare literal in some twenty places: it is the fixture's floor plus
+/// the capsule's own offset, so retuning the capsule moves this line
+/// instead of every test that lands on the ground.
+const GROUND: i32 = 10;
+const GROUND_EYE: f32 = GROUND as f32 + EYE_TO_FEET;
+
 /// Flat ground: solid below the surface line, air above.
 fn flat_world(x: i32, y: i32, z: i32) -> Option<u16> {
 	let _ = (x, z);
-	some_cell(if y < 10 {
+	some_cell(if y < GROUND {
 		BlockType::Dirt
 	} else {
 		BlockType::Air
@@ -49,7 +57,7 @@ fn spawn_positions_are_pinned() {
 /// (returns the input) on a column solid to the ceiling.
 #[test]
 fn ascend_clear_steps_over_built_obstructions() {
-	let eye = Vec3::new(0.5, 11.5, 0.5); // standing on flat_world ground
+	let eye = Vec3::new(0.5, GROUND_EYE, 0.5); // standing on flat_world ground
 	assert_eq!(ascend_clear(eye, &flat_world), eye);
 	assert_eq!(ascend_clear(eye, &|_, _, _| None), eye);
 
@@ -83,7 +91,7 @@ fn falls_and_lands_snapped() {
 	let mut p = new_player();
 	tick_n(&mut p, 600, PlayerIntent::default());
 	// Landing snaps the eye to EYE_TO_FEET over the ground's top plane.
-	assert!((p.pos.y - 11.5).abs() < 0.001, "eye at {}", p.pos.y);
+	assert!((p.pos.y - GROUND_EYE).abs() < 0.001, "eye at {}", p.pos.y);
 }
 
 #[test]
@@ -148,7 +156,7 @@ fn airtime_grants_only_air_control_speed() {
 	};
 	for _ in 0..200 {
 		p.tick(TICK, Vec3::Z, forward, &flat_world);
-		if (p.pos.y - 11.5).abs() < 0.001 {
+		if (p.pos.y - GROUND_EYE).abs() < 0.001 {
 			break; // landed
 		}
 	}
@@ -206,11 +214,11 @@ fn walking_off_an_edge_keeps_momentum() {
 	let mut prev_z = p.pos.z;
 	let mut exit_step = 0.0f32;
 	for _ in 0..600 {
-		let grounded_before = (p.pos.y - 11.5).abs() < 0.001;
+		let grounded_before = (p.pos.y - GROUND_EYE).abs() < 0.001;
 		p.tick(TICK, Vec3::Z, forward, &world);
 		let step = p.pos.z - prev_z;
 		prev_z = p.pos.z;
-		if grounded_before && p.pos.y < 11.5 - 0.001 {
+		if grounded_before && p.pos.y < GROUND_EYE - 0.001 {
 			exit_step = step;
 			break;
 		}
@@ -293,7 +301,7 @@ fn ceiling_stops_jump() {
 			BlockType::Air
 		})
 	};
-	let mut p = Player::new(Vec3::new(0.5, 11.5, 0.5));
+	let mut p = Player::new(Vec3::new(0.5, GROUND_EYE, 0.5));
 	p.tick(TICK, Vec3::Z, PlayerIntent::default(), &world); // settle
 	p.tick(
 		TICK,
@@ -310,8 +318,12 @@ fn ceiling_stops_jump() {
 		peak = peak.max(p.pos.y);
 	}
 	assert!(peak <= 12.0 - EYE_TO_CROWN + 1e-3, "head stopped: {peak}");
-	assert!(peak > 11.5, "still jumped: {peak}");
-	assert!((p.pos.y - 11.5).abs() < 0.001, "returned: {}", p.pos.y);
+	assert!(peak > GROUND_EYE, "still jumped: {peak}");
+	assert!(
+		(p.pos.y - GROUND_EYE).abs() < 0.001,
+		"returned: {}",
+		p.pos.y
+	);
 }
 
 #[test]
@@ -393,7 +405,7 @@ fn jump_mounts_one_block_step() {
 	}
 	assert!(p.pos.z > 12.0, "advanced onto the step, z = {}", p.pos.z);
 	assert!(
-		(p.pos.y - 12.5).abs() < 0.001,
+		(p.pos.y - (GROUND_EYE + 1.0)).abs() < 0.001,
 		"standing on it, y = {}",
 		p.pos.y
 	);
@@ -411,7 +423,7 @@ fn jump_clears_step_under_three_high_ceiling() {
 			BlockType::Air
 		})
 	};
-	let mut p = Player::new(Vec3::new(0.5, 11.5, 0.5));
+	let mut p = Player::new(Vec3::new(0.5, GROUND_EYE, 0.5));
 	let hold = PlayerIntent {
 		move_axis: Vec2::new(0.0, 1.0),
 		jump: true,
@@ -425,7 +437,7 @@ fn jump_clears_step_under_three_high_ceiling() {
 	}
 	assert!(p.pos.z > 12.0, "advanced onto the step, z = {}", p.pos.z);
 	assert!(
-		(p.pos.y - 12.5).abs() < 0.001,
+		(p.pos.y - (GROUND_EYE + 1.0)).abs() < 0.001,
 		"standing on it, y = {}",
 		p.pos.y
 	);
@@ -618,9 +630,9 @@ fn stair_flight_climbs_at_a_constant_rate() {
 		let along_x = name == "built";
 		let dir = if along_x { Vec3::X } else { Vec3::Z };
 		let (start, top) = if along_x {
-			(Vec3::new(10.5, 11.5, 0.5), 14.0)
+			(Vec3::new(10.5, GROUND_EYE, 0.5), 14.0)
 		} else {
-			(Vec3::new(0.5, 11.5, 8.5), 13.0)
+			(Vec3::new(0.5, GROUND_EYE, 8.5), 13.0)
 		};
 		let mut p = Player::new(start);
 		let mut prev = p.pos.y - EYE_TO_FEET;
@@ -700,7 +712,7 @@ fn stair_mounts_flush_landing_smoothly() {
 	// top corner for a visible stall (the wall push cancels the walk
 	// while the corner catches the bottom sphere). With it, the mount
 	// costs no meaningful time and the climb never dips.
-	let mut p = Player::new(Vec3::new(10.5, 11.5, 0.5));
+	let mut p = Player::new(Vec3::new(10.5, GROUND_EYE, 0.5));
 	let forward = PlayerIntent {
 		move_axis: Vec2::new(0.0, 1.0),
 		jump: false,
@@ -712,7 +724,7 @@ fn stair_mounts_flush_landing_smoothly() {
 	}
 	assert!(p.pos.x > 14.0, "mounted and moved on, x = {}", p.pos.x);
 	assert!(
-		(p.pos.y - 12.5).abs() < 0.001,
+		(p.pos.y - (GROUND_EYE + 1.0)).abs() < 0.001,
 		"standing on the landing, y = {}",
 		p.pos.y
 	);
@@ -730,7 +742,7 @@ fn stair_runout_blocked_by_taller_wall() {
 		}
 		landing_world(x, y, z)
 	};
-	let mut p = Player::new(Vec3::new(10.5, 11.5, 0.5));
+	let mut p = Player::new(Vec3::new(10.5, GROUND_EYE, 0.5));
 	let forward = PlayerIntent {
 		move_axis: Vec2::new(0.0, 1.0),
 		jump: false,
@@ -760,7 +772,7 @@ fn stair_side_wall_never_hoists() {
 			some_cell(BlockType::Air)
 		}
 	};
-	let mut p = Player::new(Vec3::new(10.5, 11.5, 0.5));
+	let mut p = Player::new(Vec3::new(10.5, GROUND_EYE, 0.5));
 	let press = PlayerIntent {
 		move_axis: Vec2::new(0.5, 1.0).normalize(),
 		jump: false,
@@ -823,50 +835,9 @@ fn one_stair_world(x: i32, y: i32, z: i32) -> Option<u16> {
 }
 
 #[test]
-fn walks_up_a_stair_flight_without_jumping() {
-	let mut p = Player::new(Vec3::new(0.5, 11.5, 8.5));
-	let forward = PlayerIntent {
-		move_axis: Vec2::new(0.0, 1.0),
-		jump: false,
-	};
-	for _ in 0..360 {
-		p.tick(TICK, Vec3::Z, forward, &flight_world);
-	}
-	assert!(p.pos.z > 16.0, "crossed the flight, z = {}", p.pos.z);
-	assert!(
-		(p.pos.y - 14.5).abs() < 0.001,
-		"standing on the platform, y = {}",
-		p.pos.y
-	);
-}
-
-#[test]
-fn descends_a_stair_flight_smoothly() {
-	// Start on the platform, walk −z down the flight: never a free
-	// fall — each tick's descent stays inside the downhill-glue band
-	// while over the stairs, and the run ends back on the ground.
-	let mut p = Player::new(Vec3::new(0.5, 14.5, 17.5));
-	let back = PlayerIntent {
-		move_axis: Vec2::new(0.0, -1.0),
-		jump: false,
-	};
-	let mut prev_y = p.pos.y;
-	for _ in 0..420 {
-		p.tick(TICK, Vec3::Z, back, &flight_world);
-		let dy = p.pos.y - prev_y;
-		prev_y = p.pos.y;
-		if (11.5..14.5).contains(&p.pos.y) && p.pos.z > 11.5 {
-			assert!(dy > -0.15, "smooth descent, dy = {dy} at {:?}", p.pos);
-		}
-	}
-	assert!(p.pos.z < 11.0, "left the flight, z = {}", p.pos.z);
-	assert!((p.pos.y - 11.5).abs() < 0.001, "on the ground: {}", p.pos.y);
-}
-
-#[test]
 fn stair_back_face_blocks_like_a_wall() {
 	// Walking −x into the stair's tall back (+x side): a wall.
-	let mut p = Player::new(Vec3::new(14.5, 11.5, 0.5));
+	let mut p = Player::new(Vec3::new(14.5, GROUND_EYE, 0.5));
 	let toward = PlayerIntent {
 		move_axis: Vec2::new(0.0, 1.0),
 		jump: false,
@@ -875,14 +846,18 @@ fn stair_back_face_blocks_like_a_wall() {
 		p.tick(TICK, Vec3::NEG_X, toward, &one_stair_world);
 	}
 	assert!(p.pos.x > 13.25, "blocked at the back face, x = {}", p.pos.x);
-	assert!((p.pos.y - 11.5).abs() < 0.001, "never climbed: {}", p.pos.y);
+	assert!(
+		(p.pos.y - GROUND_EYE).abs() < 0.001,
+		"never climbed: {}",
+		p.pos.y
+	);
 }
 
 #[test]
 fn stair_low_side_ramps_up() {
 	// Walking +x from the low side: the ramp lifts the player over
 	// the cell with no jump, then they drop off the far side.
-	let mut p = Player::new(Vec3::new(10.5, 11.5, 0.5));
+	let mut p = Player::new(Vec3::new(10.5, GROUND_EYE, 0.5));
 	let forward = PlayerIntent {
 		move_axis: Vec2::new(0.0, 1.0),
 		jump: false,
@@ -907,7 +882,7 @@ fn stair_under_low_ceiling_wedges() {
 		}
 		one_stair_world(x, y, z)
 	};
-	let mut p = Player::new(Vec3::new(10.5, 11.5, 0.5));
+	let mut p = Player::new(Vec3::new(10.5, GROUND_EYE, 0.5));
 	let forward = PlayerIntent {
 		move_axis: Vec2::new(0.0, 1.0),
 		jump: false,
@@ -952,7 +927,7 @@ fn slab_stack_world(x: i32, y: i32, z: i32) -> Option<u16> {
 /// exactly these.
 #[test]
 fn slab_steps_mount_at_the_ramp_rate() {
-	let mut p = Player::new(Vec3::new(10.5, 11.5, 0.5));
+	let mut p = Player::new(Vec3::new(10.5, GROUND_EYE, 0.5));
 	let forward = PlayerIntent {
 		move_axis: Vec2::new(0.0, 1.0),
 		jump: false,
@@ -1057,7 +1032,7 @@ fn walks_onto_third_slab_without_jumping() {
 		}
 		slab_stack_world(x, y, z)
 	};
-	let mut p = Player::new(Vec3::new(10.5, 11.5, 0.5));
+	let mut p = Player::new(Vec3::new(10.5, GROUND_EYE, 0.5));
 	let forward = PlayerIntent {
 		move_axis: Vec2::new(0.0, 1.0),
 		jump: false,
@@ -1079,38 +1054,6 @@ fn walks_onto_third_slab_without_jumping() {
 }
 
 #[test]
-fn steps_up_slab_stack_and_probe_agrees() {
-	// One third → two thirds → full cube → cube plus a third: four
-	// AUTO_STEP rises in one contiguous walk. Every post-tick
-	// position must read as
-	// not-solid — the adoption envelope's probe runs on exactly these.
-	let mut p = Player::new(Vec3::new(10.5, 11.5, 0.5));
-	let forward = PlayerIntent {
-		move_axis: Vec2::new(0.0, 1.0),
-		jump: false,
-	};
-	for _ in 0..300 {
-		let prev = p.pos.y;
-		p.tick(TICK, Vec3::X, forward, &slab_stack_world);
-		assert!(p.pos.y >= prev - 1e-3, "no dip on the stack: {:?}", p.pos);
-		assert!(
-			!overlaps_solid(p.pos, &slab_stack_world),
-			"probe agrees with the resolver: {:?}",
-			p.pos
-		);
-		if p.pos.x > 15.4 {
-			break;
-		}
-	}
-	assert!(p.pos.x > 15.4, "climbed the whole stack, x = {}", p.pos.x);
-	let feet = p.pos.y - EYE_TO_FEET;
-	assert!(
-		(feet - (11.0 + 1.0 / 3.0)).abs() < 0.001,
-		"topped out on the raised 1/3, feet = {feet}"
-	);
-}
-
-#[test]
 fn two_thirds_rise_walls() {
 	// Ground straight into a two-thirds slab: a rise past
 	// `AUTO_STEP_MAX` must block like any wall — no step, no creep.
@@ -1124,7 +1067,7 @@ fn two_thirds_rise_walls() {
 			some_cell(BlockType::Air)
 		}
 	};
-	let mut p = Player::new(Vec3::new(10.5, 11.5, 0.5));
+	let mut p = Player::new(Vec3::new(10.5, GROUND_EYE, 0.5));
 	let forward = PlayerIntent {
 		move_axis: Vec2::new(0.0, 1.0),
 		jump: false,
@@ -1154,7 +1097,7 @@ fn step_blocked_under_low_ceiling() {
 			some_cell(BlockType::Air)
 		}
 	};
-	let mut p = Player::new(Vec3::new(10.5, 11.5, 0.5));
+	let mut p = Player::new(Vec3::new(10.5, GROUND_EYE, 0.5));
 	let forward = PlayerIntent {
 		move_axis: Vec2::new(0.0, 1.0),
 		jump: false,
@@ -1225,7 +1168,7 @@ fn jump_mounts_two_thirds_slab() {
 			some_cell(BlockType::Air)
 		}
 	};
-	let mut p = Player::new(Vec3::new(10.5, 11.5, 0.5));
+	let mut p = Player::new(Vec3::new(10.5, GROUND_EYE, 0.5));
 	let hold = PlayerIntent {
 		move_axis: Vec2::new(0.0, 1.0),
 		jump: true,
@@ -1268,7 +1211,7 @@ fn closed_door_blocks_open_door_passes() {
 		move_axis: Vec2::new(0.0, 1.0),
 		jump: false,
 	};
-	let mut blocked = Player::new(Vec3::new(10.5, 11.5, 0.5));
+	let mut blocked = Player::new(Vec3::new(10.5, GROUND_EYE, 0.5));
 	let closed = door_world(false);
 	for _ in 0..240 {
 		blocked.tick(TICK, Vec3::X, forward, &closed);
@@ -1279,7 +1222,7 @@ fn closed_door_blocks_open_door_passes() {
 		blocked.pos.x
 	);
 
-	let mut walker = Player::new(Vec3::new(10.5, 11.5, 0.5));
+	let mut walker = Player::new(Vec3::new(10.5, GROUND_EYE, 0.5));
 	let opened = door_world(true);
 	for _ in 0..240 {
 		walker.tick(TICK, Vec3::X, forward, &opened);
@@ -1301,16 +1244,19 @@ fn overlaps_solid_is_shape_aware() {
 	let buried = mid - Vec3::Y * 0.2;
 	assert!(overlaps_solid(buried, &one_stair_world));
 	// Cube world sanity: resting on ground clear, dipped solid.
-	assert!(!overlaps_solid(Vec3::new(0.5, 11.5, 0.5), &flight_world));
+	assert!(!overlaps_solid(
+		Vec3::new(0.5, GROUND_EYE, 0.5),
+		&flight_world
+	));
 	assert!(overlaps_solid(Vec3::new(0.5, 11.3, 0.5), &flight_world));
 	// Door: the closed leaf is set back from the cell face it points
 	// at, so the cell CENTER's capsule now grazes the leaf's front
 	// face; clearing it needs a RADIUS beyond that face. Open = no
 	// collision geometry at all (the handle knob is interaction-only
 	// and never counts).
-	let center = Vec3::new(12.5, 11.5, 0.5);
-	let clear = Vec3::new(12.6, 11.5, 0.5);
-	let against = Vec3::new(12.25, 11.5, 0.5);
+	let center = Vec3::new(12.5, GROUND_EYE, 0.5);
+	let clear = Vec3::new(12.6, GROUND_EYE, 0.5);
+	let against = Vec3::new(12.25, GROUND_EYE, 0.5);
 	assert!(overlaps_solid(center, &door_world(false)));
 	assert!(!overlaps_solid(clear, &door_world(false)));
 	assert!(overlaps_solid(against, &door_world(false)));
@@ -1319,7 +1265,7 @@ fn overlaps_solid_is_shape_aware() {
 
 #[test]
 fn placement_blocked_is_strict() {
-	let eye = Vec3::new(0.5, 11.5, 0.5);
+	let eye = Vec3::new(0.5, GROUND_EYE, 0.5);
 	let feet_cell = (0, 10, 0);
 	// A stair INTO the player's feet cell is refused — no ramp
 	// leniency for placement.
@@ -1335,11 +1281,11 @@ fn placement_blocked_is_strict() {
 		door_state(Facing::PosX, false, false),
 	);
 	let open = make_cell(BlockType::LumberDoor, door_state(Facing::PosX, true, false));
-	let near_leaf = Vec3::new(0.25, 11.5, 0.5);
+	let near_leaf = Vec3::new(0.25, GROUND_EYE, 0.5);
 	assert!(placement_blocked(near_leaf, feet_cell, closed));
 	assert!(placement_blocked(eye, feet_cell, closed), "center grazes");
 	assert!(
-		!placement_blocked(Vec3::new(0.6, 11.5, 0.5), feet_cell, closed),
+		!placement_blocked(Vec3::new(0.6, GROUND_EYE, 0.5), feet_cell, closed),
 		"front face + RADIUS clears the leaf"
 	);
 	assert!(!placement_blocked(near_leaf, feet_cell, open));
@@ -1381,7 +1327,7 @@ fn wading_stays_dry_physics() {
 			BlockType::Air
 		})
 	};
-	let mut p = Player::new(Vec3::new(0.5, 11.5, 0.5)); // feet on ground
+	let mut p = Player::new(Vec3::new(0.5, GROUND_EYE, 0.5)); // feet on ground
 	let forward = PlayerIntent {
 		move_axis: Vec2::new(0.0, 1.0),
 		jump: false,

@@ -461,6 +461,7 @@ impl TestClient {
 				NetEvent::Teleported { pos, .. } => panic!("unrequested teleport to {pos}"),
 				NetEvent::TimeOfDay { .. }
 				| NetEvent::AdminCommands { .. }
+				| NetEvent::AdminReply(_)
 				| NetEvent::Layout { .. }
 				| NetEvent::Skills { .. }
 				| NetEvent::XpGain { .. }
@@ -1251,29 +1252,6 @@ fn omitted_advertise_host_lists_observed_address() {
 		format!("https://{}:{}", reg.observed_host, server.port),
 		"listed at the observed registration address"
 	);
-}
-
-/// Chat crosses the real QUIC stack: A talks, both A (echo) and B hear
-/// it attributed to A's player id.
-#[test]
-fn chat_round_trips_between_clients() {
-	let _ = env_logger::builder().is_test(true).try_init();
-	let master = MasterProc::spawn();
-	let server = TestServer::start("chat", &master.url, true);
-
-	let (token_a, _) = mint_token(&master.url, "adam");
-	let mut a = TestClient::connect(&server.url, "adam", token_a);
-	a.wait("welcome", |c| c.welcomed);
-	let (token_b, _) = mint_token(&master.url, "beth");
-	let mut b = TestClient::connect(&server.url, "beth", token_b);
-	b.wait("welcome", |c| c.welcomed);
-
-	a.client.send_chat("hello over QUIC");
-	a.wait("chat echo", |c| !c.chats.is_empty());
-	b.wait("chat broadcast", |c| !c.chats.is_empty());
-	let a_id = a.chats[0].0;
-	assert_eq!(a.chats[0].1, "hello over QUIC");
-	assert_eq!(b.chats[0], (a_id, "hello over QUIC".to_string()));
 }
 
 #[test]

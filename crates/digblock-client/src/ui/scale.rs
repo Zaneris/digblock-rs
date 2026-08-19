@@ -13,6 +13,12 @@ const BASE_TEXT_PX: f32 = 16.0;
 /// the page.
 pub const UI_SCALE_CAP: f32 = 3.0;
 
+/// The widest a window's own proportions may push the UI before the
+/// user's preference multiplies in. Distinct from [`UI_SCALE_MAX`],
+/// which bounds the PREFERENCE: the two coincide today and mean
+/// different things, so a retune of either must not drag the other.
+pub const WINDOW_FACTOR_CAP: f32 = 1.5;
+
 /// Floor on the DERIVED scale (display density × window size), below
 /// which a default-preference UI stops being comfortably readable. Also
 /// the bottom rung of [`super::theme::fit_scale`]'s ladder. The user's
@@ -48,7 +54,9 @@ pub const UI_SCALE_STEP: f32 = 0.05;
 pub fn ui_scale(size: (u32, u32), scale_factor: f32, user: f32) -> f32 {
 	let sf = scale_factor.max(0.5);
 	let (lw, lh) = (size.0 as f32 / sf, size.1 as f32 / sf);
-	let win = (lw / 1280.0).min(lh / 800.0).clamp(UI_SCALE_FLOOR, 1.5);
+	let win = (lw / 1280.0)
+		.min(lh / 800.0)
+		.clamp(UI_SCALE_FLOOR, WINDOW_FACTOR_CAP);
 	let user = if user.is_finite() {
 		user.clamp(UI_SCALE_MIN, UI_SCALE_MAX)
 	} else {
@@ -62,7 +70,7 @@ pub fn ui_scale(size: (u32, u32), scale_factor: f32, user: f32) -> f32 {
 /// rasterized at exactly this size and blitted 1:1, which is what keeps
 /// them crisp.
 pub fn glyph_px(scale: f32) -> f32 {
-	(BASE_TEXT_PX * scale).round().max(8.0)
+	(BASE_TEXT_PX * scale).round().max(MIN_GLYPH_PX)
 }
 
 /// The debug overlay's pinned text size. It is a diagnostic, not UI: it
@@ -70,6 +78,10 @@ pub fn glyph_px(scale: f32) -> f32 {
 /// what the player set. Nothing the player reads uses this — hotbar
 /// stack counts did until they turned out to just look half-size.
 pub const FIXED_GLYPH_PX: f32 = BASE_TEXT_PX;
+
+/// The smallest glyph worth rasterizing: below this the hinting
+/// collapses and the run stops being readable at any scale.
+const MIN_GLYPH_PX: f32 = 8.0;
 
 /// Horizontal inset between a row's edge and its text; shared by the
 /// menu's measurement pass and the overlay's rendering.
@@ -86,7 +98,7 @@ mod tests {
 		assert_eq!(ui_scale((1280, 800), 1.0, 1.0), 1.0);
 		// The pre-scaling default window sits just under the reference
 		// height: still a sane near-1 step, never below the floor.
-		assert!(ui_scale((1280, 720), 1.0, 1.0) >= 0.75);
+		assert!(ui_scale((1280, 720), 1.0, 1.0) >= UI_SCALE_FLOOR);
 	}
 
 	#[test]
@@ -111,9 +123,9 @@ mod tests {
 	#[test]
 	fn window_factor_caps_both_ways() {
 		// A tiny window can't shrink the UI below the floor...
-		assert_eq!(ui_scale((640, 400), 1.0, 1.0), 0.75);
+		assert_eq!(ui_scale((640, 400), 1.0, 1.0), UI_SCALE_FLOOR);
 		// ...and a huge one caps the window factor instead of growing on.
-		assert_eq!(ui_scale((3840, 2400), 1.0, 1.0), 1.5);
+		assert_eq!(ui_scale((3840, 2400), 1.0, 1.0), WINDOW_FACTOR_CAP);
 	}
 
 	#[test]
@@ -142,7 +154,6 @@ mod tests {
 	#[test]
 	fn every_slider_notch_changes_the_scale() {
 		let notches = ((UI_SCALE_MAX - UI_SCALE_MIN) / UI_SCALE_STEP).round() as i32;
-		assert_eq!(notches, 16, "70%..150% in 5% steps");
 		for (size, sf) in [((1280u32, 800u32), 1.0f32), ((2560, 1600), 2.0)] {
 			let mut prev = f32::NEG_INFINITY;
 			for i in 0..=notches {
@@ -156,19 +167,24 @@ mod tests {
 
 	// The ladder is continuous now, not the bitmap font's multiples of its
 	// cell — that coarseness was a Nearest-sampler artifact and is what
-	// made a UI-scale slider pointless before.
+	// made a UI-scale slider pointless before. Asserted as the properties
+	// the blitter depends on rather than a table of products: a product
+	// only restates the multiply, and all of them move together the day
+	// the base size is retuned.
 	#[test]
 	fn text_size_tracks_scale_in_whole_pixels() {
-		assert_eq!(glyph_px(1.0), 16.0);
-		assert_eq!(glyph_px(1.25), 20.0);
-		assert_eq!(glyph_px(1.5), 24.0);
-		assert_eq!(glyph_px(2.0), 32.0);
-		assert_eq!(glyph_px(0.75), 12.0);
-		assert_eq!(glyph_px(0.25), 8.0); // floor
-		assert_eq!(FIXED_GLYPH_PX, 16.0);
-		for i in 3..=12 {
+		let mut prev = 0.0f32;
+		for i in 0..=12 {
 			let px = glyph_px(i as f32 / 4.0);
 			assert_eq!(px, px.round(), "{px} is not a whole pixel");
+			assert!(px >= MIN_GLYPH_PX, "{px} is under the floor");
+			assert!(px >= prev, "{px} shrank as the scale grew");
+			prev = px;
 		}
+		// The floor bites at the bottom and nowhere near unit scale.
+		assert_eq!(glyph_px(0.0), MIN_GLYPH_PX);
+		assert!(glyph_px(1.0) > MIN_GLYPH_PX);
+		// A fixed-size glyph is the unit-scale one, wherever it is drawn.
+		assert_eq!(FIXED_GLYPH_PX, glyph_px(1.0));
 	}
 }

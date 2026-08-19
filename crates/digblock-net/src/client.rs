@@ -154,6 +154,9 @@ pub enum NetEvent {
 	AdminCommands {
 		commands: Vec<(String, String)>,
 	},
+	/// An admin command's answer, as typed data. The sentence is the
+	/// client's to compose — see `voice`.
+	AdminReply(crate::messages::AdminReply),
 	/// The identity's persisted item layout (hotbar wire encoding), sent
 	/// in join sync after the inventory. Sanitize + reconcile against the
 	/// counts; absent for anonymous/first-join identities.
@@ -727,6 +730,7 @@ impl NetClient {
 				});
 			}
 			ServerMsg::TimeOfDay { tod } => out.push(NetEvent::TimeOfDay { tod }),
+			ServerMsg::Admin(reply) => out.push(NetEvent::AdminReply(reply)),
 			ServerMsg::AdminCommands { commands } => {
 				out.push(NetEvent::AdminCommands { commands });
 			}

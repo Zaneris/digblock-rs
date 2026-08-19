@@ -1275,8 +1275,10 @@ fn cutout_culls_same_type_but_not_others() {
 	let m = mesh_chunk(&isolated(&d));
 	assert!(m.water.is_empty(), "cutout meshes into the solid bucket");
 	let layer_of = |p: &[u32]| p[1] & 0x3ff;
-	let leaf_faces = m.solid.chunks(2).filter(|p| layer_of(p) == 8).count() / 4;
-	let dirt_faces = m.solid.chunks(2).filter(|p| layer_of(p) == 1).count() / 4;
+	let leaf = u32::from(B::Leaves.props().tex_side);
+	let dirt = u32::from(B::Dirt.props().tex_side);
+	let leaf_faces = m.solid.chunks(2).filter(|p| layer_of(p) == leaf).count() / 4;
+	let dirt_faces = m.solid.chunks(2).filter(|p| layer_of(p) == dirt).count() / 4;
 	// Leaf A loses two faces — its leaf neighbor culls the shared one
 	// and the dirt below occludes its bottom; Leaf B loses only the
 	// shared one.
@@ -1292,12 +1294,19 @@ fn grass_bottom_uses_dirt_texture() {
 	let mut d = ChunkData::default();
 	d.set(8, 8, 8, B::Grass);
 	let m = mesh_chunk(&isolated(&d));
+	// The layers are read off the block's own row, which IS the per-face
+	// table this is about — so the test proves the mesher consults it
+	// rather than re-typing its contents.
+	let props = B::Grass.props();
 	for p in m.solid.chunks(2) {
 		let expect = match dir_of(p[0]) as usize {
-			n if n == Dir::Top as usize => 3,    // GrassTop
-			n if n == Dir::Bottom as usize => 1, // Dirt
-			_ => 2,                              // GrassSide
+			n if n == Dir::Top as usize => props.tex_top,
+			n if n == Dir::Bottom as usize => props.tex_bottom,
+			_ => props.tex_side,
 		};
-		assert_eq!(p[1] & 0x3ff, expect);
+		assert_eq!(p[1] & 0x3ff, u32::from(expect));
 	}
+	// And the three really are distinct, or the loop above proves little.
+	assert_ne!(props.tex_top, props.tex_side);
+	assert_ne!(props.tex_bottom, props.tex_side);
 }

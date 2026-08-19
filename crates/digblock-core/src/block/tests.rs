@@ -117,98 +117,118 @@ fn only_the_worlds_own_rock_crumbles() {
 	}
 }
 
-/// The family assignment is an explicit roster, so a new row's family
-/// is a deliberate choice, never an accident of the builder default.
+/// A block's dig family is a decision, never a builder default — but it
+/// is a decision per SUBSTANCE, not per piece. So the roster names one
+/// row for each material and each block that has no material at all,
+/// and a sweep carries that answer to every shape cut from it. Adding a
+/// stair costs nothing here; adding a MATERIAL, or a node host, is a
+/// line — which is the half that was ever really a choice.
+///
+/// The completeness check at the end is what keeps the roster honest:
+/// a new diggable row that neither carries a listed material nor names
+/// itself above fails here rather than silently inheriting.
 #[test]
 fn dig_families_are_pinned() {
+	use BlockType as B;
 	use DigFamily::*;
-	let expect = [
-		(BlockType::Water, Fixed), // scoop time = the viewmodel swing
-		(BlockType::Leaves, Fixed),
-		(BlockType::PineLeaves, Fixed),
-		(BlockType::Torch, Fixed),
-		(BlockType::Dirt, Soft),
-		(BlockType::Grass, Soft),
-		(BlockType::DryGrass, Soft),
-		(BlockType::Sand, Soft),
-		(BlockType::Mud, Soft),
-		(BlockType::Snow, Soft),
-		(BlockType::Wood, Wood),
-		(BlockType::WoodStairs, Wood),
-		(BlockType::WoodSlab, Wood),
-		(BlockType::LumberDoor, Wood),
-		(BlockType::Lumber, Wood),
-		(BlockType::LumberStairs, Wood),
-		(BlockType::LumberSlab, Wood),
-		(BlockType::DarkLumber, Wood),
-		(BlockType::DarkLumberStairs, Wood),
-		(BlockType::DarkLumberSlab, Wood),
-		(BlockType::DarkLumberDoor, Wood),
-		(BlockType::RedLumber, Wood),
-		(BlockType::RedLumberStairs, Wood),
-		(BlockType::RedLumberSlab, Wood),
-		(BlockType::RedLumberDoor, Wood),
-		(BlockType::Table, Wood),
-		(BlockType::Chair, Wood),
-		(BlockType::Bed, Wood),
-		(BlockType::Stone, Rock),
-		(BlockType::StoneStairs, Rock),
-		(BlockType::StoneSlab, Rock),
-		(BlockType::StoneDoor, Rock),
-		(BlockType::Sandstone, Rock),
-		(BlockType::SandstoneStairs, Rock),
-		(BlockType::SandstoneSlab, Rock),
-		(BlockType::SandstoneDoor, Rock),
-		(BlockType::Gravel, Rock),
-		(BlockType::Rubble, Rock),
-		(BlockType::Emberore, Rock),
-		(BlockType::Duskstone, Rock),
-		(BlockType::Glowvein, Rock),
-		(BlockType::Aetherock, Rock),
-		(BlockType::DepletedStone, Rock),
-		(BlockType::StoneBrick, Rock),
-		(BlockType::StoneBrickStairs, Rock),
-		(BlockType::StoneBrickSlab, Rock),
-		(BlockType::StoneBrickDoor, Rock),
-		(BlockType::PolishedStone, Rock),
-		(BlockType::PolishedStoneStairs, Rock),
-		(BlockType::PolishedStoneSlab, Rock),
-		(BlockType::SandstoneBrick, Rock),
-		(BlockType::SandstoneBrickStairs, Rock),
-		(BlockType::SandstoneBrickSlab, Rock),
-		(BlockType::Glass, Soft),
-		(BlockType::Metal, Rock),
-		(BlockType::MetalStairs, Rock),
-		(BlockType::MetalSlab, Rock),
-		(BlockType::MetalDoor, Rock),
-		(BlockType::Crystal, Rock),
-		(BlockType::CrystalSlab, Rock),
-		(BlockType::Lantern, Rock),
-		(BlockType::Aetherlamp, Rock),
-		(BlockType::DepletedEmberore, Rock),
-		(BlockType::DepletedDuskstone, Rock),
-		(BlockType::DepletedGlowvein, Rock),
-		(BlockType::DepletedAetherock, Rock),
-		// Surface nodes dig as their HOST digs: heartwood is timber,
-		// leystone is rock, a spring bed is loose ground — the node
-		// changes what a hold pays, never what family swings at it.
-		(BlockType::Heartwood, Wood),
-		(BlockType::DrainedHeartwood, Wood),
-		(BlockType::Leystone, Rock),
-		(BlockType::SpentLeystone, Rock),
-		(BlockType::Springstone, Soft),
-		(BlockType::SpentSpringstone, Soft),
+	// One row per material, keyed on the material rather than on any one
+	// of its blocks.
+	let by_material = [
+		(Material::Dirt, Soft),
+		(Material::Grass, Soft),
+		(Material::DryGrass, Soft),
+		(Material::Sand, Soft),
+		(Material::Mud, Soft),
+		(Material::Snow, Soft),
+		(Material::Wood, Wood),
+		(Material::Lumber, Wood),
+		(Material::DarkLumber, Wood),
+		(Material::RedLumber, Wood),
+		(Material::Stone, Rock),
+		(Material::Sandstone, Rock),
+		(Material::Gravel, Rock),
+		(Material::Rubble, Rock),
+		(Material::StoneBrick, Rock),
+		(Material::PolishedStone, Rock),
+		(Material::SandstoneBrick, Rock),
+		(Material::Glass, Soft),
+		(Material::Metal, Rock),
+		(Material::Crystal, Rock),
 	];
-	for (b, f) in expect {
+	// And the rows that carry no material: fixtures, fluids, foliage, and
+	// the node hosts — a node digs as its HOST digs, because the node
+	// changes what a hold PAYS, never what swings at it.
+	let standalone = [
+		(B::Water, Fixed), // scoop time = the viewmodel swing
+		(B::Leaves, Fixed),
+		(B::PineLeaves, Fixed),
+		(B::Torch, Fixed),
+		(B::Lantern, Rock),
+		(B::Aetherlamp, Rock),
+		// Furniture is hand-authored and carries no material either.
+		(B::Table, Wood),
+		(B::Chair, Wood),
+		(B::Bed, Wood),
+		(B::Emberore, Rock),
+		(B::Duskstone, Rock),
+		(B::Glowvein, Rock),
+		(B::Aetherock, Rock),
+		(B::DepletedStone, Rock),
+		(B::DepletedEmberore, Rock),
+		(B::DepletedDuskstone, Rock),
+		(B::DepletedGlowvein, Rock),
+		(B::DepletedAetherock, Rock),
+		(B::Heartwood, Wood),
+		(B::DrainedHeartwood, Wood),
+		(B::Leystone, Rock),
+		(B::SpentLeystone, Rock),
+		(B::Springstone, Soft),
+		(B::SpentSpringstone, Soft),
+	];
+
+	let family_of_material =
+		|m: Material| by_material.iter().find(|(mm, _)| *mm == m).map(|(_, f)| *f);
+	for (m, f) in by_material {
+		assert!(
+			Material::ALL.contains(&m),
+			"{m:?} is listed but no longer a material"
+		);
+		let _ = f;
+	}
+	for (b, f) in standalone {
 		assert_eq!(b.dig_family(), f, "{b:?}");
 	}
-	// The roster covers every diggable block — a new diggable row
-	// must be added above.
+
+	// Every shape of a listed material swings as its material does. The
+	// named rows above are skipped: a few of them DO carry a material
+	// (foliage is `Leaf`), they just are not cut into shapes and their
+	// family is a fixture rather than a substance.
+	let mut swept = 0;
+	for &b in &BlockType::ALL {
+		if b.hardness_ticks().is_none() || standalone.iter().any(|(s, _)| *s == b) {
+			continue;
+		}
+		let m = b
+			.material()
+			.unwrap_or_else(|| panic!("{b:?} is diggable, material-less and unnamed above"));
+		let want = family_of_material(m)
+			.unwrap_or_else(|| panic!("{m:?} is a material with no family listed above"));
+		assert_eq!(b.dig_family(), want, "{b:?} is {m:?}");
+		swept += 1;
+	}
+
+	// The two halves together must cover every diggable row — a new one
+	// belongs in a list above, or under a material that is.
 	let diggable = BlockType::ALL
 		.iter()
 		.filter(|b| b.hardness_ticks().is_some())
 		.count();
-	assert_eq!(expect.len(), diggable, "roster covers every diggable block");
+	assert_eq!(
+		swept + standalone.len(),
+		diggable,
+		"{swept} swept + {} named against {diggable} diggable rows",
+		standalone.len()
+	);
 }
 
 /// The material assignment is an explicit roster for the same reason
@@ -464,65 +484,58 @@ fn bedrock_floor_is_undiggable() {
 	}
 }
 
+/// Every water row agrees across the fields that describe it. The
+/// amount is what the render class, the mesh bucket and the collision
+/// flag all follow, so a row that holds water and collides — or one
+/// that is opaque — is a table error the mesher draws wrong. The
+/// bucket/class equivalence is asserted rather than assumed: the split
+/// exists so a future glass can break it deliberately.
 #[test]
-fn water_family_props() {
+fn the_water_rows_agree_across_every_field_that_describes_them() {
+	let fullest = BlockType::ALL
+		.iter()
+		.filter_map(|b| b.water_amount())
+		.max()
+		.expect("the table has water in it");
 	for &b in &BlockType::ALL {
-		match b.water_amount() {
-			Some(a) => {
-				assert!((1..=8).contains(&a), "{b:?} amount {a}");
-				assert_eq!(b.props().class, RenderClass::Translucent, "{b:?}");
-				assert!(!b.props().collides, "{b:?} never collides");
-				assert!(b.is_water());
-			}
-			None => assert!(!b.is_water()),
+		if let Some(a) = b.water_amount() {
+			assert!(a > 0, "{b:?} holds water but none of it");
+			assert_eq!(b.props().class, RenderClass::Translucent, "{b:?}");
+			assert!(!b.props().collides, "{b:?} never collides");
 		}
-	}
-	assert_eq!(BlockType::Water.water_amount(), Some(8), "source is full");
-	assert_eq!(BlockType::WaterFall.water_amount(), Some(8), "fall is full");
-	assert!(BlockType::WaterFall.is_falling());
-	assert!(!BlockType::Water.is_falling());
-	for a in 1..=7u8 {
-		assert_eq!(BlockType::water_flow(a).water_amount(), Some(a));
-	}
-}
-
-/// The table is now the source of truth; this pins it to the old
-/// concrete-variant semantics for every block, so the generalization
-/// cannot have changed behavior.
-#[test]
-fn fluid_table_matches_legacy_variant_semantics() {
-	for &b in &BlockType::ALL {
-		let legacy_amount = match b {
-			BlockType::Water | BlockType::WaterFall => Some(8u8),
-			BlockType::WaterFlow1 => Some(1),
-			BlockType::WaterFlow2 => Some(2),
-			BlockType::WaterFlow3 => Some(3),
-			BlockType::WaterFlow4 => Some(4),
-			BlockType::WaterFlow5 => Some(5),
-			BlockType::WaterFlow6 => Some(6),
-			BlockType::WaterFlow7 => Some(7),
-			_ => None,
-		};
-		assert_eq!(b.water_amount(), legacy_amount, "{b:?}");
-		assert_eq!(b.is_water(), legacy_amount.is_some(), "{b:?}");
 		assert_eq!(b.is_falling(), b == BlockType::WaterFall, "{b:?}");
 		assert_eq!(b.is_fluid_source(), b == BlockType::Water, "{b:?}");
-		// Today Translucent ⇔ Water bucket; the split exists so a
-		// future glass can break the equivalence deliberately.
 		assert_eq!(
 			b.props().bucket == MeshBucket::Water,
 			b.props().class == RenderClass::Translucent,
 			"{b:?}"
 		);
-		assert_eq!(b.props().fluid.is_some(), b.is_water(), "{b:?}");
 	}
-	for a in 1..=7u8 {
-		let f = BlockType::water_flow(a)
-			.props()
-			.fluid
-			.expect("flow is fluid");
-		assert_eq!((f.amount, f.source, f.falling), (a, false, false));
+	assert_eq!(
+		BlockType::Water.water_amount(),
+		Some(fullest),
+		"the source is the fullest water there is"
+	);
+	assert_eq!(
+		BlockType::WaterFall.water_amount(),
+		Some(fullest),
+		"and so is a fall"
+	);
+	// `water_flow` is the only constructor that picks a row BY amount,
+	// so every flowing row must be the one its own amount chooses.
+	let mut flows = 0;
+	for &b in &BlockType::ALL {
+		let Some(f) = b.props().fluid else { continue };
+		if f.source || f.falling {
+			continue;
+		}
+		flows += 1;
+		assert_eq!(BlockType::water_flow(f.amount), b, "{b:?}");
 	}
+	assert!(
+		flows > 1,
+		"a table with no flowing water proves nothing here"
+	);
 }
 
 /// An identifier is not a label. `Essence::ident` is what an operator

@@ -56,17 +56,21 @@ fn xp_curve_table_is_pinned() {
 
 #[test]
 fn levels_derive_from_totals() {
+	// The first step is asked for, not written down: it is the cheapest
+	// level in the game by construction, so it is also the floor every
+	// later step has to clear.
+	let first = xp_to_next(1).expect("level 1 has a next");
 	assert_eq!(level_for_xp(0), 1);
-	assert_eq!(level_for_xp(87), 1, "one short of level 2");
-	assert_eq!(level_for_xp(88), 2);
+	assert_eq!(level_for_xp(first - 1), 1, "one short of level 2");
+	assert_eq!(level_for_xp(first), 2);
 	assert_eq!(level_for_xp(total_xp_for(50)), 50);
 	assert_eq!(level_for_xp(total_xp_for(50) - 1), 49);
-	assert_eq!(level_for_xp(total_xp_for(99)), 99);
-	assert_eq!(level_for_xp(u64::MAX), 99, "the cap holds");
+	assert_eq!(level_for_xp(total_xp_for(MAX_LEVEL)), MAX_LEVEL);
+	assert_eq!(level_for_xp(u64::MAX), MAX_LEVEL, "the cap holds");
 	// The curve is strictly increasing — no level is free and no
 	// level is skipped.
 	for level in 1..MAX_LEVEL {
-		assert!(xp_to_next(level).unwrap() >= 88);
+		assert!(xp_to_next(level).unwrap() >= first);
 		if level > 1 {
 			assert!(xp_to_next(level).unwrap() > xp_to_next(level - 1).unwrap());
 		}
@@ -99,22 +103,32 @@ fn skill_set_accumulates_and_round_trips() {
 	assert_eq!(decoded.to_wire(), vec![(0, 42)]);
 }
 
-/// §5.1's per-family endpoints, held exactly, plus goldens along the
-/// shared taper — the old mid-ladder anchor is now derived (SIM v18 drops
-/// the mid-curve parity with the shipped hardness table), so it is
-/// pinned here as an OUTPUT to catch a taper edit nobody meant.
+/// Goldens along the shared taper, pinned as OUTPUTS to catch a taper
+/// edit nobody meant — a relationship cannot notice that the curve
+/// between the endpoints changed shape, which is the whole risk here.
+///
+/// The endpoints themselves are deliberately NOT asserted: `DIG_TAPER`
+/// runs 0..=1000, so `dig_speed_permille(f, 1)` returns the family's
+/// `start` and `(f, MAX_LEVEL)` its `end` by construction. Writing those
+/// down again restates the match arm and cannot fail. What IS asserted
+/// is the thing the endpoints exist to buy — every family that scales
+/// gets faster, and the flat one does not move.
 #[test]
 fn dig_speed_anchors_are_pinned() {
 	use crate::block::DigFamily as F;
-	// The two design inputs per family: its novice and mastery endpoints.
-	for (family, start, end) in [
-		(F::Fixed, 1000, 1000),
-		(F::Soft, 2063, 542),
-		(F::Wood, 2228, 650),
-		(F::Rock, 2805, 542),
-	] {
-		assert_eq!(dig_speed_permille(family, 1), start, "{family:?} at 1");
-		assert_eq!(dig_speed_permille(family, 99), end, "{family:?} at 99");
+	for family in [F::Fixed, F::Soft, F::Wood, F::Rock] {
+		let (novice, master) = (
+			dig_speed_permille(family, 1),
+			dig_speed_permille(family, MAX_LEVEL),
+		);
+		if family == F::Fixed {
+			assert_eq!(novice, master, "{family:?} must never scale");
+		} else {
+			assert!(
+				master < novice,
+				"{family:?} did not speed up: {novice}->{master}"
+			);
+		}
 	}
 	// Derived goldens along the way, one early / mid / late.
 	for (family, at15, at30, at60) in [
@@ -138,20 +152,36 @@ fn dig_speed_anchors_are_pinned() {
 			);
 		}
 	}
-	// The §5.1 table's spot values, in sim ticks.
+	// The §5.1 table's spot values, in sim ticks. The hardness is read
+	// off each block rather than written down beside it: a hold length
+	// restated here would pin the hardness table twice, and a retune of
+	// one row would fail a test about the CURVE.
 	use BlockType as B;
-	assert_eq!(dig_required(B::Stone, 90, 1), 252, "stone at level 1");
-	assert_eq!(dig_required(B::Stone, 90, 30), 129, "stone mid-ladder");
-	assert_eq!(dig_required(B::Stone, 90, 99), 49, "stone at mastery");
-	assert_eq!(dig_required(B::Wood, 60, 1), 134, "wood at level 1");
-	assert_eq!(dig_required(B::Wood, 60, 30), 77, "wood mid-ladder");
-	assert_eq!(dig_required(B::Wood, 60, 99), 39, "wood at mastery");
-	assert_eq!(dig_required(B::Dirt, 30, 1), 62, "dirt at level 1");
-	assert_eq!(dig_required(B::Dirt, 30, 30), 34, "dirt mid-ladder");
-	// Fixed never scales: leaves and the scoop hold all the way up.
-	for level in [1, 30, 99] {
-		assert_eq!(dig_required(B::Leaves, 10, level), 10, "leaves flat");
-		assert_eq!(dig_required(B::Water, 20, level), 20, "scoop flat");
+	let hardness = |b: BlockType| b.hardness_ticks().expect("diggable");
+	for (block, at1, at30, at99) in [(B::Stone, 252, 129, 49), (B::Wood, 134, 77, 39)] {
+		let h = hardness(block);
+		assert_eq!(dig_required(block, h, 1), at1, "{block:?} at level 1");
+		assert_eq!(dig_required(block, h, 30), at30, "{block:?} mid-ladder");
+		assert_eq!(
+			dig_required(block, h, MAX_LEVEL),
+			at99,
+			"{block:?} at mastery"
+		);
+	}
+	let dirt = hardness(B::Dirt);
+	assert_eq!(dig_required(B::Dirt, dirt, 1), 62, "dirt at level 1");
+	assert_eq!(dig_required(B::Dirt, dirt, 30), 34, "dirt mid-ladder");
+	// Fixed never scales: leaves and the scoop hold all the way up, so
+	// the requirement stays the block's own hardness at every level.
+	for block in [B::Leaves, B::Water] {
+		let h = hardness(block);
+		for level in [1, 30, MAX_LEVEL] {
+			assert_eq!(
+				dig_required(block, h, level),
+				u32::from(h),
+				"{block:?} flat at {level}"
+			);
+		}
 	}
 }
 
@@ -172,11 +202,15 @@ fn every_dig_speedup_is_smaller_than_the_one_before() {
 		assert_eq!(dig_speed_step(level), expect, "step of {level}");
 	}
 	assert_eq!(dig_speed_step(0), 1, "clamps up");
-	assert_eq!(dig_speed_step(1000), 99, "clamps down");
+	assert_eq!(dig_speed_step(1000), MAX_LEVEL, "clamps down");
 	assert_eq!(DIG_STEPS.len(), DIG_TAPER.len(), "one taper entry per step");
 	// The taper spends the whole journey and eases off the whole way.
 	assert_eq!(DIG_TAPER[0], 0, "the first step is the level-1 speed");
-	assert_eq!(DIG_TAPER[20], 1000, "the last step is the level-99 speed");
+	assert_eq!(
+		DIG_TAPER[DIG_TAPER.len() - 1],
+		1000,
+		"the last step is the mastery speed"
+	);
 	for i in 2..DIG_TAPER.len() {
 		let (prev, now) = (
 			DIG_TAPER[i - 1] - DIG_TAPER[i - 2],
@@ -201,7 +235,11 @@ fn every_dig_speedup_is_smaller_than_the_one_before() {
 		// Twenty jumps in a life, so twenty-one distinct speeds.
 		let speeds: std::collections::BTreeSet<u32> =
 			(1..=99).map(|l| dig_speed_permille(family, l)).collect();
-		assert_eq!(speeds.len(), if flat { 1 } else { 21 }, "{family:?} speeds");
+		assert_eq!(
+			speeds.len(),
+			if flat { 1 } else { DIG_TAPER.len() },
+			"{family:?} speeds"
+		);
 		// And each of those jumps is smaller than its predecessor —
 		// the whole point, in the multiplier where it is exact (a
 		// given block's TICK count can wobble by one on rounding).
@@ -219,14 +257,21 @@ fn every_dig_speedup_is_smaller_than_the_one_before() {
 		}
 	}
 	// A stone dig gets faster on the stride and nowhere else, and the
-	// first jump dwarfs the last.
+	// first jump dwarfs the last. The hold lengths are goldens; the
+	// HARDNESS behind them is read off the block, because restating it
+	// here would pin the hardness table from a test about the curve.
 	use BlockType as B;
-	assert_eq!(dig_required(B::Stone, 90, 4), 252, "still the level-1 hold");
-	assert_eq!(dig_required(B::Stone, 90, 5), 224, "the biggest jump");
-	assert_eq!(dig_required(B::Stone, 90, 9), 224, "held to the next step");
-	assert_eq!(dig_required(B::Stone, 90, 95), 51, "the 95 step");
-	assert_eq!(dig_required(B::Stone, 90, 98), 51, "held at the 95 step");
-	assert_eq!(dig_required(B::Stone, 90, 99), 49, "the last jump");
+	let h = B::Stone.hardness_ticks().expect("stone is diggable");
+	for (level, want, why) in [
+		(4, 252, "still the level-1 hold"),
+		(5, 224, "the biggest jump"),
+		(9, 224, "held to the next step"),
+		(95, 51, "the 95 step"),
+		(98, 51, "held at the 95 step"),
+		(MAX_LEVEL, 49, "the last jump"),
+	] {
+		assert_eq!(dig_required(B::Stone, h, level), want, "{why}");
+	}
 }
 
 /// The decay is a FRACTION of the bar per tick, not a tick count:
@@ -271,24 +316,45 @@ fn an_abandoned_hold_bleeds_out_in_exactly_one_second() {
 	assert_eq!(dig_decayed(1, need, 1), 0);
 }
 
-/// §5.2's award table, derived from the SHIPPED hardness values — XP is
-/// fixed per action for life.
+/// §5.2's award: XP is fixed per action for life and rides hardness, so
+/// a harder block never pays less than a softer one. Asserted as that
+/// ordering plus the exemptions rather than as a table of quotients —
+/// `dig_xp` IS the hardness divided down, so the quotients only restate
+/// the division and every one of them moves when a hardness is retuned.
 #[test]
 fn dig_xp_follows_the_hardness_table() {
 	use BlockType as B;
-	for (block, xp) in [
-		(B::Snow, 1u64),
-		(B::Sand, 2),
-		(B::Dirt, 2),
-		(B::Grass, 2),
-		(B::Gravel, 2),
-		(B::Wood, 3),
-		(B::Sandstone, 3),
-		(B::Stone, 4),
-		(B::WoodSlab, 1), // a slab third pays per completed hold
-	] {
-		assert_eq!(dig_xp(block), xp, "{block:?}");
+	let mut paid = 0;
+	for &a in &BlockType::ALL {
+		let Some(ha) = a.hardness_ticks() else {
+			continue;
+		};
+		if dig_xp(a) == 0 {
+			continue;
+		}
+		paid += 1;
+		for &b in &BlockType::ALL {
+			let Some(hb) = b.hardness_ticks() else {
+				continue;
+			};
+			if dig_xp(b) > 0 && ha <= hb {
+				assert!(
+					dig_xp(a) <= dig_xp(b),
+					"{a:?} ({ha}) outpaid the harder {b:?} ({hb})"
+				);
+			}
+		}
 	}
+	assert!(
+		paid > 5,
+		"a catalog that pays for almost nothing proves nothing here"
+	);
+	// A slab is a third of a block and pays per completed hold, so it is
+	// worth less than the block it completes into.
+	assert!(
+		dig_xp(B::WoodSlab) < dig_xp(B::Wood),
+		"a slab third must not pay a whole block's award"
+	);
 	assert_eq!(dig_xp(B::Air), 0, "undiggable pays nothing");
 	// Foliage and the torch pay nothing at all — named in `dig_xp`,
 	// because the hardness scale-down alone rounds even the softest

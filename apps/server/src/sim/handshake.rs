@@ -66,9 +66,7 @@ impl Sim {
 		);
 		send_frame(
 			&out,
-			&admin::server_reply(
-				"your pre-account character on this server has been added to your account",
-			),
+			&admin::server_reply(digblock_net::messages::AdminReply::LegacyCharacterClaimed),
 		);
 		let name = client.name.clone();
 		// No forced flush, and it needs none: the store is a whole-file

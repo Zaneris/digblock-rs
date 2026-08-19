@@ -392,23 +392,45 @@ mod tests {
 			.collect()
 	}
 
+	/// Everything on the row is derived from the XP total rather than
+	/// remembered: the level reached, what is banked into it, what the
+	/// next one costs, and the mastery total. Asserted as those VALUES
+	/// reaching the screen, each read from the table that defines it —
+	/// the words around them are the screen's own label and may be
+	/// reworded freely without breaking this, which is the point.
 	#[test]
 	fn levels_bars_and_totals_derive_from_xp() {
 		let mut skills = SkillSet::default();
 		// Dead on a level boundary: nothing banked into the next step.
-		skills.set_total(Skill::Mining, skills::total_xp_for(10));
-		let dl = emit(&skills);
-		let all = texts(&dl).join("\n");
-		assert!(all.contains("MINING   LV 10"), "{all}");
-		assert!(all.contains("ALCHEMY   LV 1"), "{all}");
-		assert!(all.contains("0 / 166 XP to LV 11"), "{all}");
-		assert!(all.contains("TOTAL LEVEL 11"), "{all}");
-
-		// The cap: full bar, no "to next".
-		skills.set_total(Skill::Mining, skills::total_xp_for(99));
+		const AT: u32 = 10;
+		skills.set_total(Skill::Mining, skills::total_xp_for(AT));
 		let all = texts(&emit(&skills)).join("\n");
-		assert!(all.contains("MINING   LV 99"), "{all}");
-		assert!(all.contains("1,103,585 XP — mastered"), "{all}");
+		let need = skills::total_xp_for(AT + 1) - skills::total_xp_for(AT);
+		let total_level = AT + skills.level(Skill::Alchemy);
+		for want in [
+			group(0),
+			group(need),
+			format!("LV {AT}"),
+			format!("LV {}", AT + 1),
+			format!("LEVEL {total_level}"),
+		] {
+			assert!(all.contains(&want), "{want:?} missing from:\n{all}");
+		}
+
+		// At the cap the readout is the whole curve, and there is no
+		// next level to climb to.
+		let cap = skills::total_xp_for(skills::MAX_LEVEL);
+		skills.set_total(Skill::Mining, cap);
+		let all = texts(&emit(&skills)).join("\n");
+		assert!(all.contains(&group(cap)), "the mastery total: {all}");
+		assert!(
+			all.contains(&format!("LV {}", skills::MAX_LEVEL)),
+			"the mastery level: {all}"
+		);
+		assert!(
+			!all.contains(&format!("LV {}", skills::MAX_LEVEL + 1)),
+			"there is nothing past mastery to climb to: {all}"
+		);
 	}
 
 	/// §5.2's depth reward is READ OFF THE CORE, at the depth the player is

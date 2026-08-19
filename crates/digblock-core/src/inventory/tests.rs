@@ -116,11 +116,31 @@ fn essences_ride_the_wire_as_flagged_ids() {
 	inv.add_sub(Essence::Terra, 1);
 	inv.add_sub(Essence::Aether, 2);
 	let wire = inv.to_wire();
-	assert!(wire.contains(&(SUB_WIRE_FLAG, 54)), "Vitae flagged at 0");
-	assert!(wire.contains(&(SUB_WIRE_FLAG | 1, 1)), "Earth flagged at 1");
-	assert!(
-		wire.contains(&(SUB_WIRE_FLAG | 4, 2)),
-		"Aether flagged at 4"
+	// Two separate facts, kept apart. First: an essence rides the wire
+	// as its own index behind the flag — read off the enum, so a RENAME
+	// costs nothing here.
+	for (e, n) in [
+		(Essence::Vitae, 54),
+		(Essence::Terra, 1),
+		(Essence::Aether, 2),
+	] {
+		assert!(
+			wire.contains(&(SUB_WIRE_FLAG | e as u16, n)),
+			"{e:?} is not on the wire at its own index"
+		);
+	}
+	// Second: those indices are frozen. This one IS a literal on
+	// purpose — the numbering is a persistence format, and the two
+	// oldest slots carry the retired Material economy's records.
+	assert_eq!(
+		Essence::Vitae as u16,
+		0,
+		"Vitae holds legacy sub-wood's slot"
+	);
+	assert_eq!(
+		Essence::Terra as u16,
+		1,
+		"Terra holds legacy sub-stone's slot"
 	);
 	assert_eq!(Inventory::from_wire(&wire), inv, "round-trips");
 
@@ -130,7 +150,7 @@ fn essences_ride_the_wire_as_flagged_ids() {
 	// Terra because the Essence enum kept those indices.
 	let legacy = Inventory::from_wire(&[(SUB_WIRE_FLAG, 54), (SUB_WIRE_FLAG | 1, 27)]);
 	assert_eq!(legacy.sub_count(Essence::Vitae), 54, "sub-wood → Vitae");
-	assert_eq!(legacy.sub_count(Essence::Terra), 27, "sub-stone → Earth");
+	assert_eq!(legacy.sub_count(Essence::Terra), 27, "sub-stone → Terra");
 
 	// Unknown families (incl. the hotbar's u16::MAX-area sentinels,
 	// which never belong in inventory pairs) drop harmlessly.
@@ -166,17 +186,31 @@ fn alchemy_craft_scales_with_level() {
 	assert_eq!(inv.count(BlockType::LumberDoor), 2, "one cube, two leaves");
 	assert_eq!(inv.count(BlockType::WoodStairs), 2);
 	assert_eq!(inv.count(BlockType::Wood), 0, "three cubes consumed");
-	assert_eq!(
-		inv.sub_count(Essence::Vitae),
-		20 - 3 * 4,
-		"ceil(3·1.05) each"
-	);
+	// What the four crafts cost is asked of the curve, not multiplied
+	// out here: the markup is `alchemy`'s to retune, and a product
+	// written down beside it is that retune's second edit.
+	let line = |item: BlockType| -> u32 {
+		crate::alchemy::craft_ideal(item)
+			.expect("craftable")
+			.iter()
+			.map(|&(_, n)| crate::alchemy::craft_cost(n, crate::skills::MAX_LEVEL))
+			.sum()
+	};
+	let spent = line(BlockType::LumberDoor) + 2 * line(BlockType::WoodStairs);
+	assert_eq!(inv.sub_count(Essence::Vitae), 20 - spent);
 
 	// The bottom of the curve: the steepest waste, so the same essence
 	// buys less — and no timber refuses outright.
 	let mut low = Inventory::default();
 	low.add(BlockType::Wood, 1);
-	low.add_sub(Essence::Vitae, 4);
+	// Exactly one short of what a novice pays — derived, so the fixture
+	// tracks the curve instead of pinning a moment of it.
+	let novice = crate::alchemy::craft_ideal(BlockType::WoodSlab)
+		.expect("craftable")
+		.iter()
+		.map(|&(_, n)| crate::alchemy::craft_cost(n, 1))
+		.sum::<u32>();
+	low.add_sub(Essence::Vitae, novice - 1);
 	assert!(
 		!apply_alchemy(
 			&mut low,
@@ -186,7 +220,7 @@ fn alchemy_craft_scales_with_level() {
 			},
 			1
 		),
-		"the catalyst costs ceil(3·1.60) = 5 > 4"
+		"a novice's markup puts the catalyst out of reach"
 	);
 	low.add_sub(Essence::Vitae, 1);
 	assert!(apply_alchemy(
@@ -309,8 +343,16 @@ fn multi_essence_crafts_never_half_charge() {
 	));
 	assert_eq!(inv.count(BlockType::Torch), 1);
 	assert_eq!(inv.count(BlockType::Wood), 0, "the stick is spent");
-	assert_eq!(inv.sub_count(Essence::Vitae), 100 - 3, "ceil(2·1.05)");
-	assert_eq!(inv.sub_count(Essence::Terra), 6 - 3, "ceil(2·1.05)");
+	let torch = crate::alchemy::craft_ideal(BlockType::Torch).expect("craftable");
+	let paid = |e: Essence| -> u32 {
+		torch
+			.iter()
+			.find(|(k, _)| *k == e)
+			.map(|&(_, n)| crate::alchemy::craft_cost(n, crate::skills::MAX_LEVEL))
+			.expect("the torch has this line")
+	};
+	assert_eq!(inv.sub_count(Essence::Vitae), 100 - paid(Essence::Vitae));
+	assert_eq!(inv.sub_count(Essence::Terra), 6 - paid(Essence::Terra));
 }
 
 /// The bucket charge is never crafted: water is something the world

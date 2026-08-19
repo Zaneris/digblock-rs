@@ -41,18 +41,33 @@ fn shade(tint: u32, f: f32) -> u32 {
 	(tint & 0xFF00_0000) | ch(16) | ch(8) | ch(0)
 }
 
+/// How far from the eye a face sits, along the fixed (+x, +y, +z) view
+/// axis. One definition, so the order `emit` draws in and the order a
+/// test can check are the same order.
+fn depth_key(q: &item_geom::ItemFace) -> i32 {
+	q.corners.iter().map(|c| c[0] + c[1] + c[2]).sum()
+}
+
+/// The visible faces of `kind`, far first — painter's order.
+///
+/// One fixed viewpoint means half the geometry is provably behind the
+/// rest: it is dropped before sorting rather than overdrawn.
+fn painter_order(kind: IconKind) -> Vec<item_geom::ItemFace> {
+	let mut quads: Vec<item_geom::ItemFace> = item_geom::faces(kind)
+		.into_iter()
+		.filter(|q| visible(q.dir))
+		.collect();
+	quads.sort_by_key(depth_key);
+	quads
+}
+
 /// Emit `kind` as a 3D icon filling `rect`. Faces are painter-sorted
 /// far-to-near; `tint`'s RGB is scaled by the per-face shading.
 pub fn emit(dl: &mut DrawList, layer: Layer, rect: Rect, kind: IconKind, tint: u32) {
 	// One fixed viewpoint means half the geometry is provably behind
 	// the rest: drop it before sorting rather than overdrawing it.
-	let mut quads: Vec<item_geom::ItemFace> = item_geom::faces(kind)
-		.into_iter()
-		.filter(|q| visible(q.dir))
-		.collect();
+	let quads = painter_order(kind);
 	let height = item_geom::height(kind);
-	// Painter's order: corner-sum depth key, far (small) first.
-	quads.sort_by_key(|q| q.corners.iter().map(|c| c[0] + c[1] + c[2]).sum::<i32>());
 
 	// 2:1 dimetric: sx = x − z ∈ [−12, 12]; sy = (x + z)/2 − y ∈
 	// [−height, 12]. Screen y grows downward, so higher y rises.
@@ -127,23 +142,41 @@ mod tests {
 		}
 		// Exactly the three face shades appear (white base tint).
 		let tints: Vec<u32> = quads.iter().map(|(_, _, t)| *t).collect();
-		for f in [1.0, 0.85, 0.78] {
-			assert!(tints.contains(&shade(0xFFFF_FFFF, f)), "missing shade {f}");
+		for d in digblock_core::dir::DIRS.iter().filter(|d| visible(**d)) {
+			assert!(
+				tints.contains(&shade(0xFFFF_FFFF, face_shade(*d))),
+				"missing the {d:?} face's shade"
+			);
 		}
 		// Top face uses the top texture.
 		let top = BlockType::Dirt.props().tex_top;
 		assert!(quads.iter().any(|(_, l, _)| *l == top));
 	}
 
+	/// A stair is the shape that needs painter's order: its treads sit at
+	/// different depths and overdraw each other, which a cube's three
+	/// mutually-disjoint faces never do. Without the sort the near tread
+	/// is painted first and the far one covers it.
 	#[test]
 	fn stairs_emit_multiple_front_faces_far_to_near() {
+		let order = painter_order(IconKind::Shaped(BlockType::WoodStairs));
+		let depths: Vec<i32> = order.iter().map(depth_key).collect();
+		let mut sorted = depths.clone();
+		sorted.sort_unstable();
+		assert_eq!(depths, sorted, "faces are not drawn far-to-near");
+		assert!(
+			depths.first() < depths.last(),
+			"every face sits at one depth, so the order proves nothing: {depths:?}"
+		);
+
 		let quads = emitted(IconKind::Shaped(BlockType::WoodStairs), 0xFFFF_FFFF);
 		assert!(quads.len() > 3, "a stair silhouette is more than a cube");
 		// No quad may use a back-face shade value (only the three
 		// visible shades exist).
-		let allowed: Vec<u32> = [1.0, 0.85, 0.78]
+		let allowed: Vec<u32> = digblock_core::dir::DIRS
 			.iter()
-			.map(|&f| shade(0xFFFF_FFFF, f))
+			.filter(|d| visible(**d))
+			.map(|&d| shade(0xFFFF_FFFF, face_shade(d)))
 			.collect();
 		assert!(quads.iter().all(|(_, _, t)| allowed.contains(t)));
 	}

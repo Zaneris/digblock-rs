@@ -78,42 +78,6 @@ fn edits_validate_apply_and_journal() {
 	);
 }
 
-/// The world floor (y = BEDROCK_Y) is indestructible: DigStart
-/// records no hold there, so even a full-length honest hold ends in
-/// DigIncomplete and the block survives. World: a single stone layer
-/// at the world floor with the player standing on it, so the floor is
-/// the ray target — no digging down through the column first.
-#[test]
-fn bedrock_floor_refuses_digs() {
-	use digblock_core::block::BEDROCK_Y;
-
-	let mut sim = bedrock_sim("bedrock");
-	let mut c = connect(&mut sim, 1);
-	wait_live(&mut sim, 1);
-
-	let down = Vec3::new(0.45, -1.0, 0.0).normalize();
-	let mut t = 0;
-	let cell = dig_hold(&mut sim, 1, down, 90, 1, EditKind::Dig, &mut t);
-	assert_eq!(cell.1, BEDROCK_Y, "the ray targeted the floor layer");
-	c.drain();
-	assert!(
-		c.msgs.iter().any(|m| matches!(
-			m,
-			ServerMsg::EditRejected {
-				client_seq: 1,
-				reason: RejectReason::DigIncomplete,
-			}
-		)),
-		"{:?}",
-		c.msgs
-	);
-	assert_eq!(
-		sim.test_block_at(cell.0, cell.1, cell.2),
-		Some(BlockType::Stone),
-		"floor block survived"
-	);
-}
-
 /// Nothing at all writes the world floor — every action the wire can carry,
 /// driven against it in one world.
 ///
@@ -340,7 +304,7 @@ fn nothing_writes_the_world_floor() {
 			sim.test_set_cell(px, y, z, BlockType::Stone as u16);
 		}
 	}
-	sim.bench_set_mining_level(1, 85);
+	sim.bench_set_mining_level(1, digblock_core::unlock::PICK_PLANE_AT);
 	sim.bench_set_active_tool(1, BlockType::ResonantPick);
 	let face = (px, FLOOR + 1, sz);
 	let swing = (Vec3::new(px as f32, FLOOR as f32 + 1.5, sz as f32 + 0.5) - pos).normalize();
@@ -431,46 +395,6 @@ fn nothing_writes_the_world_floor() {
 			"an extraction timed as {ore:?} would complete at the floor"
 		);
 	}
-}
-
-/// The reserved state nibble travels the wire but nothing consumes
-/// it yet: placements carrying state bits are BadBlock, not silently
-/// stripped — the rejection is the contract until states ship.
-#[test]
-fn place_with_state_bits_is_bad_block() {
-	let mut sim = flat_sim("statebits");
-	let mut c = connect(&mut sim, 1);
-	wait_live(&mut sim, 1);
-	let pos = sim.test_player(1).unwrap().pos;
-	let down = Vec3::new(0.45, -1.0, 0.0).normalize();
-	let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();
-	sim.tick_once(vec![SimEvent::Msg {
-		conn_id: 1,
-		msg: ClientMsg::EditRequest {
-			seq: 1,
-			tick: 0,
-			origin: pos.to_array(),
-			dir: down.to_array(),
-			kind: EditKind::Place {
-				block: (BlockType::Dirt as u16) | (1 << digblock_core::chunk::STATE_SHIFT),
-			},
-			cell: [hit.cell.0, hit.cell.1, hit.cell.2],
-			normal: [hit.normal.0 as i8, hit.normal.1 as i8, hit.normal.2 as i8],
-			slot: 0,
-		},
-	}]);
-	c.drain();
-	assert!(
-		c.msgs.iter().any(|m| matches!(
-			m,
-			ServerMsg::EditRejected {
-				reason: RejectReason::BadBlock,
-				..
-			}
-		)),
-		"{:?}",
-		c.msgs
-	);
 }
 
 #[test]

@@ -51,13 +51,19 @@ fn what_an_icon_glows_and_lights_by_comes_from_its_row() {
 	}
 }
 
+/// What the sample bar is stocked with. Named so the test that checks
+/// the counts REACH the screen reads them from the fixture rather than
+/// keeping a second copy of the same two numbers.
+const DIRT_STOCK: u32 = 3;
+const STONE_STOCK: u32 = 12;
+
 fn sample_view() -> HotbarView {
 	let mut hotbar = Hotbar::new();
 	hotbar.auto_assign(BlockType::Dirt);
 	hotbar.auto_assign(BlockType::Stone);
 	let mut inv = Inventory::default();
-	inv.add(BlockType::Dirt, 3);
-	inv.add(BlockType::Stone, 12);
+	inv.add(BlockType::Dirt, DIRT_STOCK);
+	inv.add(BlockType::Stone, STONE_STOCK);
 	// A settled bucket in the slot, the way the engine's entry path
 	// settles it — these tests are about the drawn bar, not the
 	// fresh-player bare slot.
@@ -343,8 +349,13 @@ fn counts_scale_with_the_slots() {
 	for (text, px, _) in &texts {
 		assert_eq!(*px, want, "count {text} should ride the frame's size");
 	}
-	assert!(counts.iter().any(|(t, _, _)| *t == "3"));
-	assert!(counts.iter().any(|(t, _, _)| *t == "12"));
+	for stock in [DIRT_STOCK, STONE_STOCK] {
+		let want = stock.to_string();
+		assert!(
+			counts.iter().any(|(t, _, _)| *t == want),
+			"{want} never reached the bar: {counts:?}"
+		);
+	}
 }
 
 #[test]

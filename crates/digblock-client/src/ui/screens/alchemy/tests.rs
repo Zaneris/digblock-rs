@@ -158,11 +158,14 @@ fn a_transmute_batch_drips_instead_of_paying_at_once() {
 	// runs, and the modifier legend again once it stops.
 	rebuild(&mut r);
 	let text = text_of(&r);
+	// The queue's own count reaches the row — asserted as the ARGUMENT
+	// arriving, not as the sentence around it, so the row may be
+	// reworded without touching this.
+	let (_, left) = r.screen.crafting.expect("a batch is running");
 	assert!(
-		text.contains("9 LEFT"),
-		"the batch says what is left: {text}"
+		text.contains(&left.to_string()),
+		"the batch never says what is left: {text}"
 	);
-	assert!(!text.contains("CLICK 1"), "the legend steps aside: {text}");
 
 	// The background bench: closing the screen keeps the queue, and
 	// the drip keeps sending. Only leaving the world abandons.
@@ -329,11 +332,31 @@ fn the_vessels_craft_from_timber_at_level_one() {
 	let wood = r.inv.count(B::Wood);
 	assert!(r.inv.try_take(B::Wood, wood), "drain the timber");
 	rebuild(&mut r);
-	let text = text_of(&r);
-	assert!(
-		text.contains("MORE WOOD"),
-		"the strip names the missing timber: {text}"
+	assert_eq!(
+		strip_reason(&r.view, B::Bucket),
+		StripReason::Short {
+			of: ShortOf::Feedstock(B::Wood),
+			more: alchemy::craft_feedstock(B::Bucket)
+				.iter()
+				.find(|(f, _)| *f == B::Wood)
+				.map(|&(_, n)| n)
+				.expect("the bucket is priced in timber")
+		},
+		"the strip must name the missing TIMBER, not an essence that cannot help"
 	);
+	// And the reason's arguments reach the words: what is missing, and
+	// how much more of it. Asserted as containment, so the line may be
+	// reworded without touching this — a dropped argument still fails.
+	let text = text_of(&r);
+	let StripReason::Short { of: _, more } = strip_reason(&r.view, B::Bucket) else {
+		panic!("just asserted a shortfall");
+	};
+	for want in [more.to_string(), B::Wood.name().to_uppercase()] {
+		assert!(
+			text.contains(&want),
+			"{want:?} missing from the strip: {text}"
+		);
+	}
 	assert!(
 		r.hits.rect_of(InvId::CraftGo).is_none(),
 		"no button with nothing to pay"
@@ -660,7 +683,10 @@ fn an_owned_tool_is_no_longer_on_offer() {
 		r.hits.rect_of(InvId::CraftGo).is_none(),
 		"no button on an item that cannot be crafted"
 	);
-	let text = text_of(&r);
-	assert!(text.contains("ALREADY OWNED"), "the strip explains: {text}");
-	assert!(!text.contains("NEED"), "a cap is not a shortfall: {text}");
+	// A full cap is not a shortfall: naming a price here would send the
+	// player off to gather something that cannot help.
+	assert_eq!(
+		strip_reason(&r.view, B::ResonantPick),
+		StripReason::AtCap { tool: true }
+	);
 }
