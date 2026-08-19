@@ -1043,11 +1043,83 @@ sweep, iOS the coarsest resolve.
 
 ## Invariants
 
+The ones that bite if broken. CLAUDE.md points here rather than restating them.
+
+**Buffers and history**
+
 - The voxel window is DERIVED data: never serialized, never on the wire; device loss rebuilds it by re-upload + age
-  reset (drill-tested).
-- Classification is a pure function of the cell value — headless tests pin it.
+  reset (drill-tested). Classification is a pure function of the cell value, pinned headless.
 - Everything the rays read (window, LUT, coarse, light list, atlases) lives on the GPU; the CPU never reads probes back.
-- Flag-off builds are bit-identical to the old system (P0 bench gate).
+- **The accumulator must be rgba32f** (`gi::GI_ACC_FORMAT`). A half-float's mantissa is too short to resolve the
+  smallest update a converged history can make, so it rounds to zero and every pixel freezes where it stood
+  (`history_format_resolves_the_accumulator`).
+- **The two lighting pairs have FIXED roles, not ping-pong**: `[0] ←resolve→ atrous(1) → [1] → atrous(2) → [0] →scene`.
+  That leaves the once-filtered image parked in `[1]` as next frame's history, which is what SVGF feeds back.
+- **History length `n` rides the sun target's g channel**, packed above the face code (`packed_metadata_stays_exact`),
+  because WebGPU's per-attachment byte budget is spent. Every reader masks the code back out.
+- **The history fetch is bilinear, per-tap validated on face code and view distance, and `n` is two-state** — snapped
+  onto the lattice, or `N_MOVING`. Travel is not zero at rest (R13). `a_moving_pixel_always_gets_the_spatial_filter`
+  pins `N_MOVING < N_CONVERGED`.
+- **No moments buffer.** Both estimators have an analytic variance from data already stored, which saves a ping-ponged
+  rgba32f and cannot drift out of step with the accumulator.
+
+**Transport and thresholds**
+
+- **Sun thresholds are in RADIANCE** (`SUN_MIN_L`, weight × `light_color`), never a bare blend weight. There is no
+  tonemap, so a weight that looks negligible against an HDR sky is a large error in the light it admits (R21).
+- **Twilight strength (`light_dir.w`) multiplies the LIGHT, never the shadow.**
+  `mix(vec3f(1.0), visibility,
+  light_dir.w)` is the shadow-map-era form; against a traced visibility it returns 1.0 as
+  strength falls, lighting every caster-facing surface at twilight through walls.
+- **Water writes OPAQUE** (R25). The fragment samples `scene_tex` and runs the whole transport across `thick`, so
+  `back + surf` already IS the backdrop. Alpha is the falling-sheet streak gate alone.
+- **`medium_common.wgsl` is the one participating medium**, with L_in = `sky_base`, the same function the sky pass
+  draws, so terrain fades into exactly the sky pixel behind it and the streaming rim disappears. It is the ONLY water
+  extinction — `gi_sun_vis` returns a water PATH LENGTH so the sun ray and the view ray cannot disagree. There is no
+  fog, no INDIRECT_K, no tonemap.
+- **Unproven daylight fades with depth** (R32). A march that PROVES open sky answers full daylight at any depth; every
+  answer given on no data multiplies by `medium_sky_fade`, whose top edge equals `SEA_LEVEL` and saturates there — so
+  the surface world is bit-identical by construction and only underground goes honestly dark.
+
+**The DDA**
+
+- **`gi_dda.wgsl` is the one DDA**, dependency-free so the compute kernels can share it. It owns the two-level brick
+  skip, the sky ceiling test (R18), `gi_lateral_max` and `gi_boxes_hit` (R16). Every partial cell blocks only where its
+  boxes stand, emitters included. **Every march steps BEFORE it tests**, since a shaped block's surface lies inside its
+  own opaque cell.
+- **Per-block tint multiplies albedo, never light** (R23). The à-trous filter and the accumulator only see the lighting
+  buffers, so a per-block step in the light is a signal they are built to smooth away. Structurally excluded from ink.
+
+**Emitters**
+
+- Light is three independent block properties: `emissive` (the `glows` builder — fullbright ink), `light`
+  (`emits(level)` — the cast level), and `surface_light` (`seams(level)`, R31) which radiates from exposed FACES rather
+  than the cell centre. `gi::classify_chunk` places no point source for a `seams` block; the MESHER hands the renderer
+  merged rectangles instead, because it is the one pass holding the ore reveal, face exposure and the neighbour shell at
+  once. **Every node row is `seams` and nothing else is** — buried rock must light nothing, and a point light one course
+  behind a wall leaks through it.
+- `LIGHT_RANGE`/`LIGHT_GAIN`/`LIGHT_NEAR` are pinned across both shaders by
+  `resolve_and_probe_agree_on_light_calibration`. Both gains are stopgaps for the missing tonemap, which cannot simply
+  be appended — the offscreen scene colour uses the SURFACE format, so radiance is already clamped at the scene pass.
+- **An ink texture is authored for fullbright, not for lit** (R29). A pale one has no headroom left to take
+  `emissive_ink`'s gain and clips on all three channels.
+- NEE's stop-short margin is NOT a constant: `gi_light_margin` is the light's distance to the farthest corner of its own
+  cell (R26), asked through `gi_light_margin_of`, which answers **zero** for a light with no cell of its own
+  (`GI_LIGHT_CARRIED` — a carried light's origin is on its carrier's capsule axis, so a wall half a block away is meant
+  to block it) and only `GI_LIGHT_SLACK` for a RECTANGLE, whose sample point already sits on the rock face.
+- **Direct light has exactly one PRICE**, and the light list lives on the shared gather group so nothing can quote a
+  different one: the gather returns no emitter radiance at all, and `gi_light_score` is what every NEE selects on. What
+  differs is how much of the pool one fragment dares put on a single ray — the resolve resamples through a one-pass
+  reservoir (R27), players run `sum_lights` because **nothing filters a body** (R33, R34), and confetti prices per flake
+  in the VERTEX stage with the ZERO normal `gi_light_score` reads as isotropic.
+- **A carried light is an ordinary entry in that same list** (R28) — no second lighting path, which is what gives it
+  bounce, hard shadows, water response and a lit hand for free. It hangs at `gi::carried_origin(eye)`, a function of
+  POSITION and not facing, so mouse-look cannot move it and a player standing still is not a moving emitter. Motion is
+  expressed as re-placement, and the trigger is a DISTANCE, never a cell crossing (which on a boundary fires every frame
+  for a player going nowhere). **Putting a light OUT re-places it too**, which covers a swap, a disconnect and a remote
+  leaving the snapshot.
+- `emissive_ink` in `ink_common.wgsl` is the one ink function, prepended to chunk/viewmodel/players so a `glows` block
+  reads the same in the world, in your hand and in somebody else's (`every_pass_that_draws_ink_shares_one_gain`).
 
 ## Test pins (grown per phase)
 
