@@ -55,7 +55,7 @@ blocks! {
 	/// whole — the mountain's own is the only one that breaks.
 	Stone = 5 => mat(crumbles(dig(carveable(props(RenderClass::Opaque, true, tex::STONE, tex::STONE, tex::STONE)), 90, DigFamily::Rock), BlockType::Rubble), Material::Stone),
 	Wood = 6 => mat(dig(props(RenderClass::Opaque, true, tex::LOG, tex::LOG_TOP, tex::LOG_TOP), 60, DigFamily::Wood), Material::Wood),
-	Leaves = 7 => mat(dig(props(RenderClass::Cutout, true, tex::LEAVES, tex::LEAVES, tex::LEAVES), 10, DigFamily::Fixed), Material::Leaf),
+	Leaves = 7 => mat(dig(props(RenderClass::Opaque, true, tex::LEAVES, tex::LEAVES, tex::LEAVES), 10, DigFamily::Fixed), Material::Leaf),
 	Snow = 8 => mat(dig(carveable(props(RenderClass::Opaque, true, tex::SNOW, tex::SNOW, tex::SNOW)), 15, DigFamily::Soft), Material::Snow),
 	/// Flowing water, from the thinnest up to just under a source. Spread
 	/// sideways from a source or a landed fall, thinning as it goes
@@ -76,7 +76,7 @@ blocks! {
 	/// Steep-shore and scree surface: loose pebbled rock.
 	Gravel = 19 => mat(dig(carveable(props(RenderClass::Opaque, true, tex::GRAVEL, tex::GRAVEL, tex::GRAVEL)), 45, DigFamily::Rock), Material::Gravel),
 	/// Conifer foliage; a structure block like Leaves, so not carveable.
-	PineLeaves = 20 => mat(dig(props(RenderClass::Cutout, true, tex::PINE_LEAVES, tex::PINE_LEAVES, tex::PINE_LEAVES), 10, DigFamily::Fixed), Material::PineLeaf),
+	PineLeaves = 20 => mat(dig(props(RenderClass::Opaque, true, tex::PINE_LEAVES, tex::PINE_LEAVES, tex::PINE_LEAVES), 10, DigFamily::Fixed), Material::PineLeaf),
 	/// The stratum under sandy floors (ocean, beach, river, lake beds).
 	/// "All broken rock": mined sandstone crumbles to Rubble too, so clean
 	/// sandstone is bench work exactly as clean stone is, and for the same
@@ -353,7 +353,8 @@ pub enum RenderClass {
 	/// Solid mesh; occludes neighbor faces.
 	Opaque,
 	/// Solid mesh; does not occlude; culls faces against same-type
-	/// neighbors (leaves-style).
+	/// neighbors. Memberless today — reserved as glass's likely class
+	/// (SKILLS-DESIGN §12).
 	Cutout,
 	/// Water mesh (alpha-blended, no depth write); emits faces only toward
 	/// `None` neighbors; culls same-type; top faces get the surface lip.

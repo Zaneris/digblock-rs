@@ -1257,28 +1257,27 @@ fn every_quad_winds_in_face_corner_order() {
 }
 
 #[test]
-fn cutout_culls_same_type_but_not_others() {
-	// Two adjacent leaves over dirt: the shared leaf|leaf face pair is
-	// culled, leaves never occlude the dirt below, and dirt (Opaque)
-	// occludes nothing of itself.
+fn leaves_mesh_as_solid_blocks() {
+	// Two adjacent leaves over dirt: the shared leaf|leaf pair culls,
+	// and the leaf|dirt pair culls BOTH ways — a leaf texture has no
+	// transparent texel, so nothing may show through one and no face
+	// under one is worth emitting.
 	let mut d = ChunkData::default();
 	d.set(8, 8, 8, B::Leaves);
 	d.set(9, 8, 8, B::Leaves);
 	d.set(8, 7, 8, B::Dirt);
 	let m = mesh_chunk(&isolated(&d));
-	assert!(m.water.is_empty(), "cutout meshes into the solid bucket");
+	assert!(m.water.is_empty(), "leaves mesh into the solid bucket");
 	let layer_of = |p: &[u32]| p[1] & 0x3ff;
 	let leaf = u32::from(B::Leaves.props().tex_side);
 	let dirt = u32::from(B::Dirt.props().tex_side);
 	let leaf_faces = m.solid.chunks(2).filter(|p| layer_of(p) == leaf).count() / 4;
 	let dirt_faces = m.solid.chunks(2).filter(|p| layer_of(p) == dirt).count() / 4;
-	// Leaf A loses two faces — its leaf neighbor culls the shared one
-	// and the dirt below occludes its bottom; Leaf B loses only the
+	// Leaf A loses the shared face and its bottom; leaf B only the
 	// shared one.
 	assert_eq!(leaf_faces, 9);
-	// The dirt keeps every face: its top shows through the
-	// non-occluding leaf.
-	assert_eq!(dirt_faces, 6);
+	// The dirt's top face culls under the solid leaf.
+	assert_eq!(dirt_faces, 5);
 }
 
 #[test]

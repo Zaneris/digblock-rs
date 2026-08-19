@@ -125,8 +125,8 @@ impl BlockTextures {
 	}
 }
 
-/// Alpha-weighted mean color (cutout textures like leaves must not
-/// average toward their transparent filler).
+/// Alpha-weighted mean color, so a texture with transparent filler
+/// never averages toward it.
 fn mean_rgb(img: &image::RgbaImage) -> [u8; 3] {
 	let (mut sum, mut weight) = ([0u64; 3], 0u64);
 	for p in img.pixels() {
