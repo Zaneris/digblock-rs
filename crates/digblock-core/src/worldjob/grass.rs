@@ -11,10 +11,12 @@
 use glam::Vec3;
 
 use super::{Candidates, CellSource, Schedule, Scope, WorldJob};
-use crate::block::BlockType;
-use crate::chunk::{WORLD_VBLOCK, cell_id};
+use crate::block::{BlockType, RenderClass};
+use crate::chunk::{WORLD_VBLOCK, cell_id, cell_state};
+use crate::dir::Dir;
 use crate::gi::{self, GiOpacity};
 use crate::raycast;
+use crate::shapes;
 use crate::sun::{Sun, TOD_START};
 use crate::worldgen;
 
@@ -85,6 +87,27 @@ pub fn jobs() -> [Box<dyn WorldJob>; 3] {
 		Box::new(GrassSpread::at_hour(noon, "grass-noon")),
 		Box::new(GrassSpread::at_hour(afternoon, "grass-3pm")),
 	]
+}
+
+/// The rule's inverse half: a placed cell that seals the cell below off
+/// from the sky starves the grass there back to Dirt. "Seals" is the
+/// mesher's culling answer — a cover smothers exactly when the grass top
+/// face stops being drawn (pinned against a real mesh) — so water and
+/// open undersides spare it. Both arms apply the write as a
+/// CONSEQUENCE of a place, never a predicted or validated part of one.
+pub fn smothered_by(placed: u16, below: u16) -> Option<u16> {
+	let b = BlockType::from_id(cell_id(placed));
+	let seals = match b.props().class {
+		RenderClass::Opaque => true,
+		RenderClass::Shaped => shapes::shape_of(b, cell_state(placed))
+			.is_some_and(|v| v.occludes_full[Dir::Bottom as usize]),
+		_ => false,
+	};
+	let living = matches!(
+		BlockType::from_id(cell_id(below)),
+		BlockType::Grass | BlockType::DryGrass
+	);
+	(seals && living).then_some(BlockType::Dirt as u16)
 }
 
 /// Strictly the empty cell: water or any occupant refuses, and so does

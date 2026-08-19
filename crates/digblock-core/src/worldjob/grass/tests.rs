@@ -252,3 +252,86 @@ fn every_registration_keeps_the_sun_above_the_horizon() {
 	names.dedup();
 	assert_eq!(names.len(), roster.len(), "registrations share a name");
 }
+
+/// `smothered_by` and the mesher must name ONE set of covers: a cover
+/// smothers exactly when the mesh stops drawing the grass top face
+/// under it. Swept over every block × valid state against a real mesh
+/// — an independent oracle — so a shape whose underside opens (or a
+/// class change that seals one) moves both sides or fails here. Both
+/// outcomes counted, or a sweep of spared covers would pass vacuously.
+#[test]
+fn a_cover_smothers_exactly_when_it_culls_the_grass_top_face() {
+	use crate::chunk::{ChunkData, make_cell};
+	use crate::mesher::{MeshInput, Src, mesh_chunk};
+	let grass = BlockType::Grass as u16;
+	let (mut smothering, mut sparing) = (0u32, 0u32);
+	for b in BlockType::ALL {
+		for state in 0..16u8 {
+			let cell = make_cell(b, state);
+			if b == BlockType::Air || !shapes::state_valid(cell) {
+				continue;
+			}
+			let mut d = ChunkData::default();
+			d.set(8, 8, 8, BlockType::Grass);
+			d.set_cell(8, 9, 8, cell);
+			let m = mesh_chunk(&MeshInput::build(&d, |_, _, _| Src::Missing));
+			// The grass top face: dir Top, every corner on the shared
+			// plane (y = 9 blocks, in twelfths).
+			let top_drawn = m.solid.chunks(8).any(|q| {
+				(q[0] >> 24) & 0x7 == Dir::Top as u32
+					&& q.chunks(2).all(|p| (p[0] >> 8) & 0xff == 9 * 12)
+			});
+			let smothers = smothered_by(cell, grass).is_some();
+			assert_eq!(smothers, !top_drawn, "{b:?} state {state}");
+			if smothers {
+				smothering += 1;
+			} else {
+				sparing += 1;
+			}
+		}
+	}
+	assert!(smothering > 0 && sparing > 0, "one-sided sweep");
+}
+
+/// The cycle closes for both spreaders: what the sweep greens, a
+/// sealing place turns back into the very block the sweep hunts — so an
+/// uncovered cell is a candidate again, and the covering edit itself
+/// feeds the frontier. Winners DERIVED by running the rule, never named.
+#[test]
+fn a_smothered_spread_returns_to_the_candidate_set() {
+	let job = noon();
+	let slots = [(1, 64, 0), (-1, 64, 0), (0, 64, 1), (0, 64, -1)];
+	for (kind, min) in [
+		(BlockType::Grass, GRASS_MIN_NEIGHBORS),
+		(BlockType::DryGrass, DRY_MIN_NEIGHBORS),
+	] {
+		let mut w = Pocket::airy();
+		w.set(AT, BlockType::Dirt);
+		for s in &slots[..min as usize] {
+			w.set(*s, kind);
+		}
+		let win = job.apply(AT, &w, SEED, 0).expect("a lit spread");
+		let dirt = smothered_by(BlockType::Stone as u16, win).expect("stone seals");
+		assert!(
+			job.scope()
+				.blocks
+				.contains(&BlockType::from_id(cell_id(dirt))),
+			"{kind:?}"
+		);
+	}
+}
+
+/// The deliberate exclusions, pinned by name: a cover you can see past
+/// — a poured source, a torch — leaves grass alive. The mesh sweep
+/// would follow a reclassified block's culling and agree with the bug;
+/// this names the two the design calls out.
+#[test]
+fn water_and_torches_never_smother() {
+	for b in [BlockType::Water, BlockType::Torch] {
+		assert_eq!(
+			smothered_by(b as u16, BlockType::Grass as u16),
+			None,
+			"{b:?}"
+		);
+	}
+}

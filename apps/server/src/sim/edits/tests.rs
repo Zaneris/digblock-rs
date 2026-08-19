@@ -2734,3 +2734,102 @@ fn an_ordinary_dig_start_is_not_answered() {
 		c.msgs
 	);
 }
+
+/// A sealing place starves the grass beneath it into dirt, journaled
+/// and broadcast as the SERVER's own consequence; a poured source — a
+/// cover you can see past — leaves the turf alive. Both halves land on
+/// staged grass via the top face the server's own ray finds.
+#[test]
+fn a_place_smothers_the_grass_beneath() {
+	use digblock_net::protocol::SERVER_ID;
+	let mut sim = flat_sim("smother");
+	let mut c = connect(&mut sim, 1);
+	wait_live(&mut sim, 1);
+	let pos = sim.test_player(1).unwrap().pos;
+
+	// Two turf cells, one per ray, each met on its TOP face so the
+	// placement lands directly above the grass.
+	let mut turf_under = |out: Vec3| {
+		let hit = raycast(pos, out, REACH, &|x, y, z| sim.test_cell_at(x, y, z))
+			.expect("ground in reach");
+		assert_eq!(
+			hit.normal,
+			(0, 1, 0),
+			"the shot must land on top of the turf"
+		);
+		sim.test_set_cell(hit.cell.0, hit.cell.1, hit.cell.2, BlockType::Grass as u16);
+		hit.cell
+	};
+	let stone_turf = turf_under(Vec3::new(3.0, -2.0, 0.0).normalize());
+	let water_turf = turf_under(Vec3::new(-3.0, -2.0, 0.0).normalize());
+	let place =
+		|seq: u32, out: Vec3, cell: (i32, i32, i32), b: BlockType, slot: u8| SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::EditRequest {
+				seq,
+				tick: 0,
+				origin: pos.to_array(),
+				dir: out.to_array(),
+				kind: EditKind::Place { block: b as u16 },
+				cell: [cell.0, cell.1, cell.2],
+				normal: [0, 1, 0],
+				slot,
+			},
+		};
+
+	sim.test_grant(1, BlockType::Stone, 1);
+	sim.tick_once(vec![place(
+		1,
+		Vec3::new(3.0, -2.0, 0.0).normalize(),
+		stone_turf,
+		BlockType::Stone,
+		0,
+	)]);
+	assert_eq!(
+		sim.test_block_at(stone_turf.0, stone_turf.1 + 1, stone_turf.2),
+		Some(BlockType::Stone)
+	);
+	assert_eq!(
+		sim.test_block_at(stone_turf.0, stone_turf.1, stone_turf.2),
+		Some(BlockType::Dirt),
+		"a sealing cover smothers"
+	);
+	c.drain();
+	let smother = c.msgs.iter().find_map(|m| match m {
+		ServerMsg::EditApplied { by, edit, .. }
+			if *by == SERVER_ID && (edit.x, edit.y, edit.z) == stone_turf =>
+		{
+			Some(edit.block)
+		}
+		_ => None,
+	});
+	assert_eq!(
+		smother,
+		Some(BlockType::Dirt as u16),
+		"the consequence broadcasts as the server's own edit"
+	);
+
+	// The pour: water above the turf, and the grass lives.
+	sim.bench_set_active_tool(1, BlockType::Bucket);
+	sim.clients
+		.get_mut(&1)
+		.unwrap()
+		.inventory
+		.add(BlockType::Water, 1);
+	sim.tick_once(vec![place(
+		2,
+		Vec3::new(-3.0, -2.0, 0.0).normalize(),
+		water_turf,
+		BlockType::Water,
+		digblock_core::hotbar::HOTBAR_SLOTS as u8 - 1,
+	)]);
+	assert_eq!(
+		sim.test_block_at(water_turf.0, water_turf.1 + 1, water_turf.2),
+		Some(BlockType::Water)
+	);
+	assert_eq!(
+		sim.test_block_at(water_turf.0, water_turf.1, water_turf.2),
+		Some(BlockType::Grass),
+		"a poured source never smothers"
+	);
+}

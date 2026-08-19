@@ -784,6 +784,33 @@ impl Sim {
 				self.apply_write(cell, val, prev, id, 0, false);
 			}
 		}
+
+		// A sealing cover starves the grass beneath it back to dirt
+		// (`grass::smothered_by`). Applied in the world-job sweep's style
+		// — skip-on-protected, skip-on-nonresident, SERVER_ID — and only
+		// AFTER the action has landed, never as part of it: a smother
+		// must not be able to reject a place, and the client deliberately
+		// does not predict it, so this broadcast is its one delivery.
+		if place_cell.is_some() {
+			let lock = self.spawn_lock();
+			for &(cell, val) in &writes {
+				let below = (cell.0, cell.1 - 1, cell.2);
+				if digblock_core::protect::immutable(below.0, below.1, below.2, lock.as_ref()) {
+					continue;
+				}
+				let Some(dirt) = self
+					.store
+					.cell_at(below.0, below.1, below.2)
+					.and_then(|cur| digblock_core::worldjob::grass::smothered_by(val, cur))
+				else {
+					continue;
+				};
+				let Some(prev) = self.store.set_cell(below.0, below.1, below.2, dirt) else {
+					continue;
+				};
+				self.apply_write(below, dirt, prev, SERVER_ID, 0, true);
+			}
+		}
 	}
 
 	/// Journal, fluid-schedule, and broadcast one landed world write (the

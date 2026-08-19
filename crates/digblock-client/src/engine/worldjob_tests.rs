@@ -146,3 +146,45 @@ fn leaving_a_world_abandons_the_sweep_in_flight() {
 	engine.reset_world_transients(engine.player.pos, true);
 	assert!(engine.world_jobs.sweeping().is_none());
 }
+
+/// The offline arm of the place consequence: capping staged turf with
+/// stone turns it to dirt through the real `apply_place` path — with no
+/// server in the loop, the engine's own arm is the only thing that can.
+#[test]
+fn an_offline_place_smothers_the_grass_beneath() {
+	let (mut engine, cell) = local_world();
+	engine
+		.pipeline
+		.set_block(cell.0, cell.1, cell.2, BlockType::Grass);
+	engine.inventory.add(BlockType::Stone, 1);
+	digblock_core::inv_grid::reconcile_layout(
+		&engine.inventory,
+		&mut engine.hotbar,
+		&mut engine.inv_grid,
+	);
+	engine.hotbar.select_digit(1);
+	// Straight down onto the turf's top face, so the place lands above it.
+	engine.camera.pos = glam::Vec3::new(
+		cell.0 as f32 + 0.5,
+		cell.1 as f32 + 3.5,
+		cell.2 as f32 + 0.5,
+	);
+	engine.camera.pitch_deg = -89.0;
+	engine.update_target();
+	assert_eq!(
+		engine.target.map(|h| (h.cell, h.normal)),
+		Some((cell, (0, 1, 0))),
+		"the aim must land on top of the turf"
+	);
+	engine.input.click_place = true;
+	engine.apply_place();
+	assert_eq!(
+		engine.pipeline.block_at(cell.0, cell.1 + 1, cell.2),
+		Some(BlockType::Stone)
+	);
+	assert_eq!(
+		engine.pipeline.block_at(cell.0, cell.1, cell.2),
+		Some(BlockType::Dirt),
+		"the cover smothers"
+	);
+}

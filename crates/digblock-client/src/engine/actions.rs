@@ -815,6 +815,27 @@ impl Engine {
 				for &(c, _, _) in &entries {
 					self.fluid.schedule_around(c.0, c.1, c.2);
 				}
+				// A sealing cover starves the grass beneath it back to
+				// dirt (`grass::smothered_by`) — the engine's arm of the
+				// server's post-place consequence. Deliberately NOT
+				// predicted in multiplayer: there it arrives as the
+				// server's own broadcast edit, so a rejected place never
+				// has a companion write to unwind.
+				for &(c, _, v) in &entries {
+					let below = (c.0, c.1 - 1, c.2);
+					if digblock_core::protect::immutable(below.0, below.1, below.2, None) {
+						continue;
+					}
+					let Some(dirt) = self
+						.pipeline
+						.cell_at(below.0, below.1, below.2)
+						.and_then(|cur| digblock_core::worldjob::grass::smothered_by(v, cur))
+					else {
+						continue;
+					};
+					self.pipeline.set_cell(below.0, below.1, below.2, dirt);
+					self.fluid.schedule_around(below.0, below.1, below.2);
+				}
 			}
 		}
 	}
