@@ -29,7 +29,7 @@ const SESSION_KEY: &str = "digblock.session";
 const PENDING_KEY: &str = "digblock.signin";
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
-pub struct Session {
+pub(crate) struct Session {
 	pub account_id: String,
 	#[serde(default)]
 	pub display_name: Option<String>,
@@ -53,18 +53,18 @@ fn session_storage() -> Option<web_sys::Storage> {
 	web_sys::window().and_then(|w| w.session_storage().ok().flatten())
 }
 
-pub fn load() -> Option<Session> {
+pub(crate) fn load() -> Option<Session> {
 	let raw = local()?.get_item(SESSION_KEY).ok()??;
 	serde_json::from_str(&raw).ok()
 }
 
-pub fn store(session: &Session) {
+pub(crate) fn store(session: &Session) {
 	if let (Some(s), Ok(json)) = (local(), serde_json::to_string(session)) {
 		let _ = s.set_item(SESSION_KEY, &json);
 	}
 }
 
-pub fn clear() {
+pub(crate) fn clear() {
 	if let Some(s) = local() {
 		let _ = s.remove_item(SESSION_KEY);
 	}
@@ -72,7 +72,7 @@ pub fn clear() {
 
 /// Navigate to the master's sign-in page. Does not return in practice —
 /// the document is replaced.
-pub fn begin(master_url: &str) -> Result<(), String> {
+pub(crate) fn begin(master_url: &str) -> Result<(), String> {
 	let verifier = random_b64(32)?;
 	let state = random_b64(16)?;
 	let challenge = s256(&verifier);
@@ -109,7 +109,7 @@ pub fn begin(master_url: &str) -> Result<(), String> {
 /// The `?code=&state=` a finished sign-in came back with, if this load is
 /// one. Consumes the pending request and scrubs the URL either way — a
 /// one-time code has no business sitting in the address bar or in history.
-pub fn take_callback() -> Option<(String, String)> {
+pub(crate) fn take_callback() -> Option<(String, String)> {
 	let window = web_sys::window()?;
 	let search = window.location().search().ok()?;
 	let params = web_sys::UrlSearchParams::new_with_str(&search).ok()?;
@@ -252,7 +252,11 @@ fn session_of(body: &str) -> Result<Session, String> {
 	})
 }
 
-pub async fn exchange(master_url: &str, code: &str, verifier: &str) -> Result<Session, String> {
+pub(crate) async fn exchange(
+	master_url: &str,
+	code: &str,
+	verifier: &str,
+) -> Result<Session, String> {
 	let body = serde_json::json!({ "code": code, "verifier": verifier }).to_string();
 	let (status, text) =
 		post_json(&format!("{master_url}/api/session/exchange"), None, &body).await?;
@@ -262,7 +266,7 @@ pub async fn exchange(master_url: &str, code: &str, verifier: &str) -> Result<Se
 	session_of(&text)
 }
 
-pub async fn refresh(master_url: &str, token: &str) -> Result<Session, String> {
+pub(crate) async fn refresh(master_url: &str, token: &str) -> Result<Session, String> {
 	let body = serde_json::json!({ "platform": "web" }).to_string();
 	let (status, text) = post_json(
 		&format!("{master_url}/api/session/refresh"),
@@ -276,7 +280,7 @@ pub async fn refresh(master_url: &str, token: &str) -> Result<Session, String> {
 	session_of(&text)
 }
 
-pub async fn sign_out(master_url: &str, token: &str) {
+pub(crate) async fn sign_out(master_url: &str, token: &str) {
 	let body = serde_json::json!({ "allDevices": false }).to_string();
 	let _ = post_json(
 		&format!("{master_url}/api/session/signout"),
@@ -286,7 +290,11 @@ pub async fn sign_out(master_url: &str, token: &str) {
 	.await;
 }
 
-pub async fn check_name(master_url: &str, token: &str, name: &str) -> (bool, Option<String>) {
+pub(crate) async fn check_name(
+	master_url: &str,
+	token: &str,
+	name: &str,
+) -> (bool, Option<String>) {
 	#[derive(serde::Deserialize)]
 	#[serde(rename_all = "camelCase")]
 	struct Body {
@@ -308,7 +316,7 @@ pub async fn check_name(master_url: &str, token: &str, name: &str) -> (bool, Opt
 	}
 }
 
-pub async fn set_name(master_url: &str, token: &str, name: &str) -> Result<String, String> {
+pub(crate) async fn set_name(master_url: &str, token: &str, name: &str) -> Result<String, String> {
 	#[derive(serde::Deserialize)]
 	#[serde(rename_all = "camelCase")]
 	struct Body {
@@ -331,7 +339,7 @@ pub async fn set_name(master_url: &str, token: &str, name: &str) -> Result<Strin
 
 /// Development-only sign-in, so `just play-web` and `?join` can run
 /// without a browser round trip. Honoured only by a master in Development.
-pub async fn dev_sign_in(master_url: &str, subject: &str) -> Result<Session, String> {
+pub(crate) async fn dev_sign_in(master_url: &str, subject: &str) -> Result<Session, String> {
 	let body = serde_json::json!({ "subject": subject, "platform": "web" }).to_string();
 	let (status, text) = post_json(&format!("{master_url}/api/dev/signin"), None, &body).await?;
 	if status != 200 {

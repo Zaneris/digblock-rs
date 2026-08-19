@@ -61,19 +61,19 @@ const WEDGE_SWEEPS: u32 = 600;
 /// This constant is NOT what protects weak hardware — `default_count` does, via
 /// `cores - 2`. Raising it only ever affects machines with cores to spare, so
 /// re-measure THERE, and on the fill, which is what a player actually waits on.
-pub const MAX_WORKERS: usize = 2;
+pub(crate) const MAX_WORKERS: usize = 2;
 
 /// Absolute ceiling for an explicit `?workers=` override. The override
 /// exists to measure past the shipped default — clamping it to the default
 /// would make the A/B it was added for impossible — but not to let a URL
 /// spawn an arbitrary number of wasm instances.
-pub const WORKERS_HARD_MAX: usize = 8;
+pub(crate) const WORKERS_HARD_MAX: usize = 8;
 
 /// How many workers to start on this machine, before any `?workers=`
 /// override. Zero on a device with barely any cores: more wasm instances,
 /// each with its own linear memory, is a poor trade where there is no
 /// spare core to run them on and little RAM to hold them.
-pub fn default_count() -> usize {
+pub(crate) fn default_count() -> usize {
 	let cores = web_sys::window()
 		.map(|w| w.navigator().hardware_concurrency() as usize)
 		.unwrap_or(0);
@@ -115,7 +115,7 @@ struct Slot {
 	_on_error: Closure<dyn FnMut(web_sys::Event)>,
 }
 
-pub struct WorkerPool {
+pub(crate) struct WorkerPool {
 	slots: Vec<Slot>,
 	/// Replies awaiting `poll`.
 	inbox: Inbox,
@@ -140,7 +140,7 @@ impl WorkerPool {
 	/// Start `count` workers against the stamped worker module at
 	/// `module_url`. `None` if the platform gave us nothing usable — the
 	/// caller then simply doesn't attach a pool.
-	pub fn start(module_url: &str, count: usize) -> Option<WorkerPool> {
+	pub(crate) fn start(module_url: &str, count: usize) -> Option<WorkerPool> {
 		if count == 0 {
 			return None;
 		}

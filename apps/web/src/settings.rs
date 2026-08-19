@@ -26,7 +26,7 @@ fn storage() -> Option<web_sys::Storage> {
 
 /// Overlay saved values onto `base` (the platform defaults). Absent or
 /// malformed storage/fields leave the defaults; everything re-clamps.
-pub fn load(base: Settings) -> Settings {
+pub(crate) fn load(base: Settings) -> Settings {
 	let file: SettingsFile = storage()
 		.and_then(|s| s.get_item(KEY).ok().flatten())
 		.and_then(|text| match serde_json::from_str(&text) {
@@ -51,7 +51,7 @@ pub fn load(base: Settings) -> Settings {
 }
 
 /// Fire-and-forget save; a blocked write degrades to per-run settings.
-pub fn save(s: &Settings) {
+pub(crate) fn save(s: &Settings) {
 	let file = SettingsFile {
 		draw_dist: Some(s.draw_dist),
 		music_vol: Some(s.music_vol),

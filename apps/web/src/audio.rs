@@ -86,7 +86,7 @@ impl Pool {
 	}
 }
 
-pub struct WebSink(Rc<RefCell<State>>);
+pub(crate) struct WebSink(Rc<RefCell<State>>);
 
 impl AudioSink for WebSink {
 	fn send(&mut self, cmd: AudioCmd) {
@@ -96,7 +96,7 @@ impl AudioSink for WebSink {
 
 /// Build the graph, kick off async decode + music fetch, hook the
 /// autoplay-resume gestures. Any failure degrades to silence.
-pub fn start(master_url: Option<String>) -> Box<dyn AudioSink> {
+pub(crate) fn start(master_url: Option<String>) -> Box<dyn AudioSink> {
 	let build = || -> Option<Rc<RefCell<State>>> {
 		let ctx = AudioContext::new().ok()?;
 		let sfx_bus = ctx.create_gain().ok()?;

@@ -71,7 +71,7 @@ struct Active {
 	degraded: bool,
 }
 
-pub struct LocalStorageWorldStore {
+pub(crate) struct LocalStorageWorldStore {
 	storage: Option<web_sys::Storage>,
 	active: Option<Active>,
 	id_counter: u64,
@@ -84,7 +84,7 @@ impl Default for LocalStorageWorldStore {
 }
 
 impl LocalStorageWorldStore {
-	pub fn new() -> Self {
+	pub(crate) fn new() -> Self {
 		Self {
 			storage: web_sys::window().and_then(|w| w.local_storage().ok().flatten()),
 			active: None,

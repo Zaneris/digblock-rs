@@ -61,7 +61,11 @@ struct JoinResponse {
 /// Start the service task. Scripted joins are the menu's job
 /// (`EngineConfig::auto_join`) — the service layer is identical for
 /// interactive and scripted flows.
-pub fn start(master_url: String, session: Option<Session>, no_datagrams: bool) -> MenuServices {
+pub(crate) fn start(
+	master_url: String,
+	session: Option<Session>,
+	no_datagrams: bool,
+) -> MenuServices {
 	let (cmd_tx, cmd_rx) = mpsc::channel::<MenuCommand>();
 	let (resp_tx, resp_rx) = mpsc::channel::<MenuResponse>();
 	wasm_bindgen_futures::spawn_local(run(master_url, session, no_datagrams, cmd_rx, resp_tx));
