@@ -1,51 +1,63 @@
 # DigBlock (Rust)
 
-Rust + wgpu rewrite of the DigBlock voxel engine (originally Java/libGDX, 2015–2017). The port started as a faithful
-recreation — same terrain, water, day/night sun, and dual "Shadow LoD" cascades — and is now free to diverge and improve
-from there. Modern internals: threaded chunk pipeline, WGSL shaders on Metal, and a lifecycle-robust platform shell
-designed so a future Android target inherits no surface/lifecycle bugs.
+Rust + wgpu voxel game, a rewrite of the DigBlock engine originally built in Java/libGDX (2015–2017). The port started
+as a faithful recreation and is now free to diverge: probe-traced global illumination, sub-block shapes, two skills over
+a crafting economy, and account-authenticated multiplayer.
+
+Runs on macOS, in Chrome via WebGPU, and on iOS, off one engine crate. A headless dedicated server and a .NET master
+(accounts, server listing, join tokens) sit behind the multiplayer.
 
 ## Commands
 
 ```sh
-just run                  # desktop (macOS)
-just run --drill          # automated lifecycle drill (suspend/resume + device-loss)
-just bench                # deterministic perf run (release; scripted flight, inputs off, vsync off)
-just check                # fmt + clippy + tests
+just run                  # desktop client
+just run --drill          # lifecycle drill (suspend/resume + device-loss)
+just web                  # wasm build, served at http://localhost:8080 (Chrome/WebGPU)
+just play                 # master + dedicated server + client, all local
+just play-web             # same, serving the web bundle
+just server               # dedicated server alone
+just master               # .NET master alone
+just bot -- --bots 4      # headless bots: pick a server, mint tokens, join
+just bench                # deterministic perf run — scripted flight, CSV + summary
+just check                # the gate: fmt, clippy -D warnings, workspace tests (needs Docker)
 just check-ios            # iOS compile gate (no Xcode needed)
-just ios-sim              # simulator build+run   (requires full Xcode)
-just ios-device           # device build          (requires full Xcode)
+just check-web            # wasm clippy + every shader through real Chrome's WGSL front end
 ```
 
-Deterministic-capture / metrics flags: `--seed <f64>` `--tod <deg>` (freezes the sun) `--screenshot out.png`
-`--frames
-N` `--exit` `--metrics-csv out.csv` (per-phase CPU ms, GPU pass ms, pipeline job timings — one row per logging
-interval) `--overlay` (start with the debug overlay visible) `--bench` (scripted camera flight, inputs disabled, a fixed
-frame count, CSV to bench.csv, one-line summary on exit — incl. world fill time and over-budget frame-pacing counts at
-both refresh budgets; vsync-paced so it looks as played — add `--no-vsync` for uncapped raw-cost percentiles)
-`--no-vsync` (uncapped present) `--workers N` `--draw-dist N` (workload knobs) `--mobile` (the iOS config). Env:
-`DIG_SPIKELOG=1` logs a per-phase breakdown of every frame over the frame budget.
+`just check` and `just check-ios` are the gate; CI is intentionally disabled pre-deployment.
 
-Controls: **WASD/arrows** move · mouse look (click to capture cursor) · **Space** jump · **F** toggle walk/fly · **`**
-(backquote) debug overlay · **Esc** release cursor / quit. Touch (iOS): left half = anchored joystick, right half = drag
-look, double-tap right = jump.
+## Controls
 
-Debug keys (desktop): **F8** screenshot · **F9** suspend/resume drill · **F10** device-loss drill.
+**WASD** move · mouse look · **Space** jump · **F** walk/fly · **I** inventory · **K** alchemy · **C** character · **T**
+chat · **9** cycle tools · **`** debug overlay · **Esc** menu. Touch builds get an anchored joystick, drag look, and an
+on-screen HUD.
 
-## iOS
-
-`apps/ios/xcode/DigBlock.xcodeproj` is generated from `project.yml` — edit the yml and rerun `xcodegen` (brew) rather
-than editing the project. Building for simulator/device requires **full Xcode** (Command Line Tools alone are not
-enough): install from the App Store, then `sudo xcode-select -s /Applications/Xcode.app`. Signing: automatic, personal
-team.
+Debug keys: **F7** re-queue GI · **F8** screenshot · **F9** suspend/resume drill · **F10** device-loss drill.
 
 ## Layout
 
-- `crates/digblock-core` — pure logic (terrain, chunks, player, metrics); no GPU deps
-- `crates/digblock-render` — wgpu renderer; never touches winit or the surface
-- `crates/digblock-platform` — winit shell, lifecycle state machine, input translation
-- `crates/digblock-assets` — compile-time embedded textures + WGSL (naga-validated in CI)
-- `apps/desktop`, `apps/ios` — thin launchers
+| Crate                                  | What it is                                                                                                            |
+| -------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `crates/digblock-core`                 | Pure logic — worldgen, chunks, meshing, fluid, physics, skills, economy. No GPU or windowing deps; testable headless. |
+| `crates/digblock-render`               | The client: wgpu renderer, GI, UI, menus, audio, and the engine that drives them.                                     |
+| `crates/digblock-platform`             | The winit shell and lifecycle state machine. The only crate that may touch `winit` or `wgpu::Surface`.                |
+| `crates/digblock-assets`               | Compile-time embedded textures, WGSL and fonts.                                                                       |
+| `crates/digblock-net`                  | Protocol and client netcode, sans-IO and wasm-clean.                                                                  |
+| `crates/digblock-net-native` / `-web`  | WebTransport/QUIC transports for desktop and browser.                                                                 |
+| `crates/digblock-persist`              | Journal format and world stores, shared by server and client saves.                                                   |
+| `apps/desktop`, `apps/ios`, `apps/web` | Thin launchers.                                                                                                       |
+| `apps/server`                          | Headless dedicated server: authoritative fixed-tick sim, append-only edit journal.                                    |
+| `apps/master`                          | .NET 10 minimal API — accounts, server registry, join tokens. Not in the cargo workspace.                             |
+| `tools/texgen`, `tools/shadercheck`    | Derived-texture generator; the real-Chrome shader gate.                                                               |
 
-The old Java repo (`../DigBlock`) is a historical reference; it still runs under JDK 8 for side-by-side screenshot
-comparison.
+## Documentation
+
+`CLAUDE.md` is the orientation map and the invariants that bite if broken. The reasoning lives in the design docs:
+`GI-DESIGN.md` (lighting), `SKILLS-DESIGN.md` (skills, economy, catalog), `AUTH-DESIGN.md` (accounts and the master's
+trust model), `BENCH.md` (every perf measurement, including the ones that refuted a hypothesis), and `DELVE-DESIGN.md` /
+`SOCIAL-DESIGN.md` for work not yet built.
+
+## iOS
+
+`apps/ios/xcode/DigBlock.xcodeproj` is generated from `project.yml` — edit the yml and rerun `xcodegen` rather than
+editing the project. Simulator and device builds need **full Xcode**; `just check-ios` is the fast gate that does not.
