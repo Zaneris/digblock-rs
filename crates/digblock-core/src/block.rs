@@ -423,22 +423,22 @@ impl ShapeFamily {
 	/// The tab's family label (plural — it names a group of tiles).
 	pub fn name(self) -> &'static str {
 		match self {
-			ShapeFamily::Block => "BLOCKS",
-			ShapeFamily::Slab => "SLABS",
-			ShapeFamily::Stairs => "STAIRS",
-			ShapeFamily::Door => "DOORS",
+			ShapeFamily::Block => "Blocks",
+			ShapeFamily::Slab => "Slabs",
+			ShapeFamily::Stairs => "Stairs",
+			ShapeFamily::Door => "Doors",
 		}
 	}
 
-	/// What an ITEM of this form is called after its material — "STONE" +
-	/// "STAIRS". `None` for the full cube, which is just the substance's
+	/// What an ITEM of this form is called after its material — "Stone" +
+	/// "Stairs". `None` for the full cube, which is just the substance's
 	/// own name: nobody calls it a stone block.
 	pub fn item_suffix(self) -> Option<&'static str> {
 		match self {
 			ShapeFamily::Block => None,
-			ShapeFamily::Slab => Some("SLAB"),
-			ShapeFamily::Stairs => Some("STAIRS"),
-			ShapeFamily::Door => Some("DOOR"),
+			ShapeFamily::Slab => Some("Slab"),
+			ShapeFamily::Stairs => Some("Stairs"),
+			ShapeFamily::Door => Some("Door"),
 		}
 	}
 
@@ -511,21 +511,20 @@ impl Essence {
 		Self::ALL.get(v as usize).copied()
 	}
 
-	/// The screens' all-caps label — and, via `/give`'s parser, the name
-	/// an operator types, so the command and the UI cannot drift.
+	/// The screens' label — and, via `/give`'s parser, the name an
+	/// operator types, so the command and the UI cannot drift.
 	///
-	/// Still a function rather than a `Debug` of the variant, now that the
-	/// two agree: the label is the ALL-CAPS form, and letting a screen
-	/// derive it from the identifier would make the identifier a display
-	/// format — which is the coupling that stopped these being renamed for
-	/// a release in the first place.
+	/// Still a function rather than a `Debug` of the variant: letting a
+	/// screen derive it from the identifier would make the identifier a
+	/// display format, which is the coupling that stopped these being
+	/// renamed for a release in the first place.
 	pub fn name(self) -> &'static str {
 		match self {
-			Essence::Vitae => "VITAE",
-			Essence::Terra => "TERRA",
-			Essence::Unda => "UNDA",
-			Essence::Ferrum => "FERRUM",
-			Essence::Aether => "AETHER",
+			Essence::Vitae => "Vitae",
+			Essence::Terra => "Terra",
+			Essence::Unda => "Unda",
+			Essence::Ferrum => "Ferrum",
+			Essence::Aether => "Aether",
 		}
 	}
 }
@@ -991,9 +990,10 @@ impl BlockType {
 
 	/// What this block is CALLED — the label every screen shows and the
 	/// name a refusal speaks (a `Debug` name like "WoodStairs" is not UI
-	/// text). All-caps, because the UI is.
+	/// text). Stored in ONE case, and a screen that shouts calls
+	/// `to_uppercase` where it draws.
 	///
-	/// A grid item is its substance then its form — "STONE" + "STAIRS" —
+	/// A grid item is its substance then its form — "Stone" + "Stairs" —
 	/// so a new material × shape pair names itself and cannot land on the
 	/// `?`. Only the hand-priced functional items are named by hand, for
 	/// the same reason they are priced by hand.
@@ -1005,17 +1005,17 @@ impl BlockType {
 			};
 		}
 		match self {
-			BlockType::Water => "WATER CHARGE".into(),
-			BlockType::Torch => "TORCH".into(),
-			BlockType::Table => "TABLE".into(),
-			BlockType::Chair => "CHAIR".into(),
-			BlockType::Bed => "BED".into(),
-			BlockType::Bucket => "BUCKET".into(),
-			BlockType::EssenceSiphon => "ESSENCE SIPHON".into(),
-			BlockType::ResonantPick => "RESONANT PICK".into(),
-			BlockType::Lantern => "LANTERN".into(),
-			BlockType::Aetherlamp => "AETHERLAMP".into(),
-			BlockType::MastersSigil => "MASTER'S SIGIL".into(),
+			BlockType::Water => "Water Charge".into(),
+			BlockType::Torch => "Torch".into(),
+			BlockType::Table => "Table".into(),
+			BlockType::Chair => "Chair".into(),
+			BlockType::Bed => "Bed".into(),
+			BlockType::Bucket => "Bucket".into(),
+			BlockType::EssenceSiphon => "Essence Siphon".into(),
+			BlockType::ResonantPick => "Resonant Pick".into(),
+			BlockType::Lantern => "Lantern".into(),
+			BlockType::Aetherlamp => "Aetherlamp".into(),
+			BlockType::MastersSigil => "Master's Sigil".into(),
 			_ => "?".into(),
 		}
 	}

@@ -122,7 +122,7 @@ fn a_transmute_batch_drips_instead_of_paying_at_once() {
 		inv.add(B::Wood, 50);
 		inv.add_sub(Essence::Vitae, 500);
 	});
-	let slabs = center(r.hits.rect_of(family(&r, "SLABS")).unwrap());
+	let slabs = center(r.hits.rect_of(family(&r, "Slabs")).unwrap());
 	press(&mut r, slabs);
 	rebuild(&mut r);
 	feed(
@@ -226,7 +226,7 @@ fn family_selection_and_the_single_transmute_button() {
 	// hand-priced ones after). Its first unlocked member is the
 	// WoodSlab the Vitae affords; Ctrl asks for its whole batch and
 	// the holdings clamp it.
-	let slabs = center(r.hits.rect_of(family(&r, "SLABS")).unwrap());
+	let slabs = center(r.hits.rect_of(family(&r, "Slabs")).unwrap());
 	press(&mut r, slabs);
 	rebuild(&mut r);
 	let go = center(r.hits.rect_of(InvId::CraftGo).unwrap());
@@ -262,7 +262,7 @@ fn family_selection_and_the_single_transmute_button() {
 	// substance the bench makes in cube form. (The felled log is not
 	// here: the world hands you that one, so it has no recipe.) The
 	// one button queues THAT.
-	let blocks = center(r.hits.rect_of(family(&r, "BLOCKS")).unwrap());
+	let blocks = center(r.hits.rect_of(family(&r, "Blocks")).unwrap());
 	press(&mut r, blocks);
 	rebuild(&mut r);
 	let go = center(r.hits.rect_of(InvId::CraftGo).unwrap());
@@ -303,7 +303,7 @@ fn family_selection_and_the_single_transmute_button() {
 #[test]
 fn the_vessels_craft_from_timber_at_level_one() {
 	let mut r = rig_at(1, |inv| inv.add(B::Wood, 20));
-	let tools = center(r.hits.rect_of(family(&r, "TOOLS")).unwrap());
+	let tools = center(r.hits.rect_of(family(&r, "Tools")).unwrap());
 	press(&mut r, tools);
 	rebuild(&mut r);
 	// Lands on the bucket — the first unlocked member.
@@ -443,7 +443,7 @@ fn the_essence_readout_never_spills_out_of_its_panel() {
 					face, x, px, range, ..
 				} => {
 					let t = &arena[range.0 as usize..range.1 as usize];
-					t.starts_with(Essence::ALL[0].name())
+					t.starts_with(&Essence::ALL[0].name().to_uppercase())
 						.then(|| x + crate::font::face(*face).measure(t, *px))
 				}
 				_ => None,
@@ -540,13 +540,13 @@ fn the_page_hides_everything_past_the_next_unlock() {
 			.position(|f| f.name == name)
 			.unwrap_or_else(|| panic!("no {name} family")) as u8
 	};
-	for name in ["SLABS", "STAIRS", "TOOLS"] {
+	for name in ["Slabs", "Stairs", "Tools"] {
 		assert!(
 			r.hits.rect_of(InvId::Family(idx(name))).is_some(),
 			"{name} belongs on a fresh page"
 		);
 	}
-	for name in ["DOORS", "BLOCKS", "LIGHTS", "FURNITURE"] {
+	for name in ["Doors", "Blocks", "Lights", "Furniture"] {
 		assert!(
 			r.hits.rect_of(InvId::Family(idx(name))).is_none(),
 			"{name} is past the next unlock and must hide"
@@ -555,7 +555,7 @@ fn the_page_hides_everything_past_the_next_unlock() {
 	// Inside TOOLS: the vessels show, the pick and the sigil do not —
 	// the sigil at the cap is exactly the tile a fresh player must
 	// not be stared down by.
-	let tools = center(r.hits.rect_of(InvId::Family(idx("TOOLS"))).unwrap());
+	let tools = center(r.hits.rect_of(InvId::Family(idx("Tools"))).unwrap());
 	press(&mut r, tools);
 	rebuild(&mut r);
 	assert!(r.hits.rect_of(InvId::Craft(0)).is_some(), "the bucket");
@@ -567,10 +567,10 @@ fn the_page_hides_everything_past_the_next_unlock() {
 	// unlock the next tier holds dark lumber and stone brick, and the
 	// true member indices survive the packing.
 	let mut r = rig_at(15, |_| {});
-	let blocks = center(r.hits.rect_of(InvId::Family(idx("BLOCKS"))).unwrap());
+	let blocks = center(r.hits.rect_of(InvId::Family(idx("Blocks"))).unwrap());
 	press(&mut r, blocks);
 	rebuild(&mut r);
-	let members = &families()[idx("BLOCKS") as usize].members;
+	let members = &families()[idx("Blocks") as usize].members;
 	let at = |b: B| members.iter().position(|&m| m == b).unwrap() as u8;
 	assert!(r.hits.rect_of(InvId::Craft(at(B::Lumber))).is_some());
 	assert!(r.hits.rect_of(InvId::Craft(at(B::Stone))).is_some());
@@ -589,13 +589,13 @@ fn the_page_hides_everything_past_the_next_unlock() {
 	// And at the cap nothing hides at all.
 	let r = rig_at(99, |_| {});
 	for name in [
-		"SLABS",
-		"STAIRS",
-		"DOORS",
-		"BLOCKS",
-		"LIGHTS",
-		"FURNITURE",
-		"TOOLS",
+		"Slabs",
+		"Stairs",
+		"Doors",
+		"Blocks",
+		"Lights",
+		"Furniture",
+		"Tools",
 	] {
 		assert!(
 			r.hits.rect_of(InvId::Family(idx(name))).is_some(),
@@ -617,12 +617,12 @@ fn an_owned_tool_is_no_longer_on_offer() {
 			inv.add_sub(e, 5_000);
 		}
 	});
-	let tools = center(r.hits.rect_of(family(&r, "TOOLS")).unwrap());
+	let tools = center(r.hits.rect_of(family(&r, "Tools")).unwrap());
 	press(&mut r, tools);
 	rebuild(&mut r);
 	let member = families()
 		.iter()
-		.find(|f| f.name == "TOOLS")
+		.find(|f| f.name == "Tools")
 		.unwrap()
 		.members
 		.iter()

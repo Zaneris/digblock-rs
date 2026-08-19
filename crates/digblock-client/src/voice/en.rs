@@ -19,8 +19,8 @@ pub(super) fn line(msg: &Msg) -> String {
 		// "you could not make one".
 		Msg::DigRefused(req) => format!(
 			"{} needs {} level {}",
-			req.block.name().to_lowercase(),
-			req.skill.display(),
+			req.block.name(),
+			req.skill.name(),
 			req.level
 		),
 		Msg::DigProtected => "this block is holding firm".into(),
@@ -28,9 +28,9 @@ pub(super) fn line(msg: &Msg) -> String {
 		Msg::NeedsSiphon => "this vein needs an essence siphon".into(),
 		Msg::DigRefusedByServer => "the server refused that dig".into(),
 
-		Msg::LevelUp { skill, level } => format!("{} is now level {level}.", skill.display()),
+		Msg::LevelUp { skill, level } => format!("{} is now level {level}.", skill.name()),
 		Msg::RemoteLevelUp { who, skill, level } => {
-			format!("{who} reached {} level {level}.", skill.display())
+			format!("{who} reached {} level {level}.", skill.name())
 		}
 		Msg::VeinsRevealed => "New veins shimmer into view.".into(),
 

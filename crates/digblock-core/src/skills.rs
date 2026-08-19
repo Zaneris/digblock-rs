@@ -33,16 +33,10 @@ impl Skill {
 		}
 	}
 
-	/// The HUD/screen name (the UI is all-caps everywhere it labels).
+	/// What the skill is called. ONE case, stored: a screen that shouts
+	/// its labels uppercases where it draws, which is what keeps the
+	/// name a single string rather than one per context.
 	pub fn name(self) -> &'static str {
-		match self {
-			Skill::Mining => "MINING",
-			Skill::Alchemy => "ALCHEMY",
-		}
-	}
-
-	/// Sentence-case display for feed lines ("Mining is now level N").
-	pub fn display(self) -> &'static str {
 		match self {
 			Skill::Mining => "Mining",
 			Skill::Alchemy => "Alchemy",

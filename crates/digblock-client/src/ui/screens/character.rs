@@ -41,7 +41,7 @@ impl CharView {
 				None => (1.0, format!("{} XP — mastered", group(xp))),
 			};
 			rows.push(Row::Skill {
-				text: format!("{}   LV {}", skill.name(), level),
+				text: format!("{}   LV {}", skill.name().to_uppercase(), level),
 				frac,
 			});
 			rows.push(Row::Info(info));

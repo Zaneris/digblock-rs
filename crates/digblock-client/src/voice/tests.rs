@@ -91,20 +91,22 @@ fn every_message_has_words_of_its_own() {
 }
 
 /// The refusal names the block and the level that opens it, and reads
-/// its numbers out of the tables — the wording is pinned here, the
-/// LEVEL is `unlock`'s to move.
+/// its numbers out of the tables — the wording is pinned here, the LEVEL
+/// is `unlock`'s to move. The name arrives in the ONE case core stores
+/// it in: a sentence that re-cased it would be transforming text a
+/// translation has to own.
 #[test]
 fn a_refusal_names_the_block_and_the_level() {
 	let strength = unlock::requirement(BlockType::Wood, Kind::Strength).expect("timber is gated");
 	assert_eq!(
 		render(&Msg::DigRefused(strength)),
-		format!("wood needs Mining level {}", unlock::mine(BlockType::Wood))
+		format!("Wood needs Mining level {}", unlock::mine(BlockType::Wood))
 	);
 	let recipe = unlock::requirement(BlockType::StoneStairs, Kind::Recipe).expect("craft-only");
 	assert_eq!(
 		render(&Msg::DigRefused(recipe)),
 		format!(
-			"stone stairs needs Alchemy level {}",
+			"Stone Stairs needs Alchemy level {}",
 			unlock::pickup(BlockType::StoneStairs)
 		)
 	);

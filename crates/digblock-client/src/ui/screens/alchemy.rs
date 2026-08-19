@@ -210,15 +210,15 @@ pub struct Family {
 /// by what they DO. Drawn after the shape families.
 const FUNCTIONAL_FAMILIES: [(&str, &[BlockType]); 3] = [
 	(
-		"LIGHTS",
+		"Lights",
 		&[BlockType::Torch, BlockType::Lantern, BlockType::Aetherlamp],
 	),
 	(
-		"FURNITURE",
+		"Furniture",
 		&[BlockType::Chair, BlockType::Table, BlockType::Bed],
 	),
 	(
-		"TOOLS",
+		"Tools",
 		// The vessels lead: the bucket and the siphon are the catalog's
 		// first crafts (feedstock-only, so a fresh player can make both),
 		// and members sit in unlock order like everywhere else.
@@ -494,7 +494,7 @@ impl AlchScreen {
 	fn holdings_text(view: &AlchView) -> String {
 		Essence::ALL
 			.iter()
-			.map(|&e| format!("{} {}", e.name(), view.subs[e as usize]))
+			.map(|&e| format!("{} {}", e.name().to_uppercase(), view.subs[e as usize]))
 			.collect::<Vec<_>>()
 			.join("   ")
 	}
@@ -781,21 +781,24 @@ impl AlchScreen {
 		let text_x = strip.x + text_pad + ROW_ICON * s + ICON_TEXT_GAP * s;
 		let avail = btn.x - ICON_TEXT_GAP * s - text_x;
 		let text = if locked {
-			format!("{}   —   LV {need}", item.name())
+			format!("{}   —   LV {need}", item.name().to_uppercase())
 		} else {
 			let ideal = alchemy::craft_ideal(item).expect("members are craftable");
 			let feedstock = alchemy::craft_feedstock(item);
 			// Feedstock lines first — matter in hand reads before the
 			// currency — then the essence lines at this level's waste.
-			let costs =
-				feedstock
-					.iter()
-					.map(|&(f, n)| format!("{n} {}", f.name()))
-					.chain(ideal.iter().map(|&(e, n)| {
-						format!("{} {}", alchemy::craft_cost(n, view.level), e.name())
-					}))
-					.collect::<Vec<_>>()
-					.join(" + ");
+			let costs = feedstock
+				.iter()
+				.map(|&(f, n)| format!("{n} {}", f.name().to_uppercase()))
+				.chain(ideal.iter().map(|&(e, n)| {
+					format!(
+						"{} {}",
+						alchemy::craft_cost(n, view.level),
+						e.name().to_uppercase()
+					)
+				}))
+				.collect::<Vec<_>>()
+				.join(" + ");
 			let tail = match batches {
 				// A full cap is not a shortfall, and naming a cost here
 				// would send the player off to gather something that
@@ -814,13 +817,16 @@ impl AlchScreen {
 					.iter()
 					.find_map(|&(f, n)| {
 						let have = view.counts[f as usize];
-						(have < n).then(|| format!("NEED {} MORE {}", n - have, f.name()))
+						(have < n)
+							.then(|| format!("NEED {} MORE {}", n - have, f.name().to_uppercase()))
 					})
 					.or_else(|| {
 						ideal.iter().find_map(|&(e, n)| {
 							let cost = alchemy::craft_cost(n, view.level);
 							let have = view.subs[e as usize];
-							(have < cost).then(|| format!("NEED {} MORE {}", cost - have, e.name()))
+							(have < cost).then(|| {
+								format!("NEED {} MORE {}", cost - have, e.name().to_uppercase())
+							})
 						})
 					})
 					.unwrap_or_else(|| "NOTHING TO CHARGE".into()),
@@ -831,11 +837,11 @@ impl AlchScreen {
 			// line's whole job — and the long prices at the end of the
 			// catalog are long enough to push it off the end. Drop the
 			// costs before letting that happen.
-			let full = format!("{}   —   {costs}   ·   {tail}", item.name());
+			let full = format!("{}   —   {costs}   ·   {tail}", item.name().to_uppercase());
 			if ui.style.measure(&full) <= avail {
 				full
 			} else {
-				format!("{}   —   {tail}", item.name())
+				format!("{}   —   {tail}", item.name().to_uppercase())
 			}
 		};
 		widgets::label(
@@ -868,7 +874,8 @@ impl AlchScreen {
 		// how many are still owed. It names its own item rather than
 		// borrowing the strip's, which follows the SELECTION and may have
 		// moved on while the batch runs.
-		let queued = running.map(|(item, left)| format!("{}   ·   {left} LEFT", item.name()));
+		let queued =
+			running.map(|(item, left)| format!("{}   ·   {left} LEFT", item.name().to_uppercase()));
 		widgets::row(
 			ui.dl,
 			&ui.style,

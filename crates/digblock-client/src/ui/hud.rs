@@ -659,7 +659,7 @@ pub fn xp_toasts(
 	let mut bottom = row_grid(size, scale).origin.1 - super::theme::GAP_ABOVE_BAR * scale;
 	for toast in toasts.iter().rev() {
 		let fade = (toast.ttl / XP_TOAST_FADE).clamp(0.0, 1.0);
-		let text = format!("+{} {}", toast.amount, toast.skill.name());
+		let text = format!("+{} {}", toast.amount, toast.skill.name().to_uppercase());
 		let w = style.measure(&text) + 2.0 * pad_x;
 		let rect = super::Rect::new((size.0 as f32 - w) / 2.0, bottom - line, w, line);
 		dl.quad(Layer::Backdrop, rect, faded(super::theme::FILL_BG, fade));

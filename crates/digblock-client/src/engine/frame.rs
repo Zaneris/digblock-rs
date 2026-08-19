@@ -233,7 +233,7 @@ impl Engine {
 			{
 				use crate::ui::screens::alchemy::BenchJob;
 				let BenchJob::Craft(item, left) = job;
-				let text = format!("BENCH  {} ×{left}", item.name());
+				let text = format!("BENCH  {} ×{left}", item.name().to_uppercase());
 				crate::ui::hud::bench_tell(ui.dl, &ui.style, size, &text);
 			}
 			crate::ui::hud::tool_rail(
