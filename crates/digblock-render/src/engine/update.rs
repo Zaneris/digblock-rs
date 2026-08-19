@@ -116,7 +116,7 @@ impl Engine {
 			// Without a store there is no save list to return to, so a
 			// store-less run keeps playing the server's seed offline
 			// rather than dropping into a menu it can't leave.
-			if self.world_store.is_some() {
+			if self.save.world_store.is_some() {
 				self.return_to_title();
 			}
 		}
@@ -131,9 +131,9 @@ impl Engine {
 		// Return to spawn: one shared cooldown gates the menu row.
 		// Connected, the server teleports us (Teleported lands in
 		// pump_net); local play resolves and lands immediately.
-		self.spawn_cooldown = (self.spawn_cooldown - dt).max(0.0);
+		self.save.spawn_cooldown = (self.save.spawn_cooldown - dt).max(0.0);
 		self.menu
-			.set_spawn_cooldown(self.spawn_cooldown.ceil() as u32);
+			.set_spawn_cooldown(self.save.spawn_cooldown.ceil() as u32);
 		// The menu's Inventory/Alchemy rows: the menu closed itself; the
 		// screen takes over the free cursor seamlessly.
 		if self.menu.take_inventory() {
@@ -146,12 +146,12 @@ impl Engine {
 			self.char_screen.open();
 		}
 		let spawn_requested =
-			self.menu.take_return_spawn() | std::mem::take(&mut self.return_spawn_requested);
-		if spawn_requested && self.spawn_cooldown == 0.0 {
-			self.spawn_cooldown = digblock_net::protocol::RETURN_SPAWN_COOLDOWN_SECS as f32;
+			self.menu.take_return_spawn() | std::mem::take(&mut self.save.return_spawn_requested);
+		if spawn_requested && self.save.spawn_cooldown == 0.0 {
+			self.save.spawn_cooldown = digblock_net::protocol::RETURN_SPAWN_COOLDOWN_SECS as f32;
 			// Set before the arms: it is what the teleport that lands —
 			// this frame locally, or a round trip later — words itself by.
-			self.spawn_return_pending = true;
+			self.save.spawn_return_pending = true;
 			match self.net.as_mut() {
 				Some(net) if net.ready() => net.send_return_to_spawn(),
 				_ => {
@@ -222,20 +222,20 @@ impl Engine {
 		}
 		// XP toasts fade out and drop (unlike the feed, nothing rereads
 		// an expired toast).
-		for t in &mut self.xp_toasts {
+		for t in &mut self.vfx.xp_toasts {
 			t.ttl -= dt;
 		}
-		self.xp_toasts.retain(|t| t.ttl > 0.0);
+		self.vfx.xp_toasts.retain(|t| t.ttl > 0.0);
 		// Confetti: the age in lane 3 IS the simulation — every flake's
 		// arc is a pure function of it in the shader. A burst is dropped
 		// the moment it reaches the life the shader fades to zero at.
-		for b in &mut self.confetti {
+		for b in &mut self.vfx.confetti {
 			b[3] += dt;
 		}
-		self.confetti.retain(|b| b[3] < crate::confetti::LIFE);
+		self.vfx.confetti.retain(|b| b[3] < crate::confetti::LIFE);
 		// DIG_CONFETTI=1: a burst every couple of seconds a few blocks
 		// ahead, so a capture run can photograph one at every age.
-		if self.config.debug_confetti && self.confetti.is_empty() {
+		if self.config.debug_confetti && self.vfx.confetti.is_empty() {
 			let at = self.camera.pos + self.camera.dir() * 4.0 - Vec3::Y * 0.5;
 			self.throw_confetti(at);
 		}
@@ -318,14 +318,14 @@ impl Engine {
 		// backdrop world's recordings are drained and dropped.
 		let t_persist = web_time::Instant::now();
 		let recorded = self.pipeline.take_recorded_edits();
-		if let Some(store) = self.world_store.as_mut() {
-			if self.in_local_save && self.net.is_none() {
+		if let Some(store) = self.save.world_store.as_mut() {
+			if self.save.in_local_save && self.net.is_none() {
 				for (x, y, z, cell) in recorded {
 					store.append_edit(x, y, z, cell);
 				}
-				self.player_save_accum += dt;
-				if self.player_save_accum >= 5.0 {
-					self.player_save_accum = 0.0;
+				self.save.player_save_accum += dt;
+				if self.save.player_save_accum >= 5.0 {
+					self.save.player_save_accum = 0.0;
 					store.save_player(
 						&self.inventory.to_wire(),
 						&self.hotbar.to_wire(),
@@ -348,7 +348,7 @@ impl Engine {
 		// queue never opens the room join sync reserves, must not be able
 		// to strand a player on a loading screen — the fallback is exactly
 		// the behaviour this replaced.
-		if let Some(left) = self.arrival_hold {
+		if let Some(left) = self.save.arrival_hold {
 			let left = left - dt;
 			// A connection that ended can never deliver the marker, and the
 			// world we fall back to playing offline is generated, not
@@ -365,7 +365,7 @@ impl Engine {
 				);
 				self.end_arrival_hold();
 			} else {
-				self.arrival_hold = Some(left);
+				self.save.arrival_hold = Some(left);
 			}
 		}
 
@@ -417,7 +417,7 @@ impl Engine {
 			// the correction that reads as being *moved* after joining —
 			// you stand on worldgen, the server stands on the journal, and
 			// the first snapshot settles it visibly.
-			let world_ready = column_loaded && self.arrival_hold.is_none();
+			let world_ready = column_loaded && self.save.arrival_hold.is_none();
 			if !world_ready {
 				self.tick_accum = 0.0;
 				// Zeroing the accumulator parks the lerp at alpha = 0, which
@@ -505,8 +505,8 @@ impl Engine {
 		// movement, so they sit together and `prev_player_pos` advances
 		// once, after both — `step_audio` returns early on a silent run
 		// and would otherwise starve the bob of every frame's delta.
-		let moved = self.player.pos - self.prev_player_pos;
-		self.view_bob.advance(
+		let moved = self.player.pos - self.audio.prev_player_pos;
+		self.vfx.view_bob.advance(
 			Vec3::new(moved.x, 0.0, moved.z).length(),
 			dt,
 			self.ground_below().1,
@@ -514,7 +514,7 @@ impl Engine {
 		// The scoop's arc is started by the hold that opens it, in
 		// `step_dig` — one stroke per bucket, so there is nothing to
 		// re-arm here.
-		self.view_swing.advance(dt);
+		self.vfx.view_swing.advance(dt);
 		// At the TAIL on the interactive path, after `reconcile_layout` and
 		// `pump_net`: a slot whose count reached zero is only released by
 		// the reconcile above, so reading the bar ahead of it drew — and
@@ -523,7 +523,7 @@ impl Engine {
 		// because the hand is part of the frame they capture.
 		self.advance_hand(dt);
 		self.step_audio(dt);
-		self.prev_player_pos = self.player.pos;
+		self.audio.prev_player_pos = self.player.pos;
 		self.pending.update_ms = ms_since(t_update);
 	}
 }

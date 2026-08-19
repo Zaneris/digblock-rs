@@ -16,9 +16,9 @@ impl Engine {
 		self.prep_start = Some(web_time::Instant::now());
 		// Remote players, sampled an interpolation delay in the past;
 		// the instance list rides FrameScene and re-uploads every frame.
-		self.remote_instances.clear();
-		self.held_instances.clear();
-		self.carried.begin();
+		self.vfx.remote_instances.clear();
+		self.vfx.held_instances.clear();
+		self.vfx.carried.begin();
 		// Your own hand has no world position — the viewmodel is authored
 		// in view space — so the LIGHT is body-anchored exactly like
 		// everyone else's (`gi::carried_origin`). Keyed off the item the
@@ -26,20 +26,23 @@ impl Engine {
 		// and the visible torch arrive and leave together through the swap
 		// dip; and read unconditionally, because opening the inventory
 		// puts the hand away, not the torch out.
-		self.carried.push(
+		self.vfx.carried.push(
 			CARRIER_SELF,
 			self.camera.pos,
-			self.view_swap.shown().and_then(crate::ui::hud::icon_block),
+			self.vfx
+				.view_swap
+				.shown()
+				.and_then(crate::ui::hud::icon_block),
 			self.skills.level(digblock_core::skills::Skill::Mining),
 		);
 		if let Some(net) = self.net.as_ref() {
-			net.remotes.sample(&mut self.remote_scratch);
-			for i in 0..self.remote_scratch.len() {
-				let d = self.remote_scratch[i];
+			net.remotes.sample(&mut self.vfx.remote_scratch);
+			for i in 0..self.vfx.remote_scratch.len() {
+				let d = self.vfx.remote_scratch[i];
 				push_remote(
-					&mut self.remote_instances,
-					&mut self.held_instances,
-					&mut self.carried,
+					&mut self.vfx.remote_instances,
+					&mut self.vfx.held_instances,
+					&mut self.vfx.carried,
 					&Remote {
 						key: u16::from(d.id),
 						id: d.id,
@@ -65,9 +68,9 @@ impl Engine {
 			// item entirely once the hand moved to the correct side.
 			let yaw = (-flat.x).atan2(-flat.z);
 			push_remote(
-				&mut self.remote_instances,
-				&mut self.held_instances,
-				&mut self.carried,
+				&mut self.vfx.remote_instances,
+				&mut self.vfx.held_instances,
+				&mut self.vfx.carried,
 				&Remote {
 					key: CARRIER_DEBUG,
 					id: 2,
@@ -77,7 +80,7 @@ impl Engine {
 				},
 			);
 		}
-		self.carried.finish(self.camera.pos);
+		self.vfx.carried.finish(self.camera.pos);
 		let frame = self.frame_uniforms();
 		let aspect = size.0 as f32 / size.1.max(1) as f32;
 		let view_proj = self.camera.view_proj(aspect);
@@ -87,7 +90,7 @@ impl Engine {
 		// Entries past `tags` keep their String buffers for next frame; the
 		// live slice is `[..tags]`.
 		let mut tags = 0usize;
-		for d in &self.remote_scratch {
+		for d in &self.vfx.remote_scratch {
 			if self.net.is_none() || d.pos.distance(self.camera.pos) > NAMETAG_RANGE {
 				continue;
 			}
@@ -103,15 +106,15 @@ impl Engine {
 			}
 			// Reuse the slot's String rather than allocating a fresh one
 			// per visible player per frame.
-			if tags == self.nametag_scratch.len() {
-				self.nametag_scratch.push(crate::renderer::NameTag {
+			if tags == self.vfx.nametag_scratch.len() {
+				self.vfx.nametag_scratch.push(crate::renderer::NameTag {
 					x: 0.0,
 					y: 0.0,
 					color: 0,
 					text: String::new(),
 				});
 			}
-			let tag = &mut self.nametag_scratch[tags];
+			let tag = &mut self.vfx.nametag_scratch[tags];
 			tag.x = (ndc.x * 0.5 + 0.5) * size.0 as f32;
 			tag.y = (1.0 - (ndc.y * 0.5 + 0.5)) * size.1 as f32;
 			tag.color = pack_rgb(player_color(d.id));
@@ -125,13 +128,13 @@ impl Engine {
 			}
 			tags += 1;
 		}
-		self.nametag_count = tags;
+		self.vfx.nametag_count = tags;
 		// Overlay data is last frame's numbers (metrics.frame() runs at the
 		// end of this fn) and GPU ms lags the readback ring — fine for a
 		// debug HUD.
 		let overlay_stats = if self.overlay_visible {
 			self.metrics
-				.history_tail(crate::overlay::GRAPH_FRAMES, &mut self.history_scratch);
+				.history_tail(crate::overlay::GRAPH_FRAMES, &mut self.vfx.history_scratch);
 			let mut stats = self.metrics.overlay_stats();
 			// The reproduction line. `body_pos` and not `camera.pos`: the
 			// camera carries the tick lerp and the reconciliation offset,
@@ -216,7 +219,7 @@ impl Engine {
 			crate::ui::hud::hotbar(&mut ui, size, &hotbar_view, |i| {
 				crate::ui::InvId::Bar(i as u8)
 			});
-			crate::ui::hud::xp_toasts(ui.dl, &ui.style, size, &self.xp_toasts);
+			crate::ui::hud::xp_toasts(ui.dl, &ui.style, size, &self.vfx.xp_toasts);
 			// The background bench's tell: only while a job runs with the
 			// screen CLOSED — open, the screen's own progress row is the
 			// richer version of the same fact.
@@ -266,7 +269,7 @@ impl Engine {
 		// world behind this is pristine worldgen the journal is about to
 		// overwrite. The menu path covers its own case (the Connecting
 		// screen simply stays up), so this is the in-game one — a teleport.
-		if self.arrival_hold.is_some() && in_game {
+		if self.save.arrival_hold.is_some() && in_game {
 			crate::ui::hud::arrival_cover(
 				&mut self.ui_dl,
 				&crate::ui::Style::new(self.ui_scale),
@@ -290,10 +293,10 @@ impl Engine {
 			// the probes around it re-trace at full weight instead of
 			// decaying from a stale value. See `Carried`. `commit` runs
 			// only once they have actually been queued.
-			for &(_, p) in &self.carried.pending {
+			for &(_, p) in &self.vfx.carried.pending {
 				r.gi_invalidate_moving(p);
 			}
-			self.carried.commit();
+			self.vfx.carried.commit();
 			let t_encode = web_time::Instant::now();
 			let scene = FrameScene {
 				uniforms: frame,
@@ -304,14 +307,14 @@ impl Engine {
 					gi_div: self.config.gi_scale_div,
 				},
 				ui_scale: self.ui_scale,
-				players: &self.remote_instances,
-				held: &self.held_instances,
-				carried: &self.carried.lights,
-				confetti: &self.confetti,
+				players: &self.vfx.remote_instances,
+				held: &self.vfx.held_instances,
+				carried: &self.vfx.carried.lights,
+				confetti: &self.vfx.confetti,
 				// The stream ends where the tool's own light hangs, and
 				// the destination is handed over rather than derived in
 				// the shader so the two cannot drift — see `siphon`.
-				siphon: self.siphon.map(|s| {
+				siphon: self.vfx.siphon.map(|s| {
 					crate::siphon::instance(
 						s.source.to_array(),
 						digblock_core::gi::carried_origin(self.camera.pos).to_array(),
@@ -323,7 +326,7 @@ impl Engine {
 				}),
 				overlay: overlay_stats
 					.as_ref()
-					.map(|s| (s, self.history_scratch.as_slice())),
+					.map(|s| (s, self.vfx.history_scratch.as_slice())),
 				feed: &self.feed,
 				target: highlight_target,
 				viewmodel,
@@ -332,7 +335,7 @@ impl Engine {
 					self.chat
 						.view(((self.time_secs * 2.0) as u32).is_multiple_of(2))
 				}),
-				nametags: &self.nametag_scratch[..self.nametag_count],
+				nametags: &self.vfx.nametag_scratch[..self.vfx.nametag_count],
 			};
 			let stats = r.render(gpu, target, &scene);
 			self.pending.encode_ms = ms_since(t_encode);

@@ -94,23 +94,23 @@ impl Engine {
 			// Nothing to draw from: run whatever was running out, and drop
 			// it at the bottom — which is also how the flare a completed
 			// draw ends on gets spent.
-			if let Some(s) = self.siphon.as_mut() {
+			if let Some(s) = self.vfx.siphon.as_mut() {
 				s.envelope = crate::siphon::envelope_step(s.envelope, false, dt);
 			}
-			if self.siphon.is_some_and(|s| s.envelope <= 0.0) {
-				self.siphon = None;
+			if self.vfx.siphon.is_some_and(|s| s.envelope <= 0.0) {
+				self.vfx.siphon = None;
 			}
 			return;
 		};
 		let envelope =
-			crate::siphon::envelope_step(self.siphon.map_or(0.0, |s| s.envelope), true, dt);
+			crate::siphon::envelope_step(self.vfx.siphon.map_or(0.0, |s| s.envelope), true, dt);
 		let c = cell_center(hit.cell);
 		let n = hit.normal;
 		// `Extract` names one of the four tiers, so the palette is always
 		// there; white is a visible wrong answer rather than a panic on a
 		// path that only draws pixels.
 		let (core, _) = ore.node_flecks().unwrap_or(([255; 3], [255; 3]));
-		self.siphon = Some(SiphonDraw {
+		self.vfx.siphon = Some(SiphonDraw {
 			source: Vec3::new(
 				c[0] + n.0 as f32 * 0.5,
 				c[1] + n.1 as f32 * 0.5,
@@ -152,7 +152,7 @@ impl Engine {
 				.map(|t| crate::ui::hud::tool_icon(t, full)),
 			other => Some(crate::ui::hud::item_icon(other, full).0),
 		});
-		self.view_swap.advance(dt, selected);
+		self.vfx.view_swap.advance(dt, selected);
 	}
 
 	/// This frame's held item, if the hand has anything in it. The pose
@@ -164,7 +164,7 @@ impl Engine {
 	) -> Option<crate::viewmodel::ViewmodelFrame> {
 		// The SWAP's item, not the hotbar's: mid-swap the hand is still
 		// holding the one it hasn't put away yet.
-		let kind = self.view_swap.shown()?;
+		let kind = self.vfx.view_swap.shown()?;
 		// The light rig is world-space; the item lives in view space, so
 		// rotate the direction through the same view matrix the scene
 		// used. Translation is irrelevant for a direction.
@@ -174,9 +174,9 @@ impl Engine {
 		Some(crate::viewmodel::ViewmodelFrame {
 			kind,
 			pose: [
-				self.view_bob.pose(),
-				self.view_swing.pose(),
-				self.view_swap.pose(),
+				self.vfx.view_bob.pose(),
+				self.vfx.view_swing.pose(),
+				self.vfx.view_swap.pose(),
 			]
 			.into_iter()
 			.fold(Default::default(), crate::viewmodel::combine),

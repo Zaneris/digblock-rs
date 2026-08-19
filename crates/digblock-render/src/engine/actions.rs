@@ -81,11 +81,11 @@ impl Engine {
 	/// over anything built there this session.
 	pub(super) fn local_spawn(&self) -> Vec3 {
 		let resolved = match self.pipeline.overlay() {
-			Some(o) => digblock_core::spawn::resolve(self.spawn_pos, self.seed, &|x, y, z| {
+			Some(o) => digblock_core::spawn::resolve(self.save.spawn_pos, self.seed, &|x, y, z| {
 				o.column(x.div_euclid(16), z.div_euclid(16))
 					.and_then(|cells| cells.get(&(x, y, z)).copied())
 			}),
-			None => self.spawn_pos,
+			None => self.save.spawn_pos,
 		};
 		let pipeline = &self.pipeline;
 		digblock_core::player::ascend_clear(resolved, &|x, y, z| pipeline.cell_at(x, y, z))
@@ -348,7 +348,7 @@ impl Engine {
 			// with the hold it measures — its length is the scoop's, so
 			// the hand comes back up exactly as the water lands in it.
 			if self.water_tool_selected() {
-				self.view_swing.strike();
+				self.vfx.view_swing.strike();
 				self.emit(crate::audio::AudioCmd::Sfx {
 					sound: crate::audio::Sfx::Swim,
 					pos: Some(cell_center(hit.cell)),
@@ -527,7 +527,7 @@ impl Engine {
 		// reason that state outlives the hold: the cell is spent rock by
 		// the write above, so there is no vein left to ask.
 		if extracting.is_some()
-			&& let Some(s) = self.siphon.as_mut()
+			&& let Some(s) = self.vfx.siphon.as_mut()
 		{
 			s.progress = 1.0;
 			s.envelope = crate::siphon::FLARE;

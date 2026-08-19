@@ -89,12 +89,12 @@ impl Engine {
 		}
 		self.skills.set_total(skill, total);
 		let delta = total - old;
-		match self.xp_toasts.iter_mut().find(|t| t.skill == skill) {
+		match self.vfx.xp_toasts.iter_mut().find(|t| t.skill == skill) {
 			Some(t) => {
 				t.amount += delta;
 				t.ttl = crate::ui::hud::XP_TOAST_TTL;
 			}
-			None => self.xp_toasts.push(crate::ui::hud::XpToast {
+			None => self.vfx.xp_toasts.push(crate::ui::hud::XpToast {
 				skill,
 				amount: delta,
 				ttl: crate::ui::hud::XP_TOAST_TTL,
@@ -161,16 +161,16 @@ impl Engine {
 	/// one, which is the one somebody is watching.
 	pub(super) fn throw_confetti(&mut self, eye: Vec3) {
 		const HEAD_CLEARANCE: f32 = 0.55;
-		self.confetti_seq = self.confetti_seq.wrapping_add(1);
-		if self.confetti.len() >= crate::confetti::MAX_BURSTS {
-			self.confetti.remove(0);
+		self.vfx.confetti_seq = self.vfx.confetti_seq.wrapping_add(1);
+		if self.vfx.confetti.len() >= crate::confetti::MAX_BURSTS {
+			self.vfx.confetti.remove(0);
 		}
-		self.confetti.push(crate::confetti::instance(
+		self.vfx.confetti.push(crate::confetti::instance(
 			[eye.x, eye.y + HEAD_CLEARANCE, eye.z],
 			0.0,
 			// A spread-out seed: consecutive bursts must not look like
 			// the same paper thrown twice.
-			self.confetti_seq as f32 * 7.919,
+			self.vfx.confetti_seq as f32 * 7.919,
 		));
 	}
 

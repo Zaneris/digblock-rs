@@ -361,7 +361,7 @@ impl Engine {
 				// it on the shared cooldown.
 				Key::H => {
 					if pressed {
-						self.return_spawn_requested = true;
+						self.save.return_spawn_requested = true;
 					}
 				}
 				// Chat is multiplayer-only — there is no one to hear a

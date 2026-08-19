@@ -103,32 +103,50 @@ impl Engine {
 		let mut engine = Self {
 			menu,
 			chat: crate::chat::Chat::default(),
-			audio: None,
-			water_audio: crate::water_audio::WaterAudio::default(),
-			footsteps: crate::audio::Footsteps::default(),
-			swim_strokes: crate::audio::SwimStrokes::default(),
-			view_bob: crate::viewmodel::Bob::default(),
-			view_swing: crate::viewmodel::Swing::default(),
-			view_swap: crate::viewmodel::Swap::default(),
-			ambient: crate::audio::Ambient::default(),
-			prospect: crate::audio::Prospect::default(),
-			audio_scratch: Vec::new(),
-			prev_player_pos: spawn,
-			music_night: None,
+			audio: AudioState {
+				sink: None,
+				water_audio: crate::water_audio::WaterAudio::default(),
+				footsteps: crate::audio::Footsteps::default(),
+				swim_strokes: crate::audio::SwimStrokes::default(),
+				ambient: crate::audio::Ambient::default(),
+				prospect: crate::audio::Prospect::default(),
+				audio_scratch: Vec::new(),
+				prev_player_pos: spawn,
+				music_night: None,
+				prev_wet: true,
+				fall_from_y: spawn.y,
+			},
+			vfx: Vfx {
+				confetti: Vec::new(),
+				confetti_seq: 0,
+				siphon: None,
+				view_bob: crate::viewmodel::Bob::default(),
+				view_swing: crate::viewmodel::Swing::default(),
+				view_swap: crate::viewmodel::Swap::default(),
+				xp_toasts: Vec::new(),
+				nametag_scratch: Vec::new(),
+				nametag_count: 0,
+				remote_scratch: Vec::new(),
+				remote_instances: Vec::new(),
+				held_instances: Vec::new(),
+				history_scratch: Vec::new(),
+				carried: Carried::default(),
+			},
 			// Assume wet: whatever the spawn turns out to be, arriving
 			// there is not "entering the water".
-			prev_wet: true,
-			fall_from_y: spawn.y,
-			nametag_scratch: Vec::new(),
-			nametag_count: 0,
 			services: None,
 			settings_store: None,
 			clipboard: None,
-			world_store: None,
-			in_local_save: false,
-			player_save_accum: 0.0,
-			spawn_pos: spawn,
-			spawn_cooldown: 0.0,
+			save: SaveSession {
+				world_store: None,
+				in_local_save: false,
+				player_save_accum: 0.0,
+				spawn_pos: spawn,
+				spawn_cooldown: 0.0,
+				return_spawn_requested: false,
+				spawn_return_pending: false,
+				arrival_hold: None,
+			},
 			debug_shapes_pending: {
 				let mut plan = if config.debug_shapes {
 					debug_shapes_plan(spawn)
@@ -210,13 +228,6 @@ impl Engine {
 			pending_ack: None,
 			correction_offset: Vec3::ZERO,
 			tick_lerp: crate::smoothing::TickLerp::new(spawn),
-			remote_scratch: Vec::new(),
-			remote_instances: Vec::new(),
-			held_instances: Vec::new(),
-			carried: Carried::default(),
-			confetti: Vec::new(),
-			confetti_seq: 0,
-			siphon: None,
 			net_corrections: 0,
 			net_error_accum: 0.0,
 			net_log_timer: 0.0,
@@ -224,23 +235,24 @@ impl Engine {
 			player_names: rustc_hash::FxHashMap::default(),
 			my_player_id: None,
 			metrics,
-			stream_budget: digblock_core::stream_budget::StreamBudget::new(stream_floor),
+			stream: StreamQueues {
+				pending_uploads: std::collections::VecDeque::new(),
+				pending_evicts: std::collections::VecDeque::new(),
+				pending_evict_set: rustc_hash::FxHashSet::default(),
+				gi_queue: VecDeque::new(),
+				gi_queued: rustc_hash::FxHashSet::default(),
+				upload_sort_center: ChunkPos::new(i32::MAX, 0, i32::MAX),
+				stream_budget: digblock_core::stream_budget::StreamBudget::new(stream_floor),
+			},
 			pending: FrameTimings::default(),
 			frame_start: None,
 			prep_start: None,
 			ambient_height: None,
 			overlay_visible,
-			history_scratch: Vec::new(),
 			bench_t: 0.0,
 			fly_frames: 0,
 			bench_reported: false,
 			walk_origin: None,
-			pending_uploads: std::collections::VecDeque::new(),
-			pending_evicts: std::collections::VecDeque::new(),
-			pending_evict_set: rustc_hash::FxHashSet::default(),
-			gi_queue: VecDeque::new(),
-			gi_queued: rustc_hash::FxHashSet::default(),
-			upload_sort_center: ChunkPos::new(i32::MAX, 0, i32::MAX),
 			size: (1, 1),
 			scale_factor: 1.0,
 			ui_scale: 1.0,
@@ -250,10 +262,6 @@ impl Engine {
 			alch_screen: Default::default(),
 			char_screen: Default::default(),
 			skills: Default::default(),
-			xp_toasts: Vec::new(),
-			return_spawn_requested: false,
-			spawn_return_pending: false,
-			arrival_hold: None,
 			inv_grid: Default::default(),
 			last_layout_sent: None,
 		};
@@ -492,9 +500,9 @@ impl Engine {
 	/// Inject the platform audio backend (launcher-owned, like
 	/// `MenuServices`). Never called by bench/screenshot/drill runs.
 	pub fn set_audio(&mut self, sink: Box<dyn crate::audio::AudioSink>) {
-		self.audio = Some(sink);
-		self.ambient.reset();
-		self.prospect.reset();
+		self.audio.sink = Some(sink);
+		self.audio.ambient.reset();
+		self.audio.prospect.reset();
 		// Persisted volumes apply from the very first sound.
 		self.emit(crate::audio::AudioCmd::Volume {
 			music: self.config.music_vol,
@@ -541,7 +549,7 @@ impl Engine {
 	/// Inject the named-save backend (launcher-owned: desktop files, web
 	/// localStorage). Root's "Play Local" becomes "Singleplayer".
 	pub fn set_world_store(&mut self, store: Box<dyn digblock_persist::WorldStore>) {
-		self.world_store = Some(store);
+		self.save.world_store = Some(store);
 		self.menu.set_store_available();
 	}
 

@@ -90,7 +90,7 @@ impl Engine {
 			// Urgency reads last frame's heaps (this frame's scan hasn't
 			// run) — one frame of lag, and the floor batch still runs
 			// regardless.
-			self.stream_budget.on_frame(
+			self.stream.stream_budget.on_frame(
 				self.metrics.last.total_ms,
 				self.metrics.last.busy_ms,
 				self.pipeline.stream_urgency(),
@@ -142,8 +142,8 @@ impl Engine {
 		let gi_window = renderer.gi_window_chunks().min(self.config.draw_dist);
 		self.pipeline.gi_recenter(center, gi_window);
 		for pos in self.pipeline.take_gi_dirty() {
-			if self.gi_queued.insert(pos) {
-				self.gi_queue.push_back(pos);
+			if self.stream.gi_queued.insert(pos) {
+				self.stream.gi_queue.push_back(pos);
 			}
 		}
 		for (x, y, z) in self.pipeline.take_gi_edits() {
@@ -155,10 +155,10 @@ impl Engine {
 			if gi_uploads >= GI_UPLOAD_MIN && web_time::Instant::now() >= deadline {
 				break;
 			}
-			let Some(pos) = self.gi_queue.pop_front() else {
+			let Some(pos) = self.stream.gi_queue.pop_front() else {
 				break;
 			};
-			self.gi_queued.remove(&pos);
+			self.stream.gi_queued.remove(&pos);
 			// Outside the window's half-extent: uploading would ALIAS onto
 			// an in-window column — drop it; `gi_recenter` re-dirties it
 			// the moment it enters coverage. Not resident anymore =
@@ -193,42 +193,49 @@ impl Engine {
 			// idle until dropped, so nothing is gained by freeing them all
 			// inside one frame.
 			for pos in m.evicted {
-				if self.pending_evict_set.insert(pos) {
-					self.pending_evicts.push_back(pos);
+				if self.stream.pending_evict_set.insert(pos) {
+					self.stream.pending_evicts.push_back(pos);
 				}
 			}
-			let gone = &self.pending_evict_set;
-			self.pending_uploads.retain(|out| !gone.contains(&out.pos));
+			let gone = &self.stream.pending_evict_set;
+			self.stream
+				.pending_uploads
+				.retain(|out| !gone.contains(&out.pos));
 		}
 		let appended = !m.meshed.is_empty();
-		self.pending_uploads.extend(m.meshed);
+		self.stream.pending_uploads.extend(m.meshed);
 		// Nearest-first: on fast travel the queue backs up, and the chunks
 		// that matter are the ones at and around the player. The queue is
 		// already ordered, so re-sort only when new work arrived or the
 		// player changed column — not every frame it happens to be
 		// non-empty, which is exactly when frames are tightest.
-		if self.pending_uploads.len() > 1 && (appended || center != self.upload_sort_center) {
-			self.upload_sort_center = center;
-			self.pending_uploads.make_contiguous().sort_by_key(|out| {
-				let dx = out.pos.x - center.x;
-				let dz = out.pos.z - center.z;
-				dx * dx + dz * dz
-			});
+		if self.stream.pending_uploads.len() > 1
+			&& (appended || center != self.stream.upload_sort_center)
+		{
+			self.stream.upload_sort_center = center;
+			self.stream
+				.pending_uploads
+				.make_contiguous()
+				.sort_by_key(|out| {
+					let dx = out.pos.x - center.x;
+					let dz = out.pos.z - center.z;
+					dx * dx + dz * dz
+				});
 		}
 		// Release evicted GPU buffers under the same clock as everything
 		// else, always making some progress so the queue can't grow without
 		// bound while the player keeps moving.
 		let mut released = 0usize;
-		while let Some(pos) = self.pending_evicts.pop_front() {
+		while let Some(pos) = self.stream.pending_evicts.pop_front() {
 			// Cancelled: the chunk came back (walked around the rim, or a
 			// teleport) and re-uploaded before its removal was reached.
 			// Releasing it now would delete the FRESH mesh and leave a hole
 			// until something happened to re-dirty the chunk.
-			if !self.pending_evict_set.remove(&pos) {
+			if !self.stream.pending_evict_set.remove(&pos) {
 				continue;
 			}
 			renderer.remove_chunk(pos);
-			self.water_audio.remove_chunk(pos);
+			self.audio.water_audio.remove_chunk(pos);
 			released += 1;
 			if released >= EVICT_MIN && web_time::Instant::now() >= deadline {
 				break;
@@ -241,14 +248,15 @@ impl Engine {
 		// anyway.
 		let mut uploads = 0u32;
 		let mut bytes = 0usize;
-		while let Some(out) = self.pending_uploads.pop_front() {
+		while let Some(out) = self.stream.pending_uploads.pop_front() {
 			// Cancels any queued release for this position (see above).
-			self.pending_evict_set.remove(&out.pos);
+			self.stream.pending_evict_set.remove(&out.pos);
 			// Both vertex streams are u32 words (see `mesher::pack`).
 			bytes += (out.mesh.solid.len() + out.mesh.water.len()) * 4;
 			renderer.upload_chunk(gpu, out.pos, &out.mesh);
 			// Waterfall audio follows the same impacts spray renders.
-			self.water_audio
+			self.audio
+				.water_audio
 				.set_chunk(out.pos, out.pos.origin(), &out.mesh.impacts);
 			uploads += 1;
 			if uploads as usize >= UPLOAD_MIN
@@ -271,8 +279,8 @@ impl Engine {
 			mesh_queue: m.mesh_queue,
 			in_flight: m.in_flight,
 			resident: self.pipeline.resident() as u32,
-			upload_backlog: self.pending_uploads.len() as u32,
-			evict_backlog: self.pending_evicts.len() as u32,
+			upload_backlog: self.stream.pending_uploads.len() as u32,
+			evict_backlog: self.stream.pending_evicts.len() as u32,
 			// Written by pump_net earlier this frame; preserved here
 			// because the gauges are replaced wholesale.
 			net_backlog: self.net_backlog.len() as u32,
@@ -287,7 +295,7 @@ impl Engine {
 		if m.gen_queue == 0
 			&& m.mesh_queue == 0
 			&& m.in_flight == 0
-			&& self.pending_uploads.is_empty()
+			&& self.stream.pending_uploads.is_empty()
 		{
 			self.metrics.mark_streamed();
 		}

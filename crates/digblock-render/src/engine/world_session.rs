@@ -13,7 +13,7 @@ impl Engine {
 		self.player_names.clear();
 		self.push_feed("Connected to server.".into());
 		self.seed = seed;
-		self.spawn_pos = spawn;
+		self.save.spawn_pos = spawn;
 		// No overlay: the server's journal owns this world's edits.
 		self.install_pipeline(Pipeline::new(
 			seed,
@@ -36,7 +36,7 @@ impl Engine {
 		// Level 1 is the honest guess: it under-reveals rather than over-, and
 		// every reveal it misses arrives moments later with the real totals.
 		self.skills = Default::default();
-		self.xp_toasts.clear();
+		self.vfx.xp_toasts.clear();
 		self.reset_world_transients(spawn, true);
 	}
 
@@ -69,8 +69,8 @@ impl Engine {
 		// Confetti is thrown at a world position; a new world has none of
 		// them left hanging in the air. Same for the essence draw, which
 		// names a cell in the world just left.
-		self.confetti.clear();
-		self.siphon = None;
+		self.vfx.confetti.clear();
+		self.vfx.siphon = None;
 		// And the bench job, which survives the SCREEN closing but not
 		// the world: it points at this world's stacks and this server's
 		// bucket, neither of which exists in whatever comes next.
@@ -80,34 +80,34 @@ impl Engine {
 		// the menu) keeps its meshes and waterfall voices — the world is
 		// identical, clearing would only force a full re-upload.
 		if world_replaced {
-			self.pending_uploads.clear();
+			self.stream.pending_uploads.clear();
 			// `clear_chunks` already dropped every GPU mesh, so queued
 			// releases are not just redundant but dangerous: those
 			// positions exist in the NEW world too, and releasing one later
 			// would delete a chunk that legitimately belongs there.
-			self.pending_evicts.clear();
-			self.pending_evict_set.clear();
-			self.upload_sort_center = ChunkPos::new(i32::MAX, 0, i32::MAX);
+			self.stream.pending_evicts.clear();
+			self.stream.pending_evict_set.clear();
+			self.stream.upload_sort_center = ChunkPos::new(i32::MAX, 0, i32::MAX);
 			if let Some(r) = self.renderer.as_mut() {
 				r.clear_chunks();
 			}
-			let mut cmds = std::mem::take(&mut self.audio_scratch);
-			self.water_audio.clear(&mut cmds);
+			let mut cmds = std::mem::take(&mut self.audio.audio_scratch);
+			self.audio.water_audio.clear(&mut cmds);
 			for cmd in cmds.drain(..) {
 				self.emit(cmd);
 			}
-			self.audio_scratch = cmds;
+			self.audio.audio_scratch = cmds;
 		}
 		// Old-world sounds don't survive the swap.
 		self.emit(crate::audio::AudioCmd::LoopStop {
 			id: crate::audio::LOOP_DIG,
 		});
-		self.ambient.reset();
-		self.prospect.reset();
-		self.swim_strokes.reset();
-		self.view_bob.reset();
-		self.view_swing.reset();
-		self.view_swap.reset();
+		self.audio.ambient.reset();
+		self.audio.prospect.reset();
+		self.audio.swim_strokes.reset();
+		self.vfx.view_bob.reset();
+		self.vfx.view_swing.reset();
+		self.vfx.view_swap.reset();
 		// The tool slot's handover animates whenever the active tool changes,
 		// which is right for a cycle and wrong for a world entry: the bar we
 		// are about to draw is state ARRIVING, not an exchange anybody
@@ -126,9 +126,9 @@ impl Engine {
 		// walks into plain stone until the next level-up. Silent: the
 		// discovery was made long ago.
 		self.sync_node_reveal(false);
-		self.prev_player_pos = pos;
-		self.prev_wet = true;
-		self.fall_from_y = pos.y;
+		self.audio.prev_player_pos = pos;
+		self.audio.prev_wet = true;
+		self.audio.fall_from_y = pos.y;
 	}
 
 	/// Flush and detach the active named save (leaving for a server,
@@ -138,8 +138,8 @@ impl Engine {
 	/// is its last chance to see it before the pipeline is replaced.
 	pub(super) fn close_local_save(&mut self) {
 		let recorded = self.pipeline.take_recorded_edits();
-		if let Some(store) = self.world_store.as_mut()
-			&& self.in_local_save
+		if let Some(store) = self.save.world_store.as_mut()
+			&& self.save.in_local_save
 		{
 			for (x, y, z, cell) in recorded {
 				store.append_edit(x, y, z, cell);
@@ -147,7 +147,7 @@ impl Engine {
 			store.flush(self.pipeline.overlay());
 			store.close_world();
 		}
-		self.in_local_save = false;
+		self.save.in_local_save = false;
 	}
 
 	/// Swap to a fresh backdrop world and relock the startup menu — the
@@ -163,7 +163,7 @@ impl Engine {
 		let seed = nanos as f64 / u32::MAX as f64 * 10000.0;
 		self.seed = seed;
 		let spawn = digblock_core::player::spawn(seed);
-		self.spawn_pos = spawn;
+		self.save.spawn_pos = spawn;
 		self.install_pipeline(Pipeline::with_overlay(
 			seed,
 			self.config.draw_dist,
@@ -174,10 +174,10 @@ impl Engine {
 		self.camera.pos = spawn;
 		self.inventory = Inventory::default();
 		self.skills = Default::default();
-		self.xp_toasts.clear();
+		self.vfx.xp_toasts.clear();
 		self.player_names.clear();
 		self.reset_world_transients(spawn, true);
-		self.in_local_save = false;
+		self.save.in_local_save = false;
 		self.menu.on_returned_to_title();
 	}
 
@@ -192,7 +192,7 @@ impl Engine {
 		);
 		self.player_names.clear();
 		let spawn = digblock_core::player::spawn(save.meta.seed);
-		self.spawn_pos = spawn;
+		self.save.spawn_pos = spawn;
 		let overlay: digblock_core::overlay::EditOverlay = save.edits.into_iter().collect();
 		// Same world already streamed in behind the menu (Create adopts
 		// the backdrop's seed to hit this deliberately), no edits on
@@ -244,7 +244,7 @@ impl Engine {
 		// The save's skill totals (empty for pre-skills saves = level 1);
 		// stale toasts belong to whatever world we just left.
 		self.skills = digblock_core::skills::SkillSet::from_wire(&save.skills);
-		self.xp_toasts.clear();
+		self.vfx.xp_toasts.clear();
 		// Saved arrangement first (sanitizing decode), then reconcile as
 		// the backstop: legacy saves get the derived layout, and types
 		// the arrangement doesn't cover still land on the bar or grid.
@@ -260,8 +260,8 @@ impl Engine {
 			&mut self.inv_grid,
 		);
 		self.reset_world_transients(start, !reuse);
-		self.in_local_save = true;
-		self.player_save_accum = 0.0;
+		self.save.in_local_save = true;
+		self.save.player_save_accum = 0.0;
 		self.menu.on_world_entered();
 	}
 
@@ -277,7 +277,7 @@ impl Engine {
 				// keeps the already-streamed pipeline instead of
 				// regenerating it from scratch. Otherwise a fresh
 				// clock-derived seed (no `rand` — wasm cleanliness).
-				let seed = if self.net.is_none() && !self.in_local_save {
+				let seed = if self.net.is_none() && !self.save.in_local_save {
 					self.seed
 				} else {
 					let nanos = web_time::SystemTime::now()
@@ -285,7 +285,7 @@ impl Engine {
 						.map_or(0, |d| d.subsec_nanos());
 					nanos as f64 / u32::MAX as f64 * 10000.0
 				};
-				let opened = self.world_store.as_mut().map(|store| {
+				let opened = self.save.world_store.as_mut().map(|store| {
 					store
 						.create_world(&name, seed)
 						.and_then(|meta| store.open_world(&meta.id))
@@ -306,7 +306,7 @@ impl Engine {
 				// Close the current save BEFORE opening the next (single
 				// active world per store).
 				self.close_local_save();
-				let opened = self.world_store.as_mut().map(|s| s.open_world(&id));
+				let opened = self.save.world_store.as_mut().map(|s| s.open_world(&id));
 				match opened {
 					Some(Ok(save)) => self.enter_local_world(save),
 					Some(Err(e)) => self.menu.set_worlds_status(e),
@@ -314,7 +314,7 @@ impl Engine {
 				}
 			}
 			WorldIntent::Delete { id } => {
-				if let Some(store) = self.world_store.as_mut() {
+				if let Some(store) = self.save.world_store.as_mut() {
 					// The store drops the active world itself if this is it.
 					store.delete_world(&id);
 				}
@@ -325,7 +325,7 @@ impl Engine {
 
 	/// Send the store's world list to the menu, ages formatted.
 	pub(super) fn push_world_list(&mut self) {
-		let Some(store) = self.world_store.as_mut() else {
+		let Some(store) = self.save.world_store.as_mut() else {
 			return;
 		};
 		let now = web_time::SystemTime::now()
@@ -361,7 +361,7 @@ impl Engine {
 	/// join on "Joining world..." forever — a timeout escape hatch cannot fire
 	/// on a hold that was never set.
 	pub(super) fn begin_arrival_hold(&mut self) {
-		self.arrival_hold = Some(digblock_net::protocol::AREA_SYNC_TIMEOUT_SECS);
+		self.save.arrival_hold = Some(digblock_net::protocol::AREA_SYNC_TIMEOUT_SECS);
 	}
 
 	/// Release it, whichever way it ended. Also closes the join's
@@ -369,14 +369,14 @@ impl Engine {
 	/// covers itself from the HUD) and for a hold that timed out with the
 	/// menu already gone.
 	pub(super) fn end_arrival_hold(&mut self) {
-		if self.arrival_hold.take().is_some() {
+		if self.save.arrival_hold.take().is_some() {
 			self.menu.on_welcome();
 			// The pose we are about to start simulating from is the one the
 			// server gave us, now standing on the real world rather than on
 			// worldgen. Re-anchor so the first drawn frame does not
 			// interpolate out of wherever the held frames left the lerp.
 			self.tick_lerp.reset(self.player.pos);
-			self.prev_player_pos = self.player.pos;
+			self.audio.prev_player_pos = self.player.pos;
 		}
 	}
 }

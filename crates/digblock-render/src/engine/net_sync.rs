@@ -32,15 +32,15 @@ impl Engine {
 		self.camera.pos = pos;
 		self.correction_offset = Vec3::ZERO;
 		self.pending_ack = None;
-		self.prev_player_pos = pos;
-		self.prev_wet = true;
-		self.fall_from_y = pos.y;
+		self.audio.prev_player_pos = pos;
+		self.audio.prev_wet = true;
+		self.audio.fall_from_y = pos.y;
 		self.tick_lerp.reset(pos);
 		self.dig = None;
 		if look != Vec3::ZERO {
 			self.face(look);
 		}
-		let line = if std::mem::take(&mut self.spawn_return_pending) {
+		let line = if std::mem::take(&mut self.save.spawn_return_pending) {
 			"Returned to spawn."
 		} else {
 			"Teleported."
@@ -360,7 +360,7 @@ impl Engine {
 					// place the paper could honestly come from. A player
 					// too far away to be sampled at all gets no burst,
 					// which is exactly right: nobody can see them.
-					if let Some(d) = self.remote_scratch.iter().find(|d| d.id == player) {
+					if let Some(d) = self.vfx.remote_scratch.iter().find(|d| d.id == player) {
 						let eye = d.pos;
 						self.throw_confetti(eye);
 					}

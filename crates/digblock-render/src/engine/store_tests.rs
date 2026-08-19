@@ -105,7 +105,7 @@ fn create_enter_edits_and_snapshots_flow_to_store() {
 	engine.set_world_store(Box::new(MockStore(calls.clone())));
 
 	engine.handle_world_intent(crate::menu::WorldIntent::Create { name: "W".into() });
-	assert!(engine.in_local_save, "entered the created world");
+	assert!(engine.save.in_local_save, "entered the created world");
 	assert_eq!(engine.seed, 7.0, "world seed from the save");
 	assert_eq!(
 		engine.player.pos.to_array(),
@@ -362,7 +362,7 @@ fn create_reuses_streamed_backdrop_world() {
 	);
 
 	engine.handle_world_intent(crate::menu::WorldIntent::Create { name: "W".into() });
-	assert!(engine.in_local_save);
+	assert!(engine.save.in_local_save);
 	assert_eq!(engine.seed, 3.0, "create adopted the backdrop seed");
 	// Retained pipeline: the spawn column is queryable with no
 	// further maintain — the player stands instead of waiting.

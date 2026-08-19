@@ -244,25 +244,8 @@ pub struct Engine {
 	/// measurably the dominant stutter source, well ahead of anything the
 	/// network does.
 	tick_lerp: crate::smoothing::TickLerp,
-	/// Per-frame remote-player sampling scratch.
-	remote_scratch: Vec<digblock_net::remote::RemoteDraw>,
-	remote_instances: Vec<[f32; 8]>,
-	held_instances: Vec<(crate::ui::hud::IconKind, [f32; 8])>,
-	carried: Carried,
-	/// Live level-up confetti bursts, in the flat instance layout the
-	/// shader reads (origin + age + seed). World state, so a world swap
-	/// forgets them; the flakes' whole motion derives from these three
-	/// numbers in confetti.wgsl, which is why aging them is the entire
-	/// simulation.
-	confetti: Vec<crate::confetti::BurstInstance>,
-	/// Burst counter — the per-burst seed, so two celebrations on the
-	/// same spot don't throw identical paper. Deliberately a counter
-	/// rather than an RNG: nothing here needs to be unpredictable.
-	confetti_seq: u32,
-	/// The live essence draw, aged by `step_siphon`. World state for the
-	/// same reason confetti is: it names a cell, and a world swap must
-	/// forget it.
-	siphon: Option<SiphonDraw>,
+	/// See [`Vfx`].
+	vfx: Vfx,
 	/// Reconciliation health, logged on a slow cadence while connected.
 	net_corrections: u32,
 	net_error_accum: f32,
@@ -278,9 +261,8 @@ pub struct Engine {
 	/// our chat echo resolves through this + config.player_name.
 	my_player_id: Option<u8>,
 	metrics: Metrics,
-	/// Adaptive streaming-budget controller (web/inline builds; the fixed
-	/// config budget elsewhere — see `EngineConfig::adaptive_stream`).
-	stream_budget: digblock_core::stream_budget::StreamBudget,
+	/// See [`StreamQueues`].
+	stream: StreamQueues,
 	/// The bench summary has been emitted; a second call would report a
 	/// different (fallback) line, because `bench_summary` consumes the run
 	/// history. Two exits can reach it — `Game::on_exit` and `Drop` — and
@@ -298,7 +280,6 @@ pub struct Engine {
 	/// the camera's block column.
 	ambient_height: Option<((i32, i32), i32)>,
 	overlay_visible: bool,
-	history_scratch: Vec<f32>,
 	/// Scripted-flight clock (bench mode), in fixed sim ticks.
 	bench_t: f32,
 	/// Steps of the scripted flight already taken, against `config.fly`.
@@ -306,22 +287,6 @@ pub struct Engine {
 	/// Where `config.walk`'s oscillation is anchored: the camera's pose at
 	/// the first step, latched so `--fly` and `--warp` share it.
 	walk_origin: Option<Vec3>,
-	/// Meshes drained but not yet uploaded (upload budget carry-over).
-	pending_uploads: std::collections::VecDeque<digblock_core::pipeline::MeshOutput>,
-	/// Evicted chunks whose GPU buffers are still to be released, drained
-	/// under the frame's streaming budget.
-	pending_evicts: std::collections::VecDeque<ChunkPos>,
-	/// Positions with a release still outstanding. Doubles as the cancel
-	/// set: an upload for a queued position clears it, so a chunk that
-	/// comes back before its release is reached keeps its new mesh.
-	pending_evict_set: rustc_hash::FxHashSet<ChunkPos>,
-	/// RTGI voxel-window re-upload queue (chunk positions from
-	/// `Pipeline::take_gi_dirty`, drained under a per-frame byte
-	/// budget; the set half dedupes re-dirtied entries).
-	gi_queue: VecDeque<ChunkPos>,
-	gi_queued: rustc_hash::FxHashSet<ChunkPos>,
-	/// Camera chunk the upload queue was last ordered for.
-	upload_sort_center: ChunkPos,
 	size: (u32, u32),
 	/// Device pixels per logical pixel (shell-reported; unscaled until told).
 	scale_factor: f32,
@@ -344,23 +309,8 @@ pub struct Engine {
 	/// (`Skills`/`XpGain` — never client-claimed), computed through the
 	/// same core award functions offline.
 	skills: digblock_core::skills::SkillSet,
-	/// Live "+N SKILL" toasts above the hotbar (coalescing per skill).
-	xp_toasts: Vec<crate::ui::hud::XpToast>,
-	/// H pressed in-game: merged with the menu's return-spawn request.
-	return_spawn_requested: bool,
-	/// A return-to-spawn is outstanding, so the next teleport that lands
-	/// is ours and says so. Kept apart from the teleport's `look`, which
-	/// a server with `/set-spawn-dir` set fills in on this path too.
-	spawn_return_pending: bool,
-	/// Seconds left holding the world after an arrival — a join or a
-	/// teleport — while the server ships the journaled columns around the
-	/// destination (`ServerMsg::AreaReady`). `None` = not holding.
-	///
-	/// Counts DOWN rather than storing a deadline so it needs no clock of
-	/// its own, and so a suspended tab resumes with its full wait rather
-	/// than an expired one. Zero releases exactly as the marker does:
-	/// a hold that cannot time out is worse than the artifact it removes.
-	arrival_hold: Option<f32>,
+	/// See [`SaveSession`].
+	save: SaveSession,
 	/// The inventory-grid arrangement behind the hotbar (slot
 	/// assignments; counts stay in `inventory`). Kept consistent by
 	/// `reconcile_layout` every frame.
@@ -373,43 +323,8 @@ pub struct Engine {
 	menu: crate::menu::Menu,
 	/// Chat input line (pure; overlay renders its view).
 	chat: crate::chat::Chat,
-	/// Injected audio backend; None (bench, iOS) makes every emit free.
-	audio: Option<Box<dyn crate::audio::AudioSink>>,
-	/// Waterfall loop-voice reconciler (fed by mesh impacts).
-	water_audio: crate::water_audio::WaterAudio,
-	/// Footstep cadence + ambient-bed state (pure helpers).
-	footsteps: crate::audio::Footsteps,
-	swim_strokes: crate::audio::SwimStrokes,
-	/// Held-item animation. Advanced in `update`, NOT in `step_audio` —
-	/// that returns early with no audio sink attached (bench, screenshot,
-	/// iOS), which would silently freeze the hand in exactly the
-	/// configurations that photograph it.
-	view_bob: crate::viewmodel::Bob,
-	view_swing: crate::viewmodel::Swing,
-	/// Owns which item the hand is DRAWING — it lags `hotbar.selected`
-	/// by half a swap, so the exchange happens below the frame.
-	view_swap: crate::viewmodel::Swap,
-	ambient: crate::audio::Ambient,
-	/// The prospector's sense's cadence (SKILLS-DESIGN §5.5).
-	prospect: crate::audio::Prospect,
-	/// Scratch for batched audio commands (water voices).
-	audio_scratch: Vec<crate::audio::AudioCmd>,
-	/// Player eye position last frame (footstep distance).
-	prev_player_pos: Vec3,
-	/// Last music pool announced to the filler; `None` until the first
-	/// frame, so startup always sends one.
-	music_night: Option<bool>,
-	/// Were the feet in water last frame? Rising edge = one splash.
-	prev_wet: bool,
-	/// Highest foot height since the feet were last supported — the fall
-	/// height a splash is scaled by. Reset on ground and in water, so
-	/// walking down a hillside into a lake isn't a plunge.
-	fall_from_y: f32,
-	/// Per-frame name-tag scratch (reused allocation).
-	/// Name tags, kept beyond `nametag_count` so their String buffers
-	/// survive between frames instead of being reallocated every frame.
-	nametag_scratch: Vec<crate::renderer::NameTag>,
-	nametag_count: usize,
+	/// See [`AudioState`].
+	audio: AudioState,
 	/// Launcher-owned HTTP/probe services the menu talks to; None = no
 	/// master URL configured (Multiplayer shows as disabled).
 	services: Option<crate::menu::MenuServices>,
@@ -418,23 +333,6 @@ pub struct Engine {
 	settings_store: Option<crate::settings::SettingsStore>,
 	/// Launcher-injected clipboard writer; see `set_clipboard`.
 	clipboard: Option<ClipboardSink>,
-	/// Launcher-injected named-save backend; None (bench, drill,
-	/// scripted joins, iOS) keeps the ephemeral "Play Local" flow.
-	world_store: Option<Box<dyn digblock_persist::WorldStore>>,
-	/// True while playing an opened named save: recorded edits stream to
-	/// the store and player state snapshots on a timer. False for the
-	/// startup backdrop world (which still has an overlay, so eviction
-	/// is safe, but nothing persists).
-	in_local_save: bool,
-	/// Seconds since the last player/inventory snapshot handoff.
-	player_save_accum: f32,
-	/// The world's spawn point (the server's after a Welcome swap):
-	/// the return-to-spawn target.
-	spawn_pos: Vec3,
-	/// Seconds left on the return-to-spawn cooldown (0 = ready). One
-	/// gate for local and connected play; connected, the server also
-	/// enforces its own copy.
-	spawn_cooldown: f32,
 	/// DIG_SHAPES=1 showcase cells not yet placed (chunks stream in
 	/// asynchronously; each update retries what's left). Empty = done
 	/// or disabled.
@@ -443,6 +341,176 @@ pub struct Engine {
 
 /// Client-side hold-to-dig progress (mirrors the server's `DigState`;
 /// purely predictive — the server re-times the interval itself).
+/// Everything the engine needs to decide what to play. The sink is
+/// injected, and a `None` sink is what covers bench, screenshot,
+/// drill and iOS runs.
+struct AudioState {
+	/// Injected audio backend; None (bench, iOS) makes every emit free.
+	sink: Option<Box<dyn crate::audio::AudioSink>>,
+
+	/// Waterfall loop-voice reconciler (fed by mesh impacts).
+	water_audio: crate::water_audio::WaterAudio,
+
+	/// Footstep cadence + ambient-bed state (pure helpers).
+	footsteps: crate::audio::Footsteps,
+
+	swim_strokes: crate::audio::SwimStrokes,
+
+	ambient: crate::audio::Ambient,
+
+	/// The prospector's sense's cadence (SKILLS-DESIGN §5.5).
+	prospect: crate::audio::Prospect,
+
+	/// Scratch for batched audio commands (water voices).
+	audio_scratch: Vec<crate::audio::AudioCmd>,
+
+	/// Player eye position last frame (footstep distance).
+	prev_player_pos: Vec3,
+
+	/// Last music pool announced to the filler; `None` until the first
+	/// frame, so startup always sends one.
+	music_night: Option<bool>,
+
+	/// Were the feet in water last frame? Rising edge = one splash.
+	prev_wet: bool,
+
+	/// Highest foot height since the feet were last supported — the fall
+	/// height a splash is scaled by. Reset on ground and in water, so
+	/// walking down a hillside into a lake isn't a plunge.
+	fall_from_y: f32,
+}
+
+/// Work the pipeline has produced and the renderer has not yet taken.
+/// Drained under one per-frame deadline, so streaming can never hitch
+/// the render loop.
+struct StreamQueues {
+	/// Meshes drained but not yet uploaded (upload budget carry-over).
+	pending_uploads: std::collections::VecDeque<digblock_core::pipeline::MeshOutput>,
+
+	/// Evicted chunks whose GPU buffers are still to be released, drained
+	/// under the frame's streaming budget.
+	pending_evicts: std::collections::VecDeque<ChunkPos>,
+
+	/// Positions with a release still outstanding. Doubles as the cancel
+	/// set: an upload for a queued position clears it, so a chunk that
+	/// comes back before its release is reached keeps its new mesh.
+	pending_evict_set: rustc_hash::FxHashSet<ChunkPos>,
+
+	/// RTGI voxel-window re-upload queue (chunk positions from
+	/// `Pipeline::take_gi_dirty`, drained under a per-frame byte
+	/// budget; the set half dedupes re-dirtied entries).
+	gi_queue: VecDeque<ChunkPos>,
+
+	gi_queued: rustc_hash::FxHashSet<ChunkPos>,
+
+	/// Camera chunk the upload queue was last ordered for.
+	upload_sort_center: ChunkPos,
+
+	/// Adaptive streaming-budget controller (web/inline builds; the fixed
+	/// config budget elsewhere — see `EngineConfig::adaptive_stream`).
+	stream_budget: digblock_core::stream_budget::StreamBudget,
+}
+
+/// Presentation-only motion: nothing here is read by gameplay, and
+/// none of it is authoritative. Reset when the world under it is
+/// replaced.
+struct Vfx {
+	/// Live level-up confetti bursts, in the flat instance layout the
+	/// shader reads (origin + age + seed). World state, so a world swap
+	/// forgets them; the flakes' whole motion derives from these three
+	/// numbers in confetti.wgsl, which is why aging them is the entire
+	/// simulation.
+	confetti: Vec<crate::confetti::BurstInstance>,
+
+	/// Burst counter — the per-burst seed, so two celebrations on the
+	/// same spot don't throw identical paper. Deliberately a counter
+	/// rather than an RNG: nothing here needs to be unpredictable.
+	confetti_seq: u32,
+
+	/// The live essence draw, aged by `step_siphon`. World state for the
+	/// same reason confetti is: it names a cell, and a world swap must
+	/// forget it.
+	siphon: Option<SiphonDraw>,
+
+	/// Held-item animation. Advanced in `update`, NOT in `step_audio` —
+	/// that returns early with no audio sink attached (bench, screenshot,
+	/// iOS), which would silently freeze the hand in exactly the
+	/// configurations that photograph it.
+	view_bob: crate::viewmodel::Bob,
+
+	view_swing: crate::viewmodel::Swing,
+
+	/// Owns which item the hand is DRAWING — it lags `hotbar.selected`
+	/// by half a swap, so the exchange happens below the frame.
+	view_swap: crate::viewmodel::Swap,
+
+	/// Live "+N SKILL" toasts above the hotbar (coalescing per skill).
+	xp_toasts: Vec<crate::ui::hud::XpToast>,
+
+	/// Per-frame name-tag scratch (reused allocation).
+	/// Name tags, kept beyond `nametag_count` so their String buffers
+	/// survive between frames instead of being reallocated every frame.
+	nametag_scratch: Vec<crate::renderer::NameTag>,
+
+	nametag_count: usize,
+
+	/// Per-frame remote-player sampling scratch.
+	remote_scratch: Vec<digblock_net::remote::RemoteDraw>,
+
+	remote_instances: Vec<[f32; 8]>,
+
+	held_instances: Vec<(crate::ui::hud::IconKind, [f32; 8])>,
+
+	history_scratch: Vec<f32>,
+
+	carried: Carried,
+}
+
+/// The local-world half: which save is open, when the next player
+/// snapshot is owed, and the spawn-return cooldown. A rejoin resumes
+/// in place, so the cooldown persists with the position.
+struct SaveSession {
+	/// Launcher-injected named-save backend; None (bench, drill,
+	/// scripted joins, iOS) keeps the ephemeral "Play Local" flow.
+	world_store: Option<Box<dyn digblock_persist::WorldStore>>,
+
+	/// True while playing an opened named save: recorded edits stream to
+	/// the store and player state snapshots on a timer. False for the
+	/// startup backdrop world (which still has an overlay, so eviction
+	/// is safe, but nothing persists).
+	in_local_save: bool,
+
+	/// Seconds since the last player/inventory snapshot handoff.
+	player_save_accum: f32,
+
+	/// The world's spawn point (the server's after a Welcome swap):
+	/// the return-to-spawn target.
+	spawn_pos: Vec3,
+
+	/// Seconds left on the return-to-spawn cooldown (0 = ready). One
+	/// gate for local and connected play; connected, the server also
+	/// enforces its own copy.
+	spawn_cooldown: f32,
+
+	/// H pressed in-game: merged with the menu's return-spawn request.
+	return_spawn_requested: bool,
+
+	/// A return-to-spawn is outstanding, so the next teleport that lands
+	/// is ours and says so. Kept apart from the teleport's `look`, which
+	/// a server with `/set-spawn-dir` set fills in on this path too.
+	spawn_return_pending: bool,
+
+	/// Seconds left holding the world after an arrival — a join or a
+	/// teleport — while the server ships the journaled columns around the
+	/// destination (`ServerMsg::AreaReady`). `None` = not holding.
+	///
+	/// Counts DOWN rather than storing a deadline so it needs no clock of
+	/// its own, and so a suspended tab resumes with its full wait rather
+	/// than an expired one. Zero releases exactly as the marker does:
+	/// a hold that cannot time out is worse than the artifact it removes.
+	arrival_hold: Option<f32>,
+}
+
 struct DigProgress {
 	cell: (i32, i32, i32),
 	/// Full cell value at hold start: any content change (id OR state —
@@ -703,15 +771,15 @@ impl Game for Engine {
 	fn on_suspend(&mut self) {
 		log::info!("engine: on_suspend (state save point)");
 		self.metrics.pause();
-		self.stream_budget.reset();
+		self.stream.stream_budget.reset();
 		// One cheap synchronous send — honors the on_suspend contract.
 		self.emit(crate::audio::AudioCmd::Pause);
 		// Named-save save-point: drain any same-frame edits, snapshot the
 		// player, and flush — all synchronous by design (file fsync /
 		// localStorage put), honoring the cheap-and-synchronous contract.
 		let recorded = self.pipeline.take_recorded_edits();
-		if let Some(store) = self.world_store.as_mut() {
-			if self.in_local_save {
+		if let Some(store) = self.save.world_store.as_mut() {
+			if self.save.in_local_save {
 				for (x, y, z, cell) in recorded {
 					store.append_edit(x, y, z, cell);
 				}

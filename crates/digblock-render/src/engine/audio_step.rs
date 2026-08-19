@@ -34,7 +34,7 @@ impl Engine {
 		const SPLASH_GAIN_MIN: f32 = 0.3;
 		const SPLASH_GAIN_PER_BLOCK: f32 = 0.06;
 		const SPLASH_GAIN_MAX: f32 = 0.9;
-		if self.audio.is_none() {
+		if self.audio.sink.is_none() {
 			return;
 		}
 		let cam = self.camera.pos;
@@ -45,7 +45,7 @@ impl Engine {
 
 		// Footsteps and the water-entry splash, both driven by the feet.
 		let submerged = self.eye_in_water();
-		let d = self.player.pos - self.prev_player_pos;
+		let d = self.player.pos - self.audio.prev_player_pos;
 		let feet = self.player.pos.y - digblock_core::player::EYE_TO_FEET;
 		let (bx, bz) = (
 			self.player.pos.x.floor() as i32,
@@ -59,7 +59,7 @@ impl Engine {
 		let wet = submerged || feet_wet;
 		if self.walking {
 			let moved = Vec3::new(d.x, 0.0, d.z).length();
-			if let Some((m, gain)) = self.footsteps.advance(moved, grounded, below, wet) {
+			if let Some((m, gain)) = self.audio.footsteps.advance(moved, grounded, below, wet) {
 				self.emit(AudioCmd::Sfx {
 					sound: step_sfx(m),
 					pos: Some([self.player.pos.x, feet, self.player.pos.z]),
@@ -71,8 +71,8 @@ impl Engine {
 			// from a cliff does. Fly mode is excluded: the body isn't
 			// being simulated, so drifting through a surface isn't an
 			// entry.
-			if wet && !self.prev_wet {
-				let drop = (self.fall_from_y - feet).max(0.0);
+			if wet && !self.audio.prev_wet {
+				let drop = (self.audio.fall_from_y - feet).max(0.0);
 				let gain = (SPLASH_GAIN_MIN + drop * SPLASH_GAIN_PER_BLOCK).min(SPLASH_GAIN_MAX);
 				self.emit(AudioCmd::Sfx {
 					sound: crate::audio::Sfx::Splash,
@@ -83,7 +83,7 @@ impl Engine {
 			// Strokes while actually swimming — in the water and off the
 			// bottom. Wading is grounded, so it keeps its footsteps and
 			// the two can never double up.
-			if let Some(gain) = self.swim_strokes.advance(moved, wet && !grounded) {
+			if let Some(gain) = self.audio.swim_strokes.advance(moved, wet && !grounded) {
 				self.emit(AudioCmd::Sfx {
 					sound: crate::audio::Sfx::Swim,
 					pos: Some([self.player.pos.x, feet, self.player.pos.z]),
@@ -91,20 +91,20 @@ impl Engine {
 				});
 			}
 		}
-		self.prev_wet = wet;
-		self.fall_from_y = if grounded || wet || !self.walking {
+		self.audio.prev_wet = wet;
+		self.audio.fall_from_y = if grounded || wet || !self.walking {
 			feet
 		} else {
-			self.fall_from_y.max(feet)
+			self.audio.fall_from_y.max(feet)
 		};
 
 		// Waterfall voices.
-		let mut cmds = std::mem::take(&mut self.audio_scratch);
-		self.water_audio.update(dt, cam, &mut cmds);
+		let mut cmds = std::mem::take(&mut self.audio.audio_scratch);
+		self.audio.water_audio.update(dt, cam, &mut cmds);
 		for cmd in cmds.drain(..) {
 			self.emit(cmd);
 		}
-		self.audio_scratch = cmds;
+		self.audio.audio_scratch = cmds;
 
 		// Ambient bed: underwater beats cave beats surface. Cave = well
 		// below the pure worldgen surface (dug pits near grade don't
@@ -132,7 +132,7 @@ impl Engine {
 				AmbientZone::Surface
 			}
 		};
-		if let Some(zone) = self.ambient.advance(zone, dt) {
+		if let Some(zone) = self.audio.ambient.advance(zone, dt) {
 			self.emit(AudioCmd::LoopStart {
 				id: LOOP_AMBIENT,
 				sound: ambient_sfx(zone),
@@ -163,7 +163,7 @@ impl Engine {
 				)
 			})
 			.flatten();
-		if self.prospect.advance(near.is_some(), dt)
+		if self.audio.prospect.advance(near.is_some(), dt)
 			&& let Some(d) = near
 		{
 			self.emit(AudioCmd::Sfx {
@@ -180,15 +180,15 @@ impl Engine {
 		// monotonic, and the filler only acts on this at the next track
 		// boundary anyway.
 		let night = self.sun.tod.abs() >= 90.0;
-		if self.music_night != Some(night) {
-			self.music_night = Some(night);
+		if self.audio.music_night != Some(night) {
+			self.audio.music_night = Some(night);
 			self.emit(AudioCmd::MusicSet { night });
 		}
 	}
 
 	/// Send one audio command if a sink is attached (free otherwise).
 	pub(super) fn emit(&mut self, cmd: crate::audio::AudioCmd) {
-		if let Some(a) = self.audio.as_mut() {
+		if let Some(a) = self.audio.sink.as_mut() {
 			a.send(cmd);
 		}
 	}
