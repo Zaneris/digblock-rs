@@ -578,6 +578,11 @@ settings and URL params still winning.
   **The SESSION's account of an ending beats a stream's**, and must be waited for: a connection going down rejects the
   pending read AND settles `closed`, and the read always wins. `stream_failed` parks a stream's reason for
   `SESSION_GRACE_MS` and reports it only if the session stays up.
+- **`Device::push_error_scope` is unusable in the browser.** wgpu reads a popped scope through a `JsOption`, which
+  counts only `undefined` as absent, while a CLEAN `popErrorScope` resolves `null` — which then reaches a converter that
+  panics on anything but a validation or out-of-memory error, so every pop aborts the module whether or not anything
+  went wrong. `pipeline_builder::watched` drives the two scopes off the raw `GPUDevice` instead; nothing reachable from
+  a browser may go back to wgpu's API.
 - `web_time::Instant` workspace-wide; the depth "copy" is a blit into R32Float (WebGPU forbids depth32float as a copy
   destination).
 - **Deploying**: `just build-web` is the bundle and `deploy-web.yml` runs that recipe rather than mirroring it. Glue JS

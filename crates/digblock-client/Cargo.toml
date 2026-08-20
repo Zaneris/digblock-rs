@@ -19,6 +19,14 @@ image.workspace = true
 web-time.workspace = true
 log.workspace = true
 
+# The guarded pipelines' verdict, and nothing else: wgpu's own error-scope
+# API cannot report a clean scope in a browser, so `pipeline_builder` reads
+# the two scopes off the raw GPUDevice — see `watched` there.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen.workspace = true
+wasm-bindgen-futures.workspace = true
+js-sys.workspace = true
+
 [dev-dependencies]
 # Layout tripwire only (frame_layout_matches_wgsl). The workspace pin, for
 # the reason digblock-assets uses it: this parses the SHIPPED WGSL, so a

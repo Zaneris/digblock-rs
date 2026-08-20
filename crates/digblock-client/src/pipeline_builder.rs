@@ -9,6 +9,11 @@ use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll, Waker};
 
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::JsCast;
+#[cfg(target_arch = "wasm32")]
+use wasm_bindgen::prelude::wasm_bindgen;
+
 use crate::renderer::DEPTH_FORMAT;
 
 pub(crate) struct PipelineDesc<'a> {
@@ -55,13 +60,18 @@ enum Verdict {
 	// The scope's answer is a promise on WebGPU, so the verdict starts
 	// unresolved and the pipeline is withheld until it lands — at most
 	// the few boot frames the browser takes to answer.
-	Pending(Pin<Box<dyn Future<Output = Option<wgpu::Error>>>>),
+	Pending(Pending),
 	Valid,
 	// The message is for `build_failed` — the test build is its only
 	// reader; the running engine already logged it at the transition.
 	#[cfg_attr(not(test), expect(dead_code))]
 	Invalid(String),
 }
+
+/// What the scopes will eventually say: the failure's own message, or
+/// nothing. A MESSAGE rather than the error, because the two arms below
+/// do not share an error type.
+type Pending = Pin<Box<dyn Future<Output = Option<String>>>>;
 
 /// [`build`] under error scopes. Validation AND Internal: a descriptor
 /// bug is the former, but a driver refusing to compile the module — the
@@ -72,24 +82,99 @@ pub(crate) fn build_guarded(
 	color_format: Option<wgpu::TextureFormat>,
 	desc: &PipelineDesc<'_>,
 ) -> GuardedPipeline {
+	let (pipeline, verdict) = watched(device, || build(device, color_format, desc));
+	GuardedPipeline {
+		label: desc.label.to_owned(),
+		pipeline,
+		verdict: Verdict::Pending(verdict),
+	}
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn watched(
+	device: &wgpu::Device,
+	build: impl FnOnce() -> wgpu::RenderPipeline,
+) -> (wgpu::RenderPipeline, Pending) {
 	let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
 	let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
-	let pipeline = build(device, color_format, desc);
+	let pipeline = build();
 	// Popped eagerly, in reverse push order (native enforces LIFO); only
 	// the ANSWERS are deferred, so later builds can push scopes of their
 	// own.
 	let v = validation.pop();
 	let i = internal.pop();
-	GuardedPipeline {
-		label: desc.label.to_owned(),
+	(
 		pipeline,
-		verdict: Verdict::Pending(Box::pin(async move {
+		Box::pin(async move {
 			match v.await {
-				Some(e) => Some(e),
-				None => i.await,
+				Some(e) => Some(e.to_string()),
+				None => i.await.map(|e| e.to_string()),
 			}
-		})),
-	}
+		}),
+	)
+}
+
+/// The same two scopes, driven through the raw `GPUDevice`. **Nothing
+/// reachable from the browser may call `Device::push_error_scope`**:
+/// wgpu 30 reads a popped scope through a `JsOption`, which counts only
+/// `undefined` as absent, while a CLEAN `popErrorScope` resolves `null`
+/// — which then reaches a converter that panics on anything but a
+/// validation or out-of-memory error. Every pop aborts the module,
+/// error or not, so the guard would crash the page it exists to keep
+/// rendering.
+#[cfg(target_arch = "wasm32")]
+fn watched(
+	device: &wgpu::Device,
+	build: impl FnOnce() -> wgpu::RenderPipeline,
+) -> (wgpu::RenderPipeline, Pending) {
+	let Some(raw) = device.as_webgpu() else {
+		// No browser device behind it, so nothing here can refuse a build.
+		return (build(), Box::pin(std::future::ready(None)));
+	};
+	let raw: &ScopedDevice = raw.unchecked_ref();
+	raw.push_error_scope("internal");
+	raw.push_error_scope("validation");
+	let pipeline = build();
+	let v = raw.pop_error_scope();
+	let i = raw.pop_error_scope();
+	(
+		pipeline,
+		Box::pin(async move {
+			match settled(v).await {
+				Some(why) => Some(why),
+				None => settled(i).await,
+			}
+		}),
+	)
+}
+
+/// A popped scope's answer: absent for a clean one, else the error's own
+/// message. A REJECTED pop names an empty scope stack or a lost device,
+/// and neither of those is this pipeline's verdict.
+#[cfg(target_arch = "wasm32")]
+async fn settled(popped: js_sys::Promise) -> Option<String> {
+	let e = wasm_bindgen_futures::JsFuture::from(popped).await.ok()?;
+	(!e.is_null() && !e.is_undefined()).then(|| e.unchecked_ref::<GpuError>().message())
+}
+
+/// The two `GPUDevice` methods wgpu will not lend: its `webgpu` module
+/// exports the device type but not the filter enum, and web-sys's WebGPU
+/// half needs an unstable cfg on every build of every crate. The filter
+/// is the plain string the JS API takes either way.
+#[cfg(target_arch = "wasm32")]
+#[wasm_bindgen]
+extern "C" {
+	type ScopedDevice;
+	#[wasm_bindgen(method, js_name = pushErrorScope)]
+	fn push_error_scope(this: &ScopedDevice, filter: &str);
+	#[wasm_bindgen(method, js_name = popErrorScope)]
+	fn pop_error_scope(this: &ScopedDevice) -> js_sys::Promise;
+
+	/// Any `GPUError`; which subclass it is decides nothing here, because
+	/// the scope it came out of already named the kind.
+	type GpuError;
+	#[wasm_bindgen(method, getter)]
+	fn message(this: &GpuError) -> String;
 }
 
 impl GuardedPipeline {
@@ -103,8 +188,8 @@ impl GuardedPipeline {
 		if let Poll::Ready(err) = fut.as_mut().poll(&mut cx) {
 			self.verdict = match err {
 				None => Verdict::Valid,
-				Some(e) => {
-					let what = format!("pipeline '{}' failed to build: {e}", self.label);
+				Some(why) => {
+					let what = format!("pipeline '{}' failed to build: {why}", self.label);
 					log::error!("{what} — its draw is disabled");
 					Verdict::Invalid(what)
 				}
