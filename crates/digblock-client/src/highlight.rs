@@ -8,6 +8,12 @@
 //!
 //! The box is the target's own bounds, not the unit cell, and for a door
 //! it is the whole two-cell leaf — see [`HighlightTarget`].
+//!
+//! TWO pipelines over one shared vertex stage, both guarded: the crack
+//! module's branch loop is the engine's likeliest driver-compile
+//! casualty, and this decal is drawn on every diggable block a fresh
+//! player aims at — so a refused pipeline must cost the decal (or just
+//! the fracture), never the frame it would otherwise invalidate.
 
 use digblock_platform::Gpu;
 
@@ -79,10 +85,21 @@ fn cell_seed(cell: (i32, i32, i32)) -> u32 {
 		& 0xFFFF
 }
 
+/// Which pipeline this frame's target asks for. Kept beside the instance
+/// upload rather than re-derived at draw, so the buffer and the bind can
+/// never describe two different frames.
+#[derive(Clone, Copy, PartialEq)]
+enum Mode {
+	Off,
+	Outline,
+	Crack,
+}
+
 pub(crate) struct HighlightDraw {
-	pipeline: wgpu::RenderPipeline,
+	outline: crate::pipeline_builder::GuardedPipeline,
+	crack: crate::pipeline_builder::GuardedPipeline,
 	instance_buf: wgpu::Buffer,
-	active: bool,
+	mode: Mode,
 }
 
 impl HighlightDraw {
@@ -92,10 +109,6 @@ impl HighlightDraw {
 		water_frame_bgl: &wgpu::BindGroupLayout,
 	) -> Self {
 		let device = &gpu.device;
-		let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-			label: Some("highlight"),
-			source: wgpu::ShaderSource::Wgsl(digblock_assets::shader::HIGHLIGHT.into()),
-		});
 		let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
 			label: Some("highlight"),
 			bind_group_layouts: &[Some(water_frame_bgl)],
@@ -103,44 +116,54 @@ impl HighlightDraw {
 		});
 		// Translucent decal: depth compare Always (occlusion is manual,
 		// against the solid depth copy — see the module doc), never write.
-		let pipeline = crate::pipeline_builder::build(
-			device,
-			Some(surface_format),
-			&crate::pipeline_builder::PipelineDesc {
-				label: "highlight",
-				layout: &layout,
-				module: &shader,
-				vs_entry: "vs",
-				fs_entry: Some("fs"),
-				vertex_buffers: &[wgpu::VertexBufferLayout {
-					array_stride: INSTANCE_BYTES,
-					step_mode: wgpu::VertexStepMode::Instance,
-					attributes: &[
-						wgpu::VertexAttribute {
-							format: wgpu::VertexFormat::Float32x4,
-							offset: 0,
-							shader_location: 0,
-						},
-						wgpu::VertexAttribute {
-							format: wgpu::VertexFormat::Float32x4,
-							offset: 16,
-							shader_location: 1,
-						},
-						wgpu::VertexAttribute {
-							format: wgpu::VertexFormat::Float32x4,
-							offset: 32,
-							shader_location: 2,
-						},
-					],
-				}],
-				cull: Some(wgpu::Face::Back),
-				depth_write: false,
-				depth_compare: wgpu::CompareFunction::Always,
-				depth_bias: Default::default(),
-				blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-				write_mask: wgpu::ColorWrites::ALL,
-			},
-		);
+		// One descriptor per module, guarded — see the module doc for why
+		// neither build may be allowed to poison the frame.
+		let build = |label: &'static str, src: &'static str| {
+			let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+				label: Some(label),
+				source: wgpu::ShaderSource::Wgsl(src.into()),
+			});
+			crate::pipeline_builder::build_guarded(
+				device,
+				Some(surface_format),
+				&crate::pipeline_builder::PipelineDesc {
+					label,
+					layout: &layout,
+					module: &shader,
+					vs_entry: "vs",
+					fs_entry: Some("fs"),
+					vertex_buffers: &[wgpu::VertexBufferLayout {
+						array_stride: INSTANCE_BYTES,
+						step_mode: wgpu::VertexStepMode::Instance,
+						attributes: &[
+							wgpu::VertexAttribute {
+								format: wgpu::VertexFormat::Float32x4,
+								offset: 0,
+								shader_location: 0,
+							},
+							wgpu::VertexAttribute {
+								format: wgpu::VertexFormat::Float32x4,
+								offset: 16,
+								shader_location: 1,
+							},
+							wgpu::VertexAttribute {
+								format: wgpu::VertexFormat::Float32x4,
+								offset: 32,
+								shader_location: 2,
+							},
+						],
+					}],
+					cull: Some(wgpu::Face::Back),
+					depth_write: false,
+					depth_compare: wgpu::CompareFunction::Always,
+					depth_bias: Default::default(),
+					blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+					write_mask: wgpu::ColorWrites::ALL,
+				},
+			)
+		};
+		let outline = build("highlight", digblock_assets::shader::HIGHLIGHT);
+		let crack = build("highlight_crack", digblock_assets::shader::HIGHLIGHT_CRACK);
 		let instance_buf = device.create_buffer(&wgpu::BufferDescriptor {
 			label: Some("highlight instance"),
 			size: INSTANCE_BYTES,
@@ -148,15 +171,25 @@ impl HighlightDraw {
 			mapped_at_creation: false,
 		});
 		Self {
-			pipeline,
+			outline,
+			crack,
 			instance_buf,
-			active: false,
+			mode: Mode::Off,
 		}
 	}
 
 	/// Upload this frame's target, or clear it.
 	pub(crate) fn set_target(&mut self, gpu: &Gpu, target: Option<HighlightTarget>) {
-		self.active = target.is_some();
+		// The per-frame &mut site is what drives the build verdicts home.
+		self.outline.poll();
+		self.crack.poll();
+		self.mode = match &target {
+			None => Mode::Off,
+			Some(t) => match t.progress {
+				Some(p) if p > 0.0 => Mode::Crack,
+				_ => Mode::Outline,
+			},
+		};
 		let Some(t) = target else {
 			return;
 		};
@@ -184,13 +217,30 @@ impl HighlightDraw {
 	/// bind group at 0 — it carries the solid depth copy the shader
 	/// occludes against). Returns triangles drawn.
 	pub(crate) fn draw(&self, pass: &mut wgpu::RenderPass<'_>) -> u32 {
-		if !self.active {
+		// A refused crack pipeline falls back to the plain outline — the
+		// box under the hand matters more than the fracture — and a
+		// `None` from both is the guard doing its job: skip the bind,
+		// keep the frame.
+		let pipeline = match self.mode {
+			Mode::Off => None,
+			Mode::Outline => self.outline.pipeline(),
+			Mode::Crack => self.crack.pipeline().or_else(|| self.outline.pipeline()),
+		};
+		let Some(pipeline) = pipeline else {
 			return 0;
-		}
-		pass.set_pipeline(&self.pipeline);
+		};
+		pass.set_pipeline(pipeline);
 		pass.set_vertex_buffer(0, self.instance_buf.slice(..));
 		pass.draw(0..36, 0..1);
 		12
+	}
+
+	/// Test hook — see [`crate::pipeline_builder::GuardedPipeline::build_failed`].
+	#[cfg(test)]
+	pub(crate) fn build_failed(&mut self) -> Option<String> {
+		self.outline
+			.build_failed()
+			.or_else(|| self.crack.build_failed())
 	}
 }
 
