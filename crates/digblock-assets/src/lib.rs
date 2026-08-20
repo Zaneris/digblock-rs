@@ -329,9 +329,22 @@ pub mod shader {
 		include_str!("../../../assets/shaders/ink_common.wgsl"),
 		include_str!("../../../assets/shaders/glass.wgsl"),
 	);
+	/// The bare-aim outline half of the target highlight. Two modules on
+	/// purpose, not two entry points in one: a front end (or a driver)
+	/// that rejects the crack's loop must invalidate only the crack's own
+	/// pipeline, and a rejection at module scope would take both.
 	pub const HIGHLIGHT: &str = concat!(
 		include_str!("../../../assets/shaders/frame_common.wgsl"),
+		include_str!("../../../assets/shaders/highlight_common.wgsl"),
 		include_str!("../../../assets/shaders/highlight.wgsl"),
+	);
+	/// The hold-to-dig fracture, bound only while a hold is live — the
+	/// only shader in the engine with dynamically-indexed function-scope
+	/// arrays, which is why it may not share a module with the outline.
+	pub const HIGHLIGHT_CRACK: &str = concat!(
+		include_str!("../../../assets/shaders/frame_common.wgsl"),
+		include_str!("../../../assets/shaders/highlight_common.wgsl"),
+		include_str!("../../../assets/shaders/highlight_crack.wgsl"),
 	);
 	pub const HOTBAR_ICONS: &str = include_str!("../../../assets/shaders/hotbar_icons.wgsl");
 	/// The first-person viewmodel. Deliberately WITHOUT the frame
@@ -391,7 +404,7 @@ pub mod shader {
 		include_str!("../../../assets/shaders/gi_common.wgsl"),
 	);
 
-	pub const ALL: [(&str, &str); 22] = [
+	pub const ALL: [(&str, &str); 23] = [
 		("chunk.wgsl", CHUNK),
 		("water.wgsl", WATER),
 		("glass.wgsl", GLASS),
@@ -404,6 +417,7 @@ pub mod shader {
 		("siphon.wgsl", SIPHON),
 		("players.wgsl", PLAYERS),
 		("highlight.wgsl", HIGHLIGHT),
+		("highlight_crack.wgsl", HIGHLIGHT_CRACK),
 		("hotbar_icons.wgsl", HOTBAR_ICONS),
 		("viewmodel.wgsl", VIEWMODEL),
 		("gi_probe.wgsl", GI_PROBE),

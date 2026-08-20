@@ -675,7 +675,7 @@ mod tests {
 			device,
 			queue,
 		};
-		let _renderer = super::Renderer::new(
+		let mut renderer = super::Renderer::new(
 			&gpu,
 			// The surface format the desktop swapchain actually picks;
 			// fragment outputs are validated against it.
@@ -691,6 +691,12 @@ mod tests {
 		);
 		if let Some(err) = pollster::block_on(scope.pop()) {
 			panic!("a pipeline failed validation:\n{err}");
+		}
+		// Guarded pipelines catch their own errors — exactly the point of
+		// the guard, and exactly why the scope above can no longer see
+		// them — so each guard is asked directly.
+		if let Some(err) = renderer.highlight.build_failed() {
+			panic!("a guarded pipeline failed validation:\n{err}");
 		}
 	}
 
