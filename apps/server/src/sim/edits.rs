@@ -11,7 +11,7 @@ use digblock_core::raycast::{REACH, raycast, raycast_fluid};
 use digblock_net::messages::{BlockEdit, EditKind, RejectReason, ServerMsg};
 use digblock_net::protocol::{
 	CHAT_BURST, CHAT_RATE_PER_SEC, DIG_OFF_TARGET_RESET, EDIT_BURST, EDIT_POS_TOLERANCE,
-	EDIT_RATE_PER_SEC, PlayerId, SERVER_ID, TICK_RATE, dig_grace,
+	EDIT_RATE_PER_SEC, NO_CLIENT_SEQ, PlayerId, SERVER_ID, TICK_RATE, dig_grace,
 };
 use glam::Vec3;
 
@@ -614,7 +614,20 @@ impl Sim {
 			EditKind::Interact => unreachable!("routed to process_interact"),
 		};
 		if !slot_ok {
-			return reject(RejectReason::WrongSlot);
+			reject(RejectReason::WrongSlot);
+			// The same drift-repair backstop as NoStock: a count drift
+			// files the item in different slots on the two ends once the
+			// layouts reconcile apart, so without the rebase the mismatch
+			// repeats on every retry and the drift never heals.
+			if let Some(client) = self.clients.get(&req.conn_id) {
+				send_frame(
+					&out,
+					&ServerMsg::InventoryFull {
+						counts: client.inventory.to_wire(),
+					},
+				);
+			}
+			return;
 		}
 
 		// Stock gate: the LAST check before mutating the world, so a
@@ -775,13 +788,13 @@ impl Sim {
 		}
 
 		// Journal + broadcast the first write under the client's seq, the
-		// companion (a door's other half) under seq 0 — the in-order
-		// stream confirms the pair before the companion applies
+		// companion (a door's other half) under `NO_CLIENT_SEQ` — the
+		// in-order stream confirms the pair before the companion applies
 		// idempotently over the client's identical prediction.
 		self.apply_write(first_cell, first_val, prev_cell, id, req.seq, false);
 		for &(cell, val) in &writes[1..] {
 			if let Some(prev) = self.store.set_cell(cell.0, cell.1, cell.2, val) {
-				self.apply_write(cell, val, prev, id, 0, false);
+				self.apply_write(cell, val, prev, id, NO_CLIENT_SEQ, false);
 			}
 		}
 
@@ -808,7 +821,7 @@ impl Sim {
 				let Some(prev) = self.store.set_cell(below.0, below.1, below.2, dirt) else {
 					continue;
 				};
-				self.apply_write(below, dirt, prev, SERVER_ID, 0, true);
+				self.apply_write(below, dirt, prev, SERVER_ID, NO_CLIENT_SEQ, true);
 			}
 		}
 	}
@@ -935,7 +948,7 @@ impl Sim {
 		let mut first = true;
 		for &(cell, _, val) in &writes {
 			if let Some(prev) = self.store.set_cell(cell.0, cell.1, cell.2, val) {
-				let seq = if first { req.seq } else { 0 };
+				let seq = if first { req.seq } else { NO_CLIENT_SEQ };
 				self.apply_write(cell, val, prev, id, seq, false);
 			}
 			first = false;
@@ -1107,7 +1120,7 @@ impl Sim {
 				if new_column {
 					self.enroll_new_column(edit);
 				}
-				self.broadcast_edit(seq, SERVER_ID, 0, edit, prev);
+				self.broadcast_edit(seq, SERVER_ID, NO_CLIENT_SEQ, edit, prev);
 			}
 		}
 	}

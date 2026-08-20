@@ -8,16 +8,18 @@
 //! wins.
 //!
 //! Each entry also carries the inventory delta predicted with it. The cell and
-//! the delta revert on different events: a rejection reverts both, but a
-//! superseding authoritative write owns the CELL while the server never applied
-//! our INVENTORY change — so `on_authoritative` returns the dropped entries and
-//! the caller reverts only their deltas.
+//! the delta settle on different events: a superseding authoritative write owns
+//! the CELL at once, while the DELTA must wait for the seq's own verdict — the
+//! server answers every request and may yet apply a superseded edit (two
+//! places racing on one slab cell), so a refund at supersede time would part
+//! the two ends' counts by the whole delta, permanently.
 //!
 //! Multi-cell actions are LINKED entries sharing one seq via `begin_multi`:
 //! confirm drops them all, reject returns every SURVIVING entry for revert, and
 //! the shared inventory delta rides only the first entry so it reverts exactly
 //! once.
 
+use crate::protocol::NO_CLIENT_SEQ;
 use digblock_core::block::BlockType;
 use std::collections::VecDeque;
 
@@ -35,6 +37,10 @@ pub struct PendingEdit {
 	/// positive count for a dig credit, a negative one for a place debit.
 	/// On a multi-cell entry group, only the FIRST entry carries it.
 	pub inv_delta: Option<(BlockType, i32)>,
+	/// An authoritative write landed on this cell first: the cell is the
+	/// broadcast's and must never revert to `prev`. The delta is still
+	/// live — the seq's own verdict settles it.
+	pub superseded: bool,
 }
 
 #[derive(Default)]
@@ -65,8 +71,11 @@ impl PendingEdits {
 		tick: u32,
 		inv_delta: Option<(BlockType, i32)>,
 	) -> u32 {
+		self.next_seq = self.next_seq.wrapping_add(1);
+		if self.next_seq == NO_CLIENT_SEQ {
+			self.next_seq = self.next_seq.wrapping_add(1);
+		}
 		let seq = self.next_seq;
-		self.next_seq += 1;
 		for (i, &(cell, prev, placed)) in cells.iter().enumerate() {
 			self.pending.push_back(PendingEdit {
 				seq,
@@ -75,22 +84,23 @@ impl PendingEdits {
 				placed,
 				tick,
 				inv_delta: if i == 0 { inv_delta } else { None },
+				superseded: false,
 			});
 		}
 		seq
 	}
 
-	/// Server confirmed our edit: drop every entry under that seq (the
-	/// predicted cells and inventory delta all stand).
+	/// Server confirmed our edit: drop every entry under that seq,
+	/// superseded ones included (the inventory delta stands either way —
+	/// the server applied it for real).
 	pub fn confirm(&mut self, seq: u32) {
 		self.pending.retain(|e| e.seq != seq);
 	}
 
-	/// Server rejected our edit. Every SURVIVING entry under the seq
-	/// returns for revert (cells to `prev`, plus the carried inv_delta);
-	/// entries already superseded by authoritative writes are absent, so
-	/// their cells stay untouched (their deltas were reverted at
-	/// supersede time).
+	/// Server rejected our edit. Every entry under the seq returns for
+	/// revert: the carried inv_delta always, the cell to `prev` only
+	/// where `superseded` is false — a superseded cell belongs to the
+	/// authoritative write that took it.
 	pub fn reject(&mut self, seq: u32) -> Vec<PendingEdit> {
 		let mut dropped = Vec::new();
 		self.pending.retain(|e| {
@@ -115,23 +125,20 @@ impl PendingEdits {
 	/// edit IS the news, and supersedes through
 	/// [`Self::on_authoritative`].
 	pub fn pending_at(&self, cell: (i32, i32, i32)) -> bool {
-		self.pending.iter().any(|e| e.cell == cell)
+		// A superseded entry no longer owns its cell — a restatement of
+		// what took it is free to land.
+		self.pending.iter().any(|e| e.cell == cell && !e.superseded)
 	}
 
-	/// An authoritative edit landed on `cell`: all pending entries there
-	/// are superseded. Returns them so the caller reverts their
-	/// `inv_delta`s — never their cells.
-	pub fn on_authoritative(&mut self, cell: (i32, i32, i32)) -> Vec<PendingEdit> {
-		let mut dropped = Vec::new();
-		self.pending.retain(|e| {
-			if e.cell == cell {
-				dropped.push(*e);
-				false
-			} else {
-				true
-			}
-		});
-		dropped
+	/// An authoritative edit landed on `cell`: pending entries there are
+	/// marked superseded — the broadcast value owns the cell — but they
+	/// stay pending, because their deltas are NOT settled here. The
+	/// server answers every seq, and that verdict decides each delta:
+	/// `confirm` keeps it, `reject` hands it back for refund.
+	pub fn on_authoritative(&mut self, cell: (i32, i32, i32)) {
+		for e in self.pending.iter_mut().filter(|e| e.cell == cell) {
+			e.superseded = true;
+		}
 	}
 
 	/// All in-flight predictions — the `InventoryFull` re-base sums their
@@ -177,29 +184,56 @@ mod tests {
 	}
 
 	#[test]
-	fn authoritative_beats_pending() {
+	fn authoritative_beats_pending_cell_but_not_delta() {
 		let mut p = PendingEdits::default();
-		let seq = p.begin(CELL, STONE, AIR, 100, None);
-		// Another player's edit lands on the same cell first.
+		let dig = Some((BlockType::Stone, 1));
+		let seq = p.begin(CELL, STONE, AIR, 100, dig);
+		// Another player's edit lands on the same cell first: the cell is
+		// no longer ours, but the delta still awaits our seq's verdict.
 		p.on_authoritative(CELL);
-		// Our rejection arrives late: no revert allowed.
-		assert!(p.reject(seq).is_empty());
+		assert!(!p.pending_at(CELL), "a restatement may land here now");
+		assert_eq!(p.len(), 1, "the entry parks until the verdict");
+		// Our rejection arrives late: the delta comes back for refund,
+		// flagged so the caller leaves the cell alone.
+		let e = p.reject(seq);
+		assert_eq!(e.len(), 1);
+		assert!(e[0].superseded);
+		assert_eq!(e[0].inv_delta, dig);
+		assert!(p.is_empty());
 	}
 
 	#[test]
-	fn authoritative_supersede_returns_entries_for_inventory_revert() {
+	fn confirm_after_supersede_keeps_the_delta() {
+		// Two predictions race on one cell (a slab grown twice): the first
+		// seq's own ack supersedes the second, whose delta must STAND —
+		// the server goes on to apply it and debit for real.
 		let mut p = PendingEdits::default();
-		let dig = Some((BlockType::Stone, 1));
-		p.begin(CELL, STONE, AIR, 100, dig);
-		let other = p.begin((9, 9, 9), AIR, SAND, 101, None);
+		let a = p.begin(CELL, AIR, DIRT, 100, Some((BlockType::Dirt, -1)));
+		let b = p.begin(CELL, DIRT, SAND, 101, Some((BlockType::Dirt, -1)));
+		p.confirm(a);
+		p.on_authoritative(CELL);
+		assert_eq!(p.len(), 1, "the second prediction still awaits its verdict");
+		assert!(p.iter().all(|e| e.seq == b && e.superseded));
+		// Its own ack lands: dropped with nothing handed back to refund.
+		p.confirm(b);
+		assert!(p.is_empty());
 
-		let dropped = p.on_authoritative(CELL);
-		assert_eq!(dropped.len(), 1);
-		assert_eq!(dropped[0].inv_delta, dig, "delta surfaces for revert");
-		assert_eq!(p.len(), 1, "unrelated entry survives");
-		assert!(p.iter().any(|e| e.seq == other));
+		// Unrelated entries are untouched by a supersede elsewhere.
+		let other = p.begin((9, 9, 9), AIR, SAND, 102, None);
+		p.on_authoritative((0, 0, 0));
+		assert!(p.iter().any(|e| e.seq == other && !e.superseded));
+	}
 
-		assert!(p.on_authoritative((0, 0, 0)).is_empty(), "no match, no-op");
+	#[test]
+	fn seqs_skip_the_companion_sentinel() {
+		// A companion broadcast arrives under `NO_CLIENT_SEQ`; a real
+		// prediction must never be confirmable by one.
+		let mut p = PendingEdits::default();
+		for _ in 0..4 {
+			let seq = p.begin(CELL, STONE, AIR, 100, None);
+			assert_ne!(seq, NO_CLIENT_SEQ);
+			p.confirm(seq);
+		}
 	}
 
 	#[test]
@@ -221,18 +255,18 @@ mod tests {
 		p.confirm(seq);
 		assert!(p.is_empty());
 
-		// Reject returns every surviving entry...
+		// Reject returns every entry...
 		let seq2 = p.begin_multi(&[(lower, AIR, door), (upper, AIR, door)], 51, delta);
 		let dropped = p.reject(seq2);
 		assert_eq!(dropped.len(), 2);
-		// ...but a per-cell supersede first removes just that cell, and
-		// the late rejection reverts only the remainder.
+		assert!(dropped.iter().all(|e| !e.superseded));
+		// ...and a per-cell supersede first flags just that cell, so the
+		// late rejection reverts both deltas but only the un-superseded
+		// cell.
 		let seq3 = p.begin_multi(&[(lower, AIR, door), (upper, AIR, door)], 52, delta);
-		let superseded = p.on_authoritative(upper);
-		assert_eq!(superseded.len(), 1);
-		assert_eq!(superseded[0].cell, upper);
+		p.on_authoritative(upper);
 		let rest = p.reject(seq3);
-		assert_eq!(rest.len(), 1, "only the un-superseded cell reverts");
-		assert_eq!(rest[0].cell, lower);
+		assert_eq!(rest.len(), 2, "every entry comes back for its delta");
+		assert!(rest.iter().all(|e| e.superseded == (e.cell == upper)));
 	}
 }

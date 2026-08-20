@@ -85,7 +85,7 @@ impl Sim {
 			let Some(prev) = self.store.set_cell(cell.0, cell.1, cell.2, val) else {
 				continue;
 			};
-			self.apply_write(cell, val, prev, SERVER_ID, 0, true);
+			self.apply_write(cell, val, prev, SERVER_ID, NO_CLIENT_SEQ, true);
 		}
 	}
 }

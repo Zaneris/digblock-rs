@@ -595,7 +595,9 @@ pub enum ServerMsg {
 		seq: u64,
 		tick: u32,
 		by: PlayerId,
-		/// The author's request seq; meaningful only when `by` is you.
+		/// The author's request seq; meaningful only when `by` is you,
+		/// and `NO_CLIENT_SEQ` for a write no request named (a door's
+		/// companion half, the fluid sim, a world-job sweep).
 		client_seq: u32,
 		edit: BlockEdit,
 		/// Block cell that was replaced (dig pickup).
@@ -614,8 +616,9 @@ pub enum ServerMsg {
 	},
 	/// Authoritative inventory snapshot: (block id, count) pairs, absent
 	/// = zero. Sent after `JournalDone` on join and alongside every
-	/// `NoStock` rejection (drift-repair backstop); every other
-	/// transition is implicit in the predict/confirm/reject flow.
+	/// `NoStock` and `WrongSlot` rejection (drift-repair backstop — both
+	/// are how a drifted count presents); every other transition is
+	/// implicit in the predict/confirm/reject flow.
 	InventoryFull {
 		counts: Vec<(u16, u32)>,
 	},

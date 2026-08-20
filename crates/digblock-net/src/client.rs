@@ -75,30 +75,27 @@ pub enum NetEvent {
 		me: digblock_core::player::PlayerState,
 	},
 	/// Authoritative cell value (id + state nibble) — apply directly
-	/// (no-op if already predicted). `superseded` carries any of our own
-	/// pending predictions this write cancelled: revert their
-	/// `inv_delta`s only, never their cells (the authoritative value owns
-	/// the cell).
+	/// (no-op if already predicted). Our own pending predictions on the
+	/// cell are superseded internally: the value owns the cell, and each
+	/// prediction's inventory delta rides until its seq's own verdict.
 	Edit {
 		cell: (i32, i32, i32),
 		cell_value: u16,
-		superseded: Vec<PendingEdit>,
 		/// `Some(author)` only for a live broadcast authored by someone
 		/// other than us (SERVER_ID = the fluid sim). `None` for join
 		/// sync and for the echo of our own edits — the audio layer keys
 		/// off this so a join replay never plays a thud storm.
 		remote_author: Option<PlayerId>,
 	},
-	/// One cell of a rejected prediction that no authoritative write has
-	/// superseded — revert the cell to `.prev` AND the predicted
-	/// `.inv_delta`. Multi-cell actions emit one event per surviving
-	/// entry.
+	/// One cell of a rejected prediction — revert the predicted
+	/// `.inv_delta` always, and the cell to `.prev` unless
+	/// `.superseded`, in which case an authoritative write owns the
+	/// cell. Multi-cell actions emit one event per entry.
 	EditRejected {
 		edit: PendingEdit,
 		/// The server's verdict, for rejections worth explaining to the
-		/// player. `None` on the local unknown-cell path, which reverts
-		/// without any server verdict to report.
-		reason: Option<RejectReason>,
+		/// player.
+		reason: RejectReason,
 	},
 	/// The server refused a hold-to-dig as it started (a protected cell).
 	/// Abandon the local hold now rather than running the timer out
@@ -648,7 +645,6 @@ impl NetClient {
 						out.push(NetEvent::Edit {
 							cell,
 							cell_value,
-							superseded: Vec::new(),
 							remote_author: None,
 						});
 					}
@@ -670,27 +666,22 @@ impl NetClient {
 				edit,
 				..
 			} => {
-				if Some(by) == self.my_id {
+				// A companion write (`NO_CLIENT_SEQ`) is authored by us but
+				// answers no request — confirming it would drop a real
+				// pending seq whose verdict is still coming.
+				if Some(by) == self.my_id && client_seq != crate::protocol::NO_CLIENT_SEQ {
 					self.edits.confirm(client_seq);
 				}
 				let cell = (edit.x, edit.y, edit.z);
-				let superseded = self.edits.on_authoritative(cell);
+				self.edits.on_authoritative(cell);
+				// Unknown/hostile cell from a newer server: not applied;
+				// any superseded predictions park until their verdicts.
 				if let Some(cell_value) = valid_cell(edit.block) {
 					out.push(NetEvent::Edit {
 						cell,
 						cell_value,
-						superseded,
 						remote_author: (Some(by) != self.my_id).then_some(by),
 					});
-				} else {
-					// Unknown/hostile cell from a newer server: it can't
-					// be applied, but the inventory reverts still must be.
-					for e in superseded {
-						out.push(NetEvent::EditRejected {
-							edit: e,
-							reason: None,
-						});
-					}
 				}
 			}
 			ServerMsg::DigRefused { cell, reason } => {
@@ -702,10 +693,7 @@ impl NetClient {
 			ServerMsg::EditRejected { client_seq, reason } => {
 				log::info!("edit {client_seq} rejected: {reason:?}");
 				for e in self.edits.reject(client_seq) {
-					out.push(NetEvent::EditRejected {
-						edit: e,
-						reason: Some(reason),
-					});
+					out.push(NetEvent::EditRejected { edit: e, reason });
 				}
 			}
 			// Remote positions come from snapshots; these only carry names.
