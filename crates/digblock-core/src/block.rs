@@ -226,14 +226,13 @@ blocks! {
 	SandstoneBrick = 62 => mat(dig(crafted(props(RenderClass::Opaque, true, tex::SANDSTONE_BRICK, tex::SANDSTONE_BRICK, tex::SANDSTONE_BRICK)), 70, DigFamily::Rock), Material::SandstoneBrick),
 	SandstoneBrickStairs = 63 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::SANDSTONE_BRICK, tex::SANDSTONE_BRICK, tex::SANDSTONE_BRICK)), ShapeKind::Stairs), 70, DigFamily::Rock), Material::SandstoneBrick),
 	SandstoneBrickSlab = 64 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::SANDSTONE_BRICK, tex::SANDSTONE_BRICK, tex::SANDSTONE_BRICK)), ShapeKind::Slab), 23, DigFamily::Rock), Material::SandstoneBrick),
-	/// Leaded glass. OPAQUE, and that is the honest half of §12's open
-	/// question: see-through glass is a RENDER problem (the depth
-	/// prepass writes the whole quad, so a cutout discard would need
-	/// the prepass to sample the atlas too), not a catalog one. This is
-	/// a building material that reads as glass without pretending the
-	/// light goes through it, and it upgrades in place when the render
-	/// answer lands.
-	Glass = 65 => mat(dig(crafted(props(RenderClass::Opaque, true, tex::GLASS, tex::GLASS, tex::GLASS)), 25, DigFamily::Soft), Material::Glass),
+	/// Leaded glass, and it is SEE-THROUGH — §12's render question is
+	/// answered: the blended `Translucent` bucket draws after water and
+	/// stays out of the depth prepass entirely, so the prepass never had
+	/// to learn to sample the atlas. The panes carry the texture's own
+	/// alpha, which is flat across the pane — a painted came lattice only
+	/// competed with the transmission that IS the look.
+	Glass = 65 => mat(dig(translucent(crafted(props(RenderClass::Glass, true, tex::GLASS, tex::GLASS, tex::GLASS))), 25, DigFamily::Soft), Material::Glass),
 	/// The prestige material: Metal comes only from ore, so a metal
 	/// wall is a statement about how long somebody has been mining.
 	Metal = 66 => mat(dig(crafted(props(RenderClass::Opaque, true, tex::METAL, tex::METAL, tex::METAL)), 150, DigFamily::Rock), Material::Metal),
@@ -250,8 +249,8 @@ blocks! {
 	/// thirds complete into `Crystal` (`slab_grown` → `slab_base`), so the
 	/// identical volume of the identical stuff snapped to fullbright in one
 	/// frame. `every_shape_of_a_material_agrees_on_light` is the pin.
-	Crystal = 70 => mat(glows(dig(crafted(props(RenderClass::Opaque, true, tex::CRYSTAL, tex::CRYSTAL, tex::CRYSTAL)), 120, DigFamily::Rock)), Material::Crystal),
-	CrystalSlab = 71 => mat(glows(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::CRYSTAL, tex::CRYSTAL, tex::CRYSTAL)), ShapeKind::Slab), 40, DigFamily::Rock)), Material::Crystal),
+	Crystal = 70 => mat(glows(dig(translucent(crafted(props(RenderClass::Glass, true, tex::CRYSTAL, tex::CRYSTAL, tex::CRYSTAL))), 120, DigFamily::Rock)), Material::Crystal),
+	CrystalSlab = 71 => mat(glows(dig(shaped(translucent(crafted(props(RenderClass::Shaped, true, tex::CRYSTAL, tex::CRYSTAL, tex::CRYSTAL))), ShapeKind::Slab), 40, DigFamily::Rock)), Material::Crystal),
 	/// §7.3's lamps: the first Ferrum sink outside tools, and the
 	/// standing Aether one. Both are FUNCTIONAL — a lamp is a thing, not
 	/// a form — so both are hand-priced, and both cast real light as well
@@ -302,6 +301,12 @@ blocks! {
 	/// water features destinations.
 	Springstone = 83 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::SPRINGSTONE, tex::SPRINGSTONE, tex::SPRINGSTONE), 60, DigFamily::Soft), 3)), Material::Springstone),
 	SpentSpringstone = 84 => mat(dig(props(RenderClass::Opaque, true, tex::SPENT_SPRINGSTONE, tex::SPENT_SPRINGSTONE, tex::SPENT_SPRINGSTONE), 25, DigFamily::Soft), Material::SpentSpringstone),
+	/// The stained panes — clean glass in a colour, and the colour is
+	/// what the light through them becomes (the tinted-transmission op).
+	RedGlass = 85 => mat(dig(translucent(crafted(props(RenderClass::Glass, true, tex::GLASS_RED, tex::GLASS_RED, tex::GLASS_RED))), 25, DigFamily::Soft), Material::RedGlass),
+	GreenGlass = 86 => mat(dig(translucent(crafted(props(RenderClass::Glass, true, tex::GLASS_GREEN, tex::GLASS_GREEN, tex::GLASS_GREEN))), 25, DigFamily::Soft), Material::GreenGlass),
+	BlueGlass = 87 => mat(dig(translucent(crafted(props(RenderClass::Glass, true, tex::GLASS_BLUE, tex::GLASS_BLUE, tex::GLASS_BLUE))), 25, DigFamily::Soft), Material::BlueGlass),
+	AmberGlass = 88 => mat(dig(translucent(crafted(props(RenderClass::Glass, true, tex::GLASS_AMBER, tex::GLASS_AMBER, tex::GLASS_AMBER))), 25, DigFamily::Soft), Material::AmberGlass),
 }
 
 /// The indestructible world floor: cells at this height can never be
@@ -353,12 +358,18 @@ pub enum RenderClass {
 	/// Solid mesh; occludes neighbor faces.
 	Opaque,
 	/// Solid mesh; does not occlude; culls faces against same-type
-	/// neighbors. Memberless today — reserved as glass's likely class
-	/// (SKILLS-DESIGN §12).
+	/// neighbors. Memberless today — reserved for a future alpha-TESTED
+	/// block; glass went `Glass` (alpha-blended) instead.
 	Cutout,
 	/// Water mesh (alpha-blended, no depth write); emits faces only toward
 	/// `None` neighbors; culls same-type; top faces get the surface lip.
 	Translucent,
+	/// Alpha-blended glass: rides the `Translucent` BUCKET's stream (solid
+	/// vertex format, blended after water); does not occlude; culls faces
+	/// against same-type neighbors only, so a pane shows the world and the
+	/// water behind it. Distinct from `Translucent` because every reader of
+	/// that class means WATER (the GI's op-1 water counter included).
+	Glass,
 	/// Sub-block geometry from the `shapes` registry (sub-grid). Solid
 	/// stream; occlusion is per-face via the shape's coverage masks, and
 	/// shaped blocks never cast AO (like Cutout).
@@ -557,6 +568,14 @@ pub enum MeshBucket {
 	/// The two-word water stream (surface lips, flow/splash payload,
 	/// alpha blend, no depth write).
 	Water,
+	/// The blended-glass stream: solid vertex format, drawn after water as
+	/// a transmittance MULTIPLY plus an additive shine — not alpha
+	/// blending, which averages coverage where a filter must filter. The
+	/// two do not commute across panes, so the draw walks its chunks
+	/// back-to-front and runs both halves per chunk. Also the GI's
+	/// translucency predicate — shaped rows keep `class Shaped`, so the
+	/// bucket is the one field that names every see-through block.
+	Translucent,
 }
 
 /// Fluid behavior, when a block IS one. Data, not variant identity: a
@@ -575,8 +594,9 @@ pub struct FluidProps {
 
 pub struct BlockProps {
 	/// Occlusion/face-culling rule ONLY — bucket and fluid behavior are
-	/// separate fields (a future glass is Translucent but Solid-bucket
-	/// and not a fluid).
+	/// separate fields (glass is `Glass` over the `Translucent` bucket and
+	/// not a fluid; a translucent SHAPED row keeps `Shaped` here and names
+	/// its see-through-ness by bucket alone).
 	pub class: RenderClass,
 	/// Blocks the player and stops the picking ray.
 	pub collides: bool,
@@ -724,6 +744,14 @@ const fn props(class: RenderClass, collides: bool, side: u16, top: u16, bottom: 
 /// resolves geometry from.
 const fn shaped(mut p: BlockProps, kind: ShapeKind) -> BlockProps {
 	p.shape = Some(kind);
+	p
+}
+
+/// A see-through row: faces land in the blended `Translucent` stream and
+/// the GI lets light through (the bucket is the predicate — this composes
+/// with `shaped`, whose rows keep their class).
+const fn translucent(mut p: BlockProps) -> BlockProps {
+	p.bucket = MeshBucket::Translucent;
 	p
 }
 
@@ -905,11 +933,16 @@ pub mod tex {
 	pub const SPENT_LEYSTONE: u16 = 44;
 	pub const SPRINGSTONE: u16 = 45;
 	pub const SPENT_SPRINGSTONE: u16 = 46;
+	/// The stained panes — clean glass in a colour.
+	pub const GLASS_RED: u16 = 47;
+	pub const GLASS_GREEN: u16 = 48;
+	pub const GLASS_BLUE: u16 = 49;
+	pub const GLASS_AMBER: u16 = 50;
 
 	/// Layers in the array, i.e. `digblock_assets::tex::LAYERS.len()`.
 	/// Pinned against it by `every_block_texture_layer_is_uploaded` in
 	/// digblock-client, the one crate that can see both.
-	pub const COUNT: u16 = SPENT_SPRINGSTONE + 1;
+	pub const COUNT: u16 = GLASS_AMBER + 1;
 }
 
 impl BlockType {

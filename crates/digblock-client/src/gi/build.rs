@@ -7,7 +7,7 @@ impl GiDraw {
 	pub(crate) fn new(
 		gpu: &Gpu,
 		window_chunks: u32,
-		layer_means: &[[u8; 3]],
+		layer_means: &[[u8; 4]],
 		surface_format: wgpu::TextureFormat,
 		debug_probes: bool,
 		stub: u32,

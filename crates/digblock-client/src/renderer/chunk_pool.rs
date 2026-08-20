@@ -174,6 +174,7 @@ impl Renderer {
 					pos,
 					solid: None,
 					water: None,
+					translucent: None,
 					slot,
 					center: chunk_center(pos),
 				});
@@ -185,6 +186,8 @@ impl Renderer {
 		self.chunks[idx].solid = self.store_mesh(gpu, prev, &mesh.solid);
 		let prev = self.chunks[idx].water.take();
 		self.chunks[idx].water = self.store_mesh(gpu, prev, &mesh.water);
+		let prev = self.chunks[idx].translucent.take();
+		self.chunks[idx].translucent = self.store_mesh(gpu, prev, &mesh.translucent);
 	}
 
 	/// RTGI: forward one classified chunk into the voxel window.
@@ -220,7 +223,10 @@ impl Renderer {
 			self.by_pos.insert(moved.pos, idx);
 		}
 		self.free_slots.push(old.slot);
-		for mesh in [old.solid, old.water].into_iter().flatten() {
+		for mesh in [old.solid, old.water, old.translucent]
+			.into_iter()
+			.flatten()
+		{
 			self.recycle(mesh);
 		}
 	}
@@ -231,7 +237,10 @@ impl Renderer {
 		for chunk in std::mem::take(&mut self.chunks) {
 			self.spray.remove_chunk(chunk.pos);
 			self.free_slots.push(chunk.slot);
-			for mesh in [chunk.solid, chunk.water].into_iter().flatten() {
+			for mesh in [chunk.solid, chunk.water, chunk.translucent]
+				.into_iter()
+				.flatten()
+			{
 				self.recycle(mesh);
 			}
 		}

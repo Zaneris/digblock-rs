@@ -97,12 +97,17 @@ pub fn jobs() -> [Box<dyn WorldJob>; 3] {
 /// CONSEQUENCE of a place, never a predicted or validated part of one.
 pub fn smothered_by(placed: u16, below: u16) -> Option<u16> {
 	let b = BlockType::from_id(cell_id(placed));
-	let seals = match b.props().class {
-		RenderClass::Opaque => true,
-		RenderClass::Shaped => shapes::shape_of(b, cell_state(placed))
-			.is_some_and(|v| v.occludes_full[Dir::Bottom as usize]),
-		_ => false,
-	};
+	// The bucket guard mirrors `neighbor_cover`'s: a see-through cover
+	// never seals, even a shaped one whose mask is full — the grass top
+	// face keeps drawing through it, and the sun keeps reaching it.
+	let translucent = b.props().bucket == crate::block::MeshBucket::Translucent;
+	let seals = !translucent
+		&& match b.props().class {
+			RenderClass::Opaque => true,
+			RenderClass::Shaped => shapes::shape_of(b, cell_state(placed))
+				.is_some_and(|v| v.occludes_full[Dir::Bottom as usize]),
+			_ => false,
+		};
 	let living = matches!(
 		BlockType::from_id(cell_id(below)),
 		BlockType::Grass | BlockType::DryGrass

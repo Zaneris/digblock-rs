@@ -354,6 +354,19 @@ impl Renderer {
 					stats.triangles += water_tris;
 				}
 
+				// Blended glass, over the finished water: the depth
+				// attachment already holds solids AND the nearest water
+				// surface, so a pane behind either loses the test and one
+				// in front blends over both. Water's groups 0-2 are
+				// exactly the ones the glass pipeline shares.
+				if self.stub & stub::NOGLASS == 0 {
+					let (glass_draws, glass_tris) =
+						self.glass
+							.draw(&mut pass, draw.chunks, &self.lists.translucent);
+					stats.draw_calls += glass_draws;
+					stats.triangles += glass_tris;
+				}
+
 				// Target highlight/crack decal, over the finished water so
 				// a box on a source (or a submerged block) survives the
 				// water's depth tint; it occludes itself against the solid

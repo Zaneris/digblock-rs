@@ -2,7 +2,8 @@
 //! variations of the hand-made originals, so new blocks stay in the established
 //! pixel-art style. Run manually (`cargo run -p texgen`) and commit the outputs —
 //! assets are `include_bytes!`d, so generated PNGs live in git. Output matches
-//! the loader contract: `SIZE`-square 8-bit RGB, non-interlaced.
+//! the loader contract: `SIZE`-square 8-bit, non-interlaced — RGB, or RGBA for
+//! the rows whose alpha the Translucent bucket reads (`save_rgba`).
 //!
 //! A run rewrites EVERY output, so it is not a free operation: the noisy recipes
 //! below share one rng, so adding, removing or reordering a `save` rerolls the
@@ -13,7 +14,7 @@
 //! it.
 
 use digblock_core::block::BlockType as B;
-use image::RgbImage;
+use image::{RgbImage, RgbaImage};
 
 const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/textures");
 const SIZE: u32 = 64;
@@ -121,18 +122,17 @@ fn main() {
 		bricks(&load("Sandstone.png"), 16, 8, &mut rng),
 	);
 	save("PolishedStone.png", polished(&stone, &mut rng));
-	// Leaded glass: a pale frosted body under a dark lattice. OPAQUE —
-	// see-through glass is a render question (§12) about the depth
-	// prepass, not a catalog one, so this is the honest half of it: a
-	// building material that reads as glass without pretending the light
-	// goes through.
-	save("Glass.png", glass(&mut rng));
+	// Clear glass: one flat pale tint at a low alpha, so most of what
+	// you see through a pane is the world behind it (the render's
+	// Translucent bucket multiplies the backdrop by its transmittance).
+	save_rgba("Glass.png", glass(&mut rng));
 	// Metal: a cool grey plate, planished — the flat highlights are what
 	// separate it from stone at a glance.
 	save("Metal.png", metal(&stone, &mut rng));
-	// Crystal: an Aether-blue lattice, bright enough to carry the
-	// emissive bit the way the deep ores do.
-	save("Crystal.png", crystal(&mut rng));
+	// Crystal: an Aether-blue body carrying the emissive bit the way the
+	// deep ores do, with fine cracks a shade brighter. Near-opaque
+	// throughout — it is see-through, but it is a solid, not a window.
+	save_rgba("Crystal.png", crystal(&mut rng));
 	// The two lamps, both emissive: a metal frame around a lit pane.
 	save("Lantern.png", lamp([255, 214, 138], [96, 88, 78], &mut rng));
 	save(
@@ -201,6 +201,17 @@ fn main() {
 		save("Springstone.png", ore(&sand, core, rim, 0.42, &mut rng));
 		save("SpentSpringstone.png", spent(&sand, core, rim, &mut rng));
 	}
+	// The tinted panes — clean glass in a colour, drawn with NO rng at
+	// all and saved after everything else, so adding one can never
+	// reroll an earlier recipe.
+	for (name, tint) in [
+		("GlassRed.png", [225u8, 58, 48]),
+		("GlassGreen.png", [84u8, 205, 96]),
+		("GlassBlue.png", [72u8, 128, 232]),
+		("GlassAmber.png", [235u8, 172, 64]),
+	] {
+		save_rgba(name, tinted_pane(tint));
+	}
 }
 
 /// A running-bond course: `h`-tall rows offset by half a brick each
@@ -260,10 +271,12 @@ fn polished(stone: &RgbImage, rng: &mut Rng) -> RgbImage {
 	out
 }
 
-/// Leaded glass: a frosted pale body, a dark came grid, and a bright
-/// diagonal glint in each light.
-fn glass(rng: &mut Rng) -> RgbImage {
-	let mut out = RgbImage::new(SIZE, SIZE);
+/// Clear glass: one flat pale tint at one flat alpha. No came grid and
+/// no frost — a pane reads by what it does to the world behind it, and a
+/// painted frame only fights the transmission. The rng draws are kept
+/// and burnt unread so every later recipe's noise is unchanged.
+fn glass(rng: &mut Rng) -> RgbaImage {
+	let mut out = RgbaImage::new(SIZE, SIZE);
 	let cell = SIZE / 4;
 	for (x, y, p) in out.enumerate_pixels_mut() {
 		let (cx, cy) = (x % cell, y % cell);
@@ -273,15 +286,23 @@ fn glass(rng: &mut Rng) -> RgbImage {
 		} else {
 			0
 		};
-		p.0 = if cx < 2 || cy < 2 {
-			[add8(96, frost), add8(104, frost), add8(114, frost)]
-		} else {
-			[
-				add8(196, frost + glint),
-				add8(214, frost + glint),
-				add8(226, frost + glint),
-			]
-		};
+		// A clean tinted pane: one flat colour, one flat alpha, no came
+		// lattice — glass reads by what it does to the world behind it,
+		// not by a painted frame. The frost draw above is burnt unread
+		// so the rng stream (and every later recipe) is unchanged.
+		let _ = (frost, glint, cx, cy);
+		p.0 = [140, 205, 225, 96];
+	}
+	out
+}
+
+/// A coloured clean pane: the glass look in one saturated tint, alpha
+/// high enough that what it passes is unmistakably ITS colour — the
+/// stained-glass blocks. Deliberately rng-free (see the call site).
+fn tinted_pane(tint: [u8; 3]) -> RgbaImage {
+	let mut out = RgbaImage::new(SIZE, SIZE);
+	for p in out.pixels_mut() {
+		p.0 = [tint[0], tint[1], tint[2], 200];
 	}
 	out
 }
@@ -319,20 +340,40 @@ fn metal(stone: &RgbImage, rng: &mut Rng) -> RgbImage {
 	out
 }
 
-/// Crystal: a dark matrix shot through with bright facets. Same contrast
-/// argument as the deep ores — the block is emissive, so the DARK half
-/// has to be dark or the whole face glows and nothing reads.
-fn crystal(rng: &mut Rng) -> RgbImage {
-	let mut out = RgbImage::new(SIZE, SIZE);
+/// Crystal: a near-uniform translucent blue body under fine cracks. The
+/// facet lattice is retired — the block reads by its glow and what it
+/// passes, so painted structure only competed with both. Its jitter draw
+/// is still burnt at the old band positions to hold the rng stream.
+fn crystal(rng: &mut Rng) -> RgbaImage {
+	let mut out = RgbaImage::new(SIZE, SIZE);
 	for (x, y, p) in out.enumerate_pixels_mut() {
 		let n = rng.signed(5);
-		p.0 = [add8(30, n), add8(38, n), add8(56, n)];
-		// Two crossing lattices of facets.
+		// A plain gem: a near-uniform translucent blue body — the glow
+		// comes from the ink gain, not from painted structure.
+		p.0 = [
+			add8(58, n * 2),
+			add8(78, n * 2),
+			add8(114, n * 2),
+			add8(214, n * 2),
+		];
+		// The retired facet lattice still BURNS its jitter draw at the
+		// old band positions, so the rng stream (and every later
+		// recipe's output) is unchanged.
 		let a = (x + y) % 19;
 		let b = (x + SIZE - y) % 23;
 		if a < 3 || b < 2 {
-			let j = rng.signed(14);
-			p.0 = [add8(120, j), add8(206, j), add8(246, j)];
+			let _ = rng.signed(14);
+		}
+		// Small cracks: a few thin wandering lines — a staircase wobble
+		// on a coarse period, long enough to read as a crack rather
+		// than mipping down to glitter. Position-derived, so they cost
+		// no draws and tile.
+		let wob_v = (y / 3 + y / 7) % 5;
+		let crack_v = (x + wob_v) % 21 == 0 && y % 32 < 22;
+		let wob_h = (x / 4 + x / 9) % 4;
+		let crack_h = (y + wob_h) % 26 == 0 && (x + 11) % 32 < 20;
+		if crack_v || crack_h {
+			p.0 = [add8(118, n * 3), add8(162, n * 3), add8(204, n * 3), 236];
 		}
 	}
 	out
@@ -670,6 +711,14 @@ fn load(name: &str) -> RgbImage {
 }
 
 fn save(name: &str, img: RgbImage) {
+	img.save(format!("{DIR}/{name}"))
+		.unwrap_or_else(|e| panic!("save {name}: {e}"));
+	println!("wrote {name}");
+}
+
+/// The RGBA half of `save`, for the see-through recipes (the atlas is
+/// Rgba8Unorm either way; RGB PNGs decode with an opaque alpha).
+fn save_rgba(name: &str, img: RgbaImage) {
 	img.save(format!("{DIR}/{name}"))
 		.unwrap_or_else(|e| panic!("save {name}: {e}"));
 	println!("wrote {name}");

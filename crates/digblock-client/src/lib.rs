@@ -9,6 +9,7 @@ mod confetti;
 mod engine;
 mod font;
 mod gi;
+mod glass;
 mod gpu_timer;
 mod highlight;
 pub mod hotbar;

@@ -122,6 +122,10 @@ fn the_materials_with_no_gate_beyond_their_family_are_spelled_out() {
 			M::Grass,
 			M::Mud,
 			M::Glass,
+			M::RedGlass,
+			M::GreenGlass,
+			M::BlueGlass,
+			M::AmberGlass,
 			M::RedLumber,
 			M::PolishedStone,
 			M::SandstoneBrick,
@@ -378,6 +382,10 @@ fn crafted_blocks_have_recipes_and_drop_themselves() {
 			B::CrystalSlab,
 			B::Lantern,
 			B::Aetherlamp,
+			B::RedGlass,
+			B::GreenGlass,
+			B::BlueGlass,
+			B::AmberGlass,
 		]
 	);
 }

@@ -141,6 +141,30 @@ pub(super) fn debug_shapes_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 		slab_z + 4,
 		make_cell(B::WoodSlab, slab_state(false, false)),
 	));
+	// The see-through row, flanking the corridor where the camera looks:
+	// a two-high glass wall on the left with the stair rows behind it, a
+	// crystal pair (the emissive translucent) and a crystal slab on the
+	// right — blending, same-type culling and the shaped-translucent
+	// stream all in one capture, without walling off the view.
+	for dx in 0..4 {
+		out.push((bx - 6 + dx, by, bz + 1, B::Glass as u16));
+		out.push((bx - 6 + dx, by + 1, bz + 1, B::Glass as u16));
+	}
+	out.push((bx + 3, by, bz + 1, B::Crystal as u16));
+	out.push((bx + 3, by + 1, bz + 1, B::Crystal as u16));
+	out.push((
+		bx + 4,
+		by,
+		bz + 1,
+		make_cell(B::CrystalSlab, slab_state(false, false)),
+	));
+	// The stained panes, one of each, standing past the crystal.
+	for (i, b) in [B::RedGlass, B::GreenGlass, B::BlueGlass, B::AmberGlass]
+		.into_iter()
+		.enumerate()
+	{
+		out.push((bx + 6 + i as i32, by, bz + 1, b as u16));
+	}
 	out
 }
 

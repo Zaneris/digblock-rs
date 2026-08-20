@@ -321,6 +321,35 @@ fn a_smothered_spread_returns_to_the_candidate_set() {
 	}
 }
 
+/// The greenhouse rule, swept over the bucket: a see-through cover —
+/// glass, crystal, a translucent shaped cover in ANY state — never
+/// smothers, because the sun still reaches the turf through it. Counted,
+/// so a future pane joins the pin by carrying the bucket.
+#[test]
+fn a_translucent_cover_never_smothers() {
+	use crate::block::MeshBucket;
+	use crate::chunk::make_cell;
+	let mut examined = 0u32;
+	for b in BlockType::ALL {
+		if b.props().bucket != MeshBucket::Translucent {
+			continue;
+		}
+		for state in 0..16u8 {
+			let cell = make_cell(b, state);
+			if !shapes::state_valid(cell) {
+				continue;
+			}
+			examined += 1;
+			assert_eq!(
+				smothered_by(cell, BlockType::Grass as u16),
+				None,
+				"{b:?} state {state}"
+			);
+		}
+	}
+	assert!(examined > 0, "the bucket has members to sweep");
+}
+
 /// The deliberate exclusions, pinned by name: a cover you can see past
 /// — a poured source, a torch — leaves grass alive. The mesh sweep
 /// would follow a reclassified block's culling and agree with the bug;

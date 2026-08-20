@@ -39,8 +39,8 @@ furniture, dressed stone, glass, metal, crystal, the two lamps, the sigil).
 - **Furniture and the bed are FUNCTIONAL items**, not grid cells: a table is a thing, not a form any substance takes.
   The bed is one cell (a horizontal two-cell pair is new machinery — the door's pair is vertical), and its Flora + Aqua
   price is the catalog's first genuinely cross-family cost.
-- **Glass ships opaque** (§12's render question is unanswered: the depth prepass writes the whole quad, so a cutout
-  discard needs the prepass to sample the atlas).
+- **Glass ships see-through** (§12's render question is answered: the blended `Translucent` mesh bucket draws after
+  water and stays out of the depth prepass entirely, so the prepass never learned to sample the atlas).
 - **Ore's bench XP derived from its extraction base like everything else**, not §4.1's hand-set per-tier figures.
   Superseded with the bench verb (§14); field XP (§5.4) is tabled as written and stands.
 
@@ -829,9 +829,11 @@ The pins are in the code and the milestones (M1–M7) all shipped; M7 is an open
   `XP_TO_NEXT` would retroactively lower every existing character's levels — a betrayal no retune is worth. Pacing is
   tuned on the AWARD side (`dig_xp`, `field_xp`, `craft_xp` — which only slow future earning) and by where thresholds
   sit, never by repricing levels.
-- **Glass render class.** `Translucent` currently means the specialized water pass (surface payloads, its own sorting
-  story); glass through that pass is unproven. Safer v1: `Cutout` with a framed/latticed texture that reads as glass
-  without per-pixel alpha blending; upgrade to true translucency when the render question is answered on its own terms.
+- **Glass render class** — RESOLVED, and not through the water pass: glass took its own `RenderClass::Glass` over a
+  third mesh bucket (`Translucent`), drawn after water in that pass as a transmittance multiply plus an additive shine,
+  chunk-sorted back-to-front. The bucket — not the class — is also the GI's see-through predicate, so a translucent
+  SHAPED row (the crystal slab, a future pane) keeps `Shaped` and still blends. `Cutout` stays memberless and reserved.
+  GI-DESIGN.md R35 has the lighting half.
 - **Rubble scope.** Stone and Sandstone share one Rubble id (one texture, one row). If sandstone rubble wants its own
   warm-toned look later, a second id is append-only — but one rubble keeps the extraction table and the cobble aesthetic
   simple.

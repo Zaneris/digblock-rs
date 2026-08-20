@@ -118,6 +118,12 @@ pub(crate) struct Face {
 /// Pinned against the WGSL twin by `the_carried_flag_matches_the_shaders`.
 const LIGHT_CARRIED: u32 = 256;
 
+/// The LUT's tinted-transmission op — a see-through class whose rgb
+/// filter rides word `.z`. Named because THREE shaders branch on it and
+/// nothing else pins them together; `the_lut_ops_match_the_shaders`
+/// holds the four of them to one value.
+const LUT_OP_TINTED: u32 = 4;
+
 /// Where [`Emitter::level`] rides in the same packed word, above the
 /// class byte and the carried flag. Zero means "no override" — the LUT
 /// row's own level stands — so a placed emitter's word is bit-identical
@@ -366,13 +372,13 @@ pub(crate) struct GiDraw {
 /// fill the range above `core::gi::SHAPE_CLASS_BASE` and borrow their
 /// base block's albedo and light, so a slab bounces wood-colored and a
 /// torch's synthetic class still names its emission.
-fn material_lut(layer_means: &[[u8; 3]]) -> [[u32; 4]; 256] {
+fn material_lut(layer_means: &[[u8; 4]]) -> [[u32; 4]; 256] {
 	let mut lut = [[0u32; 4]; 256];
-	let albedo = |b: BlockType| -> [u8; 3] {
+	let albedo = |b: BlockType| -> [u8; 4] {
 		layer_means
 			.get(b.props().tex_top as usize)
 			.copied()
-			.unwrap_or([255, 255, 255])
+			.unwrap_or([255, 255, 255, 255])
 	};
 	// Word 1: the cast level in the low byte, the cast COLOUR above it.
 	//
@@ -388,7 +394,9 @@ fn material_lut(layer_means: &[[u8; 3]]) -> [[u32; 4]; 256] {
 	// `ore_flecks` is the same palette texgen paints the flecks and their spent
 	// siblings from (GI-DESIGN.md R31).
 	let emit_word = |b: BlockType| -> u32 {
-		let t = b.node_flecks().map_or_else(|| albedo(b), |(core, _)| core);
+		let t = b
+			.node_flecks()
+			.map_or_else(|| albedo(b), |(core, _)| [core[0], core[1], core[2], 255]);
 		u32::from(b.props().light)
 			| u32::from(t[0]) << 8
 			| u32::from(t[1]) << 16
@@ -400,15 +408,31 @@ fn material_lut(layer_means: &[[u8; 3]]) -> [[u32; 4]; 256] {
 			continue;
 		}
 		let m = albedo(b);
+		// Op 3 is the synthetic shape classes' (below); 4 is tinted
+		// transmission, whose rgb filter rides word .z — free for every
+		// full-cube class, since only synthetic classes carry boxes.
 		let op = match opacity(b) {
 			GiOpacity::Air => 0u32,
 			GiOpacity::Translucent => 1,
 			GiOpacity::Opaque => 2,
+			GiOpacity::Tinted => LUT_OP_TINTED,
+		};
+		// What a ray keeps crossing one cell of this class, per channel:
+		// the texture's mean alpha is the coverage and its alpha-weighted
+		// mean colour is what the covered part passes — T = 1 − ā·(1 − a).
+		// DERIVED from the same texture the surface wears, so retinting
+		// the pane retints its light with no second table.
+		let tinted = |m: [u8; 4]| -> u32 {
+			let t = |c: u8| -> u32 {
+				let cover = u32::from(m[3]);
+				255 - (cover * (255 - u32::from(c))) / 255
+			};
+			t(m[0]) | (t(m[1]) << 8) | (t(m[2]) << 16)
 		};
 		lut[id] = [
 			u32::from(m[0]) | (u32::from(m[1]) << 8) | (u32::from(m[2]) << 16) | (op << 24),
 			emit_word(b),
-			0,
+			if op == 4 { tinted(m) } else { 0 },
 			0,
 		];
 	}

@@ -185,6 +185,40 @@ fn a_wielders_level_rides_the_entry_and_nothing_elses() {
 /// both NEE passes take as a prelude. Nothing but agreement makes the
 /// two halves one thing, so agreement is what gets pinned.
 #[test]
+fn the_lut_ops_match_the_shaders() {
+	// The op is a WGSL mirror: nothing in Rust can derive what a shader
+	// branches on, so the declaration is the contract. Every shader that
+	// reads the LUT must name the same value — change the CPU op alone
+	// and the marches would silently take glass for air.
+	let decl = format!("const GI_LUT_OP_TINTED = {LUT_OP_TINTED}u;");
+	for (name, src) in [
+		("gi_common.wgsl", digblock_assets::shader::GI_COMMON),
+		("gi_probe.wgsl", digblock_assets::shader::GI_PROBE),
+	] {
+		assert!(src.contains(&decl), "{name} must declare `{decl}`");
+	}
+	// Both `gi_solid` twins must keep reading a tinted cell as solid —
+	// that is what keeps probe relocation and `gi_occluded` out of a
+	// pane. Its threshold is a shader literal like the op, so it gets
+	// read back out of the source rather than written down again here.
+	for (name, src) in [
+		("gi_common.wgsl", digblock_assets::shader::GI_COMMON),
+		("gi_probe.wgsl", digblock_assets::shader::GI_PROBE),
+	] {
+		let threshold = src
+			.split(">> 24u) >= ")
+			.nth(1)
+			.and_then(|s| s.split('u').next())
+			.and_then(|s| s.trim().parse::<u32>().ok())
+			.unwrap_or_else(|| panic!("{name} must spell its gi_solid threshold"));
+		assert!(
+			LUT_OP_TINTED >= threshold,
+			"{name}: a tinted cell must read as solid ({LUT_OP_TINTED} < {threshold})"
+		);
+	}
+}
+
+#[test]
 fn the_carried_flag_matches_the_shaders() {
 	for decl in [
 		format!("const GI_LIGHT_CARRIED = {LIGHT_CARRIED}u;"),
@@ -604,8 +638,8 @@ fn the_lut_carries_the_shape_covers() {
 fn the_cast_colour_is_the_albedo_except_where_a_vein_says_otherwise() {
 	// One distinct mean per layer, so "took the right one" is
 	// checkable rather than vacuously true.
-	let means: Vec<[u8; 3]> = (0..digblock_core::block::tex::COUNT)
-		.map(|i| [i as u8, 200 - i as u8, 40 + i as u8])
+	let means: Vec<[u8; 4]> = (0..digblock_core::block::tex::COUNT)
+		.map(|i| [i as u8, 200 - i as u8, 40 + i as u8, 255])
 		.collect();
 	let lut = material_lut(&means);
 	let tint = |b: BlockType| {
@@ -621,18 +655,20 @@ fn the_cast_colour_is_the_albedo_except_where_a_vein_says_otherwise() {
 		BlockType::Lantern,
 		BlockType::EssenceSiphon,
 	] {
+		let m = means[b.props().tex_top as usize];
 		assert_eq!(
 			tint(b),
-			means[b.props().tex_top as usize],
+			[m[0], m[1], m[2]],
 			"{b:?} must still cast its own texture's colour"
 		);
 	}
 	for &ore in &digblock_core::worldgen::ore::ORES {
 		let (core, _) = ore.node_flecks().expect("a tier");
 		assert_eq!(tint(ore), core, "{ore:?} casts its flecks, not its rock");
+		let m = means[ore.props().tex_top as usize];
 		assert_ne!(
 			tint(ore),
-			means[ore.props().tex_top as usize],
+			[m[0], m[1], m[2]],
 			"{ore:?}: the whole point is that this is NOT the texture mean"
 		);
 		assert!(
@@ -640,6 +676,58 @@ fn the_cast_colour_is_the_albedo_except_where_a_vein_says_otherwise() {
 			"{ore:?} has a colour and no light to cast in it"
 		);
 	}
+}
+
+/// The tinted word (.z) and its op, swept and pinned at the endpoints.
+/// Op 4 rides exactly the translucent bucket; every other full-cube row
+/// leaves .z zero (the no-box sentinel the shaped classes rely on). The
+/// filter itself is pinned by its two ENDPOINTS rather than its formula:
+/// a fully-covering texture filters light to its own albedo, and a
+/// fully-open one filters nothing — the relationship `gi_glass_tr`
+/// (gi_common.wgsl) decodes, worked here because nothing in WGSL can be
+/// asked at test time.
+#[test]
+fn the_tinted_word_is_the_bucket_and_pins_its_endpoints() {
+	use digblock_core::block::MeshBucket;
+	// Full cover: the filter IS the albedo. Open: the filter is white.
+	let mut means = vec![[0u8; 4]; digblock_core::block::tex::COUNT as usize];
+	let covered = digblock_core::block::BlockType::Glass.props().tex_top as usize;
+	means[covered] = [90, 140, 200, 255];
+	let lut_covered = material_lut(&means);
+	let glass = digblock_core::block::BlockType::Glass as usize;
+	let z = lut_covered[glass][2];
+	assert_eq!(
+		[z & 0xff, (z >> 8) & 0xff, (z >> 16) & 0xff],
+		[90, 140, 200],
+		"full cover filters to the albedo"
+	);
+	means[covered] = [90, 140, 200, 0];
+	let lut_open = material_lut(&means);
+	let z = lut_open[glass][2];
+	assert_eq!(
+		[z & 0xff, (z >> 8) & 0xff, (z >> 16) & 0xff],
+		[255, 255, 255],
+		"no cover filters nothing"
+	);
+	// The op is the bucket, and .z is nonzero exactly on op-4 rows,
+	// swept over every full-cube class byte.
+	let mut tinted = 0u32;
+	for b in BlockType::ALL {
+		let id = b as usize;
+		if id >= 256 || b == BlockType::Air {
+			continue;
+		}
+		let op = lut_covered[id][0] >> 24;
+		if b.props().bucket == MeshBucket::Translucent {
+			tinted += 1;
+			assert_eq!(op, 4, "{b:?}");
+			assert_ne!(lut_covered[id][2], 0, "{b:?} carries a filter");
+		} else {
+			assert_ne!(op, 4, "{b:?}");
+			assert_eq!(lut_covered[id][2], 0, "{b:?} box word stays clear");
+		}
+	}
+	assert!(tinted > 0, "the bucket has members to sweep");
 }
 
 /// A contiguous cursor is what made convergence sweep as a visible

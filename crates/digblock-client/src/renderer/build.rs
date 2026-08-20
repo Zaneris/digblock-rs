@@ -228,6 +228,11 @@ impl Renderer {
 		);
 
 		let water = WaterDraw::new(gpu, surface_format, &water_layout);
+		// Glass shares water's pipeline layout: its shader declares only
+		// group 0's frame UBO out of the water frame group, which is a
+		// legal subset — and sharing means the pass binds nothing new
+		// between the water draw and this one.
+		let glass = crate::glass::GlassDraw::new(gpu, surface_format, &water_layout);
 		let sky = SkyDraw::new(gpu, surface_format, &frame_bgl);
 
 		// Fullscreen composite of the offscreen scene into the swapchain:
@@ -388,6 +393,7 @@ impl Renderer {
 			solid_pipeline,
 			prepass_pipeline,
 			water,
+			glass,
 			sky,
 			frame_buf,
 			frame_bg,

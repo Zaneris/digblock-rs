@@ -149,6 +149,10 @@ pub fn material_of(b: BlockType) -> Material {
 			| Subst::Sandstone
 			| Subst::SandstoneBrick
 			| Subst::Glass
+			| Subst::RedGlass
+			| Subst::GreenGlass
+			| Subst::BlueGlass
+			| Subst::AmberGlass
 			| Subst::Metal
 			| Subst::Crystal
 			| Subst::Rubble

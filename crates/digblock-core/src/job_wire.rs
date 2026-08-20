@@ -296,6 +296,8 @@ impl JobResult {
 				put_u32s(&mut out, &m.mesh.solid);
 				put_run_len(&mut out, m.mesh.water.len());
 				put_u32s(&mut out, &m.mesh.water);
+				put_run_len(&mut out, m.mesh.translucent.len());
+				put_u32s(&mut out, &m.mesh.translucent);
 				put_run_len(&mut out, m.mesh.impacts.len());
 				put_u16s(&mut out, &m.mesh.impacts);
 				put_run_len(&mut out, m.mesh.lights.len());
@@ -342,6 +344,7 @@ impl JobResult {
 				let dur_ms = r.f32()?;
 				let solid = r.run(4, |r| r.u32())?;
 				let water = r.run(4, |r| r.u32())?;
+				let translucent = r.run(4, |r| r.u32())?;
 				let impacts = r.run(2, |r| r.u16())?;
 				let lights = r.run(4, |r| r.u32())?;
 				Some(JobResult::Meshed {
@@ -351,6 +354,7 @@ impl JobResult {
 						mesh: MeshData {
 							solid,
 							water,
+							translucent,
 							impacts,
 							lights,
 						},
@@ -564,6 +568,12 @@ mod tests {
 		for (i, cell) in blocks.iter_mut().enumerate() {
 			*cell = stack[solid_y].blocks[i % crate::chunk::CHUNK_VOLUME];
 		}
+		// Worldgen places no crafted block, and every translucent row is
+		// crafted, so the third stream would be EMPTY on terrain alone and
+		// its assertion would compare two empty vecs forever. Plant one
+		// pane and one shaped pane so the stream carries real vertices.
+		blocks[crate::mesher::pidx(4, 4, 4)] = crate::block::BlockType::RedGlass as u16;
+		blocks[crate::mesher::pidx(6, 4, 4)] = crate::block::BlockType::CrystalSlab as u16;
 		let job = Job::Mesh {
 			pos: ChunkPos::new(0, solid_y as i32, 0),
 			generation: 7,
@@ -578,6 +588,10 @@ mod tests {
 			panic!("mesh")
 		};
 		assert!(!before.mesh.solid.is_empty(), "test needs a real mesh");
+		assert!(
+			!before.mesh.translucent.is_empty(),
+			"test needs a real translucent mesh"
+		);
 		let Some(JobResult::Meshed { out: after, .. }) = JobResult::decode(&result.encode()) else {
 			panic!("decode");
 		};
@@ -587,6 +601,7 @@ mod tests {
 		);
 		assert_eq!(after.mesh.solid, before.mesh.solid);
 		assert_eq!(after.mesh.water, before.mesh.water);
+		assert_eq!(after.mesh.translucent, before.mesh.translucent);
 		assert_eq!(after.mesh.impacts, before.mesh.impacts);
 		assert_eq!(after.mesh.lights, before.mesh.lights);
 	}

@@ -11,7 +11,7 @@ complete; the engine is free to diverge. The old Java repo at `../DigBlock` is a
 measurements and the alternatives tried and declined live in the design docs. Read the relevant one before re-litigating
 a decision or rebuilding something:
 
-- `GI-DESIGN.md` — lighting: data model, pass order, tuned constants, release notes R13–R34, an honest "What is NOT
+- `GI-DESIGN.md` — lighting: data model, pass order, tuned constants, release notes R13–R35, an honest "What is NOT
   built" list, and `## Invariants`. `## Measuring motion` is the methodology for any lighting capture.
 - `BENCH.md` — every perf measurement, including the ones that refuted a hypothesis.
 - `SKILLS-DESIGN.md` — skills, XP curve, essences, transmutation catalog, milestones. §14 is the essence redesign and
@@ -119,8 +119,9 @@ For `just run`:
   exactly one oscillation period later at fixed dt.
 - **Attribution**: `DIG_STUB=<terms>` removes one shading term per run — water
   `wvert wsun wssr wripple wrefract wflat spray nowater`, GI `gisun gigather ginee giflat giatrous`, raster
-  `noscene noraster`. Uniform-branch gated, so an un-stubbed run pays nothing; a typo is fatal. `noscene` is the CLEAN
-  raster stub; `noraster` drops the prepass too and is an UPPER BOUND only. Never subtract the two to "get" the prepass.
+  `noscene noraster noglass`. Uniform-branch gated, so an un-stubbed run pays nothing; a typo is fatal. `noscene` is the
+  CLEAN raster stub; `noraster` drops the prepass too and is an UPPER BOUND only. Never subtract the two to "get" the
+  prepass.
 - **Scenes**: `DIG_VAULT` (sealed stone vault + torch; `DIG_VAULT_DARK=1` drops the torch and implies it), `DIG_ROOF`,
   `DIG_TUNNEL` (sealed bore past the cascades' coverage — the unproven-daylight capture; pair with a low `--pos`, and
   the same run above `SEA_LEVEL` is the geometry-identical control), `DIG_DIVE`, `DIG_SHAPES`, `DIG_RIVER` (flooded
@@ -415,13 +416,18 @@ in material, not in XP**: cells behind the aimed one pay `PICK_EXTRA_PERMILLE`, 
 Probe-traced GI, the **only** render path — no flag. The raster stack it replaced is deleted; with AO gone the mesher's
 quad winding is fixed rather than AO-keyed, and the vertex words are repacked.
 
-**`GI-DESIGN.md` is the reference** — data model, pass order, every tuned constant, R13–R34 with their measurements, a
+**`GI-DESIGN.md` is the reference** — data model, pass order, every tuned constant, R13–R35 with their measurements, a
 "What is NOT built" list, and **`## Invariants`, the list that bites if broken.** Read both before changing anything
 here; several plausible ideas in there were built, measured and **declined**, with the numbers recorded.
 
-Three reach outside lighting, so they can catch you when you weren't editing lighting at all:
+Four reach outside lighting, so they can catch you when you weren't editing lighting at all:
 
 - **Water writes OPAQUE**; alpha is the falling-sheet streak gate and sits at exactly 1.0 on every still surface.
+- **The see-through predicate is `MeshBucket::Translucent`, never a render class** (R35): it picks the blended glass
+  stream, opens the GI's tinted transmission, spares the turf under a pane (`worldjob/grass`), decides which face water
+  emits toward, keeps a shaped run culling its own interior, and leaves the water surface unpinned under a pane — so a
+  new translucent block is a bucket, not a class audit. Every one of those sites keyed on the CLASS once and each grew
+  its own visible hole; `a_translucent_cell_never_covers_whatever_its_shape` is the sweep that generalizes it.
 - **Every node row is `seams(level)` and nothing else is** — buried rock must light nothing.
 - **`gi::carried_light(block, mining)`** is the one place an emitter answers to its HOLDER: it raises the pick's level
   and whitens its cast tint at the rank `unlock::pick_cells` widens the swing at, riding the light entry itself, because

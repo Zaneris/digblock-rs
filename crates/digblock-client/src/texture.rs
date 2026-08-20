@@ -11,7 +11,7 @@ pub(crate) struct BlockTextures {
 	/// Mean rgb per texture layer (gamma-space, like the atlas) — the
 	/// GI material LUT's albedo source (GI-DESIGN.md): rays never
 	/// sample the atlas, they read one color per class.
-	pub layer_means: Vec<[u8; 3]>,
+	pub layer_means: Vec<[u8; 4]>,
 }
 
 fn mip_levels(size: u32) -> u32 {
@@ -125,24 +125,30 @@ impl BlockTextures {
 	}
 }
 
-/// Alpha-weighted mean color, so a texture with transparent filler
-/// never averages toward it.
-fn mean_rgb(img: &image::RgbaImage) -> [u8; 3] {
+/// Alpha-weighted mean color (so a texture with transparent filler never
+/// averages toward it), plus the plain mean alpha in the fourth channel —
+/// the coverage a translucent layer presents, which the GI's transmittance
+/// derives from.
+fn mean_rgb(img: &image::RgbaImage) -> [u8; 4] {
 	let (mut sum, mut weight) = ([0u64; 3], 0u64);
+	let mut alpha = 0u64;
 	for p in img.pixels() {
 		let a = u64::from(p[3]);
 		for c in 0..3 {
 			sum[c] += u64::from(p[c]) * a;
 		}
 		weight += a;
+		alpha += a;
 	}
+	let mean_a = (alpha / u64::from(img.width() * img.height())) as u8;
 	if weight == 0 {
-		return [0; 3];
+		return [0, 0, 0, mean_a];
 	}
 	[
 		(sum[0] / weight) as u8,
 		(sum[1] / weight) as u8,
 		(sum[2] / weight) as u8,
+		mean_a,
 	]
 }
 

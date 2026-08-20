@@ -95,6 +95,16 @@ fn surface_amount(input: &MeshInput, x: i32, y: i32, z: i32, b: BlockType) -> Op
 ///
 /// A pure function of the CORNER, never of the cell emitting the face — which
 /// is what lets adjacent cells knit without cracks, chunk borders included.
+/// Does the block above a water cell HIDE its top face? Water renders as
+/// a full cube exactly when it does, so the two answers must be the same
+/// one — a see-through cover leaves the surface on screen, and pinning it
+/// full would show a brimming cube where a shallow flow is. Air and glass
+/// both answer false; a solid or an opaque shaped cover answers true.
+fn hides_water_top(above: BlockType) -> bool {
+	above.props().class != RenderClass::None
+		&& above.props().bucket != crate::block::MeshBucket::Translucent
+}
+
 fn corner_drop(input: &MeshInput, lx: i32, y: i32, lz: i32) -> u32 {
 	let mut best = 0u8;
 	let mut plunge = false;
@@ -107,11 +117,11 @@ fn corner_drop(input: &MeshInput, lx: i32, y: i32, lz: i32) -> u32 {
 				return 0;
 			}
 			let b = BlockType::from_id(input.get(cx, y, cz));
-			// A covered water cell (non-air above) renders as a full
-			// cube (`WaterState::full`); pin the shared corner so open
+			// A covered water cell renders as a full cube
+			// (`WaterState::full`); pin the shared corner so open
 			// surfaces rise to meet it instead of dipping into a
 			// see-through sliver at its edge.
-			if b.is_water() && above.props().class != RenderClass::None {
+			if b.is_water() && hides_water_top(above) {
 				return 0;
 			}
 			source |= b.is_fluid_source();
@@ -204,7 +214,7 @@ impl WaterState {
 	) -> WaterState {
 		let falling = me.is_falling();
 		let above = BlockType::from_id(input.get(x, y + 1, z));
-		let full = above.props().class != RenderClass::None;
+		let full = hides_water_top(above);
 		let flow = if falling || me.is_fluid_source() {
 			0 // sources rest, falls scroll vertically instead
 		} else {

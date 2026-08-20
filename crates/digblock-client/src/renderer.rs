@@ -181,6 +181,7 @@ pub(crate) struct ChunkGpu {
 	pub(crate) pos: ChunkPos,
 	pub(crate) solid: Option<ChunkMesh>,
 	pub(crate) water: Option<ChunkMesh>,
+	pub(crate) translucent: Option<ChunkMesh>,
 	/// Origin-stream index; rides each draw as `first_instance`.
 	pub(crate) slot: u32,
 	/// Bounding-sphere center, precomputed — the cull is the hottest
@@ -197,11 +198,20 @@ struct CullLists {
 	/// Camera-visible chunks carrying water geometry. Unordered: the
 	/// water depth prepass is what decides which surface shades.
 	water: Vec<u32>,
+	/// Camera-visible chunks carrying blended-glass geometry, coarsely
+	/// front-to-back like `scene` — the glass draw walks it in REVERSE
+	/// for chunk-level back-to-front blending.
+	translucent: Vec<u32>,
 	/// Solid casters inside the near cascade's light frustum.
 	near: Vec<u32>,
 	/// Counting-sort input: (distance bucket, chunk index).
 	keyed: Vec<(u8, u32)>,
 	counts: [u32; DIST_BUCKETS],
+	/// The translucent list's own counting-sort input — the scene's
+	/// machinery reused, kept separate so one scatter pass each fills
+	/// both lists from the one cull walk.
+	tkeyed: Vec<(u8, u32)>,
+	tcounts: [u32; DIST_BUCKETS],
 }
 
 impl Default for CullLists {
@@ -210,9 +220,12 @@ impl Default for CullLists {
 		Self {
 			scene: Vec::new(),
 			water: Vec::new(),
+			translucent: Vec::new(),
 			near: Vec::new(),
 			keyed: Vec::new(),
 			counts: [0; DIST_BUCKETS],
+			tkeyed: Vec::new(),
+			tcounts: [0; DIST_BUCKETS],
 		}
 	}
 }
@@ -246,6 +259,9 @@ pub(crate) struct Renderer {
 	prepass_pipeline: wgpu::RenderPipeline,
 	/// The water depth-prepass + color subpass pair.
 	water: WaterDraw,
+	/// The blended-glass pipeline (Translucent bucket), drawn after
+	/// water in the same pass.
+	glass: crate::glass::GlassDraw,
 	/// Fullscreen procedural sky, drawn after solids, before water.
 	sky: SkyDraw,
 	frame_buf: wgpu::Buffer,
@@ -458,6 +474,8 @@ impl Renderer {
 		lists.near.clear();
 		lists.keyed.clear();
 		lists.counts = [0; DIST_BUCKETS];
+		lists.tkeyed.clear();
+		lists.tcounts = [0; DIST_BUCKETS];
 		let mut culled = 0;
 		for (i, c) in chunks.iter().enumerate() {
 			let i = i as u32;
@@ -471,13 +489,20 @@ impl Renderer {
 				culled += 1;
 				continue;
 			}
-			if solid {
+			let translucent = c.translucent.is_some();
+			if solid || translucent {
 				let dx = i64::from(c.pos.x - cam_chunk.0);
 				let dz = i64::from(c.pos.z - cam_chunk.1);
 				let b = ((dx * dx + dz * dz) as f64).sqrt() as usize;
 				let b = b.min(DIST_BUCKETS - 1);
-				lists.counts[b] += 1;
-				lists.keyed.push((b as u8, i));
+				if solid {
+					lists.counts[b] += 1;
+					lists.keyed.push((b as u8, i));
+				}
+				if translucent {
+					lists.tcounts[b] += 1;
+					lists.tkeyed.push((b as u8, i));
+				}
 			}
 			if c.water.is_some() {
 				lists.water.push(i);
@@ -487,9 +512,13 @@ impl Renderer {
 			scene,
 			keyed,
 			counts,
+			translucent,
+			tkeyed,
+			tcounts,
 			..
 		} = lists;
 		scatter_by_bucket(keyed, counts, scene);
+		scatter_by_bucket(tkeyed, tcounts, translucent);
 		culled
 	}
 

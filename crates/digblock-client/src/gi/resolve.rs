@@ -152,7 +152,19 @@ impl GiDraw {
 			self.cascades[1].spacing as f32,
 		]));
 		data.extend_from_slice(bytemuck::cast_slice(&self.last_sun));
-		data.extend_from_slice(bytemuck::cast_slice(&frame.light_color));
+		// rgb the caster colour; w its twilight STRENGTH, which the scene
+		// pass applies to the sun lane through `light_dir.w`. The
+		// chromatic residual is a finished radiance on the indirect lane
+		// and gets no such multiply, so it has to carry the strength
+		// itself — without it the two lanes stop summing to the
+		// transmission anywhere but full sun. (`light_color.w` is the
+		// animation clock; the resolve has no use for it.)
+		data.extend_from_slice(bytemuck::cast_slice(&[
+			frame.light_color[0],
+			frame.light_color[1],
+			frame.light_color[2],
+			frame.light_dir[3],
+		]));
 		data.extend_from_slice(bytemuck::cast_slice(&frame.zenith));
 		data.extend_from_slice(bytemuck::cast_slice(&frame.horizon));
 		for col in self.prev_vp {

@@ -41,6 +41,13 @@ pub enum Material {
 	Grass,
 	Mud,
 	Glass,
+	/// The stained panes: clean glass in a colour. Separate SUBSTANCES,
+	/// not styles — one grid cell holds one block, and each pane's tint
+	/// is what its light does to a room.
+	RedGlass,
+	GreenGlass,
+	BlueGlass,
+	AmberGlass,
 	/// Planed timber, red.
 	RedLumber,
 	PolishedStone,
@@ -96,7 +103,7 @@ pub enum Material {
 }
 
 impl Material {
-	pub const COUNT: usize = 37;
+	pub const COUNT: usize = 41;
 
 	/// Every material in unlock order — the transmute tab reads members in
 	/// this order, so a family's tiles run from cheapest to rarest.
@@ -113,6 +120,10 @@ impl Material {
 		Material::Grass,
 		Material::Mud,
 		Material::Glass,
+		Material::RedGlass,
+		Material::GreenGlass,
+		Material::BlueGlass,
+		Material::AmberGlass,
 		Material::RedLumber,
 		Material::PolishedStone,
 		Material::SandstoneBrick,
@@ -159,7 +170,14 @@ impl Material {
 			// The mason's loop (§7.1): broken rock back into clean forms.
 			M::Stone | M::StoneBrick | M::PolishedStone => BlockType::Rubble,
 			// The sand-flavoured substances fuse from sand itself.
-			M::Sand | M::Sandstone | M::SandstoneBrick | M::Glass => BlockType::Sand,
+			M::Sand
+			| M::Sandstone
+			| M::SandstoneBrick
+			| M::Glass
+			| M::RedGlass
+			| M::GreenGlass
+			| M::BlueGlass
+			| M::AmberGlass => BlockType::Sand,
 			// The loose grounds reshape from their own loose block.
 			M::Dirt => BlockType::Dirt,
 			M::Grass => BlockType::Grass,
@@ -187,7 +205,9 @@ impl Material {
 			M::Wood | M::Lumber | M::DarkLumber | M::RedLumber => &[(E::Vitae, 3)],
 			M::Stone | M::Sand | M::Sandstone => &[(E::Terra, 3)],
 			M::StoneBrick | M::PolishedStone | M::SandstoneBrick => &[(E::Terra, 3)],
-			M::Glass => &[(E::Terra, 3)],
+			M::Glass | M::RedGlass | M::GreenGlass | M::BlueGlass | M::AmberGlass => {
+				&[(E::Terra, 3)]
+			}
 			M::Dirt => &[(E::Terra, 3), (E::Vitae, 1)],
 			M::Grass => &[(E::Terra, 2), (E::Vitae, 1)],
 			M::Mud => &[(E::Terra, 2), (E::Vitae, 1), (E::Unda, 1)],
@@ -278,6 +298,10 @@ impl Material {
 			M::Grass => "Grass",
 			M::Mud => "Mud",
 			M::Glass => "Glass",
+			M::RedGlass => "Red Glass",
+			M::GreenGlass => "Green Glass",
+			M::BlueGlass => "Blue Glass",
+			M::AmberGlass => "Amber Glass",
 			M::RedLumber => "Red Lumber",
 			M::PolishedStone => "Polished Stone",
 			M::SandstoneBrick => "Sandstone Brick",
@@ -354,6 +378,10 @@ mod tests {
 				| Material::Grass
 				| Material::Mud
 				| Material::Glass
+				| Material::RedGlass
+				| Material::GreenGlass
+				| Material::BlueGlass
+				| Material::AmberGlass
 				| Material::RedLumber
 				| Material::PolishedStone
 				| Material::SandstoneBrick

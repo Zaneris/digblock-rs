@@ -70,6 +70,9 @@ pub fn material(m: Material) -> Option<u32> {
 		M::Stone => 15,
 		M::DarkLumber | M::StoneBrick => 18,
 		M::Sandstone | M::Snow | M::Grass | M::Mud | M::Glass => 21,
+		// The stained panes ride one rung past plain glass — the same
+		// substance, asked for a colour.
+		M::RedGlass | M::GreenGlass | M::BlueGlass | M::AmberGlass => 24,
 		M::RedLumber => 27,
 		M::PolishedStone | M::SandstoneBrick => 30,
 		// Scarce by construction: Ferrum comes only from ore.

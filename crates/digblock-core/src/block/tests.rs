@@ -34,6 +34,20 @@ fn table_sanity() {
 		if p.shape.is_some() {
 			assert!(p.collides, "{b:?} shaped blocks collide");
 		}
+		// Glass-the-class and Translucent-the-bucket travel together in
+		// one direction each: every Glass row is bucketed translucent,
+		// and every translucent row is Glass or a shaped variant — and
+		// never a fluid, whose see-through-ness is water's own pass.
+		if p.class == RenderClass::Glass {
+			assert_eq!(p.bucket, MeshBucket::Translucent, "{b:?}");
+		}
+		if p.bucket == MeshBucket::Translucent {
+			assert!(
+				matches!(p.class, RenderClass::Glass | RenderClass::Shaped),
+				"{b:?}"
+			);
+			assert!(p.fluid.is_none(), "{b:?} translucent rows are not fluids");
+		}
 	}
 }
 
@@ -152,6 +166,10 @@ fn dig_families_are_pinned() {
 		(Material::PolishedStone, Rock),
 		(Material::SandstoneBrick, Rock),
 		(Material::Glass, Soft),
+		(Material::RedGlass, Soft),
+		(Material::GreenGlass, Soft),
+		(Material::BlueGlass, Soft),
+		(Material::AmberGlass, Soft),
 		(Material::Metal, Rock),
 		(Material::Crystal, Rock),
 	];
@@ -284,6 +302,10 @@ fn material_roster_is_pinned() {
 		(B::SandstoneBrickStairs, M::SandstoneBrick),
 		(B::SandstoneBrickSlab, M::SandstoneBrick),
 		(B::Glass, M::Glass),
+		(B::RedGlass, M::RedGlass),
+		(B::GreenGlass, M::GreenGlass),
+		(B::BlueGlass, M::BlueGlass),
+		(B::AmberGlass, M::AmberGlass),
 		(B::Metal, M::Metal),
 		(B::MetalStairs, M::Metal),
 		(B::MetalSlab, M::Metal),
@@ -488,8 +510,10 @@ fn bedrock_floor_is_undiggable() {
 /// amount is what the render class, the mesh bucket and the collision
 /// flag all follow, so a row that holds water and collides — or one
 /// that is opaque — is a table error the mesher draws wrong. The
-/// bucket/class equivalence is asserted rather than assumed: the split
-/// exists so a future glass can break it deliberately.
+/// bucket/class equivalence is asserted rather than assumed — and glass
+/// deliberately kept it true by taking its own class (`Glass`) and its
+/// own bucket (`Translucent`), so Translucent-the-class still names
+/// exactly the water family.
 #[test]
 fn the_water_rows_agree_across_every_field_that_describes_them() {
 	let fullest = BlockType::ALL

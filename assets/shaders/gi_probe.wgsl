@@ -40,6 +40,10 @@ struct Light {
 @group(0) @binding(1) var window_tex: texture_3d<u32>;
 @group(0) @binding(2) var coarse_tex: texture_3d<u32>;
 @group(0) @binding(3) var<storage, read> lut: array<vec4u>;
+
+// The LUT's tinted-transmission op — mirrored from the CPU's
+// `LUT_OP_TINTED` and pinned by `the_lut_ops_match_the_shaders`.
+const GI_LUT_OP_TINTED = 4u;
 @group(0) @binding(4) var<storage, read> lights: array<vec4f>;
 @group(0) @binding(5) var prev_atlas: texture_3d<f32>;
 @group(0) @binding(6) var out_atlas: texture_storage_3d<rgba16float, write>;
@@ -180,6 +184,9 @@ struct Hit {
 	cell: vec3i,
 	axis: u32,
 	water: f32,
+	// Glass throughput crossed on the way (op 4) — the pinned twin of
+	// gi_common's `GiSunVis.thru`.
+	thru: vec3f,
 	// Miss quality (R32) — the pinned twin of gi_common's `GiHit.sky`:
 	// true only on the PROVEN sky-ceiling exit, false when the ray merely
 	// ran out (max_t, lateral bound, iteration cap, the world's floor).
@@ -192,6 +199,7 @@ fn march(from_p: vec3f, dir: vec3f, max_t: f32) -> Hit {
 	var out: Hit;
 	out.hit = false;
 	out.water = 0.0;
+	out.thru = vec3f(1.0);
 	out.sky = false;
 	let step_dir = vec3i(sign(dir));
 	let inv = 1.0 / max(abs(dir), vec3f(1e-6));
@@ -254,6 +262,9 @@ fn march(from_p: vec3f, dir: vec3f, max_t: f32) -> Hit {
 			}
 			if op == 1u {
 				out.water += 1.0;
+			}
+			if op == GI_LUT_OP_TINTED {
+				out.thru *= glass_tr(v);
 			}
 		}
 		r = gi_ray_step(r, step_dir, inv);
@@ -338,7 +349,14 @@ fn nee(p: vec3f, n: vec3f, rnd: f32) -> vec3f {
 	// shared sampler, so the probes and the resolve cannot price the same
 	// seam differently.
 	return radiance * (ndl * s.w / max(dist2, LIGHT_NEAR * LIGHT_NEAR))
-		* medium_water_tr(sh.water) * f32(count);
+		* medium_water_tr(sh.water) * sh.thru * f32(count);
+}
+
+// The tinted class's rgb filter (op 4) — gi_common's `gi_glass_tr` twin
+// over this pass's own `lut` binding.
+fn glass_tr(v: u32) -> vec3f {
+	let m = lut[v].z;
+	return vec3f(f32(m & 0xffu), f32((m >> 8u) & 0xffu), f32((m >> 16u) & 0xffu)) / 255.0;
 }
 
 fn albedo_of(v: u32) -> vec3f {
@@ -458,7 +476,7 @@ fn trace_radiance(p: vec3f, dir: vec3f, rnd: f32) -> vec3f {
 	// Per-channel now, and from medium_common's measured sigma — the
 	// same constant the view ray uses. This was a grey exponential with
 	// no relationship to the water the eye looks through.
-	let water_att = medium_water_tr(h.water);
+	let water_att = medium_water_tr(h.water) * h.thru;
 	if !h.hit {
 		var sky = sky_radiance(dir);
 		// The sun disc itself: a bright narrow lobe so probes carry
@@ -510,7 +528,7 @@ fn trace_radiance(p: vec3f, dir: vec3f, rnd: f32) -> vec3f {
 				// Unproven sun (the ray ran out rather than clearing the
 				// ceiling) fades at the receiving surface — the same rule
 				// gi_sun_vis applies at its shading point (R32).
-				incident += gi.sun_color.rgb * ndl * medium_water_tr(sh.water)
+				incident += gi.sun_color.rgb * ndl * medium_water_tr(sh.water) * sh.thru
 					* select(medium_sky_fade(hp.y), 1.0, sh.sky);
 			}
 		}
@@ -679,7 +697,7 @@ fn cam_light() {
 		// on the far side of a wall from it.
 		let h = march(cam, gi.sun.xyz, MAX_T);
 		if !h.hit {
-			sv = medium_water_tr(h.water)
+			sv = medium_water_tr(h.water) * h.thru
 				* select(medium_sky_fade(cam.y), 1.0, h.sky);
 		}
 	}
