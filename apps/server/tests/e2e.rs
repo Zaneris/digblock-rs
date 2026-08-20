@@ -1114,9 +1114,15 @@ impl ComposeRig {
 
 impl Drop for ComposeRig {
 	fn drop(&mut self) {
+		// `--rmi local` is not a tidiness flag. The project name carries the
+		// PID, so compose names the images it builds here after THIS run and
+		// no later one ever reuses them; `down` alone takes the containers,
+		// the network and the volumes, and strands a server and a master
+		// image that nothing else collects. `local` is the images compose
+		// built for this project — never a base layer someone else shares.
 		let _ = self
 			.compose()
-			.args(["down", "-v", "--remove-orphans"])
+			.args(["down", "-v", "--remove-orphans", "--rmi", "local"])
 			.stdout(std::process::Stdio::null())
 			.stderr(std::process::Stdio::null())
 			.status();
