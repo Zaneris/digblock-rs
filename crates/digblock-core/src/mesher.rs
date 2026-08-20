@@ -369,6 +369,12 @@ pub struct MeshData {
 	/// mesh so every fall-changing path (worldgen stream-in, dig/place,
 	/// fluid sim, remesh-all) refreshes emitters with no extra scans.
 	pub impacts: Vec<u16>,
+	/// The blended-glass stream: `solid`'s two-word format exactly, split
+	/// out because it draws after water with alpha blending and no depth
+	/// write, chunk-sorted back-to-front. Faces land here by BUCKET, so a
+	/// shaped translucent (a crystal slab, a pane) rides along with the
+	/// glass cubes.
+	pub translucent: Vec<u32>,
 	/// Exposed faces of SURFACE emitters, greedy-merged into rectangles
 	/// ([`lights::pack`]) — the GI's area lights for revealed veins.
 	///
@@ -385,7 +391,7 @@ pub struct MeshData {
 
 impl MeshData {
 	pub fn is_empty(&self) -> bool {
-		self.solid.is_empty() && self.water.is_empty()
+		self.solid.is_empty() && self.water.is_empty() && self.translucent.is_empty()
 	}
 }
 
@@ -400,6 +406,12 @@ enum Cover {
 
 fn neighbor_cover(cell: u16, dir: Dir) -> Cover {
 	let b = BlockType::from_id(crate::chunk::cell_id(cell));
+	// A see-through neighbor covers nothing, whatever its class — checked
+	// by BUCKET before the class match, or a translucent SHAPED cell's
+	// coverage mask would cull the very face you see through it.
+	if b.props().bucket == crate::block::MeshBucket::Translucent {
+		return Cover::None;
+	}
 	match b.props().class {
 		RenderClass::Opaque => Cover::Full,
 		RenderClass::Shaped => {
@@ -427,10 +439,18 @@ fn face_visible(me: BlockType, neighbor: Option<u16>, dir: Dir) -> bool {
 		RenderClass::None => false,
 		RenderClass::Opaque => true,
 		RenderClass::Cutout => nb != me,
+		// Same-type culling, glass edition: a window's interior faces
+		// vanish while its faces toward air, water, shaped covers and
+		// OTHER glass all draw.
+		RenderClass::Glass => nb != me,
 		// Water toward a Shaped neighbor emits nothing (class != None) —
 		// the known v1 artifact, pinned by test: you can see through a
-		// stair's open region into the water void behind it.
-		RenderClass::Translucent => nb.props().class == RenderClass::None,
+		// stair's open region into the water void behind it. Toward glass
+		// it DOES emit: the pane blends over the surface behind it, so an
+		// aquarium wall shows its water.
+		RenderClass::Translucent => {
+			matches!(nb.props().class, RenderClass::None | RenderClass::Glass)
+		}
 		// Shaped cells never route here — mesh_chunk branches to the
 		// shaped emitter first.
 		RenderClass::Shaped => unreachable!("shaped cells use emit_shaped"),
@@ -622,6 +642,7 @@ pub fn mesh_chunk(input: &MeshInput) -> MeshData {
 	let mut mesh = MeshData {
 		solid: Vec::with_capacity(4096),
 		water: Vec::with_capacity(512),
+		translucent: Vec::new(),
 		impacts: Vec::new(),
 		lights: lights::collect(input),
 	};
@@ -636,7 +657,15 @@ pub fn mesh_chunk(input: &MeshInput) -> MeshData {
 					continue;
 				}
 				if me.props().class == RenderClass::Shaped {
-					emit_shaped(&mut mesh.solid, input, (x, y, z), me, cell);
+					// Stream selection is by BUCKET here and below — a
+					// translucent shaped row keeps its class and still
+					// lands in the blended stream.
+					let out = if me.props().bucket == crate::block::MeshBucket::Translucent {
+						&mut mesh.translucent
+					} else {
+						&mut mesh.solid
+					};
+					emit_shaped(out, input, (x, y, z), me, cell);
 					continue;
 				}
 				// A fall's landing cell drives the spray emitters and the
@@ -675,13 +704,25 @@ pub fn mesh_chunk(input: &MeshInput) -> MeshData {
 						continue;
 					}
 					let tex = me.texture(dir);
-					if me.props().bucket == crate::block::MeshBucket::Water {
-						let state = *wstate.get_or_insert_with(|| {
-							WaterState::of(input, &mut falls, x as i32, y as i32, z as i32, me)
-						});
-						emit_water_face(&mut mesh.water, input, (x, y, z), dir, tex, state);
-					} else {
-						emit_face(&mut mesh.solid, (x, y, z), dir, tex, me.props().emissive);
+					match me.props().bucket {
+						crate::block::MeshBucket::Water => {
+							let state = *wstate.get_or_insert_with(|| {
+								WaterState::of(input, &mut falls, x as i32, y as i32, z as i32, me)
+							});
+							emit_water_face(&mut mesh.water, input, (x, y, z), dir, tex, state);
+						}
+						crate::block::MeshBucket::Translucent => {
+							emit_face(
+								&mut mesh.translucent,
+								(x, y, z),
+								dir,
+								tex,
+								me.props().emissive,
+							);
+						}
+						crate::block::MeshBucket::Solid => {
+							emit_face(&mut mesh.solid, (x, y, z), dir, tex, me.props().emissive);
+						}
 					}
 				}
 			}

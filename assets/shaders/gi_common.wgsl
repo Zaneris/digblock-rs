@@ -190,16 +190,37 @@ fn gi_occluded(side: i32, a: vec3f, b: vec3f, cap: i32) -> bool {
 // Cells, not exact chord lengths: a shallow ray crosses a cell over a longer
 // path than a steep one. That approximation is left alone; M4's trace carries
 // real segment lengths.
-fn gi_sun_vis(side: i32, sky_y: f32, cam_xz: vec2f, sun: vec4f, p: vec3f, iters: i32) -> vec3f {
+struct GiSunVis {
+	// Occluder visibility: 1 lit, 0 blocked, the depth fade on an
+	// unproven miss (R32).
+	vis: f32,
+	// Water cells crossed, as a PATH LENGTH — the caller applies
+	// medium_common's sigma so sun and view rays share one water.
+	water: f32,
+	// Distance to the occluder on a blocked ray (the penumbra input);
+	// 0 on a lit one.
+	dist: f32,
+	// Glass throughput: the product of every tinted cell's rgb filter
+	// (op 4) crossed on the way. 1 where no glass intervenes. A
+	// FILTER product, not a medium — it has no path state, so the two
+	// ray directions cannot disagree about being "inside" it.
+	thru: vec3f,
+}
+
+fn gi_sun_vis(side: i32, sky_y: f32, cam_xz: vec2f, sun: vec4f, p: vec3f, iters: i32) -> GiSunVis {
+	var out: GiSunVis;
+	out.vis = 0.0;
+	out.water = 0.0;
+	out.dist = 0.0;
+	out.thru = vec3f(1.0);
 	if sun.w < 0.5 {
-		return vec3f(0.0, 0.0, 0.0);
+		return out;
 	}
 	let dir = sun.xyz;
 	let o = p + dir * GI_SURFACE_EPS;
 	let step_dir = vec3i(sign(dir));
 	let inv = 1.0 / max(abs(dir), vec3f(1e-6));
 	var r = gi_ray_init(o, dir, inv);
-	var water = 0.0;
 	// Did the march PROVE open sky (the R18 ceiling), or merely run out —
 	// of iterations, or of window? An unproven exit used to answer "fully
 	// lit" too, which deep underground is daylight through fifty blocks of
@@ -271,7 +292,8 @@ fn gi_sun_vis(side: i32, sky_y: f32, cam_xz: vec2f, sun: vec4f, p: vec3f, iters:
 			// fetched only inside the partial branch.
 			let op = gi_lut[v].x >> 24u;
 			if op == 2u {
-				return vec3f(0.0, water, r.t);
+				out.dist = r.t;
+				return out;
 			}
 			if op == 3u {
 				// A shaped cell blocks only where its boxes actually
@@ -281,15 +303,20 @@ fn gi_sun_vis(side: i32, sky_y: f32, cam_xz: vec2f, sun: vec4f, p: vec3f, iters:
 				let t_exit = min(r.tmax.x, min(r.tmax.y, r.tmax.z));
 				let bh = gi_boxes_hit(o, dir, r.cell, r.t, t_exit, gi_lut[v].zw, r.axis);
 				if bh.x >= 0.0 {
-					return vec3f(0.0, water, bh.x);
+					out.dist = bh.x;
+					return out;
 				}
 			}
 			if op == 1u {
-				water += 1.0;
+				out.water += 1.0;
+			}
+			if op == 4u {
+				out.thru *= gi_glass_tr(v);
 			}
 		}
 	}
-	return vec3f(select(medium_sky_fade(p.y), 1.0, proven), water, 0.0);
+	out.vis = select(medium_sky_fade(p.y), 1.0, proven);
+	return out;
 }
 
 // A general march, for the final gather's ray — the one thing `gi_occluded`
@@ -306,6 +333,8 @@ struct GiHit {
 	axis: u32,
 	// Water cells crossed on the way, as a PATH LENGTH (see gi_sun_vis).
 	water: f32,
+	// Glass throughput crossed on the way — see GiSunVis.thru.
+	thru: vec3f,
 	// Miss quality (R32): true only when the ray PROVED open sky — the
 	// R18 ceiling test, or climbing out of the world. False on a hit, and
 	// false for the unproven exits (lateral bound, `max_t`, iteration
@@ -320,6 +349,7 @@ fn gi_march(side: i32, sky_y: f32, cam_xz: vec2f, p: vec3f, dir: vec3f, max_t: f
 	out.cell = vec3i(0);
 	out.axis = 1u;
 	out.water = 0.0;
+	out.thru = vec3f(1.0);
 	out.sky = false;
 	let o = p + dir * GI_SURFACE_EPS;
 	let step_dir = vec3i(sign(dir));
@@ -386,6 +416,9 @@ fn gi_march(side: i32, sky_y: f32, cam_xz: vec2f, p: vec3f, dir: vec3f, max_t: f
 			if op == 1u {
 				out.water += 1.0;
 			}
+			if op == 4u {
+				out.thru *= gi_glass_tr(v);
+			}
 		}
 	}
 	// Every miss path lands here; record where the march ended.
@@ -397,6 +430,14 @@ fn gi_march(side: i32, sky_y: f32, cam_xz: vec2f, p: vec3f, dir: vec3f, max_t: f
 // same packed words out of its own binding.
 fn gi_albedo(v: u32) -> vec3f {
 	let m = gi_lut[v].x;
+	return vec3f(f32(m & 0xffu), f32((m >> 8u) & 0xffu), f32((m >> 16u) & 0xffu)) / 255.0;
+}
+
+// A tinted class's per-cell rgb filter (op 4). Word .z is free for every
+// full-cube class — only the synthetic shape classes carry boxes there —
+// and the CPU packs it only for op-4 rows (material_lut).
+fn gi_glass_tr(v: u32) -> vec3f {
+	let m = gi_lut[v].z;
 	return vec3f(f32(m & 0xffu), f32((m >> 8u) & 0xffu), f32((m >> 16u) & 0xffu)) / 255.0;
 }
 

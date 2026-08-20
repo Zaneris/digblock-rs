@@ -279,7 +279,7 @@ const CODE_NORMALS = array<vec3f, 6>(
 // surface's own nearby torches can fall off and go dark rather than arriving as
 // lottery noise. Deliberate, but the thing to watch if a base outgrows the list.
 fn path_radiance(side: i32, h: GiHit, dir: vec3f) -> vec3f {
-	let tr = medium_water_tr(h.water);
+	let tr = medium_water_tr(h.water) * h.thru;
 	if !h.hit {
 		// Open in that direction. NOT the sun disc as well: gi_probe.wgsl
 		// adds a sun lobe here because a probe has no separate direct term,
@@ -354,7 +354,7 @@ fn path_radiance(side: i32, h: GiHit, dir: vec3f) -> vec3f {
 		let ndl = max(dot(hn, rz.sun_exact.xyz), 0.0);
 		if ndl > 0.0 {
 			let sv = gi_sun_vis(side, rz.jitter.z, rz.cam.xz, rz.sun, hp, GI_GATHER_ITERS);
-			e += rz.sun_color.rgb * ndl * sv.x * medium_water_tr(sv.y);
+			e += rz.sun_color.rgb * ndl * sv.vis * medium_water_tr(sv.water) * sv.thru;
 		}
 	}
 	return alb * e * tr;
@@ -549,7 +549,11 @@ fn fs(i: VsOut) -> FsOut {
 	// STUB_GISUN answers "lit, dry, no occluder" without marching. Its
 	// march carries the largest single ray budget in the frame, so this is
 	// the term to reach for first.
-	var sv = vec3f(sdir.w, 0.0, 0.0);
+	var sv: GiSunVis;
+	sv.vis = sdir.w;
+	sv.water = 0.0;
+	sv.dist = 0.0;
+	sv.thru = vec3f(1.0);
 	if !stubbed(STUB_GISUN) {
 		sv = gi_sun_vis(side, rz.jitter.z, rz.cam.xz, sdir, sp, 320);
 	}
@@ -564,14 +568,31 @@ fn fs(i: VsOut) -> FsOut {
 	// shadowed side (max over taps), which is what lets the lit half of
 	// the edge blur too.
 	let texel_world = max(max(length(ddx_p), length(ddy_p)), 1e-4);
-	let pen = clamp(sv.z * SUN_TAN / texel_world, 0.0, PEN_MAX);
+	let pen = clamp(sv.dist * SUN_TAN / texel_world, 0.0, PEN_MAX);
 
 	// Reproject into last frame. Exact for static geometry, so this needs
 	// no motion vectors — only a validity test.
 	var n_hist = 0.0;
+	// The transmitted sun's CHROMATIC residual rides the rgb indirect
+	// lane: acc_sun below carries the glass filter's luminance (the sun
+	// target has no colour lanes — its g and a are the face code +
+	// history and the penumbra), and this adds exactly the difference,
+	// so the two lanes SUM to the full rgb transmission chunk.wgsl
+	// multiplies out and a red pane's pool lands red, not grey. Zero
+	// wherever thru is 1, NEGATIVE in the channels the filter absorbs
+	// (that subtraction is what takes the grey out), and it rides the
+	// indirect accumulator's own history and a-trous.
+	let thru_lum = dot(sv.thru, vec3f(0.299, 0.587, 0.114));
+	if any(sv.thru != vec3f(1.0)) {
+		let ndl = clamp(dot(n, rz.sun_exact.xyz), 0.0, 1.0);
+		indirect += rz.sun_color.rgb
+			* (ndl * sv.vis)
+			* medium_water_tr(sv.water)
+			* (sv.thru - vec3f(thru_lum));
+	}
 	var acc = indirect;
-	var acc_sun = sv.x;
-	var acc_water = sv.y;
+	var acc_sun = sv.vis * thru_lum;
+	var acc_water = sv.water;
 	// Did a same-face history tap fail depth only MARGINALLY? Then the
 	// surface is still on screen and the miss is a grazing fetch the
 	// tolerance clipped, not a reveal. The near ground fails all four
@@ -724,8 +745,9 @@ fn fs(i: VsOut) -> FsOut {
 					// water path rides the sun's alpha: it is part of the
 					// same ray.
 					let a_sun = 1.0 / min(n_hist, N_SUN);
-					acc_sun = mix(s_sun * inv, sv.x, a_sun);
-					acc_water = mix(s_wat * inv, sv.y, a_sun);
+					let sun_now = sv.vis * dot(sv.thru, vec3f(0.299, 0.587, 0.114));
+					acc_sun = mix(s_sun * inv, sun_now, a_sun);
+					acc_water = mix(s_wat * inv, sv.water, a_sun);
 				}
 			}
 		}
@@ -754,7 +776,7 @@ fn fs(i: VsOut) -> FsOut {
 			// at full strength. The sun channel needs no prime: its ray is
 			// deterministic, so the current answer is already converged.
 			let sun_lit =
-				sv.x * clamp(dot(n, rz.sun_exact.xyz), 0.0, 1.0) * rz.sun_exact.w;
+				sv.vis * clamp(dot(n, rz.sun_exact.xyz), 0.0, 1.0) * rz.sun_exact.w;
 			if sun_lit < PRIME_SUN_MAX {
 				// The CHEAP cache lookup, not the full cascade blend.
 				// Priming is bursty by nature — a camera swing into a

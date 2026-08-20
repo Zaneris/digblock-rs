@@ -1280,6 +1280,59 @@ fn leaves_mesh_as_solid_blocks() {
 	assert_eq!(dirt_faces, 5);
 }
 
+/// Every see-through row streams BLENDED, and hides nothing: its faces
+/// land in `mesh.translucent` (never solid or water), and a stone beside
+/// it keeps the interface face you see through it. Swept over the bucket
+/// rather than named blocks, with the sweep counted — a future pane joins
+/// the pin by having the bucket at all.
+#[test]
+fn translucent_rows_stream_blended_and_hide_nothing() {
+	use crate::block::MeshBucket;
+	let mut examined = 0u32;
+	for &b in &B::ALL {
+		if b.props().bucket != MeshBucket::Translucent {
+			continue;
+		}
+		examined += 1;
+		let mut d = ChunkData::default();
+		d.set(8, 8, 8, b);
+		d.set(7, 8, 8, B::Stone);
+		let m = mesh_chunk(&isolated(&d));
+		assert!(!m.translucent.is_empty(), "{b:?} streams translucent");
+		assert!(m.water.is_empty(), "{b:?} is not water");
+		// The stone's face toward the see-through cell survives — the
+		// whole reason a translucent neighbor covers nothing.
+		quad_of(&m.solid, 7, 8, 8, Dir::West);
+		// And the stone's own faces are the only solid ones: none of
+		// this block's leaked into the opaque stream.
+		let stone = u32::from(B::Stone.props().tex_side);
+		for pair in m.solid.chunks(2) {
+			assert_eq!(pair[1] & 0x3ff, stone, "{b:?} leaked a solid face");
+		}
+	}
+	assert!(examined > 0, "the bucket has members to sweep");
+}
+
+/// Glass culling is same-type only, and the water interface emits BOTH
+/// ways — an aquarium wall shows its water, and the water shows its
+/// glass, each blending in its own pass order.
+#[test]
+fn glass_culls_same_type_and_meets_water_face_to_face() {
+	let mut d = ChunkData::default();
+	d.set(8, 8, 8, B::Glass);
+	d.set(9, 8, 8, B::Glass);
+	d.set(7, 8, 8, B::Water);
+	let m = mesh_chunk(&isolated(&d));
+	// Two cubes lose exactly the shared pair; the glass|water interface
+	// face stays (West face of the pane at 8 toward... the water sits at
+	// 7, so the pane's EAST face and the water's WEST face share it).
+	let faces = m.translucent.len() / 8;
+	assert_eq!(faces, 10, "two glass cubes cull only their shared pair");
+	quad_of(&m.translucent, 8, 8, 8, Dir::East);
+	// Water emits toward glass (the extended Translucent arm).
+	water_quad(&m.water, 7, 8, 8, Dir::West);
+}
+
 #[test]
 fn grass_bottom_uses_dirt_texture() {
 	// Per-face table: grass top/side/bottom are three distinct layers.

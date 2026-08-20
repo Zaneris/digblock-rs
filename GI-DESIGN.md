@@ -938,6 +938,40 @@ is the shape of its fix.
   gather ray does when the thing it hits is close.
 - Fits WebGPU baseline `Limits::default()` — no feature/limit negotiation.
 
+### R35 — glass lets the light through, and the bucket is the word for it
+
+Blended glass landed (Glass, Crystal, the crystal slab, future panes): a third mesh bucket drawn in the water pass after
+the water draw, absent from the depth prepass — so a pane shades like water does, probe gather per vertex plus the short
+per-fragment sun DDA (R17's split), because the half-res resolve owns no texel of a surface the prepass never saw.
+
+In the GI the see-through test is the BUCKET (`MeshBucket::Translucent`), never the render class — `Translucent`
+-the-class still means water and its op-1 path-length counter everywhere. A tinted cell is LUT op **4**: the marches
+multiply a per-class rgb filter into a throughput instead of stopping, and every consumer that already applied
+`medium_water_tr` multiplies the throughput beside it. The filter is DERIVED, not authored twice: the texture's mean
+alpha is the coverage and its alpha-weighted mean colour is what the covered part passes (`material_lut`), packed in the
+LUT's first box word — free for every full-cube class, since only synthetic shape classes carry boxes. A shaped
+translucent classifies as a FULL cell of its base id (`gi_class` bypasses the synthetic classes), the accepted
+approximation: a box that attenuates instead of blocking has no home in the box words.
+
+The resolve's sun target has no colour lanes (its g and a carry the face code + history and the penumbra), so the
+transmitted sun splits across the two outputs it does have: the sun lane takes the filter's LUMINANCE, and the rgb
+indirect lane takes the CHROMATIC RESIDUAL — sun radiance x ndl x vis x the water term x (thru − lum(thru)), negative in
+the channels the filter absorbs — so the two lanes SUM to the full rgb transmission chunk.wgsl multiplies out and a red
+pane's pool lands red, riding the indirect accumulator's own history and a-trous instead of a third MRT.
+
+The glass DRAW is transmissive, not alpha-blended, in two commuting halves: a MULTIPLY pass scales the backdrop by each
+texel's transmittance (per-face sqrt, so the face PAIR every closed volume presents costs one cell's T — the same T the
+marches charge), then an ADDITIVE pass lays the covered fraction's lit surface and any ink on top. Both halves commute
+across faces and panes, so the pass needs no sorting and no winding split, and a pane over bright sky GLOWS with what it
+passes — the thing coverage blending can never say.
+
+Two deliberate conservatisms, recorded rather than discovered later. `gi_solid` (op >= 2) counts a tinted cell as solid,
+so probes relocate out of panes and the deterministic NEE ray treats glass as blocking — no worse than the Opaque rows
+these blocks were the day before. And the coarse blocker bit is SET for tinted cells (`classify_chunk`): the coarse
+texture only licenses skipping a brick, and a skipped brick accumulates no throughput, so a wall of panes would go
+untinted. The one-line fallback — glass as GI-air, `opacity()`'s bucket arm answering `Air` — shipped as this feature's
+intermediate phase and lives in git if a bench ever charges the marches more than the picture is worth.
+
 ## Non-goals (v1)
 
 - Specular GI / reflections (SSR stays as-is for water).
@@ -1120,6 +1154,11 @@ The ones that bite if broken. CLAUDE.md points here rather than restating them.
   leaving the snapshot.
 - `emissive_ink` in `ink_common.wgsl` is the one ink function, prepended to chunk/viewmodel/players so a `glows` block
   reads the same in the world, in your hand and in somebody else's (`every_pass_that_draws_ink_shares_one_gain`).
+- **The see-through predicate is the mesh BUCKET** (R35), swept by `the_bucket_is_the_see_through_predicate`:
+  `MeshBucket::Translucent` is op 4 in the LUT, and `Translucent`-the-class still means water everywhere. Glass
+  throughput is a FILTER PRODUCT, not a medium — it has no path state, so the sun and view rays cannot disagree about
+  being inside it, and water remains the one participating medium. A tinted cell pins its coarse brick
+  (`coarse_bits_split_blockers_from_emitters`), or a homogeneous run of panes would be skipped untinted.
 
 ## Test pins (grown per phase)
 

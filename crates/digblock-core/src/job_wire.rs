@@ -296,6 +296,8 @@ impl JobResult {
 				put_u32s(&mut out, &m.mesh.solid);
 				put_run_len(&mut out, m.mesh.water.len());
 				put_u32s(&mut out, &m.mesh.water);
+				put_run_len(&mut out, m.mesh.translucent.len());
+				put_u32s(&mut out, &m.mesh.translucent);
 				put_run_len(&mut out, m.mesh.impacts.len());
 				put_u16s(&mut out, &m.mesh.impacts);
 				put_run_len(&mut out, m.mesh.lights.len());
@@ -342,6 +344,7 @@ impl JobResult {
 				let dur_ms = r.f32()?;
 				let solid = r.run(4, |r| r.u32())?;
 				let water = r.run(4, |r| r.u32())?;
+				let translucent = r.run(4, |r| r.u32())?;
 				let impacts = r.run(2, |r| r.u16())?;
 				let lights = r.run(4, |r| r.u32())?;
 				Some(JobResult::Meshed {
@@ -351,6 +354,7 @@ impl JobResult {
 						mesh: MeshData {
 							solid,
 							water,
+							translucent,
 							impacts,
 							lights,
 						},
@@ -587,6 +591,7 @@ mod tests {
 		);
 		assert_eq!(after.mesh.solid, before.mesh.solid);
 		assert_eq!(after.mesh.water, before.mesh.water);
+		assert_eq!(after.mesh.translucent, before.mesh.translucent);
 		assert_eq!(after.mesh.impacts, before.mesh.impacts);
 		assert_eq!(after.mesh.lights, before.mesh.lights);
 	}

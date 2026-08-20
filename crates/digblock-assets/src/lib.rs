@@ -88,6 +88,10 @@ pub mod tex {
 	pub const SPRINGSTONE: &[u8] = include_bytes!("../../../assets/textures/Springstone.png");
 	pub const SPENT_SPRINGSTONE: &[u8] =
 		include_bytes!("../../../assets/textures/SpentSpringstone.png");
+	pub const GLASS_RED: &[u8] = include_bytes!("../../../assets/textures/GlassRed.png");
+	pub const GLASS_GREEN: &[u8] = include_bytes!("../../../assets/textures/GlassGreen.png");
+	pub const GLASS_BLUE: &[u8] = include_bytes!("../../../assets/textures/GlassBlue.png");
+	pub const GLASS_AMBER: &[u8] = include_bytes!("../../../assets/textures/GlassAmber.png");
 
 	/// Texture-array layer order — the layer index is what block PROPS
 	/// reference, and `digblock_core::block::tex` mirrors this list
@@ -100,7 +104,7 @@ pub mod tex {
 	/// assert in digblock-client (`texture.rs`, the only file that can see
 	/// both crates) fails the BUILD on a length skew, so move them
 	/// together.
-	pub const LAYERS: [&[u8]; 47] = [
+	pub const LAYERS: [&[u8]; 51] = [
 		WATER,
 		DIRT,
 		GRASS_SIDE,
@@ -148,6 +152,10 @@ pub mod tex {
 		SPENT_LEYSTONE,
 		SPRINGSTONE,
 		SPENT_SPRINGSTONE,
+		GLASS_RED,
+		GLASS_GREEN,
+		GLASS_BLUE,
+		GLASS_AMBER,
 	];
 }
 
@@ -308,6 +316,19 @@ pub mod shader {
 		include_str!("../../../assets/shaders/ink_common.wgsl"),
 		include_str!("../../../assets/shaders/players.wgsl"),
 	);
+	/// Blended glass — the Translucent mesh bucket, drawn in the water
+	/// pass after water. Water's prelude stack plus ink_common: it lights
+	/// by the raw probe field (gi_common's group 2) like water, and its
+	/// emissive rows read by ink_common's one rule like chunk.
+	pub const GLASS: &str = concat!(
+		include_str!("../../../assets/shaders/frame_common.wgsl"),
+		include_str!("../../../assets/shaders/medium_common.wgsl"),
+		include_str!("../../../assets/shaders/sky_common.wgsl"),
+		include_str!("../../../assets/shaders/gi_dda.wgsl"),
+		include_str!("../../../assets/shaders/gi_common.wgsl"),
+		include_str!("../../../assets/shaders/ink_common.wgsl"),
+		include_str!("../../../assets/shaders/glass.wgsl"),
+	);
 	pub const HIGHLIGHT: &str = concat!(
 		include_str!("../../../assets/shaders/frame_common.wgsl"),
 		include_str!("../../../assets/shaders/highlight.wgsl"),
@@ -370,9 +391,10 @@ pub mod shader {
 		include_str!("../../../assets/shaders/gi_common.wgsl"),
 	);
 
-	pub const ALL: [(&str, &str); 21] = [
+	pub const ALL: [(&str, &str); 22] = [
 		("chunk.wgsl", CHUNK),
 		("water.wgsl", WATER),
+		("glass.wgsl", GLASS),
 		("sky.wgsl", SKY),
 		("overlay.wgsl", OVERLAY),
 		("blit.wgsl", BLIT),

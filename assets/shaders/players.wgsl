@@ -234,7 +234,8 @@ fn fs(in: VsOut) -> @location(0) vec4f {
 		let direct = max(dot(in.wn, -frame.light_dir.xyz), 0.0);
 		let sv = gi_sun_vis(side, frame.gi_misc.y, frame.cam_pos.xz, frame.gi_sun, gp, SUN_STEPS);
 		// Strength fades the LIGHT, never the shadow — see chunk.wgsl.
-		let sh = sv.x * medium_water_tr(sv.y) * frame.light_dir.w;
+		// `thru` is the glass filter the ray crossed (op 4).
+		let sh = sv.vis * medium_water_tr(sv.water) * sv.thru * frame.light_dir.w;
 		// The direct term for local lights (R33): the shared NEE over the
 		// same list the resolve reads — a probe carries a torch only as its
 		// bounce off the room, and the resolve's half-res NEE can never cover

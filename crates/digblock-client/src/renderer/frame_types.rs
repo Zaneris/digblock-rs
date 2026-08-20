@@ -102,8 +102,11 @@ pub mod stub {
 	/// pass goes trivially cheap too. A prepass-only stub would carry the
 	/// same confound with none of the honesty, which is why there isn't one.
 	pub const NORASTER: u32 = 1 << 14;
+	/// Drop the blended-glass draw (the whole Translucent-bucket cost —
+	/// a pass-level CPU gate like `NOWATER`, not a shader branch).
+	pub const NOGLASS: u32 = 1 << 15;
 
-	const NAMES: [(&str, u32); 15] = [
+	const NAMES: [(&str, u32); 16] = [
 		("wvert", WVERT),
 		("wsun", WSUN),
 		("wssr", WSSR),
@@ -119,6 +122,7 @@ pub mod stub {
 		("giatrous", GIATROUS),
 		("noscene", NOSCENE),
 		("noraster", NORASTER),
+		("noglass", NOGLASS),
 	];
 
 	/// Comma-separated names → mask. Unknown names are returned so the

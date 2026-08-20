@@ -521,12 +521,17 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 		0.8 * max(aer, max(shore * 0.25, 0.09 * f32(i.splash))),
 		max(spec * 2.0 * mirror, lip * 0.15),
 	);
-	var sv = vec3f(1.0, 0.0, 0.0);
+	var sv: GiSunVis;
+	sv.vis = 1.0;
+	sv.water = 0.0;
+	sv.dist = 0.0;
+	sv.thru = vec3f(1.0);
 	if sun_w > SUN_MIN_L && !stubbed(STUB_WSUN) {
 		sv = gi_sun_vis(side, frame.gi_misc.y, frame.cam_pos.xz, frame.gi_sun, i.world, SUN_STEPS);
 	}
 	// Strength fades the LIGHT, never the shadow — see chunk.wgsl.
-	let sh = sv.x * medium_water_tr(sv.y) * frame.light_dir.w;
+	// `thru` is the glass filter the ray crossed (op 4).
+	let sh = sv.vis * medium_water_tr(sv.water) * sv.thru * frame.light_dir.w;
 	// Froth light: the same direct+indirect mix the spray billboards
 	// use (spray.wgsl), shadowed like the surface it sits on — so foam
 	// dims with the night instead of glowing unlit white.

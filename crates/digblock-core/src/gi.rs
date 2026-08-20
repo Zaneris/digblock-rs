@@ -23,6 +23,11 @@ pub enum GiOpacity {
 	Air,
 	Translucent,
 	Opaque,
+	/// See-through with a per-class rgb transmittance (glass, crystal):
+	/// the marches multiply a throughput instead of stopping, and the
+	/// coarse rule still sets the blocker bit so a brick of panes is
+	/// marched rather than skipped straight through untinted.
+	Tinted,
 }
 
 /// One classified chunk, ready for the GPU: texel bytes in
@@ -273,17 +278,33 @@ pub fn gi_class(cell: u16) -> u8 {
 		return 0;
 	}
 	if b.props().shape.is_some() {
-		let key = ((b as usize) << 4) | crate::chunk::cell_state(cell) as usize;
-		return SHAPE_CLASSES.1[key];
+		// A translucent shaped cell (a crystal slab, a pane) skips the
+		// synthetic partial classes and answers its BASE id: the GI
+		// approximates it as a full see-through cell, since a box that
+		// attenuates instead of blocking has no home in the box words.
+		if b.props().bucket != crate::block::MeshBucket::Translucent {
+			let key = ((b as usize) << 4) | crate::chunk::cell_state(cell) as usize;
+			return SHAPE_CLASSES.1[key];
+		}
 	}
 	b as u8
 }
 
 /// How a full-cube class attenuates rays (LUT-side mirror; also the
 /// coarse rule). Shaped cells don't route through this — their
-/// synthetic classes are partial by construction.
+/// synthetic classes are partial by construction — EXCEPT translucent
+/// ones, which [`gi_class`] hands back as their base id so they land
+/// here like any full cube.
+///
+/// The see-through test is the BUCKET, not a class: a translucent
+/// shaped row keeps `RenderClass::Shaped`, and `Translucent`-the-class
+/// still means water (the marches' op-1 path-length counter). Glass is
+/// `Tinted`: light passes, filtered by the class's own transmittance.
 #[inline]
 pub fn opacity(b: BlockType) -> GiOpacity {
+	if b.props().bucket == crate::block::MeshBucket::Translucent {
+		return GiOpacity::Tinted;
+	}
 	match b.props().class {
 		RenderClass::None => GiOpacity::Air,
 		RenderClass::Translucent => GiOpacity::Translucent,
@@ -338,8 +359,11 @@ pub fn classify_chunk(data: &ChunkData) -> GiChunk {
 				}
 				// A partial cell sets the blocker bit too: the coarse
 				// texture only licenses SKIPPING a brick, and a brick
-				// holding a slab must still be marched.
-				let blocks_rays = class >= SHAPE_CLASS_BASE || opacity(b) == GiOpacity::Opaque;
+				// holding a slab must still be marched. Tinted cells set
+				// it for the same reason — a skipped brick accumulates no
+				// throughput, so a wall of panes would go untinted.
+				let blocks_rays = class >= SHAPE_CLASS_BASE
+					|| matches!(opacity(b), GiOpacity::Opaque | GiOpacity::Tinted);
 				if blocks_rays || emits {
 					let ci = (z / 8) * 4 + (y / 8) * 2 + (x / 8);
 					coarse[ci] |= u8::from(blocks_rays) | (u8::from(emits) << 1);
@@ -458,6 +482,31 @@ mod tests {
 		}
 	}
 
+	/// The see-through predicate is the BUCKET, swept over every block:
+	/// a translucent row reads as tinted transmission to the rays, water
+	/// alone reads as the water counter, and everything solid blocks. Derived from the same fields the table asserts, so
+	/// a new row lands in exactly one arm or fails here by name.
+	#[test]
+	fn the_bucket_is_the_see_through_predicate() {
+		use crate::block::{MeshBucket, RenderClass};
+		let mut translucent = 0u32;
+		for b in BlockType::ALL {
+			let p = b.props();
+			let expect = if p.bucket == MeshBucket::Translucent {
+				translucent += 1;
+				GiOpacity::Tinted
+			} else if p.class == RenderClass::None {
+				GiOpacity::Air
+			} else if p.class == RenderClass::Translucent {
+				GiOpacity::Translucent
+			} else {
+				GiOpacity::Opaque
+			};
+			assert_eq!(opacity(b), expect, "{b:?}");
+		}
+		assert!(translucent > 0, "the bucket has members to sweep");
+	}
+
 	#[test]
 	fn the_cover_contains_every_collision_box() {
 		// Box 0 is collision box 0 exactly; box 1 must contain each of
@@ -472,6 +521,13 @@ mod tests {
 				let cell = make_cell(b, state);
 				let class = gi_class(cell);
 				let boxes = shapes::collision_boxes(cell);
+				// A translucent shaped block skips the synthetic classes
+				// on purpose: the GI takes it as a full see-through cell
+				// of its base id, boxes and all (see `gi_class`).
+				if b.props().bucket == crate::block::MeshBucket::Translucent {
+					assert_eq!(class, b as u8, "{b:?}");
+					continue;
+				}
 				if boxes.is_empty() {
 					assert_eq!(class, 0);
 					continue;
@@ -552,5 +608,13 @@ mod tests {
 		assert_eq!(w.coarse, [0; 8]);
 		assert_eq!(opacity(BlockType::Water), GiOpacity::Translucent);
 		assert_ne!(w.bytes[0], 0, "water still classifies — rays attenuate");
+		// A tinted cell PINS its brick — a skipped brick accumulates no
+		// throughput, so a wall of panes would go untinted — but it
+		// still emits nothing.
+		let mut pane = ChunkData::default();
+		pane.set(0, 0, 0, BlockType::Glass);
+		let g = classify_chunk(&pane);
+		assert_eq!(g.coarse[0], 0b01, "glass: pins the brick, no emission");
+		assert_eq!(opacity(BlockType::Glass), GiOpacity::Tinted);
 	}
 }
