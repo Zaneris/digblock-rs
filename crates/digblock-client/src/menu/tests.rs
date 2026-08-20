@@ -394,6 +394,32 @@ fn text_edits_name_with_charset_cap_and_backspace() {
 	assert!(name_row.text.len() <= "name: ".len() + digblock_net::protocol::MAX_DISPLAY_NAME);
 }
 
+/// The bridge's whole-value restatement and the keystroke path are one
+/// filter: any divergence would let the DOM buffer smuggle in what
+/// typing refuses. Pure deletion — a restatement carrying nothing — must
+/// clear the field the way backspacing it out would.
+#[test]
+fn a_replacement_matches_the_same_text_typed() {
+	let line = format!(
+		"te d!é_{}",
+		"x".repeat(2 * digblock_net::protocol::MAX_DISPLAY_NAME)
+	);
+	let mut typed = Menu::new(true, Settings::default(), None, unnamed());
+	typed.set_services_available();
+	typed.activate(Act::OpenMultiplayer);
+	for ch in line.chars() {
+		typed.handle_text(ch);
+	}
+	let mut replaced = Menu::new(true, Settings::default(), None, unnamed());
+	replaced.set_services_available();
+	replaced.activate(Act::OpenMultiplayer);
+	replaced.handle_text_replace(&line);
+	assert_ne!(typed.text_field_contents(), "");
+	assert_eq!(typed.text_field_contents(), replaced.text_field_contents());
+	replaced.handle_text_replace("");
+	assert_eq!(replaced.text_field_contents(), "");
+}
+
 /// Typing a name is one availability check at a time, not one per
 /// keystroke. Both fillers serve commands in order and the desktop one
 /// blocks a thread doing it, so an unbounded queue of these would sit in

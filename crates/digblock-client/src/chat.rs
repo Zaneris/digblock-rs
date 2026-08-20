@@ -64,6 +64,25 @@ impl Chat {
 		}
 	}
 
+	/// The line as typed so far, seeding the soft-keyboard bridge.
+	pub(crate) fn line(&self) -> &str {
+		&self.buffer
+	}
+
+	/// Whole-line replacement from the soft-keyboard bridge: clear, then
+	/// feed every character through the same gate typed text takes, so
+	/// the alphabet and the cap cannot fork from the keystroke path.
+	/// Ends the open-key suppression — a restatement is never the
+	/// opening keypress's own echo. Must only be called while `is_open()`.
+	pub(crate) fn replace(&mut self, text: &str) {
+		self.suppress_text = false;
+		self.buffer.clear();
+		self.cycle = None;
+		for ch in text.chars() {
+			let _ = self.handle_input(&InputEvent::Text { ch });
+		}
+	}
+
 	pub(crate) fn view(&self, caret: bool) -> ChatView<'_> {
 		ChatView {
 			line: &self.buffer,
@@ -190,6 +209,25 @@ mod tests {
 		// ...then real typing.
 		text(&mut c, "hi");
 		assert_eq!(c.view(false).line, "hi");
+	}
+
+	/// The bridge's whole-value restatement and the keystroke path are one
+	/// filter: any divergence would let the DOM buffer smuggle in what
+	/// typing refuses. Replacement is also never the opener's echo, so it
+	/// must land even where a typed first char is swallowed.
+	#[test]
+	fn a_replacement_matches_the_same_text_typed() {
+		let line = format!("héllo\u{7}Ω {}", "x".repeat(2 * MAX_CHAT_LEN));
+		let mut typed = Chat::default();
+		typed.open();
+		text(&mut typed, "t"); // swallowed opener
+		text(&mut typed, &line);
+		let mut replaced = Chat::default();
+		replaced.open();
+		replaced.replace(&line);
+		assert_eq!(typed.view(false).line, replaced.view(false).line);
+		replaced.replace("");
+		assert_eq!(replaced.view(false).line, "");
 	}
 
 	#[test]
