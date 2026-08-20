@@ -10,6 +10,12 @@ pub type PlayerId = u8;
 /// Author id for server-originated edits (fluid simulation).
 pub const SERVER_ID: PlayerId = u8::MAX;
 
+/// The `client_seq` of a broadcast write no request named — a door's
+/// companion half, a smother, a world-job sweep. Predictions never
+/// allocate it and the client never `confirm`s it, so a companion echo
+/// can't drop a real pending edit whose verdict is still coming.
+pub const NO_CLIENT_SEQ: u32 = 0;
+
 /// The production master server. Launchers and the dedicated server fall
 /// back to this when no master is specified; an explicitly empty override
 /// (`--master-url ""`, `?master=`) disables master-backed features (menu

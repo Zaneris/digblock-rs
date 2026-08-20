@@ -195,7 +195,6 @@ impl Engine {
 				NetEvent::Edit {
 					cell,
 					cell_value,
-					superseded,
 					remote_author,
 				} => {
 					let block = BlockType::from_id(digblock_core::chunk::cell_id(cell_value));
@@ -222,17 +221,20 @@ impl Engine {
 						}
 					}
 					self.apply_remote_edit(cell, cell_value);
-					// Our predictions on this cell lost to authority: the
-					// cell is owned by the broadcast value, but the server
-					// never applied our inventory deltas — take them back.
-					for e in superseded {
-						self.revert_inv_delta(e.inv_delta);
-					}
+					// Predictions of ours on this cell are superseded
+					// inside `NetClient` — cell to the broadcast, each
+					// delta to its own seq's verdict. Refunding here
+					// instead is the drift the slab grow made routine: the
+					// server accepts the racing second place and debits,
+					// while the refund hands the client its item back.
 				}
 				NetEvent::EditRejected { edit: e, reason } => {
-					// Revert the predicted edit: the cell AND the
-					// inventory delta (dig credit / place debit).
-					self.pipeline.set_cell(e.cell.0, e.cell.1, e.cell.2, e.prev);
+					// Revert the predicted delta always; the CELL only if
+					// no authoritative write superseded it — that value
+					// owns the cell and must not flick back to `prev`.
+					if !e.superseded {
+						self.pipeline.set_cell(e.cell.0, e.cell.1, e.cell.2, e.prev);
+					}
 					self.revert_inv_delta(e.inv_delta);
 					// A protected cell is the one rejection a player can
 					// act on, and the only one they can't see coming: the
@@ -246,7 +248,7 @@ impl Engine {
 					// multi-cell action carries the delta on its first
 					// entry only, so this speaks once per action rather
 					// than once per cell.
-					if reason == Some(digblock_net::messages::RejectReason::Protected) {
+					if reason == digblock_net::messages::RejectReason::Protected {
 						match e.inv_delta {
 							Some((_, n)) if n > 0 => self.push_feed(Msg::DigProtected),
 							Some((_, n)) if n < 0 => self.push_feed(Msg::PlaceProtected),

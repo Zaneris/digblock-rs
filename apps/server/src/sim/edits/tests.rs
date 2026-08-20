@@ -1754,6 +1754,142 @@ fn slab_top_place_grows_to_base_block_with_per_step_debits() {
 	assert_eq!(sim.test_cell_at(above.0, above.1, above.2), Some(slab0));
 }
 
+/// Both halves of the client's natural double-click — fresh 1/3, then
+/// grow — enqueued in ONE tick, the racing shape whose acks supersede
+/// each other client-side. The server accepts and debits BOTH: this is
+/// the truth the client's deferred-delta rule (`PendingEdits`) has to
+/// match, and a client that refunds the second debit at supersede time
+/// drifts a phantom item for good.
+#[test]
+fn racing_slab_places_in_one_tick_both_debit() {
+	let mut sim = flat_sim("slabrace");
+	let mut c = connect(&mut sim, 1);
+	wait_live(&mut sim, 1);
+	sim.test_grant(1, BlockType::WoodSlab, 2);
+	let start = sim.test_inventory_count(1, BlockType::WoodSlab);
+	let slab0 = BlockType::WoodSlab as u16;
+
+	let pos = sim.test_player(1).unwrap().pos;
+	let down = Vec3::new(0.45, -1.0, 0.0).normalize();
+	let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();
+	let cell = (
+		hit.cell.0 + hit.normal.0,
+		hit.cell.1 + hit.normal.1,
+		hit.cell.2 + hit.normal.2,
+	);
+	// The second request is aimed the way the CLIENT aimed it — at the
+	// predicted slab's top face, before any ack came back. The server
+	// re-raycasts it after the first write has landed, so it verifies
+	// against the grown world exactly as an honest client computed it.
+	let grow_dir = (top_point(cell, 4) - pos).normalize();
+	c.drain();
+	c.msgs.clear();
+	let place = |seq: u32, dir: Vec3, target: (i32, i32, i32), normal: [i8; 3]| SimEvent::Msg {
+		conn_id: 1,
+		msg: ClientMsg::EditRequest {
+			seq,
+			tick: 0,
+			origin: pos.to_array(),
+			dir: dir.to_array(),
+			kind: EditKind::Place { block: slab0 },
+			cell: [target.0, target.1, target.2],
+			normal,
+			slot: 0,
+		},
+	};
+	sim.tick_once(vec![
+		place(
+			1,
+			down,
+			hit.cell,
+			[hit.normal.0 as i8, hit.normal.1 as i8, hit.normal.2 as i8],
+		),
+		place(2, grow_dir, cell, [0, 1, 0]),
+	]);
+	c.drain();
+
+	for seq in [1u32, 2] {
+		assert!(
+			c.msgs.iter().any(|m| matches!(
+				m,
+				ServerMsg::EditApplied { client_seq, .. } if *client_seq == seq
+			)),
+			"place {seq} applied: {:?}",
+			c.msgs
+		);
+	}
+	assert_eq!(
+		sim.test_cell_at(cell.0, cell.1, cell.2),
+		Some(digblock_core::shapes::slab_grown(slab0)),
+		"the second place grew the first in place"
+	);
+	assert_eq!(
+		sim.test_inventory_count(1, BlockType::WoodSlab),
+		start - 2,
+		"one debit per accepted place, racing or not"
+	);
+}
+
+/// A WrongSlot rejection carries the same `InventoryFull` rebase as
+/// NoStock: a drifted count presents as a slot mismatch once the two
+/// ends' layouts reconcile apart, and without the rebase the drift
+/// would repeat on every retry instead of healing.
+#[test]
+fn wrong_slot_rejection_carries_the_rebase() {
+	let mut sim = flat_sim("wrongslot");
+	let mut c = connect(&mut sim, 1);
+	wait_live(&mut sim, 1);
+	sim.test_grant(1, BlockType::Dirt, 5);
+
+	let pos = sim.test_player(1).unwrap().pos;
+	let down = Vec3::new(0.45, -1.0, 0.0).normalize();
+	let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();
+	// Declare a slot that does not hold Dirt (the grant filed it in the
+	// first free slot; the last one is empty).
+	let bare = (digblock_core::hotbar::HOTBAR_SLOTS - 1) as u8;
+	c.drain();
+	c.msgs.clear();
+	sim.tick_once(vec![SimEvent::Msg {
+		conn_id: 1,
+		msg: ClientMsg::EditRequest {
+			seq: 1,
+			tick: 0,
+			origin: pos.to_array(),
+			dir: down.to_array(),
+			kind: EditKind::Place {
+				block: BlockType::Dirt as u16,
+			},
+			cell: [hit.cell.0, hit.cell.1, hit.cell.2],
+			normal: [hit.normal.0 as i8, hit.normal.1 as i8, hit.normal.2 as i8],
+			slot: bare,
+		},
+	}]);
+	c.drain();
+
+	let rejected = c.msgs.iter().position(|m| {
+		matches!(
+			m,
+			ServerMsg::EditRejected {
+				client_seq: 1,
+				reason: RejectReason::WrongSlot,
+			}
+		)
+	});
+	let rejected = rejected.expect("WrongSlot rejection");
+	assert!(
+		c.msgs[rejected..].iter().any(
+			|m| matches!(m, ServerMsg::InventoryFull { counts } if *counts == sim.clients[&1].inventory.to_wire()),
+		),
+		"the authoritative rebase follows the rejection: {:?}",
+		c.msgs
+	);
+	assert_eq!(
+		sim.test_inventory_count(1, BlockType::Dirt),
+		5,
+		"a refused place debits nothing"
+	);
+}
+
 /// A pre-grown 2/3 request is BadBlock (one item can't buy two
 /// thirds), and a cross-material slab on a slab top does NOT grow.
 #[test]

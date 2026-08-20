@@ -437,27 +437,123 @@ fn authoritative_broadcast_cancels_pending_revert() {
 	});
 	events.clear();
 	client.poll(&mut events, 0.016);
-	// One Edit event (the authoritative sand) carrying our superseded
-	// prediction so its inventory credit can be unwound; NO EditRejected
-	// cell revert.
+	// One Edit event applies the authoritative sand; the rejection then
+	// hands our prediction back flagged superseded, so the caller refunds
+	// its credit but leaves the cell to the broadcast value.
 	match events.iter().find(|e| matches!(e, NetEvent::Edit { .. })) {
 		Some(NetEvent::Edit {
 			cell: (7, 9, 7),
 			cell_value,
-			superseded,
 			..
-		}) => {
-			assert_eq!(*cell_value, BlockType::Sand as u16);
-			assert_eq!(superseded.len(), 1);
-			assert_eq!(superseded[0].inv_delta, Some((BlockType::Stone, 1)));
-		}
+		}) => assert_eq!(*cell_value, BlockType::Sand as u16),
 		other => panic!("expected the authoritative Edit, got {other:?}"),
 	}
+	match events
+		.iter()
+		.find(|e| matches!(e, NetEvent::EditRejected { .. }))
+	{
+		Some(NetEvent::EditRejected { edit: e, .. }) => {
+			assert!(e.superseded, "the cell belongs to the broadcast");
+			assert_eq!(e.inv_delta, Some((BlockType::Stone, 1)));
+		}
+		other => panic!("expected the verdict's EditRejected, got {other:?}"),
+	}
+}
+
+/// Two predictions race on one cell and BOTH get accepted — the slab
+/// grow's natural gesture. The first seq's own ack supersedes the
+/// second, whose delta must ride to its own verdict: refunding it at
+/// supersede time hands back a debit the server goes on to keep.
+#[test]
+fn own_ack_defers_the_racing_predictions_delta() {
+	let (a, b) = loopback_pair();
+	let mut client = new_client(a);
+	let mut server = Stub::new(b);
+	let mut events = Vec::new();
+	client.poll(&mut events, 0.016);
+	server.send(&ServerMsg::Welcome {
+		protocol: PROTOCOL_VERSION,
+		seed: 1.0,
+		player_id: 1,
+		spawn: [0.5, 11.5, 0.5],
+		server_tick: 0,
+		snapshot_divisor: 3,
+		session_token: [0; 16],
+		sim_version: digblock_core::SIM_VERSION,
+		build: "test".into(),
+		tod: 80.0,
+		spawn_look: [0.0; 3],
+	});
+	client.poll(&mut events, 0.016);
+
+	let cell = (7, 9, 7);
+	let debit = Some((BlockType::Dirt, -1));
+	let seq1 = client.edits.begin(
+		cell,
+		BlockType::Air as u16,
+		BlockType::Dirt as u16,
+		10,
+		debit,
+	);
+	let seq2 = client.edits.begin(
+		cell,
+		BlockType::Dirt as u16,
+		BlockType::Sand as u16,
+		11,
+		debit,
+	);
+
+	server.send(&ServerMsg::EditApplied {
+		seq: 2,
+		tick: 11,
+		by: 1,
+		client_seq: seq1,
+		edit: BlockEdit {
+			x: cell.0,
+			y: cell.1,
+			z: cell.2,
+			block: BlockType::Dirt as u16,
+		},
+		prev: BlockType::Air as u16,
+	});
+	events.clear();
+	client.poll(&mut events, 0.016);
+	// The ack settles seq1 alone. seq2 is superseded on the cell but its
+	// debit is NOT refunded — no rejection event may fire for it.
 	assert!(
 		!events
 			.iter()
 			.any(|e| matches!(e, NetEvent::EditRejected { .. }))
 	);
+	let parked: Vec<_> = client.edits.iter().collect();
+	assert_eq!(parked.len(), 1);
+	assert_eq!(parked[0].seq, seq2);
+	assert!(parked[0].superseded);
+	assert_eq!(parked[0].inv_delta, debit);
+
+	// Its own ack lands: the entry drops with the debit standing —
+	// exactly what the server's books say.
+	server.send(&ServerMsg::EditApplied {
+		seq: 3,
+		tick: 12,
+		by: 1,
+		client_seq: seq2,
+		edit: BlockEdit {
+			x: cell.0,
+			y: cell.1,
+			z: cell.2,
+			block: BlockType::Sand as u16,
+		},
+		prev: BlockType::Dirt as u16,
+	});
+	events.clear();
+	client.poll(&mut events, 0.016);
+	assert!(
+		!events
+			.iter()
+			.any(|e| matches!(e, NetEvent::EditRejected { .. }))
+	);
+	assert!(client.edits.is_empty());
 }
 
 #[test]
