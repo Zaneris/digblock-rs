@@ -836,6 +836,28 @@ impl Game for Engine {
 		self.config.interactive && (self.ui.chat.is_open() || self.ui.menu.text_field_open())
 	}
 
+	// Chat first in both, mirroring `text_entry_active`: a menu cannot be
+	// open over the chat line, but the shared order keeps the pair
+	// answering about the same field even if that ever changes.
+	fn text_field_contents(&self) -> String {
+		if self.ui.chat.is_open() {
+			self.ui.chat.line().to_string()
+		} else {
+			self.ui.menu.text_field_contents().to_string()
+		}
+	}
+
+	fn text_replace(&mut self, text: &str) {
+		if !self.config.interactive {
+			return;
+		}
+		if self.ui.chat.is_open() {
+			self.ui.chat.replace(text);
+		} else {
+			self.ui.menu.handle_text_replace(text);
+		}
+	}
+
 	/// The window closed, the page is unloading, or a capture ran out its
 	/// frames. Hang up properly so the server frees the session now rather
 	/// than at its idle timeout — otherwise a player who quits and

@@ -121,6 +121,19 @@ pub trait Game: 'static {
 	fn text_entry_active(&self) -> bool {
 		false
 	}
+	/// Polled by the keyboard bridge as it (re)takes focus: the active
+	/// field's current contents, seeding the hidden DOM input so
+	/// deletion can reach characters typed before the keyboard was last
+	/// dismissed. Meaningless while `text_entry_active` is false.
+	fn text_field_contents(&self) -> String {
+		String::new()
+	}
+	/// The bridge's DOM buffer changed: replace the active field with
+	/// this text, re-applying the field's own charset and length rules.
+	/// Always the whole value, never a delta — so IME composition, paste
+	/// and caret edits arrive by one path, and a character the field
+	/// refused simply stays refused on every later restatement.
+	fn text_replace(&mut self, _text: &str) {}
 	fn on_resume(&mut self) {}
 	/// F10 drill: rebuild all device-lifetime resources from scratch, as a
 	/// real device loss would require. The standing regression test for the

@@ -107,10 +107,11 @@ pub(crate) enum UserEvent {
 	GpuReady(GpuReady),
 	/// Browser pointer-lock truth from the pointerlockchange listener.
 	PointerLock { locked: bool },
-	/// A produced character from the soft-keyboard bridge (webtext.rs).
+	/// The soft-keyboard bridge's whole DOM value after an edit
+	/// (webtext.rs) — a restatement, not a delta.
 	#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-	TextChar(char),
-	/// A named key (Enter, Backspace) from the soft-keyboard bridge,
+	TextValue(String),
+	/// A named key (Enter, Tab, arrows) from the soft-keyboard bridge,
 	/// delivered as a press+release pair.
 	#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 	TextKey(crate::input::Key),
@@ -154,7 +155,8 @@ struct App<G: Game> {
 	drill_ok: bool,
 	/// Next drill step to fire (see `auto_drill`).
 	drill_step: u8,
-	/// The soft-keyboard bridge, present on touch devices (webtext.rs).
+	/// The soft-keyboard bridge (webtext.rs). `None` only if the DOM
+	/// refused its setup.
 	#[cfg(target_arch = "wasm32")]
 	text_bridge: Option<crate::webtext::TextBridge>,
 }
@@ -579,9 +581,10 @@ impl<G: Game> App<G> {
 			// Once per launch (reinit_device bypasses init_all, so no
 			// double install).
 			install_pointer_lock_listeners(&self.proxy);
-			if self.options.touch {
-				self.text_bridge = crate::webtext::TextBridge::new(self.proxy.clone());
-			}
+			// Unconditional: gating on device detection is how Brave's
+			// fingerprinting shields once left a phone with no keyboard
+			// at all. Existing is free — only `sync`'s focus costs.
+			self.text_bridge = crate::webtext::TextBridge::new(self.proxy.clone());
 			self.spawn_gpu_init(window, false);
 		}
 	}
@@ -1039,8 +1042,9 @@ impl<G: Game> App<G> {
 			if fullscreen {
 				toggle_browser_fullscreen();
 			}
+			let game = &self.game;
 			if let Some(bridge) = &mut self.text_bridge {
-				bridge.sync(self.game.text_entry_active());
+				bridge.sync(game.text_entry_active(), || game.text_field_contents());
 			}
 		}
 		#[cfg(not(target_arch = "wasm32"))]
@@ -1337,7 +1341,7 @@ impl<G: Game> ApplicationHandler<UserEvent> for App<G> {
 				}
 			}
 			UserEvent::PointerLock { locked } => self.on_pointer_lock_change(locked),
-			UserEvent::TextChar(ch) => self.game.input(InputEvent::Text { ch }),
+			UserEvent::TextValue(v) => self.game.text_replace(&v),
 			UserEvent::TextKey(key) => {
 				self.game.input(InputEvent::Key { key, pressed: true });
 				self.game.input(InputEvent::Key {
@@ -1347,6 +1351,15 @@ impl<G: Game> ApplicationHandler<UserEvent> for App<G> {
 				// Enter may have submitted and closed the field: let the
 				// bridge blur so the keyboard follows it down.
 				self.after_game_input();
+				// A named key can rewrite the field engine-side (Tab
+				// completion); restate the DOM buffer, or the next
+				// keystroke resends the text it replaced.
+				#[cfg(target_arch = "wasm32")]
+				if self.game.text_entry_active()
+					&& let Some(bridge) = &self.text_bridge
+				{
+					bridge.reseed(self.game.text_field_contents());
+				}
 			}
 		}
 	}

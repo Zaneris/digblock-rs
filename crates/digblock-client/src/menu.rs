@@ -473,6 +473,34 @@ impl Menu {
 		)
 	}
 
+	/// The open field's contents, seeding the soft-keyboard bridge.
+	pub(crate) fn text_field_contents(&self) -> &str {
+		match &self.screen {
+			Some(Screen::ChooseName(n)) => &n.name,
+			Some(Screen::CreateWorld { name, .. }) => name,
+			_ => "",
+		}
+	}
+
+	/// Whole-field replacement from the soft-keyboard bridge: clear, then
+	/// feed every character through `handle_text`, so charset and cap
+	/// cannot fork from the keystroke path. The trailing availability
+	/// check covers pure deletion, which feeds no characters.
+	pub(crate) fn handle_text_replace(&mut self, text: &str) {
+		match &mut self.screen {
+			Some(Screen::ChooseName(n)) => {
+				n.status = None;
+				n.name.clear();
+			}
+			Some(Screen::CreateWorld { name, .. }) => name.clear(),
+			_ => return,
+		}
+		for ch in text.chars() {
+			self.handle_text(ch);
+		}
+		self.check_typed_name();
+	}
+
 	pub(crate) fn is_open(&self) -> bool {
 		self.screen.is_some()
 	}
