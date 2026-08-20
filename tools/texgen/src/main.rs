@@ -2,7 +2,8 @@
 //! variations of the hand-made originals, so new blocks stay in the established
 //! pixel-art style. Run manually (`cargo run -p texgen`) and commit the outputs —
 //! assets are `include_bytes!`d, so generated PNGs live in git. Output matches
-//! the loader contract: `SIZE`-square 8-bit RGB, non-interlaced.
+//! the loader contract: `SIZE`-square 8-bit, non-interlaced — RGB, or RGBA for
+//! the rows whose alpha the Translucent bucket reads (`save_rgba`).
 //!
 //! A run rewrites EVERY output, so it is not a free operation: the noisy recipes
 //! below share one rng, so adding, removing or reordering a `save` rerolls the
@@ -121,18 +122,16 @@ fn main() {
 		bricks(&load("Sandstone.png"), 16, 8, &mut rng),
 	);
 	save("PolishedStone.png", polished(&stone, &mut rng));
-	// Leaded glass: a pale frosted body under a dark came lattice. The
-	// lattice is opaque; the panes carry a low alpha (the render's
-	// Translucent bucket blends them), frost-jittered so the glazing
-	// reads hand-set rather than uniform.
+	// Clear glass: one flat pale tint at a low alpha, so most of what
+	// you see through a pane is the world behind it (the render's
+	// Translucent bucket multiplies the backdrop by its transmittance).
 	save_rgba("Glass.png", glass(&mut rng));
 	// Metal: a cool grey plate, planished — the flat highlights are what
 	// separate it from stone at a glance.
 	save("Metal.png", metal(&stone, &mut rng));
-	// Crystal: an Aether-blue lattice, bright enough to carry the
-	// emissive bit the way the deep ores do. The dark matrix is glass —
-	// mid alpha — while the facets stay near-opaque, so what glows is
-	// also what covers.
+	// Crystal: an Aether-blue body carrying the emissive bit the way the
+	// deep ores do, with fine cracks a shade brighter. Near-opaque
+	// throughout — it is see-through, but it is a solid, not a window.
 	save_rgba("Crystal.png", crystal(&mut rng));
 	// The two lamps, both emissive: a metal frame around a lit pane.
 	save("Lantern.png", lamp([255, 214, 138], [96, 88, 78], &mut rng));
@@ -272,8 +271,10 @@ fn polished(stone: &RgbImage, rng: &mut Rng) -> RgbImage {
 	out
 }
 
-/// Leaded glass: a frosted pale body, a dark came grid, and a bright
-/// diagonal glint in each light.
+/// Clear glass: one flat pale tint at one flat alpha. No came grid and
+/// no frost — a pane reads by what it does to the world behind it, and a
+/// painted frame only fights the transmission. The rng draws are kept
+/// and burnt unread so every later recipe's noise is unchanged.
 fn glass(rng: &mut Rng) -> RgbaImage {
 	let mut out = RgbaImage::new(SIZE, SIZE);
 	let cell = SIZE / 4;
@@ -339,9 +340,10 @@ fn metal(stone: &RgbImage, rng: &mut Rng) -> RgbImage {
 	out
 }
 
-/// Crystal: a dark matrix shot through with bright facets. Same contrast
-/// argument as the deep ores — the block is emissive, so the DARK half
-/// has to be dark or the whole face glows and nothing reads.
+/// Crystal: a near-uniform translucent blue body under fine cracks. The
+/// facet lattice is retired — the block reads by its glow and what it
+/// passes, so painted structure only competed with both. Its jitter draw
+/// is still burnt at the old band positions to hold the rng stream.
 fn crystal(rng: &mut Rng) -> RgbaImage {
 	let mut out = RgbaImage::new(SIZE, SIZE);
 	for (x, y, p) in out.enumerate_pixels_mut() {

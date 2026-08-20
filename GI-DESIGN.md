@@ -115,6 +115,11 @@ Named here because this document previously described several of these as done:
   instead. Indirect should stay on the probes regardless — it is smooth and does not smear — so the cache would only
   ever have carried sun visibility. Reopen only if "converged while walking" becomes a requirement;
   denoised-while-walking is what exists today.
+- **Glass touching a lit surface does not tint it**, and a report will arrive worded as **"stained glass barely tints
+  the block it is sitting on"** — a washed-out window sill, or a glass floor colouring the ground under it far less than
+  the same glass colours a pool cast across the room. The cause and the cost of fixing it are in R35's edge list; go
+  straight there. Three smaller R35 edges live beside it, all of them the draw and the marches disagreeing on how many
+  times a path owes `T`.
 
 ## Measuring motion
 
@@ -946,31 +951,88 @@ per-fragment sun DDA (R17's split), because the half-res resolve owns no texel o
 
 In the GI the see-through test is the BUCKET (`MeshBucket::Translucent`), never the render class — `Translucent`
 -the-class still means water and its op-1 path-length counter everywhere. A tinted cell is LUT op **4**: the marches
-multiply a per-class rgb filter into a throughput instead of stopping, and every consumer that already applied
-`medium_water_tr` multiplies the throughput beside it. The filter is DERIVED, not authored twice: the texture's mean
-alpha is the coverage and its alpha-weighted mean colour is what the covered part passes (`material_lut`), packed in the
-LUT's first box word — free for every full-cube class, since only synthetic shape classes carry boxes. A shaped
-translucent classifies as a FULL cell of its base id (`gi_class` bypasses the synthetic classes), the accepted
-approximation: a box that attenuates instead of blocking has no home in the box words.
+multiply a per-class rgb filter into a throughput instead of stopping, and every consumer that applies `medium_water_tr`
+multiplies `thru` beside it — all THREE NEE sites included (the probe's `nee`, the resolve's reservoir, and
+`sum_lights`, which is what lights a body). That completeness is the whole reason the filter is a product and not a
+medium: it has no path state, so no two rays can disagree about being inside glass. Two of the three shipped without it
+briefly, and the symptom was a lamp behind a stained pane lighting a player white inside its own coloured pool. The
+filter is DERIVED, not authored twice: the texture's mean alpha is the coverage and its alpha-weighted mean colour is
+what the covered part passes (`material_lut`), packed in the LUT's first box word — free for every full-cube class,
+since only synthetic shape classes carry boxes. A shaped translucent classifies as a FULL cell of its base id
+(`gi_class` bypasses the synthetic classes), the accepted approximation: a box that attenuates instead of blocking has
+no home in the box words.
 
 The resolve's sun target has no colour lanes (its g and a carry the face code + history and the penumbra), so the
 transmitted sun splits across the two outputs it does have: the sun lane takes the filter's LUMINANCE, and the rgb
-indirect lane takes the CHROMATIC RESIDUAL — sun radiance x ndl x vis x the water term x (thru − lum(thru)), negative in
-the channels the filter absorbs — so the two lanes SUM to the full rgb transmission chunk.wgsl multiplies out and a red
-pane's pool lands red, riding the indirect accumulator's own history and a-trous instead of a third MRT.
+indirect lane takes the CHROMATIC RESIDUAL — sun radiance x ndl x vis x strength x the water term x (thru − lum(thru)),
+negative in the channels the filter absorbs — so the two lanes SUM to the full rgb transmission chunk.wgsl multiplies
+out and a red pane's pool lands red, riding the indirect accumulator's own history and a-trous instead of a third MRT.
 
-The glass DRAW is transmissive, not alpha-blended, in two commuting halves: a MULTIPLY pass scales the backdrop by each
-texel's transmittance (per-face sqrt, so the face PAIR every closed volume presents costs one cell's T — the same T the
-marches charge), then an ADDITIVE pass lays the covered fraction's lit surface and any ink on top. Both halves commute
-across faces and panes, so the pass needs no sorting and no winding split, and a pane over bright sky GLOWS with what it
-passes — the thing coverage blending can never say.
+**The caster STRENGTH rides the residual explicitly**, and that is the load-bearing half of the split. The sun lane
+leaves the resolve as a bare visibility fraction and the scene pass scales it by `light_color * light_dir.w`; the
+residual leaves as a finished radiance that nothing scales downstream, so it must carry `light_dir.w` itself — which is
+why the resolve's uniform block spends `sun_color.w` on it. Omit it and the halves sum to the transmission at full sun
+only; worse, since the residual is NEGATIVE where the filter absorbs, any strength below `lum(T)` drives those channels
+past zero and the pane starts SUBTRACTING light through the whole sunrise and sunset ramp.
+
+The glass DRAW is transmissive, not alpha-blended, in two halves: a MULTIPLY pass scales the backdrop by each texel's
+transmittance (per-face sqrt, so the face PAIR every closed volume presents costs one cell's T — the same T the marches
+charge), then an ADDITIVE pass lays the covered fraction's lit surface and any ink on top. A pane over bright sky GLOWS
+with what it passes — the thing coverage blending can never say.
+
+**The halves do NOT commute across panes**, and that is worth stating plainly because the pass was built believing they
+did. A pane is `dst*T + S`; composing two of those gives `T_A*S_B + S_A` one way and `T_B*S_A + S_B` the other, equal
+only when the shines happen to balance. Running every tint and then every shine IS order-free, but only by letting each
+shine escape every filter — stack panes and the transmission falls toward zero while the additive term grows without
+bound, so a deep glass corridor gets BRIGHTER instead of darker. `GlassDraw::draw` therefore walks its chunks
+back-to-front and runs a chunk's tint and shine together, which is exact whenever the panes sit in different chunks. Two
+panes inside ONE chunk still share a tint: the standing approximation, and the reason winding still needs no split.
+
+Three accepted v1 edges in the draw, all the same missing fact — the mesher never says whether a face has a PARTNER:
+
+- A pane whose far face is culled by an opaque neighbour (glass laid on dirt, set into stone) shows the ray one face and
+  charges `sqrt(T)` where its cell is worth `T`, so it reads too bright against its own backdrop.
+- A wall `n` cells thick still presents one pair, so the draw charges `T` while the marches charge `T^n`. Thickness
+  reads in the light and not in the glass.
+- The shine half is per-FACE, so the pair convention has to be spent on the ink too (`INK_PER_FACE`) or a free-standing
+  crystal glows twice as bright as one set into a wall. `GLASS_REFLECT` is exempt: it was tuned against the doubled term
+  and already absorbs it.
+
+All three want one vertex bit saying "this face has a partner", which nobody has spent yet.
+
+A fourth edge sits on the MARCH side of the same ledger, and it is the one most likely to arrive as a BUG REPORT, so it
+is written symptom first.
+
+> **"Stained glass barely tints the block it is sitting on."** Also: a window's sill washed out while the floor just
+> past it is properly coloured; a stained-glass FLOOR that colours the ground under it far less than the same glass
+> colours a pool cast across the room. Suspect this edge before looking anywhere else.
+
+**Cause: a tinted cell the shading point sits in is never charged.** Every march steps before it tests (the rule that
+stopped shaped surfaces shadowing themselves), and `gi_ray_init` floors `p + dir*0.01`, so the first cell — the one the
+lit face opens onto — is stepped out of before anything reads it. Glass touching a lit surface therefore filters that
+surface's sunlight not at all. Light through a window several cells away is unaffected, because the pane is crossed
+mid-march, which is why the feature's showcase looks right and this does not.
+
+The tint is always WEAK, never absent, and the geometry is why: the artifact needs the origin cell to be glass, and if
+it is, then seeing that face means looking through that same glass, so the draw still charges one face. A surface with a
+pane laid on it comes out at `sqrt(T)` where it is worth `T^2` — the absorbed channels land several times too bright,
+and it is a steady error with no shimmer or motion cue, which is what makes it easy to live with and hard to spot alone.
+Side by side against a pool cast through a window it is obvious.
+
+Of the two edges compounding here this is the DOMINANT one; the `sqrt(T)` pairing above is the smaller half, so a fix
+that spends only one should spend this. The fix is a pre-charge before the loop at the three march sites, and it is not
+free — one extra fetch per ray, on every ray, in every scene, to correct a case that needs glass touching the lit face.
+Charging is safe there in a way testing is not (a tinted cell never sets `hit`, so it cannot re-introduce
+self-shadowing), so this is a cost decision and not a correctness one.
 
 Two deliberate conservatisms, recorded rather than discovered later. `gi_solid` (op >= 2) counts a tinted cell as solid,
-so probes relocate out of panes and the deterministic NEE ray treats glass as blocking — no worse than the Opaque rows
-these blocks were the day before. And the coarse blocker bit is SET for tinted cells (`classify_chunk`): the coarse
-texture only licenses skipping a brick, and a skipped brick accumulates no throughput, so a wall of panes would go
-untinted. The one-line fallback — glass as GI-air, `opacity()`'s bucket arm answering `Air` — shipped as this feature's
-intermediate phase and lives in git if a bench ever charges the marches more than the picture is worth.
+which is what keeps probe RELOCATION and the probe-gather visibility test (`gi_occluded`) out of panes — no worse than
+the Opaque rows these blocks were the day before. It does NOT make glass block anything else: every NEE shadow ray goes
+through `march`/`gi_march`, which never set `hit` on op 4 and attenuate instead, which is the point. And the coarse
+blocker bit is SET for tinted cells (`classify_chunk`): the coarse texture only licenses skipping a brick, and a skipped
+brick accumulates no throughput, so a wall of panes would go untinted. The one-line fallback — glass as GI-air,
+`opacity()`'s bucket arm answering `Air` — shipped as this feature's intermediate phase and lives in git if a bench ever
+charges the marches more than the picture is worth.
 
 ## Non-goals (v1)
 
@@ -1157,8 +1219,14 @@ The ones that bite if broken. CLAUDE.md points here rather than restating them.
 - **The see-through predicate is the mesh BUCKET** (R35), swept by `the_bucket_is_the_see_through_predicate`:
   `MeshBucket::Translucent` is op 4 in the LUT, and `Translucent`-the-class still means water everywhere. Glass
   throughput is a FILTER PRODUCT, not a medium — it has no path state, so the sun and view rays cannot disagree about
-  being inside it, and water remains the one participating medium. A tinted cell pins its coarse brick
+  being inside it, and water remains the one participating medium. That only holds while EVERY consumer multiplies
+  `thru`: all three NEE sites, not just the probe's. A tinted cell pins its coarse brick
   (`coarse_bits_split_blockers_from_emitters`), or a homogeneous run of panes would be skipped untinted.
+- **The bucket is the see-through predicate OUTSIDE lighting too**, and each site that forgot it grew its own hole: the
+  water arm of `face_visible`, the shaped emitter's cull, and the water surface's cover test all key on it now, swept by
+  `a_translucent_cell_never_covers_whatever_its_shape`. A render CLASS cannot answer this — a crystal slab is `Shaped`.
+- **The glass draw's two halves do not commute** (R35), so the chunk list is walked BACK TO FRONT with both halves run
+  per chunk. Running all tints then all shines lets every shine escape every filter, which diverges as panes stack.
 
 ## Test pins (grown per phase)
 

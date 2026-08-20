@@ -118,6 +118,12 @@ pub(crate) struct Face {
 /// Pinned against the WGSL twin by `the_carried_flag_matches_the_shaders`.
 const LIGHT_CARRIED: u32 = 256;
 
+/// The LUT's tinted-transmission op — a see-through class whose rgb
+/// filter rides word `.z`. Named because THREE shaders branch on it and
+/// nothing else pins them together; `the_lut_ops_match_the_shaders`
+/// holds the four of them to one value.
+const LUT_OP_TINTED: u32 = 4;
+
 /// Where [`Emitter::level`] rides in the same packed word, above the
 /// class byte and the carried flag. Zero means "no override" — the LUT
 /// row's own level stands — so a placed emitter's word is bit-identical
@@ -409,7 +415,7 @@ fn material_lut(layer_means: &[[u8; 4]]) -> [[u32; 4]; 256] {
 			GiOpacity::Air => 0u32,
 			GiOpacity::Translucent => 1,
 			GiOpacity::Opaque => 2,
-			GiOpacity::Tinted => 4,
+			GiOpacity::Tinted => LUT_OP_TINTED,
 		};
 		// What a ray keeps crossing one cell of this class, per channel:
 		// the texture's mean alpha is the coverage and its alpha-weighted

@@ -230,7 +230,8 @@ blocks! {
 	/// answered: the blended `Translucent` bucket draws after water and
 	/// stays out of the depth prepass entirely, so the prepass never had
 	/// to learn to sample the atlas. The panes carry the texture's own
-	/// alpha; the came lattice is opaque.
+	/// alpha, which is flat across the pane — a painted came lattice only
+	/// competed with the transmission that IS the look.
 	Glass = 65 => mat(dig(translucent(crafted(props(RenderClass::Glass, true, tex::GLASS, tex::GLASS, tex::GLASS))), 25, DigFamily::Soft), Material::Glass),
 	/// The prestige material: Metal comes only from ore, so a metal
 	/// wall is a statement about how long somebody has been mining.
@@ -567,8 +568,11 @@ pub enum MeshBucket {
 	/// The two-word water stream (surface lips, flow/splash payload,
 	/// alpha blend, no depth write).
 	Water,
-	/// The blended-glass stream: solid vertex format, drawn after water
-	/// with alpha blending, chunk-sorted back-to-front. Also the GI's
+	/// The blended-glass stream: solid vertex format, drawn after water as
+	/// a transmittance MULTIPLY plus an additive shine — not alpha
+	/// blending, which averages coverage where a filter must filter. The
+	/// two do not commute across panes, so the draw walks its chunks
+	/// back-to-front and runs both halves per chunk. Also the GI's
 	/// translucency predicate — shaped rows keep `class Shaped`, so the
 	/// bucket is the one field that names every see-through block.
 	Translucent,

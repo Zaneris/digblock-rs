@@ -1324,13 +1324,153 @@ fn glass_culls_same_type_and_meets_water_face_to_face() {
 	d.set(7, 8, 8, B::Water);
 	let m = mesh_chunk(&isolated(&d));
 	// Two cubes lose exactly the shared pair; the glass|water interface
-	// face stays (West face of the pane at 8 toward... the water sits at
-	// 7, so the pane's EAST face and the water's WEST face share it).
+	// stays — the water sits at 7, so the pane's EAST face and the
+	// water's WEST face share that plane and both draw.
 	let faces = m.translucent.len() / 8;
 	assert_eq!(faces, 10, "two glass cubes cull only their shared pair");
 	quad_of(&m.translucent, 8, 8, 8, Dir::East);
 	// Water emits toward glass (the extended Translucent arm).
 	water_quad(&m.water, 7, 8, 8, Dir::West);
+}
+
+/// The see-through predicate is the BUCKET, swept over every block and
+/// every valid state. A translucent cell covers NOTHING, so no face rule
+/// anywhere can cull the face you look through it at — and the sweep is
+/// what generalizes it: three separate sites keyed on the render CLASS
+/// instead, and each grew its own hole (a water void behind a crystal
+/// slab, a brimming flow under a pane, doubled interior quads).
+#[test]
+fn a_translucent_cell_never_covers_whatever_its_shape() {
+	use crate::block::MeshBucket;
+	use crate::dir::DIRS;
+	let mut swept = 0u32;
+	for b in B::ALL {
+		if b.props().bucket != MeshBucket::Translucent {
+			continue;
+		}
+		for state in 0..16u8 {
+			let cell = b as u16 | (u32::from(state) << crate::chunk::ID_BITS) as u16;
+			if !crate::shapes::state_valid(cell) {
+				continue;
+			}
+			for dir in DIRS {
+				assert!(
+					matches!(neighbor_cover(cell, dir), Cover::None),
+					"{b:?} state {state} covers toward {dir:?}"
+				);
+				swept += 1;
+			}
+		}
+	}
+	// Every translucent row, every valid state, every direction — and the
+	// count says the sweep examined them rather than skipping the lot.
+	assert!(swept > 0, "the bucket has members to sweep");
+}
+
+/// A run of identical translucent SHAPED cells culls its interior faces
+/// exactly as a run of translucent cubes does. The two are one rule, so
+/// the counts are compared against each other rather than written down:
+/// a shaped run that stopped culling would leave coincident quads the
+/// no-depth-write glass pass tints twice.
+#[test]
+fn a_translucent_shaped_run_culls_like_a_translucent_cube_run() {
+	let run = |b: B| {
+		let mut d = ChunkData::default();
+		for x in 6..10 {
+			d.set(x, 8, 8, b);
+		}
+		mesh_chunk(&isolated(&d)).translucent.len() / 8
+	};
+	let shaped = run(B::CrystalSlab);
+	let cubes = run(B::Crystal);
+	// Both runs are four cells long and closed, so both present exactly
+	// the two end caps plus their four sides — the interior boundaries
+	// are gone on both sides of the comparison.
+	assert_eq!(
+		shaped, cubes,
+		"a shaped translucent run must cull its interior faces like a cube run"
+	);
+	// And the comparison is not vacuous: the run really did mesh.
+	assert!(cubes > 0, "test needs a real translucent mesh");
+	// A DIFFERENT translucent type still meets face to face — culling is
+	// same-type, never "any pane hides any pane".
+	let mut d = ChunkData::default();
+	d.set(8, 8, 8, B::CrystalSlab);
+	d.set(9, 8, 8, B::RedGlass);
+	let mixed = mesh_chunk(&isolated(&d)).translucent.len() / 8;
+	let lone = {
+		let mut d = ChunkData::default();
+		d.set(8, 8, 8, B::CrystalSlab);
+		mesh_chunk(&isolated(&d)).translucent.len() / 8
+	} + {
+		let mut d = ChunkData::default();
+		d.set(9, 8, 8, B::RedGlass);
+		mesh_chunk(&isolated(&d)).translucent.len() / 8
+	};
+	assert_eq!(mixed, lone, "unlike types cull nothing against each other");
+}
+
+/// Water meets a see-through neighbour face to face whatever its SHAPE:
+/// the predicate is the bucket, so a crystal slab gets the same water
+/// face a glass cube does. Keying it on the class left a water void
+/// behind every translucent shaped cover.
+#[test]
+fn water_meets_every_see_through_neighbor_whatever_its_shape() {
+	let faces_toward = |b: B| {
+		let mut d = ChunkData::default();
+		d.set(8, 8, 8, B::Water);
+		d.set(9, 8, 8, b);
+		mesh_chunk(&isolated(&d)).water.len() / 8
+	};
+	// The bucket decides, so a shaped translucent and a cube translucent
+	// must give the water the same face count...
+	assert_eq!(
+		faces_toward(B::CrystalSlab),
+		faces_toward(B::Glass),
+		"water treats every translucent neighbour alike"
+	);
+	// ...and that count is one more than an OPAQUE shaped neighbour,
+	// which still covers (the standing v1 artifact).
+	assert_eq!(
+		faces_toward(B::CrystalSlab),
+		faces_toward(B::StoneSlab) + 1,
+		"a see-through cover earns the water an extra face"
+	);
+}
+
+/// Glass over water leaves the surface knitted at its real depth. The
+/// full-cube rule keys on whether the cover HIDES the top face, and a
+/// pane does not — pinning it full would brim a shallow flow up to a
+/// full block under every window.
+#[test]
+fn a_see_through_cover_leaves_the_water_surface_alone() {
+	let drops_under = |above: Option<B>| {
+		let mut d = ChunkData::default();
+		d.set(8, 8, 8, B::WaterFlow1);
+		if let Some(b) = above {
+			d.set(8, 9, 8, b);
+		}
+		let m = mesh_chunk(&isolated(&d));
+		// The four corner codes of the top face carry the surface drop.
+		m.water
+			.chunks(2)
+			.filter(|p| dir_of(p[0]) as usize == Dir::Top as usize)
+			.map(|p| drop_of(p[1]))
+			.collect::<Vec<_>>()
+	};
+	let open = drops_under(None);
+	assert!(!open.is_empty(), "test needs a real water surface");
+	assert_eq!(
+		drops_under(Some(B::Glass)),
+		open,
+		"a pane over water must not pin the surface full"
+	);
+	// An OPAQUE cover still pins it — the rule moved, it did not vanish.
+	assert_ne!(
+		drops_under(Some(B::Stone)),
+		open,
+		"an opaque cover still renders the cell full"
+	);
 }
 
 #[test]

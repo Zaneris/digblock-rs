@@ -8,14 +8,20 @@
 //   which alpha blending can never say — coverage averages, a filter
 //   filters. T = 1 - a(1 - albedo) per texel, the LUT rule's per-texel
 //   twin (`material_lut`), so what the eye sees through a pane and what
-//   the GI carries through its cell are one formula.
+//   the GI carries through its cell are one formula. One cell, one T:
+//   see `fs_tint` for the pairing that buys it and for where it slips.
 // - `fs_shine` ADDS the surface's own light: the covered fraction shades
-//   as a diffuse surface (the came lattice is one), and `glows` rows add
-//   their ink — a crystal's cracks read in the dark.
+//   as a diffuse surface, and `glows` rows add their ink — a crystal's
+//   cracks read in the dark.
 //
-// Both halves commute across faces and panes, so draw order does not
-// matter — no sort, no winding split, and a cube tints twice (two faces),
-// which is a thickness, not a bug.
+// The halves do NOT commute across panes — a pane is `dst*T + S`, and two
+// of those compose differently in each order — so `GlassDraw::draw` walks
+// its chunks BACK TO FRONT and runs a chunk's tint and shine together.
+// Running all tints and then all shines would be order-free only by
+// letting every shine escape every filter, which diverges as panes stack.
+// Two panes in ONE chunk still share a tint: the standing approximation.
+// Winding needs no split (a cube's two faces both tint, which is its
+// thickness), and the sqrt below is what makes that pair cost one cell.
 //
 // The vertex words are the SOLID stream's — the decode below must agree
 // with mesher::pack / solid_word1, exactly as chunk.wgsl and water.wgsl
@@ -61,13 +67,31 @@ const SUN_MIN_L = 0.002;
 // bloomed additive white over its own tinted backdrop.
 const GLASS_REFLECT = 0.22;
 
+// The shine half's share of one FACE, under the same pairing convention
+// the tint half's sqrt encodes: a closed volume shows a ray two faces, so
+// each carries half of what the cell contributes. Ink needs it stated
+// because `emissive_ink` is shared with the lit passes and pinned against
+// them — a crystal that was an Opaque row until this bucket existed drew
+// its ink once, and would otherwise glow twice as bright free-standing as
+// it does set into a wall. GLASS_REFLECT is NOT scaled by this: it was
+// tuned against the doubled term and already absorbs it.
+const INK_PER_FACE = 0.5;
+
 // See chunk.wgsl: exact twelfths → blocks decode.
 fn twelfths(v: u32) -> f32 {
 	return f32(v / 12u) + f32(v % 12u) / 12.0;
 }
 
 struct VsOut {
-	@builtin(position) pos: vec4f,
+	// @invariant on BOTH entries, and load-bearing: the tint half and the
+	// shine half rasterize the same triangles from the same stream, and a
+	// one-ulp difference between them would leave a fragment taking the
+	// multiply without the add (a dark seam) or the add without the
+	// multiply (a bright fringe). It also settles the coplanar tie with
+	// the water prepass that `LessEqual` now depends on, instead of
+	// leaving it to per-frame luck. Same reasoning as chunk.wgsl and
+	// water.wgsl — build the position identically in both entries.
+	@invariant @builtin(position) pos: vec4f,
 	@location(0) uv: vec2f,
 	@location(1) @interpolate(flat) layer: u32,
 	// Lambert against the caster, flat per face.
@@ -119,7 +143,7 @@ fn vs(@location(0) packed: vec2u, @location(1) origin: vec4f) -> VsOut {
 }
 
 struct VsTintOut {
-	@builtin(position) pos: vec4f,
+	@invariant @builtin(position) pos: vec4f,
 	@location(0) uv: vec2f,
 	@location(1) @interpolate(flat) layer: u32,
 }
@@ -133,8 +157,11 @@ fn vs_tint(@location(0) packed: vec2u, @location(1) origin: vec4f) -> VsTintOut 
 	let x = twelfths(w0 & 0xffu);
 	let y = twelfths((w0 >> 8u) & 0xffu);
 	let z = twelfths((w0 >> 16u) & 0xffu);
+	// Built exactly as `vs` builds it — same expression, same order — or
+	// @invariant guarantees nothing between the two pipelines.
+	let world = vec3f(x, y, z) + origin.xyz;
 	var o: VsTintOut;
-	o.pos = frame.view_proj * vec4f(vec3f(x, y, z) + origin.xyz, 1.0);
+	o.pos = frame.view_proj * vec4f(world, 1.0);
 	o.uv = vec2f(twelfths((w1 >> 10u) & 0xfu), twelfths((w1 >> 14u) & 0xfu));
 	o.layer = w1 & 0x3ffu;
 	return o;
@@ -146,6 +173,14 @@ fn vs_tint(@location(0) packed: vec2u, @location(1) origin: vec4f) -> VsTintOut 
 // faces in PAIRS (same-type interior faces cull), so per-pair the
 // backdrop takes T — which is what the GI charges a one-cell wall, and
 // the case every window is.
+//
+// Two shapes fall outside the pair, and both are v1 edges recorded in
+// GI-DESIGN R35 rather than fixed here. A pane whose far face is culled
+// by an OPAQUE neighbour (glass laid on dirt, set into stone) shows the
+// ray one face and charges sqrt(T) where the cell is worth T. And a wall
+// n cells THICK still shows one pair, so the draw charges T while the
+// marches charge T^n. Both want the mesher to say whether a face has a
+// partner, which is a vertex bit nobody has spent yet.
 @fragment
 fn fs_tint(i: VsTintOut) -> @location(0) vec4f {
 	let tex = textureSample(blocks_tex, blocks_smp, i.uv, i.layer);
@@ -159,7 +194,7 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	// Fullbright ink through ink_common's one definition — chunk.wgsl's
 	// rule, so crystal reads the same lit or blended. The branch narrows
 	// to the lighting; the medium below applies to both alike.
-	var col = emissive_ink(tex.rgb);
+	var col = emissive_ink(tex.rgb) * INK_PER_FACE;
 	if i.emissive == 0u {
 		// The sun march, gated on its own contribution exactly as
 		// water.wgsl gates its (SUN_MIN_L there): a face turned from the

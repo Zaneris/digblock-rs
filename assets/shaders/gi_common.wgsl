@@ -19,6 +19,10 @@
 @group(2) @binding(0) var gi_window: texture_3d<u32>;
 @group(2) @binding(1) var gi_coarse: texture_3d<u32>;
 @group(2) @binding(2) var<storage, read> gi_lut: array<vec4u>;
+
+// The LUT's tinted-transmission op — mirrored from the CPU's
+// `LUT_OP_TINTED` and pinned by `the_lut_ops_match_the_shaders`.
+const GI_LUT_OP_TINTED = 4u;
 @group(2) @binding(3) var gi_atlas0: texture_3d<f32>;
 @group(2) @binding(4) var gi_atlas1: texture_3d<f32>;
 // The emitter list (R20) — the same count-prefixed buffer the probe pass
@@ -310,7 +314,7 @@ fn gi_sun_vis(side: i32, sky_y: f32, cam_xz: vec2f, sun: vec4f, p: vec3f, iters:
 			if op == 1u {
 				out.water += 1.0;
 			}
-			if op == 4u {
+			if op == GI_LUT_OP_TINTED {
 				out.thru *= gi_glass_tr(v);
 			}
 		}
@@ -416,7 +420,7 @@ fn gi_march(side: i32, sky_y: f32, cam_xz: vec2f, p: vec3f, dir: vec3f, max_t: f
 			if op == 1u {
 				out.water += 1.0;
 			}
-			if op == 4u {
+			if op == GI_LUT_OP_TINTED {
 				out.thru *= gi_glass_tr(v);
 			}
 		}
@@ -931,10 +935,14 @@ fn sum_lights(side: i32, sky_y: f32, cam_xz: vec2f, p: vec3f, n: vec3f) -> vec3f
 			max(dist - gi_light_margin_of(l), 0.0), GI_NEE_ITERS,
 		);
 		if !sh.hit {
+			// Glass on the path, exactly as both other NEE passes charge
+			// it — nothing filters a body (R33/R34), so without this a
+			// player standing in a pane's coloured pool is lit white.
 			sum += gi_light_tint(l.w, gi_emit_tint(gi_light_class(l.w)))
 				* LIGHT_GAIN
 				* best[k]
-				* medium_water_tr(sh.water);
+				* medium_water_tr(sh.water)
+				* sh.thru;
 		}
 	}
 	return sum;

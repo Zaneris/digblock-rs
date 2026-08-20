@@ -489,22 +489,34 @@ mod tests {
 	#[test]
 	fn the_bucket_is_the_see_through_predicate() {
 		use crate::block::{MeshBucket, RenderClass};
-		let mut translucent = 0u32;
+		// Set equality, both directions, rather than a re-spelling of
+		// `opacity`'s arms: the bucket names EXACTLY the tinted blocks,
+		// and `Translucent`-the-class still names exactly the water the
+		// marches count path length through. Written as memberships, a
+		// row that gained the bucket without the op — or the reverse —
+		// fails here by name, while a retune of the arms' ORDER does not.
+		let (mut tinted, mut water) = (0u32, 0u32);
 		for b in BlockType::ALL {
 			let p = b.props();
-			let expect = if p.bucket == MeshBucket::Translucent {
-				translucent += 1;
-				GiOpacity::Tinted
-			} else if p.class == RenderClass::None {
-				GiOpacity::Air
-			} else if p.class == RenderClass::Translucent {
-				GiOpacity::Translucent
-			} else {
-				GiOpacity::Opaque
-			};
-			assert_eq!(opacity(b), expect, "{b:?}");
+			assert_eq!(
+				p.bucket == MeshBucket::Translucent,
+				opacity(b) == GiOpacity::Tinted,
+				"{b:?}: the bucket and the tinted op name one set"
+			);
+			// Water is the OTHER see-through thing, and it must not have
+			// drifted into the tinted op: it is a participating medium
+			// with a path length, not a filter product.
+			assert_eq!(
+				p.class == RenderClass::Translucent && p.bucket != MeshBucket::Translucent,
+				opacity(b) == GiOpacity::Translucent,
+				"{b:?}: the water op stays the water class"
+			);
+			tinted += u32::from(opacity(b) == GiOpacity::Tinted);
+			water += u32::from(opacity(b) == GiOpacity::Translucent);
 		}
-		assert!(translucent > 0, "the bucket has members to sweep");
+		// Neither sweep may pass by examining nothing.
+		assert!(tinted > 0, "the bucket has members to sweep");
+		assert!(water > 0, "the water class has members to sweep");
 	}
 
 	#[test]

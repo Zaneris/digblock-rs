@@ -8,10 +8,19 @@ struct. The bench flyover contains no glass at all — worldgen never places any
 costs: the per-frame empty translucent cull list, the two extra pipeline binds, and the op-4 branch every march now
 carries.
 
-Release, M2 Max, `just bench --no-vsync --offscreen` (the 2026-08-15 recipe), two runs: avg **4.96, 4.96 ms**, p95 7.00,
-7.02, p99 7.79, 7.70, over-12.5ms **0**, hitches 0, resident 20704 both — the same streaming regime as the 2026-08-19
-baseline, and every figure at or better than its uncapped rows. No glass-free regression to find. A glass-HEAVY scene
-has no baseline yet; the first player build with a glass wall is the capture to take it from.
+Release, M2 Max, `just bench --no-vsync --offscreen`, two runs: avg **4.96, 4.96 ms**, p95 7.00, 7.02, p99 7.79, 7.70,
+over-12.5ms **0**, hitches 0, resident 20704 both — the same streaming regime as the 2026-08-19 baseline.
+
+**These frame times are NOT comparable to the 2026-08-19 uncapped rows**, and the entry originally claimed they were:
+`--offscreen` drops the present wait, while `just bench --no-vsync` alone still goes through the swapchain. The
+2026-08-15 entry says so in as many words about its own pair. What this run supports is the narrower claim it was taken
+for — an unchanged STREAMING regime and zero hitches with the feature compiled in — not a frame-time comparison. A
+swapchain re-run is what would retire the caveat.
+
+Superseded in part by the R35 review fixes (back-to-front interleaved glass draw, `LessEqual` depth, `thru` in all three
+NEE sites): the standing costs above still hold for a glass-free scene, but the two pipeline binds are now two PER
+TRANSLUCENT CHUNK. A glass-HEAVY scene has no baseline either way; the first player build with a glass wall is the
+capture to take both from.
 
 ## 2026-08-19 — a grass sweep costs a player half a millisecond per tick, one at a cave mouth
 

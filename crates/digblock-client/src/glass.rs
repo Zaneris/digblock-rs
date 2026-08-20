@@ -52,7 +52,15 @@ impl GlassDraw {
 					vertex_buffers: &vertex_layouts,
 					cull: None,
 					depth_write: false,
-					depth_compare: wgpu::CompareFunction::Less,
+					// LESS-OR-EQUAL, not Less: water emits its interface
+					// face toward glass, so an aquarium wall and every
+					// submerged pane are exactly COPLANAR with a water
+					// quad the water prepass already wrote. Under `Less`
+					// the pane lost that tie to its own backdrop and
+					// vanished. Glass writes no depth and the mesher culls
+					// it against every opaque neighbour, so no other
+					// coplanar case can slip through on the tie.
+					depth_compare: wgpu::CompareFunction::LessEqual,
 					depth_bias: Default::default(),
 					blend: Some(wgpu::BlendState {
 						color: blend,
@@ -92,11 +100,23 @@ impl GlassDraw {
 		}
 	}
 
-	/// Draw the culled translucent list (indices into `chunks`) — both
-	/// halves commute, so all tints land first, then all shines, two
-	/// pipeline binds total and no ordering anywhere. The caller has
-	/// bound groups 0-2, the index buffer, and the origin stream at
-	/// vertex slot 1. Returns (draws, triangles).
+	/// Draw the culled translucent list (indices into `chunks`) BACK TO
+	/// FRONT, each chunk's tint half immediately followed by its shine.
+	///
+	/// The two halves do NOT commute across panes: a pane's real operator
+	/// is `dst*T + S`, and `f_A(f_B(x))` differs from `f_B(f_A(x))` unless
+	/// the shines happen to balance. Running all tints and then all shines
+	/// is order-independent, but only because every shine then escapes
+	/// every filter — stack panes and the transmission falls to nothing
+	/// while the additive term grows without bound, so a deep glass
+	/// corridor gets BRIGHTER. Interleaving per chunk in depth order makes
+	/// the composite exact whenever the panes sit in different chunks; two
+	/// panes inside ONE chunk still share a tint and are the standing
+	/// approximation. The cost is two pipeline binds per translucent
+	/// chunk, and glass is sparse.
+	///
+	/// The caller has bound groups 0-2, the index buffer, and the origin
+	/// stream at vertex slot 1. Returns (draws, triangles).
 	pub(crate) fn draw(
 		&self,
 		pass: &mut wgpu::RenderPass<'_>,
@@ -104,13 +124,15 @@ impl GlassDraw {
 		list: &[u32],
 	) -> (u32, u32) {
 		let (mut draws, mut tris) = (0u32, 0u32);
-		for pipeline in [&self.tint_pipeline, &self.shine_pipeline] {
-			pass.set_pipeline(pipeline);
-			for &i in list {
-				let chunk = &chunks[i as usize];
-				let Some(mesh) = chunk.translucent.as_ref() else {
-					continue;
-				};
+		// `list` is coarsely front-to-back (the shared distance scatter),
+		// so walking it in reverse is back-to-front.
+		for &i in list.iter().rev() {
+			let chunk = &chunks[i as usize];
+			let Some(mesh) = chunk.translucent.as_ref() else {
+				continue;
+			};
+			for pipeline in [&self.tint_pipeline, &self.shine_pipeline] {
+				pass.set_pipeline(pipeline);
 				draws += 1;
 				tris += draw_chunk(pass, mesh, chunk.slot) / 3;
 			}

@@ -370,10 +370,10 @@ pub struct MeshData {
 	/// fluid sim, remesh-all) refreshes emitters with no extra scans.
 	pub impacts: Vec<u16>,
 	/// The blended-glass stream: `solid`'s two-word format exactly, split
-	/// out because it draws after water with alpha blending and no depth
-	/// write, chunk-sorted back-to-front. Faces land here by BUCKET, so a
-	/// shaped translucent (a crystal slab, a pane) rides along with the
-	/// glass cubes.
+	/// out because it draws after water with no depth write, chunk-sorted
+	/// back-to-front (its two blend halves do not commute across panes).
+	/// Faces land here by BUCKET, so a shaped translucent (a crystal slab,
+	/// a pane) rides along with the glass cubes.
 	pub translucent: Vec<u32>,
 	/// Exposed faces of SURFACE emitters, greedy-merged into rectangles
 	/// ([`lights::pack`]) — the GI's area lights for revealed veins.
@@ -412,6 +412,17 @@ fn neighbor_cover(cell: u16, dir: Dir) -> Cover {
 	if b.props().bucket == crate::block::MeshBucket::Translucent {
 		return Cover::None;
 	}
+	geometric_cover(cell, dir)
+}
+
+/// [`neighbor_cover`] without the see-through bypass: the coverage this
+/// cell presents as GEOMETRY, ignoring whether you can see through it.
+/// Only same-type translucent neighbours ask for this — it is what gives
+/// a shaped pane the interior-face rule `RenderClass::Glass` gives a
+/// full cube, and asking it of a DIFFERENT translucent type would cull
+/// the face you see through.
+fn geometric_cover(cell: u16, dir: Dir) -> Cover {
+	let b = BlockType::from_id(crate::chunk::cell_id(cell));
 	match b.props().class {
 		RenderClass::Opaque => Cover::Full,
 		RenderClass::Shaped => {
@@ -443,13 +454,16 @@ fn face_visible(me: BlockType, neighbor: Option<u16>, dir: Dir) -> bool {
 		// vanish while its faces toward air, water, shaped covers and
 		// OTHER glass all draw.
 		RenderClass::Glass => nb != me,
-		// Water toward a Shaped neighbor emits nothing (class != None) —
-		// the known v1 artifact, pinned by test: you can see through a
-		// stair's open region into the water void behind it. Toward glass
-		// it DOES emit: the pane blends over the surface behind it, so an
-		// aquarium wall shows its water.
+		// Water emits toward air and toward anything SEE-THROUGH, and
+		// see-through is the BUCKET — a crystal slab keeps class
+		// `Shaped`, so asking the class here left a water void behind
+		// every translucent shaped cover. Toward an opaque Shaped
+		// neighbour it still emits nothing: the known v1 artifact,
+		// pinned by test — you can see through a stair's open region
+		// into the void behind it.
 		RenderClass::Translucent => {
-			matches!(nb.props().class, RenderClass::None | RenderClass::Glass)
+			nb.props().class == RenderClass::None
+				|| nb.props().bucket == crate::block::MeshBucket::Translucent
 		}
 		// Shaped cells never route here — mesh_chunk branches to the
 		// shaped emitter first.
@@ -591,7 +605,22 @@ fn emit_shaped(
 				continue;
 			}
 			let (ox, oy, oz) = dir.offset();
-			match neighbor_cover(input.get_cell(bx + ox, by + oy, bz + oz), dir) {
+			let ncell = input.get_cell(bx + ox, by + oy, bz + oz);
+			// Same-type culling, shaped edition. `neighbor_cover` answers
+			// `None` for any translucent neighbour so a pane cannot cull
+			// the face you see through it — but between two cells of the
+			// SAME type there is nothing to see, and emitting both leaves
+			// coincident quads the no-depth-write glass pass tints twice.
+			// Full cubes get this from `face_visible`'s `Glass` arm; the
+			// state rides along, so a top slab beside a bottom slab still
+			// draws (their shapes do not meet).
+			let same_type = crate::chunk::cell_id(ncell) == me as u16;
+			let cover = if same_type && me.props().bucket == crate::block::MeshBucket::Translucent {
+				geometric_cover(ncell, dir)
+			} else {
+				neighbor_cover(ncell, dir)
+			};
+			match cover {
 				Cover::Full => continue,
 				Cover::Partial(m) if m.covers(q.rect[0], q.rect[1], q.rect[2], q.rect[3]) => {
 					continue;

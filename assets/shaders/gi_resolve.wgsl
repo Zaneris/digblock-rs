@@ -42,6 +42,8 @@ struct GiResolve {
 	dims1: vec4f,
 	// xyz quantized dir toward the sun, w sun-above-horizon (0/1).
 	sun: vec4f,
+	// rgb the caster colour, w its twilight strength (the scene pass
+	// applies the same value to the sun lane via light_dir.w).
 	sun_color: vec4f,
 	zenith: vec4f,
 	horizon: vec4f,
@@ -505,7 +507,12 @@ fn fs(i: VsOut) -> FsOut {
 				max(pick.dist - pick.margin, 0.0), GI_NEE_ITERS,
 			);
 			if !sh.hit {
-				nee = pick.irradiance * medium_water_tr(sh.water);
+				// `sh.thru` is the glass crossed on the way to the light.
+				// The probe pass's nee() multiplies it on the identical
+				// estimator, and the two must price one light alike or a
+				// lamp behind a stained pane lands white here and tinted
+				// in the bounce around it.
+				nee = pick.irradiance * medium_water_tr(sh.water) * sh.thru;
 			}
 		}
 		// A second, decorrelated draw from the same sequence — sharing the
@@ -585,8 +592,16 @@ fn fs(i: VsOut) -> FsOut {
 	let thru_lum = dot(sv.thru, vec3f(0.299, 0.587, 0.114));
 	if any(sv.thru != vec3f(1.0)) {
 		let ndl = clamp(dot(n, rz.sun_exact.xyz), 0.0, 1.0);
+		// STRENGTH rides the residual explicitly. The sun lane is a bare
+		// visibility fraction that the scene pass scales by
+		// `light_color * light_dir.w`; this lane is a finished radiance
+		// that nothing scales downstream. Leave it off and the halves
+		// stop summing to the transmission below full sun — and since
+		// the residual is NEGATIVE in the channels the filter absorbs,
+		// a strength under lum(T) drives them past zero and they start
+		// subtracting real light out of the twilight.
 		indirect += rz.sun_color.rgb
-			* (ndl * sv.vis)
+			* (ndl * sv.vis * rz.sun_color.w)
 			* medium_water_tr(sv.water)
 			* (sv.thru - vec3f(thru_lum));
 	}

@@ -40,6 +40,10 @@ struct Light {
 @group(0) @binding(1) var window_tex: texture_3d<u32>;
 @group(0) @binding(2) var coarse_tex: texture_3d<u32>;
 @group(0) @binding(3) var<storage, read> lut: array<vec4u>;
+
+// The LUT's tinted-transmission op — mirrored from the CPU's
+// `LUT_OP_TINTED` and pinned by `the_lut_ops_match_the_shaders`.
+const GI_LUT_OP_TINTED = 4u;
 @group(0) @binding(4) var<storage, read> lights: array<vec4f>;
 @group(0) @binding(5) var prev_atlas: texture_3d<f32>;
 @group(0) @binding(6) var out_atlas: texture_storage_3d<rgba16float, write>;
@@ -259,7 +263,7 @@ fn march(from_p: vec3f, dir: vec3f, max_t: f32) -> Hit {
 			if op == 1u {
 				out.water += 1.0;
 			}
-			if op == 4u {
+			if op == GI_LUT_OP_TINTED {
 				out.thru *= glass_tr(v);
 			}
 		}

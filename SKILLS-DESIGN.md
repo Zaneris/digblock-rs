@@ -830,9 +830,10 @@ The pins are in the code and the milestones (M1–M7) all shipped; M7 is an open
   tuned on the AWARD side (`dig_xp`, `field_xp`, `craft_xp` — which only slow future earning) and by where thresholds
   sit, never by repricing levels.
 - **Glass render class** — RESOLVED, and not through the water pass: glass took its own `RenderClass::Glass` over a
-  third mesh bucket (`Translucent`), alpha-blended after water in that pass, chunk-sorted back-to-front. The bucket —
-  not the class — is also the GI's see-through predicate, so a translucent SHAPED row (the crystal slab, a future pane)
-  keeps `Shaped` and still blends. `Cutout` stays memberless and reserved. GI-DESIGN.md R35 has the lighting half.
+  third mesh bucket (`Translucent`), drawn after water in that pass as a transmittance multiply plus an additive shine,
+  chunk-sorted back-to-front. The bucket — not the class — is also the GI's see-through predicate, so a translucent
+  SHAPED row (the crystal slab, a future pane) keeps `Shaped` and still blends. `Cutout` stays memberless and reserved.
+  GI-DESIGN.md R35 has the lighting half.
 - **Rubble scope.** Stone and Sandstone share one Rubble id (one texture, one row). If sandstone rubble wants its own
   warm-toned look later, a second id is append-only — but one rubble keeps the extraction table and the cobble aesthetic
   simple.

@@ -185,6 +185,40 @@ fn a_wielders_level_rides_the_entry_and_nothing_elses() {
 /// both NEE passes take as a prelude. Nothing but agreement makes the
 /// two halves one thing, so agreement is what gets pinned.
 #[test]
+fn the_lut_ops_match_the_shaders() {
+	// The op is a WGSL mirror: nothing in Rust can derive what a shader
+	// branches on, so the declaration is the contract. Every shader that
+	// reads the LUT must name the same value — change the CPU op alone
+	// and the marches would silently take glass for air.
+	let decl = format!("const GI_LUT_OP_TINTED = {LUT_OP_TINTED}u;");
+	for (name, src) in [
+		("gi_common.wgsl", digblock_assets::shader::GI_COMMON),
+		("gi_probe.wgsl", digblock_assets::shader::GI_PROBE),
+	] {
+		assert!(src.contains(&decl), "{name} must declare `{decl}`");
+	}
+	// Both `gi_solid` twins must keep reading a tinted cell as solid —
+	// that is what keeps probe relocation and `gi_occluded` out of a
+	// pane. Its threshold is a shader literal like the op, so it gets
+	// read back out of the source rather than written down again here.
+	for (name, src) in [
+		("gi_common.wgsl", digblock_assets::shader::GI_COMMON),
+		("gi_probe.wgsl", digblock_assets::shader::GI_PROBE),
+	] {
+		let threshold = src
+			.split(">> 24u) >= ")
+			.nth(1)
+			.and_then(|s| s.split('u').next())
+			.and_then(|s| s.trim().parse::<u32>().ok())
+			.unwrap_or_else(|| panic!("{name} must spell its gi_solid threshold"));
+		assert!(
+			LUT_OP_TINTED >= threshold,
+			"{name}: a tinted cell must read as solid ({LUT_OP_TINTED} < {threshold})"
+		);
+	}
+}
+
+#[test]
 fn the_carried_flag_matches_the_shaders() {
 	for decl in [
 		format!("const GI_LIGHT_CARRIED = {LIGHT_CARRIED}u;"),

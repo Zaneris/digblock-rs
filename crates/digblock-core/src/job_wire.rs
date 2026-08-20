@@ -568,6 +568,12 @@ mod tests {
 		for (i, cell) in blocks.iter_mut().enumerate() {
 			*cell = stack[solid_y].blocks[i % crate::chunk::CHUNK_VOLUME];
 		}
+		// Worldgen places no crafted block, and every translucent row is
+		// crafted, so the third stream would be EMPTY on terrain alone and
+		// its assertion would compare two empty vecs forever. Plant one
+		// pane and one shaped pane so the stream carries real vertices.
+		blocks[crate::mesher::pidx(4, 4, 4)] = crate::block::BlockType::RedGlass as u16;
+		blocks[crate::mesher::pidx(6, 4, 4)] = crate::block::BlockType::CrystalSlab as u16;
 		let job = Job::Mesh {
 			pos: ChunkPos::new(0, solid_y as i32, 0),
 			generation: 7,
@@ -582,6 +588,10 @@ mod tests {
 			panic!("mesh")
 		};
 		assert!(!before.mesh.solid.is_empty(), "test needs a real mesh");
+		assert!(
+			!before.mesh.translucent.is_empty(),
+			"test needs a real translucent mesh"
+		);
 		let Some(JobResult::Meshed { out: after, .. }) = JobResult::decode(&result.encode()) else {
 			panic!("decode");
 		};
