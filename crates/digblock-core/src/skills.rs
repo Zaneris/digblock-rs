@@ -19,16 +19,18 @@ use crate::block::BlockType;
 pub enum Skill {
 	Mining = 0,
 	Alchemy = 1,
+	Arcana = 2,
 }
 
 impl Skill {
-	pub const COUNT: usize = 2;
-	pub const ALL: [Skill; Self::COUNT] = [Skill::Mining, Skill::Alchemy];
+	pub const COUNT: usize = 3;
+	pub const ALL: [Skill; Self::COUNT] = [Skill::Mining, Skill::Alchemy, Skill::Arcana];
 
 	pub fn try_from_index(i: u8) -> Option<Self> {
 		match i {
 			0 => Some(Skill::Mining),
 			1 => Some(Skill::Alchemy),
+			2 => Some(Skill::Arcana),
 			_ => None,
 		}
 	}
@@ -40,6 +42,7 @@ impl Skill {
 		match self {
 			Skill::Mining => "Mining",
 			Skill::Alchemy => "Alchemy",
+			Skill::Arcana => "Arcana",
 		}
 	}
 }

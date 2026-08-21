@@ -325,6 +325,40 @@ pub fn ore_mastery(level: u32) -> u32 {
 /// is the top of the CONTENT ladder rather than the level cap.
 pub const MASTERY_AT: u32 = 60;
 
+/// Arcana's home cooldown: how long Return Home rests between casts,
+/// stepping DOWN at the two swift-return rungs — a rung is felt as "home
+/// comes back sooner". The first level's answer IS the game's base
+/// return cooldown; `digblock-net` aliases that base onto the protocol
+/// const its message doc names, so there is one number.
+pub fn return_cooldown_secs(level: u32) -> u32 {
+	match level {
+		l if l >= RETURN_SWIFTER_AT => 30,
+		l if l >= RETURN_SWIFT_AT => 45,
+		_ => RETURN_COOLDOWN_BASE_SECS,
+	}
+}
+
+/// The cooldown every player starts at — and the one pre-Arcana players
+/// effectively keep, since a fresh skill sits at the first level.
+pub const RETURN_COOLDOWN_BASE_SECS: u32 = 60;
+
+/// The first swift-return rung: the stretch between the second waystone
+/// and the third otherwise has no threshold in sight.
+pub const RETURN_SWIFT_AT: u32 = 18;
+
+/// The second, deep in the ladder beside the last ports.
+pub const RETURN_SWIFTER_AT: u32 = 56;
+
+/// The cast wind-up, in sim ticks — every spell channels through this,
+/// so the quickening rung is felt on the whole spellbook at once.
+pub fn channel_ticks(level: u32) -> u32 {
+	if level >= CHANNEL_QUICK_AT { 72 } else { 120 }
+}
+
+/// Where every channel quickens — the ladder's midpoint breather between
+/// the arc's first rank and the fourth waystone.
+pub const CHANNEL_QUICK_AT: u32 = 30;
+
 // There is deliberately NO per-substance draw gate. The reveal IS the
 // gate: a node you cannot see draws as its host, and one you can needs
 // only the siphon — a second level axis on top of the reveal would be
@@ -549,6 +583,14 @@ pub fn opens(skill: Skill, level: u32) -> bool {
 		}
 		// A new recipe, or a surface node fading into view.
 		Skill::Alchemy => craft(b) == Some(level) || alchemy_reveal(b) == Some(level),
+		// The travel rungs: the home cooldown stepping down, or the
+		// channel quickening — levels that hand you something without
+		// handing you an item, on the prospector/mastery pattern.
+		Skill::Arcana => {
+			b == BlockType::Air
+				&& (return_cooldown_secs(level) != return_cooldown_secs(level - 1)
+					|| channel_ticks(level) != channel_ticks(level - 1))
+		}
 	})
 }
 

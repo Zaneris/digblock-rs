@@ -517,6 +517,16 @@ fn unlock_levels_are_the_threshold_levels() {
 			 the first level, which is never an unlock, and the old bonus \
 			 lines left with bench extraction"
 	);
+	// Arcana: the travel rungs alone until the waystones land — Return
+	// Home and Wisp sit at the first level, which is never an unlock.
+	let arcana: Vec<u32> = (1..=MAX_LEVEL)
+		.filter(|&l| opens(Skill::Arcana, l))
+		.collect();
+	assert_eq!(
+		arcana,
+		vec![RETURN_SWIFT_AT, CHANNEL_QUICK_AT, RETURN_SWIFTER_AT],
+		"the two swift-return rungs and the channel quickening"
+	);
 	// The first level is where everyone starts — you never level up into
 	// it, and the slabs sitting at that unlock must not say otherwise.
 	for s in Skill::ALL {
@@ -524,4 +534,28 @@ fn unlock_levels_are_the_threshold_levels() {
 		assert!(!opens(s, 0));
 		assert!(!opens(s, MAX_LEVEL + 1));
 	}
+}
+
+/// The travel rungs only ever help: neither the cooldown nor the channel
+/// may lengthen with a level, and each really steps somewhere — a sweep
+/// that saw no step proved nothing.
+#[test]
+fn the_travel_rungs_never_lengthen_with_level() {
+	let (mut cooldown_steps, mut channel_steps, mut examined) = (0u32, 0u32, 0u32);
+	for l in 2..=MAX_LEVEL {
+		examined += 1;
+		assert!(
+			return_cooldown_secs(l) <= return_cooldown_secs(l - 1),
+			"cooldown lengthened at {l}"
+		);
+		assert!(
+			channel_ticks(l) <= channel_ticks(l - 1),
+			"channel lengthened at {l}"
+		);
+		cooldown_steps += u32::from(return_cooldown_secs(l) != return_cooldown_secs(l - 1));
+		channel_steps += u32::from(channel_ticks(l) != channel_ticks(l - 1));
+	}
+	assert_eq!(examined, MAX_LEVEL - 1);
+	assert!(cooldown_steps > 0, "the cooldown never stepped");
+	assert!(channel_steps > 0, "the channel never stepped");
 }

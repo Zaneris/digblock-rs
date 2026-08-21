@@ -73,6 +73,7 @@ fn teasers(skill: Skill) -> Vec<(u32, &'static str)> {
 	match skill {
 		Skill::Mining => mining_teasers(),
 		Skill::Alchemy => alch_teasers(),
+		Skill::Arcana => arcana_teasers(),
 	}
 }
 
@@ -153,6 +154,19 @@ fn alch_teasers() -> Vec<(u32, &'static str)> {
 			"the waste dip — your process tightens early",
 		),
 		(item_at(B::MastersSigil), "the master's sigil"),
+	]
+}
+
+/// Arcana's: the travel rungs. Young on purpose — the waystone network
+/// and the spellbook grow this list as their stages land.
+fn arcana_teasers() -> Vec<(u32, &'static str)> {
+	vec![
+		(
+			unlock::RETURN_SWIFT_AT,
+			"swift return — home comes back sooner",
+		),
+		(unlock::CHANNEL_QUICK_AT, "every channel quickens"),
+		(unlock::RETURN_SWIFTER_AT, "swifter return"),
 	]
 }
 
@@ -406,7 +420,9 @@ mod tests {
 		skills.set_total(Skill::Mining, skills::total_xp_for(AT));
 		let all = texts(&emit(&skills)).join("\n");
 		let need = skills::total_xp_for(AT + 1) - skills::total_xp_for(AT);
-		let total_level = AT + skills.level(Skill::Alchemy);
+		// Summed over the roster, not written as arithmetic — a new skill
+		// must move this total without anyone revisiting the test.
+		let total_level: u32 = Skill::ALL.iter().map(|&s| skills.level(s)).sum();
 		for want in [
 			group(0),
 			group(need),
