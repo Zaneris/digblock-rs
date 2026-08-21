@@ -475,6 +475,8 @@ impl TestClient {
 				| NetEvent::Skills { .. }
 				| NetEvent::XpGain { .. }
 				| NetEvent::LevelUp { .. }
+				| NetEvent::Waystones { .. }
+				| NetEvent::CastRefused { .. }
 				| NetEvent::AreaReady => {}
 			}
 		}

@@ -546,6 +546,35 @@ pub const HOME_XP_STRIDE: f32 = 8.0;
 /// The home award's ceiling, per jump.
 pub const HOME_XP_CAP: u64 = 60;
 
+/// Arcana XP for a PRICED cast, derived from what it drains — the
+/// `craft_xp` rule: the award rides the price, so a fare retune moves
+/// its XP with it and no spell pays out of proportion to its drain.
+/// Zero-cost casts pay zero structurally.
+pub fn cast_xp(essence_price: u32) -> u64 {
+	u64::from(essence_price) * CAST_XP_PER_ESSENCE
+}
+
+/// Points per essence unit a cast drains.
+pub const CAST_XP_PER_ESSENCE: u64 = 15;
+
+/// The once-per-account first-arrival milestone at each biome's
+/// waystone, flat and authored (the `field_xp` mold): rising with the
+/// port's remoteness, sized so the waystone hunt is Arcana's XP spine
+/// the way reveals are Mining's. `None` mirrors the portless kinds.
+pub fn waystone_milestone(kind: crate::worldgen::SurfaceKind) -> Option<u64> {
+	use crate::worldgen::SurfaceKind as K;
+	Some(match kind {
+		K::Plains => 400,
+		K::Forest => 600,
+		K::Savanna => 900,
+		K::Taiga => 1_400,
+		K::Beach => 2_000,
+		K::Mountain => 3_000,
+		K::Snow => 4_500,
+		K::Ocean | K::River | K::Lake | K::Marsh | K::GravelShore | K::Scree => return None,
+	})
+}
+
 /// Total Alchemy XP for one validated alchemy op (call only after
 /// `apply_alchemy` succeeded — the op's counts are then known-valid).
 pub fn alchemy_xp(op: &crate::inventory::AlchemyOp) -> u64 {

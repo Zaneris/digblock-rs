@@ -66,6 +66,12 @@ impl Sim {
 		);
 		send_frame(
 			&out,
+			&ServerMsg::Waystones {
+				entries: self.waystone_store.sites().to_vec(),
+			},
+		);
+		send_frame(
+			&out,
 			&admin::server_reply(digblock_net::messages::AdminReply::LegacyCharacterClaimed),
 		);
 		let name = client.name.clone();
@@ -255,6 +261,15 @@ impl Sim {
 				xp: record.skills.to_wire(),
 			},
 		);
+		// The world's resolved waystones, right behind Skills: server
+		// state the client cannot derive (resolved against the journal
+		// once, stored forever).
+		ok &= send_frame(
+			&out,
+			&ServerMsg::Waystones {
+				entries: self.waystone_store.sites().to_vec(),
+			},
+		);
 		if !ok {
 			// The handshake itself no longer competes with the column
 			// stream for queue space, so this is now a genuinely broken
@@ -345,6 +360,7 @@ impl Sim {
 				// cooldown and the timer is bypassed by rejoining.
 				last_return_tick: record.last_return_tick,
 				skills: record.skills,
+				visited_waystones: record.visited_waystones,
 			},
 		);
 		self.residency_dirty = true;

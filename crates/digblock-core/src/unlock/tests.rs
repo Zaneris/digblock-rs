@@ -550,6 +550,45 @@ fn unlock_levels_are_the_threshold_levels() {
 	}
 }
 
+/// The three port tables are twins over ONE set of kinds — a fare
+/// without a port is as wrong as a port without a fare or a milestone —
+/// and remoteness orders fares and milestones alike: a farther port
+/// costs more and pays more, with no inversion to game. The fare is also
+/// PAYABLE when its first port opens: every fare is drawn in an essence
+/// whose node reveals earlier on its own ladder (the payability pin's
+/// question, asked cross-skill the way the siphon handshake is).
+#[test]
+fn the_port_tables_are_twins_and_the_fare_is_payable() {
+	use crate::worldgen::SurfaceKind;
+	use BlockType as B;
+	let mut ports: Vec<(u32, u32, u64)> = Vec::new();
+	for k in SurfaceKind::ALL {
+		let port = waystone(k);
+		let fare = crate::alchemy::cast_price(k);
+		let stone = crate::skills::waystone_milestone(k);
+		assert_eq!(port.is_some(), fare.is_some(), "{k:?} fare/port twins");
+		assert_eq!(port.is_some(), stone.is_some(), "{k:?} milestone twin");
+		if let (Some(l), Some((_, amt)), Some(ms)) = (port, fare, stone) {
+			ports.push((l, amt, ms));
+		}
+	}
+	assert!(
+		!ports.is_empty(),
+		"no ports at all — the sweep proved nothing"
+	);
+	ports.sort_unstable();
+	for w in ports.windows(2) {
+		assert!(w[0].0 < w[1].0, "two ports on one level");
+		assert!(w[0].1 < w[1].1, "a farther port must cost more");
+		assert!(w[0].2 < w[1].2, "a farther port must pay more");
+	}
+	let first_port = ports[0].0;
+	assert!(
+		alchemy_reveal(B::Leystone).expect("leystone reveals") <= first_port,
+		"the travel essence must be findable before the first port opens"
+	);
+}
+
 /// The travel rungs only ever help: neither the cooldown nor the channel
 /// may lengthen with a level, and each really steps somewhere — a sweep
 /// that saw no step proved nothing.

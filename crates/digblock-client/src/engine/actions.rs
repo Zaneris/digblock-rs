@@ -298,6 +298,75 @@ impl Engine {
 		}
 	}
 
+	/// The ports this world offers: online, exactly the sites its server
+	/// RESOLVED (a port to nowhere must not exist); offline, the whole
+	/// ladder — a kind this seed never generated refuses at the cast.
+	pub(super) fn known_ports(&self) -> Vec<crate::ui::screens::spellbook::Port> {
+		let all = crate::ui::screens::spellbook::all_ports();
+		if self.session.client.is_some() {
+			all.into_iter()
+				.filter(|p| self.session.waystones.iter().any(|&(i, _)| i == p.idx))
+				.collect()
+		} else {
+			all
+		}
+	}
+
+	/// The offline arm of a waystone cast: the same tables the server
+	/// validates with, the same debit, and the site materializes on first
+	/// visit — stamped, protected and marked, what a server world did at
+	/// boot. The first cast to a kind pays the anchor walk (a pure ring
+	/// search), cached for the session. No first-arrival milestone
+	/// offline: that award is once per ACCOUNT, and accounts are a
+	/// multiplayer concept — a per-save copy would re-pay every save.
+	fn cast_waystone_offline(&mut self, idx: u8) {
+		use digblock_core::skills::Skill;
+		use digblock_core::worldgen::SurfaceKind;
+		let Some(&kind) = SurfaceKind::ALL.get(idx as usize) else {
+			return;
+		};
+		let Some(level) = digblock_core::unlock::waystone(kind) else {
+			return;
+		};
+		if self.skills.level(Skill::Arcana) < level {
+			self.push_feed(Msg::WaystoneLocked);
+			return;
+		}
+		let eye = match self.save.offline_waystones.get(&idx).copied() {
+			Some(cached) => cached,
+			None => {
+				let found = digblock_core::waystones::anchor(kind, self.seed);
+				self.save.offline_waystones.insert(idx, found);
+				found
+			}
+		};
+		let Some(eye) = eye else {
+			// This seed never made such a place — a port to nowhere.
+			self.push_feed(Msg::WaystoneLocked);
+			return;
+		};
+		let (essence, fare) =
+			digblock_core::alchemy::cast_price(kind).expect("a laddered kind has a fare");
+		if !self.inventory.try_take_sub(essence, fare) {
+			self.push_feed(Msg::CastCantPay);
+			return;
+		}
+		let region = digblock_core::spawn::lock_region(eye);
+		if !self.protected.contains(&region) {
+			self.protected.push(region);
+			self.pending_stamp
+				.extend(digblock_core::waystones::stamp(eye));
+			self.vfx.marker_sites.push(Vec3::new(
+				eye.x,
+				eye.y - digblock_core::player::EYE_TO_FEET,
+				eye.z,
+			));
+		}
+		self.apply_teleport(eye, Vec3::ZERO);
+		// Offline arm ONLY — the shared path never awards.
+		self.award_xp_offline(Skill::Arcana, digblock_core::skills::cast_xp(fare));
+	}
+
 	/// A completed channel fires its spell. The teleport that answers —
 	/// this frame offline, a round trip later online — is what words the
 	/// arrival, via `spawn_return_pending`.
@@ -330,6 +399,14 @@ impl Engine {
 					}
 				}
 			}
+			CastTarget::Waystone(idx) => match self.session.client.as_mut() {
+				// The server validates the two real gates — the unlock
+				// and the fare — and answers Teleported or CastRefused.
+				Some(net) if net.ready() => {
+					net.send_cast(digblock_net::messages::CastKind::Waystone(idx));
+				}
+				_ => self.cast_waystone_offline(idx),
+			},
 		}
 	}
 

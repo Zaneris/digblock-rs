@@ -439,6 +439,20 @@ impl Engine {
 					self.begin_arrival_hold();
 				}
 				NetEvent::AreaReady => self.end_arrival_hold(),
+				NetEvent::Waystones { entries } => {
+					// The server's resolved sites: the spellbook's roster
+					// and the standing spirals' anchors. Marker sites are
+					// pad-floor positions; entries carry eyes.
+					self.session.waystones = entries;
+					self.refresh_marker_sites();
+				}
+				NetEvent::CastRefused { reason } => {
+					use digblock_net::messages::CastRefusal;
+					self.push_feed(match reason {
+						CastRefusal::Locked => Msg::WaystoneLocked,
+						CastRefusal::CantPay => Msg::CastCantPay,
+					});
+				}
 				// Hard-set: inter-beat drift is microscopic, and after a
 				// paused clock (backgrounded tab) a snap is what we want.
 				NetEvent::TimeOfDay { tod } => self.sun.tod = tod,

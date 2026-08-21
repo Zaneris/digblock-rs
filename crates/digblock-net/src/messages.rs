@@ -499,6 +499,37 @@ pub enum ClientMsg {
 	/// trade, and it is the right way round for a client that would
 	/// otherwise be unable to play at all.
 	Unreliable(Vec<u8>),
+	/// A completed cast channel asking for its spell. The channel itself
+	/// is client pacing (the `handle_return_to_spawn` stance: honest
+	/// clients gate locally); the server validates the UNLOCK and the
+	/// PRICE, which are the real gates. Appended in v32.
+	Cast(CastKind),
+}
+
+/// What a [`ClientMsg::Cast`] winds up toward — shaped for the whole
+/// spell roster from day one so the message never needs a second form.
+/// `Wisp` and `Kindle` decode today and are refused until their spells
+/// land (the retired-verb pattern, run in reverse).
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
+pub enum CastKind {
+	/// A port to the biome waystone at this `SurfaceKind`
+	/// declaration-order index.
+	Waystone(u8),
+	Wisp,
+	Kindle {
+		cell: [i32; 3],
+		face: u8,
+	},
+}
+
+/// Why a cast was refused — a reason, never a sentence; `voice` chooses
+/// the words. Appended in v32.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
+pub enum CastRefusal {
+	/// The destination (or the spell) is beyond the caster's Arcana.
+	Locked,
+	/// The caster cannot pay the passage. Refused BEFORE any debit.
+	CantPay,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
@@ -728,6 +759,21 @@ pub enum ServerMsg {
 	/// that used to ride `Chat` from `SERVER_ID`; the sentence is now
 	/// `voice`'s. Appended in v29.
 	Admin(AdminReply),
+	/// The world's RESOLVED waystones — `(SurfaceKind index, eye)` — sent
+	/// once in join sync after `Skills`. Server state the client cannot
+	/// derive: each eye was resolved against the journal ONCE and stored,
+	/// so re-deriving from the seed would disagree exactly on damaged
+	/// worlds. Appended in v32.
+	Waystones {
+		entries: Vec<(u8, [f32; 3])>,
+	},
+	/// A cast the server would not perform, and why — the spellbook greys
+	/// what it can predict, so an honest client sees this only across a
+	/// race (levelling down is impossible, but spending essence between
+	/// build and click is not). Appended in v32.
+	CastRefused {
+		reason: CastRefusal,
+	},
 }
 
 #[cfg(test)]

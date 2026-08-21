@@ -198,6 +198,8 @@ impl Engine {
 				&self.input.tool_swap,
 			);
 			let owned_tools = self.owned_tools();
+			// Hoisted before the DrawList borrow: `known_ports` reads self.
+			let ports = self.ui.spellbook.is_open().then(|| self.known_ports());
 			let mut ui = crate::ui::Ui {
 				dl: &mut self.ui.ui_dl,
 				hits: &mut self.ui.ui_hits,
@@ -222,6 +224,8 @@ impl Engine {
 				let view = crate::ui::screens::spellbook::SpellView::build(
 					&self.skills,
 					self.save.spawn_cooldown.ceil() as u32,
+					ports.as_deref().unwrap_or(&[]),
+					&self.inventory,
 				);
 				self.ui.spellbook.build(&mut ui, size, &view, daylight);
 			} else {

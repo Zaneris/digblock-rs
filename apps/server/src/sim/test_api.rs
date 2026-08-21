@@ -193,6 +193,23 @@ impl Sim {
 		}
 	}
 
+	/// Seed a resolved waystone, as boot would have stored one — cast
+	/// tests need a destination without paying a real anchor walk.
+	#[cfg(test)]
+	pub(crate) fn bench_add_waystone(&mut self, idx: u8, eye: Vec3) {
+		self.waystone_store.set(idx, eye.to_array());
+	}
+
+	/// A client's essence balance, for fare assertions.
+	#[cfg(test)]
+	pub(crate) fn test_essence(
+		&self,
+		conn_id: u64,
+		e: digblock_core::block::Essence,
+	) -> Option<u32> {
+		self.clients.get(&conn_id).map(|c| c.inventory.sub_count(e))
+	}
+
 	/// The cell a client currently holds a dig on, if any.
 	#[cfg(test)]
 	pub(super) fn test_digging(&self, conn_id: u64) -> Option<(i32, i32, i32)> {

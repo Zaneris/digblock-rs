@@ -251,6 +251,71 @@ impl Sim {
 		self.process_cast(conn_id, digblock_core::skills::home_xp(from.distance(pos)));
 	}
 
+	/// A completed cast asking for its spell. The channel was client
+	/// pacing; the two REAL gates are validated here — the unlock against
+	/// the caster's own Arcana, and the fare, refused BEFORE any debit
+	/// (the headroom rule). Wisp and Kindle decode and refuse until their
+	/// spells land.
+	pub(super) fn handle_cast(&mut self, conn_id: u64, kind: digblock_net::messages::CastKind) {
+		use digblock_core::skills::Skill;
+		use digblock_net::messages::{CastKind, CastRefusal};
+		let refuse = |client: &Client, reason: CastRefusal| {
+			client_send(client, &ServerMsg::CastRefused { reason });
+		};
+		let Some(client) = self.clients.get(&conn_id) else {
+			return;
+		};
+		if !client.live {
+			return;
+		}
+		let CastKind::Waystone(idx) = kind else {
+			return refuse(client, CastRefusal::Locked);
+		};
+		let Some(&skind) = digblock_core::worldgen::SurfaceKind::ALL.get(idx as usize) else {
+			return refuse(client, CastRefusal::Locked);
+		};
+		let (level, eye) = match (
+			digblock_core::unlock::waystone(skind),
+			self.waystone_store.get(idx),
+		) {
+			(Some(l), Some(eye)) => (l, Vec3::from_array(eye)),
+			// No port on this kind, or a site this world never managed
+			// to resolve — a port to nowhere must not exist.
+			_ => return refuse(client, CastRefusal::Locked),
+		};
+		if client.skills.level(Skill::Arcana) < level {
+			return refuse(client, CastRefusal::Locked);
+		}
+		let (essence, fare) =
+			digblock_core::alchemy::cast_price(skind).expect("a laddered kind has a fare");
+		let pos = self.clear_landing(eye);
+		let client = self.clients.get_mut(&conn_id).expect("checked above");
+		if !client.inventory.try_take_sub(essence, fare) {
+			let client = self.clients.get(&conn_id).expect("checked above");
+			return refuse(client, CastRefusal::CantPay);
+		}
+		// The debit's rebase, the standing answer to every alchemy-side
+		// mutation — the offer greyed on the same headroom, so an honest
+		// client only ever sees this move the number it predicted.
+		let counts = client.inventory.to_wire();
+		client_send(client, &ServerMsg::InventoryFull { counts });
+		// First arrival pays its milestone exactly once per account.
+		let first = !client.visited_waystones.contains(&idx);
+		if first {
+			client.visited_waystones.push(idx);
+		}
+		let id = client.id;
+		let name = client.name.clone();
+		log::info!("player {id} ({name}) ported to the {skind:?} waystone");
+		self.teleport_client(conn_id, pos, Vec3::ZERO);
+		let mut xp = digblock_core::skills::cast_xp(fare);
+		if first {
+			xp += digblock_core::skills::waystone_milestone(skind)
+				.expect("a laddered kind has a milestone");
+		}
+		self.process_cast(conn_id, xp);
+	}
+
 	/// The cast chokepoint — Arcana's twin of `process_alchemy`'s award
 	/// tail: the one place a landed cast becomes XP, the wire total, the
 	/// persisted record and the level-up announcement. Offline play

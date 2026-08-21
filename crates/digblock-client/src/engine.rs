@@ -423,6 +423,11 @@ struct SaveSession {
 	/// Seconds since the last player/inventory snapshot handoff.
 	player_save_accum: f32,
 
+	/// Offline port anchors, derived on first cast and cached — the ring
+	/// walk is pure but not free, and a session casts to the same few
+	/// places. `None` caches a kind this seed never offers.
+	offline_waystones: std::collections::HashMap<u8, Option<Vec3>>,
+
 	/// The world's spawn point (the server's after a Welcome swap):
 	/// the return-to-spawn target.
 	spawn_pos: Vec3,
@@ -532,6 +537,11 @@ struct NetSession {
 	/// network does.
 	tick_lerp: crate::smoothing::TickLerp,
 
+	/// The server's resolved waystones for THIS world, from join sync —
+	/// `(SurfaceKind index, eye)`. The spellbook's roster and the
+	/// standing spirals' anchors; empty offline (ports derive lazily).
+	waystones: Vec<(u8, [f32; 3])>,
+
 	/// Reconciliation health, logged on a slow cadence while connected.
 	net_corrections: u32,
 
@@ -636,11 +646,12 @@ struct UiState {
 	overlay_visible: bool,
 }
 
-/// What a channel is winding up toward. One arm today; the waystone
-/// ports join it when they land.
+/// What a channel is winding up toward.
 #[derive(Clone, Copy, PartialEq)]
 enum CastTarget {
 	Home,
+	/// The port at this `SurfaceKind` declaration-order index.
+	Waystone(u8),
 }
 
 struct CastState {

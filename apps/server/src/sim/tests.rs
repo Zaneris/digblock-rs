@@ -1356,6 +1356,120 @@ fn return_to_spawn_teleports_with_cooldown() {
 	assert!(sim.test_player(1).unwrap().pos.distance(FLAT_SPAWN) < 1.0);
 }
 
+/// The resolved sites ride join sync, right behind Skills — the client
+/// cannot derive them, and the spellbook's roster is empty without them.
+#[test]
+fn waystones_ride_join_sync() {
+	let mut sim = flat_sim("wsync");
+	sim.bench_add_waystone(2, FLAT_SPAWN + glam::Vec3::new(150.0, 0.0, 0.0));
+	let mut c = connect(&mut sim, 1);
+	wait_live(&mut sim, 1);
+	c.drain();
+	let entries = c
+		.msgs
+		.iter()
+		.find_map(|m| match m {
+			ServerMsg::Waystones { entries } => Some(entries.clone()),
+			_ => None,
+		})
+		.expect("join sync carries the waystones");
+	assert!(entries.iter().any(|&(k, _)| k == 2));
+}
+
+/// The two real gates of a port, in refusal order — the unlock, then
+/// the fare (refused BEFORE any debit) — and the pay: fare-derived cast
+/// XP, plus the first-arrival milestone exactly once per account, with
+/// every expectation read off the core tables.
+#[test]
+fn a_port_validates_the_unlock_and_the_fare_and_pays_once() {
+	use digblock_core::skills::{cast_xp, total_xp_for, waystone_milestone};
+	use digblock_core::worldgen::SurfaceKind;
+	use digblock_net::messages::{CastKind, CastRefusal};
+	let kind = SurfaceKind::Plains;
+	let idx = SurfaceKind::ALL
+		.iter()
+		.position(|&k| k == kind)
+		.expect("plains is a kind") as u8;
+	let port_level = digblock_core::unlock::waystone(kind).expect("plains has a port");
+	let (essence, fare) = digblock_core::alchemy::cast_price(kind).expect("and a fare");
+	let milestone = waystone_milestone(kind).expect("and a milestone");
+
+	let mut sim = flat_sim("port");
+	let mut c = connect(&mut sim, 1);
+	wait_live(&mut sim, 1);
+	let dest = FLAT_SPAWN + glam::Vec3::new(200.0, 0.0, 0.0);
+	sim.bench_add_waystone(idx, dest);
+	let cast = |sim: &mut super::Sim| {
+		sim.tick_once(vec![SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::Cast(CastKind::Waystone(idx)),
+		}]);
+	};
+
+	// Below the port's level: refused as locked, unmoved, undebited.
+	cast(&mut sim);
+	c.drain();
+	assert!(c.msgs.iter().any(|m| matches!(
+		m,
+		ServerMsg::CastRefused {
+			reason: CastRefusal::Locked
+		}
+	)));
+	assert!(sim.test_player(1).unwrap().pos.distance(dest) > 100.0);
+
+	// Unlocked but broke: refused for the fare, BEFORE any debit.
+	sim.bench_set_arcana_level(1, port_level);
+	c.msgs.clear();
+	cast(&mut sim);
+	c.drain();
+	assert!(c.msgs.iter().any(|m| matches!(
+		m,
+		ServerMsg::CastRefused {
+			reason: CastRefusal::CantPay
+		}
+	)));
+
+	// Funded for two trips: the first pays fare-derived XP plus the
+	// milestone; the second, the fare's worth alone.
+	sim.test_grant_essence(1, essence, fare * 2);
+	c.msgs.clear();
+	cast(&mut sim);
+	c.drain();
+	assert!(sim.test_player(1).unwrap().pos.distance(dest) < 3.0);
+	let total_after = |c: &TestClient| {
+		c.msgs
+			.iter()
+			.filter_map(|m| match m {
+				ServerMsg::XpGain { skill, total }
+					if *skill == digblock_core::skills::Skill::Arcana as u8 =>
+				{
+					Some(*total)
+				}
+				_ => None,
+			})
+			.next_back()
+	};
+	assert_eq!(
+		total_after(&c),
+		Some(total_xp_for(port_level) + cast_xp(fare) + milestone),
+		"first arrival pays the fare's worth plus the milestone"
+	);
+	c.msgs.clear();
+	cast(&mut sim);
+	c.drain();
+	assert_eq!(
+		total_after(&c),
+		Some(total_xp_for(port_level) + cast_xp(fare) * 2 + milestone),
+		"a second arrival pays the fare's worth alone"
+	);
+	// And the fare really left: two trips, two fares.
+	assert_eq!(
+		sim.test_essence(1, essence),
+		Some(0),
+		"both fares debited exactly"
+	);
+}
+
 /// A site stamp lands once and converges: every cell the pure builder
 /// names holds its value afterwards, and a second stamp broadcasts
 /// nothing at all — boot after boot is a no-op, not a journal leak.

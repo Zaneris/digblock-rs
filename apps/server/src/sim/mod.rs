@@ -354,9 +354,13 @@ struct Client {
 	/// (the first request after joining is always allowed).
 	last_return_tick: Option<u32>,
 	/// Per-skill XP totals — the authoritative copy. Awards happen at
-	/// the two chokepoints (dig credit, alchemy) and reach the client as
-	/// `ServerMsg::XpGain` totals; levels derive from the shared curve.
+	/// the chokepoints (dig credit, alchemy, the cast) and reach the
+	/// client as `ServerMsg::XpGain` totals; levels derive from the
+	/// shared curve.
 	skills: digblock_core::skills::SkillSet,
+	/// Waystones this account has arrived at (kind indices) — the
+	/// first-arrival milestone's memory, persisted with the record.
+	visited_waystones: Vec<u8>,
 }
 
 impl Client {
@@ -405,6 +409,7 @@ impl Client {
 			pos: Some(self.player.pos.to_array()),
 			last_return_tick: self.last_return_tick,
 			skills: self.skills.clone(),
+			visited_waystones: self.visited_waystones.clone(),
 		}
 	}
 }
@@ -853,6 +858,7 @@ impl Sim {
 				// stream (edit raycasts re-validate against the player's
 				// position when they run anyway).
 				ClientMsg::ReturnToSpawn => self.handle_return_to_spawn(conn_id),
+				ClientMsg::Cast(kind) => self.handle_cast(conn_id, kind),
 				// Inline like chat: sync radius is read fresh each tick, so the
 				// change applies from the next sync pass.
 				//

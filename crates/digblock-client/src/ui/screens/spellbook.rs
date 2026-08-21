@@ -4,8 +4,10 @@
 //! closes the screen and runs the channel, so the cast is watched, not
 //! menued. The screen never mutates game state.
 
+use digblock_core::inventory::Inventory;
 use digblock_core::skills::{Skill, SkillSet};
 use digblock_core::unlock;
+use digblock_core::worldgen::SurfaceKind;
 use digblock_platform::input::{InputEvent, MouseButton};
 
 use crate::ui::draw::Layer;
@@ -16,6 +18,56 @@ use crate::ui::{HitMap, InvId, Rect, hud, theme};
 pub enum SpellAction {
 	/// Begin the Return Home channel.
 	CastHome,
+	/// Begin the channel for the port at this `SurfaceKind` index.
+	CastWaystone(u8),
+}
+
+/// One port as the page lists it — everything derived from the core
+/// tables by [`all_ports`], so the roster and the rules cannot drift.
+#[derive(Clone, Copy)]
+pub struct Port {
+	/// `SurfaceKind` declaration-order index.
+	pub idx: u8,
+	pub level: u32,
+	pub essence: digblock_core::block::Essence,
+	pub fare: u32,
+}
+
+/// Every laddered port, ascending by level: the whole roster offline,
+/// and the universe the online caller filters to its world's RESOLVED
+/// sites. Reads the three twinned tables and nothing else.
+pub fn all_ports() -> Vec<Port> {
+	let mut out: Vec<Port> = SurfaceKind::ALL
+		.iter()
+		.enumerate()
+		.filter_map(|(i, &k)| {
+			let level = unlock::waystone(k)?;
+			let (essence, fare) = digblock_core::alchemy::cast_price(k)?;
+			Some(Port {
+				idx: i as u8,
+				level,
+				essence,
+				fare,
+			})
+		})
+		.collect();
+	out.sort_by_key(|p| p.level);
+	out
+}
+
+/// The page's own name for a port — a label, not a `voice` sentence;
+/// screens own their labels.
+fn port_label(idx: u8) -> &'static str {
+	match SurfaceKind::ALL.get(idx as usize) {
+		Some(SurfaceKind::Plains) => "PLAINS WAYSTONE",
+		Some(SurfaceKind::Forest) => "FOREST WAYSTONE",
+		Some(SurfaceKind::Savanna) => "SAVANNA WAYSTONE",
+		Some(SurfaceKind::Taiga) => "TAIGA WAYSTONE",
+		Some(SurfaceKind::Beach) => "SHORE WAYSTONE",
+		Some(SurfaceKind::Mountain) => "MOUNTAIN WAYSTONE",
+		Some(SurfaceKind::Snow) => "FAR COLD WAYSTONE",
+		_ => "WAYSTONE",
+	}
 }
 
 /// The page's per-frame view, derived once so measure and emit read the
@@ -24,15 +76,26 @@ pub enum SpellAction {
 pub struct SpellView {
 	rows: Vec<Row>,
 	home_ready: bool,
+	/// The ports a click may cast right now, by `InvId::Spell` slot.
+	castable: Vec<(u8, u8)>,
 }
 
 impl SpellView {
 	/// `cooldown_secs` is the engine's live home-spell countdown,
 	/// ceiling-rounded by the caller (a "0s" row that is not yet ready
 	/// would be a lie).
-	pub fn build(skills: &SkillSet, cooldown_secs: u32) -> Self {
+	/// `ports` is what THIS world offers (the engine filters online to
+	/// the sites its server resolved); the fare greys on the same counts
+	/// the cast would debit, so the offer and the rule cannot drift.
+	pub fn build(
+		skills: &SkillSet,
+		cooldown_secs: u32,
+		ports: &[Port],
+		inventory: &Inventory,
+	) -> Self {
 		let level = skills.level(Skill::Arcana);
 		let home_ready = cooldown_secs == 0;
+		let mut castable = Vec::new();
 		let mut rows = vec![Row::Title, Row::Space];
 		rows.push(Row::Spell {
 			id: InvId::Spell(0),
@@ -48,13 +111,42 @@ impl SpellView {
 			"a channelled journey back to your spawn — hold still".to_string(),
 		));
 		rows.push(Row::Space);
-		// One teaser tier, the alchemy screen's rule: the next rung and
-		// nothing past it. Prose is this screen's own; the level is read
-		// from the table that enforces it.
+		// The ports: every unlocked one, plus ONE teaser tier — the
+		// alchemy screen's "what you have and one tier of what is
+		// coming".
+		let mut teased = false;
+		for port in ports {
+			if port.level <= level {
+				let affordable = inventory.sub_count(port.essence) >= port.fare;
+				let slot = 1 + port.idx;
+				if affordable {
+					castable.push((slot, port.idx));
+				}
+				rows.push(Row::Spell {
+					id: InvId::Spell(slot),
+					text: port_label(port.idx).to_string(),
+					state: format!("{} {}", port.fare, port.essence.name().to_uppercase()),
+					ready: affordable,
+				});
+			} else if !teased {
+				teased = true;
+				rows.push(Row::Info(format!(
+					"next port: LV {} — {}",
+					port.level,
+					port_label(port.idx).to_lowercase()
+				)));
+			}
+		}
+		rows.push(Row::Space);
+		// The rung teaser rides beneath the roster.
 		if let Some((lvl, what)) = next_rung(level) {
 			rows.push(Row::Info(format!("next: LV {lvl} — {what}")));
 		}
-		Self { rows, home_ready }
+		Self {
+			rows,
+			home_ready,
+			castable,
+		}
 	}
 }
 
@@ -169,6 +261,11 @@ impl SpellScreen {
 				pressed: true,
 			} => match hits.hit(self.cursor.0, self.cursor.1)? {
 				InvId::Spell(0) if view.home_ready => Some(SpellAction::CastHome),
+				InvId::Spell(slot) => view
+					.castable
+					.iter()
+					.find(|&&(s, _)| s == slot)
+					.map(|&(_, idx)| SpellAction::CastWaystone(idx)),
 				_ => None,
 			},
 			_ => None,

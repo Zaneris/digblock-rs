@@ -159,6 +159,18 @@ impl Engine {
 		self.audio.fall_from_y = pos.y;
 	}
 
+	/// Rebuild the standing-spiral anchors from what this world knows:
+	/// the spawn pad, plus every resolved waystone. Eyes become pad-floor
+	/// positions — the spiral rises out of the platform, not the air.
+	pub(super) fn refresh_marker_sites(&mut self) {
+		let pad = |eye: Vec3| Vec3::new(eye.x, eye.y - digblock_core::player::EYE_TO_FEET, eye.z);
+		let mut sites = vec![pad(self.save.spawn_pos)];
+		for &(_, eye) in &self.session.waystones {
+			sites.push(pad(Vec3::from_array(eye)));
+		}
+		self.vfx.marker_sites = sites;
+	}
+
 	/// Flush and detach the active named save (leaving for a server,
 	/// another save, or a backdrop world). Drains this frame's recorded
 	/// edits and flushes WITH the live overlay before closing — a

@@ -105,6 +105,7 @@ fn eviction_spares_the_recently_used() {
 	s.put(
 		veteran,
 		PlayerRecord {
+			visited_waystones: Vec::new(),
 			inventory: inv,
 			layout: None,
 			pos: None,
@@ -147,6 +148,7 @@ fn the_interval_flush_persists_without_blocking_the_caller() {
 		s.put(
 			id,
 			PlayerRecord {
+				visited_waystones: Vec::new(),
 				inventory: inv,
 				layout: None,
 				pos: None,
@@ -204,6 +206,7 @@ fn round_trips_across_reopen() {
 		s.put(
 			id_a,
 			PlayerRecord {
+				visited_waystones: Vec::new(),
 				inventory: inv,
 				layout: Some(layout()),
 				pos: None,
@@ -284,6 +287,9 @@ fn every_format_version_still_reads() {
 		}
 		if version >= 4 {
 			bytes.push(0); // no skills
+		}
+		if version >= 9 {
+			bytes.push(0); // no visited waystones
 		}
 		if version >= FIRST_TWO_SECTION_VERSION {
 			bytes.extend_from_slice(&0u32.to_le_bytes()); // empty quarantine
@@ -384,6 +390,7 @@ fn a_claim_merges_into_what_the_account_already_had() {
 	let dir = temp_dir("claimmerge");
 	std::fs::create_dir_all(&dir).unwrap();
 	let mut old = PlayerRecord {
+		visited_waystones: Vec::new(),
 		inventory: Inventory::default(),
 		layout: Some(layout()),
 		pos: Some([1.0, 2.0, 3.0]),
@@ -404,6 +411,7 @@ fn a_claim_merges_into_what_the_account_already_had() {
 	// The account has been played on this server already.
 	let account = key(42);
 	let mut mine = PlayerRecord {
+		visited_waystones: Vec::new(),
 		pos: Some([40.0, 50.0, 60.0]),
 		last_return_tick: Some(77),
 		..Default::default()
@@ -497,6 +505,7 @@ fn absent_position_stays_absent() {
 		s.put(
 			id,
 			PlayerRecord {
+				visited_waystones: Vec::new(),
 				inventory: Inventory::default(),
 				layout: None,
 				pos: None,
@@ -567,6 +576,7 @@ fn a_file_written_at_the_old_grid_width_still_reads() {
 			buf.push(*skill);
 			buf.extend_from_slice(&total.to_le_bytes());
 		}
+		buf.push(0); // no visited waystones
 	}
 	buf.extend_from_slice(&0u32.to_le_bytes()); // empty quarantine
 	std::fs::write(&path, &buf).unwrap();
@@ -596,7 +606,13 @@ fn a_file_written_at_the_old_grid_width_still_reads() {
 
 	// And the next write stores the sized form, which round-trips at
 	// the full width.
-	s.put(id_a, PlayerRecord { ..a });
+	s.put(
+		id_a,
+		PlayerRecord {
+			visited_waystones: Vec::new(),
+			..a
+		},
+	);
 	s.sync();
 	let s = PlayerStore::open(&dir).unwrap();
 	let back = s.get(&id_a).layout.expect("still there");
@@ -642,6 +658,7 @@ fn a_wider_stored_grid_truncates_without_desyncing() {
 		buf.push(0); // no position
 		buf.push(0); // no return tick
 		buf.push(0); // no skills
+		buf.push(0); // no visited waystones
 	}
 	buf.extend_from_slice(&0u32.to_le_bytes()); // empty quarantine
 	std::fs::write(dir.join("inventories.bin"), &buf).unwrap();

@@ -271,17 +271,28 @@ impl Engine {
 					pressed: true,
 				} => self.ui.spellbook.close(),
 				_ => {
+					use crate::ui::screens::spellbook::SpellAction;
+					let ports = self.known_ports();
 					let view = crate::ui::screens::spellbook::SpellView::build(
 						&self.skills,
 						self.save.spawn_cooldown.ceil() as u32,
+						&ports,
+						&self.inventory,
 					);
-					let act = self
+					match self
 						.ui
 						.spellbook
-						.handle_input(&event, &self.ui.ui_hits, &view);
-					if let Some(crate::ui::screens::spellbook::SpellAction::CastHome) = act {
-						self.ui.spellbook.close();
-						self.start_cast(CastTarget::Home);
+						.handle_input(&event, &self.ui.ui_hits, &view)
+					{
+						Some(SpellAction::CastHome) => {
+							self.ui.spellbook.close();
+							self.start_cast(CastTarget::Home);
+						}
+						Some(SpellAction::CastWaystone(idx)) => {
+							self.ui.spellbook.close();
+							self.start_cast(CastTarget::Waystone(idx));
+						}
+						None => {}
 					}
 				}
 			}

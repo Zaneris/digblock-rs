@@ -30,6 +30,8 @@ pub(super) fn line(msg: &Msg) -> String {
 		Msg::NeedsSiphon => "this vein needs an essence siphon".into(),
 		Msg::DigRefusedByServer => "the server refused that dig".into(),
 		Msg::CastInterrupted => "the channel breaks".into(),
+		Msg::WaystoneLocked => "that waystone is beyond your arcana".into(),
+		Msg::CastCantPay => "you cannot pay the passage".into(),
 
 		Msg::LevelUp { skill, level } => format!("{} is now level {level}.", skill.name()),
 		Msg::RemoteLevelUp { who, skill, level } => {
