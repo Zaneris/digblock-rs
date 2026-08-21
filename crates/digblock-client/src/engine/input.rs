@@ -278,6 +278,7 @@ impl Engine {
 						self.save.spawn_cooldown.ceil() as u32,
 						&ports,
 						&self.inventory,
+						self.arc_on,
 					);
 					match self
 						.ui
@@ -300,6 +301,9 @@ impl Engine {
 							self.ui.spellbook.close();
 							self.start_cast(CastTarget::Kindle);
 						}
+						// A stance flip, not a cast: the page stays open,
+						// showing the new state.
+						Some(SpellAction::ToggleArc) => self.arc_on = !self.arc_on,
 						None => {}
 					}
 				}

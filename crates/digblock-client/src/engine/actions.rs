@@ -991,6 +991,40 @@ impl Engine {
 		// (identical to the server's InsidePlayer scan). Doors check
 		// both halves.
 		let mut placements = vec![(target, placed_cell)];
+		// The Mason's Arc: with the stance on and the rank earned, a
+		// plain block extends into the full line along the face normal —
+		// ALL OR NOTHING (both ends must derive one set), falling back to
+		// the ordinary single place when the line does not fit. Slabs,
+		// doors and water keep their own machinery, un-multiplied.
+		let mut arc_len = 1u32;
+		if self.arc_on && !grow && !block.is_door() && !block.is_slab() && block != BlockType::Water
+		{
+			let n = digblock_core::unlock::arc_cells(
+				self.skills.level(digblock_core::skills::Skill::Arcana),
+			);
+			if n > 1 {
+				let mut line = Vec::new();
+				for i in 2..=n as i32 {
+					let c = (
+						hit.cell.0 + hit.normal.0 * i,
+						hit.cell.1 + hit.normal.1 * i,
+						hit.cell.2 + hit.normal.2 * i,
+					);
+					if !self.cell_is_replaceable(c)
+						|| digblock_core::protect::immutable(c.0, c.1, c.2, &self.protected)
+						|| digblock_core::player::placement_blocked(self.body_pos(), c, placed_cell)
+					{
+						line.clear();
+						break;
+					}
+					line.push((c, placed_cell));
+				}
+				if line.len() == n - 1 {
+					arc_len = n as u32;
+					placements.extend(line);
+				}
+			}
+		}
 		if block.is_door() {
 			let upper = (target.0, target.1 + 1, target.2);
 			// The upper cell, same rule (mirrors the server's gate).
@@ -1025,8 +1059,8 @@ impl Engine {
 			return;
 		}
 		// Stock gate BEFORE the world mutation: no stock, no prediction.
-		// One debit covers a door's two cells.
-		if !self.inventory.try_take(block, 1) {
+		// One debit covers a door's two cells; an arc costs its length.
+		if !self.inventory.try_take(block, arc_len) {
 			return;
 		}
 		let mut entries = Vec::new();
@@ -1034,7 +1068,7 @@ impl Engine {
 			match self.pipeline.set_cell(c.0, c.1, c.2, v) {
 				Some(prev) => entries.push((c, prev, v)),
 				None if entries.is_empty() => {
-					self.inventory.add(block, 1); // refund: nothing happened
+					self.inventory.add(block, arc_len); // refund: nothing happened
 					return;
 				}
 				None => {}
@@ -1054,7 +1088,9 @@ impl Engine {
 		match self.session.client.as_mut() {
 			Some(net) if net.ready() => {
 				let tick = net.predictor.current_tick();
-				let seq = net.edits.begin_multi(&entries, tick, Some((block, -1)));
+				let seq = net
+					.edits
+					.begin_multi(&entries, tick, Some((block, -(arc_len as i32))));
 				// Slabs always travel as the canonical state-0 cell: the
 				// server derives the grow AND the anchor from the normal
 				// it verified, so neither is a state a client can assert.
@@ -1063,12 +1099,17 @@ impl Engine {
 				} else {
 					placed_cell
 				};
+				let kind = if arc_len > 1 {
+					digblock_net::messages::EditKind::PlaceArc { block: wire_cell }
+				} else {
+					digblock_net::messages::EditKind::Place { block: wire_cell }
+				};
 				net.send_edit(
 					seq,
 					tick,
 					origin,
 					dir,
-					digblock_net::messages::EditKind::Place { block: wire_cell },
+					kind,
 					hit.cell,
 					hit.normal,
 					self.hotbar.selected_index() as u8,

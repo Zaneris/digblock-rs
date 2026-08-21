@@ -321,10 +321,11 @@ impl Sim {
 			return reject(RejectReason::ServerError);
 		}
 
+		let arc = matches!(req.kind, EditKind::PlaceArc { .. });
 		let place_cell = match req.kind {
 			EditKind::Dig | EditKind::Collect => None,
 			EditKind::Interact => unreachable!("routed to process_interact"),
-			EditKind::Place { block } => {
+			EditKind::Place { block } | EditKind::PlaceArc { block } => {
 				// Strict: unknown ids, spare bits, and states the id's
 				// shape doesn't define are refused (`state_valid` is the
 				// one gate). Door requests must be the LOWER+CLOSED cell —
@@ -347,6 +348,12 @@ impl Sim {
 				// anchor from the normal it verified rather than taking
 				// the client's word.
 				if b.is_slab() && digblock_core::chunk::cell_state(block) != 0 {
+					return reject(RejectReason::BadBlock);
+				}
+				// The arc multiplies a PLAIN placement only: slabs grow,
+				// doors pair and water pours — each its own machinery the
+				// line must not multiply.
+				if arc && (b.is_slab() || b.is_door() || b.is_fluid_source()) {
 					return reject(RejectReason::BadBlock);
 				}
 				Some(block)
@@ -545,6 +552,27 @@ impl Sim {
 						v
 					};
 					writes.push((target, placed));
+					if arc {
+						// The Mason's Arc: the full line along the verified
+						// normal, all or nothing — a partial line would
+						// leave the two ends deriving different sets.
+						let arcana = self
+							.clients
+							.get(&req.conn_id)
+							.map_or(1, |c| c.skills.level(digblock_core::skills::Skill::Arcana));
+						let n = digblock_core::unlock::arc_cells(arcana) as i32;
+						for i in 2..=n {
+							let t = (
+								req.cell.0 + hit.normal.0 * i,
+								req.cell.1 + hit.normal.1 * i,
+								req.cell.2 + hit.normal.2 * i,
+							);
+							if !self.cell_is_replaceable(t) {
+								return reject(RejectReason::Occluded);
+							}
+							writes.push((t, placed));
+						}
+					}
 					if place_b.is_some_and(|b| b.is_door()) {
 						// The derived upper half, same rule.
 						let upper = (target.0, target.1 + 1, target.2);
@@ -598,7 +626,7 @@ impl Sim {
 			EditKind::Collect => {
 				slot_item == Some(Some(HotbarItem::WaterTool)) && active_tool == BlockType::Bucket
 			}
-			EditKind::Place { .. } => match slot_item {
+			EditKind::Place { .. } | EditKind::PlaceArc { .. } => match slot_item {
 				Some(Some(HotbarItem::Block(b))) => place_b == Some(b),
 				// Pouring the bucket. Water is the ONLY thing the tool
 				// places, and the tool is the only thing that places water:
@@ -645,8 +673,11 @@ impl Sim {
 		if req.kind == EditKind::Collect && client.inventory.bucket_full() {
 			return reject(RejectReason::BucketFull);
 		}
+		// One debit per BLOCK: a door's derived half is free, an arc's
+		// line costs its length.
+		let debit = if arc { writes.len() as u32 } else { 1 };
 		if let Some(b) = place_b
-			&& !client.inventory.try_take(b, 1)
+			&& !client.inventory.try_take(b, debit)
 		{
 			let inv = client.inventory.to_wire();
 			reject(RejectReason::NoStock);
@@ -671,7 +702,7 @@ impl Sim {
 			if let Some(b) = place_b
 				&& let Some(client) = self.clients.get_mut(&req.conn_id)
 			{
-				client.inventory.add(b, 1);
+				client.inventory.add(b, debit);
 			}
 			return reject(RejectReason::NotLoaded);
 		};

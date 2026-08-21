@@ -24,12 +24,15 @@ pub enum SpellAction {
 	CastWisp,
 	/// Begin conjured light's channel (aimed at completion).
 	CastKindle,
+	/// Flip the Mason's Arc stance.
+	ToggleArc,
 }
 
 /// The two non-port spell slots in the `InvId::Spell` space — ports use
 /// `1 + kind index`, which tops out well below these.
 const SLOT_WISP: u8 = 100;
 const SLOT_KINDLE: u8 = 101;
+const SLOT_ARC: u8 = 102;
 
 /// One port as the page lists it — everything derived from the core
 /// tables by [`all_ports`], so the roster and the rules cannot drift.
@@ -87,6 +90,7 @@ pub struct SpellView {
 	home_ready: bool,
 	wisp_ready: bool,
 	kindle_ready: bool,
+	arc_shown: bool,
 	/// The ports a click may cast right now, by `InvId::Spell` slot.
 	castable: Vec<(u8, u8)>,
 }
@@ -103,6 +107,7 @@ impl SpellView {
 		cooldown_secs: u32,
 		ports: &[Port],
 		inventory: &Inventory,
+		arc_on: bool,
 	) -> Self {
 		let level = skills.level(Skill::Arcana);
 		let home_ready = cooldown_secs == 0;
@@ -142,6 +147,21 @@ impl SpellView {
 				ready: kindle_ready,
 			});
 		}
+		// The arc is a STANCE, not a channel: the row flips it, and the
+		// price is the blocks each line lays.
+		let arc_shown = unlock::arc_cells(level) > 1;
+		if arc_shown {
+			rows.push(Row::Spell {
+				id: InvId::Spell(SLOT_ARC),
+				text: "MASON'S ARC".to_string(),
+				state: if arc_on {
+					"ON".to_string()
+				} else {
+					"OFF".to_string()
+				},
+				ready: true,
+			});
+		}
 		rows.push(Row::Space);
 		// The ports: every unlocked one, plus ONE teaser tier — the
 		// alchemy screen's "what you have and one tier of what is
@@ -179,6 +199,7 @@ impl SpellView {
 			home_ready,
 			wisp_ready,
 			kindle_ready,
+			arc_shown,
 			castable,
 		}
 	}
@@ -297,6 +318,7 @@ impl SpellScreen {
 				InvId::Spell(0) if view.home_ready => Some(SpellAction::CastHome),
 				InvId::Spell(SLOT_WISP) if view.wisp_ready => Some(SpellAction::CastWisp),
 				InvId::Spell(SLOT_KINDLE) if view.kindle_ready => Some(SpellAction::CastKindle),
+				InvId::Spell(SLOT_ARC) if view.arc_shown => Some(SpellAction::ToggleArc),
 				InvId::Spell(slot) => view
 					.castable
 					.iter()

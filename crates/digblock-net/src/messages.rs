@@ -317,12 +317,21 @@ pub enum EditKind {
 	/// (one unit of Water). Subject to the same hold-to-dig timing gate
 	/// as `Dig`, and refused with `BucketFull` if the tool already holds
 	/// one — the bucket carries a charge, not a stack.
+	// (PlaceArc is appended at the enum's tail — postcard is append-only.)
 	Collect,
 	/// Use/interact click (door open-close toggle): validated with the
 	/// interact-aware raycast (`raycast_interact` — an open door's swung
 	/// leaf still stops it); the hit must be interactive. `normal` may
 	/// be zero. Appended in v8.
 	Interact,
+	/// A Mason's Arc placement: `Place`, extended into a full line of
+	/// `unlock::arc_cells` along the verified face normal — all or
+	/// nothing, so both ends derive one set or the request bounces.
+	/// Refused for slabs, doors and water (each carries machinery of its
+	/// own the line must not multiply). Appended in v32.
+	PlaceArc {
+		block: u16,
+	},
 }
 
 /// One alchemy request (wire form; ids are validated server-side against

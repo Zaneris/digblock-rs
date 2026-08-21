@@ -170,6 +170,10 @@ fn arcana_teasers() -> Vec<(u32, &'static str)> {
 			"swift return — home comes back sooner",
 		),
 		(port_at(K::Savanna), "the savanna waystone"),
+		(
+			unlock::ARC_AT,
+			"the mason's arc — one placement lays a line of three",
+		),
 		(unlock::CHANNEL_QUICK_AT, "every channel quickens"),
 		(port_at(K::Taiga), "the taiga waystone"),
 		(
@@ -177,6 +181,7 @@ fn arcana_teasers() -> Vec<(u32, &'static str)> {
 			"the wisp burns brighter, and longer",
 		),
 		(port_at(K::Beach), "the shore waystone"),
+		(unlock::ARC_WIDE_AT, "the arc reaches five"),
 		(port_at(K::Mountain), "the mountain waystone"),
 		(unlock::KINDLE_CHEAP_AT, "kindle costs less"),
 		(unlock::RETURN_SWIFTER_AT, "swifter return"),

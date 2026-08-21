@@ -235,6 +235,7 @@ impl Engine {
 					self.save.spawn_cooldown.ceil() as u32,
 					ports.as_deref().unwrap_or(&[]),
 					&self.inventory,
+					self.arc_on,
 				);
 				self.ui.spellbook.build(&mut ui, size, &view, daylight);
 			} else {

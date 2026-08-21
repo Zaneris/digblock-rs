@@ -2651,6 +2651,114 @@ fn held_item_rides_snapshots() {
 	let _ = &mut c1;
 }
 
+/// The Mason's Arc: one placement lays the FULL line along the face
+/// normal — length read off `unlock::arc_cells`, stock debited per
+/// block — and a line that does not fit places NOTHING (all or nothing,
+/// so both ends always derive one set). Every expectation derived.
+#[test]
+fn an_arc_places_a_full_line_or_nothing() {
+	use digblock_core::unlock::{ARC_AT, arc_cells};
+	let mut sim = flat_sim("arcline");
+	let mut c = connect(&mut sim, 1);
+	wait_live(&mut sim, 1);
+	sim.bench_set_arcana_level(1, ARC_AT);
+	let n = arc_cells(ARC_AT) as u32;
+	assert!(n > 1, "the first rank must widen the line");
+	sim.test_grant(1, BlockType::Stone, n * 2);
+
+	let pos = sim.test_player(1).unwrap().pos;
+	// Aim down-and-out at open ground: the line grows straight up off
+	// the struck top face.
+	let out = Vec3::new(3.0, -2.0, 0.0).normalize();
+	let hit = raycast(pos, out, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).expect("ground");
+	assert_eq!(hit.normal, (0, 1, 0), "the fixture needs a top face");
+	let arc = |sim: &mut Sim, seq: u32| {
+		sim.tick_once(vec![SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::EditRequest {
+				seq,
+				tick: 0,
+				origin: pos.to_array(),
+				dir: out.to_array(),
+				kind: EditKind::PlaceArc {
+					block: BlockType::Stone as u16,
+				},
+				cell: [hit.cell.0, hit.cell.1, hit.cell.2],
+				normal: [hit.normal.0 as i8, hit.normal.1 as i8, hit.normal.2 as i8],
+				slot: 0,
+			},
+		}]);
+	};
+	arc(&mut sim, 1);
+	for i in 1..=n as i32 {
+		assert_eq!(
+			sim.test_cell_at(hit.cell.0, hit.cell.1 + i, hit.cell.2),
+			Some(BlockType::Stone as u16),
+			"cell {i} of the line"
+		);
+	}
+	assert_eq!(
+		sim.test_inventory_count(1, BlockType::Stone),
+		n,
+		"one debit per block of the line"
+	);
+
+	// A line that cannot fit places NOTHING: a second clear column with
+	// a cap hung where the line's SECOND cell would go, so the first
+	// cell fits and the whole line still bounces, stock intact.
+	let out2 = Vec3::new(0.0, -2.0, 3.0).normalize();
+	let hit2 = raycast(pos, out2, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).expect("ground 2");
+	assert_eq!(
+		hit2.normal,
+		(0, 1, 0),
+		"the second fixture needs a top face"
+	);
+	sim.test_set_cell(
+		hit2.cell.0,
+		hit2.cell.1 + 2,
+		hit2.cell.2,
+		BlockType::Stone as u16,
+	);
+	c.drain();
+	c.msgs.clear();
+	sim.tick_once(vec![SimEvent::Msg {
+		conn_id: 1,
+		msg: ClientMsg::EditRequest {
+			seq: 2,
+			tick: 0,
+			origin: pos.to_array(),
+			dir: out2.to_array(),
+			kind: EditKind::PlaceArc {
+				block: BlockType::Stone as u16,
+			},
+			cell: [hit2.cell.0, hit2.cell.1, hit2.cell.2],
+			normal: [
+				hit2.normal.0 as i8,
+				hit2.normal.1 as i8,
+				hit2.normal.2 as i8,
+			],
+			slot: 0,
+		},
+	}]);
+	c.drain();
+	assert!(
+		c.msgs.iter().any(|m| matches!(
+			m,
+			ServerMsg::EditRejected {
+				reason: RejectReason::Occluded,
+				..
+			}
+		)),
+		"an obstructed line must bounce wholesale: {:?}",
+		c.msgs
+	);
+	assert_eq!(
+		sim.test_inventory_count(1, BlockType::Stone),
+		n,
+		"a bounced line debits nothing"
+	);
+}
+
 /// Placing into a locked region is refused too, and reports
 /// `Protected` rather than some incidental reason — the client picks
 /// its wording ("can't build" vs "won't break") from this.

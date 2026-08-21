@@ -159,7 +159,13 @@ mod tests {
 				style,
 			},
 			size,
-			&super::spellbook::SpellView::build(&skills, 12, &super::spellbook::all_ports(), &inv),
+			&super::spellbook::SpellView::build(
+				&skills,
+				12,
+				&super::spellbook::all_ports(),
+				&inv,
+				true,
+			),
 			1.0,
 		);
 		out.push(("spellbook", dl));

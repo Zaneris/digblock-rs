@@ -388,6 +388,22 @@ pub const KINDLE_AT: u32 = 10;
 /// Where Kindle's fare eases, deep beside the last ports.
 pub const KINDLE_CHEAP_AT: u32 = 54;
 
+/// The Mason's Arc: how many cells one placement lays along the face
+/// normal — Arcana's mirror of [`pick_cells`], the placing half of the
+/// pick's breaking. The single cell below the first rank IS the
+/// ordinary place.
+pub fn arc_cells(level: u32) -> usize {
+	match level {
+		l if l >= ARC_WIDE_AT => 5,
+		l if l >= ARC_AT => 3,
+		_ => 1,
+	}
+}
+
+/// The arc's two ranks.
+pub const ARC_AT: u32 = 26;
+pub const ARC_WIDE_AT: u32 = 46;
+
 /// Wisp's second rank: brighter AND whitened — level alone reads as
 /// more of the same hue, never as brighter (the carried-light lesson).
 pub const WISP_BRIGHT_AT: u32 = 38;
@@ -641,6 +657,7 @@ pub fn opens(skill: Skill, level: u32) -> bool {
 					.iter()
 					.any(|&k| waystone(k) == Some(level))
 					|| level == KINDLE_AT
+					|| arc_cells(level) != arc_cells(level - 1)
 					|| return_cooldown_secs(level) != return_cooldown_secs(level - 1)
 					|| channel_ticks(level) != channel_ticks(level - 1)
 					|| wisp_light(level) != wisp_light(level - 1)

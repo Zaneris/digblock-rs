@@ -254,6 +254,7 @@ impl Engine {
 			drawn_cell: None,
 			dig: None,
 			cast: None,
+			arc_on: false,
 			wisp_left: 0.0,
 			dig_accum: 0.0,
 			target: None,
