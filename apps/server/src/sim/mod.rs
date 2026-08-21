@@ -361,6 +361,10 @@ struct Client {
 	/// Waystones this account has arrived at (kind indices) — the
 	/// first-arrival milestone's memory, persisted with the record.
 	visited_waystones: Vec<u8>,
+	/// The tick this client's wisp burns until, for the snapshot fx byte
+	/// alone — the light itself is per-viewer GI, computed client-side.
+	/// Session-local, exactly like the client's own copy.
+	wisp_until: Option<u32>,
 }
 
 impl Client {

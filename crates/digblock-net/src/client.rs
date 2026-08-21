@@ -794,6 +794,7 @@ impl NetClient {
 					),
 					yaw: p.yaw,
 					held: p.held,
+					fx: p.fx,
 				},
 			);
 		}

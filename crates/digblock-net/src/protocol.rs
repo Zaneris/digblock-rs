@@ -72,7 +72,7 @@ pub const AREA_SYNC_TIMEOUT_SECS: f32 = 5.0;
 /// render a stained pane as a hole, walk through it, and have every dig
 /// near it refused, while the server holds the cell solid. Adding block
 /// rows therefore raises the floor as surely as moving a field does.
-pub const MIN_PROTOCOL: u16 = 31;
+pub const MIN_PROTOCOL: u16 = 32;
 
 // ---- handshake preamble ----------------------------------------------
 //

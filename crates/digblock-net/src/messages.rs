@@ -239,6 +239,46 @@ pub struct RemoteState {
 	/// (`WIRE_EMPTY`/`WIRE_TOOL`/[`HELD_TOOL_FULL`]/block id) — remote
 	/// clients render it in hand. Appended in v10.
 	pub held: u16,
+	/// The player's visible effect, packed by [`pack_fx`]: the wisp they
+	/// burn today, with a kind reserved for the siphon draw's remote half
+	/// (which needs the drawn CELL, a field of its own when it lands).
+	/// Appending a struct field is the one genuinely breaking postcard
+	/// change, which is what the v32 `MIN_PROTOCOL` raise carries.
+	/// Appended in v32.
+	pub fx: u8,
+}
+
+/// The remote-effect kinds [`RemoteState::fx`] can carry. Two bits.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RemoteFx {
+	None,
+	/// A burning wisp; the argument is its cast light level, with the
+	/// whitened flag beside it — a remote's wisp must cast exactly what
+	/// its caster earned, and their skills are not in the snapshot.
+	Wisp {
+		level: u8,
+		whitened: bool,
+	},
+}
+
+/// Kind in the top two bits, the whitened flag under it, the level in
+/// the low five — one byte, decoded by [`unpack_fx`], its round-trip
+/// pinned by `fx_round_trips`.
+pub fn pack_fx(fx: RemoteFx) -> u8 {
+	match fx {
+		RemoteFx::None => 0,
+		RemoteFx::Wisp { level, whitened } => (1 << 6) | (u8::from(whitened) << 5) | (level & 0x1F),
+	}
+}
+
+pub fn unpack_fx(b: u8) -> RemoteFx {
+	match b >> 6 {
+		1 => RemoteFx::Wisp {
+			level: b & 0x1F,
+			whitened: b & 0x20 != 0,
+		},
+		_ => RemoteFx::None,
+	}
 }
 
 /// `held` sentinel for a CHARGED water tool.

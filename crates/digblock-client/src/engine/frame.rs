@@ -58,6 +58,7 @@ impl Engine {
 						pos: d.pos,
 						yaw: d.yaw,
 						held: d.held,
+						fx: d.fx,
 					},
 				);
 			}
@@ -86,6 +87,7 @@ impl Engine {
 					pos: p,
 					yaw,
 					held,
+					fx: 0,
 				},
 			);
 		}

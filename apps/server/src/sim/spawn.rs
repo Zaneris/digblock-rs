@@ -337,6 +337,8 @@ impl Sim {
 			);
 			return;
 		}
+		let level = client.skills.level(digblock_core::skills::Skill::Arcana);
+		client.wisp_until = Some(self.tick + digblock_core::unlock::wisp_secs(level) * TICK_RATE);
 		let counts = client.inventory.to_wire();
 		client_send(client, &ServerMsg::InventoryFull { counts });
 		self.process_cast(conn_id, digblock_core::skills::cast_xp(fare));

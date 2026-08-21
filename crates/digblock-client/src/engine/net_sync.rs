@@ -13,6 +13,44 @@ impl Engine {
 		self.camera.pitch_deg = 0.0;
 	}
 
+	/// The jump's light and sound, shared by our own teleport and a
+	/// remote's so the two can never look different: a departure collapse
+	/// at `from`, an arrival bloom at `to` (both eye positions). Engine
+	/// state, so a world swap forgets the bursts like confetti. `own`
+	/// keys the halves that belong to the jumper alone — the overlay
+	/// flash, and an arrival heard flat rather than placed, because it
+	/// lands in YOUR ears.
+	pub(super) fn jump_bursts(&mut self, from: Vec3, to: Vec3, own: bool) {
+		let feet = Vec3::new(0.0, digblock_core::player::EYE_TO_FEET, 0.0);
+		let seq = self.vfx.cast_seq;
+		self.vfx.cast_seq = seq.wrapping_add(2);
+		self.vfx.casts.push(TeleportFx {
+			pos: from - feet,
+			mode: crate::teleport::Mode::Departure,
+			age: 0.0,
+			seed: seq as f32 * 17.31,
+		});
+		self.vfx.casts.push(TeleportFx {
+			pos: to - feet,
+			mode: crate::teleport::Mode::Arrival,
+			age: 0.0,
+			seed: (seq + 1) as f32 * 17.31,
+		});
+		if own {
+			self.vfx.flash = 1.0;
+		}
+		self.emit(crate::audio::AudioCmd::Sfx {
+			sound: crate::audio::Sfx::TeleportOut,
+			pos: Some(from.to_array()),
+			gain: 0.8,
+		});
+		self.emit(crate::audio::AudioCmd::Sfx {
+			sound: crate::audio::Sfx::TeleportIn,
+			pos: (!own).then(|| to.to_array()),
+			gain: 0.7,
+		});
+	}
+
 	/// Land a teleport (return to spawn, admin /tp): hard-set the player
 	/// and camera — the reconciliation slide across half the map would
 	/// fight streaming — and drop everything that describes the
@@ -25,35 +63,8 @@ impl Engine {
 	/// set answers a return-to-spawn with a look, and reading that as
 	/// "an admin teleported me" got the wording backwards.
 	pub(super) fn apply_teleport(&mut self, pos: Vec3, look: Vec3) {
-		// The jump's light: a departure collapse where the caster stood,
-		// an arrival bloom where they land, and the overlay flash between
-		// them. Engine state, so a world swap forgets them like confetti.
-		let feet = Vec3::new(0.0, digblock_core::player::EYE_TO_FEET, 0.0);
-		let seq = self.vfx.cast_seq;
-		self.vfx.cast_seq = seq.wrapping_add(2);
-		self.vfx.casts.push(TeleportFx {
-			pos: self.player.pos - feet,
-			mode: crate::teleport::Mode::Departure,
-			age: 0.0,
-			seed: seq as f32 * 17.31,
-		});
-		self.vfx.casts.push(TeleportFx {
-			pos: pos - feet,
-			mode: crate::teleport::Mode::Arrival,
-			age: 0.0,
-			seed: (seq + 1) as f32 * 17.31,
-		});
-		self.vfx.flash = 1.0;
-		self.emit(crate::audio::AudioCmd::Sfx {
-			sound: crate::audio::Sfx::TeleportOut,
-			pos: Some(self.player.pos.to_array()),
-			gain: 0.8,
-		});
-		self.emit(crate::audio::AudioCmd::Sfx {
-			sound: crate::audio::Sfx::TeleportIn,
-			pos: None,
-			gain: 0.7,
-		});
+		let from = self.player.pos;
+		self.jump_bursts(from, pos, true);
 		self.player.set_state(digblock_core::player::PlayerState {
 			pos,
 			vel: Vec3::ZERO,
@@ -125,6 +136,11 @@ impl Engine {
 			return;
 		};
 		net.remotes.advance(dt);
+		// Someone else's teleport, read off their snapshot discontinuity —
+		// the wire carries no announcement (`RemotePlayers::take_jumps`).
+		for (_, from, to) in net.remotes.take_jumps() {
+			self.jump_bursts(from, to, false);
+		}
 		let mut events = std::mem::take(&mut self.session.net_events);
 		events.clear();
 		net.poll(&mut events, dt);

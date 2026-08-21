@@ -361,6 +361,7 @@ impl Sim {
 				last_return_tick: record.last_return_tick,
 				skills: record.skills,
 				visited_waystones: record.visited_waystones,
+				wisp_until: None,
 			},
 		);
 		self.residency_dirty = true;

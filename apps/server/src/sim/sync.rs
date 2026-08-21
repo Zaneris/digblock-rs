@@ -346,6 +346,18 @@ impl Sim {
 					],
 					yaw: yaw_to_wire(c.look.to_array()),
 					held: c.held_wire(),
+					fx: {
+						use digblock_net::messages::{RemoteFx, pack_fx};
+						match c.wisp_until {
+							Some(t) if self.tick < t => {
+								let (level, whitened) = digblock_core::unlock::wisp_light(
+									c.skills.level(digblock_core::skills::Skill::Arcana),
+								);
+								pack_fx(RemoteFx::Wisp { level, whitened })
+							}
+							_ => pack_fx(RemoteFx::None),
+						}
+					},
 				},
 				SelfState {
 					pos: s.pos.to_array(),

@@ -23,6 +23,9 @@ pub struct RemoteSnap {
 	/// Held item in hotbar wire encoding (`WIRE_EMPTY`/`WIRE_TOOL`/block
 	/// id). Discrete — never interpolated; the newest bracket wins.
 	pub held: u16,
+	/// The packed effect byte (`messages::pack_fx`), held's rules: the
+	/// newest bracket wins.
+	pub fx: u8,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -33,11 +36,26 @@ pub struct RemoteDraw {
 	pub yaw: f32,
 	/// Held item in hotbar wire encoding, from the newest snapshot.
 	pub held: u16,
+	/// The packed effect byte, from the newest snapshot.
+	pub fx: u8,
 }
+
+/// The shortest between-snapshot displacement read as a teleport.
+/// Bursts are presentation: a hop shorter than this reads fine as the
+/// interpolation smear, and staying far above the adoption envelope's
+/// instant corrections keeps a rubber-band step from flashing one.
+const JUMP_MIN_DIST: f32 = 8.0;
+
+/// A jump's implied speed must also clear the fastest honest motion —
+/// terminal fall — with a factor of margin, so a walking or falling
+/// player behind a stalled snapshot gap never reads as a teleport.
+const JUMP_MIN_SPEED: f32 = -2.0 * digblock_core::player::TERM_VELOCITY;
 
 #[derive(Default)]
 pub struct RemotePlayers {
 	players: FxHashMap<PlayerId, VecDeque<RemoteSnap>>,
+	/// Detected teleports `(id, from, to)`, parked for [`Self::take_jumps`].
+	jumps: Vec<(PlayerId, Vec3, Vec3)>,
 	/// Estimated server clock in ticks: lifted by snapshots, advanced by
 	/// wall time in between.
 	///
@@ -70,10 +88,28 @@ impl RemotePlayers {
 		if matches!(ring.back(), Some(last) if snap.server_tick <= last.server_tick) {
 			return;
 		}
+		// A displacement no honest motion produces is someone else's
+		// teleport, detected here so the wire needs no announcement.
+		// Dropping the ring pops them to the destination instead of
+		// smearing them across the map at the interpolation rate.
+		if let Some(last) = ring.back() {
+			let gap = (snap.server_tick - last.server_tick) as f32 / TICK_RATE as f32;
+			let dist = snap.pos.distance(last.pos);
+			if dist >= JUMP_MIN_DIST && dist >= JUMP_MIN_SPEED * gap {
+				self.jumps.push((id, last.pos, snap.pos));
+				ring.clear();
+			}
+		}
 		if ring.len() == SNAP_CAP {
 			ring.pop_front();
 		}
 		ring.push_back(snap);
+	}
+
+	/// Drain the teleports [`Self::push`] detected — `(id, from, to)`
+	/// eye positions, for the engine to burst at both ends.
+	pub fn take_jumps(&mut self) -> Vec<(PlayerId, Vec3, Vec3)> {
+		std::mem::take(&mut self.jumps)
 	}
 
 	pub fn remove(&mut self, id: PlayerId) {
@@ -95,14 +131,15 @@ impl RemotePlayers {
 		let target = self.est_server_tick - INTERP_DELAY_TICKS;
 		for (&id, ring) in &self.players {
 			if let Some((pos, yaw)) = sample_ring(ring, target) {
-				// The held item is discrete state: always render the
-				// newest known value rather than a time-shifted one.
-				let held = ring.back().map_or(u16::MAX, |s| s.held);
+				// The held item and effect byte are discrete state: always
+				// render the newest known value rather than a time-shifted one.
+				let (held, fx) = ring.back().map_or((u16::MAX, 0), |s| (s.held, s.fx));
 				out.push(RemoteDraw {
 					id,
 					pos,
 					yaw: crate::messages::yaw_from_wire(yaw),
 					held,
+					fx,
 				});
 			}
 		}
@@ -147,15 +184,19 @@ mod tests {
 			vel: Vec3::new(vx, 0.0, 0.0),
 			yaw: 0,
 			held: u16::MAX,
+			fx: 0,
 		}
 	}
 
 	#[test]
 	fn interp_sampling_is_exact_lerp() {
+		// Steps well under the teleport detector's length floor, so this
+		// stays a test of the lerp and not of the jump path.
+		let step = JUMP_MIN_DIST / 4.0;
 		let mut r = RemotePlayers::default();
 		r.push(1, snap(0, 0.0, 0.0));
-		r.push(1, snap(3, 3.0, 0.0));
-		r.push(1, snap(6, 12.0, 0.0));
+		r.push(1, snap(3, step, 0.0));
+		r.push(1, snap(6, 3.0 * step, 0.0));
 		// Lift the estimated clock so the interpolation target lands
 		// squarely between the two newest snaps.
 		r.est_server_tick = 4.5 + INTERP_DELAY_TICKS;
@@ -163,7 +204,11 @@ mod tests {
 		r.sample(&mut out);
 		assert_eq!(out.len(), 1);
 		// Halfway between the bracketing snaps is the midpoint of their x.
-		assert!((out[0].pos.x - 7.5).abs() < 1e-5, "x = {}", out[0].pos.x);
+		assert!(
+			(out[0].pos.x - 2.0 * step).abs() < 1e-5,
+			"x = {}",
+			out[0].pos.x
+		);
 	}
 
 	#[test]
@@ -200,6 +245,45 @@ mod tests {
 		r.sample(&mut out);
 		assert_eq!(out.len(), 1, "stale player 2 expired: {out:?}");
 		assert_eq!(out[0].id, 1);
+	}
+
+	/// A between-snapshot displacement is a teleport only when it is both
+	/// long AND faster than honest motion — a terminal fall behind a
+	/// stalled snapshot gap covers real distance at a legal speed and
+	/// must never burst, while a real jump pops the remote straight to
+	/// its destination.
+	#[test]
+	fn a_snapshot_jump_is_a_teleport_and_honest_speed_never_is() {
+		// Honest: terminal fall (half the speed floor) across a long gap.
+		let gap_ticks = 60u32;
+		let gap_secs = gap_ticks as f32 / TICK_RATE as f32;
+		let fell = (JUMP_MIN_SPEED / 2.0) * gap_secs;
+		assert!(fell > JUMP_MIN_DIST, "the fall must clear the length arm");
+		let mut r = RemotePlayers::default();
+		r.push(1, snap(0, 0.0, 0.0));
+		r.push(1, snap(gap_ticks, fell, 0.0));
+		assert!(r.take_jumps().is_empty(), "a fall is not a teleport");
+
+		// A jump: longer than the floor and far faster than any fall.
+		let hop = JUMP_MIN_DIST.max(JUMP_MIN_SPEED * gap_secs) * 2.0;
+		let from = fell;
+		r.push(1, snap(2 * gap_ticks, from + hop, 0.0));
+		let jumps = r.take_jumps();
+		assert_eq!(jumps.len(), 1);
+		let (id, a, b) = jumps[0];
+		assert_eq!(id, 1);
+		assert!((a.x - from).abs() < 1e-3 && (b.x - (from + hop)).abs() < 1e-3);
+		assert!(r.take_jumps().is_empty(), "drained, not re-reported");
+		// The ring was dropped: the remote samples AT the destination
+		// rather than smearing across the hop.
+		let mut out = Vec::new();
+		r.est_server_tick = 2.0 * gap_ticks as f64 + INTERP_DELAY_TICKS;
+		r.sample(&mut out);
+		assert!(
+			(out[0].pos.x - (from + hop)).abs() < 1e-3,
+			"x = {}",
+			out[0].pos.x
+		);
 	}
 
 	#[test]

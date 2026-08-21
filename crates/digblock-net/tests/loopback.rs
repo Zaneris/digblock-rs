@@ -353,6 +353,7 @@ fn full_frame_handshake_edits_snapshot() {
 			vel: [0, 0, 0],
 			yaw: digblock_net::messages::yaw_to_wire([1.0, 0.0, 0.0]),
 			held: BlockType::Dirt as u16,
+			fx: 0,
 		}],
 	});
 	events.clear();
@@ -1360,6 +1361,7 @@ fn traffic_counters_produce_a_per_second_rate() {
 				vel: [0, 0, 0],
 				yaw: 0,
 				held: 5,
+				fx: 0,
 			}],
 		});
 		events.clear();
