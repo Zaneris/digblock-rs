@@ -523,8 +523,9 @@ same-pose diff above.
 so a point that can only see some of what it samples gets a Bernoulli on the pool total — the one thing the target
 function cannot price. `DIG_TORCHES_WALL` exists to measure it rather than argue it: 8 torches screened in half read
 **0.103 / 0.099** against 0.070 / 0.035 in the open. Real, and still 4× better than the shipped build's OPEN case. The
-fix is a temporal reservoir (ReSTIR DI — reproject through `prev_vp`, which the resolve already does, with an M-clamp
-around 20); it is deliberately NOT built here, and **0.103 is the number to beat**.
+assumed fix was a temporal reservoir (ReSTIR DI — reproject through `prev_vp`, with an M-clamp around 20), with **0.103
+as the number to beat** — R37 built it, watched the estimator work and the image not move, and reverted it. Read the
+refutation there before reaching for it again: the residual is real, and the filters behind this term already spend it.
 
 ### R28 — a torch in a hand is a torch
 
@@ -633,9 +634,9 @@ while you hold a torch, other torches' shadows wash out rather than get noisy. U
 `DIG_VAULT_DARK` cannot measure this: it is a room with exactly one emitter, which is why it shipped unseen. The capture
 is `DIG_TORCHES=8 DIG_TORCHES_WALL=1 DIG_SCREEN=torch`, screened emitters plus a carried one, read against the same
 scene with a non-emitting item in hand — R27's 0.103 is what it has to be compared with, since this is the same
-estimator and the same fix (a temporal reservoir, M-clamped, reprojected through `prev_vp`). It is deliberately not
-built here either; what is new is only that the carried light makes R27's residual reachable in ordinary play rather
-than in a contrived screen.
+estimator and the same assumed fix (a temporal reservoir), which R37 built and refuted: its argument — the accumulator
+is a longer filter than any M-clamp — covers this residual identically. What is new is only that the carried light makes
+R27's residual reachable in ordinary play rather than in a contrived screen.
 
 ### R29 — the torch was a white stick
 
@@ -1084,6 +1085,53 @@ builds no scene. The pad's capacity grew from its R27 clamp to the light list's 
 `MAX_LIGHTS`: the first 64 keep the exact cells R27 and R34 measured on, and the extension stacks VERTICALLY over a
 compact footprint, because the reach filter is lateral and a pad growing away from the camera would fall out of reach at
 precisely the short draw distances the bed exists to price.
+
+### R37 — the temporal reservoir was built, measured working, and reverted anyway
+
+R27 and R28 both end on the same deferred fix: visibility is the one thing `gi_light_score` cannot price, so wherever
+emitters occlude each other the whole in-range pool rides one shadow ray's Bernoulli, and a temporal reservoir (ReSTIR
+DI) was the assumed cure with 0.103 (`DIG_TORCHES_WALL`, the 90-frame walk diff) as the number to beat. R37 built it,
+validated the estimator, and reverted the build on the measurement. This note is what remains, and it exists so the next
+reader spends an afternoon here instead of the week.
+
+**What was built.** A second fragment entry in the resolve module — its own pass, because the resolve's two accumulator
+targets already spend the whole WebGPU default `maxColorAttachmentBytesPerSample` — holding the exact discrete RIS scan
+plus the reservoir: ONE shadow ray on the FRESH winner, whose occlusion zeroes its merge weight while still counting in
+M (that zero-yet-counted entry is the entire estimator — drop the "counts in M" half and a half-occluded wall converges
+2× bright); a temporal candidate re-entering at its current score × stored weight × clamped M, reprojected through
+`prev_vp` and validated against the resolve's own history attachments at the GRAZE-widened tolerance (the strict one
+starves the reservoir on walking frames, the same population the resolve's relaxed pass exists for); identity stored as
+position + packed w word and re-matched inside the scan, because `flush_lights` selects and never sorts, so an index
+means nothing across frames; and trusted visibility for the un-marched winner — safe in this engine alone, because
+occluders are voxels and every voxel change carries an inval sphere, which restarts the reservoir. A Monte Carlo
+reference implementation preceded the WGSL: unbiased on every occlusion pattern tried, EXACT on an all-visible pool, ~9×
+less flicker in the sim. One trap worth keeping from the wreckage: `fs`'s `uv` is scaled for the RENDER-size depth copy,
+so a GI-sized input read at `uv` lands its content a factor of `gi_scale_div` up-left — a new same-size input must be
+read at `i.pos.xy`.
+
+**The estimator works.** Night, 8 torches, walking, the 90-frame same-pose diff, on the real build: the raw NEE term's
+own flicker fell 0.646 → 0.159 with the wall screened — the 4× the sim promised, before any filter.
+
+**The image does not move, and the open case regresses.** Same protocol on the finished frame: with the temporal half
+force-disabled the restructure is bit-identical to the shipped build (wall 0.0944, open 0.0675 — the baseline
+reproduced); enabled, the wall reads 0.0996 and the open 0.0774. The wall's excess over the open case — the exact number
+the reservoir was built to close — did not shrink, and the open case, where the estimator is provably exact, picked up
+15%. Full table in BENCH.md 2026-08-21.
+
+**Why, and why it is structural rather than a tuning miss.** The NEE term is folded into `indirect` and then filtered
+twice — the screen accumulator (`N_MOVING` deep on exactly the walking frames that flicker) and the a-trous pass. A
+temporal reservoir is itself a temporal filter whose window is the M-clamp, and that window is SHORTER than the
+accumulator's. Reuse does not remove variance, it moves it down the spectrum: the memoryless Bernoulli is white,
+per-pixel independent noise — precisely what the accumulator and a spatial filter suppress best — while the reservoir's
+slowly-relaxing weight rides through a filter whose gain assumes independent samples. The reservoir traded noise the
+pipeline already removes for wander it cannot, which is why 4× off the raw term bought slightly WORSE on the finished
+frame. No M-clamp fixes this: shorter clamps converge back to the memoryless estimator, longer ones wander slower still.
+ReSTIR earns its keep where the reservoir's output is shaded with little or no history behind it; this engine's direct
+term does not qualify, and that is a property of the architecture, not of the tuning.
+
+**What would reopen it.** Removing or drastically shortening the screen accumulator, or a consumer that needs
+low-variance direct light with no filter behind it — and the unfiltered consumers this engine has (players, confetti)
+already run `sum_lights` instead, deterministically, for exactly that reason (R34).
 
 ## Non-goals (v1)
 
