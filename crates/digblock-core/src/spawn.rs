@@ -11,7 +11,7 @@
 //! The search never looks downward, and [`SPAWN_FLOOR`] keeps it out of pits.
 
 use crate::decoration::box_obstructed;
-use crate::protect::Region;
+use crate::protect::{Region, Sphere};
 use crate::worldgen::{SEA_LEVEL, carved, column_shape_above, column_shapes_in};
 use glam::Vec3;
 
@@ -22,6 +22,15 @@ pub const CLEAR: i32 = 2;
 /// Height of the air cylinder above the floor, in cells. The player
 /// capsule stands on `h + 1`, so cells `h+1 ..= h+CAPSULE` must be clear.
 pub const CAPSULE: i32 = 3;
+
+/// Radius of the protected sphere around an arrival pad — the spawn
+/// lock, and a waystone pad. Sized to CONTAIN the validated core (the
+/// [`CLEAR`] disc plus its [`CAPSULE`]): the box's farthest cells are its
+/// top corners, and this is the smallest whole-block sphere that keeps
+/// every one of them, with the lower hemisphere as the anti-undermining
+/// depth the box never had. Shrinking it below that containment breaks
+/// the "locked ⇒ permanently valid" fast path.
+pub const LOCK_RADIUS: i32 = 6;
 
 /// Spawn never sits below sea level — a beach at the water's edge is
 /// fine, an excavated pit is not.
@@ -84,24 +93,24 @@ fn column(eye: Vec3) -> (i32, i32, i32) {
 	)
 }
 
-/// The cells a spawn lock protects: one block down (the floor the player
-/// stands on), [`CLEAR`] out, [`CAPSULE`] high.
+/// The cells an arrival lock protects: a [`LOCK_RADIUS`] sphere centred
+/// on the pad's floor cell.
 ///
-/// Deliberately the exact set of cells [`accepts`] inspects — that
-/// equivalence, pinned by `lock_region_covers_what_the_test_reads`, is
+/// The sphere CONTAINS every cell [`accepts`] inspects — that
+/// containment, pinned by `lock_region_covers_what_the_test_reads`, is
 /// what makes a locked spawn *permanently* valid: no edit the lock
 /// permits can change the search's answer, so callers holding a lock can
-/// skip [`resolve`] outright.
+/// skip [`resolve`] outright. The cells beyond the validated core are
+/// protected without being validated — whatever terrain they are,
+/// frozen, the lower half against undermining the pad.
 pub fn lock_region(eye: Vec3) -> Region {
 	let (x, h, z) = column(eye);
-	Region {
-		x0: x - CLEAR,
-		x1: x + CLEAR,
-		y0: h,
-		y1: h + CAPSULE,
-		z0: z - CLEAR,
-		z1: z + CLEAR,
-	}
+	Region::Sphere(Sphere {
+		cx: x,
+		cy: h,
+		cz: z,
+		r: LOCK_RADIUS,
+	})
 }
 
 /// The pristine half of the test: `Some(h)` when worldgen alone would be

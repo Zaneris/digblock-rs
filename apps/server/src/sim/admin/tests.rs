@@ -726,57 +726,28 @@ fn tp_landing_rises_over_journaled_builds() {
 	);
 }
 
-/// The lock reports, toggles, and persists — and it pins the region
-/// around the *resolved* spawn, so the fast path ("locked means the
-/// region can't have been broken, so skip the search") stays sound.
+/// Protection is always on: boot locks the resolved spawn once, a second
+/// boot re-pins nothing, and the region is `spawn::lock_region`'s —
+/// asked for rather than re-derived here, since the search reads that
+/// same region and the two drifting apart is what makes a locked spawn
+/// stop being valid.
 #[test]
-fn lock_spawn_toggles_and_reports() {
+fn spawn_is_locked_at_boot_exactly_once() {
 	let mut sim = admin_sim("lockspawn");
-	let mut admin = connect_admin(&mut sim, 1, "boss");
-
-	sim.tick_once(vec![chat(1, "/lock-spawn")]);
-	admin.drain();
 	assert!(
-		answered(&admin, |r| matches!(
-			r,
-			AdminReply::SpawnAlreadyUnlocked | AdminReply::SpawnSetButUnlocked { .. }
-		)),
-		"expected an unlocked report: {:?}",
-		replies(&admin)
+		sim.protected_regions().is_empty(),
+		"the synthetic seam locks nothing on its own"
 	);
-	assert!(sim.spawn_lock().is_none());
-
-	admin.msgs.clear();
-	sim.tick_once(vec![chat(1, "/lock-spawn on")]);
-	admin.drain();
-	assert!(
-		answered(&admin, |r| matches!(
-			r,
-			AdminReply::SpawnLocked { already: false, .. }
-		)),
-		"expected a locked report: {:?}",
-		replies(&admin)
+	sim.ensure_spawn_lock();
+	let regions = sim.protected_regions();
+	assert_eq!(
+		regions,
+		vec![digblock_core::spawn::lock_region(FLAT_SPAWN)],
+		"boot locked somewhere other than the resolved spawn"
 	);
-	// The locked box is exactly `spawn::lock_region`'s, asked for rather
-	// than re-derived here: the search reads that same region, and the
-	// two drifting apart is what makes a locked spawn stop being valid.
-	let region = sim.spawn_lock().expect("locked");
-	assert_eq!(region, digblock_core::spawn::lock_region(FLAT_SPAWN));
-
-	// Idempotent: locking again reports rather than re-pinning.
-	admin.msgs.clear();
-	sim.tick_once(vec![chat(1, "/lock-spawn on")]);
-	admin.drain();
-	assert!(answered(&admin, |r| matches!(
-		r,
-		AdminReply::SpawnLocked { already: true, .. }
-	)));
-
-	admin.msgs.clear();
-	sim.tick_once(vec![chat(1, "/lock-spawn off")]);
-	admin.drain();
-	assert!(answered(&admin, |r| matches!(r, AdminReply::SpawnUnlocked)));
-	assert!(sim.spawn_lock().is_none());
+	// Idempotent: a second boot keeps the stored answer.
+	sim.ensure_spawn_lock();
+	assert_eq!(sim.protected_regions(), regions);
 }
 
 /// Aim the client and wait for the server to have adopted it: inputs
@@ -887,16 +858,17 @@ fn set_spawn_refuses_ground_a_player_cannot_stand_on() {
 	assert!(sim.test_spawn_point().is_none());
 }
 
-/// The point overrides the search for joins, and an active lock
-/// travels with it: the old cells become editable, the new ones
-/// protected.
+/// The point overrides the search for joins, and the lock travels with
+/// it unconditionally — protection is always on, so the old cells become
+/// editable and the new ones protected.
 #[test]
 fn a_set_spawn_moves_the_lock_and_becomes_the_spawn() {
 	let mut sim = admin_sim("setspawnlock");
 	let mut admin = connect_admin(&mut sim, 1, "boss");
 	wait_live(&mut sim, 1);
-	sim.tick_once(vec![chat(1, "/lock-spawn on")]);
-	let before = sim.spawn_lock().expect("locked");
+	sim.ensure_spawn_lock();
+	let before = sim.protected_regions();
+	assert!(!before.is_empty(), "boot locked nothing");
 
 	// Aim down and out: within reach, but a different column's top.
 	let mut t = 0;
@@ -914,9 +886,9 @@ fn a_set_spawn_moves_the_lock_and_becomes_the_spawn() {
 		"{:?}",
 		replies(&admin)
 	);
-	let after = sim.spawn_lock().expect("still locked");
-	assert_ne!(before.x0, after.x0, "lock stayed on the old cells");
-	assert_eq!(after, digblock_core::spawn::lock_region(set));
+	let after = sim.protected_regions();
+	assert_ne!(before, after, "lock stayed on the old cells");
+	assert_eq!(after, vec![digblock_core::spawn::lock_region(set)]);
 
 	// And it is the spawn a joiner gets.
 	let guest = connect_named(&mut sim, 2, "guest");
@@ -929,23 +901,6 @@ fn a_set_spawn_moves_the_lock_and_becomes_the_spawn() {
 		})
 		.expect("Welcome");
 	assert_eq!((welcome[0], welcome[2]), (set.x, set.z));
-
-	// Unlocking releases the cells but leaves the spawn where it was
-	// put — it is not the search's to move any more.
-	admin.msgs.clear();
-	sim.tick_once(vec![chat(1, "/lock-spawn off")]);
-	sim.tick_once(vec![chat(1, "/lock-spawn")]);
-	admin.drain();
-	assert!(sim.spawn_lock().is_none());
-	assert_eq!(sim.test_spawn_point(), Some(set));
-	assert!(
-		answered(&admin, |r| matches!(
-			r,
-			AdminReply::SpawnSetButUnlocked { .. }
-		)),
-		"{:?}",
-		replies(&admin)
-	);
 }
 
 /// The facing is the admin's own look by default, a cardinal when one
@@ -1078,16 +1033,16 @@ fn a_resumed_join_does_not_get_the_spawn_facing() {
 	assert_eq!(look, [0.0; 3], "a resume adopted the spawn facing");
 }
 
-/// A bad argument explains itself instead of silently toggling.
+/// The retired toggle is an unknown command now — protection is not
+/// optional, so no verb may switch it off.
 #[test]
-fn lock_spawn_rejects_a_bad_argument() {
-	let mut sim = admin_sim("lockspawnbad");
+fn lock_spawn_is_no_longer_a_command() {
+	let mut sim = admin_sim("lockspawngone");
 	let mut admin = connect_admin(&mut sim, 1, "boss");
-	sim.tick_once(vec![chat(1, "/lock-spawn maybe")]);
+	sim.tick_once(vec![chat(1, "/lock-spawn off")]);
 	admin.drain();
 	assert!(answered(&admin, |r| matches!(
 		r,
-		AdminReply::Usage(AdminUsage::LockSpawn)
+		AdminReply::UnknownCommand { .. }
 	)));
-	assert!(sim.spawn_lock().is_none(), "bad argument changed the lock");
 }

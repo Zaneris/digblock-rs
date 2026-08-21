@@ -2667,7 +2667,7 @@ fn locked_spawn_refuses_a_place() {
 		.set_lock(Some(crate::spawn_store::SpawnLock {
 			eye: eye.to_array(),
 		}));
-	let region = sim.spawn_lock().expect("locked");
+	let region = sim.protected_regions()[0];
 
 	let pos = sim.test_player(1).unwrap().pos;
 	let out = Vec3::new(3.0, -2.0, 0.0).normalize();
@@ -2766,11 +2766,12 @@ fn water_cannot_flow_into_a_locked_region() {
 		.set_lock(Some(crate::spawn_store::SpawnLock {
 			eye: spawn.to_array(),
 		}));
-	let region = sim.spawn_lock().expect("locked");
+	let region = sim.protected_regions()[0];
+	let x1 = region.bounds()[1];
 
 	// A source one column outside the region, level with the capsule,
 	// with a clear run straight at it.
-	let (wx, wy, wz) = (region.x1 + 1, h + 1, sz);
+	let (wx, wy, wz) = (x1 + 1, h + 1, sz);
 	assert!(!region.contains(wx, wy, wz), "source must start outside");
 	assert!(sim.store.set_block(wx, wy, wz, BlockType::Water).is_some());
 	sim.fluid.schedule_around(wx, wy, wz);
@@ -2789,7 +2790,7 @@ fn water_cannot_flow_into_a_locked_region() {
 	// And the source itself did flow somewhere — otherwise this test
 	// would pass on a fluid sim that simply never ran.
 	assert!(
-		sim.test_cell_at(region.x1 + 2, h + 1, sz)
+		sim.test_cell_at(x1 + 2, h + 1, sz)
 			.is_some_and(|c| BlockType::from_id(digblock_core::chunk::cell_id(c)).is_water()),
 		"fluid never spread at all; the test proves nothing"
 	);
@@ -2813,11 +2814,7 @@ fn a_protected_dig_is_refused_at_dig_start() {
 		FLAT_SPAWN.y.floor() as i32 - 2,
 		FLAT_SPAWN.z.floor() as i32,
 	);
-	assert!(
-		sim.spawn_lock()
-			.expect("locked")
-			.contains(cell.0, cell.1, cell.2)
-	);
+	assert!(sim.protected_regions()[0].contains(cell.0, cell.1, cell.2));
 
 	sim.tick_once(vec![SimEvent::Msg {
 		conn_id: 1,

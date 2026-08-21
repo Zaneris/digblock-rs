@@ -485,6 +485,7 @@ impl Sim {
 		let store = ChunkStore::new(seed, workers);
 		let mut sim = Self::with_store(seed, data_dir, sim_radius, store, player::spawn(seed))?;
 		sim.spawn_search = true;
+		sim.ensure_spawn_lock();
 		Ok(sim)
 	}
 

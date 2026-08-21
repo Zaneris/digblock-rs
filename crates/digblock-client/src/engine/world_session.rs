@@ -14,6 +14,9 @@ impl Engine {
 		self.push_feed(crate::voice::Msg::Connected);
 		self.seed = seed;
 		self.save.spawn_pos = spawn;
+		// A server's protected regions are its own secret: refusals arrive
+		// as `DigRefused`, never predicted.
+		self.protected.clear();
 		// No overlay: the server's journal owns this world's edits.
 		self.install_pipeline(Pipeline::new(
 			seed,
@@ -171,6 +174,9 @@ impl Engine {
 		self.seed = seed;
 		let spawn = digblock_core::player::spawn(seed);
 		self.save.spawn_pos = spawn;
+		// The backdrop is ephemeral — nothing persists, so nothing needs
+		// an arrival lock, and the world just left must not leak its own.
+		self.protected.clear();
 		self.install_pipeline(Pipeline::with_overlay(
 			seed,
 			self.config.draw_dist,
@@ -248,6 +254,13 @@ impl Engine {
 		if save.rev < digblock_persist::REV_FOUND_ESSENCE {
 			self.inventory.clear_pre_redesign_essence();
 		}
+		// Protection is always on offline too: the pipeline is the
+		// authority here, so it enforces the spawn sphere itself — around
+		// the RESOLVED spawn, so a save whose anchor was dug out before
+		// this rule existed locks the relocated pad, never the crater.
+		self.protected = vec![digblock_core::spawn::lock_region(
+			self.local_spawn_resolved(),
+		)];
 		// The save's skill totals (empty for pre-skills saves = level 1);
 		// stale toasts belong to whatever world we just left.
 		self.skills = digblock_core::skills::SkillSet::from_wire(&save.skills);

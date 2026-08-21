@@ -79,14 +79,22 @@ impl Engine {
 	/// A world with no overlay (an unsaved session) has no recorded edits
 	/// to reason about, so the anchor stands; `ascend_clear` still steps
 	/// over anything built there this session.
-	pub(super) fn local_spawn(&self) -> Vec3 {
-		let resolved = match self.pipeline.overlay() {
+	/// The offline spawn as resolved against the save's edits — the eye
+	/// the arrival lock centres on. Split from [`Self::local_spawn`]
+	/// because the lock must anchor on the PAD, before the landing rule
+	/// steps over any residual obstruction.
+	pub(super) fn local_spawn_resolved(&self) -> Vec3 {
+		match self.pipeline.overlay() {
 			Some(o) => digblock_core::spawn::resolve(self.save.spawn_pos, self.seed, &|x, y, z| {
 				o.column(x.div_euclid(16), z.div_euclid(16))
 					.and_then(|cells| cells.get(&(x, y, z)).copied())
 			}),
 			None => self.save.spawn_pos,
-		};
+		}
+	}
+
+	pub(super) fn local_spawn(&self) -> Vec3 {
+		let resolved = self.local_spawn_resolved();
 		let pipeline = &self.pipeline;
 		digblock_core::player::ascend_clear(resolved, &|x, y, z| pipeline.cell_at(x, y, z))
 	}
@@ -178,10 +186,11 @@ impl Engine {
 	}
 
 	pub(super) fn diggable(&self, hit: &RayHit) -> bool {
-		// Permanently protected cells never start a hold. Only the world
-		// floor is knowable client-side — a server's spawn lock is its own
-		// secret, so a cell it has already refused is remembered instead.
-		if digblock_core::protect::immutable(hit.cell.0, hit.cell.1, hit.cell.2, None)
+		// Permanently protected cells never start a hold: the world floor
+		// everywhere, plus the offline arrival regions. A SERVER's regions
+		// are its own secret, so a cell it has already refused is
+		// remembered instead.
+		if digblock_core::protect::immutable(hit.cell.0, hit.cell.1, hit.cell.2, &self.protected)
 			|| self.refused_cell == Some(hit.cell)
 		{
 			return false;
@@ -255,7 +264,7 @@ impl Engine {
 		// `DigRefused` instead. The latch keeps each refusal to one feed
 		// line per aim, same as the server path.
 		if let Some((cell, msg)) = self.target.and_then(|h| {
-			if digblock_core::protect::immutable(h.cell.0, h.cell.1, h.cell.2, None) {
+			if digblock_core::protect::immutable(h.cell.0, h.cell.1, h.cell.2, &self.protected) {
 				Some((h.cell, Msg::DigProtected))
 			} else if self.node_dig_mode(h.cell)
 				== digblock_core::worldgen::nodes::DigMode::NeedsSiphon
@@ -746,11 +755,11 @@ impl Engine {
 		// thing between a place and the world floor was
 		// `cell_is_replaceable`, which asks about block IDENTITY, and the
 		// floor rule is the one rule that must never depend on what
-		// happens to be standing there. Only the floor is knowable
-		// client-side; a spawn lock arrives as a rejection instead.
+		// happens to be standing there. Offline the arrival regions ride
+		// along; a SERVER's regions arrive as a rejection instead.
 		if placements
 			.iter()
-			.any(|&(c, _)| digblock_core::protect::immutable(c.0, c.1, c.2, None))
+			.any(|&(c, _)| digblock_core::protect::immutable(c.0, c.1, c.2, &self.protected))
 		{
 			self.push_feed(Msg::PlaceProtected);
 			return;
@@ -823,7 +832,8 @@ impl Engine {
 				// has a companion write to unwind.
 				for &(c, _, v) in &entries {
 					let below = (c.0, c.1 - 1, c.2);
-					if digblock_core::protect::immutable(below.0, below.1, below.2, None) {
+					if digblock_core::protect::immutable(below.0, below.1, below.2, &self.protected)
+					{
 						continue;
 					}
 					let Some(dirt) = self
@@ -866,7 +876,7 @@ impl Engine {
 		// with only its upper cell reachable.
 		if entries
 			.iter()
-			.any(|&(c, _, _)| digblock_core::protect::immutable(c.0, c.1, c.2, None))
+			.any(|&(c, _, _)| digblock_core::protect::immutable(c.0, c.1, c.2, &self.protected))
 		{
 			return;
 		}

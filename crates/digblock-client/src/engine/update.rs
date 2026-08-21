@@ -308,7 +308,7 @@ impl Engine {
 			self.flow_accum = (self.flow_accum + dt).min(1.0);
 			while self.flow_accum >= FLOW_STEP_SECS {
 				self.flow_accum -= FLOW_STEP_SECS;
-				let mut world = PipelineWorld(&mut self.pipeline);
+				let mut world = PipelineWorld(&mut self.pipeline, &self.protected);
 				self.fluid.step(&mut world, FLOW_BUDGET);
 			}
 			self.step_world_jobs();

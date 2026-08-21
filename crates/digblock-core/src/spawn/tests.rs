@@ -314,14 +314,17 @@ fn stands_clear_rejects_an_unreadable_cell() {
 	assert!(!stands_clear(eye_over(top), &cell));
 }
 
-/// The load-bearing alignment: the cells `stands_clear` reads are
-/// exactly the ones the lock protects, so locking a hand-picked spawn
-/// makes it permanently valid the same way locking a searched one does.
+/// The load-bearing containment: every cell whose edit could break
+/// `stands_clear`'s answer is protected by the lock, so locking a
+/// hand-picked spawn makes it permanently valid the same way locking a
+/// searched one does. Containment, not equivalence — the sphere also
+/// freezes unvalidated cells around and beneath the pad on purpose.
 #[test]
-fn stands_clear_reads_exactly_the_locked_region() {
+fn the_lock_contains_what_stands_clear_reads() {
 	let top = 100;
 	let e = eye_over(top);
 	let region = lock_region(e);
+	let mut broke_count = 0u32;
 	for cz in -CLEAR - 1..=CLEAR + 1 {
 		for cx in -CLEAR - 1..=CLEAR + 1 {
 			for cy in top - 1..=top + CAPSULE + 1 {
@@ -333,14 +336,15 @@ fn stands_clear_reads_exactly_the_locked_region() {
 					BlockType::Stone as u16
 				};
 				patch.insert((cx, cy, cz), cell);
-				let broke = !stands_clear(e, &world(top, patch));
-				assert_eq!(
-					broke,
-					region.contains(cx, cy, cz),
-					"cell ({cx},{cy},{cz}): broke={broke}, protected={}",
-					region.contains(cx, cy, cz)
-				);
+				if !stands_clear(e, &world(top, patch)) {
+					broke_count += 1;
+					assert!(
+						region.contains(cx, cy, cz),
+						"edit at ({cx},{cy},{cz}) breaks the pad but is not protected"
+					);
+				}
 			}
 		}
 	}
+	assert!(broke_count > 0, "no probed edit broke the pad");
 }

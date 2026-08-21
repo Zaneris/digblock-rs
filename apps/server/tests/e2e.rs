@@ -619,6 +619,29 @@ fn edit_reaches_late_joiner_and_live_peer() {
 		a.pump();
 		std::thread::sleep(Duration::from_millis(16));
 	}
+	// Spawn is always protected now, so walk clear of its sphere first —
+	// a dig within `LOCK_RADIUS` of the pad would be refused, correctly.
+	let clear = digblock_core::spawn::LOCK_RADIUS as f32 + REACH;
+	let start = player.pos;
+	let walk = digblock_core::player::PlayerIntent {
+		move_axis: glam::Vec2::new(0.0, 1.0),
+		jump: false,
+	};
+	for _ in 0..600 {
+		if (player.pos - start).length() >= clear {
+			break;
+		}
+		a.client
+			.predictor
+			.predict(&mut player, walk, Vec3::Z, &world);
+		a.client.send_inputs();
+		a.pump();
+		std::thread::sleep(Duration::from_millis(16));
+	}
+	assert!(
+		(player.pos - start).length() >= clear,
+		"never walked clear of the spawn sphere"
+	);
 	// Dig at an angle so the ground under the player stays intact (a
 	// hole underfoot would drop the server player away from our claims).
 	let dig_dir = Vec3::new(0.45, -1.0, 0.0).normalize();

@@ -927,26 +927,18 @@ fn a_protected_cell_refuses_the_whole_pick_swing() {
 	let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();
 	// Lock a region whose NEAR edge is the aimed cell's +x neighbour,
 	// so the aimed cell itself is free and the refusal can only come
-	// from a cell the swing reached. (`lock_region` is a box CLEAR
-	// out from the eye's column, floored just below the eye.)
-	let lock_x = hit.cell.0 + 1 + digblock_core::spawn::CLEAR;
+	// from a cell the swing reached. (`lock_region` is a sphere of
+	// `LOCK_RADIUS` around the eye's floor cell.)
+	let lock_x = hit.cell.0 + 1 + digblock_core::spawn::LOCK_RADIUS;
 	sim.bench_lock_spawn_at(Vec3::new(
 		lock_x as f32 + 0.5,
 		hit.cell.1 as f32 + 2.5,
 		hit.cell.2 as f32 + 0.5,
 	));
+	let locks = sim.protected_regions();
 	assert!(
-		digblock_core::protect::immutable(
-			hit.cell.0 + 1,
-			hit.cell.1,
-			hit.cell.2,
-			sim.spawn_lock().as_ref()
-		) && !digblock_core::protect::immutable(
-			hit.cell.0,
-			hit.cell.1,
-			hit.cell.2,
-			sim.spawn_lock().as_ref()
-		),
+		digblock_core::protect::immutable(hit.cell.0 + 1, hit.cell.1, hit.cell.2, &locks)
+			&& !digblock_core::protect::immutable(hit.cell.0, hit.cell.1, hit.cell.2, &locks),
 		"the lock has to straddle the plane, not swallow it"
 	);
 	let mut t = 100;

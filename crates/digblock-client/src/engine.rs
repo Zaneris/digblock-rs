@@ -186,6 +186,11 @@ pub struct Engine {
 	/// confirms/rejects keep it honest. Offline it is simply the truth.
 	inventory: Inventory,
 	hotbar: Hotbar,
+	/// Protected arrival regions this engine ENFORCES — offline only,
+	/// where the pipeline is the authority and the spawn sphere is derived
+	/// at world entry. Empty in multiplayer on purpose: a server's regions
+	/// are its own secret and refusals arrive as `DigRefused`.
+	protected: Vec<digblock_core::protect::Region>,
 	/// Edit-time water flow (digblock-core fluid rules); idle unless
 	/// edits schedule cells.
 	fluid: digblock_core::fluid::FluidSim,
@@ -917,7 +922,7 @@ impl Game for Engine {
 /// The fluid sim's view of the chunk pipeline: set_block already handles
 /// copy-on-write and remesh invalidation, and returns None for unloaded
 /// cells, which the sim treats as a dropped write.
-struct PipelineWorld<'a>(&'a mut Pipeline);
+struct PipelineWorld<'a>(&'a mut Pipeline, &'a [digblock_core::protect::Region]);
 
 impl digblock_core::worldjob::CellSource for PipelineWorld<'_> {
 	fn cell_at(&self, x: i32, y: i32, z: i32) -> Option<u16> {
@@ -960,9 +965,10 @@ impl digblock_core::fluid::FluidWorld for PipelineWorld<'_> {
 		// `cur.props().collides` kept water out of it — a property of
 		// whatever block happens to sit there, which is precisely what
 		// the floor rule must not depend on. The sim reads `false` as
-		// "didn't land" and declines to propagate onward. A spawn lock is
-		// server-only knowledge and stays unpredicted, hence `None`.
-		if digblock_core::protect::immutable(x, y, z, None) {
+		// "didn't land" and declines to propagate onward. Offline the
+		// engine's own arrival regions ride along; multiplayer passes an
+		// empty set, because a server's regions are its own secret.
+		if digblock_core::protect::immutable(x, y, z, self.1) {
 			return false;
 		}
 		self.0.set_block(x, y, z, b).is_some()

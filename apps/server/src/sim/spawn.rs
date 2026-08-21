@@ -1,6 +1,6 @@
 //! The spawn point, the walk that finds a valid one, and the
-//! teleports that use it. `lock_region` is exactly the cell set the
-//! search inspects, which is why a locked spawn stays valid.
+//! teleports that use it. `lock_region` contains every cell the search
+//! inspects, which is why a locked spawn stays valid.
 
 use super::*;
 
@@ -132,6 +132,27 @@ impl Sim {
 		);
 		// The interest center jumped; re-derive residency + sync scope.
 		self.residency_dirty = true;
+	}
+
+	/// Protection is always on: with no stored lock, resolve spawn against
+	/// the journal and lock the RESULT — never the raw anchor, so an
+	/// existing world whose anchor was dug out locks the relocated spawn
+	/// rather than the crater. On the pathological seed where even the
+	/// search gives up, boot proceeds unlocked and retries next boot
+	/// instead of pinning a bad answer.
+	pub(super) fn ensure_spawn_lock(&mut self) {
+		if self.spawn_store.lock().is_some() {
+			return;
+		}
+		let eye = self.spawn_point();
+		if !self.spawn_valid(eye) {
+			log::warn!("spawn protection deferred: no clear spawn to lock");
+			return;
+		}
+		self.spawn_store.set_lock(Some(SpawnLock {
+			eye: eye.to_array(),
+		}));
+		log::info!("spawn locked at {eye}");
 	}
 
 	/// Teleport a live client back to spawn, subject to the cooldown.

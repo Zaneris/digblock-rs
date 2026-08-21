@@ -118,8 +118,8 @@ fn a_sweep_reaches_a_client_as_an_ordinary_edit() {
 #[test]
 fn a_locked_spawn_refuses_a_sweep() {
 	let mut sim = flat_sim("wj-lock");
-	// One above the ground: the lock is the standing capsule over the
-	// spawn column, so the floor itself is outside it.
+	// One above the ground, inside the lock sphere near the pad and
+	// outside it farther away — the sweep band straddles the boundary.
 	let y = FLAT_GROUND_TOP as i32 + 1;
 	let mut c = connect(&mut sim, 1);
 	wait_live(&mut sim, 1);
@@ -132,13 +132,14 @@ fn a_locked_spawn_refuses_a_sweep() {
 	c.drain();
 	run_sweep(&mut sim, &mut c, 8);
 
-	let lock = sim.spawn_lock().expect("spawn is locked");
+	let locks = sim.protected_regions();
+	assert!(!locks.is_empty(), "spawn is locked");
 	let (mut refused, mut swept) = (0, 0);
 	for &(x, _, z) in &sown {
 		if !(0..16).contains(&x) || !(0..16).contains(&z) {
 			continue;
 		}
-		if digblock_core::protect::immutable(x, y, z, Some(&lock)) {
+		if digblock_core::protect::immutable(x, y, z, &locks) {
 			assert_eq!(
 				sim.cell_at(x, y, z),
 				Some(BlockType::Dirt as u16),

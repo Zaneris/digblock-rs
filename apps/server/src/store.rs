@@ -239,12 +239,12 @@ fn overlay(stack: &mut [Arc<ChunkData>], x: i32, y: i32, z: i32, block: u16) {
 pub struct StoreWorld<'a> {
 	pub store: &'a mut ChunkStore,
 	pub edits: &'a mut Vec<(BlockEdit, u16)>,
-	/// Protected region, if any. Refusing the write here — rather than
+	/// Protected arrival regions. Refusing the write here — rather than
 	/// filtering the schedule — is what stops water *sourced outside* a
 	/// locked region flowing into it: the fluid sim treats a false return
 	/// as "didn't land" and declines to propagate onward, so one check
 	/// covers every direction of approach.
-	pub lock: Option<Region>,
+	pub locks: Vec<Region>,
 }
 
 impl FluidWorld for StoreWorld<'_> {
@@ -253,7 +253,7 @@ impl FluidWorld for StoreWorld<'_> {
 	}
 
 	fn set(&mut self, x: i32, y: i32, z: i32, b: BlockType) -> bool {
-		if digblock_core::protect::immutable(x, y, z, self.lock.as_ref()) {
+		if digblock_core::protect::immutable(x, y, z, &self.locks) {
 			return false;
 		}
 		if let Some(prev) = self.store.set_block(x, y, z, b) {
@@ -363,7 +363,7 @@ mod tests {
 		let mut world = StoreWorld {
 			store: &mut store,
 			edits: &mut edits,
-			lock: None,
+			locks: Vec::new(),
 		};
 		assert!(world.set(2, y, 2, BlockType::Water));
 		// No-op write (same value) does not land or record.

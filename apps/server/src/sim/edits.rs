@@ -570,15 +570,15 @@ impl Sim {
 			}
 		};
 
-		// Protected cells: the world floor, and the spawn lock's region
-		// when one is active. Checked against the assembled `writes` so
-		// every path is covered at once — a plain dig, a place landing on
-		// the neighbour cell, a door's derived upper half, a slab grow.
-		// Honest clients predict this and never send the edit.
-		let lock = self.spawn_lock();
+		// Protected cells: the world floor, and the arrival regions.
+		// Checked against the assembled `writes` so every path is covered
+		// at once — a plain dig, a place landing on the neighbour cell, a
+		// door's derived upper half, a slab grow. Honest clients predict
+		// this and never send the edit.
+		let regions = self.protected_regions();
 		if writes
 			.iter()
-			.any(|&(c, _)| digblock_core::protect::immutable(c.0, c.1, c.2, lock.as_ref()))
+			.any(|&(c, _)| digblock_core::protect::immutable(c.0, c.1, c.2, &regions))
 		{
 			return reject(RejectReason::Protected);
 		}
@@ -805,10 +805,10 @@ impl Sim {
 		// must not be able to reject a place, and the client deliberately
 		// does not predict it, so this broadcast is its one delivery.
 		if place_cell.is_some() {
-			let lock = self.spawn_lock();
+			let regions = self.protected_regions();
 			for &(cell, val) in &writes {
 				let below = (cell.0, cell.1 - 1, cell.2);
-				if digblock_core::protect::immutable(below.0, below.1, below.2, lock.as_ref()) {
+				if digblock_core::protect::immutable(below.0, below.1, below.2, &regions) {
 					continue;
 				}
 				let Some(dirt) = self
@@ -924,10 +924,10 @@ impl Sim {
 			writes.push((partner, pc, door_toggled(pc)));
 		}
 		// A door inside a protected region is furniture, not a mechanism.
-		let lock = self.spawn_lock();
+		let regions = self.protected_regions();
 		if writes
 			.iter()
-			.any(|&(c, _, _)| digblock_core::protect::immutable(c.0, c.1, c.2, lock.as_ref()))
+			.any(|&(c, _, _)| digblock_core::protect::immutable(c.0, c.1, c.2, &regions))
 		{
 			return reject(RejectReason::Protected);
 		}
@@ -1105,14 +1105,14 @@ impl Sim {
 			return;
 		}
 		self.flow_accum = (self.flow_accum + TICK).min(1.0);
-		let lock = self.spawn_lock();
+		let locks = self.protected_regions();
 		while self.flow_accum >= FLOW_STEP_SECS {
 			self.flow_accum -= FLOW_STEP_SECS;
 			let mut edits = Vec::new();
 			let mut world = StoreWorld {
 				store: &mut self.store,
 				edits: &mut edits,
-				lock,
+				locks: locks.clone(),
 			};
 			self.fluid.step(&mut world, FLOW_BUDGET);
 			for (edit, prev) in edits {
@@ -1137,8 +1137,8 @@ impl Sim {
 	/// below) — never add to it. The action-queue cap bounds the
 	/// per-tick volume.
 	fn handle_dig_start(&mut self, conn_id: u64, cell: (i32, i32, i32), slot: u8) {
-		// Before the client borrow: `spawn_lock` reads all of `self`.
-		let lock = self.spawn_lock();
+		// Before the client borrow: `protected_regions` reads all of `self`.
+		let regions = self.protected_regions();
 		let Some(client) = self.clients.get_mut(&conn_id) else {
 			return;
 		};
@@ -1157,7 +1157,7 @@ impl Sim {
 		// reject it anyway, but only after the player held the button
 		// through the block's full dig time for nothing — the refusal is
 		// only useful if it arrives when the hold starts.
-		if digblock_core::protect::immutable(cell.0, cell.1, cell.2, lock.as_ref()) {
+		if digblock_core::protect::immutable(cell.0, cell.1, cell.2, &regions) {
 			client.digging = None;
 			client_send(
 				client,
@@ -1273,11 +1273,15 @@ impl Sim {
 		};
 	}
 
-	/// The active spawn lock's protected region, if any.
-	pub(super) fn spawn_lock(&self) -> Option<Region> {
+	/// Every protected arrival region — the spawn lock's sphere, and (as
+	/// later stages add them) the waystone pads. Owned on purpose: every
+	/// caller hoists it before taking a mutable client borrow.
+	pub(super) fn protected_regions(&self) -> Vec<Region> {
 		self.spawn_store
 			.lock()
 			.map(|l| digblock_core::spawn::lock_region(Vec3::from_array(l.eye)))
+			.into_iter()
+			.collect()
 	}
 }
 

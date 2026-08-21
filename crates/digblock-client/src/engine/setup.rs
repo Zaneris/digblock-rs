@@ -241,6 +241,10 @@ impl Engine {
 			target: None,
 			inventory: Inventory::default(),
 			hotbar: Hotbar::new(),
+			// The startup world is ephemeral (a backdrop, or a capture
+			// scene) — no arrival lock; entering a NAMED save or a server
+			// world replaces this per `world_session`.
+			protected: Vec::new(),
 			fluid: digblock_core::fluid::FluidSim::new(),
 			world_jobs: digblock_core::worldjob::Scheduler::new(),
 			flow_accum: 0.0,
