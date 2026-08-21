@@ -464,6 +464,9 @@ impl Engine {
 		for job in digblock_core::worldjob::grass::jobs() {
 			engine.register_world_job(job);
 		}
+		for job in digblock_core::worldjob::leaves::jobs() {
+			engine.register_world_job(job);
+		}
 		engine
 	}
 

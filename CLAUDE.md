@@ -457,9 +457,10 @@ corners are chosen must be checked against the mapping and not just the codes.
 
 ## Scheduled world jobs
 
-`digblock-core/src/worldjob.rs` is a seam with no rule in it yet: a `WorldJob` runs on a clock over blocks of a given
-type near active players (grass creeping onto dirt is the shape). **This is not fluid and must not be built on it** —
-fluid is a continuous per-tick sim over cells in flight, this is a rare batch sweep. They share only their write path.
+`digblock-core/src/worldjob.rs` is the seam and carries two rules: `grass` (creep onto sunlit dirt, smother under
+covers) and `leaves` (foliage rots once nothing anchors it). A `WorldJob` runs on a clock over blocks of a given type
+near active players. **This is not fluid and must not be built on it** — fluid is a continuous per-tick sim over cells
+in flight, this is a rare batch sweep. They share only their write path.
 
 - **The clock is the GAME's day** (`sun::DAY_SECS`), fixed by `Schedule` rather than chosen per job — a server's local
   09:00 means nothing to a player elsewhere, and the game clock is already dictated to every client.
@@ -472,6 +473,12 @@ fluid is a continuous per-tick sim over cells in flight, this is a rare batch sw
   `Pipeline::set_cell` offline. Both arms run the same scheduler, or a rule forks.
 - Catch-up is capped at one run (`last_run` advances when a sweep STARTS); one sweep at a time; the column set is
   snapshotted at the start, because players move and a shifting set gives uneven coverage.
+- **Leaf decay's frontier candidates are its propagation engine**: a felled trunk's edits expose only the adjacent ring
+  of leaves, and each rotted ring's own writes recruit the next — decay applied anywhere but the edit path stops
+  canopies melting. A leaf is anchored by trunk blocks INCLUDING the heartwood faces (a siphon must not orphan the
+  canopy), or by foliage resting on ground — which is what spares bushes, so "a leaf implies wood nearby" is a trap.
+  `every_pristine_structure_leaf_survives` walks real worldgen to keep the walk cap ahead of the canopies decoration
+  grows — **watch it when widening a canopy.**
 
 ## Spawn & protected cells
 
