@@ -78,9 +78,20 @@ impl Engine {
 		self.drawn_cell = None;
 		// Confetti is thrown at a world position; a new world has none of
 		// them left hanging in the air. Same for the essence draw, which
-		// names a cell in the world just left.
+		// names a cell in the world just left, the teleport light, and
+		// the channel's fade.
 		self.vfx.confetti.clear();
 		self.vfx.siphon = None;
+		self.vfx.casts.clear();
+		self.vfx.channel_env = 0.0;
+		self.vfx.flash = 0.0;
+		// The arrival marker follows the world's own spawn: the pad's
+		// floor centre under the spawn eye.
+		self.vfx.marker_sites = vec![Vec3::new(
+			self.save.spawn_pos.x,
+			self.save.spawn_pos.y - digblock_core::player::EYE_TO_FEET,
+			self.save.spawn_pos.z,
+		)];
 		// And the bench job, which survives the SCREEN closing but not
 		// the world: it points at this world's stacks and this server's
 		// bucket, neither of which exists in whatever comes next.
@@ -112,11 +123,15 @@ impl Engine {
 		self.emit(crate::audio::AudioCmd::LoopStop {
 			id: crate::audio::LOOP_DIG,
 		});
+		self.emit(crate::audio::AudioCmd::LoopStop {
+			id: crate::audio::LOOP_CAST,
+		});
 		self.audio.ambient.reset();
 		self.audio.prospect.reset();
 		self.audio.swim_strokes.reset();
 		self.vfx.view_bob.reset();
 		self.vfx.view_swing.reset();
+		self.vfx.view_cast.reset();
 		self.vfx.view_swap.reset();
 		// The tool slot's handover animates whenever the active tool changes,
 		// which is right for a cycle and wrong for a world entry: the bar we
@@ -281,6 +296,14 @@ impl Engine {
 			&mut self.inv_grid,
 		);
 		self.reset_world_transients(start, !reuse);
+		// The marker stands on the RESOLVED pad — the eye the lock
+		// anchors on — not the pristine anchor a damaged save moved off.
+		let pad = self.local_spawn_resolved();
+		self.vfx.marker_sites = vec![Vec3::new(
+			pad.x,
+			pad.y - digblock_core::player::EYE_TO_FEET,
+			pad.z,
+		)];
 		self.save.in_local_save = true;
 		self.save.player_save_accum = 0.0;
 		self.ui.menu.on_world_entered();

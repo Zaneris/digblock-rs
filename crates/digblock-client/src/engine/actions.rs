@@ -246,6 +246,12 @@ impl Engine {
 			return;
 		}
 		self.cast = Some(CastState { target, ticks: 0 });
+		self.emit(crate::audio::AudioCmd::LoopStart {
+			id: crate::audio::LOOP_CAST,
+			sound: crate::audio::Sfx::CastLoop,
+			pos: None,
+			gain: 0.45,
+		});
 	}
 
 	/// One fixed-rate step of the cast channel. A channel is STILLNESS:
@@ -269,6 +275,9 @@ impl Engine {
 			|| self.ui.chat.is_open();
 		if moving || surface || self.dig_active() {
 			self.cast = None;
+			self.emit(crate::audio::AudioCmd::LoopStop {
+				id: crate::audio::LOOP_CAST,
+			});
 			self.push_feed(Msg::CastInterrupted);
 			return;
 		}
@@ -282,6 +291,9 @@ impl Engine {
 		};
 		if let Some(target) = done {
 			self.cast = None;
+			self.emit(crate::audio::AudioCmd::LoopStop {
+				id: crate::audio::LOOP_CAST,
+			});
 			self.complete_cast(target);
 		}
 	}

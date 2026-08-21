@@ -132,8 +132,22 @@ impl Engine {
 				confetti: Vec::new(),
 				confetti_seq: 0,
 				siphon: None,
+				casts: Vec::new(),
+				cast_seq: 0,
+				channel_env: 0.0,
+				flash: 0.0,
+				// The startup world marks its spawn too: the marker is the
+				// pad's identity, and captures photograph it here.
+				marker_sites: vec![Vec3::new(
+					spawn.x,
+					spawn.y - digblock_core::player::EYE_TO_FEET,
+					spawn.z,
+				)],
+				fx_scratch: Vec::new(),
+				marker_scratch: Vec::new(),
 				view_bob: crate::viewmodel::Bob::default(),
 				view_swing: crate::viewmodel::Swing::default(),
+				view_cast: crate::viewmodel::Cast::default(),
 				view_swap: crate::viewmodel::Swap::default(),
 				xp_toasts: Vec::new(),
 				nametag_scratch: Vec::new(),

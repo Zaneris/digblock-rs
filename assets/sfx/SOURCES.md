@@ -161,3 +161,10 @@ so; the older entries pin neither, and reproduce the sound rather than the bytes
   afade=t=out:st=0.41:d=0.04" -ar 44100 -ac 1 splash.wav
   oggenc -q 3 -o splash.ogg splash.wav
   ```
+
+## Wanted (placeholders in use)
+
+The Arcana cast set currently reuses existing recordings (see `digblock-client/src/audio.rs::bytes`): `CastLoop` plays
+`siphon_draw.ogg`, `TeleportOut` plays `siphon_take.ogg`, `TeleportIn` plays `level_unlock.ogg`. Wanted, CC0: a soft
+arcane wind loop for the channel, a release "whoosh" for departure, and a settling chime for arrival — swap the `bytes`
+arms when they land, nothing else moves.

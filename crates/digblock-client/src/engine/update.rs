@@ -221,6 +221,21 @@ impl Engine {
 			b[3] += dt;
 		}
 		self.vfx.confetti.retain(|b| b[3] < crate::confetti::LIFE);
+		// Teleport bursts age the same way — the age IS the simulation —
+		// and the channel aura's envelope opens while a cast channels and
+		// dissolves when one ends or breaks, so an interrupt fades rather
+		// than pops. The flash is the teleport instant's overlay wash.
+		for fx in &mut self.vfx.casts {
+			fx.age += dt;
+		}
+		self.vfx.casts.retain(|fx| fx.age < crate::teleport::LIFE);
+		let channel_live = self.cast.is_some() || self.config.debug_cast.is_some();
+		self.vfx.channel_env = if channel_live {
+			(self.vfx.channel_env + dt / crate::teleport::FADE_IN_SECS).min(1.0)
+		} else {
+			(self.vfx.channel_env - dt / crate::teleport::FADE_OUT_SECS).max(0.0)
+		};
+		self.vfx.flash = (self.vfx.flash - dt * 2.2).max(0.0);
 		// DIG_CONFETTI=1: a burst every couple of seconds a few blocks
 		// ahead, so a capture run can photograph one at every age.
 		if self.config.debug_confetti && self.vfx.confetti.is_empty() {
@@ -507,6 +522,9 @@ impl Engine {
 		// `step_dig` — one stroke per bucket, so there is nothing to
 		// re-arm here.
 		self.vfx.view_swing.advance(dt);
+		// The casting hand rides the channel's own envelope, so gesture
+		// and aura rise and dissolve together. DIG_CAST holds both.
+		self.vfx.view_cast.advance(dt, self.vfx.channel_env);
 		// At the TAIL on the interactive path, after `reconcile_layout` and
 		// `pump_net`: a slot whose count reached zero is only released by
 		// the reconcile above, so reading the bar ahead of it drew — and

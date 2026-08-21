@@ -442,6 +442,18 @@ fn main() {
 	// about, so this one is too. And a draw needs the tool in hand: DIG_SCREEN's
 	// own `siphon` spelling is what puts it there, defaulted rather than
 	// re-implemented.
+	// DIG_CAST=<percent>: pose the cast channel's aura at that progress
+	// with no hold behind it — the DIG_SIPHON rule, minus the vein (a
+	// channel needs no target, so it stands its own scene).
+	if let Ok(v) = std::env::var("DIG_CAST") {
+		match v.parse::<f32>() {
+			Ok(p) if (0.0..=100.0).contains(&p) => config.debug_cast = Some(p / 100.0),
+			_ => {
+				eprintln!("DIG_CAST must be a percent in 0..=100, got {v:?}");
+				std::process::exit(2);
+			}
+		}
+	}
 	if let Ok(v) = std::env::var("DIG_SIPHON") {
 		match v.parse::<f32>() {
 			Ok(p) if (0.0..=100.0).contains(&p) => config.debug_siphon = Some(p / 100.0),

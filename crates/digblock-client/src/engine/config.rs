@@ -259,6 +259,11 @@ pub struct EngineConfig {
 	/// launcher refuses the pair unset rather than capturing an empty
 	/// wall. Set by the desktop launcher from DIG_SIPHON.
 	pub debug_siphon: Option<f32>,
+	/// Debug: hold the cast channel's aura at a fixed progress with no
+	/// hold behind it — standing in a channel is the one thing a headless
+	/// run cannot do (the DIG_SIPHON rule). Set by the desktop launcher
+	/// from DIG_CAST.
+	pub debug_cast: Option<f32>,
 	/// Debug: open a UI screen at startup with a stocked inventory, so a
 	/// headless `--screenshot` run can capture it. Set by the desktop
 	/// launcher from DIG_SCREEN.
@@ -476,6 +481,7 @@ impl EngineConfig {
 			debug_confetti: false,
 			debug_crack: None,
 			debug_siphon: None,
+			debug_cast: None,
 			debug_shapes: false,
 			debug_doors: false,
 			debug_vault: false,

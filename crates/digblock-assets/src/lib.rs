@@ -307,6 +307,19 @@ pub mod shader {
 		include_str!("../../../assets/shaders/medium_common.wgsl"),
 		include_str!("../../../assets/shaders/siphon.wgsl"),
 	);
+	/// Teleport light (the cast channel, departure, arrival) and the
+	/// standing waystone marker — both additive for siphon's reason, so
+	/// both take the transmittance halves and nothing else.
+	pub const TELEPORT: &str = concat!(
+		include_str!("../../../assets/shaders/frame_common.wgsl"),
+		include_str!("../../../assets/shaders/medium_common.wgsl"),
+		include_str!("../../../assets/shaders/teleport.wgsl"),
+	);
+	pub const WAYSTONE: &str = concat!(
+		include_str!("../../../assets/shaders/frame_common.wgsl"),
+		include_str!("../../../assets/shaders/medium_common.wgsl"),
+		include_str!("../../../assets/shaders/waystone.wgsl"),
+	);
 	pub const PLAYERS: &str = concat!(
 		include_str!("../../../assets/shaders/frame_common.wgsl"),
 		include_str!("../../../assets/shaders/medium_common.wgsl"),
@@ -404,7 +417,7 @@ pub mod shader {
 		include_str!("../../../assets/shaders/gi_common.wgsl"),
 	);
 
-	pub const ALL: [(&str, &str); 23] = [
+	pub const ALL: [(&str, &str); 25] = [
 		("chunk.wgsl", CHUNK),
 		("water.wgsl", WATER),
 		("glass.wgsl", GLASS),
@@ -415,6 +428,8 @@ pub mod shader {
 		("spray.wgsl", SPRAY),
 		("confetti.wgsl", CONFETTI),
 		("siphon.wgsl", SIPHON),
+		("teleport.wgsl", TELEPORT),
+		("waystone.wgsl", WAYSTONE),
 		("players.wgsl", PLAYERS),
 		("highlight.wgsl", HIGHLIGHT),
 		("highlight_crack.wgsl", HIGHLIGHT_CRACK),

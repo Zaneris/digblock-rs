@@ -25,6 +25,35 @@ impl Engine {
 	/// set answers a return-to-spawn with a look, and reading that as
 	/// "an admin teleported me" got the wording backwards.
 	pub(super) fn apply_teleport(&mut self, pos: Vec3, look: Vec3) {
+		// The jump's light: a departure collapse where the caster stood,
+		// an arrival bloom where they land, and the overlay flash between
+		// them. Engine state, so a world swap forgets them like confetti.
+		let feet = Vec3::new(0.0, digblock_core::player::EYE_TO_FEET, 0.0);
+		let seq = self.vfx.cast_seq;
+		self.vfx.cast_seq = seq.wrapping_add(2);
+		self.vfx.casts.push(TeleportFx {
+			pos: self.player.pos - feet,
+			mode: crate::teleport::Mode::Departure,
+			age: 0.0,
+			seed: seq as f32 * 17.31,
+		});
+		self.vfx.casts.push(TeleportFx {
+			pos: pos - feet,
+			mode: crate::teleport::Mode::Arrival,
+			age: 0.0,
+			seed: (seq + 1) as f32 * 17.31,
+		});
+		self.vfx.flash = 1.0;
+		self.emit(crate::audio::AudioCmd::Sfx {
+			sound: crate::audio::Sfx::TeleportOut,
+			pos: Some(self.player.pos.to_array()),
+			gain: 0.8,
+		});
+		self.emit(crate::audio::AudioCmd::Sfx {
+			sound: crate::audio::Sfx::TeleportIn,
+			pos: None,
+			gain: 0.7,
+		});
 		self.player.set_state(digblock_core::player::PlayerState {
 			pos,
 			vel: Vec3::ZERO,

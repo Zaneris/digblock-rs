@@ -429,6 +429,8 @@ impl Renderer {
 				gi.gather_bgl(),
 			),
 			siphon: crate::siphon::Siphon::new(gpu, surface_format, &frame_bgl),
+			teleport: crate::teleport::Teleport::new(gpu, surface_format, &frame_bgl),
+			waystone_fx: crate::waystone_fx::WaystoneFx::new(gpu, surface_format, &frame_bgl),
 			players: crate::players::RemotePlayersDraw::new(
 				gpu,
 				surface_format,

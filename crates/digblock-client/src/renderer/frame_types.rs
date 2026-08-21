@@ -182,6 +182,11 @@ pub(crate) struct FrameScene<'a> {
 	/// vein. At most one — a player holds one button — and the engine
 	/// owns its envelope, so this outlives the hold by the fade.
 	pub siphon: Option<crate::siphon::DrawInstance>,
+	/// Live teleport effects — the caster's channel aura plus any
+	/// departure/arrival bursts still playing, engine-aged.
+	pub teleport: &'a [crate::teleport::FxInstance],
+	/// The visible arrival-pad spirals, engine-culled by distance.
+	pub markers: &'a [crate::waystone_fx::MarkerInstance],
 	pub overlay: Option<(&'a OverlayStats, &'a [f32])>,
 	pub feed: &'a [(crate::voice::Msg, f32, u32)],
 	/// Crosshair target for the highlight decal — cell, the shape's own

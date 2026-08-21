@@ -340,6 +340,30 @@ struct Vfx {
 	/// forget it.
 	siphon: Option<SiphonDraw>,
 
+	/// Live teleport bursts (departure/arrival), aged in `update` — world
+	/// state, exactly as confetti is.
+	casts: Vec<TeleportFx>,
+
+	/// Burst counter — the per-effect seed, confetti's arrangement.
+	cast_seq: u32,
+
+	/// The channel aura's fade envelope: opens while a cast channels,
+	/// dissolves when one ends or breaks — an interrupted channel fades
+	/// rather than pops.
+	channel_env: f32,
+
+	/// The teleport instant's full-screen flash, decayed in `update`.
+	flash: f32,
+
+	/// The arrival pads this world marks with a standing spiral — spawn
+	/// today, the waystones when they land. Set at world entry.
+	marker_sites: Vec<Vec3>,
+
+	/// Per-frame packed scratch for the two instanced effects (reused
+	/// allocations, the nametag arrangement).
+	fx_scratch: Vec<crate::teleport::FxInstance>,
+	marker_scratch: Vec<crate::waystone_fx::MarkerInstance>,
+
 	/// Held-item animation. Advanced in `update`, NOT in `step_audio` —
 	/// that returns early with no audio sink attached (bench, screenshot,
 	/// iOS), which would silently freeze the hand in exactly the
@@ -347,6 +371,10 @@ struct Vfx {
 	view_bob: crate::viewmodel::Bob,
 
 	view_swing: crate::viewmodel::Swing,
+
+	/// The casting gesture, strength-driven by the channel's envelope so
+	/// hand and aura rise and dissolve together.
+	view_cast: crate::viewmodel::Cast,
 
 	/// Owns which item the hand is DRAWING — it lags `hotbar.selected`
 	/// by half a swap, so the exchange happens below the frame.
@@ -642,6 +670,15 @@ impl DigProgress {
 			u32::from(self.idle),
 		) as u16
 	}
+}
+
+/// One live teleport burst: where, which half of the jump, and how old.
+/// The whole simulation is aging it — every mote derives in the shader.
+struct TeleportFx {
+	pos: Vec3,
+	mode: crate::teleport::Mode,
+	age: f32,
+	seed: f32,
 }
 
 /// The essence draw the siphon is running, if any — presentation only,

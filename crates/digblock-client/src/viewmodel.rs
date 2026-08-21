@@ -194,6 +194,53 @@ impl Bob {
 	}
 }
 
+/// The casting gesture: the hand rises and stirs while a channel winds.
+/// Driven by a STRENGTH the engine sets each frame (the channel's own
+/// fade envelope), so an interrupted cast lowers the hand on the same
+/// dissolve the aura fades on — nothing here keeps time of its own.
+#[derive(Default)]
+pub(crate) struct Cast {
+	/// 0..=1: how far into the gesture the hand is.
+	strength: f32,
+	/// The stir's own clock, advanced only while the gesture shows.
+	t: f32,
+}
+
+/// How far the casting hand rises, in units of [`SIZE`], and how far it
+/// pulls toward the viewer.
+const CAST_Y: f32 = 0.22;
+const CAST_Z: f32 = 0.14;
+/// The stir: wrist-roll amplitude (radians) and rate (radians/s).
+const CAST_ROLL: f32 = 0.16;
+const CAST_STIR: f32 = 5.2;
+
+impl Cast {
+	pub(crate) fn advance(&mut self, dt: f32, strength: f32) {
+		self.strength = strength;
+		if strength > 0.0 {
+			self.t += dt;
+		} else {
+			self.t = 0.0;
+		}
+	}
+
+	pub(crate) fn pose(&self) -> Pose {
+		let a = self.strength;
+		if a <= 0.0 {
+			return Pose::default();
+		}
+		Pose {
+			offset: Vec3::new(0.0, CAST_Y * a, CAST_Z * a),
+			pitch: -0.5 * CAST_ROLL * a,
+			roll: CAST_ROLL * a * (self.t * CAST_STIR).sin(),
+		}
+	}
+
+	pub(crate) fn reset(&mut self) {
+		*self = Self::default();
+	}
+}
+
 /// The collect swing: exactly one arc per scoop, started when the hold
 /// opens. Collecting water is a scoop, not a mining hold — it
 /// deliberately does NOT draw the block-breaking crack decal, so this is
