@@ -354,7 +354,7 @@ impl Sim {
 		let refuse = |client: &Client, reason: CastRefusal| {
 			client_send(client, &ServerMsg::CastRefused { reason });
 		};
-		let regions = self.protected_regions();
+		let regions = self.requester_regions(conn_id);
 		let Some(client) = self.clients.get(&conn_id) else {
 			return;
 		};

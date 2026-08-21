@@ -2823,6 +2823,93 @@ fn locked_spawn_refuses_a_place() {
 	);
 }
 
+/// The operator who moves spawn and stamps the sites must also be able
+/// to repair them: an admin's place inside the lock lands, and their
+/// hold is not refused at DigStart — while the sim's own writers keep
+/// answering to the full region set (`requester_regions` names the
+/// split). The non-admin refusals are the tests around this one.
+#[test]
+fn an_admin_edits_inside_the_arrival_regions() {
+	let mut sim = flat_sim("adminlock");
+	sim.set_admin_accounts([admin_account()]);
+	let mut c = connect_admin(&mut sim, 1, "boss");
+	wait_live(&mut sim, 1);
+	sim.test_grant(1, BlockType::Stone, 4);
+	let eye = FLAT_SPAWN + Vec3::new(4.0, 0.0, 0.0);
+	sim.spawn_store
+		.set_lock(Some(crate::spawn_store::SpawnLock {
+			eye: eye.to_array(),
+		}));
+	let region = sim.protected_regions()[0];
+
+	let pos = sim.test_player(1).unwrap().pos;
+	let out = Vec3::new(3.0, -2.0, 0.0).normalize();
+	let hit = raycast(pos, out, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).expect("ground");
+	let target = (
+		hit.cell.0 + hit.normal.0,
+		hit.cell.1 + hit.normal.1,
+		hit.cell.2 + hit.normal.2,
+	);
+	assert!(
+		region.contains(target.0, target.1, target.2),
+		"test aims outside the locked region: {target:?}"
+	);
+	sim.tick_once(vec![SimEvent::Msg {
+		conn_id: 1,
+		msg: ClientMsg::EditRequest {
+			seq: 1,
+			tick: 0,
+			origin: pos.to_array(),
+			dir: out.to_array(),
+			kind: EditKind::Place {
+				block: BlockType::Stone as u16,
+			},
+			cell: [hit.cell.0, hit.cell.1, hit.cell.2],
+			normal: [hit.normal.0 as i8, hit.normal.1 as i8, hit.normal.2 as i8],
+			slot: 0,
+		},
+	}]);
+	c.drain();
+	assert!(
+		!c.msgs.iter().any(|m| matches!(
+			m,
+			ServerMsg::EditRejected {
+				reason: RejectReason::Protected,
+				..
+			}
+		)),
+		"an admin place inside the lock was refused: {:?}",
+		c.msgs
+	);
+	assert_eq!(
+		sim.test_cell_at(target.0, target.1, target.2),
+		Some(BlockType::Stone as u16),
+		"the admin's block should land"
+	);
+
+	// And the hold: a dig start on a protected cell is not refused for
+	// the admin (a non-admin's is — the refusal test beside this one).
+	sim.tick_once(vec![SimEvent::Msg {
+		conn_id: 1,
+		msg: ClientMsg::DigStart {
+			cell: [target.0, target.1, target.2],
+			slot: 0,
+		},
+	}]);
+	c.drain();
+	assert!(
+		!c.msgs.iter().any(|m| matches!(
+			m,
+			ServerMsg::DigRefused {
+				reason: RejectReason::Protected,
+				..
+			}
+		)),
+		"an admin hold inside the lock was refused: {:?}",
+		c.msgs
+	);
+}
+
 /// Unlocking gives the cells back — the lock is a toggle, not a
 /// permanent property of the terrain.
 #[test]

@@ -602,8 +602,9 @@ impl Sim {
 		// Checked against the assembled `writes` so every path is covered
 		// at once — a plain dig, a place landing on the neighbour cell, a
 		// door's derived upper half, a slab grow. Honest clients predict
-		// this and never send the edit.
-		let regions = self.protected_regions();
+		// this and never send the edit; an admin's are exempt
+		// (`requester_regions`).
+		let regions = self.requester_regions(req.conn_id);
 		if writes
 			.iter()
 			.any(|&(c, _)| digblock_core::protect::immutable(c.0, c.1, c.2, &regions))
@@ -954,8 +955,9 @@ impl Sim {
 		{
 			writes.push((partner, pc, door_toggled(pc)));
 		}
-		// A door inside a protected region is furniture, not a mechanism.
-		let regions = self.protected_regions();
+		// A door inside a protected region is furniture, not a mechanism
+		// — except under an admin's hand.
+		let regions = self.requester_regions(req.conn_id);
 		if writes
 			.iter()
 			.any(|&(c, _, _)| digblock_core::protect::immutable(c.0, c.1, c.2, &regions))
@@ -1168,8 +1170,8 @@ impl Sim {
 	/// below) — never add to it. The action-queue cap bounds the
 	/// per-tick volume.
 	fn handle_dig_start(&mut self, conn_id: u64, cell: (i32, i32, i32), slot: u8) {
-		// Before the client borrow: `protected_regions` reads all of `self`.
-		let regions = self.protected_regions();
+		// Before the client borrow: `requester_regions` reads all of `self`.
+		let regions = self.requester_regions(conn_id);
 		let Some(client) = self.clients.get_mut(&conn_id) else {
 			return;
 		};
@@ -1302,6 +1304,25 @@ impl Sim {
 			// will fail its DigIncomplete check.
 			_ => None,
 		};
+	}
+
+	/// The regions THIS requester's action must respect: every arrival
+	/// region for a player, none for an admin — the operator who moves
+	/// spawn and stamps the sites must also be able to repair them.
+	/// Only player-authored actions (edits, holds, door toggles, casts)
+	/// ask this; the sim's own writers — fluid, the sweeps, the smother
+	/// — always answer to [`Self::protected_regions`], or an admin
+	/// merely being ONLINE would let water eat the spawn pad.
+	pub(super) fn requester_regions(&self, conn_id: u64) -> Vec<Region> {
+		let admin = self
+			.clients
+			.get(&conn_id)
+			.is_some_and(|c| self.is_admin(c.account));
+		if admin {
+			Vec::new()
+		} else {
+			self.protected_regions()
+		}
 	}
 
 	/// Every protected arrival region — the spawn lock's sphere and the
