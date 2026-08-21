@@ -1,223 +1,202 @@
-# Magic — travel, waystones & the arcane skill (design document)
+# Arcana — travel, waystones & the arcane skill
 
-Status: **DESIGN ONLY — nothing in this document is built.** It came out of the 2026-08-21 design conversation on new
-skills. The owner's brief: turn return-to-spawn into a real spell with real teleport effects; unlock teleports to other
-biomes at higher levels — to places the caster has genuinely never been, shared so friends who unlock them converge on
-the same spot; group further spells under the skill; and make every teleport destination protected ground. Where this
-document names a constant or function that does not exist yet, the name is a proposal; where it names one that does
-(`spawn::lock_region`, `protect::immutable`, `Sim::teleport_client`, `ClientMsg::ReturnToSpawn`), the reference is to
-shipped code and the claim about it has been checked.
+Status: **BUILT** (branch `feat/arcana`, stages 1–8). This document came out of the 2026-08-21 design conversation on
+new skills and is now the record of what shipped and why, plus §9's open questions and §10's unbuilt tail. The owner's
+brief: turn return-to-spawn into a real spell with real teleport effects; unlock teleports to other biomes at higher
+levels — to places the caster has genuinely never been, shared so friends who unlock them converge on the same spot;
+group further spells under the skill; and make every teleport destination protected ground. Where this document names a
+constant or function, the reference is to shipped code.
 
-Three decisions are settled here rather than open, and §4 is their record: **the spawn lock stops being an operator
-toggle and is always on**, **its protected region becomes a sphere containing the old box**, and **the same protection
-covers every teleport destination**.
+Decisions settled during the build, so they stay settled: the skill is named **Arcana** (`Skill::Arcana`); casting lives
+in a **spellbook screen** (J; H starts the home channel directly, and the pause menu's old "Return to Spawn" row now
+opens the book); **the spawn lock stopped being an operator toggle and is always on**, its region a **sphere**
+containing the old box, and the same protection covers every teleport destination; waystone **structures are STAMPED by
+the server as ordinary journaled edits, never worldgen** (§3); and the teleport visuals are their own
+helix-and-column-of-light shaders, deliberately **not the confetti look**.
 
 ## 1. Goals and non-negotiables
 
-Magic is the travel-and-utility skill. Its spine is teleportation; everything else grouped under it is a world-directed
-convenience in the same register. The constitution binds as everywhere else:
+Arcana is the travel-and-utility skill: Mining breaks blocks, Alchemy transmutes them, **Arcana moves things that aren't
+blocks — the player, and light.** The constitution binds as everywhere else:
 
 - **No RNG.** Destinations, costs and effects are pure functions; the one "discovery" in the design — arriving somewhere
-  you have never walked — is a threshold unlock, the reveal-as-event grammar (veins fading in at a level), not a roll.
+  you have never walked — is a threshold unlock, the reveal-as-event grammar, not a roll.
 - **XP is server-computed.** One new chokepoint (`process_cast`, the `process_alchemy` twin) plus the first-arrival
-  milestones, which are the DELVE-DESIGN §5 chokepoint family.
-- **No combat spells.** The surface stays exactly as safe as it is today; danger belongs to DELVE-DESIGN and nothing
-  here hurts anyone.
+  milestones; offline arms award through the same core functions in the offline branches only.
+- **No combat spells.** The surface stays exactly as safe as it was; danger belongs to DELVE-DESIGN.
 - **No spell touches per-tick movement.** Levitation, speed, water-walking — each would run through `Player::tick` and
   the adoption envelope, making every such spell its own anti-cheat surface. Teleports dodge the problem entirely: a
-  teleport is a server-side position SET (`Sim::teleport_client`, the `/tp` shape), corrected by nothing because the
-  server said so first.
-- **Essence is the mana.** There is no mana bar and no new currency: casts are priced in essence, which makes Magic the
-  standing essence *sink* the economy explicitly wants — and no cast creates matter; the one spell that writes cells
-  writes temporary ones that revert through the same scheduled-write machinery that heals dungeons (§5).
-- **Web is the priority platform.** Effects are `spray.rs`-mold world-space emitters — no new passes, no new render
-  machinery.
+  teleport is a server-side position SET (`Sim::teleport_client`), corrected by nothing because the server said so
+  first.
+- **Essence is the mana.** No mana bar, no new currency: casts are priced in essence, which makes Arcana the standing
+  essence *sink* the economy explicitly wants. No cast creates matter — the one spell that writes cells writes conjured
+  light that the wisplight sweep reverts (§5), and the one that writes real blocks (the Mason's Arc) spends the player's
+  own inventory.
+- **Web is the priority platform.** Effects are instanced world-space emitters in the additive water-pass slot — no new
+  passes, no new render machinery, WGSL that passes real Chrome's front end.
 
-## 2. The spawn spell
+## 2. The spawn spell — Return Home
 
-Return-to-spawn already exists end to end: `ClientMsg::ReturnToSpawn`, `Sim::handle_return_to_spawn` gating on
-`last_return_tick` against `RETURN_SPAWN_COOLDOWN_SECS`, the cooldown persisted in `PlayerRecord` so a rejoin cannot
-reset it, and `teleport_client` doing the hard part — shedding the drift EWMA, the dig hold and the stale intent,
-setting `arrival_hold` and the sync scan, answering with `ServerMsg::Teleported`. The spell is a presentation-and-ladder
-upgrade over that machinery, not a replacement.
+Return-to-spawn kept its machinery (`ClientMsg::ReturnToSpawn`, `Sim::handle_return_to_spawn`, `teleport_client`) and
+became a spell in front of it:
 
-- **Level 1 grants it, which means everyone keeps it.** Every skill starts at level 1, so gating the spell there is how
-  an existing free feature becomes a spell without ever being taken away. Level 1 buys the dressing: a cast channel (a
-  held, interruptible wind-up the client paces before sending the existing message — the server's cooldown remains the
-  real gate, exactly as the doc comment on `handle_return_to_spawn` already states: honest clients gate locally), a
-  departure effect, an arrival effect.
-- **The ladder hangs rungs on the machinery that exists**: the cooldown steps down at thresholds (the server holds the
-  caster's skills and can widen its own gate per level), the channel shortens, and the top of the line is not a better
-  home teleport but the waystone network (§3).
-- **The recovery spell costs no essence, ever** — the essence-tool bootstrap rule's cousin, and pinnable the same way
-  (`the_recovery_spell_costs_no_essence`). Return-to-spawn is the game's recovery tool; an essence price on it would
-  strand exactly the player who is lost AND broke. Its governor is the cooldown, and only the cooldown (§9).
+- **Level 1 grants it, which means everyone keeps it.** The spell is a held, interruptible channel
+  (`unlock::channel_ticks`, shortening at `CHANNEL_QUICK_AT`) the client paces before sending the existing message — the
+  server's cooldown remains the real gate. Movement, opening a screen or starting a dig RESETS the channel
+  (`Msg::CastInterrupted`); the decay mold is reserved for D3 damage.
+- **The cooldown steps down** at the Swift Return rungs (`unlock::return_cooldown_secs`; the level-1 answer IS the old
+  flat constant, aliased rather than copied), read per-caster by the server.
+- **The recovery spell costs no essence, ever** (`the_recovery_spell_costs_no_essence`) — the essence-tool bootstrap
+  rule's cousin: an essence price would strand exactly the player who is lost AND broke. Its governor is the cooldown,
+  and only the cooldown (§6).
+- **A homeward jump pays distance-scaled XP** (`skills::home_xp`: linear in blocks travelled, capped). This is the
+  ladder's bootstrap — a fresh player who has never touched Alchemy still climbs — and the anti-idle rule is arithmetic,
+  not policy: recasting at spawn moves zero blocks and pays zero.
 
 ## 3. Waystones — canonical destinations, unlocked rather than visited
 
 The rejected shape first, so it stays rejected: *attune-by-visiting* (walk to the stone, hold, then you may teleport)
 was considered and dropped. It reads well solo and sours in multiplayer — every friend must separately re-walk every
-expedition before a group can convene anywhere, and the unlock stops being an event because the walk was the event. The
-shipped grammar is better: a threshold fires and the world offers more of itself.
+expedition before a group can convene anywhere. The shipped grammar is better: a threshold fires and the world offers
+more of itself.
 
-- **One canonical waystone per biome per world, derived from the seed.** `SurfaceKind` is the biome axis and is already
-  documented as "the seam where the biome system attaches"; `waystones::anchor(kind, seed)` is `spawn::anchor`'s ring
-  walk with a per-kind gate over the same `pristine_floor` test. Pure, stateless, and therefore **retroactive in
-  existing worlds**, like ore and like dungeons.
+- **One canonical waystone per biome kind per world, derived from the seed.** `waystones::anchor(kind, seed)` is
+  `spawn::anchor`'s ring walk generalized (shared accept-closure walk, per-kind salted start so kinds don't contend for
+  one ring). The roster is the seven kinds `unlock::waystone` answers for; GravelShore and Scree are excluded — a narrow
+  shore band and a slope patch are not destinations.
 - **The unlock IS the teleport.** Crossing the threshold makes the destination castable — no visit required, and the
-  first cast is the discovery: the player materializes somewhere they have genuinely never been. First arrival at each
-  waystone pays milestone XP once per account. Because destinations are canonical, two friends who cross the threshold
-  hold the *same* place — "meet me at the desert waystone" is a sentence that works, and waystones become the game's
-  first gathering points away from spawn. This is a direct answer to the 2026-08-16 review's finding that the world has
-  no *places*, and it is the ground SOCIAL-DESIGN's claims-and-trade era will want to grow towns on.
-- **The site is authored by decoration** — a small platform-and-standing-stone ruin at the anchor, the pure apron
-  pattern. A purely additive decoration change is the one worldgen change that rides a `PROTOCOL_VERSION` bump with
-  saves kept (`landmark_fallback_only_adds` is the shape of the proof), which is what lets waystones appear in existing
-  worlds without staling anything.
-- **Existing-world damage resolves once, then the answer is stored.** On the first boot that knows about waystones, the
-  server validates each anchor pad against the journal (`stands_clear`) and searches sideways if players have ruined it
-  — `spawn::resolve`'s mold — then stores the resolved eye in a `spawn_store`-style file (`waystones.json`) and locks
-  it. Stored rather than re-derived for exactly the reason `spawn.json` stores the lock's eye: a lock's whole purpose is
-  that its region cannot change. A torn ruin (players built through the pristine site before the feature landed) is
-  accepted; the lock stops further damage, and the pad is what matters.
-- **The ladder orders destinations by remoteness and rarity**, not curation: the common lowland kinds first, the
-  mountain and snow line later, and — once DELVE-DESIGN ships — the deep sanctum ports in the tail, cast in Aether.
-  Levels between destination unlocks buy the cooldown and channel rungs of §2. Everything lands inside the 1–60
-  placement policy of SKILLS-DESIGN §13, with the sanctum ports as tail content by design.
+  first cast is the discovery. First arrival at each waystone pays milestone XP once per account
+  (`skills::waystone_milestone`, `visited_waystones` persisted with the player record). Because destinations are
+  canonical, two friends who cross the threshold hold the *same* place — "meet me at the mountain waystone" is a
+  sentence that works, and waystones are the game's first gathering points away from spawn.
+- **The site is STAMPED, not generated.** The earlier draft authored the ruin by decoration; that was superseded because
+  stamping is strictly safer for existing worlds: `waystones::stamp` is a pure builder returning cell writes — a
+  platform replacing the ground under the pad, footed shafts, lamp caps — and the server applies them **as ordinary
+  journaled edits** at boot, exactly once per site (idempotent by journal-equality skip). No worldgen changes, no moved
+  goldens, no additive-decoration proof, and retroactive in existing worlds by construction, since join sync is seed +
+  edits. **Spawn gets the same stamp** — the accepted one-time spawn move on an old world — and **`/set-spawn` re-stamps
+  at the new site**, which is the admin-moves-spawn flow. The old site's blocks stay as ordinary now-unprotected edits.
+- **Existing-world damage resolves once, then the answer is stored.** First boot validates each anchor pad against the
+  journal (`stands_clear`), resolves sideways if ruined (`spawn::resolve`'s mold), stamps, stores the eye in
+  `waystones.json`, and locks it. Stored rather than re-derived because a lock's whole purpose is that its region cannot
+  change.
+- **Every site also wears a standing marker** — the slow rising spiral of `waystone.wgsl`, distance-culled client-side
+  over every resolved site. The spiral doubles as the protection-boundary hint (§9's old open question, answered).
 
-## 4. Arrival regions — protection stops being optional
+## 4. Arrival regions — protection stopped being optional
 
-The decisions this document exists to record. Today `protect::immutable` takes ONE optional region — the spawn lock —
-and the lock is an operator toggle (`/lock-spawn`). Teleportation makes an unprotected destination a griefing machine:
-wall in the pad, roof it, drown it, dig the pit under it. So:
+- **The spawn lock is always on.** Boot resolves spawn as before and locks the result automatically; `/lock-spawn`
+  retired (its `AdminReply` variants stay decodable — the wire is append-only), `/set-spawn` keeps moving the point, the
+  lock, and now the stamp with it.
+- **The lock is a sphere of radius `spawn::LOCK_RADIUS`, and the validated core did not move.** Growing `spawn::CLEAR`
+  itself would demand a rarer pristine disc and change what the search accepts everywhere — so validation keeps its
+  exact box and the protection changed shape around it. The radius derivation, quoted because the value is the argument:
+  the old lock box's farthest points are its top corners at √(2.5² + 2.5² + 4²) ≈ 5.3 blocks, so 6 is the smallest
+  whole-block sphere containing everything the box protected. A full sphere rather than a dome on purpose: the lower
+  hemisphere is the anti-undermining depth the box never had. Membership is an integer squared-distance compare on
+  whole-cell coords, one convention both ends share. This deliberately weakened `lock_region`'s pinned property from
+  equivalence to **containment** — permanence only ever needed the lock to COVER what the search reads — and the pin
+  asserts exactly that direction.
+- **Every teleport destination is an arrival region**: the identical sphere, locked at resolution and never after.
+  `protect::immutable` takes a slice of regions; `Region` is a two-variant enum (box, sphere). Every writer already
+  funnels through the one predicate (edit validation, the fluid sim, the world-job sweeps), so the generalization was a
+  signature change, not a hunt.
+- **The regions reach the client only offline.** Online, `DigRefused`/`Protected` covers refusals the client cannot
+  predict, as everywhere; offline, the engine derives the same regions and enforces locally so the two modes agree.
+- **Fluid was already handled**: protection refuses the fluid *write*, so water sourced outside a locked region cannot
+  flow in. Waystone pads inherit that for free.
 
-- **The spawn lock is always on.** Boot resolves spawn exactly as today and then locks the result automatically, storing
-  the eye as `/lock-spawn` does now; `/lock-spawn` and its unlock half retire (admin commands are typed strings, not
-  wire — removal is free). `/set-spawn` keeps its shipped behaviour: moving the point moves the lock with it. An
-  existing world's first boot under the rule resolves against the journal first, so a dug-out anchor locks the relocated
-  spawn, never the crater.
-- **The lock becomes a sphere of radius `LOCK_RADIUS`, and the validated core does not move.** Growing `spawn::CLEAR`
-  itself would demand a rarer pristine disc (the whole footprint must be level at one height) and change what the search
-  accepts everywhere — so validation keeps its exact box and the protection changes shape around it. The sphere is
-  centred at the pad's floor centre, and 6 is the derivation, quoted because the value is the argument: the current lock
-  box's farthest points are its top corners at √(2.5² + 2.5² + 4²) ≈ 5.3 blocks, so radius 6 is the smallest whole-block
-  sphere that contains everything the lock protects today. A full sphere rather than a dome on purpose: the lower
-  hemisphere is the anti-undermining depth the shipped box never had — nobody hollows a cavern under the pad and leaves
-  it a one-block shell. Membership is tested at the cell's centre, one convention both ends share so a boundary cell
-  cannot be disputed. This deliberately weakens `lock_region`'s pinned property from equivalence to **containment**:
-  permanence only ever needed the lock to COVER what the search reads — no permitted edit can change the search's answer
-  — and the pin (`lock_region_covers_what_the_test_reads`) updates to assert exactly that direction. The cells outside
-  the core are protected without being validated; they are whatever terrain they are, frozen.
-- **Every teleport destination is an arrival region.** Waystone pads take the identical treatment: a `stands_clear` core
-  inside the same `LOCK_RADIUS` sphere, locked at resolution and never after. One concept, one predicate —
-  `protect::immutable` generalizes from `Option<&Region>` to a small set of regions, and the sphere is a second region
-  shape beside the box (a centre and a squared-radius compare — a predicate swap, not new machinery). Every writer
-  already funnels through the one predicate (edit validation, the fluid sim, the world-job sweeps), so the
-  generalization is a signature change, not a hunt. The set is a handful of static regions; if the linear scan in that
-  hot path ever shows up, it shows up in a measurement first (BENCH.md discipline), not in a guess.
-- **The regions deliberately do not reach the client.** `ServerMsg::DigRefused` exists precisely for refusals the client
-  cannot predict — a protected region it has no knowledge of — and waystone regions ride that as-is. Whether the client
-  should eventually *render* a boundary hint is a UX question, not a correctness one (§9).
-- **Claims are refused inside arrival regions** — SOCIAL-DESIGN's claim-time predicate check, the same rule it already
-  states for dungeon regions, extended to one more region source.
-- **Fluid is already handled**: protection refuses the fluid *write*, so water sourced outside a locked region cannot
-  flow into it. Waystone pads inherit that for free.
+## 5. The spellbook — what casts today
 
-## 5. The rest of the spellbook
+The book (J) is one screen in the alchemy-page mold: a pure `SpellView::build`, unlocked tiles plus one teaser tier,
+actions returned rather than applied. Four spell families shipped; the rest are §10's tail.
 
-Later waves, each filtered to the world-directed verb set. None of these is scheduled by this document; each is listed
-so its dependency is named before somebody builds it out of order.
+- **Wisp** — a timed raise of the caster's own carried light: an ordinary entry in the GI light list wearing the
+  Wisplight row's class, level and whitening answering to the caster's Arcana (`unlock::wisp_light`, brightening and
+  whitening at `WISP_BRIGHT_AT` — R30's "level alone reads as more blue" lesson). Server debits and tracks expiry
+  session-local (`wisp_until`); the buff deliberately drops on disconnect. Remotes see it through the snapshot fx byte
+  (§8).
+- **Kindle** — conjured light placed in the world: the server validates an AIR cell on an aimed face within honest
+  reach, debits, and writes a `Wisplight` block as an ordinary journaled edit. **Expiry rides the worldjob scheduler** —
+  the wisplight sweep (Wisplight → Air) both arms register, so lifetime is "until the sweep", offline parity is free,
+  and quitting before expiry cannot keep a free lamp. Wisplight is conjured light, never matter: not slottable, drops
+  nothing, no collision, and not a node host.
+- **The Mason's Arc** — Arcana's answer to the Resonant Pick: the pick widens *breaking*, the Arc widens *placing*. A
+  toggle in the book; while on, a plain placement extends along the verified normal to `unlock::arc_cells` cells under
+  one seq (`EditKind::PlaceArc`), debiting one block per cell. The server re-derives the line from its own raycast (the
+  pick's no-cheat-surface rule) and the line is **all or nothing** — a partial line would leave the two ends deriving
+  different sets. The arc multiplies PLAIN placements only: slabs grow, doors pair and water pours, each its own
+  machinery the line must not multiply. No XP by design — placement paying XP would make place-spam a faucet.
+- **Travel** — Return Home (§2) and the waystone roster (§3), each cast a channel with the same interruption surface.
 
-- **Conjured passage** — cast a temporary bridge or platform whose cells revert after a deterministic window. This is
-  DELVE-DESIGN D2's scheduled-cell-write substrate used player-side, and it is what makes conjured matter honest: it
-  vanishes, so "no matter creation" survives structurally. **Waits on D2.** Interaction with claims and protection:
-  conjured cells are ordinary journaled writes and every writer asks `immutable` first, so protected ground refuses
-  conjuration with no new rule.
-- **Kindle** — cast a temporary light onto a distant cell: an emissive ramp on the same reversion clock. The RTGI is the
-  whole show here; the spell is spectacle at the cost of a timer entry.
-- **Prospect pulse** — the passive audio senses (`unlock::prospect_range`'s pattern) recast as an on-demand ping. Audio
-  only, like the sense it echoes — the no-ESP stance holds.
-- **Mending** — meaningful only once DELVE-DESIGN's health exists; a heal is the cross-skill handshake that gives Magic
-  demand inside dungeons, and it consumes essence exactly where that design wants consumption. **Waits on D3.**
-- **Teleport-to-friend** — the multiplayer headliner of a later wave: consent required, addressed by account id and
-  never by name (the `--admin` lesson), server-side position set like every other teleport.
-- **The personal waystone** — a craftable, placeable waystone inside your own claim, hand-priced as a serious essence
-  sink; friends teleport to it via the claim's own co-builder allow-list. **Waits on SOCIAL-DESIGN claims.** This is
-  where the exploration itch the rejected attune-model scratched comes back, priced instead of walked.
+## 6. Costs & XP — Arcana is the standing essence sink
 
-## 6. Costs — magic is the standing essence sink
-
-- The recovery spell is free forever (§2's pin).
-- Waystone casts are hand-priced per destination in the `functional_ideal` mold, with the payability pin extended to ask
-  the question it always asks: **a cast must be payable at the level that unlocks it**, sourced from what that level can
-  already reach.
-- The common destinations price in Terra; the sanctum ports price in **Aether — a repeatable Aether sink in the tail**,
-  which is SKILLS-DESIGN §13.3's own argument (the Aetherlamp/Chandelier reasoning) applied to a demand that never
-  saturates, because travel is never finished.
-- Cooldown and price are two governors and each spell gets ONE (§9): recovery is cooldown-governed and free; waystone
-  casts are price-governed and uncooled beyond their channel.
+- **One governor per spell.** Home is cooldown-governed and free forever; everything else is price-governed with no
+  cooldown — the channel is feel and interruption surface, not a governor.
+- Waystone fares are a hand table in Terra (`alchemy::cast_price`), rising with the ladder; the wisp prices in Vitae
+  (`wisp_price` — what a fresh player's first heartwood draws pay, the day-one bootstrap); kindle in Terra
+  (`kindle_price`, cheapening at `KINDLE_CHEAP_AT`). The payability pin asks the standing question: **a cast must be
+  payable at the level that unlocks it.**
+- **XP per priced cast derives from the price** (`skills::cast_xp` = `CAST_XP_PER_ESSENCE` × the fare), so a price
+  retune moves its XP with it and no spell pays out of proportion to what it drains. Home derives from distance instead
+  (§2), and the Arc pays zero — the three shapes are pinned together.
+- **First-arrival milestones** (`skills::waystone_milestone`, once per account) are Arcana's XP spine the way reveals
+  are Mining's — each unlock lands with a milestone worth several levels at that point, without dwarfing repeatable
+  play.
+- Every threshold lives in `unlock.rs` as always: the waystone rungs, `KINDLE_AT`, `ARC_AT`/`ARC_WIDE_AT`,
+  `WISP_BRIGHT_AT`, `RETURN_SWIFT_AT`/`RETURN_SWIFTER_AT`, `CHANNEL_QUICK_AT`, `KINDLE_CHEAP_AT`, pinned by the Arcana
+  vector in `unlock_levels_are_the_threshold_levels`.
 
 ## 7. The skill
 
-- `Skill` is `repr(u8)` append-only; Magic is one more variant and every wire and save format already carries it. The
-  skill's display name is an open question (§9) — nothing serializes a skill by name.
-- **XP sources**: casts, through `process_cast`; first-arrival milestones, once per account per waystone, persisted as a
-  small set in `PlayerRecord` (a format-version bump, read-compat like every other).
-- **Gates**: all `unlock.rs` tables, nothing new in kind — `unlock::waystone(kind)`, the cooldown and channel rungs, and
-  later the spellbook entries. The character screen's teaser machinery reads unlock tables and therefore serves Magic
-  for free.
+`Skill` is `repr(u8)` append-only; Arcana is the third variant and every wire and save format already carried it.
+Storage is XP-only totals, level always derived, the pinned integer curve untouched. `visited_waystones` rides the
+player record (format-version bump, read-compat, union on merge). The character screen's teaser machinery reads unlock
+tables and therefore serves Arcana for free.
 
-## 8. Wire and machinery inventory
+## 8. Wire inventory (v32)
 
-- **The spawn spell needs no wire at all**: the channel is client-side pacing in front of the existing
-  `ClientMsg::ReturnToSpawn`, and `ServerMsg::Teleported` already carries the answer.
-- **Waystones add**: `ClientMsg::Cast { dest }` (appended), refused with the standing reject machinery when locked or
-  unpaid; one join-sync message carrying the world's resolved waystones (the stored eyes are server state, so the client
-  cannot derive them — the `spawn_look` precedent, sent once).
-- **Remote-visible casting** rides a snapshot effect field — deliberately the SAME field the ore-draw's unbuilt remote
-  half needs (SKILLS-DESIGN's standing "still design" item), so building it pays two debts at once. Until it exists,
-  effects are caster-local and arrivals are simply seen.
-- `teleport_client` is the landing for every spell here: residue shedding, `arrival_hold`, the sync scan and
-  `clear_landing` all stand unchanged.
+- **The spawn spell needed no wire at all**: the channel is client pacing in front of `ClientMsg::ReturnToSpawn`.
+- **`ClientMsg::Cast(CastKind)`** — shaped for the whole roster from day one (`Waystone(kind)`, `Wisp`,
+  `Kindle { cell, face }`) so it never needs a v2. **`ServerMsg::Waystones`** carries the world's resolved sites in join
+  sync (server state the client cannot derive — each eye was resolved against the journal once and stored).
+  **`ServerMsg::CastRefused(CastRefusal)`** is a reason, never a sentence — `voice` chooses the words.
+- **`EditKind::PlaceArc`** rides the standing edit request so craft-then-place ordering and slot declaration hold.
+- **Remote-visible casting** is one appended snapshot byte: `RemoteState.fx` (`pack_fx`/`unpack_fx` — kind, whitened,
+  level), today carrying **the wisp only**, because a wisp is the one effect whose look depends on state not in the
+  snapshot. A kind is reserved for the ore-draw's remote half (it needs the drawn cell, so it waits on its own design).
+  Appending a struct field is the one genuinely breaking postcard change — this is what the v32 `MIN_PROTOCOL` raise
+  carries.
+- **A remote's teleport needs no wire at all**: the between-snapshot displacement no honest motion produces is detected
+  client-side (`RemotePlayers::take_jumps` — a length floor well above the adoption envelope's corrections AND a speed
+  floor above terminal fall), pops the remote to its destination instead of smearing it across the map, and fires the
+  same departure/arrival bursts as your own jump through one shared site.
 
 ## 9. Hard problems, named before they bite
 
 1. **Channels vs Delve hazards.** Once damage exists, a teleport channel is an escape rope. The rule is stated now so D3
-   inherits it: taking damage interrupts a channel, through the decay mold rather than a hard reset.
-2. **One governor per spell.** A cast that is both priced and cooldown-limited double-punishes and reads as neither;
-   §6's split (recovery = cooldown, waystones = price) is the rule, and any new spell picks one.
-3. **Solo worlds.** Always-on protection applies offline too — one rule, and the spell's arrival promise holds in every
-   mode — but it means a solo player cannot build inside their own spawn region. `LOCK_RADIUS` is sized to the pad, not
-   the neighbourhood, for exactly this reason. If it stings, the pressure valve is a solo settings action to relocate
-   spawn (the `/set-spawn` behaviour without the admin), not a protection toggle.
-4. **The skill's name.** Arcana, Leycraft, Attunement — undecided. Leystone is already in the ground and nothing yet
-   explains the "ley"; a name that ties the teleport network to the ley theme gets that word for free. Display-only, so
-   the decision blocks nothing.
-5. **Boundary visibility.** The client never knows region bounds, so the first thing a player learns about a waystone
-   pad is a refusal. Probably fine for spawn (players know spawn is special); possibly worth a rendered hint at
-   waystones. UX question, deferred until the ruin art exists — the ruin itself may BE the hint.
-6. **Waystone density vs biome rarity.** One waystone per kind per world is the v1 answer; a second ring of more distant
-   duplicates is a later unlock wave if the map outgrows it. Derived the same way, so nothing about the wire or the
+   inherits it: taking damage interrupts a channel through the decay mold rather than the hard reset movement uses.
+2. **One governor per spell** (§6) — any new spell picks one.
+3. **Solo worlds.** Always-on protection applies offline too — one rule, and the arrival promise holds in every mode —
+   but a solo player cannot build inside their own spawn sphere. `LOCK_RADIUS` is sized to the pad, not the
+   neighbourhood, for exactly this reason; the pressure valve if it stings is a solo relocate-spawn action, not a
+   protection toggle.
+4. **Waystone density vs biome rarity.** One waystone per kind per world is the v1 answer; a second ring of more distant
+   duplicates is a later unlock wave if the map outgrows it — derived the same way, so nothing about the wire or the
    store changes shape.
+5. **Placeholder audio.** The cast loop and both teleport sounds currently reuse existing oggs; the wanted assets are
+   named in `assets/sfx/SOURCES.md`.
 
-## 10. Staging
+## 10. What is NOT built
 
-Each slice ships alone, and the first one is not even a Magic feature:
-
-- **M-A — arrival protection** (small): always-on spawn lock, the `LOCK_RADIUS` sphere, the containment re-pin, the
-  `immutable` generalization to a region set, claim refusal inside arrival regions. Pure hardening; every later slice
-  stands on it.
-- **M-B — the skill + the spawn spell** (small-medium): the enum variant, `process_cast`, level-1 grant, the channel,
-  caster-local effects, the cooldown/channel rungs.
-- **M-C — waystones** (medium): `waystones::anchor`, the decoration site, resolve-once + `waystones.json`, the two wire
-  additions, first-arrival milestones, the unlock ladder.
-- **M-D — the spellbook wave** (medium, gated): kindle and prospect pulse any time; conjured passage after DELVE D2;
-  mending after D3.
-- **M-E — the social ports** (medium, gated on SOCIAL claims): teleport-to-friend, the personal waystone.
-
-## 11. What is NOT in this design
-
-No combat magic, no movement-modifying spells, no RNG, no mana bar, no instanced or private destinations, no
-visit-to-attune, no mounts, and no spell that permanently writes a cell — the one matter-touching spell reverts by the
-same machinery that heals dungeons. Health, damage and danger stay DELVE-DESIGN's; visibility of other players'
-achievement stays SOCIAL-DESIGN's. The surface world remains exactly as safe as it is today.
+- **Conjured passage** — temporary bridge cells on a reversion clock. Waits on DELVE-DESIGN D2's scheduled-cell-write
+  substrate; kindle deliberately did NOT build it (the wisplight sweep is a batch rule, not a timer).
+- **Prospect pulse** — the passive audio senses recast as an on-demand ping. Audio only; the no-ESP stance holds.
+- **Mending** — waits on D3 health.
+- **Teleport-to-friend** — consent required, addressed by account id and never by name (the `--admin` lesson).
+- **The personal waystone** — craftable inside your own claim, a serious essence sink. Waits on SOCIAL-DESIGN claims.
+  This is where the exploration itch the rejected attune model scratched comes back, priced instead of walked.
+- **Sanctum ports** — the Aether-priced deep destinations, tail content with Delve.
+- **The remote ore-draw fx kind** — reserved in the fx byte, unbuilt (needs the drawn cell).
+- No combat magic, no movement-modifying spells, no RNG, no mana bar, no instanced or private destinations, no
+  visit-to-attune, no mounts. Health, damage and danger stay DELVE-DESIGN's.
