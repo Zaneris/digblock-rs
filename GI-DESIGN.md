@@ -1039,10 +1039,11 @@ charges the marches more than the picture is worth.
 
 ### R36 — the light list took a cap, and the ray budgets became numbers a platform can set
 
-Two levers landed together, both aimed at the mobile browser, neither moving a shipped default. The motivating cost is
-scene-dependent: `resample_light` scans the whole light list per resolve pixel per frame, so a torch field or a cave
-wall of revealed veins is exactly where the frame gets expensive — and the platform that pays most is the one with the
-least headroom.
+Two levers landed together, both aimed at the mobile browser. The RAY budgets moved no default; the cap did —
+`web_mobile()` now ships the Low lighting notch and the Light Sources floor (`LIGHT_CAP_MIN`), a start-cheap default a
+phone player buys back up from, while every other profile keeps the full list. The motivating cost is scene-dependent:
+`resample_light` scans the whole light list per resolve pixel per frame, so a torch field or a cave wall of revealed
+veins is exactly where the frame gets expensive — and the platform that pays most is the one with the least headroom.
 
 **The cap.** `Settings::max_lights` ("Light Sources") caps the flushed list at runtime. CPU-side ONLY: the buffer
 allocation, the probe uniform's capacity word and the shader clamps stay sized to `MAX_LIGHTS` at compile time, and the

@@ -574,7 +574,11 @@ impl EngineConfig {
 	/// order, exactly as they do over `web()`.
 	pub fn web_mobile() -> Self {
 		Self {
-			gi_scale_div: 3, // the Settings screen's "Medium" notch
+			gi_scale_div: 4, // the Settings screen's "Low" notch
+			// The slider's own floor: phone GPUs start with the shortest
+			// list and buy emitters back up, instead of paying the full
+			// per-pixel scan until they find the slider.
+			max_lights: crate::settings::LIGHT_CAP_MIN,
 			// Here and not in `mobile_quality`: only mobile-web GPUs have
 			// been named as needing less than the shared mobile default,
 			// so iOS keeps the shared numbers and this profile alone
