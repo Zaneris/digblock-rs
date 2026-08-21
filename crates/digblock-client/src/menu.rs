@@ -7,8 +7,8 @@
 mod view;
 
 use crate::settings::{
-	DRAW_MAX, DRAW_MIN, DRAW_STEP, GI_SCALE_DIVISORS, Settings, UI_SCALE_MAX, UI_SCALE_MIN,
-	UI_SCALE_STEP, VOL_MAX, VOL_STEP,
+	DRAW_MAX, DRAW_MIN, DRAW_STEP, GI_SCALE_DIVISORS, LIGHT_CAP_MAX, LIGHT_CAP_MIN, LIGHT_CAP_STEP,
+	Settings, UI_SCALE_MAX, UI_SCALE_MIN, UI_SCALE_STEP, VOL_MAX, VOL_STEP,
 };
 use digblock_net::transport::NetTransport;
 use digblock_platform::{InputEvent, Key, MouseButton};
@@ -245,6 +245,7 @@ enum Screen {
 enum Setting {
 	DrawDist,
 	GiScale,
+	MaxLights,
 	UiScale,
 	MusicVol,
 	SfxVol,
@@ -347,6 +348,11 @@ pub(crate) struct Menu {
 	/// This build draws the touch HUD, so the touch-only settings rows
 	/// are surfaced. See [`Menu::set_touch`].
 	touch: bool,
+	/// The draw-distance slider's lower bound on THIS platform
+	/// (`EngineConfig::draw_min` — see [`Menu::set_draw_min`]). A bound on
+	/// the slider only; `Settings::clamped` accepts down to the global
+	/// floor everywhere.
+	draw_min: i32,
 	/// The shell can toggle browser fullscreen: Root offers the row.
 	fullscreen_available: bool,
 	/// There is no Fullscreen API, but an installed home-screen app would
@@ -406,6 +412,7 @@ impl Menu {
 			services_available: false,
 			store_available: false,
 			touch: false,
+			draw_min: DRAW_MIN,
 			fullscreen_available: false,
 			fullscreen_hint: false,
 			wants_fullscreen: false,
@@ -442,6 +449,14 @@ impl Menu {
 	/// engine declares after construction, not a constructor parameter.
 	pub(crate) fn set_touch(&mut self) {
 		self.touch = true;
+	}
+
+	/// This platform's draw-distance slider floor (`EngineConfig::
+	/// draw_min`). Same declared-capability pattern as [`Menu::set_touch`]
+	/// — here it opens (or keeps closed) the slider's lower rungs rather
+	/// than surfacing a row.
+	pub(crate) fn set_draw_min(&mut self, min: i32) {
+		self.draw_min = min;
 	}
 
 	/// The shell can toggle browser fullscreen: Root offers the row.
@@ -969,10 +984,11 @@ impl Menu {
 	/// Step one setting by `dir` (±1). Toggles just flip; sliders move by
 	/// their step, snapped to the step grid so float drift can't build up.
 	fn adjust_setting(&mut self, s: Setting, dir: i32) {
+		let draw_min = self.draw_min;
 		let st = &mut self.settings;
 		let changed = match s {
 			Setting::DrawDist => {
-				let v = (st.draw_dist + dir * DRAW_STEP).clamp(DRAW_MIN, DRAW_MAX);
+				let v = (st.draw_dist + dir * DRAW_STEP).clamp(draw_min, DRAW_MAX);
 				std::mem::replace(&mut st.draw_dist, v) != v
 			}
 			// Steps through the DIVISOR list, not a continuous range —
@@ -986,6 +1002,10 @@ impl Menu {
 				let n = GI_SCALE_DIVISORS.len() as i32;
 				let v = GI_SCALE_DIVISORS[(i - dir).clamp(0, n - 1) as usize];
 				std::mem::replace(&mut st.gi_scale_div, v) != v
+			}
+			Setting::MaxLights => {
+				let v = (st.max_lights + dir * LIGHT_CAP_STEP).clamp(LIGHT_CAP_MIN, LIGHT_CAP_MAX);
+				std::mem::replace(&mut st.max_lights, v) != v
 			}
 			Setting::UiScale => {
 				let v = snap_range(st.ui_scale, dir, UI_SCALE_MIN, UI_SCALE_MAX, UI_SCALE_STEP);
@@ -1014,13 +1034,14 @@ impl Menu {
 	/// Set one slider from a 0..=1 bar fraction (mouse click), snapped.
 	fn set_setting_frac(&mut self, s: Setting, frac: f32) {
 		let frac = frac.clamp(0.0, 1.0);
+		let draw_min = self.draw_min;
 		let st = &mut self.settings;
 		let changed = match s {
 			Setting::DrawDist => {
-				let span = (DRAW_MAX - DRAW_MIN) as f32;
-				let v = DRAW_MIN
+				let span = (DRAW_MAX - draw_min) as f32;
+				let v = draw_min
 					+ ((frac * span / DRAW_STEP as f32).round() as i32 * DRAW_STEP)
-						.clamp(0, DRAW_MAX - DRAW_MIN);
+						.clamp(0, DRAW_MAX - draw_min);
 				std::mem::replace(&mut st.draw_dist, v) != v
 			}
 			Setting::GiScale => {
@@ -1030,6 +1051,13 @@ impl Menu {
 				let i = ((1.0 - frac) * (n - 1) as f32).round() as usize;
 				let v = GI_SCALE_DIVISORS[i.min(n - 1)];
 				std::mem::replace(&mut st.gi_scale_div, v) != v
+			}
+			Setting::MaxLights => {
+				let span = (LIGHT_CAP_MAX - LIGHT_CAP_MIN) as f32;
+				let v = LIGHT_CAP_MIN
+					+ ((frac * span / LIGHT_CAP_STEP as f32).round() as i32 * LIGHT_CAP_STEP)
+						.clamp(0, LIGHT_CAP_MAX - LIGHT_CAP_MIN);
+				std::mem::replace(&mut st.max_lights, v) != v
 			}
 			Setting::UiScale => {
 				let span = UI_SCALE_MAX - UI_SCALE_MIN;
@@ -1499,12 +1527,14 @@ const ACCOUNT_BACK: u8 = ACCOUNT_ROWS.len() as u8;
 // says why). Re-exposing it means a row here, a match arm in
 // `adjust_setting` and `set_setting_frac`, a `RowSpec` below, and
 // renumbering every row after it — the indices are positional.
-const SETTINGS_ROWS: [Setting; 7] = [
+const SETTINGS_ROWS: [Setting; 8] = [
 	Setting::DrawDist,
 	// Lighting detail sits next to draw distance: both trade picture for
 	// frame time, and a player hunting fps should find them together
-	// rather than one of them filed under "interface".
+	// rather than one of them filed under "interface" — and the light cap
+	// is a third member of the same family, so it sits with them.
 	Setting::GiScale,
+	Setting::MaxLights,
 	Setting::UiScale,
 	Setting::MusicVol,
 	Setting::SfxVol,

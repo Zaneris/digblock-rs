@@ -152,6 +152,7 @@ async fn boot() -> Result<(), JsValue> {
 		ui_scale: config.ui_scale,
 		render_scale: config.render_scale,
 		gi_scale_div: config.gi_scale_div,
+		max_lights: config.max_lights,
 		touch_jump_button: config.touch_jump_button,
 	};
 	let saved = if interactive {
@@ -164,6 +165,7 @@ async fn boot() -> Result<(), JsValue> {
 	config.sfx_vol = saved.sfx_vol;
 	config.ssr = saved.ssr;
 	config.ui_scale = saved.ui_scale;
+	config.max_lights = saved.max_lights;
 	config.touch_jump_button = saved.touch_jump_button;
 	// Density picks both only when NEITHER was saved — the engine applies
 	// them at the first `set_scale_factor`, where the backing scale is
@@ -190,10 +192,18 @@ async fn boot() -> Result<(), JsValue> {
 		config.gfx_defaults_auto = false;
 	}
 	if let Some(d) = param::<i32>(&params, "draw") {
+		// The FLOOR, not the default UI minimum: the URL is the dev lever,
+		// and this is how a desktop browser A/Bs the mobile profile's
+		// lower rungs without a device in hand.
 		config.draw_dist = d.clamp(
-			digblock_client::settings::DRAW_MIN,
+			digblock_client::settings::DRAW_FLOOR,
 			digblock_client::settings::DRAW_MAX,
 		);
+	}
+	if let Some(n) = param::<i32>(&params, "maxlights") {
+		// Unsnapped like desktop's --max-lights, for the same bench
+		// sweeps; the engine clamps to the list's capacity.
+		config.max_lights = n.clamp(1, digblock_client::settings::LIGHT_CAP_MAX);
 	}
 	if params.get("ssr").is_some() {
 		config.ssr = flag(&params, "ssr");
@@ -225,6 +235,40 @@ async fn boot() -> Result<(), JsValue> {
 	// The web twin of desktop's DIG_SPIKELOG: wasm has no environment, and
 	// this is the platform whose main-thread spikes most need attributing.
 	config.spike_log = flag(&params, "spikelog");
+	// The web twin of DIG_STUB, and for the same reason the spike log is
+	// here: the browser is the platform whose frames most need attributing,
+	// and a term can only be priced on the GPU that will pay for it. A typo
+	// is fatal, never a silent un-stubbed run — the panic hook prints to
+	// the console, this platform's exit(2).
+	if let Some(v) = params.get("stub") {
+		let (mask, bad) = digblock_client::stub::parse(&v);
+		assert!(
+			bad.is_empty(),
+			"unknown ?stub= term(s): {} — known: {}",
+			bad.join(", "),
+			digblock_client::stub::names()
+				.collect::<Vec<_>>()
+				.join(", ")
+		);
+		config.stub = mask;
+	}
+	// The web twin of DIG_TORCHES_FAR: pads the light list without lighting
+	// a pixel on screen, so the emitter-count cost curve can be walked on
+	// the phone GPUs the mobile defaults are chosen for.
+	if let Some(n) = param::<i32>(&params, "torchesfar") {
+		config.debug_torches_far = n;
+	}
+	// The web twin of DIG_GI_ITERS: the resolve's ray budgets as
+	// "<gather>,<sun>", for the tier A/B on the hardware the tier is FOR.
+	// Fatal on a malformed value like every other bench param.
+	if let Some(v) = params.get("giiters") {
+		let (gather, sun) = v
+			.split_once(',')
+			.and_then(|(g, s)| Some((g.trim().parse().ok()?, s.trim().parse().ok()?)))
+			.unwrap_or_else(|| panic!("?giiters={v:?} wants <gather>,<sun> iteration counts"));
+		config.gi_gather_iters = gather;
+		config.gi_sun_iters = sun;
+	}
 	// `?nodatagrams` makes this browser behave like the one that has no
 	// datagram channel (iOS Safari), so the reliable-stream fallback can be
 	// run on a machine with a console attached. Read here, beside the other

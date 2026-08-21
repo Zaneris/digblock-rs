@@ -195,7 +195,12 @@ impl Menu {
 					RowSpec::slider(
 						RowId::SettingsRow(0),
 						format!("Draw Distance: {}", st.draw_dist),
-						(st.draw_dist - DRAW_MIN) as f32 / (DRAW_MAX - DRAW_MIN) as f32,
+						// `.max(0.0)`: a saved value under this platform's
+						// slider floor (written where the floor was lower)
+						// renders an empty bar rather than a negative one;
+						// the first adjustment snaps it legal.
+						((st.draw_dist - self.draw_min) as f32 / (DRAW_MAX - self.draw_min) as f32)
+							.max(0.0),
 					),
 				);
 				// Row indices are POSITIONAL — they must match
@@ -225,6 +230,16 @@ impl Menu {
 					&mut y,
 					RowSpec::slider(
 						RowId::SettingsRow(2),
+						format!("Light Sources: {}", st.max_lights),
+						(st.max_lights - LIGHT_CAP_MIN) as f32
+							/ (LIGHT_CAP_MAX - LIGHT_CAP_MIN) as f32,
+					),
+				);
+				push(
+					&mut specs,
+					&mut y,
+					RowSpec::slider(
+						RowId::SettingsRow(3),
 						format!("Interface Scale: {:.0}%", st.ui_scale * 100.0),
 						(st.ui_scale - UI_SCALE_MIN) / (UI_SCALE_MAX - UI_SCALE_MIN),
 					),
@@ -233,7 +248,7 @@ impl Menu {
 					&mut specs,
 					&mut y,
 					RowSpec::slider(
-						RowId::SettingsRow(3),
+						RowId::SettingsRow(4),
 						format!("Music Volume: {:.0}%", st.music_vol * 100.0),
 						st.music_vol / VOL_MAX,
 					),
@@ -242,7 +257,7 @@ impl Menu {
 					&mut specs,
 					&mut y,
 					RowSpec::slider(
-						RowId::SettingsRow(4),
+						RowId::SettingsRow(5),
 						format!("SFX Volume: {:.0}%", st.sfx_vol * 100.0),
 						st.sfx_vol / VOL_MAX,
 					),
@@ -251,7 +266,7 @@ impl Menu {
 					&mut specs,
 					&mut y,
 					RowSpec::item(
-						RowId::SettingsRow(5),
+						RowId::SettingsRow(6),
 						if st.ssr {
 							"Water Reflections: On"
 						} else {
@@ -265,7 +280,7 @@ impl Menu {
 						&mut specs,
 						&mut y,
 						RowSpec::item(
-							RowId::SettingsRow(6),
+							RowId::SettingsRow(7),
 							if st.touch_jump_button {
 								"Jump: On-screen Button"
 							} else {

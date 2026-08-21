@@ -3,12 +3,31 @@
 //! mirror struct (the `ListServer` ↔ `ServerEntry` pattern) and injects
 //! load results / a save hook, so this crate stays wasm- and IO-clean.
 
-/// Draw-distance slider bounds, in chunks. The floor is deliberately
-/// modern-hardware-sized; the server clamps its own sync radius
-/// independently of whatever a client asks for.
+/// Draw-distance slider bounds, in chunks. `DRAW_MIN` is the default UI
+/// floor, deliberately modern-hardware-sized; the server clamps its own
+/// sync radius independently of whatever a client asks for.
 pub const DRAW_MIN: i32 = 10;
 pub const DRAW_MAX: i32 = 32;
 pub const DRAW_STEP: i32 = 2;
+/// The absolute floor `clamped` accepts, and the slider minimum on a
+/// platform whose GPU has not proven it can afford `DRAW_MIN`
+/// (`EngineConfig::draw_min` — mobile web today). On `DRAW_MIN`'s own
+/// step grid, so lowering the floor moves no existing value. Accepted by
+/// `clamped` on EVERY platform: the same browser can flip between the
+/// mobile and desktop profiles across sessions over one saved file, and
+/// a value legal where it was written must survive being read anywhere.
+pub const DRAW_FLOOR: i32 = 6;
+
+/// Light-Sources slider bounds: a runtime cap on the GI light list. The
+/// maximum IS the list's compile-time capacity — derived, so the slider
+/// cannot offer a rung the buffer was not sized for. The resolve's NEE
+/// scans the whole list per pixel, which is why this is the knob that
+/// bounds what a torch field or a cave wall of revealed veins can cost;
+/// under the cap the nearest-to-the-view survivors win
+/// (`gi::select_lights`).
+pub const LIGHT_CAP_MIN: i32 = 64;
+pub const LIGHT_CAP_STEP: i32 = 64;
+pub const LIGHT_CAP_MAX: i32 = crate::gi::MAX_LIGHTS as i32;
 
 /// Volume sliders: multipliers on the authored gains. Unity gain sits at
 /// the slider midpoint so quiet mixes can be boosted, not just cut.
@@ -67,6 +86,9 @@ pub struct Settings {
 	/// The GI resolve runs at `render_size / gi_scale_div`. One of
 	/// [`GI_SCALE_DIVISORS`].
 	pub gi_scale_div: u32,
+	/// Cap on the GI light list, on the [`LIGHT_CAP_STEP`] grid within
+	/// [`LIGHT_CAP_MIN`]..=[`LIGHT_CAP_MAX`].
+	pub max_lights: i32,
 	/// Touch jump verb: the on-screen button instead of the double-tap.
 	/// Only surfaced (and only meaningful) on touch-HUD configs; the row
 	/// is hidden elsewhere but the value travels with the settings like
@@ -95,6 +117,10 @@ impl Default for Settings {
 			// applied by the LAUNCHER, for interactive runs only.
 			render_scale: 1.0,
 			gi_scale_div: GI_SCALE_DEFAULT,
+			// The full capacity, for the same reason render_scale is
+			// native: captures build this struct, and every recorded
+			// baseline was taken with the whole list.
+			max_lights: LIGHT_CAP_MAX,
 			// The double-tap is the shipped jump — the old Java feel.
 			touch_jump_button: false,
 		}
@@ -124,7 +150,17 @@ impl Settings {
 	/// Normalize untrusted values (a hand-edited settings file, an old
 	/// format) into the legal ranges.
 	pub fn clamped(mut self) -> Self {
-		self.draw_dist = self.draw_dist.clamp(DRAW_MIN, DRAW_MAX);
+		// Down to the FLOOR, not the default UI minimum — see DRAW_FLOOR:
+		// a save written under a mobile profile's lower slider must
+		// survive a desktop read.
+		self.draw_dist = self.draw_dist.clamp(DRAW_FLOOR, DRAW_MAX);
+		// Clamp then snap DOWN onto the step grid: the grid spans the
+		// range exactly, so the snap cannot leave it. Snapped rather than
+		// kept because every rung is a re-flush boundary the slider was
+		// built around, and an off-grid stored value would be a rung the
+		// UI can display but never return to.
+		let cap = self.max_lights.clamp(LIGHT_CAP_MIN, LIGHT_CAP_MAX);
+		self.max_lights = cap - (cap - LIGHT_CAP_MIN) % LIGHT_CAP_STEP;
 		self.music_vol = self.music_vol.clamp(0.0, VOL_MAX);
 		self.sfx_vol = self.sfx_vol.clamp(0.0, VOL_MAX);
 		if !self.music_vol.is_finite() {
@@ -167,6 +203,7 @@ mod tests {
 			ui_scale: 9.0,
 			render_scale: 4.0,
 			gi_scale_div: 7,
+			max_lights: i32::MAX,
 			touch_jump_button: false,
 		}
 		.clamped();
@@ -178,6 +215,57 @@ mod tests {
 		// An illegal divisor goes to the DEFAULT, not the nearest legal
 		// value — see `clamped`.
 		assert_eq!(s.gi_scale_div, GI_SCALE_DEFAULT);
+		assert_eq!(s.max_lights, LIGHT_CAP_MAX);
+
+		// The draw floor, not the default UI minimum, is what an
+		// out-of-range save clamps to — a mobile-web save must survive a
+		// desktop read.
+		assert_eq!(
+			Settings {
+				draw_dist: 0,
+				..Default::default()
+			}
+			.clamped()
+			.draw_dist,
+			DRAW_FLOOR
+		);
+		// The floor sits on DRAW_MIN's own step grid, so opening the
+		// lower rungs moved no existing value.
+		assert_eq!((DRAW_MIN - DRAW_FLOOR) % DRAW_STEP, 0);
+
+		// The light cap clamps to its bounds and snaps DOWN onto the step
+		// grid; every on-grid rung survives a round-trip.
+		assert_eq!(
+			Settings {
+				max_lights: 0,
+				..Default::default()
+			}
+			.clamped()
+			.max_lights,
+			LIGHT_CAP_MIN
+		);
+		let mut rungs = 0;
+		let mut v = LIGHT_CAP_MIN;
+		while v <= LIGHT_CAP_MAX {
+			let s = Settings {
+				max_lights: v,
+				..Default::default()
+			}
+			.clamped();
+			assert_eq!(s.max_lights, v);
+			// An off-grid value snaps down to the rung below it (v+1 can
+			// only clamp back onto v at the top because the grid spans
+			// the range exactly).
+			let off = Settings {
+				max_lights: v + 1,
+				..Default::default()
+			}
+			.clamped();
+			assert_eq!(off.max_lights, v);
+			rungs += 1;
+			v += LIGHT_CAP_STEP;
+		}
+		assert!(rungs > 1, "the slider must have more than one rung");
 
 		// A capture run builds Settings::default() and must stay at the
 		// shipped values: bench/screenshot/drill skip the settings load,
@@ -185,6 +273,7 @@ mod tests {
 		// every recorded baseline.
 		assert_eq!(Settings::default().render_scale, 1.0);
 		assert_eq!(Settings::default().gi_scale_div, GI_SCALE_DEFAULT);
+		assert_eq!(Settings::default().max_lights, LIGHT_CAP_MAX);
 		// High density drops LIGHTING DETAIL, not resolution — the two
 		// measured the same win and this one costs far less picture.
 		assert_eq!(density_gi_div(2.0), 3);
@@ -208,6 +297,7 @@ mod tests {
 			ui_scale: 1.25,
 			render_scale: 0.75,
 			gi_scale_div: 3,
+			max_lights: LIGHT_CAP_MIN + LIGHT_CAP_STEP,
 			touch_jump_button: true,
 		};
 		assert_eq!(ok.clone().clamped(), ok);

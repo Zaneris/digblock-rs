@@ -116,6 +116,26 @@ pub struct EngineConfig {
 	/// Draw distance in chunks; the mobile config ships a shorter one
 	/// (Java Config).
 	pub draw_dist: i32,
+	/// The lowest draw distance this platform's slider offers —
+	/// `settings::DRAW_MIN` everywhere a GPU has proven it never needs
+	/// less, `settings::DRAW_FLOOR` where one hasn't (mobile web). A
+	/// platform bound on the UI, not on the value: `Settings::clamped`
+	/// accepts down to the floor on every platform, so a save written
+	/// under the lower bound survives the same browser flipping to a
+	/// desktop profile.
+	pub draw_min: i32,
+	/// Runtime cap on the GI light list (`Settings::max_lights`), at most
+	/// `gi::MAX_LIGHTS`. The per-pixel NEE scan is O(list length), so this
+	/// is the knob that bounds what a torch field or a wall of revealed
+	/// veins can cost a frame.
+	pub max_lights: i32,
+	/// The GI resolve's ray budgets — the frame's two largest, per
+	/// BENCH.md's attribution. Every profile ships `gi::GI_GATHER_ITERS` /
+	/// `GI_SUN_ITERS`; only the A/B levers (`DIG_GI_ITERS`, `?giiters=`)
+	/// move them until a measured tier lands, because a shorter march
+	/// silently un-shadows what lies past the cut (gi/resolve.rs).
+	pub gi_gather_iters: u32,
+	pub gi_sun_iters: u32,
 	/// Chunk worker threads.
 	pub workers: usize,
 	pub seed: Option<f64>,
@@ -441,6 +461,10 @@ impl EngineConfig {
 		let workers = std::thread::available_parallelism().map_or(4, |n| (n.get() - 2).clamp(2, 4));
 		Self {
 			draw_dist: 20,
+			draw_min: crate::settings::DRAW_MIN,
+			max_lights: crate::settings::LIGHT_CAP_MAX,
+			gi_gather_iters: crate::gi::GI_GATHER_ITERS,
+			gi_sun_iters: crate::gi::GI_SUN_ITERS,
 			workers,
 			seed: None,
 			tod: None,
@@ -551,6 +575,12 @@ impl EngineConfig {
 	pub fn web_mobile() -> Self {
 		Self {
 			gi_scale_div: 3, // the Settings screen's "Medium" notch
+			// Here and not in `mobile_quality`: only mobile-web GPUs have
+			// been named as needing less than the shared mobile default,
+			// so iOS keeps the shared numbers and this profile alone
+			// shortens the default and opens the slider's lower rungs.
+			draw_dist: 8,
+			draw_min: crate::settings::DRAW_FLOOR,
 			touch_jump_button: false,
 			fullscreen_button: false,
 			fullscreen_hint: false,
@@ -581,6 +611,8 @@ impl EngineConfig {
 			debug_gi: self.debug_gi,
 			debug_gi_probes: self.debug_gi_probes,
 			stub: self.stub,
+			gi_gather_iters: self.gi_gather_iters,
+			gi_sun_iters: self.gi_sun_iters,
 		}
 	}
 }

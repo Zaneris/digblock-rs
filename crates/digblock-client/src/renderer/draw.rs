@@ -23,6 +23,8 @@ impl Renderer {
 			players,
 			held,
 			carried,
+			cam_forward,
+			light_cap,
 			overlay,
 			confetti,
 			siphon,
@@ -90,8 +92,17 @@ impl Renderer {
 
 		// RTGI probe update first: compute at the head of the encoder, so
 		// every later pass that reads the atlas sees this frame's write.
-		self.gi
-			.encode(gpu, &mut encoder, self.gpu_timer.as_ref(), frame, carried);
+		self.gi.encode(
+			gpu,
+			&mut encoder,
+			self.gpu_timer.as_ref(),
+			frame,
+			crate::gi::LightInputs {
+				fwd: cam_forward,
+				carried,
+				cap: light_cap,
+			},
+		);
 		// AFTER the encode, not before it: `carried` is folded into the
 		// light list inside `flush_lights`, so reading these earlier
 		// reported the PREVIOUS frame's emitters — and zero on frame 0,

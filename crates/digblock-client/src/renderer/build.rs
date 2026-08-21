@@ -145,8 +145,12 @@ impl Renderer {
 			config.draw_dist as u32,
 			&textures.layer_means,
 			surface_format,
-			config.debug_gi_probes,
-			config.stub,
+			crate::gi::GiConfig {
+				debug_probes: config.debug_gi_probes,
+				stub: config.stub,
+				gather_iters: config.gi_gather_iters,
+				sun_iters: config.gi_sun_iters,
+			},
 		);
 
 		// Shared group scheme: 0 = frame, 1 = materials, 2 = GI. For the

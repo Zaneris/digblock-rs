@@ -3,6 +3,18 @@
 
 use super::*;
 
+/// The resolve's shipped ray budgets — how many DDA iterations the
+/// per-pixel final gather and the sun march spend. The shaders' own loop
+/// bounds are CAPACITIES and stay literals in WGSL (an over-budget value
+/// self-clamps there); `budgets_fit_the_shaders_capacities` holds the two
+/// sides together. These are the frame's two largest ray budgets
+/// (BENCH.md), which is why they are the tier knob
+/// (`EngineConfig::gi_gather_iters`/`gi_sun_iters`) — and why a retune is
+/// a measured call against the release-note bars in GI-DESIGN.md, never a
+/// hunch: a shorter march silently un-shadows what lies past the cut.
+pub(crate) const GI_GATHER_ITERS: u32 = 96;
+pub(crate) const GI_SUN_ITERS: u32 = 320;
+
 impl GiDraw {
 	/// Build the resolve's group-0 bind (uniform + the depth and
 	/// face-normal taps) against the current targets — called whenever
@@ -127,7 +139,7 @@ impl GiDraw {
 			sun_view,
 		} = out;
 		let side = (self.window_chunks * 16) as f32;
-		let mut data = Vec::with_capacity(352);
+		let mut data = Vec::with_capacity(368);
 		for col in frame.inv_view_proj {
 			data.extend_from_slice(bytemuck::cast_slice(&col));
 		}
@@ -214,6 +226,14 @@ impl GiDraw {
 			e.1 -= 1;
 		}
 		self.resolve_inval.retain(|e| e.1 > 0);
+		// The ray budgets (`rz.budget`), exact in f32 far past any real
+		// iteration count.
+		data.extend_from_slice(bytemuck::cast_slice(&[
+			self.gather_iters as f32,
+			self.sun_iters as f32,
+			0.0,
+			0.0,
+		]));
 		gpu.queue.write_buffer(&self.resolve_buf, 0, &data);
 		let attach = |view| {
 			Some(wgpu::RenderPassColorAttachment {

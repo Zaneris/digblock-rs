@@ -92,6 +92,7 @@ fn main() {
 	let mut cli_ui_scale: Option<f32> = None;
 	let mut cli_render_scale: Option<f32> = None;
 	let mut cli_gi_scale: Option<u32> = None;
+	let mut cli_max_lights: Option<i32> = None;
 	let mut args = std::env::args().skip(1);
 	while let Some(arg) = args.next() {
 		match arg.as_str() {
@@ -222,6 +223,11 @@ fn main() {
 			}
 			"--workers" => config.workers = parse_or_die("--workers", args.next()),
 			"--draw-dist" => cli_draw = Some(parse_or_die("--draw-dist", args.next())),
+			// GI light-list cap (`Settings::max_lights`). Unsnapped on
+			// purpose: the emitter-count bench sweeps caps the slider's
+			// grid doesn't offer, and `flush_lights` clamps to the list's
+			// capacity anyway.
+			"--max-lights" => cli_max_lights = Some(parse_or_die("--max-lights", args.next())),
 			"--seed" => config.seed = Some(parse_or_die("--seed", args.next())),
 			// Dev builds, or a capture run that quits on its own (checked
 			// after the loop, since --exit may come later). In multiplayer
@@ -394,6 +400,26 @@ fn main() {
 			}
 		}
 	}
+	// DIG_GI_ITERS=<gather>,<sun>: the resolve's ray budgets, for the
+	// tier A/B alone — the shipped values live in gi/resolve.rs and no
+	// slider moves them. Fatal on a malformed value, same rule as
+	// DIG_STUB: a sweep arm that silently ran the shipped budgets is the
+	// worst possible outcome of a typo.
+	if let Ok(v) = std::env::var("DIG_GI_ITERS") {
+		let parsed = v.split_once(',').and_then(|(g, s)| {
+			Some((g.trim().parse::<u32>().ok()?, s.trim().parse::<u32>().ok()?))
+		});
+		match parsed {
+			Some((gather, sun)) => {
+				config.gi_gather_iters = gather;
+				config.gi_sun_iters = sun;
+			}
+			None => {
+				eprintln!("DIG_GI_ITERS wants <gather>,<sun> iteration counts, got {v:?}");
+				std::process::exit(2);
+			}
+		}
+	}
 	// DIG_STUB=wsun,wssr,…: remove shading terms so ONE build can
 	// attribute a frame. A typo must be fatal — a run that silently
 	// measures the un-stubbed build is precisely the mistake this exists
@@ -498,6 +524,7 @@ fn main() {
 			ui_scale: config.ui_scale,
 			render_scale: config.render_scale,
 			gi_scale_div: config.gi_scale_div,
+			max_lights: config.max_lights,
 			touch_jump_button: config.touch_jump_button,
 		});
 		config.draw_dist = saved.draw_dist;
@@ -505,6 +532,7 @@ fn main() {
 		config.sfx_vol = saved.sfx_vol;
 		config.ssr = saved.ssr;
 		config.ui_scale = saved.ui_scale;
+		config.max_lights = saved.max_lights;
 		config.touch_jump_button = saved.touch_jump_button;
 		// A saved value (or a --gi-scale flag, applied after this block) is
 		// an explicit preference; only its absence lets density pick.
@@ -517,6 +545,9 @@ fn main() {
 	}
 	if let Some(d) = cli_draw {
 		config.draw_dist = d;
+	}
+	if let Some(n) = cli_max_lights {
+		config.max_lights = n;
 	}
 	if let Some(ssr) = cli_ssr {
 		config.ssr = ssr;
