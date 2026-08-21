@@ -71,6 +71,8 @@ impl Engine {
 		// (A stale `Welcome` in there re-swaps the world to the old seed; a
 		// stale `Disconnected` kills the fresh connection on arrival.)
 		self.session.net_backlog.clear();
+		// A stamp owed to the world being left must not pave the next one.
+		self.pending_stamp.clear();
 		// Likewise session state: a cell one server refused stays refused at
 		// the same coordinates in the next world otherwise, because the only
 		// other clear needs the dig button held AND aimed elsewhere.
@@ -304,6 +306,11 @@ impl Engine {
 			pad.y - digblock_core::player::EYE_TO_FEET,
 			pad.z,
 		)];
+		// And the pad wears its structure offline too: the same pure
+		// stamp the server applies, owed until each chunk is resident
+		// and drained in `update` — idempotent, so an already-stamped
+		// save owes nothing.
+		self.pending_stamp = digblock_core::waystones::stamp(pad);
 		self.save.in_local_save = true;
 		self.save.player_save_accum = 0.0;
 		self.ui.menu.on_world_entered();

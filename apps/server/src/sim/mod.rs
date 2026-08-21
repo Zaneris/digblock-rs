@@ -456,6 +456,9 @@ pub struct Sim {
 	/// Persistent bans (account + IP), enforced at Hello and driven by
 	/// `/ban`.
 	ban_store: BanStore,
+	/// Resolved waystone sites (kind index → eye), stored once and never
+	/// re-derived — a lock's region cannot change.
+	waystone_store: crate::waystone_store::WaystoneStore,
 	/// The accounts granted admin chat commands.
 	///
 	/// Accounts, not names. Admin used to be a case-insensitive compare
@@ -485,6 +488,7 @@ impl Sim {
 		let mut sim = Self::with_store(seed, data_dir, sim_radius, store, player::spawn(seed))?;
 		sim.spawn_search = true;
 		sim.ensure_spawn_lock();
+		sim.ensure_arrival_sites();
 		Ok(sim)
 	}
 
@@ -514,6 +518,7 @@ impl Sim {
 		let player_store = PlayerStore::open(data_dir)?;
 		let ban_store = BanStore::open(data_dir)?;
 		let spawn_store = SpawnStore::open(data_dir)?;
+		let waystone_store = crate::waystone_store::WaystoneStore::open(data_dir)?;
 		Ok(Self {
 			tick: 0,
 			store,
@@ -536,6 +541,7 @@ impl Sim {
 			snap_buf: Vec::new(),
 			player_store,
 			ban_store,
+			waystone_store,
 			admin_accounts: FxHashSet::default(),
 			tod_offset_secs: 0.0,
 			world_jobs: digblock_core::worldjob::Scheduler::new(),

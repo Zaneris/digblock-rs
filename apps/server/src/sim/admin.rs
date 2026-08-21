@@ -283,6 +283,10 @@ impl Sim {
 		}
 		self.spawn_store.set_point(eye.to_array());
 		log::info!("admin set spawn to {eye}");
+		// The structure follows the point: the new pad is stamped before
+		// the lock report, and the old site's blocks stay behind as
+		// ordinary, now-unprotected edits.
+		self.stamp_site(eye);
 		self.reply(conn_id, AdminReply::SpawnPointSet { cell: at(eye) });
 		// The lock came along — protection is always on — so the old
 		// cells are editable again and the new region is announced.

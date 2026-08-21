@@ -31,6 +31,7 @@ pub mod stream_budget;
 pub mod sun;
 pub mod touch;
 pub mod unlock;
+pub mod waystones;
 pub mod worldgen;
 pub mod worldjob;
 

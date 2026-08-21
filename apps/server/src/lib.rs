@@ -13,6 +13,7 @@ pub mod net;
 pub mod sim;
 pub mod spawn_store;
 pub mod store;
+pub mod waystone_store;
 
 use crossbeam_channel::Receiver;
 use sim::{Sim, SimEvent};

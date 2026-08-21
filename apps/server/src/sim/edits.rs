@@ -1064,7 +1064,7 @@ impl Sim {
 	/// BEFORE the broadcast, so the `EditApplied` itself carries the data
 	/// and no JournalColumn resend is ever needed for it. This is what
 	/// lets the steady-state residency sync skip journal scans entirely.
-	fn enroll_new_column(&mut self, edit: BlockEdit) {
+	pub(super) fn enroll_new_column(&mut self, edit: BlockEdit) {
 		let col = (edit.x.div_euclid(16), edit.z.div_euclid(16));
 		for c in self.clients.values_mut() {
 			if in_radius(col, c.residency.center, c.residency.draw_dist) {
@@ -1273,14 +1273,20 @@ impl Sim {
 		};
 	}
 
-	/// Every protected arrival region — the spawn lock's sphere, and (as
-	/// later stages add them) the waystone pads. Owned on purpose: every
-	/// caller hoists it before taking a mutable client borrow.
+	/// Every protected arrival region — the spawn lock's sphere and the
+	/// resolved waystone pads. Owned on purpose: every caller hoists it
+	/// before taking a mutable client borrow.
 	pub(super) fn protected_regions(&self) -> Vec<Region> {
 		self.spawn_store
 			.lock()
 			.map(|l| digblock_core::spawn::lock_region(Vec3::from_array(l.eye)))
 			.into_iter()
+			.chain(
+				self.waystone_store
+					.sites()
+					.iter()
+					.map(|&(_, eye)| digblock_core::spawn::lock_region(Vec3::from_array(eye))),
+			)
 			.collect()
 	}
 }

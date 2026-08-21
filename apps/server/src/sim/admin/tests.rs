@@ -890,6 +890,17 @@ fn a_set_spawn_moves_the_lock_and_becomes_the_spawn() {
 	assert_ne!(before, after, "lock stayed on the old cells");
 	assert_eq!(after, vec![digblock_core::spawn::lock_region(set)]);
 
+	// The structure followed the point: every cell the stamp names holds
+	// its value at the new site — asserted over the builder's own list,
+	// so a redesigned stamp keeps this test without edits.
+	for (x, y, z, v) in digblock_core::waystones::stamp(set) {
+		assert_eq!(
+			sim.test_cell_at(x, y, z),
+			Some(v),
+			"stamped cell ({x},{y},{z}) missing after /set-spawn"
+		);
+	}
+
 	// And it is the spawn a joiner gets.
 	let guest = connect_named(&mut sim, 2, "guest");
 	let welcome = guest

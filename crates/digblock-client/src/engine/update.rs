@@ -313,6 +313,18 @@ impl Engine {
 				self.fluid.step(&mut world, FLOW_BUDGET);
 			}
 			self.step_world_jobs();
+			// The spawn structure owed to this save, landed as chunks
+			// become resident — the engine's arm of the server's boot
+			// stamp. `set_cell` answering None keeps the cell owed.
+			if !self.pending_stamp.is_empty() {
+				let pipeline = &mut self.pipeline;
+				self.pending_stamp
+					.retain(|&(x, y, z, v)| match pipeline.cell_at(x, y, z) {
+						Some(cur) if cur == v => false,
+						Some(_) => pipeline.set_cell(x, y, z, v).is_none(),
+						None => true,
+					});
+			}
 		}
 		self.bench.pending.sim_ms = ms_since(t_sim);
 

@@ -157,17 +157,29 @@ fn alch_teasers() -> Vec<(u32, &'static str)> {
 	]
 }
 
-/// Arcana's: the travel rungs. Young on purpose — the waystone network
-/// and the spellbook grow this list as their stages land.
+/// Arcana's: the waystones humming into reach, with the travel rungs
+/// between them — the ports are the spine, the way Mining's reveals are.
 fn arcana_teasers() -> Vec<(u32, &'static str)> {
+	use digblock_core::worldgen::SurfaceKind as K;
 	vec![
+		(port_at(K::Plains), "the plains waystone hums into reach"),
+		(port_at(K::Forest), "the forest waystone"),
 		(
 			unlock::RETURN_SWIFT_AT,
 			"swift return — home comes back sooner",
 		),
+		(port_at(K::Savanna), "the savanna waystone"),
 		(unlock::CHANNEL_QUICK_AT, "every channel quickens"),
+		(port_at(K::Taiga), "the taiga waystone"),
+		(port_at(K::Beach), "the shore waystone"),
+		(port_at(K::Mountain), "the mountain waystone"),
 		(unlock::RETURN_SWIFTER_AT, "swifter return"),
+		(port_at(K::Snow), "the far cold waystone — the last port"),
 	]
+}
+
+fn port_at(kind: digblock_core::worldgen::SurfaceKind) -> u32 {
+	unlock::waystone(kind).expect("a laddered kind has a port level")
 }
 
 // The three `Option` levels, with the case that cannot happen stated: an

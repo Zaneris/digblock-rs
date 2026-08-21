@@ -517,15 +517,29 @@ fn unlock_levels_are_the_threshold_levels() {
 			 the first level, which is never an unlock, and the old bonus \
 			 lines left with bench extraction"
 	);
-	// Arcana: the travel rungs alone until the waystones land — Return
-	// Home and Wisp sit at the first level, which is never an unlock.
+	// Arcana: the seven waystones interleaved with the travel rungs —
+	// ports are the spine the way reveals are Mining's. Return Home and
+	// Wisp sit at the first level, which is never an unlock.
 	let arcana: Vec<u32> = (1..=MAX_LEVEL)
 		.filter(|&l| opens(Skill::Arcana, l))
 		.collect();
 	assert_eq!(
 		arcana,
-		vec![RETURN_SWIFT_AT, CHANNEL_QUICK_AT, RETURN_SWIFTER_AT],
-		"the two swift-return rungs and the channel quickening"
+		vec![
+			6,
+			14,
+			RETURN_SWIFT_AT,
+			22,
+			CHANNEL_QUICK_AT,
+			34,
+			42,
+			50,
+			RETURN_SWIFTER_AT,
+			60
+		],
+		"seven ports rising by remoteness, the two swift-return rungs and \
+			 the channel quickening between them — the far cold port crowns \
+			 the content top"
 	);
 	// The first level is where everyone starts — you never level up into
 	// it, and the slabs sitting at that unlock must not say otherwise.

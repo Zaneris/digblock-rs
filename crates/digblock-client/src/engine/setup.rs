@@ -261,6 +261,7 @@ impl Engine {
 			// scene) — no arrival lock; entering a NAMED save or a server
 			// world replaces this per `world_session`.
 			protected: Vec::new(),
+			pending_stamp: Vec::new(),
 			fluid: digblock_core::fluid::FluidSim::new(),
 			world_jobs: digblock_core::worldjob::Scheduler::new(),
 			flow_accum: 0.0,

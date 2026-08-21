@@ -292,16 +292,32 @@ fn ring(d: i32, step: i32) -> impl Iterator<Item = (i32, i32)> {
 /// spawning tracks the terrain instead of hardcoding a height — and never
 /// drops the player into the ocean.
 pub fn anchor(seed: f64) -> Vec3 {
+	anchor_walk(&|x, z| pristine_floor(x, z, seed))
+		// Pathological seed: no clear land anywhere the walk reaches —
+		// tread water.
+		.unwrap_or_else(|| Vec3::new(0.5, SEA_LEVEL as f32 + 3.5, 0.5))
+}
+
+/// The pristine ring walk, generalized: the nearest column to the origin
+/// that `accept` answers a floor for. Spawn's own anchor and the waystone
+/// anchors share it, so "a pad the search likes" means exactly one thing
+/// — an accept that WRAPS [`pristine_floor`] inherits every clearance
+/// rule, and tightening only ever narrows the set.
+pub(crate) fn anchor_walk(accept: &dyn Fn(i32, i32) -> Option<i32>) -> Option<Vec3> {
 	for r in 0..=ANCHOR_RINGS {
 		for (x, z) in ring(r * ANCHOR_STEP, ANCHOR_STEP) {
-			if let Some(h) = pristine_floor(x, z, seed) {
-				return eye(x, h, z);
+			if let Some(h) = accept(x, z) {
+				return Some(eye(x, h, z));
 			}
 		}
 	}
-	// Pathological seed: no clear land anywhere the walk reaches — tread
-	// water.
-	Vec3::new(0.5, SEA_LEVEL as f32 + 3.5, 0.5)
+	None
+}
+
+/// [`pristine_floor`], for sibling modules building accepts over it —
+/// the clearance rule itself stays private.
+pub(crate) fn pristine_pad(x: i32, z: i32, seed: f64) -> Option<i32> {
+	pristine_floor(x, z, seed)
 }
 
 /// The spawn point to actually use: the anchor if players have left it

@@ -352,6 +352,11 @@ struct TestClient {
 	welcomed: bool,
 	edits: FxHashMap<(i32, i32, i32), BlockType>,
 	acks: u32,
+	/// The server's latest authoritative self-state, off the ack stream.
+	/// The engine feeds this to rewind/replay; this thin harness has no
+	/// replay, so a test that walked far snaps its local twin onto it
+	/// before aiming — the two eyes must agree for a hold to verify.
+	me: Option<digblock_core::player::PlayerState>,
 	joined_names: Vec<String>,
 	/// Authoritative inventory snapshots received (join sends one right
 	/// after JournalDone — the reliable-ordering proof over real QUIC).
@@ -390,6 +395,7 @@ impl TestClient {
 			welcomed: false,
 			edits: FxHashMap::default(),
 			acks: 0,
+			me: None,
 			joined_names: Vec::new(),
 			inventories: Vec::new(),
 			chats: Vec::new(),
@@ -444,7 +450,10 @@ impl TestClient {
 						BlockType::from_id(digblock_core::chunk::cell_id(cell_value)),
 					);
 				}
-				NetEvent::Ack { .. } => self.acks += 1,
+				NetEvent::Ack { me, .. } => {
+					self.acks += 1;
+					self.me = Some(me);
+				}
 				NetEvent::Refused { reason } => panic!("refused: {reason}"),
 				NetEvent::Disconnected { reason } => panic!("disconnected: {reason}"),
 				NetEvent::DigRefused { cell, reason } => {
@@ -621,31 +630,82 @@ fn edit_reaches_late_joiner_and_live_peer() {
 	}
 	// Spawn is always protected now, so walk clear of its sphere first —
 	// a dig within `LOCK_RADIUS` of the pad would be refused, correctly.
+	// DIAGONALLY, between the pad's four cardinal standing stones: this
+	// predictor runs on pristine worldgen and would otherwise walk
+	// straight through a stamped stone the server collides with.
 	let clear = digblock_core::spawn::LOCK_RADIUS as f32 + REACH;
 	let start = player.pos;
 	let walk = digblock_core::player::PlayerIntent {
 		move_axis: glam::Vec2::new(0.0, 1.0),
 		jump: false,
 	};
-	for _ in 0..600 {
-		if (player.pos - start).length() >= clear {
-			break;
+	// Rotating through the diagonals when blocked: pristine decoration
+	// (a trunk, a boulder) can stand in any one of them, and the walk
+	// only needs SOME clear line, not a particular one.
+	let diags = [
+		Vec3::new(1.0, 0.0, 1.0).normalize(),
+		Vec3::new(-1.0, 0.0, 1.0).normalize(),
+		Vec3::new(1.0, 0.0, -1.0).normalize(),
+		Vec3::new(-1.0, 0.0, -1.0).normalize(),
+	];
+	'walked: for dir in diags {
+		let mut mark = player.pos;
+		for i in 0..300 {
+			if (player.pos - start).length() >= clear {
+				break 'walked;
+			}
+			// A direction that stopped paying (a trunk, a wall) is
+			// abandoned fast: shoving geometry for seconds parks the
+			// server's adoption envelope, and the dig below needs the
+			// two eyes back together.
+			if i % 60 == 59 {
+				if (player.pos - mark).length() < 1.0 {
+					break;
+				}
+				mark = player.pos;
+			}
+			a.client.predictor.predict(&mut player, walk, dir, &world);
+			a.client.send_inputs();
+			a.pump();
+			std::thread::sleep(Duration::from_millis(16));
 		}
-		a.client
-			.predictor
-			.predict(&mut player, walk, Vec3::Z, &world);
-		a.client.send_inputs();
-		a.pump();
-		std::thread::sleep(Duration::from_millis(16));
 	}
 	assert!(
 		(player.pos - start).length() >= clear,
 		"never walked clear of the spawn sphere"
 	);
-	// Dig at an angle so the ground under the player stays intact (a
-	// hole underfoot would drop the server player away from our claims).
-	let dig_dir = Vec3::new(0.45, -1.0, 0.0).normalize();
-	let hit = raycast(player.pos, dig_dir, REACH, &world).expect("ground beside spawn");
+	// Converge the two eyes before aiming. A stretch spent shoving an
+	// obstacle can park the adoption envelope with the server's player a
+	// fraction of a block away — enough for the verify ray to name the
+	// neighbouring column forever. This harness has no rewind/replay, so
+	// it does the crude honest version: adopt the SERVER's answer, then
+	// settle on stationary claims.
+	for _ in 0..30 {
+		a.client
+			.predictor
+			.predict(&mut player, Default::default(), Vec3::Z, &world);
+		a.client.send_inputs();
+		a.pump();
+		std::thread::sleep(Duration::from_millis(16));
+	}
+	if let Some(me) = a.me {
+		player.set_state(me);
+	}
+	for _ in 0..60 {
+		a.client
+			.predictor
+			.predict(&mut player, Default::default(), Vec3::Z, &world);
+		a.client.send_inputs();
+		a.pump();
+		std::thread::sleep(Duration::from_millis(16));
+	}
+	// Straight down: the one aim that cannot glance. The walk parked us
+	// on arbitrary terrain, and an angled ray onto a slope's step edge
+	// flickers cells with centimetres of eye drift — the block underfoot
+	// is the same cell from every honest origin. No claims follow the
+	// dig, so the hole under the feet no longer matters.
+	let dig_dir = -Vec3::Y;
+	let hit = raycast(player.pos, dig_dir, REACH, &world).expect("ground underfoot");
 	a.timed_dig(&mut player, &world, dig_dir, &hit);
 	// A receives its own confirm as an authoritative Edit.
 	a.wait("dig confirm", |c| {

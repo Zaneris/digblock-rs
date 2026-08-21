@@ -349,6 +349,28 @@ pub const RETURN_SWIFT_AT: u32 = 18;
 /// The second, deep in the ladder beside the last ports.
 pub const RETURN_SWIFTER_AT: u32 = 56;
 
+/// The waystone ladder: the Arcana level that makes each biome's port
+/// castable, ordered by remoteness and rarity — common lowland first,
+/// the far cold last, crowning the content top. `None` is a kind with no
+/// port: the water kinds are not destinations, and a shore band or a
+/// slope patch is scenery, not a place (the doc comment on the arm is
+/// the roster's record). The sites themselves derive in
+/// `waystones::anchor`; this table is the only place their levels live.
+pub fn waystone(kind: crate::worldgen::SurfaceKind) -> Option<u32> {
+	use crate::worldgen::SurfaceKind as K;
+	Some(match kind {
+		K::Plains => 6,
+		K::Forest => 14,
+		K::Savanna => 22,
+		K::Taiga => 34,
+		K::Beach => 42,
+		K::Mountain => 50,
+		K::Snow => 60,
+		// Not destinations: the water kinds, and the two narrow bands.
+		K::Ocean | K::River | K::Lake | K::Marsh | K::GravelShore | K::Scree => return None,
+	})
+}
+
 /// The cast wind-up, in sim ticks — every spell channels through this,
 /// so the quickening rung is felt on the whole spellbook at once.
 pub fn channel_ticks(level: u32) -> u32 {
@@ -583,12 +605,16 @@ pub fn opens(skill: Skill, level: u32) -> bool {
 		}
 		// A new recipe, or a surface node fading into view.
 		Skill::Alchemy => craft(b) == Some(level) || alchemy_reveal(b) == Some(level),
-		// The travel rungs: the home cooldown stepping down, or the
-		// channel quickening — levels that hand you something without
-		// handing you an item, on the prospector/mastery pattern.
+		// A waystone humming into reach, or a travel rung — the home
+		// cooldown stepping down, the channel quickening: levels that
+		// hand you something without handing you an item, on the
+		// prospector/mastery pattern.
 		Skill::Arcana => {
 			b == BlockType::Air
-				&& (return_cooldown_secs(level) != return_cooldown_secs(level - 1)
+				&& (crate::worldgen::SurfaceKind::ALL
+					.iter()
+					.any(|&k| waystone(k) == Some(level))
+					|| return_cooldown_secs(level) != return_cooldown_secs(level - 1)
 					|| channel_ticks(level) != channel_ticks(level - 1))
 		}
 	})

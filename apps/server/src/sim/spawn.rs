@@ -155,6 +155,71 @@ impl Sim {
 		log::info!("spawn locked at {eye}");
 	}
 
+	/// Resolve, stamp and record every arrival site: spawn's structure,
+	/// and one waystone per laddered biome kind. Idempotent — a stored
+	/// site is never re-derived (its region cannot change), and a
+	/// re-stamp skips cells the journal already holds — so boot converges
+	/// to a no-op after the first run. A kind whose anchor walk finds
+	/// nothing is skipped and retried next boot; a port to nowhere must
+	/// not exist.
+	pub(super) fn ensure_arrival_sites(&mut self) {
+		if let Some(l) = self.spawn_store.lock() {
+			self.stamp_site(Vec3::from_array(l.eye));
+		}
+		let seed = self.store.seed();
+		for (idx, kind) in digblock_core::worldgen::SurfaceKind::ALL.iter().enumerate() {
+			if digblock_core::unlock::waystone(*kind).is_none() {
+				continue;
+			}
+			let eye = match self.waystone_store.get(idx as u8) {
+				Some(e) => Vec3::from_array(e),
+				None => {
+					let Some(a) = digblock_core::waystones::anchor(*kind, seed) else {
+						log::warn!("no {kind:?} anywhere the walk reaches — port deferred");
+						continue;
+					};
+					// An existing world may have built through the
+					// pristine site: resolve sideways off the damage the
+					// way spawn does, then the answer is FOREVER.
+					let eye = if digblock_core::spawn::valid(a, seed, &|x, y, z| {
+						self.journal_cell(x, y, z)
+					}) {
+						a
+					} else {
+						digblock_core::spawn::resolve(a, seed, &|x, y, z| {
+							self.journal_cell(x, y, z)
+						})
+					};
+					log::info!("waystone resolved: {kind:?} at {eye}");
+					self.waystone_store.set(idx as u8, eye.to_array());
+					eye
+				}
+			};
+			self.stamp_site(eye);
+		}
+	}
+
+	/// Apply one site's structure as ordinary journaled edits — the
+	/// worldjob write discipline. A resident cell takes the full landed
+	/// path; a non-resident one is journal-only, which join sync and the
+	/// standing resync repair deliver exactly like any other edit.
+	pub(super) fn stamp_site(&mut self, eye: Vec3) {
+		for (x, y, z, v) in digblock_core::waystones::stamp(eye) {
+			if self.journal_cell(x, y, z) == Some(v) {
+				continue;
+			}
+			if let Some(prev) = self.store.set_cell(x, y, z, v) {
+				self.apply_write((x, y, z), v, prev, SERVER_ID, NO_CLIENT_SEQ, true);
+			} else {
+				let edit = digblock_net::messages::BlockEdit { x, y, z, block: v };
+				let (_, new_column) = self.journal.append(edit, SERVER_ID);
+				if new_column {
+					self.enroll_new_column(edit);
+				}
+			}
+		}
+	}
+
 	/// Teleport a live client back to spawn, subject to the caster's own
 	/// cooldown — the server holds skills, so the gate widens per level.
 	/// Violations are silently ignored — honest clients gate locally.

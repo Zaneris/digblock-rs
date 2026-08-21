@@ -1356,6 +1356,43 @@ fn return_to_spawn_teleports_with_cooldown() {
 	assert!(sim.test_player(1).unwrap().pos.distance(FLAT_SPAWN) < 1.0);
 }
 
+/// A site stamp lands once and converges: every cell the pure builder
+/// names holds its value afterwards, and a second stamp broadcasts
+/// nothing at all — boot after boot is a no-op, not a journal leak.
+#[test]
+fn a_site_stamp_lands_once_and_converges() {
+	let mut sim = flat_sim("stamp");
+	let mut c = connect(&mut sim, 1);
+	wait_live(&mut sim, 1);
+	c.drain();
+	c.msgs.clear();
+	sim.stamp_site(FLAT_SPAWN);
+	sim.tick_once(vec![]);
+	c.drain();
+	let landed = c
+		.msgs
+		.iter()
+		.filter(|m| matches!(m, ServerMsg::EditApplied { .. }))
+		.count();
+	assert!(landed > 0, "the stamp wrote nothing");
+	for (x, y, z, v) in digblock_core::waystones::stamp(FLAT_SPAWN) {
+		assert_eq!(sim.test_cell_at(x, y, z), Some(v), "cell ({x},{y},{z})");
+	}
+	// Idempotence: the journal already holds every value.
+	c.msgs.clear();
+	sim.stamp_site(FLAT_SPAWN);
+	sim.tick_once(vec![]);
+	c.drain();
+	assert_eq!(
+		c.msgs
+			.iter()
+			.filter(|m| matches!(m, ServerMsg::EditApplied { .. }))
+			.count(),
+		0,
+		"a re-stamp re-broadcast cells it already owns"
+	);
+}
+
 /// The cast chokepoint: a home jump pays Arcana by the DISTANCE it
 /// covered (every figure derived from `skills::home_xp`), and the gate
 /// widens to the caster's own rung — a request inside the base cooldown

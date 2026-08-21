@@ -191,6 +191,10 @@ pub struct Engine {
 	/// confirms/rejects keep it honest. Offline it is simply the truth.
 	inventory: Inventory,
 	hotbar: Hotbar,
+	/// The spawn structure still owed to an offline world: the stamp's
+	/// writes, drained as their chunks become resident. Named saves only
+	/// — a server stamps its own, and a backdrop world is ephemeral.
+	pending_stamp: Vec<(i32, i32, i32, u16)>,
 	/// Protected arrival regions this engine ENFORCES — offline only,
 	/// where the pipeline is the authority and the spawn sphere is derived
 	/// at world entry. Empty in multiplayer on purpose: a server's regions
