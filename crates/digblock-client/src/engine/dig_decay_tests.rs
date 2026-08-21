@@ -166,6 +166,7 @@ fn a_capture_takes_neither_the_keyboard_nor_the_pointer() {
 			|| e.ui.inv_screen.is_open()
 			|| e.ui.alch_screen.is_open()
 			|| e.ui.char_screen.is_open()
+			|| e.ui.spellbook.is_open()
 	};
 	// One key per engine. Pressing all four in sequence cancels
 	// itself — `I` opens the inventory, which then swallows `K` and
@@ -198,7 +199,7 @@ fn a_capture_takes_neither_the_keyboard_nor_the_pointer() {
 	// checks `enabled`, which a capture never sets, so Escape was
 	// already inert there and a control on it would fail for a
 	// reason that has nothing to do with this flag.
-	const SCREEN_KEYS: [Key; 3] = [Key::I, Key::K, Key::C];
+	const SCREEN_KEYS: [Key; 4] = [Key::I, Key::K, Key::C, Key::J];
 
 	// A capture is deaf and never asks for the pointer.
 	assert!(

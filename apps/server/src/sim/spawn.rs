@@ -155,20 +155,25 @@ impl Sim {
 		log::info!("spawn locked at {eye}");
 	}
 
-	/// Teleport a live client back to spawn, subject to the cooldown.
+	/// Teleport a live client back to spawn, subject to the caster's own
+	/// cooldown — the server holds skills, so the gate widens per level.
 	/// Violations are silently ignored — honest clients gate locally.
 	pub(super) fn handle_return_to_spawn(&mut self, conn_id: u64) {
+		use digblock_core::skills::Skill;
 		let Some(client) = self.clients.get(&conn_id) else {
 			return;
 		};
 		if !client.live {
 			return;
 		}
+		let cooldown =
+			digblock_core::unlock::return_cooldown_secs(client.skills.level(Skill::Arcana));
 		if let Some(t) = client.last_return_tick
-			&& self.tick.wrapping_sub(t) < RETURN_SPAWN_COOLDOWN_SECS * TICK_RATE
+			&& self.tick.wrapping_sub(t) < cooldown * TICK_RATE
 		{
 			return;
 		}
+		let from = client.player.pos;
 		let pos = self.safe_spawn();
 		let look = self.spawn_look();
 		let tick = self.tick;
@@ -176,5 +181,39 @@ impl Sim {
 		client.last_return_tick = Some(tick);
 		log::info!("player {} ({}) returned to spawn", client.id, client.name);
 		self.teleport_client(conn_id, pos, look);
+		// The jump's Arcana pay, derived from the distance it covered —
+		// a recast standing at spawn covers nothing and pays nothing.
+		self.process_cast(conn_id, digblock_core::skills::home_xp(from.distance(pos)));
+	}
+
+	/// The cast chokepoint — Arcana's twin of `process_alchemy`'s award
+	/// tail: the one place a landed cast becomes XP, the wire total, the
+	/// persisted record and the level-up announcement. Offline play
+	/// awards through the same core tables in the engine's offline arm.
+	pub(super) fn process_cast(&mut self, conn_id: u64, xp: u64) {
+		use digblock_core::skills::Skill;
+		if xp == 0 {
+			return;
+		}
+		let Some(client) = self.clients.get_mut(&conn_id) else {
+			return;
+		};
+		let before = client.skills.level(Skill::Arcana);
+		let total = client.skills.add_xp(Skill::Arcana, xp);
+		client_send(
+			client,
+			&ServerMsg::XpGain {
+				skill: Skill::Arcana as u8,
+				total,
+			},
+		);
+		let after = client.skills.level(Skill::Arcana);
+		let id = client.id;
+		if let Some(hash) = client.identity {
+			self.player_store.put(hash, client.record());
+		}
+		if after > before {
+			self.announce_level_up(id, Skill::Arcana, after);
+		}
 	}
 }

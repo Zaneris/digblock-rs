@@ -29,6 +29,7 @@ pub(super) fn line(msg: &Msg) -> String {
 		Msg::PlaceProtected => "nothing will stay put here".into(),
 		Msg::NeedsSiphon => "this vein needs an essence siphon".into(),
 		Msg::DigRefusedByServer => "the server refused that dig".into(),
+		Msg::CastInterrupted => "the channel breaks".into(),
 
 		Msg::LevelUp { skill, level } => format!("{} is now level {level}.", skill.name()),
 		Msg::RemoteLevelUp { who, skill, level } => {

@@ -49,6 +49,9 @@ pub enum DebugScreen {
 	/// and needs a press to start, so this is the only way it reaches a
 	/// capture at all.
 	Transmuting,
+	/// The spellbook, with Arcana XP stocked past the first rung so a
+	/// passed threshold and the next teaser both photograph.
+	Spellbook,
 }
 
 impl DebugScreen {
@@ -69,6 +72,7 @@ impl DebugScreen {
 			"skills" | "character" => Some(Self::Skills),
 			"transmute" => Some(Self::Transmute),
 			"transmuting" => Some(Self::Transmuting),
+			"spellbook" => Some(Self::Spellbook),
 			_ => None,
 		}
 	}

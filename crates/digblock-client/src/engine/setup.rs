@@ -110,6 +110,7 @@ impl Engine {
 				inv_screen: Default::default(),
 				alch_screen: Default::default(),
 				char_screen: Default::default(),
+				spellbook: Default::default(),
 				menu,
 				chat: crate::chat::Chat::default(),
 				overlay_visible,
@@ -237,6 +238,7 @@ impl Engine {
 			refused_cell: None,
 			drawn_cell: None,
 			dig: None,
+			cast: None,
 			dig_accum: 0.0,
 			target: None,
 			inventory: Inventory::default(),
@@ -447,6 +449,19 @@ impl Engine {
 					engine.skills.add_xp(Skill::Mining, 150_000);
 					engine.skills.add_xp(Skill::Alchemy, 30_000);
 					engine.ui.char_screen.open();
+				}
+				DebugScreen::Spellbook => {
+					// Past the first rung, so a passed threshold and the
+					// next teaser both photograph. XP derived from the
+					// rung it must pass, never a magic total.
+					use digblock_core::skills::Skill;
+					engine.skills.add_xp(
+						Skill::Arcana,
+						digblock_core::skills::total_xp_for(
+							digblock_core::unlock::RETURN_SWIFT_AT + 1,
+						),
+					);
+					engine.ui.spellbook.open();
 				}
 			}
 		}

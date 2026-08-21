@@ -218,6 +218,12 @@ impl Engine {
 					self.camera.pos.y.floor() as i32,
 				);
 				self.ui.char_screen.build(&mut ui, size, &view, daylight);
+			} else if self.ui.spellbook.is_open() {
+				let view = crate::ui::screens::spellbook::SpellView::build(
+					&self.skills,
+					self.save.spawn_cooldown.ceil() as u32,
+				);
+				self.ui.spellbook.build(&mut ui, size, &view, daylight);
 			} else {
 				crate::ui::hud::crosshair(ui.dl, size, ui.style.scale);
 			}
@@ -250,7 +256,8 @@ impl Engine {
 			if self.config.touch_hud {
 				let screen_open = self.ui.inv_screen.is_open()
 					|| self.ui.alch_screen.is_open()
-					|| self.ui.char_screen.is_open();
+					|| self.ui.char_screen.is_open()
+					|| self.ui.spellbook.is_open();
 				crate::ui::hud::touch_buttons(
 					ui.dl,
 					ui.style.scale,
@@ -288,7 +295,8 @@ impl Engine {
 		let viewmodel = (in_game
 			&& !self.ui.inv_screen.is_open()
 			&& !self.ui.alch_screen.is_open()
-			&& !self.ui.char_screen.is_open())
+			&& !self.ui.char_screen.is_open()
+			&& !self.ui.spellbook.is_open())
 		.then(|| self.viewmodel_frame(&frame))
 		.flatten();
 		self.bench.pending.prep_ms = self

@@ -130,13 +130,10 @@ impl Engine {
 			self.push_feed(crate::voice::Msg::LeftWorld);
 			self.return_to_title();
 		}
-		// Return to spawn: one shared cooldown gates the menu row.
-		// Connected, the server teleports us (Teleported lands in
-		// pump_net); local play resolves and lands immediately.
+		// The home spell's cooldown ticks here; the spellbook page reads
+		// it live. Connected, the server teleports us (Teleported lands
+		// in pump_net); local play resolves and lands immediately.
 		self.save.spawn_cooldown = (self.save.spawn_cooldown - dt).max(0.0);
-		self.ui
-			.menu
-			.set_spawn_cooldown(self.save.spawn_cooldown.ceil() as u32);
 		// The menu's Inventory/Alchemy rows: the menu closed itself; the
 		// screen takes over the free cursor seamlessly.
 		if self.ui.menu.take_inventory() {
@@ -148,25 +145,13 @@ impl Engine {
 		if self.ui.menu.take_character() {
 			self.ui.char_screen.open();
 		}
-		let spawn_requested = self.ui.menu.take_return_spawn()
-			| std::mem::take(&mut self.save.return_spawn_requested);
-		if spawn_requested && self.save.spawn_cooldown == 0.0 {
-			self.save.spawn_cooldown = digblock_net::protocol::RETURN_SPAWN_COOLDOWN_SECS as f32;
-			// Set before the arms: it is what the teleport that lands —
-			// this frame locally, or a round trip later — words itself by.
-			self.save.spawn_return_pending = true;
-			match self.session.client.as_mut() {
-				Some(net) if net.ready() => net.send_return_to_spawn(),
-				_ => {
-					// Same rule the server runs: relocate sideways out of
-					// anything dug into the spawn, never descend into it.
-					// The overlay — not `pipeline.cell_at` — is the edit
-					// view: the pipeline answers None for unloaded columns,
-					// which the support test would read as void.
-					let pos = self.local_spawn();
-					self.apply_teleport(pos, Vec3::ZERO);
-				}
-			}
+		if self.ui.menu.take_spellbook() {
+			self.ui.spellbook.open();
+		}
+		// The H shortcut: begin the home channel — or, on cooldown, show
+		// the page with the countdown instead of doing nothing silently.
+		if std::mem::take(&mut self.save.return_spawn_requested) {
+			self.start_cast(super::CastTarget::Home);
 		}
 		if let Some(services) = &self.services {
 			for cmd in self.ui.menu.take_commands() {
@@ -293,6 +278,7 @@ impl Engine {
 		while self.dig_accum >= TICK {
 			self.dig_accum -= TICK;
 			self.step_dig();
+			self.step_cast();
 		}
 		// The siphon's stream reads the state those ticks just left, so it
 		// ages after them and on the FRAME clock rather than the sim one:

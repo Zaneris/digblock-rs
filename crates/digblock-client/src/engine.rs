@@ -175,6 +175,11 @@ pub struct Engine {
 	/// In-progress hold-to-dig, advanced at the fixed sim rate while
 	/// `dig_held` stays on a valid, unchanged target.
 	dig: Option<DigProgress>,
+	/// In-progress cast channel, advanced at the same fixed rate. A
+	/// channel is stillness: any movement intent, dig hold, or surface
+	/// opening resets it — the decay mold is deliberately NOT borrowed
+	/// here (that is a dig's, and later the damage-interrupt's).
+	cast: Option<CastState>,
 	/// Fixed-rate accumulator for the dig state machine — independent of
 	/// the walk/fly tick loops so digging works in both modes.
 	dig_accum: f32,
@@ -587,6 +592,9 @@ struct UiState {
 	/// The character screen (C toggles): per-skill levels + XP bars.
 	char_screen: crate::ui::screens::character::CharScreen,
 
+	/// The spellbook screen (J toggles): Arcana's casting surface.
+	spellbook: crate::ui::screens::spellbook::SpellScreen,
+
 	/// Startup/pause menu state (pure; overlay renders its view).
 	menu: crate::menu::Menu,
 
@@ -594,6 +602,18 @@ struct UiState {
 	chat: crate::chat::Chat,
 
 	overlay_visible: bool,
+}
+
+/// What a channel is winding up toward. One arm today; the waystone
+/// ports join it when they land.
+#[derive(Clone, Copy, PartialEq)]
+enum CastTarget {
+	Home,
+}
+
+struct CastState {
+	target: CastTarget,
+	ticks: u32,
 }
 
 struct DigProgress {
@@ -827,6 +847,7 @@ impl Game for Engine {
 			&& !self.ui.inv_screen.is_open()
 			&& !self.ui.alch_screen.is_open()
 			&& !self.ui.char_screen.is_open()
+			&& !self.ui.spellbook.is_open()
 	}
 
 	fn wants_text_input(&self) -> bool {
@@ -1001,6 +1022,9 @@ mod touch_hud_tests;
 
 #[cfg(test)]
 mod dig_decay_tests;
+
+#[cfg(test)]
+mod cast_tests;
 
 #[cfg(test)]
 mod ore_capture_tests;

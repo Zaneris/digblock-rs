@@ -40,8 +40,7 @@ use digblock_net::messages::{
 };
 use digblock_net::protocol::{
 	AccountId, CHAT_BURST, EDIT_BURST, MIN_PROTOCOL, NO_CLIENT_SEQ, PROTOCOL_VERSION, PlayerId,
-	RETURN_SPAWN_COOLDOWN_SECS, SERVER_ID, SNAPSHOT_DIVISOR, TICK_RATE, TOD_SYNC_TICKS,
-	sanitize_chat, sanitize_name,
+	SERVER_ID, SNAPSHOT_DIVISOR, TICK_RATE, TOD_SYNC_TICKS, sanitize_chat, sanitize_name,
 };
 use edits::{ClientAction, PendingEditReq};
 use glam::Vec3;

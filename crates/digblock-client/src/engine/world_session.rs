@@ -48,6 +48,7 @@ impl Engine {
 	/// state, and silence the old world.
 	pub(super) fn reset_world_transients(&mut self, pos: Vec3, world_replaced: bool) {
 		self.dig = None;
+		self.cast = None;
 		self.target = None;
 		self.fluid = digblock_core::fluid::FluidSim::new();
 		self.flow_accum = 0.0;

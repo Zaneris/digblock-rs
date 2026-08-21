@@ -530,6 +530,22 @@ pub fn craft_xp(item: BlockType) -> u64 {
 	u64::from(crate::alchemy::craft_worth(item))
 }
 
+/// Arcana XP for a Return Home cast, derived from the DISTANCE the jump
+/// covered rather than a flat figure — the depth ramp's spirit: the
+/// world scales the award, both ends compute it from positions the
+/// server already holds, and a zero-length jump pays zero, which is the
+/// anti-idle rule stated as arithmetic. Capped, so no journey is worth
+/// making only to be teleported back out of.
+pub fn home_xp(dist_blocks: f32) -> u64 {
+	((dist_blocks.max(0.0) / HOME_XP_STRIDE) as u64).min(HOME_XP_CAP)
+}
+
+/// Blocks per point of the home award.
+pub const HOME_XP_STRIDE: f32 = 8.0;
+
+/// The home award's ceiling, per jump.
+pub const HOME_XP_CAP: u64 = 60;
+
 /// Total Alchemy XP for one validated alchemy op (call only after
 /// `apply_alchemy` succeeded — the op's counts are then known-valid).
 pub fn alchemy_xp(op: &crate::inventory::AlchemyOp) -> u64 {

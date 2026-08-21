@@ -232,6 +232,95 @@ impl Engine {
 		self.input.safe_area = insets;
 	}
 
+	/// Begin a cast channel. The home spell on cooldown opens the
+	/// spellbook instead — the countdown is visible there, and a silent
+	/// no-op reads as a broken key.
+	pub(super) fn start_cast(&mut self, target: CastTarget) {
+		if self.cast.is_some() {
+			return;
+		}
+		if target == CastTarget::Home && self.save.spawn_cooldown > 0.0 {
+			self.input.keys = HeldKeys::default();
+			self.input.dig_held = false;
+			self.ui.spellbook.open();
+			return;
+		}
+		self.cast = Some(CastState { target, ticks: 0 });
+	}
+
+	/// One fixed-rate step of the cast channel. A channel is STILLNESS:
+	/// any movement intent, a dig hold, or a surface opening resets it
+	/// outright — the decay mold is a dig's, deliberately not borrowed.
+	pub(super) fn step_cast(&mut self) {
+		if self.cast.is_none() {
+			return;
+		}
+		let keys = &self.input.keys;
+		let moving = keys.w
+			|| keys.a || keys.s
+			|| keys.d || keys.up
+			|| keys.down
+			|| self.input.touch.move_axis() != glam::Vec2::ZERO;
+		let surface = self.ui.menu.is_open()
+			|| self.ui.inv_screen.is_open()
+			|| self.ui.alch_screen.is_open()
+			|| self.ui.char_screen.is_open()
+			|| self.ui.spellbook.is_open()
+			|| self.ui.chat.is_open();
+		if moving || surface || self.dig_active() {
+			self.cast = None;
+			self.push_feed(Msg::CastInterrupted);
+			return;
+		}
+		let need = digblock_core::unlock::channel_ticks(
+			self.skills.level(digblock_core::skills::Skill::Arcana),
+		);
+		let done = {
+			let cast = self.cast.as_mut().expect("checked above");
+			cast.ticks += 1;
+			(cast.ticks >= need).then_some(cast.target)
+		};
+		if let Some(target) = done {
+			self.cast = None;
+			self.complete_cast(target);
+		}
+	}
+
+	/// A completed channel fires its spell. The teleport that answers —
+	/// this frame offline, a round trip later online — is what words the
+	/// arrival, via `spawn_return_pending`.
+	fn complete_cast(&mut self, target: CastTarget) {
+		use digblock_core::skills::Skill;
+		match target {
+			CastTarget::Home => {
+				self.save.spawn_cooldown =
+					digblock_core::unlock::return_cooldown_secs(self.skills.level(Skill::Arcana))
+						as f32;
+				self.save.spawn_return_pending = true;
+				match self.session.client.as_mut() {
+					Some(net) if net.ready() => net.send_return_to_spawn(),
+					_ => {
+						// Same rule the server runs: relocate sideways out
+						// of anything dug into the spawn, never descend
+						// into it. The overlay — not `pipeline.cell_at` —
+						// is the edit view: the pipeline answers None for
+						// unloaded columns, which the support test would
+						// read as void.
+						let from = self.player.pos;
+						let pos = self.local_spawn();
+						self.apply_teleport(pos, Vec3::ZERO);
+						// The offline award arm ONLY — the shared path
+						// never awards, or multiplayer double-pays.
+						self.award_xp_offline(
+							Skill::Arcana,
+							digblock_core::skills::home_xp(from.distance(pos)),
+						);
+					}
+				}
+			}
+		}
+	}
+
 	/// Mouse hold or touch hold — the one question the dig machinery asks.
 	/// Touch is deliberately NOT folded into `dig_held`: that flag is
 	/// force-cleared at many sites (screen opens, focus loss, slot swaps)

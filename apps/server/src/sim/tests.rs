@@ -1356,6 +1356,75 @@ fn return_to_spawn_teleports_with_cooldown() {
 	assert!(sim.test_player(1).unwrap().pos.distance(FLAT_SPAWN) < 1.0);
 }
 
+/// The cast chokepoint: a home jump pays Arcana by the DISTANCE it
+/// covered (every figure derived from `skills::home_xp`), and the gate
+/// widens to the caster's own rung — a request inside the base cooldown
+/// but past the swift one teleports.
+#[test]
+fn a_home_cast_pays_its_distance_and_the_gate_reads_the_rung() {
+	use digblock_core::skills::{Skill, home_xp, total_xp_for};
+	use digblock_core::unlock::{RETURN_SWIFT_AT, return_cooldown_secs};
+	use digblock_net::protocol::TICK_RATE;
+	let request = |sim: &mut super::Sim| {
+		sim.tick_once(vec![SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::ReturnToSpawn,
+		}]);
+	};
+	let mut sim = flat_sim("rtsxp");
+	let mut c = connect(&mut sim, 1);
+	wait_live(&mut sim, 1);
+	sim.bench_set_arcana_level(1, RETURN_SWIFT_AT);
+	let base_total = total_xp_for(RETURN_SWIFT_AT);
+
+	// Walk far enough that the pay is provably nonzero, then jump.
+	for t in 100..400 {
+		sim.tick_once(vec![batch(vec![input(t, true, no_claim())], 1)]);
+	}
+	let from = sim.test_player(1).unwrap().pos;
+	assert!(
+		from.distance(FLAT_SPAWN) > digblock_core::skills::HOME_XP_STRIDE,
+		"never walked a stride's worth"
+	);
+	request(&mut sim);
+	let landed = sim.test_player(1).unwrap().pos;
+	c.drain();
+	let total = c
+		.msgs
+		.iter()
+		.find_map(|m| match m {
+			ServerMsg::XpGain { skill, total } if *skill == Skill::Arcana as u8 => Some(*total),
+			_ => None,
+		})
+		.expect("a jump that covered ground pays");
+	assert_eq!(total, base_total + home_xp(from.distance(landed)));
+
+	// Standing at spawn, wait out the SWIFT cooldown — shorter than the
+	// base one, which is what the rung buys — and recast: the teleport
+	// answers (the widened gate), but a zero-length jump pays nothing.
+	for _ in 0..(return_cooldown_secs(RETURN_SWIFT_AT) * TICK_RATE) {
+		sim.tick_once(vec![]);
+		c.drain();
+	}
+	assert!(return_cooldown_secs(RETURN_SWIFT_AT) < return_cooldown_secs(1));
+	c.msgs.clear();
+	request(&mut sim);
+	c.drain();
+	assert!(
+		c.msgs
+			.iter()
+			.any(|m| matches!(m, ServerMsg::Teleported { .. })),
+		"the swift rung's window should already be open"
+	);
+	assert!(
+		!c.msgs.iter().any(|m| matches!(
+			m,
+			ServerMsg::XpGain { skill, .. } if *skill == Skill::Arcana as u8
+		)),
+		"a zero-length jump paid XP"
+	);
+}
+
 /// Blocks built at the spawn point raise the landing — for a joiner
 /// AND a returning player — even when nobody is near spawn (the scan
 /// reads the journal's in-memory cells, not resident chunks).

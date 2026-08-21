@@ -131,9 +131,9 @@ For `just run`:
   `DIG_ORE`, fatal without it), `DIG_DOORS=1`, `DIG_ORE=<tier 1..=4>` (hollows a chamber around the nearest deposit and
   grants its level — the carve must not touch the vein, or the anti-dupe deletes what is being photographed),
   `DIG_NODE=<heartwood|leystone|springstone>`,
-  `DIG_SCREEN=menu|inventory|alchemy|transmute|transmuting|skills|hand|bucket|bucket-full|torch|siphon|pick|sigil` (the
-  pages are input-only and otherwise invisible to headless capture; the tool names cycle the roster, and screen stocking
-  grants every tool since a fresh player owns none).
+  `DIG_SCREEN=menu|inventory|alchemy|transmute|transmuting|skills|spellbook|hand|bucket|bucket-full|torch|siphon|pick|sigil`
+  (the pages are input-only and otherwise invisible to headless capture; the tool names cycle the roster, and screen
+  stocking grants every tool since a fresh player owns none).
 - **Gotchas**: `--size` sets logical size; the physical framebuffer follows the display's backing scale. **`--display N`
   is mandatory for any frame-time bracket** — refresh rate rides the screen, and a display-paced frame lets the GPU
   downclock (two different `refresh_ms` across a bracket is the tell). Physics ticks ride the wall clock, so cross-build

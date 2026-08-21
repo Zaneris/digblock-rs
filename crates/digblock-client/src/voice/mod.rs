@@ -38,6 +38,10 @@ pub(crate) enum Msg {
 	/// disagree about what stands there.
 	DigRefusedByServer,
 
+	/// A cast channel broken by moving, digging or opening a surface —
+	/// the player did something else, so the spell let go.
+	CastInterrupted,
+
 	// ---- progression ----
 	LevelUp {
 		skill: Skill,

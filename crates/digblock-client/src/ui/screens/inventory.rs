@@ -286,8 +286,11 @@ impl InvScreen {
 						SlotView::Empty | SlotView::Tool { .. } => return None,
 						SlotView::Block { block, .. } => HotbarItem::Block(*block),
 					},
-					// Alchemy ids never appear while this screen is open.
-					InvId::Craft(_) | InvId::Family(_) | InvId::CraftGo => return None,
+					// Alchemy and spellbook ids never appear while this
+					// screen is open.
+					InvId::Craft(_) | InvId::Family(_) | InvId::CraftGo | InvId::Spell(_) => {
+						return None;
+					}
 				};
 				self.drag.on_press(pos, id, payload);
 				None

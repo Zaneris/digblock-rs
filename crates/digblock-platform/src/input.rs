@@ -21,8 +21,10 @@ pub enum Key {
 	K,
 	/// Character (skills) screen toggle.
 	C,
-	/// Return to spawn ("home").
+	/// Cast Return Home (starts the channel).
 	H,
+	/// Spellbook screen toggle.
+	J,
 	/// Chat open (multiplayer).
 	T,
 	/// Number row digit 0..=9 (hotbar slot selection; numpad excluded —
@@ -129,6 +131,7 @@ pub(crate) fn map_key(code: winit::keyboard::KeyCode) -> Key {
 		K::KeyK => Key::K,
 		K::KeyC => Key::C,
 		K::KeyH => Key::H,
+		K::KeyJ => Key::J,
 		K::KeyT => Key::T,
 		K::Digit0 => Key::Digit(0),
 		K::Digit1 => Key::Digit(1),
