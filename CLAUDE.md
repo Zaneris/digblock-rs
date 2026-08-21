@@ -121,7 +121,9 @@ For `just run`:
   `wvert wsun wssr wripple wrefract wflat spray nowater`, GI `gisun gigather ginee giflat giatrous`, raster
   `noscene noraster noglass`. Uniform-branch gated, so an un-stubbed run pays nothing; a typo is fatal. `noscene` is the
   CLEAN raster stub; `noraster` drops the prepass too and is an UPPER BOUND only. Never subtract the two to "get" the
-  prepass.
+  prepass. On web the same masks ride `?stub=`. `--max-lights` / `?maxlights=` cap the GI light list (the Light Sources
+  slider's lever, unsnapped for sweeps) and `DIG_GI_ITERS=<gather>,<sun>` / `?giiters=` set the resolve's ray budgets —
+  A/B levers only, GI-DESIGN.md R36 owns the rules.
 - **Scenes**: `DIG_VAULT` (sealed stone vault + torch; `DIG_VAULT_DARK=1` drops the torch and implies it), `DIG_ROOF`,
   `DIG_TUNNEL` (sealed bore past the cascades' coverage — the unproven-daylight capture; pair with a low `--pos`, and
   the same run above `SEA_LEVEL` is the geometry-identical control), `DIG_DIVE`, `DIG_SHAPES`, `DIG_RIVER` (flooded
@@ -552,9 +554,10 @@ multiplayer would be recording a guess.
 ## Browser client
 
 Chrome via wasm32-unknown-unknown + WebGPU. Query params mirror desktop flags
-(`?seed= ?tod= ?draw= ?ssr=0 ?overlay ?mute ?master= ?join&server= ?workers= ?frames= ?nodatagrams ?mobile ?uiscale=`);
-defaults are full desktop quality, and a coarse-pointer device boots `EngineConfig::web_mobile` instead with saved
-settings and URL params still winning.
+(`?seed= ?tod= ?draw= ?ssr=0 ?overlay ?mute ?master= ?join&server= ?workers= ?frames= ?nodatagrams ?mobile ?uiscale=
+?maxlights= ?stub= ?torches= ?torchesfar= ?giiters=`);
+defaults are full desktop quality, and a coarse-pointer device boots `EngineConfig::web_mobile` instead — shorter draw
+distance with the slider's lower rungs open (`settings::DRAW_FLOOR`) — with saved settings and URL params still winning.
 
 - The loading overlay is a fixed contract with the platform layer (`digblock-gpu-ready`, `digblock-first-frame`,
   `digblock-fatal`), and **it must be PAINTED before wasm instantiation begins** — the double-rAF in index.html is what

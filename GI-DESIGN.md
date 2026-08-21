@@ -51,7 +51,10 @@ Named here because this document previously described several of these as done:
   it up: re-measure with the Chrome window genuinely focused for the whole run, and note that capping the half-res
   target is not a one-line change — chunk.wgsl's bilateral upsample hard-codes the ratio
   (`base = (vec2i(i.pos.xy) - 1)
-  / 2`), so the real gi/full ratio has to be plumbed in first.
+  / 2`), so the real gi/full ratio has to be plumbed in first. R36 built the
+  measurement path and the ray-budget lever (`?stub=`, `?giiters=`, the emitter bed) without moving a default — the
+  re-measurement this bullet asks for now has its instruments, and R36 records the decision rule the numbers will be fed
+  into.
 - **The atlases are still ping-ponged 3D textures** with a full GPU->GPU copy per frame. That copy was M5a's headline
   target and it was measured out: it costs a sliver of the frame far too small to justify anything. Pricing it by ADDING
   four more copies is the exact measurement, because the result stays bit-identical; pricing it by DELETING it says the
@@ -1034,6 +1037,53 @@ brick accumulates no throughput, so a wall of panes would go untinted. The one-l
 `opacity()`'s bucket arm answering `Air` — shipped as this feature's intermediate phase and lives in git if a bench ever
 charges the marches more than the picture is worth.
 
+### R36 — the light list took a cap, and the ray budgets became numbers a platform can set
+
+Two levers landed together, both aimed at the mobile browser, neither moving a shipped default. The motivating cost is
+scene-dependent: `resample_light` scans the whole light list per resolve pixel per frame, so a torch field or a cave
+wall of revealed veins is exactly where the frame gets expensive — and the platform that pays most is the one with the
+least headroom.
+
+**The cap.** `Settings::max_lights` ("Light Sources") caps the flushed list at runtime. CPU-side ONLY: the buffer
+allocation, the probe uniform's capacity word and the shader clamps stay sized to `MAX_LIGHTS` at compile time, and the
+slider's own maximum is DERIVED from that capacity (`settings::LIGHT_CAP_MAX`), so a cap is never anything but a shorter
+header count over the same allocation. `GiDraw` tracks the cap it last flushed under and dirties the list when it moves,
+in either direction — without that, RAISING the cap would not re-admit the dropped lights until the camera next cleared
+the refresh distance.
+
+**Selection leans forward under pressure.** With more candidates than slots, nearest-to-the-camera kept a vein wall
+BEHIND the player at the cost of the torches in front. The ranking key is now distance to the segment from the eye to
+`SELECT_AHEAD` blocks along the look direction — the shader's `LIGHT_RANGE`, pinned by
+`the_selection_lead_matches_the_shaders_light_range` — so under oversubscription the behind lights lose their slots
+first. Three properties held on purpose: the eye stays on the key's zero set, so the carrier's own light still cannot be
+the one dropped (`the_carriers_own_light_survives_any_cap`); the REACH filter stays camera-centred, because it mirrors
+the marches' own lateral bound and probes behind the camera still need their lights — the bias reorders eviction, it
+never culls; and an undersubscribed list is independent of the heading
+(`an_oversubscribed_list_drops_the_lights_behind_first` sweeps both), so the common case pays only the key's arithmetic.
+Staleness now compares the ANCHOR rather than the camera: a heading swing while oversubscribed moves the anchor exactly
+as a walk does, so turning around refreshes the list on the same rule and the same distance, and a resting camera still
+early-outs bit-exactly.
+
+**The budgets.** The resolve's gather and sun iteration counts — the frame's two largest ray budgets, per BENCH.md's
+attribution — moved from WGSL literals into the resolve uniform (`rz.budget`), with the shipped values now owned by
+`gi/resolve.rs` (`GI_GATHER_ITERS`/`GI_SUN_ITERS`) and every profile shipping them unchanged. The marches' own loop
+bounds stay literals in the shader as CAPACITIES — an over-budget value self-clamps in the loop, and
+`budgets_fit_the_shaders_capacities` keeps the shipped budgets inside them. The levers are `DIG_GI_ITERS=<gather>,<sun>`
+on desktop and `?giiters=` on web, and they are A/B levers, not settings: a shorter march silently un-shadows whatever
+lies past the cut, so a default only moves on the measurement the "No tier scaling" bullet has always asked for — a
+genuinely focused browser run — judged against the gi_scale_div image bar (BENCH.md 2026-08-12) and the 90-frame flicker
+method. The decision rule is recorded here ahead of the numbers: within the bars at desktop resolution AND faster, the
+default drops for everyone; within them only on mobile-web measurements, `web_mobile()` alone; outside them, the
+defaults stay and the refutation goes to BENCH.md.
+
+**The browser can finally measure itself.** `?stub=` gives the web launcher DIG_STUB's per-term attribution (same
+parser, same fatal-typo rule), and `?torches=`/`?torchesfar=`/`?maxlights=` put the emitter-count bed and the cap on the
+GPUs the mobile defaults are actually for — the far pad rides the courtyard plan, so `?torchesfar=` without `?torches=`
+builds no scene. The pad's capacity grew from its R27 clamp to the light list's own, so the bed can oversubscribe
+`MAX_LIGHTS`: the first 64 keep the exact cells R27 and R34 measured on, and the extension stacks VERTICALLY over a
+compact footprint, because the reach filter is lateral and a pad growing away from the camera would fall out of reach at
+precisely the short draw distances the bed exists to price.
+
 ## Non-goals (v1)
 
 - Specular GI / reflections (SSR stays as-is for water).
@@ -1227,6 +1277,12 @@ The ones that bite if broken. CLAUDE.md points here rather than restating them.
   `a_translucent_cell_never_covers_whatever_its_shape`. A render CLASS cannot answer this — a crystal slab is `Shaped`.
 - **The glass draw's two halves do not commute** (R35), so the chunk list is walked BACK TO FRONT with both halves run
   per chunk. Running all tints then all shines lets every shine escape every filter, which diverges as panes stack.
+- **The light cap is CPU-side only** (R36): `Settings::max_lights` shortens the flushed header count, while the buffer,
+  the probe uniform and the shader clamps stay sized to `MAX_LIGHTS` at compile time — the slider maximum is DERIVED
+  from that capacity. Under oversubscription selection ranks by distance to the eye→`SELECT_AHEAD` segment (the shader's
+  `LIGHT_RANGE`, pinned); the eye stays on the key's zero set so the carrier's own light is never the one dropped, and
+  the REACH filter stays camera-centred — the forward bias reorders eviction, it never culls a light the probes behind
+  the camera still need.
 
 ## Test pins (grown per phase)
 

@@ -799,11 +799,28 @@ pub(super) fn debug_torches_plan(
 	// that cannot contribute still takes its turn and multiplies the ones
 	// that can. If flicker tracks `far` with the picture held fixed, the
 	// probe cache's light selection is a source in its own right.
-	for i in 0..far.clamp(0, 64) {
+	// Capacity is the light list's own: the emitter-count bed has to be
+	// able to oversubscribe `MAX_LIGHTS` (with the courtyard cluster on
+	// top it does). The first 64 keep the exact cells R27 measured on, so
+	// its flicker numbers stay reproducible; the extension stacks
+	// VERTICALLY over a compact footprint because the reach filter is
+	// lateral — a pad that grew away from the camera instead would fall
+	// out of reach at exactly the short draw distances the bed exists to
+	// measure.
+	let far = far.clamp(0, crate::gi::MAX_LIGHTS as i32);
+	for i in 0..far.min(64) {
 		let x = bx - 6 + (i % 8) * 3;
 		let z = bz - 45 - (i / 8) * 3;
 		out.push((x, by - 3, z, B::Stone as u16));
 		out.push((x, by - 2, z, B::Torch as u16));
+	}
+	for i in 64..far {
+		let j = i - 64;
+		let x = bx - 6 + (j % 8) * 3;
+		let z = bz - 45 - ((j / 8) % 3) * 3;
+		let y = by + 1 + (j / 24) * 2;
+		out.push((x, y - 1, z, B::Stone as u16));
+		out.push((x, y, z, B::Torch as u16));
 	}
 	out
 }

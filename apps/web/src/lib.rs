@@ -252,9 +252,14 @@ async fn boot() -> Result<(), JsValue> {
 		);
 		config.stub = mask;
 	}
-	// The web twin of DIG_TORCHES_FAR: pads the light list without lighting
-	// a pixel on screen, so the emitter-count cost curve can be walked on
-	// the phone GPUs the mobile defaults are chosen for.
+	// The web twins of DIG_TORCHES / DIG_TORCHES_FAR: the far pad pads the
+	// light list without lighting a pixel on screen, so the emitter-count
+	// cost curve can be walked on the phone GPUs the mobile defaults are
+	// chosen for. Both, because the far pad rides the courtyard plan —
+	// `?torchesfar=` without `?torches=` builds no scene at all.
+	if let Some(n) = param::<i32>(&params, "torches") {
+		config.debug_torches = n;
+	}
 	if let Some(n) = param::<i32>(&params, "torchesfar") {
 		config.debug_torches_far = n;
 	}
