@@ -1,5 +1,6 @@
 use digblock_client::settings::{
-	GI_SCALE_DIVISORS, RENDER_SCALE_MAX, RENDER_SCALE_MIN, UI_SCALE_MAX, UI_SCALE_MIN,
+	GI_SCALE_DIV_FULL, GI_SCALE_DIVISORS, RENDER_SCALE_MAX, RENDER_SCALE_MIN, UI_SCALE_MAX,
+	UI_SCALE_MIN, lever_gi_div_ok,
 };
 use digblock_client::{Engine, EngineConfig};
 use digblock_platform::RunOptions;
@@ -53,10 +54,10 @@ fn main() {
 	//   --render-scale S (DEV/CAPTURE ONLY — no slider exposes it and it
 	//            is locked at native for players. World resolution as a
 	//            fraction of the surface; the UI stays native)
-	//   --gi-scale D (GI resolve divisor against the render size: 1/2/3/4;
-	//            the interactive high-DPI default is derived from display
-	//            density. This is the knob that pays — see
-	//            settings::density_gi_div)
+	//   --gi-scale D (GI resolve divisor against the render size: a slider
+	//            rung, or the lever-only full-res divisor; the interactive
+	//            high-DPI default is derived from display density. This is
+	//            the knob that pays — see settings::density_gi_div)
 	//   --bench-speed B (flyover blocks/s; the DEFAULT is every BENCH.md
 	//            baseline's value, several times walking pace and a
 	//            different STREAMING regime — drop it to walking pace to
@@ -167,13 +168,16 @@ fn main() {
 				let v: f32 = parse_or_die("--render-scale", args.next());
 				cli_render_scale = Some(v.clamp(RENDER_SCALE_MIN, RENDER_SCALE_MAX));
 			}
-			// GI resolve divisor against the RENDER size, one of
-			// `GI_SCALE_DIVISORS`. Must divide exactly — chunk.wgsl's
+			// GI resolve divisor against the RENDER size: a slider rung, or
+			// the lever-only full-res divisor the heavy-cost capture
+			// brackets are taken at. Must divide exactly — chunk.wgsl's
 			// bilateral upsample is a 4-tap gather over an integer ratio.
 			"--gi-scale" => {
 				let d: u32 = parse_or_die("--gi-scale", args.next());
-				if !GI_SCALE_DIVISORS.contains(&d) {
-					eprintln!("--gi-scale wants one of {GI_SCALE_DIVISORS:?}");
+				if !lever_gi_div_ok(d) {
+					eprintln!(
+						"--gi-scale wants one of {GI_SCALE_DIVISORS:?}, or {GI_SCALE_DIV_FULL} for captures"
+					);
 					std::process::exit(2);
 				}
 				cli_gi_scale = Some(d);

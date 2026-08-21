@@ -218,9 +218,9 @@ impl Menu {
 						RowSpec::slider(
 							RowId::SettingsRow(1),
 							format!("Lighting Detail: {}", gi_scale_label(st.gi_scale_div)),
-							// Full bar = divisor 1 = sharpest, so more
-							// fill means more of the thing, like every
-							// other slider here.
+							// Full bar = the list's first divisor =
+							// sharpest, so more fill means more of the
+							// thing, like every other slider here.
 							(n - 1 - i) as f32 / (n - 1) as f32,
 						),
 					);

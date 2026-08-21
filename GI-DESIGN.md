@@ -1224,7 +1224,10 @@ dispatch** and **rays per probe** together set how long a full sweep takes — m
 GPU time every frame; the **resolve divisor** trades reconstruction detail against the cost of the two per-pixel rays
 (web additionally caps the resolve's absolute size); and the **per-frame GI upload budget** trades how fast new terrain
 enters the window against a hitch on the frame that pays for it. Desktop takes the largest of each, web the smallest
-sweep, iOS the coarsest resolve.
+sweep, iOS the coarsest resolve. The full-resolution divisor is a capture lever (`settings::GI_SCALE_DIV_FULL`), never a
+settings rung: behind the à-trous filter and the bilateral upsample it buys almost no visible picture for the largest
+cost step the slider could take (BENCH.md 2026-08-12), and its accumulators at retina fullscreen are large enough to
+destabilize a browser's GPU process.
 
 - Hysteresis alpha by probe age: a freshly reset probe takes its estimate whole, and the alpha steps down by rungs to a
   steady-state floor.

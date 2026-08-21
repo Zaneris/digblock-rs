@@ -719,11 +719,14 @@ fn settings_adjust_clamp_and_dirty_once() {
 	);
 	menu.handle_key(Key::Left);
 	assert!(menu.take_settings_change().is_none(), "already coarsest");
-	// And back up to full res.
+	// And back up to the sharpest rung the slider offers.
 	for _ in 0..10 {
 		menu.handle_key(Key::Right);
 	}
-	assert_eq!(menu.take_settings_change().unwrap().gi_scale_div, 1);
+	assert_eq!(
+		menu.take_settings_change().unwrap().gi_scale_div,
+		GI_SCALE_DIVISORS[0]
+	);
 
 	// Light sources: sel 2, one step per press, floored at the slider's
 	// own minimum — every expectation derived from the cap constants.
@@ -827,7 +830,7 @@ fn settings_adjust_clamp_and_dirty_once() {
 	assert!(
 		view.rows
 			.iter()
-			.any(|r| r.text.contains("Lighting Detail: Ultra"))
+			.any(|r| r.text.contains("Lighting Detail: High"))
 	);
 }
 

@@ -186,7 +186,7 @@ async fn boot() -> Result<(), JsValue> {
 		);
 	}
 	if let Some(d) = param::<u32>(&params, "giscale")
-		&& digblock_client::settings::GI_SCALE_DIVISORS.contains(&d)
+		&& digblock_client::settings::lever_gi_div_ok(d)
 	{
 		config.gi_scale_div = d;
 		config.gfx_defaults_auto = false;

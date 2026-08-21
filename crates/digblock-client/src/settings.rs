@@ -57,8 +57,23 @@ pub const RENDER_SCALE_STEP: f32 = 0.05;
 /// matching the texels it reads. It is also why GI scale is expressed against
 /// the RENDER size and not the surface — anchored to native instead, a fractional
 /// render scale under a halved GI would ask for a non-integer ratio.
-pub const GI_SCALE_DIVISORS: [u32; 4] = [1, 2, 3, 4];
+///
+/// Full-resolution GI is deliberately not a rung: behind the à-trous filter
+/// and the bilateral upsample it buys almost no visible picture for the
+/// largest GPU-time and memory step the slider could take (BENCH.md
+/// 2026-08-12) — at retina fullscreen its accumulators are big enough to
+/// destabilize a browser's GPU process. It stays reachable from the capture
+/// levers, which is where GI-DESIGN.md's heavy-cost brackets are taken.
+pub const GI_SCALE_DIVISORS: [u32; 3] = [2, 3, 4];
 pub const GI_SCALE_DEFAULT: u32 = 2;
+
+/// The lever-only full-resolution divisor, and the shared answer to what
+/// `--gi-scale` / `?giscale=` accept — one function, so the two launchers
+/// cannot drift.
+pub const GI_SCALE_DIV_FULL: u32 = 1;
+pub fn lever_gi_div_ok(d: u32) -> bool {
+	d == GI_SCALE_DIV_FULL || GI_SCALE_DIVISORS.contains(&d)
+}
 
 /// Interface-scale slider: a multiplier on the scale the engine derives
 /// from window size and display density. Defined next to the function
@@ -215,6 +230,20 @@ mod tests {
 		// An illegal divisor goes to the DEFAULT, not the nearest legal
 		// value — see `clamped`.
 		assert_eq!(s.gi_scale_div, GI_SCALE_DEFAULT);
+		// That includes the lever-only full-res divisor: a save written
+		// when full-res was a slider rung degrades to the default, and the
+		// levers still accept what the slider offers.
+		assert_eq!(
+			Settings {
+				gi_scale_div: GI_SCALE_DIV_FULL,
+				..Default::default()
+			}
+			.clamped()
+			.gi_scale_div,
+			GI_SCALE_DEFAULT
+		);
+		assert!(lever_gi_div_ok(GI_SCALE_DIV_FULL));
+		assert!(GI_SCALE_DIVISORS.iter().all(|&d| lever_gi_div_ok(d)));
 		assert_eq!(s.max_lights, LIGHT_CAP_MAX);
 
 		// The draw floor, not the default UI minimum, is what an

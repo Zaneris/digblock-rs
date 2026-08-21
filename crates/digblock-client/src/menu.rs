@@ -1568,7 +1568,9 @@ fn snap_vol(v: f32, dir: i32) -> f32 {
 /// it is half of the render scale, itself already a fraction).
 fn gi_scale_label(div: u32) -> &'static str {
 	match div {
-		1 => "Ultra",
+		// Lever-only (settings::GI_SCALE_DIV_FULL) — the slider cannot
+		// reach it, but a capture lever's interactive run must read true.
+		1 => "Full",
 		2 => "High",
 		3 => "Medium",
 		_ => "Low",
