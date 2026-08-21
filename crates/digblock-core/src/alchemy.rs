@@ -135,6 +135,25 @@ pub fn cast_price(kind: crate::worldgen::SurfaceKind) -> Option<(Essence, u32)> 
 	})
 }
 
+/// The self-light's fare: Vitae, the day-one essence, so Arcana's own
+/// bootstrap spell is payable from the first heartwood draws.
+pub fn wisp_price() -> (Essence, u32) {
+	(Essence::Vitae, 2)
+}
+
+/// Conjured light's fare, easing at the late rung — the caster's Arcana
+/// decides, exactly as the port fares ride the port table.
+pub fn kindle_price(level: u32) -> (Essence, u32) {
+	(
+		Essence::Terra,
+		if level >= crate::unlock::KINDLE_CHEAP_AT {
+			2
+		} else {
+			3
+		},
+	)
+}
+
 pub fn functional_ideal(b: BlockType) -> Option<&'static [(Essence, u32)]> {
 	use BlockType as B;
 	use Essence as E;

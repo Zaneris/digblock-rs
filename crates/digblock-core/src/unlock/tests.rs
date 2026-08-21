@@ -527,13 +527,16 @@ fn unlock_levels_are_the_threshold_levels() {
 		arcana,
 		vec![
 			6,
+			KINDLE_AT,
 			14,
 			RETURN_SWIFT_AT,
 			22,
 			CHANNEL_QUICK_AT,
 			34,
+			WISP_BRIGHT_AT,
 			42,
 			50,
+			KINDLE_CHEAP_AT,
 			RETURN_SWIFTER_AT,
 			60
 		],

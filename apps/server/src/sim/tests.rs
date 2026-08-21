@@ -1356,6 +1356,109 @@ fn return_to_spawn_teleports_with_cooldown() {
 	assert!(sim.test_player(1).unwrap().pos.distance(FLAT_SPAWN) < 1.0);
 }
 
+/// The two utility spells' server halves: a wisp is a debit and its
+/// fare's XP (the light is per-viewer, client-side); a kindle validates
+/// the rung and the AIM — an air cell in honest reach — then conjures
+/// the Wisplight as an ordinary journaled edit. Every figure read off
+/// the core tables.
+#[test]
+fn a_wisp_debits_and_a_kindle_conjures() {
+	use digblock_core::skills::cast_xp;
+	use digblock_net::messages::{CastKind, CastRefusal};
+	let mut sim = flat_sim("wispkindle");
+	let mut c = connect(&mut sim, 1);
+	wait_live(&mut sim, 1);
+	let cast = |sim: &mut super::Sim, kind: CastKind| {
+		sim.tick_once(vec![SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::Cast(kind),
+		}]);
+	};
+
+	// The wisp: broke refuses before any debit; funded debits exactly
+	// and pays the fare's worth.
+	let (w_essence, w_fare) = digblock_core::alchemy::wisp_price();
+	cast(&mut sim, CastKind::Wisp);
+	c.drain();
+	assert!(c.msgs.iter().any(|m| matches!(
+		m,
+		ServerMsg::CastRefused {
+			reason: CastRefusal::CantPay
+		}
+	)));
+	sim.test_grant_essence(1, w_essence, w_fare);
+	c.msgs.clear();
+	cast(&mut sim, CastKind::Wisp);
+	c.drain();
+	assert_eq!(sim.test_essence(1, w_essence), Some(0), "the fare left");
+	assert_eq!(
+		sim.test_skill_xp(1, digblock_core::skills::Skill::Arcana),
+		cast_xp(w_fare)
+	);
+
+	// The kindle: below its rung, locked; at it, an aimed AIR cell
+	// becomes conjured light and a solid one refuses as a bad target.
+	let eye = sim.test_player(1).unwrap().pos;
+	let over = (
+		eye.x.floor() as i32,
+		eye.y.floor() as i32 + 2,
+		eye.z.floor() as i32,
+	);
+	let ground = (over.0, FLAT_GROUND_TOP as i32, over.2);
+	let level = digblock_core::unlock::KINDLE_AT;
+	let (k_essence, k_fare) = digblock_core::alchemy::kindle_price(level);
+	sim.test_grant_essence(1, k_essence, k_fare * 2);
+	c.msgs.clear();
+	cast(
+		&mut sim,
+		CastKind::Kindle {
+			cell: [over.0, over.1, over.2],
+			face: 0,
+		},
+	);
+	c.drain();
+	assert!(
+		c.msgs.iter().any(|m| matches!(
+			m,
+			ServerMsg::CastRefused {
+				reason: CastRefusal::Locked
+			}
+		)),
+		"kindle below its rung must refuse"
+	);
+	sim.bench_set_arcana_level(1, level);
+	cast(
+		&mut sim,
+		CastKind::Kindle {
+			cell: [over.0, over.1, over.2],
+			face: 0,
+		},
+	);
+	assert_eq!(
+		sim.test_cell_at(over.0, over.1, over.2),
+		Some(digblock_core::block::BlockType::Wisplight as u16),
+		"conjured light stands where it was aimed"
+	);
+	c.msgs.clear();
+	cast(
+		&mut sim,
+		CastKind::Kindle {
+			cell: [ground.0, ground.1, ground.2],
+			face: 0,
+		},
+	);
+	c.drain();
+	assert!(
+		c.msgs.iter().any(|m| matches!(
+			m,
+			ServerMsg::CastRefused {
+				reason: CastRefusal::BadTarget
+			}
+		)),
+		"a solid cell cannot hold conjured light"
+	);
+}
+
 /// The resolved sites ride join sync, right behind Skills — the client
 /// cannot derive them, and the spellbook's roster is empty without them.
 #[test]

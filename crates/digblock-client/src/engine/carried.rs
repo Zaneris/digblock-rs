@@ -23,6 +23,10 @@ use glam::Vec3;
 /// Carrier key for the local player. Remote carriers key on their
 /// `PlayerId`, which is a `u8`, so the two spaces cannot collide.
 pub(super) const CARRIER_SELF: u16 = u16::MAX;
+/// Carrier key for the local player's wisp — a SECOND light on the same
+/// body, so it needs its own re-placement bookkeeping.
+pub(super) const CARRIER_WISP: u16 = u16::MAX - 2;
+
 /// Carrier key for `DIG_PLAYERBOX`'s fake remote. Out of the `PlayerId`
 /// space on purpose: it borrows a real id for its COLOUR, and keying off
 /// that made it share a `Carried::fired` slot with the live player wearing
@@ -186,6 +190,25 @@ impl Carried {
 			// it otherwise is the item's own geometry, and an emissive
 			// face a few inches across is a point at any distance that
 			// matters.
+			face: None,
+		});
+		self.keys.push(key);
+	}
+
+	/// The wisp's own entry: arcane light with no item behind it. It
+	/// wears the Wisplight row's class — the same LUT row a kindled cell
+	/// uses, so the self-light and the placed light are one colour — and
+	/// its level and whitening answer to the CASTER's Arcana
+	/// (`unlock::wisp_light`), the pick's carried-light rule.
+	pub(super) fn push_wisp(&mut self, key: u16, eye: Vec3, level: u8, whitened: bool) {
+		self.lights.push(crate::gi::Emitter {
+			pos: digblock_core::gi::carried_origin(eye).to_array(),
+			class: digblock_core::gi::gi_class(digblock_core::chunk::make_cell(
+				BlockType::Wisplight,
+				0,
+			)),
+			level,
+			whitened,
 			face: None,
 		});
 		self.keys.push(key);

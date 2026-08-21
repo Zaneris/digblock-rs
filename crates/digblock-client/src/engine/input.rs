@@ -292,6 +292,14 @@ impl Engine {
 							self.ui.spellbook.close();
 							self.start_cast(CastTarget::Waystone(idx));
 						}
+						Some(SpellAction::CastWisp) => {
+							self.ui.spellbook.close();
+							self.start_cast(CastTarget::Wisp);
+						}
+						Some(SpellAction::CastKindle) => {
+							self.ui.spellbook.close();
+							self.start_cast(CastTarget::Kindle);
+						}
 						None => {}
 					}
 				}

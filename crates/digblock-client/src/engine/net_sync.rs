@@ -448,9 +448,13 @@ impl Engine {
 				}
 				NetEvent::CastRefused { reason } => {
 					use digblock_net::messages::CastRefusal;
+					// A predicted wisp goes out with the refusal — the
+					// debit it predicted against never happened.
+					self.wisp_left = 0.0;
 					self.push_feed(match reason {
 						CastRefusal::Locked => Msg::WaystoneLocked,
 						CastRefusal::CantPay => Msg::CastCantPay,
+						CastRefusal::BadTarget => Msg::CastBadTarget,
 					});
 				}
 				// Hard-set: inter-beat drift is microscopic, and after a

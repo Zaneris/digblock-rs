@@ -381,6 +381,32 @@ pub fn channel_ticks(level: u32) -> u32 {
 /// the arc's first rank and the fourth waystone.
 pub const CHANNEL_QUICK_AT: u32 = 30;
 
+/// Where Kindle opens — conjured light in the world, a few levels past
+/// the first port so the illumination family paces the travel one.
+pub const KINDLE_AT: u32 = 10;
+
+/// Where Kindle's fare eases, deep beside the last ports.
+pub const KINDLE_CHEAP_AT: u32 = 54;
+
+/// Wisp's second rank: brighter AND whitened — level alone reads as
+/// more of the same hue, never as brighter (the carried-light lesson).
+pub const WISP_BRIGHT_AT: u32 = 38;
+
+/// The wisp's cast light for a caster at this Arcana: GI level and
+/// whitening. The self-light answers to its CASTER, the pick's rule.
+pub fn wisp_light(level: u32) -> (u8, bool) {
+	if level >= WISP_BRIGHT_AT {
+		(12, true)
+	} else {
+		(8, false)
+	}
+}
+
+/// Seconds a wisp burns, doubling at the second rank.
+pub fn wisp_secs(level: u32) -> u32 {
+	if level >= WISP_BRIGHT_AT { 360 } else { 180 }
+}
+
 // There is deliberately NO per-substance draw gate. The reveal IS the
 // gate: a node you cannot see draws as its host, and one you can needs
 // only the siphon — a second level axis on top of the reveal would be
@@ -614,8 +640,12 @@ pub fn opens(skill: Skill, level: u32) -> bool {
 				&& (crate::worldgen::SurfaceKind::ALL
 					.iter()
 					.any(|&k| waystone(k) == Some(level))
+					|| level == KINDLE_AT
 					|| return_cooldown_secs(level) != return_cooldown_secs(level - 1)
-					|| channel_ticks(level) != channel_ticks(level - 1))
+					|| channel_ticks(level) != channel_ticks(level - 1)
+					|| wisp_light(level) != wisp_light(level - 1)
+					|| crate::alchemy::kindle_price(level)
+						!= crate::alchemy::kindle_price(level - 1))
 		}
 	})
 }

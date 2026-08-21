@@ -254,6 +254,7 @@ impl Engine {
 			drawn_cell: None,
 			dig: None,
 			cast: None,
+			wisp_left: 0.0,
 			dig_accum: 0.0,
 			target: None,
 			inventory: Inventory::default(),
@@ -498,6 +499,9 @@ impl Engine {
 		// constructor — offline is not allowed to fork them. They only run
 		// in local worlds; hosted, the results arrive as ordinary edits.
 		for job in digblock_core::worldjob::grass::jobs() {
+			engine.register_world_job(job);
+		}
+		for job in digblock_core::worldjob::wisplight::jobs() {
 			engine.register_world_job(job);
 		}
 		engine

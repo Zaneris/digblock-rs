@@ -407,7 +407,83 @@ impl Engine {
 				}
 				_ => self.cast_waystone_offline(idx),
 			},
+			CastTarget::Wisp => {
+				let (essence, fare) = digblock_core::alchemy::wisp_price();
+				match self.session.client.as_mut() {
+					Some(net) if net.ready() => {
+						// Predicted: the light shows now, the debit rides
+						// the rebase, and a CastRefused puts it out.
+						net.send_cast(digblock_net::messages::CastKind::Wisp);
+						self.wisp_left =
+							digblock_core::unlock::wisp_secs(self.skills.level(Skill::Arcana))
+								as f32;
+					}
+					_ => {
+						if !self.inventory.try_take_sub(essence, fare) {
+							self.push_feed(Msg::CastCantPay);
+							return;
+						}
+						self.wisp_left =
+							digblock_core::unlock::wisp_secs(self.skills.level(Skill::Arcana))
+								as f32;
+						self.award_xp_offline(Skill::Arcana, digblock_core::skills::cast_xp(fare));
+					}
+				}
+			}
+			CastTarget::Kindle => {
+				// The air cell just off the aimed face — resolved at
+				// COMPLETION, so the caster aims through the channel.
+				let Some(hit) = self.target else {
+					self.push_feed(Msg::CastBadTarget);
+					return;
+				};
+				let cell = (
+					hit.cell.0 + hit.normal.0,
+					hit.cell.1 + hit.normal.1,
+					hit.cell.2 + hit.normal.2,
+				);
+				match self.session.client.as_mut() {
+					Some(net) if net.ready() => {
+						net.send_cast(digblock_net::messages::CastKind::Kindle {
+							cell: [cell.0, cell.1, cell.2],
+							face: 0,
+						});
+					}
+					_ => self.cast_kindle_offline(cell),
+				}
+			}
 		}
+	}
+
+	/// The offline arm of conjured light: the same rung, target and fare
+	/// rules the server runs, applied through the pipeline. The wisplight
+	/// sweep both arms register is the whole expiry.
+	fn cast_kindle_offline(&mut self, cell: (i32, i32, i32)) {
+		use digblock_core::skills::Skill;
+		let level = self.skills.level(Skill::Arcana);
+		if level < digblock_core::unlock::KINDLE_AT {
+			self.push_feed(Msg::WaystoneLocked);
+			return;
+		}
+		if digblock_core::protect::immutable(cell.0, cell.1, cell.2, &self.protected)
+			|| self.pipeline.cell_at(cell.0, cell.1, cell.2)
+				!= Some(digblock_core::block::BlockType::Air as u16)
+		{
+			self.push_feed(Msg::CastBadTarget);
+			return;
+		}
+		let (essence, fare) = digblock_core::alchemy::kindle_price(level);
+		if !self.inventory.try_take_sub(essence, fare) {
+			self.push_feed(Msg::CastCantPay);
+			return;
+		}
+		self.pipeline.set_cell(
+			cell.0,
+			cell.1,
+			cell.2,
+			digblock_core::block::BlockType::Wisplight as u16,
+		);
+		self.award_xp_offline(Skill::Arcana, digblock_core::skills::cast_xp(fare));
 	}
 
 	/// Mouse hold or touch hold — the one question the dig machinery asks.

@@ -307,6 +307,12 @@ blocks! {
 	GreenGlass = 86 => mat(dig(translucent(crafted(props(RenderClass::Glass, true, tex::GLASS_GREEN, tex::GLASS_GREEN, tex::GLASS_GREEN))), 25, DigFamily::Soft), Material::GreenGlass),
 	BlueGlass = 87 => mat(dig(translucent(crafted(props(RenderClass::Glass, true, tex::GLASS_BLUE, tex::GLASS_BLUE, tex::GLASS_BLUE))), 25, DigFamily::Soft), Material::BlueGlass),
 	AmberGlass = 88 => mat(dig(translucent(crafted(props(RenderClass::Glass, true, tex::GLASS_AMBER, tex::GLASS_AMBER, tex::GLASS_AMBER))), 25, DigFamily::Soft), Material::AmberGlass),
+	// Conjured light — the Kindle spell's cube of standing arcane light.
+	// Never worldgen, never an item, never diggable: it EXPIRES (the
+	// wisplight sweep fades it back to Air), so nothing needs to police
+	// it. Walk-through on purpose — it is light, not matter. Lamp mold
+	// (`emits(glows(...))`), never `seams`, which is the node rows' alone.
+	Wisplight = 89 => emits(glows(props(RenderClass::Opaque, false, tex::WISPLIGHT, tex::WISPLIGHT, tex::WISPLIGHT)), 13),
 }
 
 /// The indestructible world floor: cells at this height can never be
@@ -938,11 +944,15 @@ pub mod tex {
 	pub const GLASS_GREEN: u16 = 48;
 	pub const GLASS_BLUE: u16 = 49;
 	pub const GLASS_AMBER: u16 = 50;
+	/// Conjured light wears the aetherlamp's face — the LAYERS entry
+	/// references the same PNG, so the spell needs no texture of its own
+	/// until somebody authors one.
+	pub const WISPLIGHT: u16 = 51;
 
 	/// Layers in the array, i.e. `digblock_assets::tex::LAYERS.len()`.
 	/// Pinned against it by `every_block_texture_layer_is_uploaded` in
 	/// digblock-client, the one crate that can see both.
-	pub const COUNT: u16 = GLASS_AMBER + 1;
+	pub const COUNT: u16 = WISPLIGHT + 1;
 }
 
 impl BlockType {

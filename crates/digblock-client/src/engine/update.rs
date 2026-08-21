@@ -134,6 +134,8 @@ impl Engine {
 		// it live. Connected, the server teleports us (Teleported lands
 		// in pump_net); local play resolves and lands immediately.
 		self.save.spawn_cooldown = (self.save.spawn_cooldown - dt).max(0.0);
+		// The wisp burns down on the same clock.
+		self.wisp_left = (self.wisp_left - dt).max(0.0);
 		// The menu's Inventory/Alchemy rows: the menu closed itself; the
 		// screen takes over the free cursor seamlessly.
 		if self.ui.menu.take_inventory() {

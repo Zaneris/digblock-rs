@@ -147,6 +147,7 @@ fn samples() -> Vec<Msg> {
 		Msg::CastInterrupted,
 		Msg::WaystoneLocked,
 		Msg::CastCantPay,
+		Msg::CastBadTarget,
 		Msg::LevelUp {
 			skill: Skill::Mining,
 			level: 7,
@@ -192,6 +193,7 @@ fn samples() -> Vec<Msg> {
 			| Msg::CastInterrupted
 			| Msg::WaystoneLocked
 			| Msg::CastCantPay
+			| Msg::CastBadTarget
 			| Msg::LevelUp { .. }
 			| Msg::RemoteLevelUp { .. }
 			| Msg::VeinsRevealed

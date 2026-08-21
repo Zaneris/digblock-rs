@@ -367,6 +367,9 @@ fn material_roster_is_pinned() {
 			B::Lantern,
 			B::Aetherlamp,
 			B::MastersSigil,
+			// Conjured light: temporary by the wisplight sweep, so it is
+			// neither substance nor priced item.
+			B::Wisplight,
 		]
 	);
 }

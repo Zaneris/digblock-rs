@@ -35,6 +35,15 @@ impl Engine {
 				.and_then(crate::ui::hud::icon_block),
 			self.skills.level(digblock_core::skills::Skill::Mining),
 		);
+		// The wisp: a second light on the same body while it burns.
+		if self.wisp_left > 0.0 {
+			let (level, whitened) = digblock_core::unlock::wisp_light(
+				self.skills.level(digblock_core::skills::Skill::Arcana),
+			);
+			self.vfx
+				.carried
+				.push_wisp(carried::CARRIER_WISP, self.camera.pos, level, whitened);
+		}
 		if let Some(net) = self.session.client.as_ref() {
 			net.remotes.sample(&mut self.vfx.remote_scratch);
 			for i in 0..self.vfx.remote_scratch.len() {

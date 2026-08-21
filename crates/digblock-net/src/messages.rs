@@ -530,6 +530,9 @@ pub enum CastRefusal {
 	Locked,
 	/// The caster cannot pay the passage. Refused BEFORE any debit.
 	CantPay,
+	/// A kindle aimed at a cell that cannot hold conjured light — not
+	/// air, out of reach, protected, or not resident.
+	BadTarget,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]

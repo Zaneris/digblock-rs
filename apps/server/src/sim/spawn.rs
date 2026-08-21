@@ -268,8 +268,10 @@ impl Sim {
 		if !client.live {
 			return;
 		}
-		let CastKind::Waystone(idx) = kind else {
-			return refuse(client, CastRefusal::Locked);
+		let idx = match kind {
+			CastKind::Waystone(idx) => idx,
+			CastKind::Wisp => return self.cast_wisp(conn_id),
+			CastKind::Kindle { cell, face: _ } => return self.cast_kindle(conn_id, cell),
 		};
 		let Some(&skind) = digblock_core::worldgen::SurfaceKind::ALL.get(idx as usize) else {
 			return refuse(client, CastRefusal::Locked);
@@ -314,6 +316,76 @@ impl Sim {
 				.expect("a laddered kind has a milestone");
 		}
 		self.process_cast(conn_id, xp);
+	}
+
+	/// The self-light. The server's whole share is the debit and the pay:
+	/// the buff's LIGHT is per-viewer GI, applied client-side (each
+	/// viewer computes lighting locally), and its expiry is the caster's
+	/// own clock. A refusal answers so a predicted buff can cancel.
+	fn cast_wisp(&mut self, conn_id: u64) {
+		use digblock_net::messages::CastRefusal;
+		let (essence, fare) = digblock_core::alchemy::wisp_price();
+		let Some(client) = self.clients.get_mut(&conn_id) else {
+			return;
+		};
+		if !client.inventory.try_take_sub(essence, fare) {
+			client_send(
+				client,
+				&ServerMsg::CastRefused {
+					reason: CastRefusal::CantPay,
+				},
+			);
+			return;
+		}
+		let counts = client.inventory.to_wire();
+		client_send(client, &ServerMsg::InventoryFull { counts });
+		self.process_cast(conn_id, digblock_core::skills::cast_xp(fare));
+	}
+
+	/// Conjured light: validate the rung, the aim (an AIR cell within an
+	/// honest reach of the caster, unprotected, resident), then debit and
+	/// write the Wisplight as an ordinary journaled edit — the wisplight
+	/// sweep is its whole expiry.
+	fn cast_kindle(&mut self, conn_id: u64, cell: [i32; 3]) {
+		use digblock_core::skills::Skill;
+		use digblock_net::messages::CastRefusal;
+		let refuse = |client: &Client, reason: CastRefusal| {
+			client_send(client, &ServerMsg::CastRefused { reason });
+		};
+		let regions = self.protected_regions();
+		let Some(client) = self.clients.get(&conn_id) else {
+			return;
+		};
+		if !client.live {
+			return;
+		}
+		let level = client.skills.level(Skill::Arcana);
+		if level < digblock_core::unlock::KINDLE_AT {
+			return refuse(client, CastRefusal::Locked);
+		}
+		let at = (cell[0], cell[1], cell[2]);
+		let center = Vec3::new(at.0 as f32 + 0.5, at.1 as f32 + 0.5, at.2 as f32 + 0.5);
+		let reach = digblock_core::raycast::REACH + digblock_net::protocol::EDIT_POS_TOLERANCE;
+		if client.player.pos.distance(center) > reach
+			|| digblock_core::protect::immutable(at.0, at.1, at.2, &regions)
+			|| self.store.cell_at(at.0, at.1, at.2)
+				!= Some(digblock_core::block::BlockType::Air as u16)
+		{
+			return refuse(client, CastRefusal::BadTarget);
+		}
+		let (essence, fare) = digblock_core::alchemy::kindle_price(level);
+		let client = self.clients.get_mut(&conn_id).expect("checked above");
+		if !client.inventory.try_take_sub(essence, fare) {
+			let client = self.clients.get(&conn_id).expect("checked above");
+			return refuse(client, CastRefusal::CantPay);
+		}
+		let counts = client.inventory.to_wire();
+		client_send(client, &ServerMsg::InventoryFull { counts });
+		let v = digblock_core::block::BlockType::Wisplight as u16;
+		if let Some(prev) = self.store.set_cell(at.0, at.1, at.2, v) {
+			self.apply_write(at, v, prev, SERVER_ID, NO_CLIENT_SEQ, true);
+		}
+		self.process_cast(conn_id, digblock_core::skills::cast_xp(fare));
 	}
 
 	/// The cast chokepoint — Arcana's twin of `process_alchemy`'s award

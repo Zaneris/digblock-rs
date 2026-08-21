@@ -175,6 +175,10 @@ pub struct Engine {
 	/// In-progress hold-to-dig, advanced at the fixed sim rate while
 	/// `dig_held` stays on a valid, unchanged target.
 	dig: Option<DigProgress>,
+	/// Seconds the wisp's self-light keeps burning; zero = no wisp.
+	/// Session-local on purpose — a buff is not a possession, so nothing
+	/// persists or syncs it, and a world swap puts it out.
+	wisp_left: f32,
 	/// In-progress cast channel, advanced at the same fixed rate. A
 	/// channel is stillness: any movement intent, dig hold, or surface
 	/// opening resets it — the decay mold is deliberately NOT borrowed
@@ -652,6 +656,11 @@ enum CastTarget {
 	Home,
 	/// The port at this `SurfaceKind` declaration-order index.
 	Waystone(u8),
+	/// The timed self-light.
+	Wisp,
+	/// Conjured light at whatever the crosshair rests on when the
+	/// channel COMPLETES — aiming is allowed mid-channel, moving is not.
+	Kindle,
 }
 
 struct CastState {

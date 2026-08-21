@@ -104,7 +104,7 @@ pub mod tex {
 	/// assert in digblock-client (`texture.rs`, the only file that can see
 	/// both crates) fails the BUILD on a length skew, so move them
 	/// together.
-	pub const LAYERS: [&[u8]; 51] = [
+	pub const LAYERS: [&[u8]; 52] = [
 		WATER,
 		DIRT,
 		GRASS_SIDE,
@@ -156,6 +156,8 @@ pub mod tex {
 		GLASS_GREEN,
 		GLASS_BLUE,
 		GLASS_AMBER,
+		// Conjured light (Wisplight) wears the aetherlamp's face.
+		AETHERLAMP,
 	];
 }
 

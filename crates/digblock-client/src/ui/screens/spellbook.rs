@@ -20,7 +20,16 @@ pub enum SpellAction {
 	CastHome,
 	/// Begin the channel for the port at this `SurfaceKind` index.
 	CastWaystone(u8),
+	/// Begin the self-light's channel.
+	CastWisp,
+	/// Begin conjured light's channel (aimed at completion).
+	CastKindle,
 }
+
+/// The two non-port spell slots in the `InvId::Spell` space — ports use
+/// `1 + kind index`, which tops out well below these.
+const SLOT_WISP: u8 = 100;
+const SLOT_KINDLE: u8 = 101;
 
 /// One port as the page lists it — everything derived from the core
 /// tables by [`all_ports`], so the roster and the rules cannot drift.
@@ -76,6 +85,8 @@ fn port_label(idx: u8) -> &'static str {
 pub struct SpellView {
 	rows: Vec<Row>,
 	home_ready: bool,
+	wisp_ready: bool,
+	kindle_ready: bool,
 	/// The ports a click may cast right now, by `InvId::Spell` slot.
 	castable: Vec<(u8, u8)>,
 }
@@ -110,6 +121,27 @@ impl SpellView {
 		rows.push(Row::Info(
 			"a channelled journey back to your spawn — hold still".to_string(),
 		));
+		// The illumination family: the wisp from the first level (the
+		// ladder's essence-priced bootstrap), kindle at its rung.
+		let (wisp_essence, wisp_fare) = digblock_core::alchemy::wisp_price();
+		let wisp_ready = inventory.sub_count(wisp_essence) >= wisp_fare;
+		rows.push(Row::Spell {
+			id: InvId::Spell(SLOT_WISP),
+			text: "WISP".to_string(),
+			state: format!("{wisp_fare} {}", wisp_essence.name().to_uppercase()),
+			ready: wisp_ready,
+		});
+		let mut kindle_ready = false;
+		if level >= unlock::KINDLE_AT {
+			let (k_essence, k_fare) = digblock_core::alchemy::kindle_price(level);
+			kindle_ready = inventory.sub_count(k_essence) >= k_fare;
+			rows.push(Row::Spell {
+				id: InvId::Spell(SLOT_KINDLE),
+				text: "KINDLE".to_string(),
+				state: format!("{k_fare} {}", k_essence.name().to_uppercase()),
+				ready: kindle_ready,
+			});
+		}
 		rows.push(Row::Space);
 		// The ports: every unlocked one, plus ONE teaser tier — the
 		// alchemy screen's "what you have and one tier of what is
@@ -145,6 +177,8 @@ impl SpellView {
 		Self {
 			rows,
 			home_ready,
+			wisp_ready,
+			kindle_ready,
 			castable,
 		}
 	}
@@ -261,6 +295,8 @@ impl SpellScreen {
 				pressed: true,
 			} => match hits.hit(self.cursor.0, self.cursor.1)? {
 				InvId::Spell(0) if view.home_ready => Some(SpellAction::CastHome),
+				InvId::Spell(SLOT_WISP) if view.wisp_ready => Some(SpellAction::CastWisp),
+				InvId::Spell(SLOT_KINDLE) if view.kindle_ready => Some(SpellAction::CastKindle),
 				InvId::Spell(slot) => view
 					.castable
 					.iter()
