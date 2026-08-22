@@ -471,13 +471,13 @@ corners are chosen must be checked against the mapping and not just the codes.
 
 ## Scheduled world jobs
 
-`digblock-core/src/worldjob.rs` is the seam and carries four rules: `grass` (creep onto sunlit dirt, smother under
-covers), `leaves` (foliage rots once nothing anchors it), `wisplight` (conjured light fades — the cadence IS the spell's
-whole lifetime, so a quit-and-reload can never leave a permanent free lamp) and `regrow` (a spent node may come back, at
-odds that climb with the day's peak head-count). A `WorldJob` runs on a clock over blocks of a given type near active
-players, and every `apply` gets a `Run` — the slot AND the day's peak players — snapshotted when the sweep starts.
-**This is not fluid and must not be built on it** — fluid is a continuous per-tick sim over cells in flight, this is a
-rare batch sweep. They share only their write path.
+`digblock-core/src/worldjob.rs` is the seam and carries three rules: `grass` (creep onto sunlit dirt, smother under
+covers), `leaves` (foliage rots once nothing anchors it) and `regrow` (a spent node may come back, at odds that climb
+with the day's peak head-count). Conjured light is deliberately NOT one: a kindled light is a timed `gi::Emitter`
+(`digblock-core/src/kindle.rs`), never a cell, so no sweep can touch it and no journal carries it. A `WorldJob` runs on
+a clock over blocks of a given type near active players, and every `apply` gets a `Run` — the slot AND the day's peak
+players — snapshotted when the sweep starts. **This is not fluid and must not be built on it** — fluid is a continuous
+per-tick sim over cells in flight, this is a rare batch sweep. They share only their write path.
 
 - **The clock is the GAME's day** (`sun::DAY_SECS`), fixed by `Schedule` rather than chosen per job — a server's local
   09:00 means nothing to a player elsewhere, and the game clock is already dictated to every client.

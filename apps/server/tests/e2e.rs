@@ -477,6 +477,7 @@ impl TestClient {
 				| NetEvent::LevelUp { .. }
 				| NetEvent::Waystones { .. }
 				| NetEvent::CastRefused { .. }
+				| NetEvent::Kindled { .. }
 				| NetEvent::AreaReady => {}
 			}
 		}

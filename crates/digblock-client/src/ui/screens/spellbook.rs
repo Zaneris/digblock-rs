@@ -22,7 +22,7 @@ pub enum SpellAction {
 	CastWaystone(u8),
 	/// Begin the self-light's channel.
 	CastWisp,
-	/// Begin conjured light's channel (aimed at completion).
+	/// Begin conjured light's channel (it stands where the head is at completion).
 	CastKindle,
 	/// Flip the Mason's Arc stance.
 	ToggleArc,
@@ -131,7 +131,7 @@ impl SpellView {
 		));
 		// The illumination family: the wisp from the first level (the
 		// ladder's essence-priced bootstrap), kindle at its rung.
-		let (wisp_essence, wisp_fare) = digblock_core::alchemy::wisp_price();
+		let (wisp_essence, wisp_fare) = digblock_core::alchemy::wisp_price(level);
 		let wisp_ready = inventory.sub_count(wisp_essence) >= wisp_fare;
 		rows.push(Row::Spell {
 			id: InvId::Spell(SLOT_WISP),

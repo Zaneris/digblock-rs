@@ -142,9 +142,19 @@ pub fn cast_price(kind: crate::worldgen::SurfaceKind) -> Option<(Essence, u32)> 
 }
 
 /// The self-light's fare: Vitae, the day-one essence, so Arcana's own
-/// bootstrap spell is payable from the first heartwood draws.
-pub fn wisp_price() -> (Essence, u32) {
-	(Essence::Vitae, 4)
+/// bootstrap spell is payable from the first heartwood draws. The fare
+/// doubles with the burn at `WISP_BRIGHT_AT` — a brighter, longer light
+/// priced as the bootstrap one would be a free upgrade, not a sink.
+pub fn wisp_price(level: u32) -> (Essence, u32) {
+	const BASE: u32 = 4;
+	(
+		Essence::Vitae,
+		if level >= crate::unlock::WISP_BRIGHT_AT {
+			BASE * 2
+		} else {
+			BASE
+		},
+	)
 }
 
 /// Conjured light's fare, easing at the late rung — the caster's Arcana

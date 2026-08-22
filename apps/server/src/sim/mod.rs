@@ -484,6 +484,17 @@ pub struct Sim {
 	/// Peak live head-count over the trailing game day — what the
 	/// regrowth sweep scales its odds by.
 	presence: digblock_core::presence::RollingPeak,
+	/// Every kindled light still burning, on the sim's own clock — not
+	/// the caster's session, so a caster who ports away or leaves the
+	/// server changes nothing about when it goes out. Not journaled: a
+	/// light is never a cell, and a restart may forget it.
+	kindled: Vec<Kindled>,
+}
+
+/// One standing kindled light: where, and the tick it burns until.
+struct Kindled {
+	cell: [i32; 3],
+	until: u32,
 }
 
 impl Sim {
@@ -555,6 +566,7 @@ impl Sim {
 			tod_offset_secs: 0.0,
 			world_jobs: digblock_core::worldjob::Scheduler::new(),
 			presence: digblock_core::presence::RollingPeak::day(),
+			kindled: Vec::new(),
 		})
 	}
 
@@ -602,6 +614,10 @@ impl Sim {
 		self.process_edits();
 		self.step_fluid();
 		self.step_world_jobs();
+		// Expiry is a comparison, so every client's own countdown agrees
+		// with the list a joiner is handed.
+		let tick = self.tick;
+		self.kindled.retain(|k| k.until > tick);
 		self.tick += 1;
 		if self.tick.is_multiple_of(SNAPSHOT_DIVISOR) {
 			self.send_snapshots();

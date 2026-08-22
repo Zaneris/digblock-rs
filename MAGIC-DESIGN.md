@@ -29,9 +29,8 @@ blocks — the player, and light.** The constitution binds as everywhere else:
   teleport is a server-side position SET (`Sim::teleport_client`), corrected by nothing because the server said so
   first.
 - **Essence is the mana.** No mana bar, no new currency: casts are priced in essence, which makes Arcana the standing
-  essence *sink* the economy explicitly wants. No cast creates matter — the one spell that writes cells writes conjured
-  light that the wisplight sweep reverts (§5), and the one that writes real blocks (the Mason's Arc) spends the player's
-  own inventory.
+  essence *sink* the economy explicitly wants. No cast creates matter — the light spells write nothing to the world at
+  all (§5), and the one that writes real blocks (the Mason's Arc) spends the player's own inventory.
 - **Web is the priority platform.** Effects are instanced world-space emitters in the additive water-pass slot — no new
   passes, no new render machinery, WGSL that passes real Chrome's front end.
 
@@ -135,11 +134,14 @@ actions returned rather than applied. Four spell families shipped; the rest are 
   whitening at `WISP_BRIGHT_AT` — R30's "level alone reads as more blue" lesson). Server debits and tracks expiry
   session-local (`wisp_until`); the buff deliberately drops on disconnect. Remotes see it through the snapshot fx byte
   (§8).
-- **Kindle** — conjured light placed in the world: the server validates an AIR cell on an aimed face within honest
-  reach, debits, and writes a `Wisplight` block as an ordinary journaled edit. **Expiry rides the worldjob scheduler** —
-  the wisplight sweep (Wisplight → Air) both arms register, so lifetime is "until the sweep", offline parity is free,
-  and quitting before expiry cannot keep a free lamp. Wisplight is conjured light, never matter: not slottable, drops
-  nothing, no collision, and not a node host.
+- **Kindle** — a standing orb of conjured light left in the cell the caster's HEAD occupies, never where they aim: the
+  server validates the rung and that the cell hosts (`kindle::hosts` — anything a head fits in, water included), debits,
+  and stands the light on the sim's own clock for `kindle::SECS`, telling everyone with `ServerMsg::Kindled`. **Not a
+  block and not journaled**: it is a `gi::Emitter` under the `Wisplight` LUT row plus a `teleport.wgsl` orb, so it
+  leaves no edit behind, and its clock is its own — the caster can port away or leave the server and it burns out on
+  schedule regardless (the sim's list is what a joiner is handed). Nothing is predicted: the caster learns of their own
+  light from the same broadcast as everyone else. The earlier block-plus-sweep form tied the lifetime to the world's day
+  and the caster's vicinity; `CastKind::Kindle { cell, face }` is that form's retired verb, decodable and refused.
 - **The Mason's Arc** — Arcana's answer to the Resonant Pick: the pick widens *breaking*, the Arc widens *placing*. A
   toggle in the book; while on, a plain placement extends along the verified normal to `unlock::arc_cells` cells under
   one seq (`EditKind::PlaceArc`), debiting one block per cell. The server re-derives the line from its own raycast (the
@@ -153,10 +155,11 @@ actions returned rather than applied. Four spell families shipped; the rest are 
 - **One governor per spell.** Home is cooldown-governed and free forever; everything else is price-governed with no
   cooldown — the channel is feel and interruption surface, not a governor.
 - Waystone fares are a hand table in Terra (`alchemy::cast_price`), rising with the ladder; the wisp prices in Vitae
-  (`wisp_price` — what a fresh player's first heartwood draws pay, the day-one bootstrap); kindle in Terra
-  (`kindle_price`, cheapening at `KINDLE_CHEAP_AT`). The fares and `CAST_XP_PER_ESSENCE` are ONE decision, never two:
-  raising a fare alone would pay more XP for costing more, which is the opposite of a sink. The payability pin asks the
-  standing question: **a cast must be payable at the level that unlocks it.**
+  (`wisp_price` — what a fresh player's first heartwood draws pay, the day-one bootstrap, doubling with the burn at
+  `WISP_BRIGHT_AT`); kindle in Terra (`kindle_price`, cheapening at `KINDLE_CHEAP_AT`). The fares and
+  `CAST_XP_PER_ESSENCE` are ONE decision, never two: raising a fare alone would pay more XP for costing more, which is
+  the opposite of a sink. The payability pin asks the standing question: **a cast must be payable at the level that
+  unlocks it.**
 - **XP per priced cast derives from the price** (`skills::cast_xp` = `CAST_XP_PER_ESSENCE` × the fare), so a price
   retune moves its XP with it and no spell pays out of proportion to what it drains. Home derives from distance instead
   (§2), and the Arc pays zero — the three shapes are pinned together.
@@ -179,9 +182,12 @@ and therefore serves Arcana for free.
 
 - **The spawn spell needed no wire at all**: the channel is client pacing in front of `ClientMsg::ReturnToSpawn`.
 - **`ClientMsg::Cast(CastKind)`** — shaped for the whole roster from day one (`Waystone(kind)`, `Wisp`,
-  `Kindle { cell, face }`) so it never needs a v2. **`ServerMsg::Waystones`** carries the world's resolved sites in join
-  sync (server state the client cannot derive — each eye was resolved against the journal once and stored).
-  **`ServerMsg::CastRefused(CastRefusal)`** is a reason, never a sentence — `voice` chooses the words.
+  `Kindle { cell, face }`, and v33's `KindleHere`, which carries nothing because the server already holds the head) so
+  it never needs a v2. **`ServerMsg::Kindled { cell, secs_left }`** (v33) is every standing light, to everyone on the
+  cast and to a joiner as backlog — and the reason `MIN_PROTOCOL` is v33, since an older client would be disconnected by
+  anybody's cast. **`ServerMsg::Waystones`** carries the world's resolved sites in join sync (server state the client
+  cannot derive — each eye was resolved against the journal once and stored). **`ServerMsg::CastRefused(CastRefusal)`**
+  is a reason, never a sentence — `voice` chooses the words.
 - **`EditKind::PlaceArc`** rides the standing edit request so craft-then-place ordering and slot declaration hold.
 - **Remote-visible casting** is one appended snapshot byte: `RemoteState.fx` (`pack_fx`/`unpack_fx` — kind, whitened,
   level), today carrying **the wisp only**, because a wisp is the one effect whose look depends on state not in the
@@ -211,7 +217,7 @@ and therefore serves Arcana for free.
 ## 10. What is NOT built
 
 - **Conjured passage** — temporary bridge cells on a reversion clock. Waits on DELVE-DESIGN D2's scheduled-cell-write
-  substrate; kindle deliberately did NOT build it (the wisplight sweep is a batch rule, not a timer).
+  substrate; kindle deliberately did NOT build it (a kindled light is an emitter on a timer, never a cell).
 - **Prospect pulse** — the passive audio senses recast as an on-demand ping. Audio only; the no-ESP stance holds.
 - **Mending** — waits on D3 health.
 - **Teleport-to-friend** — consent required, addressed by account id and never by name (the `--admin` lesson).

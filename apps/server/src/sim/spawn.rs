@@ -298,7 +298,10 @@ impl Sim {
 		let idx = match kind {
 			CastKind::Waystone(idx) => idx,
 			CastKind::Wisp => return self.cast_wisp(conn_id),
-			CastKind::Kindle { cell, face: _ } => return self.cast_kindle(conn_id, cell),
+			CastKind::KindleHere => return self.cast_kindle(conn_id),
+			// The retired aimed form: a cell the client named is exactly
+			// what the spell no longer trusts.
+			CastKind::Kindle { .. } => return refuse(client, CastRefusal::BadTarget),
 		};
 		let Some(&skind) = digblock_core::worldgen::SurfaceKind::ALL.get(idx as usize) else {
 			return refuse(client, CastRefusal::Locked);
@@ -349,10 +352,11 @@ impl Sim {
 	/// own clock. A refusal answers so a predicted buff can cancel.
 	fn cast_wisp(&mut self, conn_id: u64) {
 		use digblock_net::messages::CastRefusal;
-		let (essence, fare) = digblock_core::alchemy::wisp_price();
 		let Some(client) = self.clients.get_mut(&conn_id) else {
 			return;
 		};
+		let level = client.skills.level(digblock_core::skills::Skill::Arcana);
+		let (essence, fare) = digblock_core::alchemy::wisp_price(level);
 		if !client.inventory.try_take_sub(essence, fare) {
 			client_send(
 				client,
@@ -362,24 +366,22 @@ impl Sim {
 			);
 			return;
 		}
-		let level = client.skills.level(digblock_core::skills::Skill::Arcana);
 		client.wisp_until = Some(self.tick + digblock_core::unlock::wisp_secs(level) * TICK_RATE);
 		let counts = client.inventory.to_wire();
 		client_send(client, &ServerMsg::InventoryFull { counts });
 		self.process_cast(conn_id, digblock_core::skills::cast_xp(fare));
 	}
 
-	/// Conjured light: validate the rung, the aim (an AIR cell within an
-	/// honest reach of the caster, unprotected, resident), then debit and
-	/// write the Wisplight as an ordinary journaled edit — the wisplight
-	/// sweep is its whole expiry.
-	fn cast_kindle(&mut self, conn_id: u64, cell: [i32; 3]) {
+	/// Conjured light: validate the rung and the host — the cell the
+	/// caster's head is in, as the SERVER holds it — then debit, stand
+	/// the light on the sim's clock and tell everyone. Not a cell write:
+	/// a light is never matter, and nothing about it reaches the journal.
+	fn cast_kindle(&mut self, conn_id: u64) {
 		use digblock_core::skills::Skill;
 		use digblock_net::messages::CastRefusal;
 		let refuse = |client: &Client, reason: CastRefusal| {
 			client_send(client, &ServerMsg::CastRefused { reason });
 		};
-		let regions = self.requester_regions(conn_id);
 		let Some(client) = self.clients.get(&conn_id) else {
 			return;
 		};
@@ -390,14 +392,8 @@ impl Sim {
 		if level < digblock_core::unlock::KINDLE_AT {
 			return refuse(client, CastRefusal::Locked);
 		}
-		let at = (cell[0], cell[1], cell[2]);
-		let center = Vec3::new(at.0 as f32 + 0.5, at.1 as f32 + 0.5, at.2 as f32 + 0.5);
-		let reach = digblock_core::raycast::REACH + digblock_net::protocol::EDIT_POS_TOLERANCE;
-		if client.player.pos.distance(center) > reach
-			|| digblock_core::protect::immutable(at.0, at.1, at.2, &regions)
-			|| self.store.cell_at(at.0, at.1, at.2)
-				!= Some(digblock_core::block::BlockType::Air as u16)
-		{
+		let at = digblock_core::kindle::host_cell(client.player.pos);
+		if !digblock_core::kindle::hosts(self.store.cell_at(at.0, at.1, at.2)) {
 			return refuse(client, CastRefusal::BadTarget);
 		}
 		let (essence, fare) = digblock_core::alchemy::kindle_price(level);
@@ -408,11 +404,29 @@ impl Sim {
 		}
 		let counts = client.inventory.to_wire();
 		client_send(client, &ServerMsg::InventoryFull { counts });
-		let v = digblock_core::block::BlockType::Wisplight as u16;
-		if let Some(prev) = self.store.set_cell(at.0, at.1, at.2, v) {
-			self.apply_write(at, v, prev, SERVER_ID, NO_CLIENT_SEQ, true);
-		}
+		let light = Kindled {
+			cell: [at.0, at.1, at.2],
+			until: self.tick + digblock_core::kindle::SECS * TICK_RATE,
+		};
+		self.broadcast(&self.kindled_msg(&light));
+		self.kindled.push(light);
 		self.process_cast(conn_id, digblock_core::skills::cast_xp(fare));
+	}
+
+	/// One light as the wire carries it, its remaining time read off the
+	/// sim's clock at send time — so the cast and a join a minute later
+	/// hand out the same expiry.
+	pub(super) fn kindled_msg(&self, light: &Kindled) -> ServerMsg {
+		let ticks_left = light.until.saturating_sub(self.tick);
+		ServerMsg::Kindled {
+			cell: light.cell,
+			secs_left: u16::try_from(ticks_left.div_ceil(TICK_RATE)).unwrap_or(u16::MAX),
+		}
+	}
+
+	/// The standing lights, for a joiner's backlog.
+	pub(super) fn kindled_msgs(&self) -> Vec<ServerMsg> {
+		self.kindled.iter().map(|k| self.kindled_msg(k)).collect()
 	}
 
 	/// The cast chokepoint — Arcana's twin of `process_alchemy`'s award

@@ -307,10 +307,10 @@ blocks! {
 	GreenGlass = 86 => mat(dig(translucent(crafted(props(RenderClass::Glass, true, tex::GLASS_GREEN, tex::GLASS_GREEN, tex::GLASS_GREEN))), 25, DigFamily::Soft), Material::GreenGlass),
 	BlueGlass = 87 => mat(dig(translucent(crafted(props(RenderClass::Glass, true, tex::GLASS_BLUE, tex::GLASS_BLUE, tex::GLASS_BLUE))), 25, DigFamily::Soft), Material::BlueGlass),
 	AmberGlass = 88 => mat(dig(translucent(crafted(props(RenderClass::Glass, true, tex::GLASS_AMBER, tex::GLASS_AMBER, tex::GLASS_AMBER))), 25, DigFamily::Soft), Material::AmberGlass),
-	// Conjured light — the Kindle spell's cube of standing arcane light.
-	// Never worldgen, never an item, never diggable: it EXPIRES (the
-	// wisplight sweep fades it back to Air), so nothing needs to police
-	// it. Walk-through on purpose — it is light, not matter. Lamp mold
+	// Conjured light — the LUT row the wisp and a kindled light cast
+	// under (`gi::Emitter` entries, never a cell: `kindle` keeps its own
+	// clock). Never worldgen, never an item, never written to the world.
+	// Walk-through on purpose — it is light, not matter. Lamp mold
 	// (`emits(glows(...))`), never `seams`, which is the node rows' alone.
 	Wisplight = 89 => emits(glows(props(RenderClass::Opaque, false, tex::WISPLIGHT, tex::WISPLIGHT, tex::WISPLIGHT)), 13),
 }

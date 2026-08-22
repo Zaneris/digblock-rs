@@ -40,9 +40,22 @@ impl Engine {
 			let (level, whitened) = digblock_core::unlock::wisp_light(
 				self.skills.level(digblock_core::skills::Skill::Arcana),
 			);
-			self.vfx
-				.carried
-				.push_wisp(carried::CARRIER_WISP, self.camera.pos, level, whitened);
+			self.vfx.carried.push_arcane(
+				carried::CARRIER_WISP,
+				digblock_core::gi::carried_origin(self.camera.pos),
+				level,
+				whitened,
+			);
+		}
+		// Every kindled light: a standing entry under its own key, at
+		// the row's own level — nobody's Arcana is attached to it.
+		for k in &self.vfx.kindled {
+			self.vfx.carried.push_arcane(
+				carried::KINDLED_BANK | k.key,
+				digblock_core::kindle::origin(k.cell),
+				0,
+				false,
+			);
 		}
 		if let Some(net) = self.session.client.as_ref() {
 			net.remotes.sample(&mut self.vfx.remote_scratch);
@@ -387,6 +400,23 @@ impl Engine {
 				fx.age,
 				1.0,
 				fx.seed,
+			));
+		}
+		// The kindled orbs, culled by distance like the markers: an
+		// additive speck at range costs a draw and shows nothing. Their
+		// age drives the fade-in; the last seconds of the countdown are
+		// the envelope, so a light dims out rather than blinks.
+		for k in &self.vfx.kindled {
+			let origin = digblock_core::kindle::origin(k.cell);
+			if origin.distance(self.camera.pos) > crate::teleport::KINDLED_RADIUS {
+				continue;
+			}
+			self.vfx.fx_scratch.push(crate::teleport::instance(
+				origin.to_array(),
+				crate::teleport::Mode::Kindled,
+				k.age,
+				(k.left / crate::teleport::FADE_OUT_SECS).min(1.0),
+				f32::from(k.key),
 			));
 		}
 		if self.vfx.channel_env > 0.0 {

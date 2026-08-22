@@ -46,8 +46,8 @@ pub(crate) enum Msg {
 	WaystoneLocked,
 	/// A port refused for the fare, before any debit.
 	CastCantPay,
-	/// A kindle with nowhere to land — no aim, or a cell that cannot
-	/// hold conjured light.
+	/// A kindle refused for its host: the caster's head is in a cell
+	/// that cannot hold conjured light.
 	CastBadTarget,
 
 	// ---- progression ----

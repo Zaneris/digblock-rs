@@ -1358,9 +1358,9 @@ fn return_to_spawn_teleports_with_cooldown() {
 
 /// The two utility spells' server halves: a wisp is a debit and its
 /// fare's XP (the light is per-viewer, client-side); a kindle validates
-/// the rung and the AIM — an air cell in honest reach — then conjures
-/// the Wisplight as an ordinary journaled edit. Every figure read off
-/// the core tables.
+/// the rung, stands a light in the cell the caster's HEAD is in and
+/// tells everyone — the caster included, since nothing is predicted —
+/// for exactly `kindle::SECS`. Every figure read off the core tables.
 #[test]
 fn a_wisp_debits_and_a_kindle_conjures() {
 	use digblock_core::skills::cast_xp;
@@ -1377,7 +1377,10 @@ fn a_wisp_debits_and_a_kindle_conjures() {
 
 	// The wisp: broke refuses before any debit; funded debits exactly
 	// and pays the fare's worth.
-	let (w_essence, w_fare) = digblock_core::alchemy::wisp_price();
+	let (w_essence, w_fare) =
+		digblock_core::alchemy::wisp_price(digblock_core::skills::level_for_xp(
+			sim.test_skill_xp(1, digblock_core::skills::Skill::Arcana),
+		));
 	cast(&mut sim, CastKind::Wisp);
 	c.drain();
 	assert!(c.msgs.iter().any(|m| matches!(
@@ -1396,26 +1399,14 @@ fn a_wisp_debits_and_a_kindle_conjures() {
 		cast_xp(w_fare)
 	);
 
-	// The kindle: below its rung, locked; at it, an aimed AIR cell
-	// becomes conjured light and a solid one refuses as a bad target.
-	let eye = sim.test_player(1).unwrap().pos;
-	let over = (
-		eye.x.floor() as i32,
-		eye.y.floor() as i32 + 2,
-		eye.z.floor() as i32,
-	);
-	let ground = (over.0, FLAT_GROUND_TOP as i32, over.2);
+	// The kindle: below its rung, locked; at it, the light stands in
+	// the head's own cell for the spell's whole span, and the retired
+	// aimed form is refused whatever cell it names.
 	let level = digblock_core::unlock::KINDLE_AT;
 	let (k_essence, k_fare) = digblock_core::alchemy::kindle_price(level);
 	sim.test_grant_essence(1, k_essence, k_fare * 2);
 	c.msgs.clear();
-	cast(
-		&mut sim,
-		CastKind::Kindle {
-			cell: [over.0, over.1, over.2],
-			face: 0,
-		},
-	);
+	cast(&mut sim, CastKind::KindleHere);
 	c.drain();
 	assert!(
 		c.msgs.iter().any(|m| matches!(
@@ -1427,23 +1418,38 @@ fn a_wisp_debits_and_a_kindle_conjures() {
 		"kindle below its rung must refuse"
 	);
 	sim.bench_set_arcana_level(1, level);
-	cast(
-		&mut sim,
-		CastKind::Kindle {
-			cell: [over.0, over.1, over.2],
-			face: 0,
-		},
+	let head = digblock_core::kindle::host_cell(sim.test_player(1).unwrap().pos);
+	c.msgs.clear();
+	cast(&mut sim, CastKind::KindleHere);
+	c.drain();
+	let lit = c
+		.msgs
+		.iter()
+		.find_map(|m| match m {
+			ServerMsg::Kindled { cell, secs_left } => Some((*cell, *secs_left)),
+			_ => None,
+		})
+		.expect("the caster is told too");
+	assert_eq!(
+		lit.0,
+		[head.0, head.1, head.2],
+		"the light stands at the head"
 	);
 	assert_eq!(
-		sim.test_cell_at(over.0, over.1, over.2),
-		Some(digblock_core::block::BlockType::Wisplight as u16),
-		"conjured light stands where it was aimed"
+		u32::from(lit.1),
+		digblock_core::kindle::SECS,
+		"a fresh light carries the whole span"
+	);
+	assert_eq!(
+		sim.test_essence(1, k_essence),
+		Some(k_fare),
+		"one fare left"
 	);
 	c.msgs.clear();
 	cast(
 		&mut sim,
 		CastKind::Kindle {
-			cell: [ground.0, ground.1, ground.2],
+			cell: [head.0, head.1, head.2],
 			face: 0,
 		},
 	);
@@ -1455,7 +1461,76 @@ fn a_wisp_debits_and_a_kindle_conjures() {
 				reason: CastRefusal::BadTarget
 			}
 		)),
-		"a solid cell cannot hold conjured light"
+		"the retired aimed kindle is refused"
+	);
+	assert_eq!(
+		sim.test_essence(1, k_essence),
+		Some(k_fare),
+		"and costs nothing"
+	);
+}
+
+/// A kindled light is the SIM's, not the caster's: it reaches a joiner
+/// as a backlog entry counting down from the cast, after the caster has
+/// left, and is gone from the backlog once its span has run — on the
+/// sim's clock, with nobody there to watch it.
+#[test]
+fn a_kindled_light_outlives_its_caster_and_not_its_span() {
+	use digblock_net::messages::CastKind;
+	use digblock_net::protocol::TICK_RATE;
+	let mut sim = flat_sim("kindleleave");
+	let mut c = connect(&mut sim, 1);
+	wait_live(&mut sim, 1);
+	let level = digblock_core::unlock::KINDLE_AT;
+	let (k_essence, k_fare) = digblock_core::alchemy::kindle_price(level);
+	sim.test_grant_essence(1, k_essence, k_fare);
+	sim.bench_set_arcana_level(1, level);
+	let head = digblock_core::kindle::host_cell(sim.test_player(1).unwrap().pos);
+	sim.tick_once(vec![SimEvent::Msg {
+		conn_id: 1,
+		msg: ClientMsg::Cast(CastKind::KindleHere),
+	}]);
+	c.drain();
+	// The caster leaves; a little of the span passes with nobody on.
+	sim.tick_once(vec![SimEvent::Disconnected { conn_id: 1 }]);
+	let span = digblock_core::kindle::SECS * TICK_RATE;
+	for _ in 0..TICK_RATE {
+		sim.tick_once(vec![]);
+	}
+	let mut joiner = connect(&mut sim, 2);
+	wait_live(&mut sim, 2);
+	joiner.drain();
+	let backlog: Vec<([i32; 3], u16)> = joiner
+		.msgs
+		.iter()
+		.filter_map(|m| match m {
+			ServerMsg::Kindled { cell, secs_left } => Some((*cell, *secs_left)),
+			_ => None,
+		})
+		.collect();
+	assert_eq!(
+		backlog.len(),
+		1,
+		"the departed caster's light is handed over"
+	);
+	assert_eq!(backlog[0].0, [head.0, head.1, head.2]);
+	assert!(
+		u32::from(backlog[0].1) < digblock_core::kindle::SECS,
+		"the joiner's copy is already counting down"
+	);
+	// Run the rest of the span out, then a third arrival finds nothing.
+	for _ in 0..span {
+		sim.tick_once(vec![]);
+	}
+	let mut late = connect(&mut sim, 3);
+	wait_live(&mut sim, 3);
+	late.drain();
+	assert!(
+		!late
+			.msgs
+			.iter()
+			.any(|m| matches!(m, ServerMsg::Kindled { .. })),
+		"a spent light is not handed to anyone"
 	);
 }
 

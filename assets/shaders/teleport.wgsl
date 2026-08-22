@@ -7,13 +7,15 @@
 // the mode decides which way the phase drives them — departure tightens the
 // helix and lifts it into a column, arrival is the same flight reversed
 // (a ring blooming outward as the light settles down into the player), and
-// the channel winds in place at a rate the cast's progress sets. The CPU
-// owns an age/progress and an envelope; every mote's position is a pure
-// function of the instance and the shared animation clock — spray.wgsl's
+// the channel winds in place at a rate the cast's progress sets. The fourth
+// mode is the kindled orb: a standing ball of light in a cell, particle 0
+// the orb itself and a few sparks drifting about it. The CPU owns an
+// age/progress and an envelope; every mote's position is a pure function
+// of the instance and the shared animation clock — spray.wgsl's
 // arrangement, siphon.wgsl's additive light.
 //
 // vertex_index picks the particle (vi / 6) and the quad corner (vi % 6);
-// particle 0 is the column of light, the rest are motes.
+// particle 0 is the column of light (the orb, kindled), the rest are motes.
 
 // Frame struct + group(0) come from frame_common.wgsl; the transmittance
 // halves from medium_common.wgsl (both prepended by digblock-assets).
@@ -47,6 +49,15 @@ const COLUMN_H: f32 = 2.7;
 const COLUMN_GAIN: f32 = 0.85;
 // How far a mote whitens as its flight completes — a jump ENDS hot.
 const WHITE: f32 = 0.55;
+// The kindled orb: its diameter in blocks, its brightness, the seconds
+// its fade-in takes, and its sparks — every Nth mote drifts about the orb
+// at this radius, breathing on this period.
+const ORB: f32 = 0.34;
+const ORB_GAIN: f32 = 1.6;
+const ORB_RISE: f32 = 0.35;
+const SPARK_EVERY: u32 = 6u;
+const SPARK_RADIUS: f32 = 0.32;
+const SPARK_PERIOD: f32 = 2.6;
 
 const CORNERS = array<vec2f, 6>(
 	vec2f(-0.5, -0.5),
@@ -80,9 +91,9 @@ fn vs(
 	let pi = vi / 6u;
 	let corner = CORNERS[vi % 6u];
 	let clock = frame.light_color.w;
-	let origin = i0.xyz; // the caster's feet
-	let mode = u32(i0.w); // 0 departure, 1 arrival, 2 channel
-	let t = i1.x; // burst age (secs) or channel progress (0..1)
+	let origin = i0.xyz; // the caster's feet, or the kindled orb's centre
+	let mode = u32(i0.w); // 0 departure, 1 arrival, 2 channel, 3 kindled
+	let t = i1.x; // burst age (secs), channel progress (0..1), or orb age (secs)
 	let envelope = i1.y;
 	let seed0 = i1.z;
 	let tint = i2.rgb;
@@ -101,7 +112,36 @@ fn vs(
 	var weight = 0.0;
 	var soft = 0.0;
 	let ph = clamp(t / LIFE, 0.0, 1.0);
-	if pi == 0u {
+	if mode == 3u {
+		// The orb and its sparks share one basis: camera-facing quads
+		// about the cell's centre. The orb breathes a little so it reads
+		// as live light rather than a decal.
+		bx = right;
+		by = up;
+		let breathe = 1.0 + 0.06 * sin(clock * 2.4 + seed0);
+		if pi == 0u {
+			center = origin;
+			size_x = ORB * breathe;
+			size_y = ORB * breathe;
+			col = mix(tint, vec3f(1.0), 0.6);
+			weight = ORB_GAIN * smoothstep(0.0, ORB_RISE, t);
+			soft = 0.15;
+		} else {
+			// A spark per SPARK_EVERY motes; the rest carry no weight and
+			// collapse below. Each drifts a slow orbit with its own bob.
+			let seed = seed0 + f32(pi) * 37.719;
+			let mph = fract(clock / SPARK_PERIOD + hash1(seed + 3.0));
+			let ang = hash1(seed) * 6.2832 + clock * 0.7;
+			let rad = SPARK_RADIUS * (0.7 + 0.3 * sin(clock * 1.3 + seed));
+			center = origin + vec3f(cos(ang) * rad, (mph - 0.5) * 0.5, sin(ang) * rad);
+			size_x = MOTE * 0.6;
+			size_y = MOTE * 0.6;
+			col = mix(tint, vec3f(1.0), 0.3) * MOTE_GAIN;
+			let is_spark = select(0.0, 1.0, pi % SPARK_EVERY == 0u);
+			weight = 0.5 * sin(3.1416 * mph) * smoothstep(0.0, ORB_RISE, t) * is_spark;
+			soft = 0.45;
+		}
+	} else if pi == 0u {
 		// The column: a cylindrical billboard standing on the feet. Its
 		// life differs per mode — a departure swells into it and dies on
 		// it, an arrival opens on it, a channel earns it near completion.

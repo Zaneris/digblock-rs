@@ -134,8 +134,14 @@ impl Engine {
 		// it live. Connected, the server teleports us (Teleported lands
 		// in pump_net); local play resolves and lands immediately.
 		self.save.teleport_cooldown = (self.save.teleport_cooldown - dt).max(0.0);
-		// The wisp burns down on the same clock.
+		// The wisp burns down on the same clock, and so does every kindled
+		// light — each on its own countdown, consulting nobody.
 		self.wisp_left = (self.wisp_left - dt).max(0.0);
+		for k in &mut self.vfx.kindled {
+			k.left -= dt;
+			k.age += dt;
+		}
+		self.vfx.kindled.retain(|k| k.left > 0.0);
 		// The menu's Inventory/Alchemy rows: the menu closed itself; the
 		// screen takes over the free cursor seamlessly.
 		if self.ui.menu.take_inventory() {

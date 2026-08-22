@@ -371,6 +371,18 @@ struct Vfx {
 	/// Burst counter — the per-effect seed, confetti's arrangement.
 	cast_seq: u32,
 
+	/// Every kindled light still burning, each on its own countdown —
+	/// yours and anyone's, a join's backlog included. World state like
+	/// confetti; and the LIGHT half rides the carried list under its own
+	/// key bank, so a light going out re-places the probes exactly as a
+	/// torch put away does.
+	kindled: Vec<KindledLight>,
+
+	/// Key counter for [`Self::kindled`] — a STABLE carrier key per
+	/// light, since an index would shift under every expiry and make
+	/// `Carried` re-place lights that never moved.
+	kindle_seq: u16,
+
 	/// The channel aura's fade envelope: opens while a cast channels,
 	/// dissolves when one ends or breaks — an interrupted channel fades
 	/// rather than pops.
@@ -680,8 +692,8 @@ enum CastTarget {
 	Waystone(u8),
 	/// The timed self-light.
 	Wisp,
-	/// Conjured light at whatever the crosshair rests on when the
-	/// channel COMPLETES — aiming is allowed mid-channel, moving is not.
+	/// Conjured light standing in the cell the head is in when the
+	/// channel COMPLETES, on its own clock (`digblock_core::kindle`).
 	Kindle,
 }
 
@@ -728,6 +740,18 @@ impl DigProgress {
 			u32::from(self.idle),
 		) as u16
 	}
+}
+
+/// One standing kindled light: its host cell, the seconds it has left,
+/// and the carrier key its GI entry wears. Its clock is its own — the
+/// server said how long, and nothing after that is consulted, which is
+/// what lets the caster port away or leave.
+struct KindledLight {
+	cell: (i32, i32, i32),
+	left: f32,
+	/// Seconds since it was lit here, for the orb's fade-in alone.
+	age: f32,
+	key: u16,
 }
 
 /// One live teleport burst: where, which half of the jump, and how old.

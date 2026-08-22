@@ -32,7 +32,7 @@ pub(super) fn line(msg: &Msg) -> String {
 		Msg::CastInterrupted => "the channel breaks".into(),
 		Msg::WaystoneLocked => "that waystone is beyond your arcana".into(),
 		Msg::CastCantPay => "you cannot pay the passage".into(),
-		Msg::CastBadTarget => "there is nothing to kindle there".into(),
+		Msg::CastBadTarget => "there is no room here to kindle a light".into(),
 
 		Msg::LevelUp { skill, level } => format!("{} is now level {level}.", skill.name()),
 		Msg::RemoteLevelUp { who, skill, level } => {

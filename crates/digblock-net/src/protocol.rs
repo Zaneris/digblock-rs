@@ -29,7 +29,7 @@ pub const DEFAULT_MASTER_URL: &str = "https://master.digblock.net";
 /// discriminants by declaration order, so variants and fields are
 /// APPEND-ONLY — never reorder, never remove. `git log -S PROTOCOL_VERSION`
 /// is the history of what each bump carried.
-pub const PROTOCOL_VERSION: u16 = 32;
+pub const PROTOCOL_VERSION: u16 = 33;
 
 /// Chunk-column radius around an arrival — a join or a teleport — whose
 /// journaled columns must reach the client before it may render or
@@ -72,7 +72,12 @@ pub const AREA_SYNC_TIMEOUT_SECS: f32 = 5.0;
 /// render a stained pane as a hole, walk through it, and have every dig
 /// near it refused, while the server holds the cell solid. Adding block
 /// rows therefore raises the floor as surely as moving a field does.
-pub const MIN_PROTOCOL: u16 = 32;
+///
+/// v33 is the floor for the first reason, in the other direction: a
+/// `ServerMsg` variant an older client cannot decode (`Kindled`) is sent
+/// to EVERYONE the moment anybody kindles, so admitting that client
+/// would let one cast disconnect it.
+pub const MIN_PROTOCOL: u16 = 33;
 
 // ---- handshake preamble ----------------------------------------------
 //

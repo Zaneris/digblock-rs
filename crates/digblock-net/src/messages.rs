@@ -561,8 +561,10 @@ pub enum ClientMsg {
 
 /// What a [`ClientMsg::Cast`] winds up toward — shaped for the whole
 /// spell roster from day one so the message never needs a second form.
-/// `Wisp` and `Kindle` decode today and are refused until their spells
-/// land (the retired-verb pattern, run in reverse).
+/// `Kindle` is a RETIRED verb kept decodable and refused (the
+/// `AlchemyOp::Convert` pattern): the light no longer lands where the
+/// caster aims but in the cell their head is in, which the server
+/// already knows — so `KindleHere` carries nothing to trust.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
 pub enum CastKind {
 	/// A port to the biome waystone at this `SurfaceKind`
@@ -573,6 +575,8 @@ pub enum CastKind {
 		cell: [i32; 3],
 		face: u8,
 	},
+	/// Appended in v33.
+	KindleHere,
 }
 
 /// Why a cast was refused — a reason, never a sentence; `voice` chooses
@@ -829,6 +833,16 @@ pub enum ServerMsg {
 	/// build and click is not). Appended in v32.
 	CastRefused {
 		reason: CastRefusal,
+	},
+	/// Conjured light standing in `cell`, with the seconds it has left —
+	/// sent to everyone on the cast and to a joiner for each light still
+	/// burning. The light is per-viewer GI and the expiry is each
+	/// client's own clock from here; the server's list is what a joiner
+	/// and a departed caster both rely on, since a light outlives the
+	/// session that lit it. Appended in v33.
+	Kindled {
+		cell: [i32; 3],
+		secs_left: u16,
 	},
 }
 

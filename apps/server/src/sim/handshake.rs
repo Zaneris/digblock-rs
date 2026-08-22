@@ -27,6 +27,7 @@ impl Sim {
 		let Some(record) = self.player_store.claim_legacy(legacy, account) else {
 			return;
 		};
+		let kindled = self.kindled_msgs();
 		let Some(client) = self.clients.get_mut(&conn_id) else {
 			return;
 		};
@@ -70,6 +71,9 @@ impl Sim {
 				entries: self.waystone_store.sites().to_vec(),
 			},
 		);
+		for msg in &kindled {
+			send_frame(&out, msg);
+		}
 		send_frame(
 			&out,
 			&admin::server_reply(digblock_net::messages::AdminReply::LegacyCharacterClaimed),
@@ -270,6 +274,11 @@ impl Sim {
 				entries: self.waystone_store.sites().to_vec(),
 			},
 		);
+		// The lights still burning: a joiner cannot derive them, and the
+		// caster may be long gone.
+		for msg in self.kindled_msgs() {
+			ok &= send_frame(&out, &msg);
+		}
 		if !ok {
 			// The handshake itself no longer competes with the column
 			// stream for queue space, so this is now a genuinely broken

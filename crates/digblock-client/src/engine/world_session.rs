@@ -92,6 +92,7 @@ impl Engine {
 		self.vfx.confetti.clear();
 		self.vfx.siphon = None;
 		self.vfx.casts.clear();
+		self.vfx.kindled.clear();
 		self.vfx.channel_env = 0.0;
 		self.vfx.flash = 0.0;
 		// The arrival marker follows the world's own spawn: the pad's

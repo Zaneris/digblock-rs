@@ -591,6 +591,35 @@ fn the_port_tables_are_twins_and_the_fare_is_payable() {
 	);
 }
 
+/// The wisp's fare and its burn are one rung: the price steps exactly
+/// where the burn does, in the same essence, and in the same ratio — a
+/// brighter light that cost the bootstrap fare would be a free upgrade.
+/// A sweep that saw no step proved nothing.
+#[test]
+fn the_wisp_fare_doubles_with_its_burn() {
+	let mut steps = 0u32;
+	for l in 2..=MAX_LEVEL {
+		let (prev_ess, prev) = crate::alchemy::wisp_price(l - 1);
+		let (ess, fare) = crate::alchemy::wisp_price(l);
+		assert_eq!(prev_ess, ess, "the wisp changes essence at {l}");
+		assert_eq!(
+			fare != prev,
+			wisp_secs(l) != wisp_secs(l - 1),
+			"fare and burn must step together at {l}"
+		);
+		if fare != prev {
+			steps += 1;
+			assert_eq!(fare, prev * 2, "the fare doubles at {l}");
+			assert_eq!(
+				wisp_secs(l),
+				wisp_secs(l - 1) * 2,
+				"the burn doubles at {l}"
+			);
+		}
+	}
+	assert_eq!(steps, 1, "the wisp has exactly one rung");
+}
+
 /// The travel rungs only ever help: neither the cooldown nor the channel
 /// may lengthen with a level, and each really steps somewhere — a sweep
 /// that saw no step proved nothing.

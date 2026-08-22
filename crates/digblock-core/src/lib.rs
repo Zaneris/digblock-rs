@@ -13,6 +13,7 @@ pub mod hotbar;
 pub mod inv_grid;
 pub mod inventory;
 pub mod job_wire;
+pub mod kindle;
 pub mod material;
 pub mod mesher;
 pub mod metrics;

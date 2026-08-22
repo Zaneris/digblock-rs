@@ -463,6 +463,9 @@ impl Engine {
 					self.session.waystones = entries;
 					self.refresh_marker_sites();
 				}
+				NetEvent::Kindled { cell, secs_left } => {
+					self.kindle_light((cell[0], cell[1], cell[2]), f32::from(secs_left));
+				}
 				NetEvent::CastRefused { reason } => {
 					use digblock_net::messages::CastRefusal;
 					// A predicted wisp goes out with the refusal — the

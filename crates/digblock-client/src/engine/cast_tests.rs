@@ -210,3 +210,57 @@ fn a_light_spell_neither_waits_on_the_clock_nor_arms_it() {
 		);
 	}
 }
+
+/// The offline kindle: the light stands in the cell the caster's head is
+/// in, not where they aim; it burns for exactly `kindle::SECS` on its own
+/// clock; and moving the caster — a port — leaves it where it was lit.
+/// The span, the rung and the fare are all read off the tables.
+#[test]
+fn a_kindled_light_stands_at_the_head_on_its_own_clock() {
+	use digblock_core::skills::total_xp_for;
+	let mut e = fresh();
+	// Settle the terrain, or the head cell is unloaded and hosts nothing.
+	let center = digblock_core::chunk::ChunkPos::new(0, 0, 0);
+	for _ in 0..10_000 {
+		let m = e.pipeline.maintain(center, usize::MAX, None, None);
+		if m.gen_queue == 0 && m.mesh_queue == 0 && m.in_flight == 0 && !m.saturated {
+			break;
+		}
+	}
+	let level = digblock_core::unlock::KINDLE_AT;
+	e.skills.add_xp(Skill::Arcana, total_xp_for(level));
+	let (essence, fare) = digblock_core::alchemy::kindle_price(level);
+	e.inventory.add_sub(essence, fare);
+	// Look straight down: an aimed kindle would land on the floor cell.
+	e.camera.pitch_deg = -80.0;
+	let head = digblock_core::kindle::host_cell(e.player.pos);
+	assert!(
+		digblock_core::kindle::hosts(e.pipeline.cell_at(head.0, head.1, head.2)),
+		"the spawn head cell must host, or the sweep proves nothing"
+	);
+	e.start_cast(CastTarget::Kindle);
+	let need = digblock_core::unlock::channel_ticks(level);
+	for _ in 0..=need {
+		tick(&mut e);
+	}
+	assert_eq!(e.vfx.kindled.len(), 1, "one light stands");
+	assert_eq!(e.vfx.kindled[0].cell, head, "in the head's own cell");
+	assert_eq!(e.inventory.sub_count(essence), 0, "the fare left");
+	assert!(
+		e.skills.xp(Skill::Arcana) > total_xp_for(level),
+		"the cast paid its XP"
+	);
+	// A port: the light does not follow.
+	e.player.pos += Vec3::new(40.0, 0.0, 40.0);
+	e.step(std::time::Duration::from_secs_f32(
+		digblock_core::kindle::SECS as f32 - 1.0,
+	));
+	assert_eq!(
+		e.vfx.kindled.len(),
+		1,
+		"still burning a second short of its span"
+	);
+	assert_eq!(e.vfx.kindled[0].cell, head, "and still where it was lit");
+	e.step(std::time::Duration::from_secs_f32(1.5));
+	assert!(e.vfx.kindled.is_empty(), "and out once the span has run");
+}

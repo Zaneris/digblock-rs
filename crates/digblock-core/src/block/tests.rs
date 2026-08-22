@@ -367,8 +367,8 @@ fn material_roster_is_pinned() {
 			B::Lantern,
 			B::Aetherlamp,
 			B::MastersSigil,
-			// Conjured light: temporary by the wisplight sweep, so it is
-			// neither substance nor priced item.
+			// Conjured light: a LUT row for the arcane emitters, never a
+			// cell, so it is neither substance nor priced item.
 			B::Wisplight,
 		]
 	);

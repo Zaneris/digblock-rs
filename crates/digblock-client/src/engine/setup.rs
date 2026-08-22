@@ -137,6 +137,8 @@ impl Engine {
 				siphon: None,
 				casts: Vec::new(),
 				cast_seq: 0,
+				kindled: Vec::new(),
+				kindle_seq: 0,
 				channel_env: 0.0,
 				flash: 0.0,
 				// The startup world marks its spawn too: the marker is the
@@ -519,9 +521,6 @@ impl Engine {
 			engine.register_world_job(job);
 		}
 		for job in digblock_core::worldjob::leaves::jobs() {
-			engine.register_world_job(job);
-		}
-		for job in digblock_core::worldjob::wisplight::jobs() {
 			engine.register_world_job(job);
 		}
 		for job in digblock_core::worldjob::regrow::jobs() {

@@ -12,9 +12,13 @@
 
 use digblock_platform::Gpu;
 
-/// Simultaneous effects: the caster's own channel plus a handful of
-/// bursts (a departure and an arrival per jump, short-lived — [`LIFE`]).
-pub(crate) const MAX_FX: usize = 8;
+/// Simultaneous effects: the caster's own channel, a handful of bursts
+/// (a departure and an arrival per jump, short-lived — [`LIFE`]), and
+/// the kindled orbs within [`KINDLED_RADIUS`].
+pub(crate) const MAX_FX: usize = 24;
+/// Beyond this many blocks a kindled orb is not uploaded at all — the
+/// marker's rule; its LIGHT still reaches the GI list at any range.
+pub(crate) const KINDLED_RADIUS: f32 = 64.0;
 /// Motes per effect — keep in sync with teleport.wgsl `MOTES`, held by
 /// [`the_teleport_mote_count_matches_the_shader`]. Particle 0 is the
 /// column of light, so the draw call is one quad longer.
@@ -37,6 +41,9 @@ pub(crate) enum Mode {
 	Departure,
 	Arrival,
 	Channel,
+	/// A standing kindled orb; `t` is its age, the envelope its last
+	/// seconds.
+	Kindled,
 }
 
 /// One effect, in the flat `[origin.xyz, mode][t, envelope, seed, 0]
@@ -60,6 +67,7 @@ pub(crate) fn instance(
 		Mode::Departure => 0.0,
 		Mode::Arrival => 1.0,
 		Mode::Channel => 2.0,
+		Mode::Kindled => 3.0,
 	};
 	[
 		origin[0], origin[1], origin[2], m, t, envelope, seed, 0.0, TINT[0], TINT[1], TINT[2], 0.0,

@@ -196,6 +196,12 @@ pub enum NetEvent {
 	CastRefused {
 		reason: crate::messages::CastRefusal,
 	},
+	/// Conjured light standing in `cell` for `secs_left` more seconds —
+	/// anyone's, a joiner's backlog included.
+	Kindled {
+		cell: [i32; 3],
+		secs_left: u16,
+	},
 	Disconnected {
 		reason: String,
 	},
@@ -734,6 +740,9 @@ impl NetClient {
 			}
 			ServerMsg::Waystones { entries } => out.push(NetEvent::Waystones { entries }),
 			ServerMsg::CastRefused { reason } => out.push(NetEvent::CastRefused { reason }),
+			ServerMsg::Kindled { cell, secs_left } => {
+				out.push(NetEvent::Kindled { cell, secs_left });
+			}
 			ServerMsg::InventoryFull { counts } => {
 				// Raw pairs through to the engine — `Inventory::from_wire`
 				// does the strict decode (unknown ids dropped, flagged
