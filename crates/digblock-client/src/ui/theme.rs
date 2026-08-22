@@ -61,6 +61,17 @@ pub const GAP_ABOVE_BAR: f32 = 24.0;
 /// when [`fit_scale`] has run out of room.
 pub const TOP_MARGIN: f32 = 12.0;
 
+/// A chip is an icon (a `Style::glyph` square — the one size text has)
+/// and a number: this is the gap between the two …
+pub const CHIP_GAP: f32 = 4.0;
+/// … and this the gap between one chip and the next in a run.
+pub const CHIP_SEP: f32 = 12.0;
+/// Clearance between a hovered thing and the tooltip naming it.
+pub const TOOLTIP_GAP: f32 = 6.0;
+/// The ink of a chip's number when the holdings cannot cover it — the
+/// one way a price says "not yet" now that it has no words.
+pub const SHORT_INK: u32 = 0xFF5A5AFF;
+
 /// Panels never shrink below this row width — a short screen would
 /// otherwise read as a narrow column, and would resize as its rows
 /// changed.

@@ -52,6 +52,9 @@ pub enum IconKind {
 	Pick,
 	/// The Master's Sigil: a crystal set in a standing metal plate.
 	Sigil,
+	/// An essence: the one FLAT icon, a chip sprite rather than geometry,
+	/// because essence is a count and not a thing in the world.
+	Essence(digblock_core::block::Essence),
 }
 
 /// The arrival cover: an OPAQUE full-screen fill with one centred line,
@@ -141,11 +144,13 @@ pub fn icon_block(kind: IconKind) -> Option<BlockType> {
 		IconKind::Siphon => Some(BlockType::EssenceSiphon),
 		IconKind::Pick => Some(BlockType::ResonantPick),
 		IconKind::Sigil => Some(BlockType::MastersSigil),
+		IconKind::Essence(_) => None,
 	}
 }
 
-/// Draw one 3D item icon into `rect` (every icon path goes through the
-/// dimetric projector — one consistent visual language).
+/// Draw one item icon into `rect`. Every THING goes through the dimetric
+/// projector — one consistent visual language; an essence is the one
+/// flat sprite, since a count has no geometry to project.
 pub fn draw_icon(
 	dl: &mut super::DrawList,
 	layer: Layer,
@@ -153,7 +158,10 @@ pub fn draw_icon(
 	kind: IconKind,
 	tint: u32,
 ) {
-	super::shaped_icon::emit(dl, layer, rect, kind, tint);
+	match kind {
+		IconKind::Essence(e) => dl.icon(layer, rect, e.icon_tex(), tint),
+		_ => super::shaped_icon::emit(dl, layer, rect, kind, tint),
+	}
 }
 
 /// The hotbar row's grid: bottom-centered. Shared with the inventory

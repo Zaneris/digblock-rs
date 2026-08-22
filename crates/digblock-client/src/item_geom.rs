@@ -302,6 +302,9 @@ pub(crate) fn faces(kind: IconKind) -> Vec<ItemFace> {
 		IconKind::Siphon => siphon_faces(&mut out),
 		IconKind::Pick => pick_faces(&mut out),
 		IconKind::Sigil => sigil_faces(&mut out),
+		// A chip is a sprite, never geometry: `hud::draw_icon` routes it
+		// to the flat path before this is asked.
+		IconKind::Essence(_) => {}
 	}
 	out
 }

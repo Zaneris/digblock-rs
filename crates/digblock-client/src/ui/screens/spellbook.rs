@@ -403,7 +403,7 @@ impl SpellScreen {
 						rect,
 						widgets::RowContent {
 							text: row_text(row),
-							right: Some((state, color)),
+							right: Some(widgets::RowRight::Text(state, color)),
 							bar: None,
 							color,
 							highlight: hovered,

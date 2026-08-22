@@ -18,7 +18,14 @@ use super::draw::{Cmd, DrawList, Layer};
 /// new `blocks!` row can never overflow it.
 const BUCKET_QUADS: usize = 7;
 const SHAPED_SITES: usize = 2 * SHAPED_COUNT + 1;
-const MAX_ICON_QUADS: usize = (GRID_SLOTS + HOTBAR_SLOTS + 1) * BUCKET_QUADS
+/// Chips: the essence readout, one price's lines, every spell fare and
+/// every live toast, each at worst a cube (a feedstock chip).
+const CHIP_SITES: usize = 2 * digblock_core::block::Essence::COUNT
+	+ digblock_core::alchemy::MAX_COST_LINES
+	+ digblock_core::worldgen::SurfaceKind::ALL.len()
+	+ digblock_core::skills::Skill::COUNT
+	+ 4;
+const MAX_ICON_QUADS: usize = (GRID_SLOTS + HOTBAR_SLOTS + 1 + CHIP_SITES) * BUCKET_QUADS
 	+ SHAPED_SITES * 2 * digblock_core::shapes::MAX_SHAPE_QUADS;
 const MAX_ICON_VERTS: usize = MAX_ICON_QUADS * 6;
 // The budget must dominate the naive one-flat-quad-per-site bound too

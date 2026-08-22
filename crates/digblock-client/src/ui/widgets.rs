@@ -206,11 +206,131 @@ pub fn count_badge(dl: &mut DrawList, layer: Layer, style: &Style, slot: Rect, c
 	dl.text(layer, x, y, px, c, text);
 }
 
+/// An amount of something with an icon: essence, feedstock, a fare. The
+/// ONLY way an amount of essence reaches the screen — never as a word,
+/// because a name is a tooltip's job and a price that has to fit in a
+/// sentence ends up dropped when the sentence does not.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Chip {
+	pub kind: super::hud::IconKind,
+	pub tint: u32,
+	pub n: u32,
+	/// The number's colour — [`super::theme::SHORT_INK`] when the holdings
+	/// cannot cover it.
+	pub ink: u32,
+}
+
+/// The run of `chips` laid out from `(x, y)` — one rect per chip spanning
+/// its icon and number — wrapping past `max_w` onto the next
+/// [`super::theme::ROW_H`] row. Pure: the measure half of [`chips`], so
+/// the two cannot disagree, and what a screen hit-tests for hover.
+pub fn chip_layout(style: &Style, x: f32, y: f32, max_w: f32, chips: &[Chip]) -> Vec<Rect> {
+	let glyph = style.glyph;
+	let row_h = super::theme::ROW_H * style.scale;
+	let gap = super::theme::CHIP_GAP * style.scale;
+	let sep = super::theme::CHIP_SEP * style.scale;
+	let mut out = Vec::with_capacity(chips.len());
+	let (mut cx, mut cy) = (x, y);
+	for c in chips {
+		let w = glyph + gap + style.measure(&c.n.to_string());
+		if cx > x && cx + w - x > max_w {
+			cx = x;
+			cy += row_h;
+		}
+		out.push(Rect::new(cx, cy, w, row_h));
+		cx += w + sep;
+	}
+	out
+}
+
+/// Width of `chips` in one unwrapped run — what a panel sizes itself by.
+pub fn chips_w(style: &Style, chips: &[Chip]) -> f32 {
+	chip_layout(style, 0.0, 0.0, f32::INFINITY, chips)
+		.last()
+		.map_or(0.0, |r| r.x + r.w)
+}
+
+/// Draw `chips` as [`chip_layout`] places them: the icon on
+/// [`Layer::Icons`], the number beside it in the chip's ink at the
+/// frame's one text size, both centred in the row. Returns the rects.
+pub fn chips(
+	dl: &mut DrawList,
+	style: &Style,
+	layer: Layer,
+	x: f32,
+	y: f32,
+	max_w: f32,
+	chips: &[Chip],
+) -> Vec<Rect> {
+	let glyph = style.glyph;
+	let gap = super::theme::CHIP_GAP * style.scale;
+	let rects = chip_layout(style, x, y, max_w, chips);
+	for (c, r) in chips.iter().zip(&rects) {
+		let top = r.y + (r.h - glyph) / 2.0;
+		super::hud::draw_icon(
+			dl,
+			Layer::Icons,
+			Rect::new(r.x, top, glyph, glyph),
+			c.kind,
+			c.tint,
+		);
+		dl.text_fmt(
+			layer,
+			r.x + glyph + gap,
+			top,
+			glyph,
+			c.ink,
+			format_args!("{}", c.n),
+		);
+	}
+	rects
+}
+
+/// The name of whatever the cursor is on: a [`super::theme::PANEL_BG`] box
+/// on [`Layer::Ghost`] — above everything, the drag ghost included — at the
+/// frame's one text size, above its anchor, inside the window, and below
+/// the anchor when above would leave the window. The screen that knows
+/// what is hovered emits it LAST, so it covers what it names.
+pub fn tooltip(dl: &mut DrawList, style: &Style, size: (u32, u32), anchor: Rect, name: &str) {
+	let text = name.to_uppercase();
+	let glyph = style.glyph;
+	let w = super::theme::text_row_w(style, &text);
+	let h = crate::font::face(style.face).line_h(glyph);
+	let gap = super::theme::TOOLTIP_GAP * style.scale;
+	let (sw, sh) = (size.0 as f32, size.1 as f32);
+	let x = (anchor.x + (anchor.w - w) / 2.0).clamp(0.0, (sw - w).max(0.0));
+	let above = anchor.y - gap - h;
+	let y = if above >= 0.0 {
+		above
+	} else {
+		(anchor.y + anchor.h + gap).min((sh - h).max(0.0))
+	};
+	let rect = Rect::new(x, y, w, h);
+	dl.quad(Layer::Ghost, rect, super::theme::PANEL_BG);
+	dl.text(
+		Layer::Ghost,
+		rect.x + scale::text_pad_x(style.scale),
+		rect.y + (h - glyph) / 2.0,
+		glyph,
+		WHITE,
+		&text,
+	);
+}
+
+/// What a row's right-hand column holds.
+#[derive(Clone, Copy)]
+pub enum RowRight<'a> {
+	/// Coloured text (a ping, a hint, a state).
+	Text(&'a str, u32),
+	/// An amount with an icon (a fare).
+	Chip(Chip),
+}
+
 /// One menu-style row's content, rendered by [`row`].
 pub struct RowContent<'a> {
 	pub text: &'a str,
-	/// Right-aligned colored text (e.g. a ping column).
-	pub right: Option<(&'a str, u32)>,
+	/// Right-aligned column.
+	pub right: Option<RowRight<'a>>,
 	/// Slider fill fraction 0..=1; the fill takes the row's color.
 	pub bar: Option<f32>,
 	pub color: u32,
@@ -245,9 +365,18 @@ pub fn row(dl: &mut DrawList, style: &Style, layer: Layer, rect: Rect, c: RowCon
 		let cx = rect.x + pad_x + style.measure(c.text);
 		dl.quad(layer, Rect::new(cx, text_y, caret_w(glyph), glyph), c.color);
 	}
-	if let Some((right, color)) = c.right {
-		let rx = rect.x + rect.w - pad_x - style.measure(right);
-		dl.text(layer, rx, text_y, glyph, color, right);
+	match c.right {
+		Some(RowRight::Text(right, color)) => {
+			let rx = rect.x + rect.w - pad_x - style.measure(right);
+			dl.text(layer, rx, text_y, glyph, color, right);
+		}
+		Some(RowRight::Chip(chip)) => {
+			let run = [chip];
+			let rx = rect.x + rect.w - pad_x - chips_w(style, &run);
+			let top = rect.y + (rect.h - super::theme::ROW_H * style.scale) / 2.0;
+			chips(dl, style, layer, rx, top, f32::INFINITY, &run);
+		}
+		None => {}
 	}
 	if let Some(frac) = c.bar {
 		let bar = slider_rect(rect, style.scale);
@@ -427,5 +556,111 @@ mod tests {
 		assert_eq!(g.extent(4), (158.0, 104.0));
 		assert_eq!(g.extent(1), (50.0, 50.0));
 		assert_eq!(g.extent(0), (0.0, 0.0));
+	}
+
+	/// The layout is the measure: every chip has a rect, chips run left to
+	/// right without overlapping, the icon is the frame's glyph, and a
+	/// second row appears exactly when the run is wider than its budget.
+	#[test]
+	fn chips_lay_out_left_to_right_and_wrap_only_past_max_w() {
+		use crate::ui::hud::IconKind;
+		use digblock_core::block::Essence;
+		let style = Style::new(1.0);
+		let run: Vec<Chip> = Essence::ALL
+			.iter()
+			.enumerate()
+			.map(|(i, &e)| Chip {
+				kind: IconKind::Essence(e),
+				tint: WHITE,
+				n: 7 * (i as u32 + 1),
+				ink: WHITE,
+			})
+			.collect();
+		let wide = chips_w(&style, &run);
+		let rects = chip_layout(&style, 30.0, 40.0, f32::INFINITY, &run);
+		assert_eq!(rects.len(), run.len());
+		for (i, r) in rects.iter().enumerate() {
+			assert_eq!(r.y, 40.0, "one row when nothing wraps");
+			assert!(r.w > style.glyph, "a chip is wider than its icon");
+			if i > 0 {
+				let prev = rects[i - 1];
+				assert!(r.x >= prev.x + prev.w, "chip {i} overlaps its neighbour");
+			}
+		}
+		assert_eq!(
+			rects.last().unwrap().x + rects.last().unwrap().w - 30.0,
+			wide
+		);
+		let wrapped = chip_layout(&style, 30.0, 40.0, wide - 1.0, &run);
+		assert!(
+			wrapped.iter().any(|r| r.y > 40.0),
+			"a run wider than its budget wraps"
+		);
+		assert!(
+			wrapped
+				.iter()
+				.all(|r| r.x + r.w - 30.0 <= wide - 1.0 || r.x == 30.0)
+		);
+		// Emit agrees with measure: one icon per chip, as big as a glyph.
+		let mut dl = DrawList::default();
+		let drawn = chips(
+			&mut dl,
+			&style,
+			Layer::Content,
+			30.0,
+			40.0,
+			f32::INFINITY,
+			&run,
+		);
+		assert_eq!(drawn, rects);
+		let (cmds, _) = dl.cmds(Layer::Icons);
+		let icons: Vec<Rect> = cmds
+			.iter()
+			.filter_map(|c| match c {
+				Cmd::Icon { rect, .. } => Some(*rect),
+				_ => None,
+			})
+			.collect();
+		assert_eq!(icons.len(), run.len());
+		assert!(
+			icons
+				.iter()
+				.all(|r| r.w == style.glyph && r.h == style.glyph)
+		);
+	}
+
+	/// Whatever it is anchored to, the name stays inside the window — a
+	/// tooltip off the top flips below, one off a side slides in.
+	#[test]
+	fn a_tooltip_never_leaves_the_window() {
+		let style = Style::new(1.0);
+		let size = (300u32, 200u32);
+		let (w, h) = (size.0 as f32, size.1 as f32);
+		let corners = [
+			Rect::new(0.0, 0.0, 20.0, 20.0),
+			Rect::new(w - 20.0, 0.0, 20.0, 20.0),
+			Rect::new(0.0, h - 20.0, 20.0, 20.0),
+			Rect::new(w - 20.0, h - 20.0, 20.0, 20.0),
+		];
+		let mut checked = 0;
+		for anchor in corners {
+			let mut dl = DrawList::default();
+			tooltip(&mut dl, &style, size, anchor, "Sandstone Stairs");
+			let (cmds, _) = dl.cmds(Layer::Ghost);
+			for c in cmds {
+				if let Cmd::Quad { rect, .. } = c {
+					assert!(
+						rect.x >= 0.0 && rect.x + rect.w <= w,
+						"{anchor:?}: {rect:?}"
+					);
+					assert!(
+						rect.y >= 0.0 && rect.y + rect.h <= h,
+						"{anchor:?}: {rect:?}"
+					);
+					checked += 1;
+				}
+			}
+		}
+		assert_eq!(checked, corners.len(), "one box per anchor");
 	}
 }
