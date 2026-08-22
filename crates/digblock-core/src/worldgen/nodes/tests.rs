@@ -273,8 +273,8 @@ fn landmarks_always_carry_a_heart_and_most_trees_do_not() {
 	assert!(without > with, "most trees are plain wood");
 }
 
-/// A spring stands only in the bed of standing fresh water, and only
-/// in the bed cell itself.
+/// A spring stands only in the bed of standing water, and only in the
+/// bed cell itself.
 #[test]
 fn springs_stand_only_in_fresh_beds() {
 	let (x, y, z) = find_springstone(SEED);
@@ -283,19 +283,55 @@ fn springs_stand_only_in_fresh_beds() {
 	assert!(s.water > s.height, "under standing water");
 	assert!(!springstone_at(x, y - 1, z, SEED), "not below the bed");
 	assert!(!springstone_at(x, y + 1, z, SEED), "not in the water");
-	// And never in the ocean: sweep for ocean columns and assert the
-	// rate never fires there.
-	let mut ocean = 0u32;
-	for ox in (-2048..2048).step_by(7) {
-		for oz in (-2048..2048).step_by(7) {
+}
+
+/// The ocean carries springs only in its shoreline shallows, and more
+/// sparsely than the fresh beds do: sweep the world, sort every bed
+/// column by kind, and compare the rates that fall out.
+#[test]
+fn ocean_springs_keep_to_the_shallows_and_are_rarer() {
+	let (mut fresh, mut fresh_hit) = (0u32, 0u32);
+	let (mut shore, mut shore_hit) = (0u32, 0u32);
+	let mut deep = 0u32;
+	for ox in (-2048..2048).step_by(5) {
+		for oz in (-2048..2048).step_by(5) {
 			let s = crate::worldgen::column_shape(ox, oz, SEED);
-			if s.surface == SurfaceKind::Ocean {
-				ocean += 1;
-				assert!(!springstone_at(ox, s.height, oz, SEED), "at {ox},{oz}");
+			if s.water <= s.height {
+				continue;
+			}
+			let hit = springstone_at(ox, s.height, oz, SEED);
+			match s.surface {
+				SurfaceKind::Lake | SurfaceKind::River => {
+					fresh += 1;
+					fresh_hit += u32::from(hit);
+				}
+				SurfaceKind::Ocean if s.water - s.height <= SHORE_DEPTH => {
+					shore += 1;
+					shore_hit += u32::from(hit);
+				}
+				SurfaceKind::Ocean => {
+					deep += 1;
+					assert!(!hit, "a spring on the open floor at {ox},{oz}");
+				}
+				_ => assert!(!hit, "a spring under a puddle at {ox},{oz}"),
 			}
 		}
 	}
-	assert!(ocean > 0, "sample contains ocean");
+	assert!(
+		fresh > 0 && shore > 0 && deep > 0,
+		"sample covers every bed kind"
+	);
+	assert!(shore_hit > 0, "the shoreline carries springs");
+	// Rates, in the tables' own 256ths, each within a few of its constant.
+	let per_256 = |hit: u32, n: u32| u64::from(hit) * 256 / u64::from(n);
+	assert!(
+		per_256(fresh_hit, fresh).abs_diff(SPRING_IN_256) <= 3,
+		"{fresh_hit}/{fresh}"
+	);
+	assert!(
+		per_256(shore_hit, shore).abs_diff(SPRING_SHORE_IN_256) <= 2,
+		"{shore_hit}/{shore}"
+	);
 }
 
 /// A live face stored in the cell outright — a regrown node — is found

@@ -278,17 +278,34 @@ pub fn heartwood_at(x: i32, y: i32, z: i32, seed: f64) -> bool {
 const SPRING_SALT: u64 = 0x5b41_0e57_04e5_ea11;
 
 /// The share of lake- and river-bed cells that carry a spring, in 256ths.
-const SPRING_IN_256: u64 = 18;
+const SPRING_IN_256: u64 = 8;
+
+/// The share of ocean SHORELINE bed cells that carry one, in the same
+/// 256ths — rarer than the fresh beds, a find for the wader rather than
+/// a reason to work the coast. Must not exceed [`SPRING_IN_256`]: the
+/// fresh rate is the prune every column pays before it is classified,
+/// and a shore rate above it would be cut down to it silently.
+const SPRING_SHORE_IN_256: u64 = 3;
+const _: () = assert!(
+	SPRING_SHORE_IN_256 <= SPRING_IN_256,
+	"the shore rate would be pruned to the fresh one"
+);
+
+/// How much water may stand over an ocean bed for it to count as the
+/// shoreline — the wading shallows off a beach, where the find can be
+/// seen from the sand, not the open floor.
+const SHORE_DEPTH: i32 = 3;
 
 /// Does this cell hold a springstone — a charged stone in the pristine
-/// bed of standing fresh water?
+/// bed of standing water?
 ///
 /// The rate rolls first because it is a hash where the bed test is five
 /// field evaluations ([`crate::worldgen::column_shape`]); only the cells
-/// that pass pay for the classification. Lake and river beds only — the
-/// ocean is salt, and a marsh puddle is not a spring — and only the bed
-/// surface cell itself, which is what puts the find under water and makes
-/// water features destinations.
+/// that pass pay for the classification. Lake and river beds at the full
+/// rate, the ocean's shoreline shallows at the rarer one, and never the
+/// open ocean floor or a marsh puddle — and only the bed surface cell
+/// itself, which is what puts the find under water and makes water
+/// features destinations.
 pub fn springstone_at(x: i32, y: i32, z: i32, seed: f64) -> bool {
 	springstone_bed(x, z, seed) == Some(y)
 }
@@ -305,13 +322,21 @@ pub fn springstone_at(x: i32, y: i32, z: i32, seed: f64) -> bool {
 /// field evaluations, and the hash rejects all but a small share of
 /// columns before any of them run.
 pub fn springstone_bed(x: i32, z: i32, seed: f64) -> Option<i32> {
-	if ore::mix(x, 0, z, seed.to_bits(), SPRING_SALT) & 0xFF >= SPRING_IN_256 {
+	let roll = ore::mix(x, 0, z, seed.to_bits(), SPRING_SALT) & 0xFF;
+	if roll >= SPRING_IN_256 {
 		return None;
 	}
 	let s = crate::worldgen::column_shape(x, z, seed);
+	if s.water <= s.height {
+		return None;
+	}
 	use crate::worldgen::SurfaceKind;
-	(matches!(s.surface, SurfaceKind::Lake | SurfaceKind::River) && s.water > s.height)
-		.then_some(s.height)
+	let bed = match s.surface {
+		SurfaceKind::Lake | SurfaceKind::River => true,
+		SurfaceKind::Ocean => s.water - s.height <= SHORE_DEPTH && roll < SPRING_SHORE_IN_256,
+		_ => false,
+	};
+	bed.then_some(s.height)
 }
 
 #[cfg(test)]
