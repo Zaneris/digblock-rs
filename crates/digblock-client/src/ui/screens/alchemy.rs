@@ -37,8 +37,9 @@ use digblock_core::skills::{self, Skill, SkillSet};
 use digblock_core::unlock;
 use digblock_platform::{InputEvent, Key, MouseButton};
 
+use crate::hotbar::HotbarView;
 use crate::ui::draw::Layer;
-use crate::ui::widgets::{self, DIM, GridSpec, Style, Ui, WHITE};
+use crate::ui::widgets::{self, Chip, DIM, GridSpec, Style, Ui, WHITE};
 use crate::ui::{HitMap, InvId, Rect, hud, scale, theme};
 
 /// One requested alchemy operation, in core vocabulary.
@@ -150,6 +151,52 @@ pub fn strip_reason(view: &AlchView, item: BlockType) -> StripReason {
 		};
 	}
 	StripReason::NothingToCharge
+}
+
+/// The price of `item` at this view's level as chips — feedstock lines
+/// first (matter in hand reads before the currency), then the essence
+/// lines post-waste — each number in [`theme::SHORT_INK`] when the
+/// holdings cannot cover it. The same lines [`strip_reason`] walks, so the
+/// chip that reads short and the rule that refuses are one answer.
+pub fn cost_chips(view: &AlchView, item: BlockType, locked: bool) -> Vec<Chip> {
+	let ink = |short: bool| {
+		if locked {
+			DIM
+		} else if short {
+			theme::SHORT_INK
+		} else {
+			WHITE
+		}
+	};
+	let tint = |t: u32| if locked { LOCKED_TINT } else { t };
+	let feedstock = alchemy::craft_feedstock(item).into_iter().map(|(f, n)| {
+		let (kind, t) = hud::item_icon(HotbarItem::Block(f), false);
+		Chip {
+			kind,
+			tint: tint(t),
+			n,
+			ink: ink(view.counts[f as usize] < n),
+		}
+	});
+	let ideal = alchemy::craft_ideal(item).unwrap_or_default();
+	let essence = ideal.into_iter().map(|(e, n)| {
+		let cost = alchemy::craft_cost(n, view.level);
+		Chip {
+			kind: hud::IconKind::Essence(e),
+			tint: tint(0xFFFF_FFFF),
+			n: cost,
+			ink: ink(view.subs[e as usize] < cost),
+		}
+	});
+	feedstock.chain(essence).collect()
+}
+
+/// What a chip names on hover: the feedstock block or the essence.
+fn chip_name(chip: &Chip) -> String {
+	match chip.kind {
+		hud::IconKind::Essence(e) => e.name().to_string(),
+		kind => hud::icon_block(kind).map(|b| b.name()).unwrap_or_default(),
+	}
 }
 
 impl AlchView {
@@ -497,16 +544,28 @@ impl AlchScreen {
 	/// `theme::fit_scale` steps the full layout down the quarter-rung
 	/// ladder when a short window at a big interface scale can't hold it
 	/// — never a fractional glyph.
-	pub fn build(&self, ui: &mut Ui<'_, InvId>, size: (u32, u32), view: &AlchView, daylight: f32) {
+	pub fn build(
+		&self,
+		ui: &mut Ui<'_, InvId>,
+		size: (u32, u32),
+		view: &AlchView,
+		bar: &HotbarView,
+		daylight: f32,
+	) {
 		let window_scale = ui.style.scale;
 		ui.dl.quad(
 			Layer::Backdrop,
 			Rect::new(0.0, 0.0, size.0 as f32, size.1 as f32),
 			widgets::scaled_dim(theme::SCREEN_DIM, daylight),
 		);
-		let bar_top = hud::row_grid(size, window_scale).origin.1;
+		let bar_grid = hud::row_grid(size, window_scale);
+		let bar_top = bar_grid.origin.1;
 		let budget = bar_top - (theme::GAP_ABOVE_BAR + theme::TOP_MARGIN) * window_scale;
-		let needed = |s: f32| self.content_h(&Style::new(s)) + 2.0 * theme::PAD * s;
+		let needed = |s: f32| {
+			let style = Style::new(s);
+			let row_w = self.row_w(&style, view, size);
+			self.content_h(&style, view, row_w) + 2.0 * theme::PAD * s
+		};
 		let restore = ui.style;
 		let fitted = theme::fit_scale(window_scale, budget, needed);
 		if fitted != window_scale {
@@ -515,10 +574,8 @@ impl AlchScreen {
 		let s = ui.style.scale;
 		let pad = theme::PAD * s;
 
-		let (width, height) = (self.content_w(&ui.style, view), self.content_h(&ui.style));
-		let row_w = width
-			.max(theme::MIN_PANEL_W * s)
-			.min(size.0 as f32 - 4.0 * pad);
+		let row_w = self.row_w(&ui.style, view, size);
+		let height = self.content_h(&ui.style, view, row_w);
 		let row_x = (size.0 as f32 - row_w) / 2.0;
 		let row_y = (bar_top - theme::GAP_ABOVE_BAR * window_scale - (height + 2.0 * pad))
 			.max(theme::TOP_MARGIN * window_scale)
@@ -526,10 +583,35 @@ impl AlchScreen {
 		let panel = theme::panel_of(row_x, row_y, row_w, height, s);
 		widgets::panel(ui.dl, Layer::Backdrop, panel, theme::PANEL_BG);
 
+		// What the cursor is on, named LAST so the tooltip covers it.
+		let mut hover: Option<(Rect, String)> = None;
 		let mut y = row_y;
-		self.emit_header(ui, view, row_x, row_w, &mut y);
-		self.emit_transmute(ui, view, row_x, row_w, y);
+		self.emit_header(ui, view, row_x, row_w, &mut y, &mut hover);
+		self.emit_transmute(ui, view, row_x, row_w, y, &mut hover);
+		// The bar is drawn after us at the window's scale; naming its
+		// slots from here is what keeps the name at THIS frame's glyph.
+		if hover.is_none() {
+			let (cx, cy) = self.cursor;
+			for (i, slot) in bar.slots.iter().enumerate() {
+				let rect = hud::bar_slot_rect(&bar_grid, i, window_scale);
+				if rect.contains(cx, cy) {
+					hover = slot.name().map(|n| (rect, n));
+				}
+			}
+		}
+		if let Some((anchor, name)) = hover {
+			widgets::tooltip(ui.dl, &ui.style, size, anchor, &name);
+		}
 		ui.style = restore;
+	}
+
+	/// The panel's row width at `style`: the content's, never narrower
+	/// than the shared minimum and never wider than the window.
+	fn row_w(&self, style: &Style, view: &AlchView, size: (u32, u32)) -> f32 {
+		let pad = theme::PAD * style.scale;
+		self.content_w(style, view)
+			.max(theme::MIN_PANEL_W * style.scale)
+			.min(size.0 as f32 - 4.0 * pad)
 	}
 
 	// ---- layout ------------------------------------------------------
@@ -538,8 +620,18 @@ impl AlchScreen {
 	/// gap below. Must stay in step with the `*y` the header actually
 	/// leaves behind in `emit_header` — this is the measure half of the
 	/// same layout.
-	fn header_h(style: &Style) -> f32 {
-		(2.0 * theme::ROW_H + theme::SECTION_GAP) * style.scale
+	fn header_h(style: &Style, view: &AlchView, row_w: f32) -> f32 {
+		let rows = 1 + Self::holdings_rows(style, view, row_w);
+		(rows as f32 * theme::ROW_H + theme::SECTION_GAP) * style.scale
+	}
+
+	/// Rows the readout wraps onto inside a panel `row_w` wide.
+	fn holdings_rows(style: &Style, view: &AlchView, row_w: f32) -> usize {
+		let inner = row_w - 2.0 * scale::text_pad_x(style.scale);
+		let row_h = theme::ROW_H * style.scale;
+		widgets::chip_layout(style, 0.0, 0.0, inner, &Self::holdings_chips(view))
+			.last()
+			.map_or(1, |r| (r.y / row_h).round() as usize + 1)
 	}
 
 	fn grid_spec_at(style: &Style, origin: (f32, f32)) -> GridSpec {
@@ -551,17 +643,17 @@ impl AlchScreen {
 		}
 	}
 
-	/// The essence readout, which is also the widest text the page draws.
+	/// The essence readout: every holding as a chip, in essence order.
 	///
-	/// One function so the width the panel is MEASURED at and the string
-	/// the header EMITS cannot drift — the reason `text_row_w` exists at
-	/// all, and the reason a width is never counted in characters.
-	fn holdings_text(view: &AlchView) -> String {
-		Essence::ALL
-			.iter()
-			.map(|&e| format!("{} {}", e.name().to_uppercase(), view.subs[e as usize]))
-			.collect::<Vec<_>>()
-			.join("   ")
+	/// One function so the run the panel is MEASURED against and the run
+	/// the header EMITS cannot drift.
+	fn holdings_chips(view: &AlchView) -> [Chip; Essence::COUNT] {
+		Essence::ALL.map(|e| Chip {
+			kind: hud::IconKind::Essence(e),
+			tint: 0xFFFF_FFFF,
+			n: view.subs[e as usize],
+			ink: DIM,
+		})
 	}
 
 	fn content_w(&self, style: &Style, view: &AlchView) -> f32 {
@@ -569,14 +661,14 @@ impl AlchScreen {
 		// screen measures against — the page keeps its column.
 		let spec = Self::grid_spec_at(style, (0.0, 0.0));
 		let grid = spec.extent(GRID_SLOTS).0;
-		// ...but the holdings row is TEXT, and text does not shrink with
-		// the panel: `glyph_px` floors, so the bottom rungs of the fit
-		// ladder take a quarter off every box while the readout stays the
-		// size it was. Folding it in is what keeps the row inside the
-		// panel it is drawn in — it used to be drawn at the grid's width
-		// and spill past the edge onto the dimmed world, with nothing
-		// clipping it, and the spill grew with the digits.
-		grid.max(theme::text_row_w(style, &Self::holdings_text(view)))
+		// ...but the readout's numbers are TEXT, and text does not shrink
+		// with the panel: `glyph_px` floors, so the bottom rungs of the
+		// fit ladder take a quarter off every box while the digits stay
+		// the size they were. Asking for the unwrapped run keeps the
+		// readout on one row wherever the window allows it; where it does
+		// not, `holdings_rows` wraps it rather than letting it spill.
+		let holdings = Self::holdings_chips(view);
+		grid.max(2.0 * scale::text_pad_x(style.scale) + widgets::chips_w(style, &holdings))
 	}
 
 	/// The tallest member row any family lays out (wrapped at the grid's
@@ -590,7 +682,7 @@ impl AlchScreen {
 			.fold(0.0, f32::max)
 	}
 
-	fn content_h(&self, style: &Style) -> f32 {
+	fn content_h(&self, style: &Style, view: &AlchView, row_w: f32) -> f32 {
 		let s = style.scale;
 		let transmute = hud::SLOT_PX * s
 			+ theme::ROW_GAP * s
@@ -599,7 +691,7 @@ impl AlchScreen {
 			+ theme::ACTION_ROW_H * s
 			+ theme::ROW_GAP * s
 			+ theme::ROW_H * s;
-		Self::header_h(style) + transmute
+		Self::header_h(style, view, row_w) + transmute
 	}
 
 	fn emit_header(
@@ -609,6 +701,7 @@ impl AlchScreen {
 		row_x: f32,
 		row_w: f32,
 		y: &mut f32,
+		hover: &mut Option<(Rect, String)>,
 	) {
 		let s = ui.style.scale;
 		let row_h = theme::ROW_H * s;
@@ -629,35 +722,30 @@ impl AlchScreen {
 			},
 		);
 		*y += row_h;
-		// Essence readout, always visible — and the row `content_w` sizes
-		// the panel against, through this same function.
-		//
-		// Elided against the width it is actually drawn at, because the
-		// panel cannot always be as wide as the readout wants: `row_w` is
-		// clamped to the window, so a player holding near the stack cap
-		// on a phone asks for more width than exists. `widgets::row` does
-		// not clip, so without this the tail is drawn past the panel edge
-		// onto the dimmed world.
-		let holdings = elide(
-			&ui.style,
-			&Self::holdings_text(view),
-			row_w - 2.0 * scale::text_pad_x(s),
-		);
-		widgets::row(
+		// Essence readout, always visible — the run `content_w` sizes the
+		// panel against, through the same function. Wrapped at the width
+		// it is actually drawn at, because the panel cannot always be as
+		// wide as the readout wants: `row_w` is clamped to the window, so
+		// a player holding near the cap on a phone asks for more width
+		// than exists, and nothing clips.
+		let text_pad = scale::text_pad_x(s);
+		let holdings = Self::holdings_chips(view);
+		let rects = widgets::chips(
 			ui.dl,
 			&ui.style,
 			Layer::Content,
-			Rect::new(row_x, *y, row_w, row_h),
-			widgets::RowContent {
-				text: &holdings,
-				right: None,
-				bar: None,
-				color: DIM,
-				highlight: false,
-				caret: false,
-			},
+			row_x + text_pad,
+			*y,
+			row_w - 2.0 * text_pad,
+			&holdings,
 		);
-		*y += row_h + theme::SECTION_GAP * s;
+		let (cx, cy) = self.cursor;
+		for (chip, rect) in holdings.iter().zip(&rects) {
+			if rect.contains(cx, cy) {
+				*hover = Some((*rect, chip_name(chip)));
+			}
+		}
+		*y += Self::holdings_rows(&ui.style, view, row_w) as f32 * row_h + theme::SECTION_GAP * s;
 	}
 
 	/// The page: a row of FAMILY tiles (each slowly rotating through its
@@ -672,6 +760,7 @@ impl AlchScreen {
 		row_x: f32,
 		row_w: f32,
 		mut y: f32,
+		hover: &mut Option<(Rect, String)>,
 	) {
 		let s = ui.style.scale;
 		let glyph = ui.style.glyph;
@@ -705,6 +794,9 @@ impl AlchScreen {
 			}
 			let rect = fam_spec.rect(col);
 			col += 1;
+			if rect.contains(cx, cy) {
+				*hover = Some((rect, fam.name.to_string()));
+			}
 			let all_locked = visible.iter().all(|&m| !unlock::can_craft(m, view.level));
 			// The tile trades one member for the next by shrinking the
 			// outgoing one away and growing the incoming one in, rather
@@ -759,6 +851,9 @@ impl AlchScreen {
 				}
 				let rect = mem_spec.rect(col);
 				col += 1;
+				if rect.contains(cx, cy) {
+					*hover = Some((rect, item.name()));
+				}
 				let locked = !unlock::can_craft(item, view.level);
 				let (kind, tint) = hud::item_icon(HotbarItem::Block(item), false);
 				widgets::slot(
@@ -794,18 +889,19 @@ impl AlchScreen {
 		y += Self::member_rows_h(&ui.style) + theme::SECTION_GAP * s;
 
 		// The detail strip (the shared action-row height): the selected
-		// member's icon, its name and per-line cost at YOUR level
-		// (post-waste — what it will actually charge, feedstock lines
-		// included), and the page's one TRANSMUTE button. Locked reads
-		// dim with its level; unlocked but short reads full-color with
-		// what's MISSING — "can't yet" and "can't afford" are different
-		// answers.
+		// member's icon, its price at YOUR level as chips (post-waste —
+		// what it will actually charge, feedstock lines included, a line
+		// the holdings cannot cover in the short ink), a tail for the one
+		// case a chip cannot say, and the page's one TRANSMUTE button.
+		// Locked reads dim with its level. Its NAME is on hover like every
+		// other tile's — a name in the strip was what used to push the
+		// price off the end of it.
 		let strip_h = theme::ACTION_ROW_H * s;
 		let strip = Rect::new(row_x, y, row_w, strip_h);
-		// With nothing picked there is no item to name and nothing for the
-		// button to do, so the strip says what to do instead of naming an
-		// item the player never chose — and the modifier legend below it,
-		// which describes that button, waits with it.
+		// With nothing picked there is no item to price and nothing for
+		// the button to do, so the strip says what to do instead — and
+		// the modifier legend below it, which describes that button,
+		// waits with it.
 		let Some(f) = picked else {
 			widgets::label(
 				ui.dl,
@@ -825,18 +921,22 @@ impl AlchScreen {
 		let locked = !unlock::can_craft(item, view.level);
 		let batches = view.affordable(item);
 		let (kind, tint) = hud::item_icon(HotbarItem::Block(item), false);
+		let icon = Rect::new(
+			strip.x + text_pad,
+			strip.y + (strip_h - ROW_ICON * s) / 2.0,
+			ROW_ICON * s,
+			ROW_ICON * s,
+		);
 		hud::draw_icon(
 			ui.dl,
 			Layer::Icons,
-			Rect::new(
-				strip.x + text_pad,
-				strip.y + (strip_h - ROW_ICON * s) / 2.0,
-				ROW_ICON * s,
-				ROW_ICON * s,
-			),
+			icon,
 			kind,
 			if locked { LOCKED_TINT } else { tint },
 		);
+		if icon.contains(cx, cy) {
+			*hover = Some((icon, item.name()));
+		}
 		let btn = Rect::new(
 			strip.x + strip.w - text_pad - BTN_W * s,
 			strip.y + (strip_h - BTN_H * s) / 2.0,
@@ -844,62 +944,50 @@ impl AlchScreen {
 			BTN_H * s,
 		);
 		let text_x = strip.x + text_pad + ROW_ICON * s + ICON_TEXT_GAP * s;
-		let avail = btn.x - ICON_TEXT_GAP * s - text_x;
-		let text = if locked {
-			format!("{}   —   LV {need}", item.name().to_uppercase())
-		} else {
-			let ideal = alchemy::craft_ideal(item).expect("members are craftable");
-			let feedstock = alchemy::craft_feedstock(item);
-			// Feedstock lines first — matter in hand reads before the
-			// currency — then the essence lines at this level's waste.
-			let costs = feedstock
-				.iter()
-				.map(|&(f, n)| format!("{n} {}", f.name().to_uppercase()))
-				.chain(ideal.iter().map(|&(e, n)| {
-					format!(
-						"{} {}",
-						alchemy::craft_cost(n, view.level),
-						e.name().to_uppercase()
-					)
-				}))
-				.collect::<Vec<_>>()
-				.join(" + ");
-			// The case is decided once, in `strip_reason`; this only
-			// chooses words for it.
-			let tail = match strip_reason(view, item) {
-				StripReason::AtCap { tool: true } => "ALREADY OWNED".to_string(),
-				StripReason::AtCap { tool: false } => "ALREADY CHARGED".to_string(),
-				StripReason::Short { of, more } => {
-					let what = match of {
-						ShortOf::Feedstock(f) => f.name().to_uppercase(),
-						ShortOf::Essence(e) => e.name().to_uppercase(),
-					};
-					format!("NEED {more} MORE {what}")
-				}
-				StripReason::NothingToCharge => "NOTHING TO CHARGE".to_string(),
-				StripReason::Affords(n) => format!("×{n}"),
-			};
-			// The TAIL is what has to survive: a price is a static fact
-			// the player can go and read, but "why can't I" is this
-			// line's whole job — and the long prices at the end of the
-			// catalog are long enough to push it off the end. Drop the
-			// costs before letting that happen.
-			let full = format!("{}   —   {costs}   ·   {tail}", item.name().to_uppercase());
-			if ui.style.measure(&full) <= avail {
-				full
-			} else {
-				format!("{}   —   {tail}", item.name().to_uppercase())
-			}
-		};
-		widgets::label(
+		let costs = cost_chips(view, item, locked);
+		let rects = widgets::chips(
 			ui.dl,
+			&ui.style,
 			Layer::Content,
 			text_x,
-			strip.y + (strip_h - glyph) / 2.0,
-			glyph,
-			if locked { DIM } else { WHITE },
-			&elide(&ui.style, &text, avail),
+			strip.y + (strip_h - theme::ROW_H * s) / 2.0,
+			f32::INFINITY,
+			&costs,
 		);
+		for (chip, rect) in costs.iter().zip(&rects) {
+			if rect.contains(cx, cy) {
+				*hover = Some((*rect, chip_name(chip)));
+			}
+		}
+		// The case is decided once, in `strip_reason`; this only chooses
+		// words for it — and a shortfall has no words, because the chip
+		// drawn short already said which line and by how much.
+		let tail = if locked {
+			Some(format!("LV {need}"))
+		} else {
+			match strip_reason(view, item) {
+				StripReason::AtCap { tool: true } => Some("ALREADY OWNED".to_string()),
+				StripReason::AtCap { tool: false } => Some("ALREADY CHARGED".to_string()),
+				StripReason::Short { .. } => None,
+				StripReason::NothingToCharge => Some("NOTHING TO CHARGE".to_string()),
+				StripReason::Affords(n) => Some(format!("×{n}")),
+			}
+		};
+		if let Some(tail) = tail {
+			let tail_x = rects
+				.last()
+				.map_or(text_x, |r| r.x + r.w + theme::CHIP_SEP * s);
+			let avail = btn.x - ICON_TEXT_GAP * s - tail_x;
+			widgets::label(
+				ui.dl,
+				Layer::Content,
+				tail_x,
+				strip.y + (strip_h - glyph) / 2.0,
+				glyph,
+				if locked { DIM } else { WHITE },
+				&elide(&ui.style, &tail, avail),
+			);
+		}
 		// While a batch runs the one button is its STOP.
 		let running = self.crafting;
 		widgets::button(
@@ -929,9 +1017,9 @@ impl AlchScreen {
 			Layer::Content,
 			Rect::new(row_x, y, row_w, theme::ROW_H * s),
 			widgets::RowContent {
-				text: queued
-					.as_deref()
-					.unwrap_or("CLICK 1   ·   SHIFT 10   ·   CTRL 100"),
+				text: queued.as_deref().unwrap_or(&format!(
+					"CLICK 1   ·   SHIFT {BULK_SHIFT}   ·   CTRL {BULK_CTRL}"
+				)),
 				right: None,
 				bar: queued.is_some().then(|| self.progress.clamp(0.0, 1.0)),
 				color: if queued.is_some() { WHITE } else { DIM },

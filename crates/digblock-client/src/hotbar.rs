@@ -28,6 +28,18 @@ pub enum SlotView {
 	},
 }
 
+impl SlotView {
+	/// What a tooltip over this slot says: the item's stored-case name,
+	/// or nothing for an empty slot and a bare tool slot.
+	pub fn name(&self) -> Option<String> {
+		match self {
+			SlotView::Block { block, .. } => Some(block.name()),
+			SlotView::Tool { tool: Some(t), .. } => Some(t.name()),
+			SlotView::Tool { tool: None, .. } | SlotView::Empty => None,
+		}
+	}
+}
+
 /// The tool slot's handover animation.
 ///
 /// Cycling tools shouldn't hard-cut any more than the transmute tab's

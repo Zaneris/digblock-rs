@@ -218,13 +218,20 @@ impl Engine {
 			};
 			if self.ui.inv_screen.is_open() {
 				// Screen first: its dim/panel sit under the bar's quads.
-				self.ui
-					.inv_screen
-					.build(&mut ui, size, &self.inv_grid, &self.inventory, daylight);
+				self.ui.inv_screen.build(
+					&mut ui,
+					size,
+					&self.inv_grid,
+					&self.inventory,
+					&hotbar_view,
+					daylight,
+				);
 			} else if self.ui.alch_screen.is_open() {
 				let view =
 					crate::ui::screens::alchemy::AlchView::build(&self.inventory, &self.skills);
-				self.ui.alch_screen.build(&mut ui, size, &view, daylight);
+				self.ui
+					.alch_screen
+					.build(&mut ui, size, &view, &hotbar_view, daylight);
 			} else if self.ui.char_screen.is_open() {
 				let view = crate::ui::screens::character::CharView::build(
 					&self.skills,

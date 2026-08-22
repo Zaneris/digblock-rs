@@ -2,6 +2,16 @@ use super::*;
 use crate::ui::draw::DrawList;
 use digblock_core::block::BlockType as B;
 
+/// A bar with nothing on it — the page names bar slots, and these rigs
+/// are about the page.
+fn empty_bar() -> crate::hotbar::HotbarView {
+	crate::hotbar::HotbarView::build(
+		&digblock_core::hotbar::Hotbar::new(),
+		&Inventory::default(),
+		&crate::hotbar::ToolSwap::default(),
+	)
+}
+
 const SIZE: (u32, u32) = (1280, 800);
 
 struct Rig {
@@ -33,7 +43,7 @@ fn rig_at(level: u32, stock: impl Fn(&mut Inventory)) -> Rig {
 		hits: &mut hits,
 		style,
 	};
-	screen.build(&mut ui, SIZE, &view, 1.0);
+	screen.build(&mut ui, SIZE, &view, &empty_bar(), 1.0);
 	Rig {
 		screen,
 		hits,
@@ -53,7 +63,7 @@ fn rebuild(r: &mut Rig) {
 		hits: &mut hits,
 		style: r.style,
 	};
-	r.screen.build(&mut ui, SIZE, &r.view, 1.0);
+	r.screen.build(&mut ui, SIZE, &r.view, &empty_bar(), 1.0);
 	r.hits = hits;
 }
 
@@ -71,7 +81,7 @@ fn text_of(r: &Rig) -> String {
 		hits: &mut hits,
 		style: r.style,
 	};
-	r.screen.build(&mut ui, SIZE, &r.view, 1.0);
+	r.screen.build(&mut ui, SIZE, &r.view, &empty_bar(), 1.0);
 	let (cmds, arena) = dl.cmds(Layer::Content);
 	cmds.iter()
 		.filter_map(|c| match c {
@@ -82,6 +92,64 @@ fn text_of(r: &Rig) -> String {
 		})
 		.collect::<Vec<_>>()
 		.join(" | ")
+}
+
+/// Every text the screen draws on `layer`, with where and in what ink —
+/// for the assertions about a NUMBER and its colour, which `text_of`
+/// cannot make.
+fn texts_on(r: &Rig, layer: Layer) -> Vec<(f32, f32, f32, u32, String)> {
+	let mut dl = DrawList::default();
+	let mut hits = HitMap::default();
+	let mut ui = Ui {
+		dl: &mut dl,
+		hits: &mut hits,
+		style: r.style,
+	};
+	r.screen.build(&mut ui, SIZE, &r.view, &empty_bar(), 1.0);
+	let (cmds, arena) = dl.cmds(layer);
+	cmds.iter()
+		.filter_map(|c| match c {
+			crate::ui::draw::Cmd::Text {
+				x,
+				y,
+				px,
+				color,
+				range,
+				..
+			} => Some((
+				*x,
+				*y,
+				*px,
+				*color,
+				arena[range.0 as usize..range.1 as usize].to_string(),
+			)),
+			_ => None,
+		})
+		.collect()
+}
+
+/// The texture layers every icon on the Icons layer samples: a flat
+/// chip is one layer, a cube its faces' layers.
+fn icon_layers(dl: &DrawList) -> Vec<u16> {
+	dl.cmds(Layer::Icons)
+		.0
+		.iter()
+		.filter_map(|c| match c {
+			crate::ui::draw::Cmd::Icon { tex_layer, .. }
+			| crate::ui::draw::Cmd::IconQuad { tex_layer, .. } => Some(*tex_layer),
+			_ => None,
+		})
+		.collect()
+}
+
+/// The chips a rig's strip draws for the selected member, as the screen
+/// itself prices them — what a test compares the draw list against.
+fn strip_chips(r: &Rig, item: B) -> Vec<Chip> {
+	cost_chips(
+		&r.view,
+		item,
+		!digblock_core::unlock::can_craft(item, r.view.level),
+	)
 }
 
 fn center(rect: Rect) -> (f32, f32) {
@@ -344,23 +412,96 @@ fn the_vessels_craft_from_timber_at_level_one() {
 		},
 		"the strip must name the missing TIMBER, not an essence that cannot help"
 	);
-	// And the reason's arguments reach the words: what is missing, and
-	// how much more of it. Asserted as containment, so the line may be
-	// reworded without touching this — a dropped argument still fails.
-	let text = text_of(&r);
-	let StripReason::Short { of: _, more } = strip_reason(&r.view, B::Bucket) else {
-		panic!("just asserted a shortfall");
-	};
-	for want in [more.to_string(), B::Wood.name().to_uppercase()] {
-		assert!(
-			text.contains(&want),
-			"{want:?} missing from the strip: {text}"
-		);
-	}
+	// And the shortfall reaches the screen as a CHIP, never a word: the
+	// timber line's icon is the Wood cube, its number is the price, and
+	// its ink is the short one — while no text anywhere names the block.
+	let chips = strip_chips(&r, B::Bucket);
+	let wood = chips
+		.iter()
+		.find(|c| crate::ui::hud::icon_block(c.kind) == Some(B::Wood))
+		.expect("the bucket's price has a timber chip");
+	assert_eq!(wood.ink, theme::SHORT_INK, "the short line reads short");
+	let texts = texts_on(&r, Layer::Content);
+	assert!(
+		texts
+			.iter()
+			.any(|(_, _, _, ink, t)| *t == wood.n.to_string() && *ink == theme::SHORT_INK),
+		"the timber count is drawn in the short ink"
+	);
+	assert!(
+		!texts
+			.iter()
+			.any(|(_, _, _, _, t)| t.contains(&B::Wood.name().to_uppercase())),
+		"a price is chips, not words"
+	);
+	let mut dl = DrawList::default();
+	let mut hits = HitMap::default();
+	r.screen.build(
+		&mut Ui {
+			dl: &mut dl,
+			hits: &mut hits,
+			style: r.style,
+		},
+		SIZE,
+		&r.view,
+		&empty_bar(),
+		1.0,
+	);
+	assert!(
+		icon_layers(&dl).contains(&B::Wood.props().tex_top),
+		"the timber chip draws the Wood cube"
+	);
 	assert!(
 		r.hits.rect_of(InvId::CraftGo).is_none(),
 		"no button with nothing to pay"
 	);
+}
+
+/// The bug this page's chips exist to fix: with a name and a price
+/// sharing one line, the price was dropped whenever the line did not
+/// fit, and half the catalog's did not. Now every visible member shows
+/// every line of its price, at every rung the fit ladder reaches.
+#[test]
+fn the_strip_never_drops_a_price() {
+	let mut examined = 0;
+	for scale in [1.0f32, 1.75, 2.5] {
+		let mut r = rig_at(99, |inv| {
+			for b in B::ALL {
+				inv.add(b, 999);
+			}
+			for e in Essence::ALL {
+				inv.add_sub(e, 99_999);
+			}
+		});
+		r.style = Style::new(scale);
+		for (fi, f) in families().iter().enumerate() {
+			for (mi, &item) in f.members.iter().enumerate() {
+				r.screen.family = Some(fi);
+				r.screen.member = mi;
+				rebuild(&mut r);
+				let want = alchemy::craft_feedstock(item).len()
+					+ alchemy::craft_ideal(item)
+						.expect("a member is craftable")
+						.len();
+				let chips = strip_chips(&r, item);
+				assert_eq!(chips.len(), want, "{item:?} prices {want} lines");
+				// Each line's number is drawn, in the row's ink, with its
+				// icon beside it: count the chip numbers the strip shows.
+				let texts = texts_on(&r, Layer::Content);
+				for c in &chips {
+					assert!(
+						texts
+							.iter()
+							.any(|(_, _, _, ink, t)| *t == c.n.to_string() && *ink == c.ink),
+						"{item:?} at {scale}: a {} line is not drawn",
+						chip_name(c)
+					);
+				}
+				examined += 1;
+			}
+		}
+	}
+	assert!(examined > 20, "the catalog has shrunk");
 }
 
 /// The panel bottom-anchors above the hotbar, and a short window at a
@@ -383,7 +524,7 @@ fn panel_sits_above_the_hotbar_and_fits_short_windows() {
 			hits: &mut hits,
 			style: Style::new(scale),
 		};
-		screen.build(&mut ui, size, &view, 1.0);
+		screen.build(&mut ui, size, &view, &empty_bar(), 1.0);
 		let bar_top = hud::row_grid(size, scale).origin.1;
 		let panel = dl
 			.cmds(Layer::Backdrop)
@@ -443,7 +584,7 @@ fn the_essence_readout_never_spills_out_of_its_panel() {
 			hits: &mut hits,
 			style: Style::new(scale),
 		};
-		screen.build(&mut ui, size, &view, 1.0);
+		screen.build(&mut ui, size, &view, &empty_bar(), 1.0);
 		let panel = dl
 			.cmds(Layer::Backdrop)
 			.0
@@ -455,23 +596,42 @@ fn the_essence_readout_never_spills_out_of_its_panel() {
 				_ => None,
 			})
 			.expect("panel quad");
-		// The readout is the text run that opens with an essence name.
-		// Measured at the command's OWN face and px — the page draws
-		// at the fitted scale, not the window scale this loop set.
-		let (cmds, arena) = dl.cmds(Layer::Content);
-		let right = cmds
+		// The readout is the run of essence chips: each icon, and the
+		// number sharing its row top. Measured at the command's OWN face
+		// and px — the page draws at the fitted scale, not the window
+		// scale this loop set.
+		let icons: Vec<Rect> = dl
+			.cmds(Layer::Icons)
+			.0
 			.iter()
-			.find_map(|c| match c {
-				crate::ui::draw::Cmd::Text {
-					face, x, px, range, ..
-				} => {
-					let t = &arena[range.0 as usize..range.1 as usize];
-					t.starts_with(&Essence::ALL[0].name().to_uppercase())
-						.then(|| x + crate::font::face(*face).measure(t, *px))
-				}
+			.filter_map(|c| match c {
+				crate::ui::draw::Cmd::Icon {
+					rect, tex_layer, ..
+				} if Essence::ALL.iter().any(|e| e.icon_tex() == *tex_layer) => Some(*rect),
 				_ => None,
 			})
-			.expect("the essence readout is drawn");
+			.collect();
+		assert_eq!(icons.len(), Essence::COUNT, "every holding is drawn");
+		let (cmds, arena) = dl.cmds(Layer::Content);
+		let numbers = cmds.iter().filter_map(|c| match c {
+			crate::ui::draw::Cmd::Text {
+				face,
+				x,
+				y,
+				px,
+				range,
+				..
+			} if icons.iter().any(|r| (r.y - y).abs() < 0.5) => {
+				let t = &arena[range.0 as usize..range.1 as usize];
+				Some(x + crate::font::face(*face).measure(t, *px))
+			}
+			_ => None,
+		});
+		let right = icons
+			.iter()
+			.map(|r| r.x + r.w)
+			.chain(numbers)
+			.fold(0.0, f32::max);
 		assert!(
 			right <= panel.x + panel.w + 0.5,
 			"readout spills past the panel at {size:?}/{scale}: {right} vs {}",

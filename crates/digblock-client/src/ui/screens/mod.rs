@@ -45,6 +45,11 @@ mod tests {
 	fn each_screen(size: (u32, u32), s: f32) -> Vec<(&'static str, DrawList)> {
 		let style = Style::new(s);
 		let inv = stocked();
+		let bar = crate::hotbar::HotbarView::build(
+			&digblock_core::hotbar::Hotbar::new(),
+			&inv,
+			&crate::hotbar::ToolSwap::default(),
+		);
 		let mut out = Vec::new();
 
 		// Mid-curve skills, so the alchemy page has real content (counts,
@@ -69,6 +74,7 @@ mod tests {
 				},
 				size,
 				&super::alchemy::AlchView::build(&inv, &skills),
+				&bar,
 				1.0,
 			);
 			out.push((name, dl));
@@ -92,6 +98,7 @@ mod tests {
 			size,
 			&grid,
 			&inv,
+			&bar,
 			1.0,
 		);
 		out.push(("inventory", dl));
