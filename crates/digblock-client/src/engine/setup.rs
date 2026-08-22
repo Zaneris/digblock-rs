@@ -449,7 +449,7 @@ impl Engine {
 				DebugScreen::Inventory | DebugScreen::InventoryHover => {
 					engine.ui.inv_screen.open();
 					if screen == DebugScreen::InventoryHover {
-						engine.ui.debug_hover = Some(crate::ui::InvId::Grid(0));
+						engine.ui.debug_hover = Some(crate::ui::InvId::Bar(0));
 					}
 				}
 				DebugScreen::Alchemy

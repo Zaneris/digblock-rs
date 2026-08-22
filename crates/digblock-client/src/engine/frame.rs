@@ -180,10 +180,33 @@ impl Engine {
 			&& let Some(r) = self.ui.ui_hits.rect_of(id)
 		{
 			self.ui.debug_hover = None;
-			self.input(digblock_platform::InputEvent::CursorMoved {
+			// Straight to the screen: a capture is not interactive, and
+			// `Engine::input` drops everything for one that is not.
+			let ev = digblock_platform::InputEvent::CursorMoved {
 				x: r.x + r.w / 2.0,
 				y: r.y + r.h / 2.0,
-			});
+			};
+			if self.ui.inv_screen.is_open() {
+				let bar = crate::hotbar::HotbarView::build(
+					&self.hotbar,
+					&self.inventory,
+					&self.input.tool_swap,
+				);
+				let style = crate::ui::Style::new(self.ui.ui_scale);
+				self.ui.inv_screen.handle_input(
+					&ev,
+					&self.ui.ui_hits,
+					&style,
+					&self.inv_grid,
+					&bar,
+				);
+			} else if self.ui.alch_screen.is_open() {
+				let view =
+					crate::ui::screens::alchemy::AlchView::build(&self.inventory, &self.skills);
+				self.ui
+					.alch_screen
+					.handle_input(&ev, &self.ui.ui_hits, &view);
+			}
 		}
 		self.ui.ui_dl.clear();
 		self.ui.ui_hits.clear();
