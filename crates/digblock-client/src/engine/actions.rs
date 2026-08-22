@@ -246,6 +246,14 @@ impl Engine {
 			self.ui.spellbook.open();
 			return;
 		}
+		// The Ward climbs THROUGH the channel rather than after it, so
+		// its validation, fare and first cells belong to the start: the
+		// server hears `Cast(Ward)` now and seals on its own clock, and
+		// offline the same plan begins its climb beside the channel. A
+		// refusal here is a channel that never opens.
+		if target == CastTarget::Ward && !self.begin_ward() {
+			return;
+		}
 		self.cast = Some(CastState { target, ticks: 0 });
 		self.emit(crate::audio::AudioCmd::LoopStart {
 			id: crate::audio::LOOP_CAST,
@@ -253,6 +261,39 @@ impl Engine {
 			pos: None,
 			gain: 0.45,
 		});
+	}
+
+	fn begin_ward(&mut self) -> bool {
+		match self.session.client.as_mut() {
+			Some(net) if net.ready() => {
+				net.send_cast(digblock_net::messages::CastKind::Ward);
+				true
+			}
+			_ => self.cast_ward_offline(),
+		}
+	}
+
+	/// The channel broke with a Ward climbing under it: the server
+	/// unwinds on our word (and on its own, if we moved); offline the
+	/// climb's own record is put back crown-first, only where the glass
+	/// is still ours, and the fare returns.
+	fn break_ward(&mut self) {
+		if let Some(net) = self.session.client.as_mut()
+			&& net.ready()
+		{
+			net.send_cast_break();
+		}
+		let Some(ward) = self.ward_closing.take() else {
+			return;
+		};
+		for (c, written, prev) in ward.closing.unwind() {
+			if self.pipeline.cell_at(c.0, c.1, c.2) == Some(written) {
+				self.pipeline.set_cell(c.0, c.1, c.2, prev);
+			}
+		}
+		if let Some((essence, fare)) = ward.fare {
+			self.inventory.add_sub(essence, fare);
+		}
 	}
 
 	/// Arm the shared teleport clock at the caster's own window. Every
@@ -283,10 +324,13 @@ impl Engine {
 			|| self.ui.spellbook.is_open()
 			|| self.ui.chat.is_open();
 		if moving || surface || self.dig_active() {
-			self.cast = None;
+			let target = self.cast.take().map(|c| c.target);
 			self.emit(crate::audio::AudioCmd::LoopStop {
 				id: crate::audio::LOOP_CAST,
 			});
+			if target == Some(CastTarget::Ward) {
+				self.break_ward();
+			}
 			self.push_feed(Msg::CastInterrupted);
 			return;
 		}
@@ -445,13 +489,14 @@ impl Engine {
 				}
 			}
 			CastTarget::Ward => {
-				// Not predicted either: the sphere arrives as ordinary
-				// edits from the server, the caster's copy included.
-				match self.session.client.as_mut() {
-					Some(net) if net.ready() => {
-						net.send_cast(digblock_net::messages::CastKind::Ward);
-					}
-					_ => self.cast_ward_offline(),
+				// The climb began with the channel (`begin_ward`) and
+				// the seal is the climb's own last tick; online the
+				// server declares it with `Warded`, and the XP rides
+				// `XpGain`. Offline the award is the only thing left.
+				if self.ward_closing.is_some() {
+					let level = self.skills.level(Skill::Arcana);
+					let (_, fare) = digblock_core::alchemy::ward_price(level);
+					self.award_xp_offline(Skill::Arcana, digblock_core::skills::cast_xp(fare));
 				}
 			}
 		}
@@ -494,42 +539,85 @@ impl Engine {
 		self.award_xp_offline(Skill::Arcana, digblock_core::skills::cast_xp(fare));
 	}
 
-	/// The offline arm of the Ward: the same rung, plan, player scan and
-	/// fare the server runs, protected cells skipped the same way, then
-	/// the cells land through the pipeline's own write path.
-	fn cast_ward_offline(&mut self) {
+	/// The offline arm of the Ward's START: the same rung, plan, player
+	/// scan and fare the server runs, protected cells skipped the same
+	/// way; what it leaves behind is a climb the tick loop steps beside
+	/// the channel. False when nothing began.
+	fn cast_ward_offline(&mut self) -> bool {
 		use digblock_core::skills::Skill;
 		let level = self.skills.level(Skill::Arcana);
 		let r = digblock_core::unlock::ward_radius(level);
 		if r == 0 {
 			self.push_feed(Msg::WaystoneLocked);
-			return;
+			return false;
+		}
+		if self.ward_closing.is_some() {
+			self.push_feed(Msg::CastBadTarget);
+			return false;
 		}
 		let head = digblock_core::kindle::host_cell(self.player.pos);
 		let Ok(writes) =
 			digblock_core::ward::plan(head, r, |c| self.pipeline.cell_at(c.0, c.1, c.2))
 		else {
 			self.push_feed(Msg::CastBadTarget);
-			return;
+			return false;
 		};
 		if writes
 			.iter()
 			.any(|&(c, v)| digblock_core::player::placement_blocked(self.body_pos(), c, v))
 		{
 			self.push_feed(Msg::CastBadTarget);
-			return;
+			return false;
 		}
 		let mut writes = writes;
 		writes.retain(|&(c, _)| !digblock_core::protect::immutable(c.0, c.1, c.2, &self.protected));
 		let (essence, fare) = digblock_core::alchemy::ward_price(level);
 		if !self.inventory.try_take_sub(essence, fare) {
 			self.push_feed(Msg::CastCantPay);
+			return false;
+		}
+		self.ward_closing = Some(OfflineWard {
+			closing: digblock_core::ward::Closing::new(
+				writes,
+				digblock_core::unlock::channel_ticks(level),
+			),
+			head,
+			fare: Some((essence, fare)),
+		});
+		true
+	}
+
+	/// One sim tick of a ward climbing offline: the tick's cells go
+	/// through the pipeline's own write path, the server's pace, each
+	/// recorded with what it replaced so a break can put it back. A cell
+	/// we have since stepped into is left unwritten — a hole where
+	/// somebody stood, the server's rule too. The tick the climb ends is
+	/// the seal. DIG_WARD_AGE holds the climb at its age so a capture
+	/// can photograph the bowl.
+	pub(super) fn step_ward_closing(&mut self) {
+		let body = self.body_pos();
+		let Some(ward) = self.ward_closing.as_mut() else {
+			return;
+		};
+		if let Some(age) = self.config.debug_ward_age
+			&& ward.closing.step() as f32 * digblock_core::player::TICK >= age
+		{
 			return;
 		}
-		for (c, v) in writes {
-			self.pipeline.set_cell(c.0, c.1, c.2, v);
+		for (c, v) in ward.closing.land() {
+			if digblock_core::player::placement_blocked(body, c, v) {
+				continue;
+			}
+			if let Some(prev) = self.pipeline.cell_at(c.0, c.1, c.2) {
+				ward.closing.record(c, v, prev);
+				self.pipeline.set_cell(c.0, c.1, c.2, v);
+			}
 		}
-		self.award_xp_offline(Skill::Arcana, digblock_core::skills::cast_xp(fare));
+		if ward.closing.done() {
+			let head = ward.head;
+			self.ward_closing = None;
+			self.ward_sealed(head, true);
+		}
 	}
 
 	/// Mouse hold or touch hold — the one question the dig machinery asks.

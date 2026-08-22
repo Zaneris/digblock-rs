@@ -76,8 +76,10 @@ pub const AREA_SYNC_TIMEOUT_SECS: f32 = 5.0;
 /// v33 is the floor for the first reason, in the other direction: a
 /// `ServerMsg` variant an older client cannot decode (`Kindled`) is sent
 /// to EVERYONE the moment anybody kindles, so admitting that client
-/// would let one cast disconnect it.
-pub const MIN_PROTOCOL: u16 = 33;
+/// would let one cast disconnect it. v34 raises the floor for the same
+/// reason again (`Warded`), and for the v31 one: `Wardglass` is a new
+/// row, and a v33 client would walk through a sphere it cannot see.
+pub const MIN_PROTOCOL: u16 = 34;
 
 // ---- handshake preamble ----------------------------------------------
 //

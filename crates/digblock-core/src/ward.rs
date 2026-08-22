@@ -6,6 +6,13 @@
 //! nothing the server does not re-derive; the plan is all or nothing,
 //! the Arc's rule, since a partial sphere would leave the two ends
 //! holding different sets.
+//!
+//! The plan's ORDER is the spectacle: the cells land in plan order
+//! across the cast's own channel, floor to crown with each ring swept
+//! around, so the glass rises about the caster as they channel and seals
+//! overhead the tick the channel completes — and an interrupted channel
+//! UNWINDS what had landed. Both ends run the same [`Closing`]; nothing
+//! is animated but the world itself.
 
 use crate::block::BlockType;
 use crate::chunk::{cell_id, make_cell};
@@ -71,12 +78,16 @@ pub enum Refusal {
 	Unloaded,
 }
 
-/// The writes one cast performs: shell cells of air or water become
-/// wardglass, interior water becomes air, everything else stands. Water
-/// in the shell must be claimed too — a wave left standing is a hole —
-/// and terrain in the shell is left alone, so a sphere cast on the
-/// ground is a dome fused to it. `read` answers with the cell's CURRENT
-/// value, `None` for one not loaded.
+/// The writes one cast performs, in the order they land: shell cells of
+/// air or water become wardglass, interior water becomes air, everything
+/// else stands. Water in the shell must be claimed too — a wave left
+/// standing is a hole — and terrain in the shell is left alone, so a
+/// sphere cast on the ground is a dome fused to it. `read` answers with
+/// the cell's CURRENT value, `None` for one not loaded.
+///
+/// Order: by height from the floor up, and within a layer by angle about
+/// the caster, so the closing is a spiral climbing the sphere and the
+/// last cell to land is at the crown.
 pub fn plan(
 	head: Cell,
 	r: i32,
@@ -97,7 +108,87 @@ pub fn plan(
 			out.push((c, make_cell(BlockType::Air, 0)));
 		}
 	}
+	out.sort_by(|a, b| {
+		closing_key(head, a.0)
+			.partial_cmp(&closing_key(head, b.0))
+			.expect("finite")
+	});
 	Ok(out)
+}
+
+/// Where a cell falls in the closing: its layer, then its bearing from
+/// the caster — total over distinct cells, so the sort is a pure
+/// function of the plan and both ends land the same sequence.
+fn closing_key(head: Cell, c: Cell) -> (i32, f32) {
+	let (dx, dz) = ((c.0 - head.0) as f32, (c.2 - head.2) as f32);
+	(c.1, dz.atan2(dx))
+}
+
+/// How many of `total` cells have landed after `step` of a `span`-tick
+/// climb: linear, and exactly all of them at the span — a sphere of any
+/// size closes in the channel's own time.
+pub fn landed_by(total: usize, step: u32, span: u32) -> usize {
+	if step >= span {
+		return total;
+	}
+	(total as u64 * u64::from(step) / u64::from(span)) as usize
+}
+
+/// A sphere in the middle of landing — the plan, how far through it the
+/// clock has got, and what has actually been written so far with what
+/// it replaced, which is what an unwind restores. Each end runs its own
+/// through its own write path.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Closing {
+	writes: Vec<(Cell, u16)>,
+	span: u32,
+	step: u32,
+	landed: Vec<(Cell, u16, u16)>,
+}
+
+impl Closing {
+	/// `span` is the climb in ticks — the cast's channel.
+	pub fn new(writes: Vec<(Cell, u16)>, span: u32) -> Self {
+		Self {
+			writes,
+			span: span.max(1),
+			step: 0,
+			landed: Vec::new(),
+		}
+	}
+
+	/// Advance one tick and hand back the cells that land on it. The
+	/// caller writes each through its own path and `record`s what it
+	/// replaced — a cell it declined to write is simply not recorded,
+	/// and an unwind will not touch it.
+	pub fn land(&mut self) -> Vec<(Cell, u16)> {
+		let from = landed_by(self.writes.len(), self.step, self.span);
+		self.step += 1;
+		let to = landed_by(self.writes.len(), self.step, self.span);
+		self.writes[from..to].to_vec()
+	}
+
+	pub fn record(&mut self, cell: Cell, written: u16, prev: u16) {
+		self.landed.push((cell, written, prev));
+	}
+
+	pub fn done(&self) -> bool {
+		self.step >= self.span
+	}
+
+	pub fn step(&self) -> u32 {
+		self.step
+	}
+
+	/// What an interrupt puts back: every recorded `(cell, written, prev)`
+	/// crown-first, so the glass recedes the way it rose. A caller
+	/// restores a cell only while it still holds `written` — somebody
+	/// who dug a pane out mid-climb keeps their hole.
+	pub fn unwind(self) -> Vec<(Cell, u16, u16)> {
+		let mut landed = self.landed;
+		landed.reverse();
+		landed
+	}
 }
 
 #[cfg(test)]
@@ -215,6 +306,79 @@ mod tests {
 		}
 		assert!(glassed_air > 0 && glassed_water > 0 && drained > 0 && spared > 0);
 		assert_eq!(written.len(), writes.len(), "no cell written twice");
+	}
+
+	/// The plan climbs: no cell lands below one that landed before it,
+	/// and the crown — the cell straight above the head at the radius —
+	/// is the very last. Counted, since a one-cell plan climbs trivially.
+	#[test]
+	fn the_closing_climbs_to_the_crown() {
+		for r in radii() {
+			let writes = plan(HEAD, r, |_| Some(make_cell(BlockType::Air, 0))).unwrap();
+			assert!(writes.len() > 10, "r={r}");
+			for w in writes.windows(2) {
+				assert!(
+					w[0].0.1 <= w[1].0.1,
+					"r={r}: {:?} landed before {:?}",
+					w[0].0,
+					w[1].0
+				);
+			}
+			assert_eq!(
+				writes.last().unwrap().0,
+				(HEAD.0, HEAD.1 + r, HEAD.2),
+				"r={r}"
+			);
+		}
+	}
+
+	/// A closing lands every cell exactly once, in plan order, and all
+	/// of them by its span — whether the plan is larger than the span
+	/// or smaller, at every channel length the ladder has.
+	#[test]
+	fn a_closing_lands_the_plan_once_in_order() {
+		let spans: Vec<u32> = {
+			let mut v: Vec<u32> = (0..=100).map(unlock::channel_ticks).collect();
+			v.sort_unstable();
+			v.dedup();
+			v
+		};
+		assert!(spans.len() >= 2, "the ladder quickens the channel");
+		for span in spans {
+			for total in [1usize, 7, span as usize - 1, span as usize, 1237] {
+				let writes: Vec<(Cell, u16)> = (0..total as i32).map(|i| ((i, 0, 0), 1)).collect();
+				let mut c = Closing::new(writes.clone(), span);
+				let mut landed = Vec::new();
+				let mut ticks = 0;
+				while !c.done() {
+					landed.extend(c.land());
+					ticks += 1;
+				}
+				assert_eq!(ticks, span, "total={total}");
+				assert_eq!(landed, writes, "total={total} span={span}");
+				assert!(c.land().is_empty(), "nothing lands after the seal");
+			}
+		}
+	}
+
+	/// An unwind hands back exactly what was recorded, crown-first: the
+	/// last cell written is the first restored, and a cell never
+	/// recorded (declined at write time) is not in it.
+	#[test]
+	fn an_unwind_restores_what_landed_in_reverse() {
+		let writes: Vec<(Cell, u16)> = (0..10).map(|i| ((0, i, 0), 7)).collect();
+		let mut c = Closing::new(writes, 2);
+		let mut recorded = Vec::new();
+		for cell_val in c.land() {
+			if cell_val.0.1 % 2 == 0 {
+				continue; // declined
+			}
+			c.record(cell_val.0, cell_val.1, 3);
+			recorded.push((cell_val.0, cell_val.1, 3));
+		}
+		assert!(recorded.len() > 1, "the half-climb recorded something");
+		recorded.reverse();
+		assert_eq!(c.unwind(), recorded);
 	}
 
 	/// One unloaded cell refuses the whole cast — a skipped cell would be

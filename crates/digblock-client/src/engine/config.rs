@@ -300,10 +300,15 @@ pub struct EngineConfig {
 	/// once chunks are Ready. Set by the desktop launcher from
 	/// DIG_SHAPES — visual verification without gameplay wiring.
 	pub debug_shapes: bool,
-	/// Debug: a ward of this radius closed about spawn the moment every
-	/// cell it would touch is resident — the cast's own plan, with no
-	/// channel or fare behind it. Set by the launcher from DIG_WARD.
+	/// Debug: a ward of this radius closing about spawn from the moment
+	/// every cell it would touch is resident — the cast's own plan and
+	/// climb, with no channel or fare behind it. Set by the launcher
+	/// from DIG_WARD.
 	pub debug_ward: Option<i32>,
+	/// Debug: hold DIG_WARD's climb this many seconds in, DIG_CAST's rule
+	/// — a sphere half-landed is what a headless run cannot otherwise
+	/// photograph. Set by the launcher from DIG_WARD_AGE.
+	pub debug_ward_age: Option<f32>,
 	/// Debug: stand a rank of doors three cells ahead of spawn, close
 	/// enough that the crosshair lands on one. Set by the desktop
 	/// launcher from DIG_DOORS. See [`debug_doors_plan`] for why
@@ -519,6 +524,7 @@ impl EngineConfig {
 			debug_cast: None,
 			debug_shapes: false,
 			debug_ward: None,
+			debug_ward_age: None,
 			debug_doors: false,
 			debug_vault: false,
 			debug_node: None,

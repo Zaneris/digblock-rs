@@ -478,6 +478,7 @@ impl TestClient {
 				| NetEvent::Waystones { .. }
 				| NetEvent::CastRefused { .. }
 				| NetEvent::Kindled { .. }
+				| NetEvent::Warded { .. }
 				| NetEvent::AreaReady => {}
 			}
 		}

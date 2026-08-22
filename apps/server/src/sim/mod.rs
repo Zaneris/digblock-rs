@@ -489,6 +489,26 @@ pub struct Sim {
 	/// server changes nothing about when it goes out. Not journaled: a
 	/// light is never a cell, and a restart may forget it.
 	kindled: Vec<Kindled>,
+	/// Every ward still climbing — at most one per caster. Fare paid and
+	/// plan fixed as the channel began; the climb lasts the channel and
+	/// UNWINDS if the caster breaks it, moves, or leaves.
+	closings: Vec<WardClosing>,
+}
+
+/// One ward climbing about a channelling caster: the cells still to
+/// land, who is paying, where they stood when it began (a step away
+/// breaks the channel — stillness is the channel's contract on the
+/// client, and the server holds its own copy), and the fare to hand
+/// back on an unwind.
+struct WardClosing {
+	conn_id: u64,
+	by: PlayerId,
+	head: (i32, i32, i32),
+	radius: i32,
+	from: Vec3,
+	essence: digblock_core::block::Essence,
+	fare: u32,
+	closing: digblock_core::ward::Closing,
 }
 
 /// One standing kindled light: where, and the tick it burns until.
@@ -567,6 +587,7 @@ impl Sim {
 			world_jobs: digblock_core::worldjob::Scheduler::new(),
 			presence: digblock_core::presence::RollingPeak::day(),
 			kindled: Vec::new(),
+			closings: Vec::new(),
 		})
 	}
 
@@ -612,6 +633,7 @@ impl Sim {
 		self.step_physics();
 		self.verify_digs();
 		self.process_edits();
+		self.step_closings();
 		self.step_fluid();
 		self.step_world_jobs();
 		// Expiry is a comparison, so every client's own countdown agrees
@@ -880,6 +902,7 @@ impl Sim {
 				// position when they run anyway).
 				ClientMsg::ReturnToSpawn => self.handle_return_to_spawn(conn_id),
 				ClientMsg::Cast(kind) => self.handle_cast(conn_id, kind),
+				ClientMsg::CastBreak => self.break_ward(conn_id),
 				// Inline like chat: sync radius is read fresh each tick, so the
 				// change applies from the next sync pass.
 				//

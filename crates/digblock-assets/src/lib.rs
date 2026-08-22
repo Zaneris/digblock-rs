@@ -209,8 +209,12 @@ pub mod sfx {
 	/// The level-up that OPENS something: a four-note fanfare on top of
 	/// the same tonic, so the two read as the same event, escalated.
 	pub const LEVEL_UNLOCK: &[u8] = include_bytes!("../../../assets/sfx/level_unlock.ogg");
+	/// The Ward sealing: a crystalline chord over a soft low thump, the
+	/// crown cell landing. The climb under it has no recording of its
+	/// own — it rides the cast channel's loop.
+	pub const WARD_CLOSE: &[u8] = include_bytes!("../../../assets/sfx/ward_close.ogg");
 
-	pub const ALL: [(&str, &[u8]); 20] = [
+	pub const ALL: [(&str, &[u8]); 21] = [
 		("dig_stone.ogg", DIG_STONE),
 		("dig_earth.ogg", DIG_EARTH),
 		("dig_wood.ogg", DIG_WOOD),
@@ -231,6 +235,7 @@ pub mod sfx {
 		("siphon_take.ogg", SIPHON_TAKE),
 		("level_up.ogg", LEVEL_UP),
 		("level_unlock.ogg", LEVEL_UNLOCK),
+		("ward_close.ogg", WARD_CLOSE),
 	];
 }
 

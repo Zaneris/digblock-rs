@@ -202,6 +202,13 @@ pub enum NetEvent {
 		cell: [i32; 3],
 		secs_left: u16,
 	},
+	/// A Ward SEALED — anyone's, our own included — `radius` blocks
+	/// about `head`.
+	Warded {
+		by: PlayerId,
+		head: [i32; 3],
+		radius: u8,
+	},
 	Disconnected {
 		reason: String,
 	},
@@ -743,6 +750,9 @@ impl NetClient {
 			ServerMsg::Kindled { cell, secs_left } => {
 				out.push(NetEvent::Kindled { cell, secs_left });
 			}
+			ServerMsg::Warded { by, head, radius } => {
+				out.push(NetEvent::Warded { by, head, radius });
+			}
 			ServerMsg::InventoryFull { counts } => {
 				// Raw pairs through to the engine — `Inventory::from_wire`
 				// does the strict decode (unknown ids dropped, flagged
@@ -900,6 +910,11 @@ impl NetClient {
 	/// unlock and the price, which are the real gates.
 	pub fn send_cast(&mut self, kind: crate::messages::CastKind) {
 		self.send_msg(&ClientMsg::Cast(kind));
+	}
+
+	/// The Ward channel broke — the server unwinds the climb.
+	pub fn send_cast_break(&mut self) {
+		self.send_msg(&ClientMsg::CastBreak);
 	}
 
 	/// Tell the server the draw distance changed (settings slider), so

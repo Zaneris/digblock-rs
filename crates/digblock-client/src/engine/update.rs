@@ -40,16 +40,22 @@ impl Engine {
 			self.debug_shapes_pending = pending;
 		}
 		// DIG_WARD showcase: the plan refuses until every cell is resident,
-		// so ask each frame and land the sphere whole the first time it
-		// answers — the same plan a cast lands.
+		// so ask each frame and start the climb the first time it answers
+		// — the same plan, at the channel's own pace, with no channel or
+		// fare behind it.
 		if let Some(r) = self.debug_ward_pending {
 			let head = digblock_core::kindle::host_cell(self.player.pos);
 			if let Ok(writes) =
 				digblock_core::ward::plan(head, r, |c| self.pipeline.cell_at(c.0, c.1, c.2))
 			{
-				for (c, v) in writes {
-					self.pipeline.set_cell(c.0, c.1, c.2, v);
-				}
+				let span = digblock_core::unlock::channel_ticks(
+					self.skills.level(digblock_core::skills::Skill::Arcana),
+				);
+				self.ward_closing = Some(OfflineWard {
+					closing: digblock_core::ward::Closing::new(writes, span),
+					head,
+					fare: None,
+				});
 				self.debug_ward_pending = None;
 			}
 		}
@@ -316,6 +322,7 @@ impl Engine {
 			self.dig_accum -= TICK;
 			self.step_dig();
 			self.step_cast();
+			self.step_ward_closing();
 		}
 		// The siphon's stream reads the state those ticks just left, so it
 		// ages after them and on the FRAME clock rather than the sim one:

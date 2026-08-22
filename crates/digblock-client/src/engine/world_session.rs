@@ -50,6 +50,7 @@ impl Engine {
 	pub(super) fn reset_world_transients(&mut self, pos: Vec3, world_replaced: bool) {
 		self.dig = None;
 		self.cast = None;
+		self.ward_closing = None;
 		self.arc_on = false;
 		self.wisp_left = 0.0;
 		self.target = None;

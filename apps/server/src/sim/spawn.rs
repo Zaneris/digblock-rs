@@ -4,6 +4,12 @@
 
 use super::*;
 
+/// How far a channelling caster may drift before the server reads it
+/// as a step: the client breaks its channel on any movement INTENT,
+/// and this is the wider, authoritative copy of the same contract —
+/// generous to a snapshot's jitter, far short of a stride.
+const WARD_STILL: f32 = 0.6;
+
 impl Sim {
 	/// The spawn point to use right now.
 	///
@@ -414,15 +420,16 @@ impl Sim {
 		self.process_cast(conn_id, digblock_core::skills::cast_xp(fare));
 	}
 
-	/// The Ward: the sphere is derived from the caster's head as the
-	/// SERVER holds it (`ward::plan`), scanned whole for players and
-	/// refused whole — the Arc's rule — before the fare is taken.
-	/// Protected cells are simply not written, exactly as a fluid write
-	/// is refused at the cell: the sphere closes around a locked pad the
-	/// way water does. Every other cell lands through `apply_write` under
-	/// `NO_CLIENT_SEQ`, so the journal, the fluid schedule and every
-	/// client see ordinary edits: nothing is predicted, and the caster
-	/// learns of their own ward exactly as everyone else does.
+	/// The Ward, on `Cast(Ward)` sent as the caster's channel BEGINS: the
+	/// sphere is derived from the caster's head as the SERVER holds it
+	/// (`ward::plan`), scanned whole for players and refused whole — the
+	/// Arc's rule — before the fare is taken. Protected cells are simply
+	/// not written, exactly as a fluid write is refused at the cell.
+	/// What is accepted is a CLIMB: the cells land over the channel's
+	/// own ticks through `apply_write` under `NO_CLIENT_SEQ`, so the
+	/// journal, the fluid schedule and every client see ordinary edits,
+	/// and nothing is predicted. The seal is the server's to declare
+	/// (`Warded`), and a broken channel unwinds.
 	fn cast_ward(&mut self, conn_id: u64) {
 		use digblock_core::skills::Skill;
 		use digblock_net::messages::CastRefusal;
@@ -439,6 +446,9 @@ impl Sim {
 		let r = digblock_core::unlock::ward_radius(level);
 		if r == 0 {
 			return refuse(client, CastRefusal::Locked);
+		}
+		if self.closings.iter().any(|w| w.conn_id == conn_id) {
+			return refuse(client, CastRefusal::BadTarget);
 		}
 		let head = digblock_core::kindle::host_cell(client.player.pos);
 		let Ok(writes) = digblock_core::ward::plan(head, r, |c| self.store.cell_at(c.0, c.1, c.2))
@@ -466,20 +476,116 @@ impl Sim {
 		}
 		let counts = client.inventory.to_wire();
 		client_send(client, &ServerMsg::InventoryFull { counts });
-		let id = client.id;
-		for (cell, val) in writes {
-			if let Some(prev) = self.store.set_cell(cell.0, cell.1, cell.2, val) {
+		self.closings.push(WardClosing {
+			conn_id,
+			by: client.id,
+			head,
+			radius: r,
+			from: client.player.pos,
+			essence,
+			fare,
+			closing: digblock_core::ward::Closing::new(
+				writes,
+				digblock_core::unlock::channel_ticks(level),
+			),
+		});
+	}
+
+	/// One tick of every ward still climbing. A caster who has left,
+	/// or stepped further than [`WARD_STILL`] from where they began,
+	/// has broken the channel whatever their client said, and the climb
+	/// unwinds. Otherwise the tick's cells land; a cell somebody has
+	/// since stepped into is left unwritten rather than closed on them
+	/// — a hole where a player stood, the protected cells' honesty. The
+	/// tick the climb completes, the sphere is SEALED: announced, and
+	/// paid in XP.
+	pub(super) fn step_closings(&mut self) {
+		let mut closings = std::mem::take(&mut self.closings);
+		let mut i = 0;
+		while i < closings.len() {
+			let w = &closings[i];
+			let still = self
+				.clients
+				.get(&w.conn_id)
+				.filter(|c| c.live)
+				.is_some_and(|c| c.player.pos.distance(w.from) <= WARD_STILL);
+			if !still {
+				let w = closings.remove(i);
+				self.unwind_ward(w);
+				continue;
+			}
+			let w = &mut closings[i];
+			let by = w.by;
+			for (cell, val) in w.closing.land() {
+				let on_someone = self
+					.clients
+					.values()
+					.filter(|c| c.live)
+					.any(|c| digblock_core::player::placement_blocked(c.player.pos, cell, val));
+				if on_someone {
+					continue;
+				}
+				if let Some(prev) = self.store.set_cell(cell.0, cell.1, cell.2, val) {
+					w.closing.record(cell, val, prev);
+					self.apply_write(
+						cell,
+						val,
+						prev,
+						by,
+						digblock_net::protocol::NO_CLIENT_SEQ,
+						false,
+					);
+				}
+			}
+			if w.closing.done() {
+				let w = closings.remove(i);
+				self.broadcast(&ServerMsg::Warded {
+					by: w.by,
+					head: [w.head.0, w.head.1, w.head.2],
+					radius: u8::try_from(w.radius).expect("a rank's radius fits a byte"),
+				});
+				self.process_cast(w.conn_id, digblock_core::skills::cast_xp(w.fare));
+				continue;
+			}
+			i += 1;
+		}
+		self.closings = closings;
+	}
+
+	/// `CastBreak`: the caster's own word that the channel broke.
+	pub(super) fn break_ward(&mut self, conn_id: u64) {
+		if let Some(i) = self.closings.iter().position(|w| w.conn_id == conn_id) {
+			let w = self.closings.remove(i);
+			self.unwind_ward(w);
+		}
+	}
+
+	/// Put back what a broken climb had landed, crown-first, through the
+	/// same write path — but only a cell that still holds our glass,
+	/// so a pane somebody dug out mid-climb stays dug. The fare goes
+	/// back to a caster still here; one who left mid-channel forfeits
+	/// it, since there is no record to refund into.
+	fn unwind_ward(&mut self, w: WardClosing) {
+		for (cell, written, prev) in w.closing.unwind() {
+			if self.store.cell_at(cell.0, cell.1, cell.2) != Some(written) {
+				continue;
+			}
+			if self.store.set_cell(cell.0, cell.1, cell.2, prev).is_some() {
 				self.apply_write(
 					cell,
-					val,
 					prev,
-					id,
+					written,
+					w.by,
 					digblock_net::protocol::NO_CLIENT_SEQ,
 					false,
 				);
 			}
 		}
-		self.process_cast(conn_id, digblock_core::skills::cast_xp(fare));
+		if let Some(client) = self.clients.get_mut(&w.conn_id) {
+			client.inventory.add_sub(w.essence, w.fare);
+			let counts = client.inventory.to_wire();
+			client_send(client, &ServerMsg::InventoryFull { counts });
+		}
 	}
 
 	/// One light as the wire carries it, its remaining time read off the

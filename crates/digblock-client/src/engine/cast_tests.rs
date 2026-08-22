@@ -83,6 +83,97 @@ fn a_jump_throws_bursts_that_expire_within_their_life() {
 	assert_eq!(e.vfx.flash, 0.0, "the flash outlived the jump");
 }
 
+/// The Ward climbs THROUGH its channel and a break unwinds it: halfway
+/// through, part of the shell is glass and the fare is gone; one step
+/// puts every pane back and the fare with it; a channel left to finish
+/// seals the whole shell, washes the overlay and keeps the fare.
+#[test]
+fn a_broken_ward_channel_unwinds_and_a_finished_one_seals() {
+	use digblock_core::block::BlockType;
+	use digblock_core::chunk::{cell_id, make_cell};
+	use digblock_core::skills::total_xp_for;
+	let mut e = fresh();
+	let center = digblock_core::chunk::ChunkPos::new(0, 0, 0);
+	for _ in 0..10_000 {
+		let m = e.pipeline.maintain(center, usize::MAX, None, None);
+		if m.gen_queue == 0 && m.mesh_queue == 0 && m.in_flight == 0 && !m.saturated {
+			break;
+		}
+	}
+	let level = digblock_core::unlock::WARD_AT;
+	e.skills.add_xp(Skill::Arcana, total_xp_for(level));
+	let (essence, fare) = digblock_core::alchemy::ward_price(level);
+	e.inventory.add_sub(essence, fare);
+	let r = digblock_core::unlock::ward_radius(level);
+	let head = digblock_core::kindle::host_cell(e.player.pos);
+	let (shell, _) = digblock_core::ward::sets(head, r);
+	let glass = make_cell(BlockType::Wardglass, 0);
+	let air_cells: Vec<_> = shell
+		.iter()
+		.copied()
+		.filter(|&(x, y, z)| {
+			e.pipeline.cell_at(x, y, z).map(cell_id) == Some(BlockType::Air as u16)
+		})
+		.collect();
+	assert!(
+		air_cells.len() > 10,
+		"the shell about spawn must be mostly air, or the sweep proves nothing"
+	);
+	let glassed = |e: &Engine| {
+		air_cells
+			.iter()
+			.filter(|&&(x, y, z)| e.pipeline.cell_at(x, y, z) == Some(glass))
+			.count()
+	};
+	let need = digblock_core::unlock::channel_ticks(level);
+
+	e.start_cast(CastTarget::Ward);
+	assert!(e.cast.is_some(), "the channel opened");
+	assert_eq!(
+		e.inventory.sub_count(essence),
+		0,
+		"the fare is taken as the channel begins"
+	);
+	for _ in 0..need / 2 {
+		tick(&mut e);
+	}
+	let half = glassed(&e);
+	assert!(
+		half > 0 && half < air_cells.len(),
+		"halfway through, the glass is climbing"
+	);
+	e.input(InputEvent::Key {
+		key: Key::W,
+		pressed: true,
+	});
+	tick(&mut e);
+	assert!(e.cast.is_none(), "the step broke the channel");
+	assert_eq!(glassed(&e), 0, "every pane came back down");
+	assert_eq!(
+		e.inventory.sub_count(essence),
+		fare,
+		"and the fare came back"
+	);
+	e.input(InputEvent::Key {
+		key: Key::W,
+		pressed: false,
+	});
+
+	e.start_cast(CastTarget::Ward);
+	assert!(e.cast.is_some());
+	for _ in 0..=need {
+		tick(&mut e);
+	}
+	assert!(e.cast.is_none(), "the channel completed");
+	assert_eq!(glassed(&e), air_cells.len(), "the shell sealed whole");
+	assert!(e.vfx.flash > 0.0, "the seal washes the overlay");
+	assert_eq!(e.inventory.sub_count(essence), 0, "the fare stays spent");
+	assert!(
+		e.skills.xp(Skill::Arcana) > total_xp_for(level),
+		"the seal paid XP"
+	);
+}
+
 /// An interrupted channel FADES rather than pops: the aura's envelope is
 /// still visible the tick after the break, and then runs monotonically
 /// to zero.
@@ -189,6 +280,20 @@ fn one_cooldown_covers_home_and_every_port() {
 #[test]
 fn a_light_spell_neither_waits_on_the_clock_nor_arms_it() {
 	let mut e = fresh();
+	// The Ward validates as its channel BEGINS, so it needs its rung,
+	// its fare and a resident sphere to open at all.
+	let center = digblock_core::chunk::ChunkPos::new(0, 0, 0);
+	for _ in 0..10_000 {
+		let m = e.pipeline.maintain(center, usize::MAX, None, None);
+		if m.gen_queue == 0 && m.mesh_queue == 0 && m.in_flight == 0 && !m.saturated {
+			break;
+		}
+	}
+	let level = digblock_core::unlock::WARD_AT;
+	e.skills
+		.add_xp(Skill::Arcana, digblock_core::skills::total_xp_for(level));
+	let (essence, fare) = digblock_core::alchemy::ward_price(level);
+	e.inventory.add_sub(essence, fare);
 	let need = digblock_core::unlock::channel_ticks(e.skills.level(Skill::Arcana));
 	for target in [CastTarget::Wisp, CastTarget::Kindle, CastTarget::Ward] {
 		assert!(!target.teleports(), "{target:?} must not ride the clock");

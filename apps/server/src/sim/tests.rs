@@ -1539,6 +1539,100 @@ fn a_ward_closes_about_the_caster_as_ordinary_edits() {
 		"the ward lands"
 	);
 	let glass = make_cell(BlockType::Wardglass, 0);
+	// The glass CLIMBS through the channel: on the cast's own tick some
+	// of the shell is glass and some still air, nothing is announced,
+	// and a `CastBreak` puts every pane back and refunds the fare.
+	let shell_glass = |sim: &super::Sim| {
+		shell
+			.iter()
+			.filter(|&&(x, y, z)| sim.test_cell_at(x, y, z) == Some(glass))
+			.count()
+	};
+	let first_tick = shell_glass(&sim);
+	assert!(first_tick > 0, "nothing landed on the cast's tick");
+	assert_eq!(
+		sim.test_essence(1, essence),
+		Some(0),
+		"the fare is taken as the channel begins"
+	);
+	let span = digblock_core::unlock::channel_ticks(level);
+	for _ in 1..span / 2 {
+		sim.tick_once(vec![]);
+	}
+	let half = shell_glass(&sim);
+	assert!(
+		half > first_tick,
+		"the shell never grew past the first tick"
+	);
+	c.drain();
+	assert!(
+		!c.msgs.iter().any(|m| matches!(m, ServerMsg::Warded { .. })),
+		"a half-climbed sphere is not sealed"
+	);
+	sim.tick_once(vec![SimEvent::Msg {
+		conn_id: 1,
+		msg: ClientMsg::CastBreak,
+	}]);
+	assert_eq!(shell_glass(&sim), 0, "the break put every pane back");
+	for (&(x, y, z), &before) in shell.iter().zip(&was) {
+		assert_eq!(sim.test_cell_at(x, y, z), before, "restored at {x},{y},{z}");
+	}
+	assert_eq!(
+		sim.test_essence(1, essence),
+		Some(fare),
+		"and the fare came back"
+	);
+	c.drain();
+	c.msgs.clear();
+
+	// A step breaks it too, whatever the client says: the caster moved
+	// further than the server's stillness allows, and the sim unwinds
+	// on its own.
+	cast(&mut sim);
+	assert!(shell_glass(&sim) > 0, "the second cast climbs");
+	let from = sim.test_player(1).unwrap().pos;
+	sim.test_teleport(1, from + glam::Vec3::new(1.5, 0.0, 0.0));
+	sim.tick_once(vec![]);
+	assert_eq!(shell_glass(&sim), 0, "a step away unwound the climb");
+	assert_eq!(
+		sim.test_essence(1, essence),
+		Some(fare),
+		"with the fare back"
+	);
+	sim.test_teleport(1, from);
+	c.drain();
+	c.msgs.clear();
+
+	// Left alone, the channel seals: every cell, then the announcement.
+	cast(&mut sim);
+	for _ in 1..span {
+		sim.tick_once(vec![]);
+	}
+	c.drain();
+	let warded = c
+		.msgs
+		.iter()
+		.position(|m| matches!(m, ServerMsg::Warded { .. }))
+		.expect("the sphere sealed");
+	let last_edit = c
+		.msgs
+		.iter()
+		.rposition(|m| matches!(m, ServerMsg::EditApplied { .. }))
+		.expect("the sphere has cells");
+	assert!(
+		last_edit < warded,
+		"the seal was announced before the crown cell"
+	);
+	if let ServerMsg::Warded {
+		by,
+		head: at,
+		radius,
+	} = &c.msgs[warded]
+	{
+		assert_eq!(Some(*by), sim.test_player_id(1), "cast by the caster");
+		assert_eq!(i32::from(*radius), r, "the rank's radius");
+		assert_eq!(*at, [head.0, head.1, head.2], "about the caster's head");
+	}
 	let (mut glassed, mut spared) = (0, 0);
 	for (&(x, y, z), &before) in shell.iter().zip(&was) {
 		let before = before.expect("a flat world is resident about spawn");

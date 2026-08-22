@@ -89,6 +89,12 @@ impl Sim {
 		self.clients.get(&conn_id).map(|c| c.player.state())
 	}
 
+	/// The wire id a connection was dealt — what a broadcast names it by.
+	#[cfg(test)]
+	pub(super) fn test_player_id(&self, conn_id: u64) -> Option<digblock_net::protocol::PlayerId> {
+		self.clients.get(&conn_id).map(|c| c.id)
+	}
+
 	/// The hotbar slot this client is pointing at — what a real client
 	/// declares on every input tick and every edit, and what decides
 	/// whether the tool slot's contents are in hand at all.

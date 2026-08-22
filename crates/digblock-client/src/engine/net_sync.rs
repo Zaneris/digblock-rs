@@ -51,6 +51,22 @@ impl Engine {
 		});
 	}
 
+	/// A ward SEALED, ours or a remote's: the glass itself was the
+	/// spectacle, climbing as ordinary cells through the channel with no
+	/// sound of their own (a conjured cell never thunks), so the seal is
+	/// the one instant with a voice — the chime, heard flat by the caster
+	/// because it closed about THEIR head, and their wash of the overlay.
+	pub(super) fn ward_sealed(&mut self, head: (i32, i32, i32), own: bool) {
+		if own {
+			self.vfx.flash = 0.6;
+		}
+		self.emit(crate::audio::AudioCmd::Sfx {
+			sound: crate::audio::Sfx::WardClose,
+			pos: (!own).then(|| cell_center(head)),
+			gain: 0.8,
+		});
+	}
+
 	/// Land a teleport (return to spawn, admin /tp): hard-set the player
 	/// and camera — the reconciliation slide across half the map would
 	/// fight streaming — and drop everything that describes the
@@ -252,7 +268,10 @@ impl Engine {
 						let sound = if block == BlockType::Air {
 							prev.filter(|p| !p.is_water() && *p != BlockType::Air)
 								.map(|p| crate::audio::break_sfx(crate::audio::material_of(p)))
-						} else if !block.is_water() {
+						} else if !block.is_water() && !block.is_conjured() {
+							// A conjured cell makes no sound of its own:
+							// a sphere's worth of thunks would drown the
+							// spell that speaks for them.
 							Some(crate::audio::Sfx::Place)
 						} else {
 							None
@@ -466,11 +485,24 @@ impl Engine {
 				NetEvent::Kindled { cell, secs_left } => {
 					self.kindle_light((cell[0], cell[1], cell[2]), f32::from(secs_left));
 				}
+				NetEvent::Warded { by, head, .. } => {
+					let own = Some(by) == self.session.my_player_id;
+					self.ward_sealed((head[0], head[1], head[2]), own);
+				}
 				NetEvent::CastRefused { reason } => {
 					use digblock_net::messages::CastRefusal;
 					// A predicted wisp goes out with the refusal — the
-					// debit it predicted against never happened.
+					// debit it predicted against never happened. A Ward
+					// channel still winding has nothing climbing under
+					// it, so it stops here rather than completing into
+					// nothing.
 					self.wisp_left = 0.0;
+					if self.cast.as_ref().map(|c| c.target) == Some(CastTarget::Ward) {
+						self.cast = None;
+						self.emit(crate::audio::AudioCmd::LoopStop {
+							id: crate::audio::LOOP_CAST,
+						});
+					}
 					self.push_feed(match reason {
 						CastRefusal::Locked => Msg::WaystoneLocked,
 						CastRefusal::CantPay => Msg::CastCantPay,

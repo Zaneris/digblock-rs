@@ -557,6 +557,13 @@ pub enum ClientMsg {
 	///
 	/// [`TELEPORT_COOLDOWN_SECS`]: crate::protocol::TELEPORT_COOLDOWN_SECS
 	Cast(CastKind),
+	/// The caster broke their Ward channel — the ONE cast the server runs
+	/// for the channel's whole length (`Cast(Ward)` is sent as the
+	/// channel BEGINS, so the glass climbs while the caster stands), and
+	/// so the one with something to unwind. The server also unwinds on
+	/// its own when the caster moves or leaves; this is the honest
+	/// client's prompt word. Appended in v34.
+	CastBreak,
 }
 
 /// What a [`ClientMsg::Cast`] winds up toward — shaped for the whole
@@ -848,6 +855,17 @@ pub enum ServerMsg {
 	Kindled {
 		cell: [i32; 3],
 		secs_left: u16,
+	},
+	/// A Ward SEALED: `radius` blocks about `head`, cast by `by` — sent to
+	/// everyone, the caster included, after the crown cell's
+	/// `EditApplied`. The cells climbed as ordinary edits through the
+	/// channel; this names the instant the sphere closed, which is the
+	/// chime and the caster's wash, and which no client could tell from
+	/// an unwind about to begin. Appended in v34.
+	Warded {
+		by: PlayerId,
+		head: [i32; 3],
+		radius: u8,
 	},
 }
 

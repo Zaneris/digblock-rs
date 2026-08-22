@@ -164,6 +164,29 @@ so; the older entries pin neither, and reproduce the sound rather than the bytes
 
 ## Wanted (placeholders in use)
 
+- `ward_close.ogg` — the Ward SEALING, 2.0 s one-shot, heard flat by the caster and placed at the head for everyone
+  else. The climb itself has no recording: the glass rises through the cast channel, under the channel's own loop, and
+  this is the crown cell landing — a C-major bell chord (C6 G6 C7 E7) with two inharmonic partials for the glass, a
+  short high-passed noise "tss", and a soft 55 Hz thump underneath for weight, all decaying into silence. Noise seed and
+  Ogg serial pinned, the siphon recipes' rule.
+
+  ```sh
+  ffmpeg -f lavfi -i "aevalsrc=exprs='\
+   0.20*exp(-t*2.2)*sin(2*PI*1046.5*t)\
+  +0.16*exp(-t*2.6)*sin(2*PI*1568*t)\
+  +0.14*exp(-t*3.0)*sin(2*PI*2093*t)\
+  +0.11*exp(-t*3.6)*sin(2*PI*2637*t)\
+  +0.07*exp(-t*4.4)*sin(2*PI*2888*t)\
+  +0.05*exp(-t*6.0)*sin(2*PI*5651*t)\
+  +0.45*exp(-t*9.0)*sin(2*PI*55*t)':s=44100:d=2.0" \
+   -f lavfi -i "anoisesrc=d=2.0:c=white:a=0.8:r=44100:seed=2718" \
+   -filter_complex "[1:a]bandpass=f=5200:width_type=o:w=1.6,afade=t=in:st=0:d=0.01,\
+  afade=t=out:st=0.02:d=0.42:curve=exp,volume=0.35[ts];\
+  [0:a][ts]amix=inputs=2:normalize=0,aformat=sample_fmts=s16:channel_layouts=mono,\
+  alimiter=level_in=1:level_out=0.72,afade=t=out:st=1.8:d=0.2" -fflags +bitexact -ar 44100 -ac 1 ward_close.wav
+  oggenc -q 3 -s 2718 -o ward_close.ogg ward_close.wav
+  ```
+
 The Arcana cast set currently reuses existing recordings (see `digblock-client/src/audio.rs::bytes`): `CastLoop` plays
 `siphon_draw.ogg`, `TeleportOut` plays `siphon_take.ogg`, `TeleportIn` plays `level_unlock.ogg`. Wanted, CC0: a soft
 arcane wind loop for the channel, a release "whoosh" for departure, and a settling chime for arrival — swap the `bytes`

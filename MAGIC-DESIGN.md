@@ -152,7 +152,16 @@ actions returned rather than applied. Five spell families shipped; the rest are 
   is `Wardglass`, a `conjured` row: diggable by anyone, so nobody is walled in, but a dig credits nothing and pays no XP
   and no slot holds one — a sphere would otherwise be a faucet of panes. Nothing is predicted: the cells land through
   `apply_write` under `NO_CLIENT_SEQ` and the caster sees them as everyone does. Three ranks (`unlock::ward_radius`),
-  each a wider sphere at a doubled fare.
+  each a wider sphere at a doubled fare. The closing is the GLASS, and it happens DURING the channel: `Cast(Ward)` goes
+  out as the channel begins, the plan's order is floor to crown with each ring swept around, and the cells land in that
+  order across `unlock::channel_ticks` — the server through `apply_write`, the offline engine through the same
+  `ward::Closing` — so on every client the sphere rises about the caster while they stand still and seals overhead the
+  tick the channel completes, with nothing animated but the world. An interrupted channel UNWINDS: the client sends
+  `CastBreak` (and the server breaks it on its own if the caster moves or leaves), every pane still standing comes back
+  down crown-first through the same write path, and the fare — taken as the channel began — returns. `ServerMsg::Warded`
+  is the SEAL, sent after the crown cell: the one recording (`ward_close.ogg`) and the caster's wash; a conjured cell
+  landing makes no sound of its own. A cell somebody steps into mid-climb is left unwritten — a hole where a player
+  stood, the protected cells' honesty — and a pane somebody digs out mid-climb stays dug through an unwind.
 - **The Mason's Arc** — Arcana's answer to the Resonant Pick: the pick widens *breaking*, the Arc widens *placing*. A
   toggle in the book; while on, a plain placement extends along the verified normal to `unlock::arc_cells` cells under
   one seq (`EditKind::PlaceArc`), debiting one block per cell. The server re-derives the line from its own raycast (the
@@ -198,8 +207,9 @@ and therefore serves Arcana for free.
 - **`ClientMsg::Cast(CastKind)`** — shaped for the whole roster from day one (`Waystone(kind)`, `Wisp`,
   `Kindle { cell, face }`, v33's `KindleHere`, which carries nothing because the server already holds the head, and
   v34's `Ward`, which carries nothing for the same reason) so it never needs a v2. The ward's cells ride the standing
-  `EditApplied` broadcast — no new message — and so `MIN_PROTOCOL` stays: a v33 client never casts one and decodes the
-  sphere's edits as ordinary cells (an unknown id renders as air, so it sees a hole, not a disconnect).
+  `EditApplied` broadcast; **`ServerMsg::Warded { by, head, radius }`** (v34) is the seal, and
+  **`ClientMsg::CastBreak`** (v34) the caster's word that the channel broke — the reason `MIN_PROTOCOL` is v34: everyone
+  receives the seal, and a v33 client would also walk through a `Wardglass` it decodes as air.
   **`ServerMsg::Kindled { cell, secs_left }`** (v33) is every standing light, to everyone on the cast and to a joiner as
   backlog — and the reason `MIN_PROTOCOL` is v33, since an older client would be disconnected by anybody's cast.
   **`ServerMsg::Waystones`** carries the world's resolved sites in join sync (server state the client cannot derive —

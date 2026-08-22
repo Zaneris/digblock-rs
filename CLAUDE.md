@@ -134,13 +134,13 @@ For `just run`:
   the torch and implies it), `DIG_ROOF`, `DIG_TUNNEL` (sealed bore past the cascades' coverage — the unproven-daylight
   capture; pair with a low `--pos`, and the same run above `SEA_LEVEL` is the geometry-identical control), `DIG_DIVE`,
   `DIG_SHAPES`, `DIG_RIVER` (flooded basin + `--pitch -35`, the only pose with a SHADED water surface on screen),
-  `DIG_WARD=<radius>` (a ward closed about spawn with no cast behind it), `DIG_PLAYERBOX=<item>` (a fake remote holding
-  a HELD-ITEM WIRE id, so the scene walks the real `held_icon` decode), `DIG_MINING=<level>`, `DIG_TORCHES=<n>` /
-  `DIG_TORCHES_FAR=<n>` / `DIG_TORCHES_WALL=1`, `DIG_CONFETTI=1`, `DIG_CRACK=<percent>`, `DIG_SIPHON=<percent>` (rides
-  `DIG_ORE`, fatal without it), `DIG_DOORS=1`, `DIG_CAST=<percent>` (poses the cast channel's aura at that progress with
-  no hold behind it), `DIG_ORE=<tier 1..=4>` (hollows a chamber around the nearest deposit and grants its level — the
-  carve must not touch the vein, or the anti-dupe deletes what is being photographed),
-  `DIG_NODE=<heartwood|leystone|springstone>`,
+  `DIG_WARD=<radius>` (a ward closing about spawn with no cast behind it, at the cast's own climb; `DIG_WARD_AGE=<secs>`
+  holds the climb that far in), `DIG_PLAYERBOX=<item>` (a fake remote holding a HELD-ITEM WIRE id, so the scene walks
+  the real `held_icon` decode), `DIG_MINING=<level>`, `DIG_TORCHES=<n>` / `DIG_TORCHES_FAR=<n>` / `DIG_TORCHES_WALL=1`,
+  `DIG_CONFETTI=1`, `DIG_CRACK=<percent>`, `DIG_SIPHON=<percent>` (rides `DIG_ORE`, fatal without it), `DIG_DOORS=1`,
+  `DIG_CAST=<percent>` (poses the cast channel's aura at that progress with no hold behind it), `DIG_ORE=<tier 1..=4>`
+  (hollows a chamber around the nearest deposit and grants its level — the carve must not touch the vein, or the
+  anti-dupe deletes what is being photographed), `DIG_NODE=<heartwood|leystone|springstone>`,
   `DIG_SCREEN=menu|inventory|alchemy|transmute|transmuting|skills|spellbook|hand|bucket|bucket-full|torch|siphon|pick|sigil`
   (the pages are input-only and otherwise invisible to headless capture; the tool names cycle the roster, and screen
   stocking grants every tool since a fresh player owns none).
