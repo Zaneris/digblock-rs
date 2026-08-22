@@ -80,6 +80,9 @@ just web-live             # same, probing the production master, ?overlay&spikel
 just check-web            # clippy for wasm32 + check-shaders (needs Chrome)
 just check-shaders        # every shader through real Chrome's WGSL front end — the gate naga
                           # cannot be (DIG_CHROME=<path> if Chrome lives somewhere unusual)
+just web-shot <flags>     # `just run` for the browser: the desktop flags, driving the real
+                          # bundle in headless Chrome via Playwright; --help lists them
+just web-e2e [FILTER]     # the browser smoke suite (tools/web-e2e/tests)
 just play                 # master container + native server + client at the menu
 just play-web             # same but serving the web bundle
 just play-docker wifi     # desktop client vs containerized stack (clean | wifi | cellular netem)
@@ -124,16 +127,19 @@ For `just run`:
   prepass. On web the same masks ride `?stub=`. `--max-lights` / `?maxlights=` cap the GI light list (the Light Sources
   slider's lever, unsnapped for sweeps) and `DIG_GI_ITERS=<gather>,<sun>` / `?giiters=` set the resolve's ray budgets —
   A/B levers only, GI-DESIGN.md R36 owns the rules.
-- **Scenes**: `DIG_VAULT` (sealed stone vault + torch; `DIG_VAULT_DARK=1` drops the torch and implies it), `DIG_ROOF`,
-  `DIG_TUNNEL` (sealed bore past the cascades' coverage — the unproven-daylight capture; pair with a low `--pos`, and
-  the same run above `SEA_LEVEL` is the geometry-identical control), `DIG_DIVE`, `DIG_SHAPES`, `DIG_RIVER` (flooded
-  basin + `--pitch -35`, the only pose with a SHADED water surface on screen), `DIG_PLAYERBOX=<item>` (a fake remote
-  holding a HELD-ITEM WIRE id, so the scene walks the real `held_icon` decode), `DIG_MINING=<level>`, `DIG_TORCHES=<n>`
-  / `DIG_TORCHES_FAR=<n>` / `DIG_TORCHES_WALL=1`, `DIG_CONFETTI=1`, `DIG_CRACK=<percent>`, `DIG_SIPHON=<percent>` (rides
-  `DIG_ORE`, fatal without it), `DIG_DOORS=1`, `DIG_CAST=<percent>` (poses the cast channel's aura at that progress with
-  no hold behind it), `DIG_ORE=<tier 1..=4>` (hollows a chamber around the nearest deposit and grants its level — the
-  carve must not touch the vein, or the anti-dupe deletes what is being photographed),
-  `DIG_NODE=<heartwood|leystone|springstone>`,
+- **Scenes** — every one is a row of `digblock_client::knobs::ALL`, which BOTH launchers parse through one function: the
+  desktop reads `DIG_VAULT` from the environment, the web page reads `?vault` from its URL, and a knob cannot exist on
+  one platform and not the other. A malformed value, an unknown `?key`, and a flag spelled `=0` are all handled there
+  (fatal, fatal, ON — `DIG_VAULT=0` builds the vault). `DIG_VAULT` (sealed stone vault + torch; `DIG_VAULT_DARK=1` drops
+  the torch and implies it), `DIG_ROOF`, `DIG_TUNNEL` (sealed bore past the cascades' coverage — the unproven-daylight
+  capture; pair with a low `--pos`, and the same run above `SEA_LEVEL` is the geometry-identical control), `DIG_DIVE`,
+  `DIG_SHAPES`, `DIG_RIVER` (flooded basin + `--pitch -35`, the only pose with a SHADED water surface on screen),
+  `DIG_PLAYERBOX=<item>` (a fake remote holding a HELD-ITEM WIRE id, so the scene walks the real `held_icon` decode),
+  `DIG_MINING=<level>`, `DIG_TORCHES=<n>` / `DIG_TORCHES_FAR=<n>` / `DIG_TORCHES_WALL=1`, `DIG_CONFETTI=1`,
+  `DIG_CRACK=<percent>`, `DIG_SIPHON=<percent>` (rides `DIG_ORE`, fatal without it), `DIG_DOORS=1`, `DIG_CAST=<percent>`
+  (poses the cast channel's aura at that progress with no hold behind it), `DIG_ORE=<tier 1..=4>` (hollows a chamber
+  around the nearest deposit and grants its level — the carve must not touch the vein, or the anti-dupe deletes what is
+  being photographed), `DIG_NODE=<heartwood|leystone|springstone>`,
   `DIG_SCREEN=menu|inventory|alchemy|transmute|transmuting|skills|spellbook|hand|bucket|bucket-full|torch|siphon|pick|sigil`
   (the pages are input-only and otherwise invisible to headless capture; the tool names cycle the roster, and screen
   stocking grants every tool since a fresh player owns none).
@@ -585,17 +591,23 @@ multiplayer would be recording a guess.
 
 ## Browser client
 
-Chrome via wasm32-unknown-unknown + WebGPU. Query params mirror desktop flags
-(`?seed= ?tod= ?draw= ?ssr=0 ?overlay ?mute ?master= ?join&server= ?workers= ?frames= ?nodatagrams ?mobile ?uiscale=
-?maxlights= ?stub= ?torches= ?torchesfar= ?giiters=`);
-defaults are full desktop quality, and a coarse-pointer device boots `EngineConfig::web_mobile` instead — shorter draw
-distance with the slider's lower rungs open (`settings::DRAW_FLOOR`) — with saved settings and URL params still winning.
+Chrome via wasm32-unknown-unknown + WebGPU. Query params mirror desktop flags (`PAGE_PARAMS` in `apps/web/src/lib.rs` is
+the page's own vocabulary, `knobs::ALL` the shared scenes; the page REFUSES a key outside the two, so a typo cannot
+photograph the wrong scene). `?frames=N` is the web's `--exit`, `?capture` its `--screenshot` (hermetic, menu-less,
+input-deaf), `?play` skips the menu on an otherwise interactive run — the scripted-input path; defaults are full desktop
+quality, and a coarse-pointer device boots `EngineConfig::web_mobile` instead — shorter draw distance with the slider's
+lower rungs open (`settings::DRAW_FLOOR`) — with saved settings and URL params still winning.
 
+- **Drive it from `tools/web-e2e`, never by hand.** `just web-shot` is `just run` for the browser — same flags, same
+  spellings, translated to the query — and `just web-e2e` is the Playwright smoke suite; `lib/digblock.mjs` is the
+  driver both share (`boot` → first frame, `exit` → `digblock-exit`, `shot` → a decoded PNG with luminance/colour stats,
+  `keys`, `metrics`, `trouble`). It runs the INSTALLED Chrome headless with WebGPU on, so no browser downloads and the
+  GI path that renders is the one players get. A test asserts what a pixel shows, never a DOM: the page is one canvas.
 - The loading overlay is a fixed contract with the platform layer (`digblock-gpu-ready`, `digblock-first-frame`,
-  `digblock-fatal`), and **it must be PAINTED before wasm instantiation begins** — the double-rAF in index.html is what
-  guarantees that on a cold mobile load. Every stage behind it can HANG rather than fail, so a watchdog names the stage
-  that stopped, and it reports the page's `navigation` type, because iOS discards a page this heavy under memory
-  pressure and a stuck cold load is otherwise indistinguishable from a slow one.
+  `digblock-exit`, `digblock-fatal`), and **it must be PAINTED before wasm instantiation begins** — the double-rAF in
+  index.html is what guarantees that on a cold mobile load. Every stage behind it can HANG rather than fail, so a
+  watchdog names the stage that stopped, and it reports the page's `navigation` type, because iOS discards a page this
+  heavy under memory pressure and a stuck cold load is otherwise indistinguishable from a slow one.
 - **A fresh canvas reports 0×0**, which is why every async GPU init ends at `App::adopt_window_size`. winit fills the
   size from a `ResizeObserver` that first fires at the next rendering step, so an init that beats it configures the
   surface at the `max(1)` floor — and the `Resized` that follows lands while the app is still `WaitingForGpu`, where it

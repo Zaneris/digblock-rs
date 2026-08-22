@@ -21,6 +21,7 @@ use crate::voice::Msg;
 
 mod config;
 pub use config::{DebugScreen, EngineConfig, parse_held_item};
+pub mod knobs;
 
 mod actions;
 mod audio_step;

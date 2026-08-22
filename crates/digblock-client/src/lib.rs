@@ -33,7 +33,7 @@ mod water;
 mod water_audio;
 mod waystone_fx;
 
-pub use engine::{DebugScreen, Engine, EngineConfig, parse_held_item, parse_node_kind};
+pub use engine::{DebugScreen, Engine, EngineConfig, knobs, parse_held_item, parse_node_kind};
 /// The five types a launcher needs to drive the menu. Everything else
 /// the menu owns is the engine's business.
 pub use menu::{AccountView, MenuCommand, MenuResponse, MenuServices, ServerEntry};

@@ -365,6 +365,36 @@ build-web:
 check-shaders:
 	cargo run -q -p shadercheck
 
+# `just run` for the browser: the same flags, spelled the same way, driving
+# the real bundle in a headless Chrome through Playwright (tools/web-e2e,
+# `--help` lists everything). Every DIG_* scene is a `--name` here, since
+# both launchers read one table (digblock_client::knobs::ALL).
+#
+#   just web-shot --seed 7 --screen alchemy --frames 60 --screenshot shots/k.png
+#   just web-shot --vault --tod 90 --frames 120 --dpr 2 --screenshot shots/vault.png
+#   just web-shot --play --seed 1 --keys k --screenshot shots/k.png --console
+#
+# Photograph or drive the web build with desktop-style flags.
+web-shot *ARGS:
+	just web-e2e-setup
+	just build-web
+	node tools/web-e2e/dig.mjs {{ARGS}}
+
+# The browser smoke suite: boots, renders, poses scenes, refuses typos,
+# opens a screen on a keypress. FILTER narrows by test title.
+web-e2e FILTER="":
+	just web-e2e-setup
+	just build-web
+	cd tools/web-e2e && npx playwright test {{FILTER}}
+
+# `npm ci` once; the browser is the installed Chrome (no download), the
+# same one check-shaders needs. DIG_CHROME overrides, as there.
+web-e2e-setup:
+	#!/usr/bin/env bash
+	set -euo pipefail
+	cd tools/web-e2e
+	[ -d node_modules/@playwright/test ] || npm ci --no-audit --no-fund
+
 # Needs Chrome for the shader half, but still no wasm-bindgen-cli.
 #
 # Fast "is the web client still green" gate — wasm32 clippy plus check-shaders.
