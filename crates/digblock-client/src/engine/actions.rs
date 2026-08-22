@@ -894,6 +894,7 @@ impl Engine {
 						ore, alchemy, mining, hit.cell, self.seed,
 					) {
 						self.inventory.add_sub(e, n);
+						self.toast(crate::ui::hud::ToastLabel::Essence(e), u64::from(n));
 					}
 				}
 				let (mining_xp, alch_xp) =

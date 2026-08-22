@@ -621,19 +621,39 @@ pub fn joystick_overlay(
 	);
 }
 
-/// One coalescing XP toast: rapid awards to the same skill accumulate
-/// into a single "+N SKILL" line instead of a scrolling storm. Engine
-/// state — [`xp_toasts`] just draws whatever is live.
-pub struct XpToast {
-	pub skill: digblock_core::skills::Skill,
+/// What a toast counts: XP for a skill, or essence a draw paid. One
+/// lane and one shape for both so a draw's two toasts (the XP and the
+/// essence) stack in the order they arrived instead of fighting for the
+/// same pixels.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ToastLabel {
+	Xp(digblock_core::skills::Skill),
+	Essence(digblock_core::block::Essence),
+}
+
+impl ToastLabel {
+	/// The stored-case name the toast shouts; the HUD upper-cases it
+	/// where it draws.
+	pub fn name(self) -> &'static str {
+		match self {
+			ToastLabel::Xp(s) => s.name(),
+			ToastLabel::Essence(e) => e.name(),
+		}
+	}
+}
+
+/// One live "+N LABEL" toast above the hotbar. The engine owns the
+/// state — [`toasts`] just draws whatever is live.
+pub struct Toast {
+	pub label: ToastLabel,
 	pub amount: u64,
-	/// Seconds left; refreshed to [`XP_TOAST_TTL`] by each new award.
+	/// Seconds left; refreshed to [`TOAST_TTL`] by each new award.
 	pub ttl: f32,
 }
 
-pub const XP_TOAST_TTL: f32 = 2.0;
+pub const TOAST_TTL: f32 = 2.0;
 /// The fade window at the end of a toast's life.
-const XP_TOAST_FADE: f32 = 0.5;
+const TOAST_FADE: f32 = 0.5;
 
 /// Scale a 0xAABBGGRR color's alpha byte.
 fn faded(color: u32, f: f32) -> u32 {
@@ -641,15 +661,15 @@ fn faded(color: u32, f: f32) -> u32 {
 	a << 24 | (color & 0x00FF_FFFF)
 }
 
-/// Draw the live XP toasts, stacked upward above the hotbar, centered
+/// Draw the live toasts, stacked upward above the hotbar, centered
 /// like the bar itself. Text rides the frame's size; the backdrop is
 /// sized from the face's line height (ink legitimately overflows the
 /// nominal box — accents above, descenders below).
-pub fn xp_toasts(
+pub fn toasts(
 	dl: &mut super::DrawList,
 	style: &super::widgets::Style,
 	size: (u32, u32),
-	toasts: &[XpToast],
+	toasts: &[Toast],
 ) {
 	let scale = style.scale;
 	let px = style.glyph;
@@ -658,8 +678,8 @@ pub fn xp_toasts(
 	let gap = 4.0 * scale;
 	let mut bottom = row_grid(size, scale).origin.1 - super::theme::GAP_ABOVE_BAR * scale;
 	for toast in toasts.iter().rev() {
-		let fade = (toast.ttl / XP_TOAST_FADE).clamp(0.0, 1.0);
-		let text = format!("+{} {}", toast.amount, toast.skill.name().to_uppercase());
+		let fade = (toast.ttl / TOAST_FADE).clamp(0.0, 1.0);
+		let text = format!("+{} {}", toast.amount, toast.label.name().to_uppercase());
 		let w = style.measure(&text) + 2.0 * pad_x;
 		let rect = super::Rect::new((size.0 as f32 - w) / 2.0, bottom - line, w, line);
 		dl.quad(Layer::Backdrop, rect, faded(super::theme::FILL_BG, fade));
@@ -680,7 +700,7 @@ pub fn xp_toasts(
 /// bench working out of sight must be visible somewhere, or the first
 /// background extraction reads as "my essence changed on its own" — and
 /// it sits over the tool slot rather than in the toasts' center lane, so
-/// an XP toast and the tell never fight for the same pixels.
+/// a toast and the tell never fight for the same pixels.
 pub fn bench_tell(
 	dl: &mut super::DrawList,
 	style: &super::widgets::Style,

@@ -76,6 +76,46 @@ impl Engine {
 		}
 	}
 
+	/// Raise or refresh the toast for one label: a second award inside
+	/// the window adds to the standing toast rather than stacking a
+	/// twin, for XP and essence alike.
+	pub(super) fn toast(&mut self, label: crate::ui::hud::ToastLabel, amount: u64) {
+		if amount == 0 {
+			return;
+		}
+		match self.vfx.toasts.iter_mut().find(|t| t.label == label) {
+			Some(t) => {
+				t.amount += amount;
+				t.ttl = crate::ui::hud::TOAST_TTL;
+			}
+			None => self.vfx.toasts.push(crate::ui::hud::Toast {
+				label,
+				amount,
+				ttl: crate::ui::hud::TOAST_TTL,
+			}),
+		}
+	}
+
+	/// Adopt the server's authoritative essence counts and toast every
+	/// one that grew since the last base. Only a draw (or an operator's
+	/// `/give`) can grow one — no craft creates essence — so a rise IS a
+	/// find, and the client never has to be told the split it was not
+	/// allowed to predict. The first base after a join is adopted
+	/// silently: that is state arriving, not an award.
+	pub(super) fn adopt_auth_essence(&mut self, base: &digblock_core::inventory::Inventory) {
+		use digblock_core::block::Essence;
+		let now: [u32; Essence::COUNT] = Essence::ALL.map(|e| base.sub_count(e));
+		if let Some(prev) = self.auth_essence {
+			for (i, e) in Essence::ALL.into_iter().enumerate() {
+				self.toast(
+					crate::ui::hud::ToastLabel::Essence(e),
+					u64::from(now[i].saturating_sub(prev[i])),
+				);
+			}
+		}
+		self.auth_essence = Some(now);
+	}
+
 	/// Adopt a new authoritative XP total for one skill: coalesce the
 	/// delta into a toast, and word + sound a level-up. Totals only
 	/// grow, so a replayed or reordered frame is a no-op. Both award
@@ -88,18 +128,7 @@ impl Engine {
 			return;
 		}
 		self.skills.set_total(skill, total);
-		let delta = total - old;
-		match self.vfx.xp_toasts.iter_mut().find(|t| t.skill == skill) {
-			Some(t) => {
-				t.amount += delta;
-				t.ttl = crate::ui::hud::XP_TOAST_TTL;
-			}
-			None => self.vfx.xp_toasts.push(crate::ui::hud::XpToast {
-				skill,
-				amount: delta,
-				ttl: crate::ui::hud::XP_TOAST_TTL,
-			}),
-		}
+		self.toast(crate::ui::hud::ToastLabel::Xp(skill), total - old);
 		let (old_level, new_level) = (
 			digblock_core::skills::level_for_xp(old),
 			digblock_core::skills::level_for_xp(total),

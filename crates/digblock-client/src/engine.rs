@@ -198,6 +198,14 @@ pub struct Engine {
 	/// Predicted block counts; the server's InventoryFull + per-edit
 	/// confirms/rejects keep it honest. Offline it is simply the truth.
 	inventory: Inventory,
+	/// Essence counts as of the last AUTHORITATIVE inventory (the
+	/// server's base, before pending predictions are re-applied), so a
+	/// rebase can name what a draw paid by diffing against the previous
+	/// base. Diffing against the live inventory instead would toast a
+	/// refused cast's fare coming back, since fares are predicted
+	/// locally and never ride `pending`. `None` until the join sync's
+	/// first inventory, which is state arriving rather than a find.
+	auth_essence: Option<[u32; digblock_core::block::Essence::COUNT]>,
 	hotbar: Hotbar,
 	/// The spawn structure still owed to an offline world: the stamp's
 	/// writes, drained as their chunks become resident. Named saves only
@@ -392,8 +400,9 @@ struct Vfx {
 	/// by half a swap, so the exchange happens below the frame.
 	view_swap: crate::viewmodel::Swap,
 
-	/// Live "+N SKILL" toasts above the hotbar (coalescing per skill).
-	xp_toasts: Vec<crate::ui::hud::XpToast>,
+	/// Live "+N SKILL" / "+N ESSENCE" toasts above the hotbar
+	/// (coalescing per label).
+	toasts: Vec<crate::ui::hud::Toast>,
 
 	/// Per-frame name-tag scratch (reused allocation).
 	/// Name tags, kept beyond `nametag_count` so their String buffers

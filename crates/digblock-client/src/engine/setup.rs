@@ -151,7 +151,7 @@ impl Engine {
 				view_swing: crate::viewmodel::Swing::default(),
 				view_cast: crate::viewmodel::Cast::default(),
 				view_swap: crate::viewmodel::Swap::default(),
-				xp_toasts: Vec::new(),
+				toasts: Vec::new(),
 				nametag_scratch: Vec::new(),
 				nametag_count: 0,
 				remote_scratch: Vec::new(),
@@ -261,6 +261,7 @@ impl Engine {
 			dig_accum: 0.0,
 			target: None,
 			inventory: Inventory::default(),
+			auth_essence: None,
 			hotbar: Hotbar::new(),
 			// The startup world is ephemeral (a backdrop, or a capture
 			// scene) — no arrival lock; entering a NAMED save or a server

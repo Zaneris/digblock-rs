@@ -210,12 +210,12 @@ impl Engine {
 		for m in &mut self.session.feed {
 			m.1 = (m.1 - dt).max(FEED_TTL_FLOOR);
 		}
-		// XP toasts fade out and drop (unlike the feed, nothing rereads
-		// an expired toast).
-		for t in &mut self.vfx.xp_toasts {
+		// Toasts fade out and drop (unlike the feed, nothing rereads an
+		// expired toast).
+		for t in &mut self.vfx.toasts {
 			t.ttl -= dt;
 		}
-		self.vfx.xp_toasts.retain(|t| t.ttl > 0.0);
+		self.vfx.toasts.retain(|t| t.ttl > 0.0);
 		// Confetti: the age in lane 3 IS the simulation — every flake's
 		// arc is a pure function of it in the shader. A burst is dropped
 		// the moment it reaches the life the shader fades to zero at.

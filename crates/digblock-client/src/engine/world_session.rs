@@ -39,7 +39,8 @@ impl Engine {
 		// Level 1 is the honest guess: it under-reveals rather than over-, and
 		// every reveal it misses arrives moments later with the real totals.
 		self.skills = Default::default();
-		self.vfx.xp_toasts.clear();
+		self.vfx.toasts.clear();
+		self.auth_essence = None;
 		self.reset_world_transients(spawn, true);
 	}
 
@@ -222,7 +223,8 @@ impl Engine {
 		self.camera.pos = spawn;
 		self.inventory = Inventory::default();
 		self.skills = Default::default();
-		self.vfx.xp_toasts.clear();
+		self.vfx.toasts.clear();
+		self.auth_essence = None;
 		self.session.player_names.clear();
 		self.reset_world_transients(spawn, true);
 		self.save.in_local_save = false;
@@ -299,7 +301,7 @@ impl Engine {
 		// The save's skill totals (empty for pre-skills saves = level 1);
 		// stale toasts belong to whatever world we just left.
 		self.skills = digblock_core::skills::SkillSet::from_wire(&save.skills);
-		self.vfx.xp_toasts.clear();
+		self.vfx.toasts.clear();
 		// Saved arrangement first (sanitizing decode), then reconcile as
 		// the backstop: legacy saves get the derived layout, and types
 		// the arrangement doesn't cover still land on the bar or grid.

@@ -348,6 +348,7 @@ impl Engine {
 					// the live pending set here instead would be a different
 					// moment — see `NetEvent::Inventory`.
 					let mut inv = Inventory::from_wire(&counts);
+					self.adopt_auth_essence(&inv);
 					for (b, n) in pending {
 						match n {
 							n if n > 0 => inv.add(b, n as u32),

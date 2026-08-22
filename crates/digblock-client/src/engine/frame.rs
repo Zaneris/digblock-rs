@@ -246,7 +246,7 @@ impl Engine {
 			crate::ui::hud::hotbar(&mut ui, size, &hotbar_view, |i| {
 				crate::ui::InvId::Bar(i as u8)
 			});
-			crate::ui::hud::xp_toasts(ui.dl, &ui.style, size, &self.vfx.xp_toasts);
+			crate::ui::hud::toasts(ui.dl, &ui.style, size, &self.vfx.toasts);
 			// The teleport instant's wash: one full-rect quad over the
 			// whole overlay, gone in under half a second. Ghost is the
 			// topmost layer, which is the point — arrival paints across
