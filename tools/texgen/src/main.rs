@@ -122,7 +122,7 @@ fn main() {
 		bricks(&load("Sandstone.png"), 16, 8, &mut rng),
 	);
 	save("PolishedStone.png", polished(&stone, &mut rng));
-	// Clear glass: one flat pale tint at a low alpha, so most of what
+	// Clear glass: one flat near-white tint at a modest alpha, so most of what
 	// you see through a pane is the world behind it (the render's
 	// Translucent bucket multiplies the backdrop by its transmittance).
 	save_rgba("Glass.png", glass(&mut rng));
@@ -304,7 +304,7 @@ fn glass(rng: &mut Rng) -> RgbaImage {
 		// not by a painted frame. The frost draw above is burnt unread
 		// so the rng stream (and every later recipe) is unchanged.
 		let _ = (frost, glint, cx, cy);
-		p.0 = [140, 205, 225, 96];
+		p.0 = [210, 228, 236, 120];
 	}
 	out
 }
