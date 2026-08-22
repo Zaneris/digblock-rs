@@ -89,10 +89,12 @@ fn no_node_manifests_in_an_edited_cell() {
 		// The spent face itself never re-reads as a node.
 		let spent = spent_block(node).expect("a kind") as u16;
 		assert_eq!(revealed(spent, at, SEED, maxed(), false), None);
-		// Nor does anything else standing in that coordinate.
-		for b in [BlockType::Air, BlockType::Rubble, node] {
+		// Nor does anything else standing in that coordinate — except the
+		// live face itself, stored: that is the regrown node.
+		for b in [BlockType::Air, BlockType::Rubble] {
 			assert_eq!(revealed(b as u16, at, SEED, maxed(), false), None, "{b:?}");
 		}
+		assert_eq!(revealed(node as u16, at, SEED, maxed(), true), Some(node));
 		// A shaped cell in the same coordinate is not the host either.
 		assert_eq!(
 			revealed(make_cell(BlockType::StoneSlab, 1), at, SEED, maxed(), false),
@@ -294,4 +296,71 @@ fn springs_stand_only_in_fresh_beds() {
 		}
 	}
 	assert!(ocean > 0, "sample contains ocean");
+}
+
+/// A live face stored in the cell outright — a regrown node — is found
+/// by everyone: ahead of the reveal table and ahead of the edit bit,
+/// since the mesh already shows it to every client.
+#[test]
+fn a_stored_live_face_is_revealed_to_anyone() {
+	for &node in &NODES {
+		let cell = make_cell(node, 0);
+		for edited in [false, true] {
+			assert_eq!(
+				revealed(cell, (0, 0, 0), SEED, Levels::default(), edited),
+				Some(node)
+			);
+		}
+		assert_eq!(
+			dig_mode(
+				cell,
+				(0, 0, 0),
+				SEED,
+				Levels::default(),
+				true,
+				BlockType::EssenceSiphon
+			),
+			DigMode::Extract(node)
+		);
+		assert_eq!(
+			dig_mode(
+				cell,
+				(0, 0, 0),
+				SEED,
+				Levels::default(),
+				true,
+				BlockType::Air
+			),
+			DigMode::NeedsSiphon
+		);
+	}
+}
+
+/// `node_at` is the placement half of `revealed`: wherever the pristine
+/// host reveals a node at full level, the position alone names the same
+/// kind — and where the host reveals nothing, neither does the position.
+#[test]
+fn node_at_agrees_with_the_host_reveal() {
+	let hw = find_heartwood(SEED);
+	let sp = find_springstone(SEED);
+	let mut checked = 0;
+	for (host, at) in [(BlockType::Wood, hw), (BlockType::Sand, sp)] {
+		for dy in -3..=3 {
+			let at = (at.0, at.1 + dy, at.2);
+			let want = revealed(make_cell(host, 0), at, SEED, maxed(), false);
+			assert_eq!(node_at(at, SEED), want, "{at:?}");
+			checked += 1;
+		}
+	}
+	let d = ore::deposits_near((-256, 0, -256), (256, ore::MAX_DEPOSIT_Y, 256), SEED)
+		.into_iter()
+		.next()
+		.expect("a deposit in the sampled world");
+	for y in d.y - ore::MAX_RADIUS - 1..=d.y + ore::MAX_RADIUS + 1 {
+		let at = (d.x, y, d.z);
+		let want = revealed(make_cell(BlockType::Stone, 0), at, SEED, maxed(), false);
+		assert_eq!(node_at(at, SEED), want, "{at:?}");
+		checked += 1;
+	}
+	assert!(checked > 0);
 }

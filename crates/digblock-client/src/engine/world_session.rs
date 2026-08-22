@@ -62,6 +62,7 @@ impl Engine {
 			// against the rewound clock would starve every job for a day.
 			self.world_secs = 0.0;
 			self.world_jobs.reset();
+			self.presence.reset();
 		}
 		self.tick_accum = 0.0;
 		self.session.pending_ack = None;

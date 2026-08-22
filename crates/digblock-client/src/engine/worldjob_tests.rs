@@ -1,5 +1,5 @@
 use super::*;
-use digblock_core::worldjob::{Candidates, CellSource, Schedule, Scope, WorldJob};
+use digblock_core::worldjob::{Candidates, CellSource, Run, Schedule, Scope, WorldJob};
 
 /// Dirt to grass, once a day, in the player's own chunk — the same rule
 /// the server tests drive, so the two arms are compared on one job.
@@ -23,7 +23,7 @@ impl WorldJob for GrassSpread {
 			candidates: Candidates::Band,
 		}
 	}
-	fn apply(&self, _: (i32, i32, i32), _: &dyn CellSource, _: f64, _: u64) -> Option<u16> {
+	fn apply(&self, _: (i32, i32, i32), _: &dyn CellSource, _: f64, _: Run) -> Option<u16> {
 		Some(BlockType::Grass as u16)
 	}
 }
@@ -136,7 +136,7 @@ fn leaving_a_world_abandons_the_sweep_in_flight() {
 				candidates: Candidates::Band,
 			}
 		}
-		fn apply(&self, _: (i32, i32, i32), _: &dyn CellSource, _: f64, _: u64) -> Option<u16> {
+		fn apply(&self, _: (i32, i32, i32), _: &dyn CellSource, _: f64, _: Run) -> Option<u16> {
 			Some(BlockType::Grass as u16)
 		}
 	}

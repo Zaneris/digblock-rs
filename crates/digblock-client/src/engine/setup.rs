@@ -270,6 +270,7 @@ impl Engine {
 			pending_stamp: Vec::new(),
 			fluid: digblock_core::fluid::FluidSim::new(),
 			world_jobs: digblock_core::worldjob::Scheduler::new(),
+			presence: digblock_core::presence::RollingPeak::day(),
 			flow_accum: 0.0,
 			time_secs: 0.0,
 			world_secs: 0.0,
@@ -509,6 +510,9 @@ impl Engine {
 			engine.register_world_job(job);
 		}
 		for job in digblock_core::worldjob::wisplight::jobs() {
+			engine.register_world_job(job);
+		}
+		for job in digblock_core::worldjob::regrow::jobs() {
 			engine.register_world_job(job);
 		}
 		engine

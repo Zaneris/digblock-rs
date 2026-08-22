@@ -15,7 +15,7 @@ use std::collections::VecDeque;
 
 use rustc_hash::FxHashSet;
 
-use super::{Candidates, CellSource, Schedule, Scope, WorldJob};
+use super::{Candidates, CellSource, Run, Schedule, Scope, WorldJob};
 use crate::block::{BlockType, RenderClass};
 use crate::chunk::{WORLD_VBLOCK, cell_id};
 use crate::dir::{DIRS, Dir};
@@ -47,9 +47,9 @@ const DECAY_PERMILLE: u64 = 500;
 const DECAY_SALT: u64 = 0x6c65_6166; // "leaf"
 
 /// The blocks a canopy reads as its tree: the trunk, and the heartwood
-/// faces standing in it. A live Heartwood never reaches a `CellSource`
-/// (the reveal is derived at mesh time), but a drained face is a real
-/// edit in the middle of a trunk and must keep holding the canopy.
+/// faces standing in it. A drained face is a real edit in the middle of
+/// a trunk, and a regrown live one is too — both must keep holding the
+/// canopy.
 fn trunk(b: BlockType) -> bool {
 	matches!(
 		b,
@@ -124,13 +124,13 @@ impl WorldJob for LeafDecay {
 		(x, y, z): (i32, i32, i32),
 		world: &dyn CellSource,
 		seed: f64,
-		run: u64,
+		run: Run,
 	) -> Option<u16> {
 		// `?` folds "unjudgeable" into "leave it alone".
 		if anchored(world, (x, y, z))? {
 			return None;
 		}
-		let bits = worldgen::ore::mix(x, y, z, seed.to_bits(), DECAY_SALT ^ run);
+		let bits = worldgen::ore::mix(x, y, z, seed.to_bits(), DECAY_SALT ^ run.slot);
 		(bits % 1000 < DECAY_PERMILLE).then_some(BlockType::Air as u16)
 	}
 }

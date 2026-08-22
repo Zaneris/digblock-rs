@@ -222,6 +222,9 @@ pub struct Engine {
 	/// Clock-scheduled sweeps, run here only OFFLINE — connected, the
 	/// server owns them and their results arrive as ordinary edits.
 	world_jobs: digblock_core::worldjob::Scheduler,
+	/// The day's head-count for the jobs that scale by it — one here,
+	/// kept on the server's tracker so the rule does not fork.
+	presence: digblock_core::presence::RollingPeak,
 	flow_accum: f32,
 	/// Shader animation clock, wrapped on a long period (carried in the
 	/// otherwise unused light_color.w — no uniform layout change).

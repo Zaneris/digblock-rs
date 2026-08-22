@@ -10,7 +10,7 @@
 
 use glam::Vec3;
 
-use super::{Candidates, CellSource, Schedule, Scope, WorldJob};
+use super::{Candidates, CellSource, Run, Schedule, Scope, WorldJob};
 use crate::block::{BlockType, RenderClass};
 use crate::chunk::{WORLD_VBLOCK, cell_id, cell_state};
 use crate::dir::Dir;
@@ -171,7 +171,7 @@ impl WorldJob for GrassSpread {
 		(x, y, z): (i32, i32, i32),
 		world: &dyn CellSource,
 		seed: f64,
-		run: u64,
+		run: Run,
 	) -> Option<u16> {
 		// Cheapest gate first: the cell above must be empty.
 		if !open_above(world, x, y, z) {
@@ -217,7 +217,7 @@ impl WorldJob for GrassSpread {
 		// The sun ray, cast from the center of the empty cell above (an
 		// origin inside a stopping cell is an instant hit). Jittered per
 		// (seed, cell, run) — see JITTER_TOD_DEG.
-		let bits = worldgen::ore::mix(x, y, z, seed.to_bits(), JITTER_SALT ^ run);
+		let bits = worldgen::ore::mix(x, y, z, seed.to_bits(), JITTER_SALT ^ run.slot);
 		let dtod = signed_unit(bits) * JITTER_TOD_DEG;
 		let dz = signed_unit(bits >> u16::BITS) * JITTER_Z;
 		let mut dir = -Sun::with_tod(self.tod + dtod).sun_dir();

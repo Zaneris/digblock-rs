@@ -6,7 +6,7 @@
 //! sweep clears it. No per-cell age (that would need state the journal
 //! deliberately does not carry); the cadence IS the lifetime.
 
-use super::{Candidates, CellSource, Schedule, Scope, WorldJob};
+use super::{Candidates, CellSource, Run, Schedule, Scope, WorldJob};
 use crate::block::BlockType;
 use crate::chunk::WORLD_VBLOCK;
 
@@ -52,7 +52,7 @@ impl WorldJob for WisplightFade {
 		_at: (i32, i32, i32),
 		_world: &dyn CellSource,
 		_seed: f64,
-		_run: u64,
+		_run: Run,
 	) -> Option<u16> {
 		// Unconditional: a standing conjured light has nothing to check —
 		// it fades because the sweep came.

@@ -381,7 +381,11 @@ greys the button, so the offer and the rule cannot drift.
 Alchemy (Heartwood in pristine trunks, Leystone in the deposit stream, Springstone in fresh-water sand beds). Heartwood
 is the day-one node, because the economy has to be able to begin. A deposit is a salted 3D position hash, so
 `build_column` returns the bytes it always returned, the goldens don't move, and nodes appear retroactively in existing
-worlds. Depth bands have FLOORS as well as ceilings, so depth predicts tier.
+worlds. Depth bands have FLOORS as well as ceilings, so depth predicts tier. **The one stored node is a REGROWN one**:
+`worldjob::regrow` rolls every spent face standing where its find was, once a game day, and writes the live face itself
+back — the edited bit is monotone, so no write of the host could ever reveal again. Safe because no live face is an
+item, so only the sweep can put one in a cell; `nodes::revealed` finds a stored face at any level, since every client's
+mesh already shows it. The odds scale with `presence::RollingPeak` — the day's peak head-count, fed by each host arm.
 
 - **The unedited rule is the anti-dupe.** A node manifests only in its pristine HOST; without it, placing the host back
   into a spent cell would regrow the find. `JournalIndex::record` only ever inserts, so "touched" is monotone. The
@@ -461,18 +465,21 @@ corners are chosen must be checked against the mapping and not just the codes.
 
 ## Scheduled world jobs
 
-`digblock-core/src/worldjob.rs` is the seam and carries three rules: `grass` (creep onto sunlit dirt, smother under
-covers), `leaves` (foliage rots once nothing anchors it) and `wisplight` (conjured light fades — the cadence IS the
-spell's whole lifetime, so a quit-and-reload can never leave a permanent free lamp). A `WorldJob` runs on a clock over
-blocks of a given type near active players. **This is not fluid and must not be built on it** — fluid is a continuous
-per-tick sim over cells in flight, this is a rare batch sweep. They share only their write path.
+`digblock-core/src/worldjob.rs` is the seam and carries four rules: `grass` (creep onto sunlit dirt, smother under
+covers), `leaves` (foliage rots once nothing anchors it), `wisplight` (conjured light fades — the cadence IS the spell's
+whole lifetime, so a quit-and-reload can never leave a permanent free lamp) and `regrow` (a spent node may come back, at
+odds that climb with the day's peak head-count). A `WorldJob` runs on a clock over blocks of a given type near active
+players, and every `apply` gets a `Run` — the slot AND the day's peak players — snapshotted when the sweep starts.
+**This is not fluid and must not be built on it** — fluid is a continuous per-tick sim over cells in flight, this is a
+rare batch sweep. They share only their write path.
 
 - **The clock is the GAME's day** (`sun::DAY_SECS`), fixed by `Schedule` rather than chosen per job — a server's local
   09:00 means nothing to a player elsewhere, and the game clock is already dictated to every client.
 - **The anti-dupe is enforced, not documented.** A journal write sets the cell's monotone edited bit and
   `nodes::revealed` reads it as spent, so a sweep over a node host would destroy every reveal in a band around every
-  player. `Scheduler::register` refuses such a scope, and `a_node_host_is_never_sweepable` walks every block to keep
-  `worldjob::node_host` and `revealed` naming one set. **Watch it when a new block becomes a node host.**
+  player. `Scheduler::register` refuses such a scope — live faces included, since a stored one is a node outright — and
+  `a_node_host_is_never_sweepable` walks every block to keep `worldjob::node_host` and `revealed` naming one set.
+  **Watch it when a new block becomes a node host.**
 - Core is IO-free: `tick` reads through `CellSource` and RETURNS writes, so each side applies them through its own
   authoritative path — the server's `apply_write` (journal, protection, LWW, broadcast) and the engine's
   `Pipeline::set_cell` offline. Both arms run the same scheduler, or a rule forks.

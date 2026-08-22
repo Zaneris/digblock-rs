@@ -1072,6 +1072,11 @@ anti-dupe's edited-bit, and the background bench (which now paces only crafts).
 - **Node tiers.** The surface kinds ship one tier each. Richer variants at later Alchemy reveals (the pattern the ore
   ladder proves out), an Alchemy prospector's sense, and a proper DELVE-DESIGN handshake — its governed Aether faucet is
   the underground twin of the surface nodes and should speak this vocabulary — are the obvious next waves.
+- **Regrowth (2026-08-22).** A spent face left standing where its find was may come back: `worldjob::regrow` rolls each
+  one once a game day, in the evening, and the odds climb with the world's peak head-count over the trailing day
+  (`presence::RollingPeak`) — a solo world sits at the base rate, a busy server at a multiple of it, capped. The return
+  is the live face written into the cell, the one stored node, visible and drawable by anyone since it is already in
+  everyone's mesh. Unmeasured like the rest of this section: the constants live in `regrow.rs`.
 - **The inventory grid gained its seventh row** for the spent-face trophies, and `theme::FIT_FLOOR` stepped once to hold
   the smallest windows; the scrolling grid remains the real fix on record.
 - **The essence exchange** (§4.3's any → any, never into Aether) reads differently now that essence is scarce — it may

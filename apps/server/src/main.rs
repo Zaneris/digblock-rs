@@ -197,6 +197,9 @@ fn main() {
 	for job in digblock_core::worldjob::wisplight::jobs() {
 		sim.register_world_job(job);
 	}
+	for job in digblock_core::worldjob::regrow::jobs() {
+		sim.register_world_job(job);
+	}
 	// Resolve every admin to an account id before the first player can
 	// connect. A name is looked up ONCE, against the master, and only the
 	// resulting id is kept — so renaming does not drop admin, and a name

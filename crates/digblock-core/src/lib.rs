@@ -20,6 +20,7 @@ pub mod overlay;
 pub mod pick;
 pub mod pipeline;
 pub mod player;
+pub mod presence;
 pub mod protect;
 pub mod raycast;
 pub mod shapes;

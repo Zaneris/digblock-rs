@@ -48,11 +48,6 @@ impl Sim {
 	}
 
 	pub(super) fn step_world_jobs(&mut self) {
-		// Unhealthy journal: stop mutating the world durably, exactly as
-		// fluid does — a sweep's writes are journaled edits like any other.
-		if !self.journal.healthy() {
-			return;
-		}
 		let eyes: Vec<(i32, i32, i32)> = self
 			.clients
 			.values()
@@ -63,12 +58,22 @@ impl Sim {
 			})
 			.collect();
 		let secs = f64::from(self.tick) / f64::from(TICK_RATE) + self.tod_offset_secs;
+		// Fed ahead of the journal gate below: the head-count is a fact
+		// about the day whether or not the world can be written to.
+		self.presence.observe(secs, eyes.len() as u32);
+		// Unhealthy journal: stop mutating the world durably, exactly as
+		// fluid does — a sweep's writes are journaled edits like any other.
+		if !self.journal.healthy() {
+			return;
+		}
+		let players = self.presence.peak(secs);
 		let writes = {
 			let world = SweepWorld {
 				store: &self.store,
 				journal: &self.journal,
 			};
-			self.world_jobs.tick(secs, self.store.seed(), &eyes, &world)
+			self.world_jobs
+				.tick(secs, self.store.seed(), &eyes, players, &world)
 		};
 		if writes.is_empty() {
 			return;

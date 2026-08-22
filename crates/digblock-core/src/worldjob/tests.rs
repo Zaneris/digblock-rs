@@ -99,7 +99,7 @@ impl WorldJob for Sprout {
 		_at: (i32, i32, i32),
 		_world: &dyn CellSource,
 		_seed: f64,
-		_run: u64,
+		_run: Run,
 	) -> Option<u16> {
 		Some(BlockType::Grass as u16)
 	}
@@ -111,7 +111,7 @@ fn drain(s: &mut Scheduler, secs: f64, w: &dyn CellSource) -> (Vec<Write>, usize
 	let mut out = Vec::new();
 	let mut ticks = 0;
 	loop {
-		out.extend(s.tick(secs, SEED, &[(0, 64, 0)], w));
+		out.extend(s.tick(secs, SEED, &[(0, 64, 0)], 1, w));
 		ticks += 1;
 		if s.sweeping().is_none() {
 			return (out, ticks);
@@ -140,6 +140,27 @@ fn the_wisplight_sweep_clears_conjured_light() {
 		vec![((3, 64, 2), BlockType::Air as u16)],
 		"exactly the conjured light fades, and nothing beside it"
 	);
+}
+
+/// `daily_at` speaks the sun's clock: its noon is the sun's zero, the
+/// hours are a twenty-fourth of the day apart, and the slot it produces
+/// comes due exactly once a day.
+#[test]
+fn daily_at_keeps_the_suns_clock() {
+	use crate::sun::Sun;
+	let noon = Schedule::daily_at(12);
+	assert_eq!(noon.per_day, 1);
+	let at_noon = Sun::tod_of_secs(f64::from(noon.offset) * f64::from(DAY_SECS));
+	assert!(at_noon.abs() < 1e-3, "noon is {at_noon}°");
+	for h in 0..24 {
+		let (a, b) = (Schedule::daily_at(h), Schedule::daily_at(h + 1));
+		let gap = (b.offset - a.offset).rem_euclid(1.0);
+		assert!((gap - 1.0 / 24.0).abs() < 1e-5, "{h}: {gap}");
+		assert_eq!(
+			a.slot(f64::from(DAY_SECS) * 3.0) + 1,
+			a.slot(f64::from(DAY_SECS) * 4.0)
+		);
+	}
 }
 
 #[test]
@@ -188,7 +209,7 @@ fn no_slice_ever_exceeds_the_budget() {
 	s.register(Sprout::boxed(1, 1, (0, 200)));
 	let w = Slab::of(BlockType::Dirt);
 	for _ in 0..50 {
-		let n = s.tick(0.0, SEED, &[(0, 64, 0)], &w).len();
+		let n = s.tick(0.0, SEED, &[(0, 64, 0)], 1, &w).len();
 		assert!(n <= CELLS_PER_TICK, "slice of {n} past the budget");
 	}
 	assert!(
@@ -208,7 +229,7 @@ fn a_job_runs_once_per_slot_however_many_ticks_pass() {
 	assert_eq!(first.len(), per_sweep);
 	// Same slot, many ticks later: nothing further.
 	for _ in 0..200 {
-		assert!(s.tick(1.0, SEED, &[(0, 64, 0)], &w).is_empty());
+		assert!(s.tick(1.0, SEED, &[(0, 64, 0)], 1, &w).is_empty());
 	}
 	// Next day, next slot.
 	let (second, _) = drain(&mut s, f64::from(DAY_SECS) * 1.5, &w);
@@ -227,7 +248,7 @@ fn a_long_absence_costs_one_catch_up_sweep_not_thirty() {
 	assert_eq!(caught_up.len(), per_sweep, "exactly one sweep");
 	for _ in 0..200 {
 		assert!(
-			s.tick(f64::from(DAY_SECS) * 30.0, SEED, &[(0, 64, 0)], &w)
+			s.tick(f64::from(DAY_SECS) * 30.0, SEED, &[(0, 64, 0)], 1, &w)
 				.is_empty(),
 			"and then nothing until the next slot"
 		);
@@ -240,12 +261,18 @@ fn a_running_sweep_is_never_started_twice() {
 	let mut s = Scheduler::new();
 	s.register(Sprout::boxed(1, 2, (0, 200)));
 	let w = Slab::of(BlockType::Dirt);
-	s.tick(0.0, SEED, &[(0, 64, 0)], &w);
+	s.tick(0.0, SEED, &[(0, 64, 0)], 1, &w);
 	assert!(s.sweeping().is_some());
 	// Days pass mid-sweep. The slot moves on; the sweep does not restart.
 	let mut seen = std::collections::HashSet::new();
 	for i in 0..500 {
-		for (at, _) in s.tick(f64::from(DAY_SECS) * f64::from(i), SEED, &[(0, 64, 0)], &w) {
+		for (at, _) in s.tick(
+			f64::from(DAY_SECS) * f64::from(i),
+			SEED,
+			&[(0, 64, 0)],
+			1,
+			&w,
+		) {
 			assert!(seen.insert(at), "{at:?} written twice — sweeps overlapped");
 		}
 	}
@@ -261,7 +288,7 @@ fn walking_during_a_sweep_does_not_move_it() {
 	let mut out = Vec::new();
 	let mut eye = 0;
 	while {
-		out.extend(s.tick(0.0, SEED, &[(eye, 64, 0)], &w));
+		out.extend(s.tick(0.0, SEED, &[(eye, 64, 0)], 1, &w));
 		eye += 4096;
 		s.sweeping().is_some()
 	} {}
@@ -285,7 +312,7 @@ fn nobody_online_means_no_sweep() {
 	let mut s = Scheduler::new();
 	s.register(Sprout::boxed(1, 0, (60, 60)));
 	let w = Slab::of(BlockType::Dirt);
-	assert!(s.tick(0.0, SEED, &[], &w).is_empty());
+	assert!(s.tick(0.0, SEED, &[], 1, &w).is_empty());
 	assert!(
 		s.sweeping().is_none(),
 		"a sweep needs somebody to sweep near"
@@ -352,7 +379,7 @@ fn a_node_host_scope_is_refused_at_registration() {
 					candidates: self.1,
 				}
 			}
-			fn apply(&self, _: (i32, i32, i32), _: &dyn CellSource, _: f64, _: u64) -> Option<u16> {
+			fn apply(&self, _: (i32, i32, i32), _: &dyn CellSource, _: f64, _: Run) -> Option<u16> {
 				None
 			}
 		}
@@ -405,9 +432,11 @@ fn a_node_host_is_never_sweepable() {
 			.iter()
 			.filter(|&&at| nodes::revealed(cell, at, SEED, levels, false).is_some())
 			.count();
+		// A live face stored outright reveals itself anywhere; the
+		// scheduler refuses it for the same reason it refuses a host.
 		assert_eq!(
 			witnesses > 0,
-			node_host(b),
+			node_host(b) || b.is_node_block(),
 			"{b:?}: node_host and revealed disagree ({witnesses} witnesses)"
 		);
 	}
@@ -483,7 +512,7 @@ impl WorldJob for Creep {
 			},
 		}
 	}
-	fn apply(&self, at: (i32, i32, i32), world: &dyn CellSource, _: f64, _: u64) -> Option<u16> {
+	fn apply(&self, at: (i32, i32, i32), world: &dyn CellSource, _: f64, _: Run) -> Option<u16> {
 		ring(at, 1)
 			.into_iter()
 			.any(|(x, y, z)| {
@@ -528,7 +557,7 @@ fn judgment_reads_the_presweep_world_and_emission_rechecks_it() {
 
 	// One column, few candidates: judgment fits in the first slice and
 	// emits nothing.
-	let first = s.tick(0.0, SEED, &[(0, 64, 0)], &w);
+	let first = s.tick(0.0, SEED, &[(0, 64, 0)], 1, &w);
 	assert!(first.is_empty(), "judgment slice must not emit");
 	assert!(s.sweeping().is_some(), "emission still owed");
 
@@ -548,13 +577,13 @@ fn abandon_between_phases_emits_nothing() {
 	let mut w = Slab::of(BlockType::Dirt);
 	w.record((2, 64, 2), BlockType::Dirt as u16);
 
-	assert!(s.tick(0.0, SEED, &[(0, 64, 0)], &w).is_empty());
+	assert!(s.tick(0.0, SEED, &[(0, 64, 0)], 1, &w).is_empty());
 	assert!(s.sweeping().is_some(), "writes are judged and waiting");
 	s.abandon();
 	// Same slot: the run was consumed at start, so nothing resumes and
 	// the pending writes died with the sweep.
 	for _ in 0..50 {
-		assert!(s.tick(0.0, SEED, &[(0, 64, 0)], &w).is_empty());
+		assert!(s.tick(0.0, SEED, &[(0, 64, 0)], 1, &w).is_empty());
 	}
 }
 
@@ -565,7 +594,7 @@ fn no_frontier_slice_ever_exceeds_the_budget() {
 	let w = Slab::of(BlockType::Dirt);
 	let mut total = 0;
 	loop {
-		let n = s.tick(0.0, SEED, &[(0, 64, 0)], &w).len();
+		let n = s.tick(0.0, SEED, &[(0, 64, 0)], 1, &w).len();
 		assert!(n <= CELLS_PER_TICK, "emitted {n} past the budget");
 		total += n;
 		if s.sweeping().is_none() {

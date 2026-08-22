@@ -481,6 +481,9 @@ pub struct Sim {
 	/// Clock-scheduled sweeps near active players. Empty until something
 	/// registers a rule; the tick costs one `is_none` while it is.
 	world_jobs: digblock_core::worldjob::Scheduler,
+	/// Peak live head-count over the trailing game day — what the
+	/// regrowth sweep scales its odds by.
+	presence: digblock_core::presence::RollingPeak,
 }
 
 impl Sim {
@@ -551,6 +554,7 @@ impl Sim {
 			admin_accounts: FxHashSet::default(),
 			tod_offset_secs: 0.0,
 			world_jobs: digblock_core::worldjob::Scheduler::new(),
+			presence: digblock_core::presence::RollingPeak::day(),
 		})
 	}
 

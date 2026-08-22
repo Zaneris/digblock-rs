@@ -13,6 +13,7 @@
 
 pub mod grass;
 pub mod leaves;
+pub mod regrow;
 pub mod wisplight;
 
 use crate::block::BlockType;
@@ -44,6 +45,18 @@ pub struct Schedule {
 }
 
 impl Schedule {
+	/// Once a day, at `hour` on the game's 24-hour face — noon is the
+	/// sun's zero, and a fresh world's clock opens at
+	/// [`crate::sun::TOD_START`], so the offset is measured from there.
+	pub fn daily_at(hour: u32) -> Self {
+		let since_noon = (f64::from(hour) - 12.0) / 24.0;
+		let start = f64::from(crate::sun::TOD_START) / 360.0;
+		Self {
+			per_day: 1,
+			offset: (since_noon + start).rem_euclid(1.0) as f32,
+		}
+	}
+
 	/// The slot standing at `secs`, as an index that strictly increases
 	/// with time. Comparing two of these is the whole of "is it due yet".
 	pub fn slot(&self, secs: f64) -> u64 {
@@ -81,7 +94,8 @@ pub enum Candidates {
 pub struct Scope {
 	/// Only cells currently holding one of these are offered to the job.
 	///
-	/// **None of them may host a node** ([`node_host`]): a journal write
+	/// **None of them may host a node** ([`node_host`]) **or be a live
+	/// face** (a regrown node, stored): a journal write
 	/// sets the cell's monotone edited bit, and `nodes::revealed` reads
 	/// that bit as spent — so a sweep over a host type would silently and
 	/// irreversibly destroy every reveal in a wide band around every
@@ -118,22 +132,36 @@ pub trait CellSource {
 	fn edited_cells(&self, _cx: i32, _cz: i32, _f: &mut dyn FnMut(i32, i32, i32)) {}
 }
 
+/// What a sweep was started with, handed to every [`WorldJob::apply`]
+/// of that sweep. Snapshotted when the sweep STARTS, like its column
+/// set, so a player arriving mid-sweep cannot change the odds halfway
+/// through it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Run {
+	/// The slot index driving this sweep: seed any randomness from
+	/// `(world seed, cell, slot)` rather than a live RNG, so a sweep is
+	/// reproducible from the journal.
+	pub slot: u64,
+	/// The most players this world held at once over the game day before
+	/// the sweep — a [`crate::presence::RollingPeak`] the host feeds. A
+	/// local world answers one; a rule that scales by how busy the world
+	/// has been reads this and nothing else.
+	pub players: u32,
+}
+
 /// A rule run on a clock over the cells near active players.
 pub trait WorldJob: Send {
 	fn name(&self) -> &'static str;
 	fn schedule(&self) -> Schedule;
 	fn scope(&self) -> Scope;
 
-	/// The cell this one becomes, or `None` to leave it alone. `run` is
-	/// the slot index driving this sweep: seed any randomness from
-	/// `(world seed, cell, run)` rather than a live RNG, so a sweep is
-	/// reproducible from the journal.
+	/// The cell this one becomes, or `None` to leave it alone.
 	fn apply(
 		&self,
 		at: (i32, i32, i32),
 		world: &dyn CellSource,
 		seed: f64,
-		run: u64,
+		run: Run,
 	) -> Option<u16>;
 }
 
@@ -149,7 +177,7 @@ struct Registered {
 /// walking during it cannot change what gets covered.
 struct Sweep {
 	job: usize,
-	run: u64,
+	run: Run,
 	/// Block columns for a Band sweep, chunk columns for a Frontier one —
 	/// each mode's unit of coverage.
 	columns: Vec<(i32, i32)>,
@@ -189,9 +217,12 @@ impl Scheduler {
 	pub fn register(&mut self, job: Box<dyn WorldJob>) {
 		let scope = job.scope();
 		assert!(
-			!scope.blocks.iter().copied().any(node_host),
-			"{}: a scheduled sweep may not target a node host — the write \
-			 would set the edited bit and destroy every reveal it touched",
+			!scope
+				.blocks
+				.iter()
+				.any(|&b| node_host(b) || b.is_node_block()),
+			"{}: a scheduled sweep may not target a node host or a live face — the \
+			 write would set the edited bit and destroy every reveal it touched",
 			job.name()
 		);
 		assert!(scope.y.0 <= scope.y.1, "{}: empty y band", job.name());
@@ -214,16 +245,18 @@ impl Scheduler {
 	///
 	/// `eyes` are the active players' positions. In a local world that is
 	/// the one player, which is what keeps offline and multiplayer on the
-	/// same rule.
+	/// same rule. `players` is the day's peak head-count ([`Run::players`]),
+	/// read once when a sweep starts.
 	pub fn tick(
 		&mut self,
 		secs: f64,
 		seed: f64,
 		eyes: &[(i32, i32, i32)],
+		players: u32,
 		world: &dyn CellSource,
 	) -> Vec<Write> {
 		if self.active.is_none() {
-			self.start_due(secs, eyes);
+			self.start_due(secs, eyes, players);
 		}
 		self.slice(seed, world)
 	}
@@ -246,7 +279,7 @@ impl Scheduler {
 		}
 	}
 
-	fn start_due(&mut self, secs: f64, eyes: &[(i32, i32, i32)]) {
+	fn start_due(&mut self, secs: f64, eyes: &[(i32, i32, i32)], players: u32) {
 		if eyes.is_empty() {
 			return;
 		}
@@ -265,7 +298,7 @@ impl Scheduler {
 			};
 			self.active = Some(Sweep {
 				job: i,
-				run: slot,
+				run: Run { slot, players },
 				columns,
 				done: 0,
 				pending: Vec::new(),
@@ -353,7 +386,7 @@ fn offer(
 	scope: &Scope,
 	world: &dyn CellSource,
 	seed: f64,
-	run: u64,
+	run: Run,
 	at: (i32, i32, i32),
 	out: &mut Vec<Write>,
 ) {
@@ -380,7 +413,7 @@ fn judge_frontier_column(
 	scope: &Scope,
 	world: &dyn CellSource,
 	seed: f64,
-	run: u64,
+	run: Run,
 	(cx, cz): (i32, i32),
 	surface_shell: bool,
 	pending: &mut Vec<Write>,

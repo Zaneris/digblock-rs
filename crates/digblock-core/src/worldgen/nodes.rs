@@ -14,6 +14,14 @@
 //! still holds its pristine host and has never been written.
 //! `JournalIndex::record` only ever inserts, so a spent node cannot be regrown
 //! by placing the host back.
+//!
+//! The one node that IS stored: a spent face the regrowth sweep
+//! ([`crate::worldjob::regrow`]) has given back. The edited bit is monotone, so
+//! the only way a find can return is the sweep writing the live face itself
+//! into the cell — which the anti-dupe permits because only the sweep can:
+//! no live face is ever an item ([`BlockType::is_slottable`]), so no player
+//! can place one. A stored face is ordinary chunk data everyone sees, and
+//! [`revealed`] treats it as found at any level.
 
 use crate::block::BlockType;
 use crate::worldgen::ore;
@@ -82,6 +90,11 @@ pub fn reveal_met(node: BlockType, levels: Levels) -> bool {
 /// coordinate to regrow it. The host id also routes the query — only a
 /// Stone cell can hold a deposit, only a Wood cell heartwood, only a Sand
 /// cell a spring — so the wrong-host case costs one integer compare.
+///
+/// A cell holding a live face OUTRIGHT — a regrown node — is found by
+/// anyone, ahead of both gates: it is stored, so every client's mesh
+/// already shows it, and a node you can see and cannot draw is the worst
+/// outcome this whole system has.
 pub fn revealed(
 	cell: u16,
 	at: (i32, i32, i32),
@@ -89,10 +102,13 @@ pub fn revealed(
 	levels: Levels,
 	edited: bool,
 ) -> Option<BlockType> {
+	let id = crate::chunk::cell_id(cell);
+	if let Some(stored) = BlockType::try_from_id(id).filter(|b| b.is_node_block()) {
+		return Some(stored);
+	}
 	if edited {
 		return None;
 	}
-	let id = crate::chunk::cell_id(cell);
 	let node = if id == BlockType::Stone as u16 {
 		ore::ore_at(at.0, at.1, at.2, seed)?
 	} else if id == BlockType::Wood as u16 {
@@ -103,6 +119,22 @@ pub fn revealed(
 		return None;
 	};
 	reveal_met(node, levels).then_some(node)
+}
+
+/// The node worldgen puts at this coordinate, asked of the position
+/// ALONE — no host, no edit bit, no level. The placement half of
+/// [`revealed`], for a caller that already knows the cell is not its
+/// pristine host: the regrowth sweep, deciding whether a spent face
+/// stands where its find was, or somewhere a player carried it to.
+pub fn node_at(at: (i32, i32, i32), seed: f64) -> Option<BlockType> {
+	let (x, y, z) = at;
+	if heartwood_at(x, y, z, seed) {
+		return Some(BlockType::Heartwood);
+	}
+	if springstone_at(x, y, z, seed) {
+		return Some(BlockType::Springstone);
+	}
+	ore::ore_at(x, y, z, seed)
 }
 
 /// What a dig on one cell actually IS, for this player with this tool in
