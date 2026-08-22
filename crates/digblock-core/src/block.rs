@@ -172,10 +172,10 @@ blocks! {
 	///
 	/// All four `seams`: a revealed vein lights the room it opens into, from
 	/// the faces that open into it and no others (GI-DESIGN.md R31).
-	Emberore = 48 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::EMBERORE, tex::EMBERORE, tex::EMBERORE), 120, DigFamily::Rock), 2)), Material::Emberore),
-	Duskstone = 49 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::DUSKSTONE, tex::DUSKSTONE, tex::DUSKSTONE), 150, DigFamily::Rock), 4)), Material::Duskstone),
-	Glowvein = 50 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::GLOWVEIN, tex::GLOWVEIN, tex::GLOWVEIN), 190, DigFamily::Rock), 4)), Material::Glowvein),
-	Aetherock = 51 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::AETHEROCK, tex::AETHEROCK, tex::AETHEROCK), 240, DigFamily::Rock), 6)), Material::Aetherock),
+	Emberore = 48 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::EMBERORE, tex::EMBERORE, tex::EMBERORE), 120 * NODE_HOLD_MULT, DigFamily::Rock), 2)), Material::Emberore),
+	Duskstone = 49 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::DUSKSTONE, tex::DUSKSTONE, tex::DUSKSTONE), 150 * NODE_HOLD_MULT, DigFamily::Rock), 4)), Material::Duskstone),
+	Glowvein = 50 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::GLOWVEIN, tex::GLOWVEIN, tex::GLOWVEIN), 190 * NODE_HOLD_MULT, DigFamily::Rock), 4)), Material::Glowvein),
+	Aetherock = 51 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::AETHEROCK, tex::AETHEROCK, tex::AETHEROCK), 240 * NODE_HOLD_MULT, DigFamily::Rock), 6)), Material::Aetherock),
 	/// The generic grey tapped face the per-tier rocks at the end of this
 	/// table replaced. Kept, and unreachable: nothing writes it any more,
 	/// but journals and saves made before those rocks existed carry cells
@@ -289,17 +289,17 @@ blocks! {
 	/// for all three, a draw credits essence, and what you carry home is the
 	/// spent face below, which drops itself. Heartwood is the day-one node,
 	/// because the economy has to be able to begin.
-	Heartwood = 79 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::HEARTWOOD, tex::HEARTWOOD, tex::HEARTWOOD), 80, DigFamily::Wood), 2)), Material::Heartwood),
+	Heartwood = 79 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::HEARTWOOD, tex::HEARTWOOD, tex::HEARTWOOD), 80 * NODE_HOLD_MULT, DigFamily::Wood), 2)), Material::Heartwood),
 	DrainedHeartwood = 80 => mat(dig(props(RenderClass::Opaque, true, tex::DRAINED_HEARTWOOD, tex::DRAINED_HEARTWOOD, tex::DRAINED_HEARTWOOD), 60, DigFamily::Wood), Material::DrainedHeartwood),
 	/// Leystone rides the ore deposit stream as its SURFACE tier — the
 	/// shallow band the deep tiers vacate — and manifests in pristine
 	/// Stone exactly as they do; only its reveal keys on Alchemy.
-	Leystone = 81 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::LEYSTONE, tex::LEYSTONE, tex::LEYSTONE), 110, DigFamily::Rock), 3)), Material::Leystone),
+	Leystone = 81 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::LEYSTONE, tex::LEYSTONE, tex::LEYSTONE), 110 * NODE_HOLD_MULT, DigFamily::Rock), 3)), Material::Leystone),
 	SpentLeystone = 82 => mat(dig(props(RenderClass::Opaque, true, tex::SPENT_LEYSTONE, tex::SPENT_LEYSTONE, tex::SPENT_LEYSTONE), 90, DigFamily::Rock), Material::SpentLeystone),
 	/// Springstone manifests in the pristine sand bed of a lake or river
 	/// — the one node you dig through water to reach, which is what makes
 	/// water features destinations.
-	Springstone = 83 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::SPRINGSTONE, tex::SPRINGSTONE, tex::SPRINGSTONE), 60, DigFamily::Soft), 3)), Material::Springstone),
+	Springstone = 83 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::SPRINGSTONE, tex::SPRINGSTONE, tex::SPRINGSTONE), 60 * NODE_HOLD_MULT, DigFamily::Soft), 3)), Material::Springstone),
 	SpentSpringstone = 84 => mat(dig(props(RenderClass::Opaque, true, tex::SPENT_SPRINGSTONE, tex::SPENT_SPRINGSTONE, tex::SPENT_SPRINGSTONE), 25, DigFamily::Soft), Material::SpentSpringstone),
 	/// The stained panes — clean glass in a colour, and the colour is
 	/// what the light through them becomes (the tinted-transmission op).
@@ -824,6 +824,13 @@ const fn emits(mut p: BlockProps, level: u8) -> BlockProps {
 	p.light = level;
 	p
 }
+
+/// How much longer a live node holds than the figure its row states —
+/// every essence source, on top of its per-kind base. A draw is the only
+/// way essence enters the world and it is never undone, so the hold is
+/// priced to make a player mean it; the XP a draw pays is
+/// `skills::field_xp`, tabled per kind, and does NOT rise with this.
+const NODE_HOLD_MULT: u16 = 3;
 
 /// This block casts light at `level` from its exposed FACES rather than
 /// from the middle of its cell — see [`BlockProps::surface_light`]. A

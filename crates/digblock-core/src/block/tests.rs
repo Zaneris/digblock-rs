@@ -583,3 +583,22 @@ fn an_essence_identifier_is_ascii_and_its_own() {
 		assert!(!e.name().is_empty(), "{e:?} has no label");
 	}
 }
+
+/// A draw is priced to be meant: every live node holds a whole multiple
+/// of `NODE_HOLD_MULT` times its row's base, and at least that multiple
+/// of breaking out the spent face it leaves behind — so tapping a find is
+/// never cheaper than clearing what is left of it.
+#[test]
+fn a_live_node_holds_a_multiple_of_its_spent_face() {
+	use crate::worldgen::nodes::{NODES, spent_block};
+	for node in NODES {
+		let hold = node.hardness_ticks().expect("a node is drawn");
+		let spent = spent_block(node).expect("a kind");
+		let left = spent.hardness_ticks().expect("a spent face is dug");
+		assert_eq!(hold % NODE_HOLD_MULT, 0, "{node:?}");
+		assert!(
+			hold >= left * NODE_HOLD_MULT,
+			"{node:?}: {hold} < {left} × mult"
+		);
+	}
+}
