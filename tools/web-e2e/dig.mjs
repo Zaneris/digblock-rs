@@ -38,6 +38,7 @@ Harness flags (never reach the page):
   --dpr N             backing scale (default 1; 2 is a Retina laptop)
   --mobile            touch device: coarse pointer + the mobile defaults (also sets ?mobile)
   --headed            show the window and leave it open until Ctrl-C
+  --native            no viewport/DPR emulation: the real window on the real display
   --console           echo every console line as it arrives
   --timeout MS        first-frame deadline (default 60000)
   --url ORIGIN        use a server already running instead of serving target/web
@@ -58,7 +59,7 @@ An unknown --name is passed through and the page refuses it (check the console).
 
 function parse(argv) {
 	const h = { screenshot: null, frames: null, settle: null, keys: [], click: null, size: [1280, 800], dpr: 1,
-		mobile: false, headed: false, console: false, timeout: 60_000, url: null, stats: false };
+		mobile: false, headed: false, native: false, console: false, timeout: 60_000, url: null, stats: false };
 	const q = {};
 	for (let i = 0; i < argv.length; i++) {
 		const a = argv[i];
@@ -77,6 +78,7 @@ function parse(argv) {
 			case "dpr": h.dpr = Number(next()); break;
 			case "mobile": h.mobile = true; q.mobile = true; break;
 			case "headed": h.headed = true; break;
+			case "native": h.native = true; break;
 			case "console": h.console = true; break;
 			case "timeout": h.timeout = Number(next()); break;
 			case "url": h.url = next(); break;
@@ -103,7 +105,7 @@ async function main() {
 	let code = 0;
 	try {
 		console.error(`→ ${origin}/${query(normalize(q))}`);
-		const dig = await boot(browser, origin, q, { size: h.size, dpr: h.dpr, mobile: h.mobile, timeout: h.timeout });
+		const dig = await boot(browser, origin, q, { size: h.size, dpr: h.dpr, mobile: h.mobile, native: h.native, timeout: h.timeout });
 		if (h.console) dig.page.on("console", (m) => console.log(`[${m.type()}] ${m.text()}`));
 		for (const l of h.console ? dig.console : []) console.log(`[${l.type}] ${l.text}`);
 		if (h.settle) await dig.page.waitForTimeout(h.settle);

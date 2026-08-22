@@ -637,8 +637,21 @@ impl Engine {
 	/// through here — miss one and the settings slider appears to do
 	/// nothing until the window is resized.
 	pub(super) fn recompute_ui_scale(&mut self) {
+		let was = self.ui.ui_scale;
 		self.ui.ui_scale =
 			crate::ui::scale::ui_scale(self.ui.size, self.ui.scale_factor, self.config.ui_scale);
+		// Logged with its inputs: a UI the wrong size on one platform is a
+		// surface the wrong size, and this line is what says which.
+		if self.ui.ui_scale != was {
+			log::info!(
+				"ui scale {}: {}x{} px at {}x, preference {}",
+				self.ui.ui_scale,
+				self.ui.size.0,
+				self.ui.size.1,
+				self.ui.scale_factor,
+				self.config.ui_scale
+			);
+		}
 	}
 
 	/// Apply a settings change batch at runtime, then persist it. SSR is

@@ -603,6 +603,9 @@ lower rungs open (`settings::DRAW_FLOOR`) — with saved settings and URL params
   driver both share (`boot` → first frame, `exit` → `digblock-exit`, `shot` → a decoded PNG with luminance/colour stats,
   `keys`, `metrics`, `trouble`). It runs the INSTALLED Chrome headless with WebGPU on, so no browser downloads and the
   GI path that renders is the one players get. A test asserts what a pixel shows, never a DOM: the page is one canvas.
+  `--dpr N` is Playwright's emulation, which Chromium only half honours — the driver corrects the `ResizeObserver` box
+  winit sizes the canvas from, and `--native` drops emulation for the real display when a size question needs a second
+  opinion.
 - The loading overlay is a fixed contract with the platform layer (`digblock-gpu-ready`, `digblock-first-frame`,
   `digblock-exit`, `digblock-fatal`), and **it must be PAINTED before wasm instantiation begins** — the double-rAF in
   index.html is what guarantees that on a cold mobile load. Every stage behind it can HANG rather than fail, so a

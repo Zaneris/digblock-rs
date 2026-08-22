@@ -64,6 +64,29 @@ const INIT = () => {
 	}
 };
 
+// Chromium's DPR emulation is only skin deep: `devicePixelRatio` reports
+// the emulated ratio, but a ResizeObserver's `devicePixelContentBoxSize`
+// keeps answering in real device pixels — and that is the box winit sizes
+// the canvas from, so an emulated 2× page rendered into a 1× backing and
+// stretched it, which photographs as a UI twice too big. A real Retina
+// window does not do this (`--native` shows 2400×1616 at 2×). Derive the
+// device box from the CSS box and the ratio the page believes, which is
+// what a real display would have reported.
+const HONEST_DPR = () => {
+	const proto = ResizeObserverEntry.prototype;
+	const desc = Object.getOwnPropertyDescriptor(proto, "devicePixelContentBoxSize");
+	if (!desc?.get) return;
+	Object.defineProperty(proto, "devicePixelContentBoxSize", {
+		configurable: true,
+		get() {
+			const css = this.contentBoxSize?.[0];
+			if (!css) return desc.get.call(this);
+			const r = devicePixelRatio;
+			return [{ inlineSize: Math.round(css.inlineSize * r), blockSize: Math.round(css.blockSize * r) }];
+		},
+	});
+};
+
 export class Dig {
 	/** @param {import('@playwright/test').Page} page */
 	constructor(page, url) {
@@ -74,6 +97,14 @@ export class Dig {
 		page.on("console", (m) => this.console.push({ type: m.type(), text: m.text() }));
 		page.on("pageerror", (e) => this.errors.push(String(e)));
 		page.on("crash", () => this.errors.push("page crashed"));
+	}
+
+	/** The canvas as the browser sees it: CSS box, backing store, ratio. */
+	canvas() {
+		return this.page.evaluate(() => {
+			const c = document.getElementById("digblock-canvas");
+			return { dpr: devicePixelRatio, css: [c.clientWidth, c.clientHeight], backing: [c.width, c.height] };
+		});
 	}
 
 	/** The engine's view of the run, straight from the page. */
@@ -150,8 +181,11 @@ export class Dig {
  * the web's `--size` and the display it lands on, which the desktop can
  * only choose with `--display`.
  */
-export async function boot(browser, origin, params = {}, { size = [1280, 800], dpr = 1, mobile = false, timeout = 60_000 } = {}) {
-	const context = await browser.newContext({
+export async function boot(browser, origin, params = {}, { size = [1280, 800], dpr = 1, mobile = false, native = false, timeout = 60_000 } = {}) {
+	// `native` drops Playwright's viewport/DPR emulation: the page gets the
+	// real window and the real display's devicePixelRatio — the only way
+	// to tell an emulation artifact from a bug in how the page sizes itself.
+	const context = await browser.newContext(native ? { viewport: null } : {
 		viewport: { width: size[0], height: size[1] },
 		deviceScaleFactor: dpr,
 		hasTouch: mobile,
@@ -159,6 +193,7 @@ export async function boot(browser, origin, params = {}, { size = [1280, 800], d
 	});
 	const page = await context.newPage();
 	await page.addInitScript(INIT);
+	if (!native && dpr !== 1) await page.addInitScript(HONEST_DPR);
 	const url = origin + "/" + (typeof params === "string" ? params : query(normalize(params)));
 	const dig = new Dig(page, url);
 	await page.goto(url);

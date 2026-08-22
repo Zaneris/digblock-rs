@@ -38,3 +38,19 @@ test("K opens the alchemy screen on a menu-less interactive run and Escape close
 	expect(diff(open, closed)).toBeGreaterThan(4);
 	expect(d.trouble()).toEqual([]);
 });
+
+test("the canvas backing is the CSS box times the device ratio, at 1x and 2x", async ({ dig }) => {
+	// The desktop's `--size` holds the surface equal across platforms; here
+	// that is the viewport × DPR, and a backing that disagrees renders the
+	// UI for the wrong surface and stretches it (the 2× emulation quirk
+	// lib/digblock.mjs corrects).
+	for (const dpr of [1, 2]) {
+		const d = await dig({ seed: 7, frames: 5 }, { size: [960, 600], dpr });
+		await d.exit();
+		const c = await d.canvas();
+		expect(c.dpr).toBe(dpr);
+		expect(c.backing).toEqual([c.css[0] * dpr, c.css[1] * dpr]);
+		const png = await d.shot();
+		expect([png.width, png.height]).toEqual(c.backing);
+	}
+});
