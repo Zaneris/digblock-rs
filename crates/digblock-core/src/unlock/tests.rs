@@ -49,10 +49,11 @@ fn craft_levels_are_pinned() {
 	] {
 		assert_eq!(craft(b), None, "{b:?} is the world's, not the bench's");
 	}
-	// The first vessel: available from the start, gated by its price
-	// alone — level 1 is where everyone begins, so `opens` never
-	// celebrates it and the fanfare list below is unmoved.
-	assert_eq!(craft(B::Bucket), Some(1));
+	// The siphon is the first craft beat and stands alone on the first
+	// level: the bucket opens strictly later, so nothing competes with
+	// it on the catalog's opening line.
+	assert_eq!(craft(B::EssenceSiphon), Some(1));
+	assert!(craft(B::Bucket) > craft(B::EssenceSiphon));
 	// A level and a recipe are one decision: neither exists alone.
 	for &b in &BlockType::ALL {
 		assert_eq!(

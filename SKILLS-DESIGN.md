@@ -972,12 +972,13 @@ proposal in the header's sense (the level is final only when it lands in `unlock
   last material, the repeatable prestige building block, and the reason Aetherock mining is standing income), a
   Chandelier ~54 (the showpiece light, the biggest repeatable Aether sink).
 - **The second extraction queue slot ~42** (QoL-as-unlock; §12's answer, scheduled).
-- **The craftable bucket — BUILT** (protocol v25): the bucket lost `always_owned` and is the catalog's first tool, gated
-  by its price alone (Flora and Earth, at the level everyone starts at, so the opening dig-and-extract loop pays for it
-  — "make your first vessel" is the game's first craft beat). Its price carries **no Aqua** (water is how a player first
-  GETS Aqua — the siphon's no-Metal deadlock rule, applied again). The Water extract gate dropped to the first level
-  with it, and the `extract` axis — a one-entry table by then — was deleted outright; if a substance ever genuinely
-  needs its own extraction level, the axis returns with more than one row in it. A fresh player's tool slot stands BARE
+- **The craftable bucket — BUILT** (protocol v25): the bucket lost `always_owned` and became a craft priced in timber
+  alone. It first sat at the level everyone starts at, which put it on the catalog's opening line beside the siphon and
+  distracted from the one craft beat that line exists for — "make your siphon" — so it now opens a few rungs later, at
+  `unlock::functional`'s rung for it. Its price carries **no Aqua** (water is how a player first GETS Aqua — the
+  siphon's no-Metal deadlock rule, applied again). The Water extract gate dropped to the first level with it, and the
+  `extract` axis — a one-entry table by then — was deleted outright; if a substance ever genuinely needs its own
+  extraction level, the axis returns with more than one row in it. A fresh player's tool slot stands BARE
   (`Hotbar::active_tool` is an `Option`; `tool_in_hand` spells the empty hand as `Air` for the shared dig questions;
   reconciling auto-equips the first crafted vessel). Every record written while the bucket was owned by everyone keeps
   it via a migration grant — `inventories.bin` v7 server-side, `SAVE_REV` for local saves, with a fresh world opening AT

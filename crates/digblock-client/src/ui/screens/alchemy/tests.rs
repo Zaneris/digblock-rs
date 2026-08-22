@@ -366,14 +366,17 @@ fn family_selection_and_the_single_transmute_button() {
 	assert!(r.hits.rect_of(InvId::CraftGo).is_none(), "Stone: no Earth");
 }
 
-/// The vessels are the catalog's first crafts, and they are paid in
-/// FEEDSTOCK: a fresh player with timber can make the bucket and the
-/// siphon at level 1 with no essence anywhere — the whole reason the
-/// economy can bootstrap — and the strip names the missing timber
-/// when they cannot.
+/// The vessels are paid in FEEDSTOCK: once both are open, a player with
+/// timber can make the bucket and the siphon with no essence anywhere —
+/// the whole reason the economy can bootstrap — and the strip names the
+/// missing timber when they cannot. Rigged at the later vessel's own
+/// rung, read off `unlock`, so a move of either keeps the page honest.
 #[test]
-fn the_vessels_craft_from_timber_at_level_one() {
-	let mut r = rig_at(1, |inv| inv.add(B::Wood, 20));
+fn the_vessels_craft_from_timber_alone() {
+	let rung = digblock_core::unlock::craft(B::Bucket)
+		.max(digblock_core::unlock::craft(B::EssenceSiphon))
+		.expect("both vessels are crafts");
+	let mut r = rig_at(rung, |inv| inv.add(B::Wood, 20));
 	let tools = center(r.hits.rect_of(family(&r, "Tools")).unwrap());
 	press(&mut r, tools);
 	rebuild(&mut r);

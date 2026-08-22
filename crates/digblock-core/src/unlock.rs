@@ -109,11 +109,12 @@ pub fn material(m: Material) -> Option<u32> {
 /// decision, pinned so neither can exist without the other.
 pub fn functional(b: BlockType) -> Option<u32> {
 	Some(match b {
-		// The first vessel (§13.5): the bucket sits at the level everyone
-		// starts at, so its PRICE is the gate — the opening dig-and-extract
-		// loop pays for it, and "make your first vessel" is the game's
-		// first craft beat rather than a level-up.
-		BlockType::Bucket => 1,
+		// The water vessel (§13.5) sits a few rungs past the start, beside
+		// the leystone reveal: at the first level it shared the catalog's
+		// opening line with the siphon and split the one beat the ladder
+		// must not split — "make your siphon". Still priced in timber
+		// alone, so the rung is the whole gate.
+		BlockType::Bucket => 5,
 		// First light, pre-ore on purpose (§7.3) — and past the leystone
 		// reveal, since its price names Terra and Terra is a leystone draw
 		// now.

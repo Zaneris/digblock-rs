@@ -414,10 +414,11 @@ mesh already shows it. The odds scale with `presence::RollingPeak` — the day's
 
 ## Tools & the Resonant Pick
 
-Four tools, every one crafted: the two vessels (bucket and **Essence Siphon**, level-1 crafts priced in felled timber
-ALONE), the **Resonant Pick**, and the **Master's Sigil** (the last thing either ladder unlocks, priced entirely in
-Aether, and it DOES nothing — the point is that it is the catalog's last line). Ownership is the count; a fresh player
-owns none, and `Hotbar::active_tool` is an `Option`.
+Four tools, every one crafted: the two vessels (the **Essence Siphon** at the first level and the bucket a few rungs
+later, both priced in felled timber ALONE so the siphon owns the opening craft beat), the **Resonant Pick**, and the
+**Master's Sigil** (the last thing either ladder unlocks, priced entirely in Aether, and it DOES nothing — the point is
+that it is the catalog's last line). Ownership is the count; a fresh player owns none, and `Hotbar::active_tool` is an
+`Option`.
 
 The pick breaks the PLANE of the face it hits, derived on both ends from the ray (`pick::cells`) so the client names one
 cell and the server decides what the swing touched. Two rules: every extra cell must yield the **same credit**

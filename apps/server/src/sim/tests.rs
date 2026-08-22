@@ -1099,17 +1099,17 @@ fn xp_awards_on_dig_and_alchemy_and_persists() {
 
 		// Craft the first vessel from granted timber: its `craft_xp`
 		// in Alchemy, in wire order with the InventoryFull rebase.
-		let timber: u32 = digblock_core::alchemy::craft_feedstock(BlockType::Bucket)
+		let timber: u32 = digblock_core::alchemy::craft_feedstock(BlockType::EssenceSiphon)
 			.iter()
 			.map(|&(_, n)| n)
 			.sum();
 		sim.test_grant(1, BlockType::Wood, timber);
-		let bucket_xp = digblock_core::skills::craft_xp(BlockType::Bucket);
+		let siphon_xp = digblock_core::skills::craft_xp(BlockType::EssenceSiphon);
 		sim.tick_once(vec![SimEvent::Msg {
 			conn_id: 1,
 			msg: ClientMsg::Alchemy {
 				op: AlchemyOp::Craft {
-					item: BlockType::Bucket as u16,
+					item: BlockType::EssenceSiphon as u16,
 					count: 1,
 				},
 			},
@@ -1118,7 +1118,7 @@ fn xp_awards_on_dig_and_alchemy_and_persists() {
 		assert!(
 			c.msgs
 				.iter()
-				.any(|m| matches!(m, ServerMsg::XpGain { skill: 1, total } if *total == bucket_xp)),
+				.any(|m| matches!(m, ServerMsg::XpGain { skill: 1, total } if *total == siphon_xp)),
 			"the vessel pays its craft_xp: {:?}",
 			c.msgs
 		);
@@ -1127,11 +1127,11 @@ fn xp_awards_on_dig_and_alchemy_and_persists() {
 		sim.tick_once(vec![SimEvent::Disconnected { conn_id: 1 }]);
 		let mut c2 = connect_as_account(&mut sim, 2, account);
 		c2.drain();
-		let bucket_xp = digblock_core::skills::craft_xp(BlockType::Bucket);
+		let siphon_xp = digblock_core::skills::craft_xp(BlockType::EssenceSiphon);
 		assert!(
 			c2.msgs.iter().any(|m| matches!(
 				m,
-				ServerMsg::Skills { xp } if xp == &vec![(0, after), (1, bucket_xp)]
+				ServerMsg::Skills { xp } if xp == &vec![(0, after), (1, siphon_xp)]
 			)),
 			"reconnect carries the totals: {:?}",
 			c2.msgs
@@ -1143,11 +1143,11 @@ fn xp_awards_on_dig_and_alchemy_and_persists() {
 	let mut sim = super::Sim::new_with_source(SEED, &dir, 1, 2, flat_source(), FLAT_SPAWN).unwrap();
 	let mut c3 = connect_as_account(&mut sim, 3, account);
 	c3.drain();
-	let bucket_xp = digblock_core::skills::craft_xp(BlockType::Bucket);
+	let siphon_xp = digblock_core::skills::craft_xp(BlockType::EssenceSiphon);
 	assert!(
 		c3.msgs.iter().any(|m| matches!(
 			m,
-			ServerMsg::Skills { xp } if xp == &vec![(0, after), (1, bucket_xp)]
+			ServerMsg::Skills { xp } if xp == &vec![(0, after), (1, siphon_xp)]
 		)),
 		"reboot carries the totals: {:?}",
 		c3.msgs

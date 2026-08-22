@@ -280,7 +280,7 @@ fn alchemy_craft_scales_with_level() {
 /// a fresh player's first craft is exactly this.
 #[test]
 fn a_vessel_is_crafted_from_feedstock_alone() {
-	let need: u32 = crate::alchemy::craft_feedstock(BlockType::Bucket)
+	let need: u32 = crate::alchemy::craft_feedstock(BlockType::EssenceSiphon)
 		.iter()
 		.map(|&(_, n)| n)
 		.sum();
@@ -290,7 +290,7 @@ fn a_vessel_is_crafted_from_feedstock_alone() {
 		!apply_alchemy(
 			&mut inv,
 			AlchemyOp::Craft {
-				item: BlockType::Bucket,
+				item: BlockType::EssenceSiphon,
 				count: 1
 			},
 			1
@@ -302,12 +302,16 @@ fn a_vessel_is_crafted_from_feedstock_alone() {
 	assert!(apply_alchemy(
 		&mut inv,
 		AlchemyOp::Craft {
-			item: BlockType::Bucket,
+			item: BlockType::EssenceSiphon,
 			count: 1
 		},
 		1
 	));
-	assert_eq!(inv.count(BlockType::Bucket), 1, "the vessel is owned");
+	assert_eq!(
+		inv.count(BlockType::EssenceSiphon),
+		1,
+		"the vessel is owned"
+	);
 	assert_eq!(inv.count(BlockType::Wood), 0, "the timber is spent");
 	for &e in &Essence::ALL {
 		assert_eq!(inv.sub_count(e), 0, "no essence moved");
