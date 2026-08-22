@@ -598,3 +598,23 @@ fn essence_faucets_open_where_they_always_did() {
 			 still has a level a player can reach it at"
 	);
 }
+
+/// `MAX_COST_LINES` is a budget the client derives icon space from, so it
+/// must dominate every craft in the catalog — and not by so much that it
+/// is meaningless: some craft has to reach it.
+#[test]
+fn no_craft_has_more_cost_lines_than_the_budget() {
+	let mut widest = 0;
+	let mut checked = 0;
+	for &b in &BlockType::ALL {
+		let Some(ideal) = craft_ideal(b) else {
+			continue;
+		};
+		let lines = craft_feedstock(b).len() + ideal.len();
+		assert!(lines <= MAX_COST_LINES, "{b:?} has {lines} cost lines");
+		widest = widest.max(lines);
+		checked += 1;
+	}
+	assert!(checked > 0, "nothing craftable");
+	assert_eq!(widest, MAX_COST_LINES, "the budget has slack to give back");
+}

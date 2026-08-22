@@ -92,6 +92,13 @@ pub mod tex {
 	pub const GLASS_GREEN: &[u8] = include_bytes!("../../../assets/textures/GlassGreen.png");
 	pub const GLASS_BLUE: &[u8] = include_bytes!("../../../assets/textures/GlassBlue.png");
 	pub const GLASS_AMBER: &[u8] = include_bytes!("../../../assets/textures/GlassAmber.png");
+	// The essence chips: UI sprites that ride the materials array because
+	// the icon pipeline samples nothing else. No block wears one.
+	pub const ESSENCE_VITAE: &[u8] = include_bytes!("../../../assets/textures/EssenceVitae.png");
+	pub const ESSENCE_TERRA: &[u8] = include_bytes!("../../../assets/textures/EssenceTerra.png");
+	pub const ESSENCE_UNDA: &[u8] = include_bytes!("../../../assets/textures/EssenceUnda.png");
+	pub const ESSENCE_FERRUM: &[u8] = include_bytes!("../../../assets/textures/EssenceFerrum.png");
+	pub const ESSENCE_AETHER: &[u8] = include_bytes!("../../../assets/textures/EssenceAether.png");
 
 	/// Texture-array layer order — the layer index is what block PROPS
 	/// reference, and `digblock_core::block::tex` mirrors this list
@@ -104,7 +111,7 @@ pub mod tex {
 	/// assert in digblock-client (`texture.rs`, the only file that can see
 	/// both crates) fails the BUILD on a length skew, so move them
 	/// together.
-	pub const LAYERS: [&[u8]; 52] = [
+	pub const LAYERS: [&[u8]; 57] = [
 		WATER,
 		DIRT,
 		GRASS_SIDE,
@@ -158,6 +165,11 @@ pub mod tex {
 		GLASS_AMBER,
 		// Conjured light (Wisplight) wears the aetherlamp's face.
 		AETHERLAMP,
+		ESSENCE_VITAE,
+		ESSENCE_TERRA,
+		ESSENCE_UNDA,
+		ESSENCE_FERRUM,
+		ESSENCE_AETHER,
 	];
 }
 

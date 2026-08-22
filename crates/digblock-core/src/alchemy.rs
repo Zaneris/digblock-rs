@@ -13,6 +13,12 @@
 use crate::block::{BlockType, Essence};
 use crate::material::cost_split;
 
+/// The most cost lines — feedstock and essence together — any one craft
+/// carries. A screen drawing a price as chips sizes its icon budget from
+/// this rather than from a guess; `no_craft_has_more_cost_lines_than_the_budget`
+/// keeps it honest against the whole catalog.
+pub const MAX_COST_LINES: usize = 3;
+
 /// Level-scaled yield for one draw line: a fraction of the base at the
 /// first level rising to all of it at the cap, floored, and never below
 /// one (a listed line never vanishes entirely). Integer math throughout.

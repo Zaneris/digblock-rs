@@ -13,7 +13,7 @@
 //! point — but they mean the diff of a run is wider than the edit that prompted
 //! it.
 
-use digblock_core::block::BlockType as B;
+use digblock_core::block::{BlockType as B, Essence};
 use image::{RgbImage, RgbaImage};
 
 const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/textures");
@@ -212,6 +212,19 @@ fn main() {
 	] {
 		save_rgba(name, tinted_pane(tint));
 	}
+	// The essence chips — the UI's only sprites, one flake per essence in
+	// its own palette. Also rng-free and also saved last, for the same
+	// reason as the panes.
+	for (name, e) in [
+		("EssenceVitae.png", Essence::Vitae),
+		("EssenceTerra.png", Essence::Terra),
+		("EssenceUnda.png", Essence::Unda),
+		("EssenceFerrum.png", Essence::Ferrum),
+		("EssenceAether.png", Essence::Aether),
+	] {
+		let (core, rim) = e.palette();
+		save_rgba(name, essence_flake(core, rim));
+	}
 }
 
 /// A running-bond course: `h`-tall rows offset by half a brick each
@@ -303,6 +316,50 @@ fn tinted_pane(tint: [u8; 3]) -> RgbaImage {
 	let mut out = RgbaImage::new(SIZE, SIZE);
 	for p in out.pixels_mut() {
 		p.0 = [tint[0], tint[1], tint[2], 200];
+	}
+	out
+}
+
+/// An essence flake: a disc in the core colour, lit from the upper left
+/// — a rim-coloured crescent and a small highlight there, the far edge
+/// darkened — over a transparent field. The field's RGB is the core
+/// colour rather than black: the loader mips the array, and a chip drawn
+/// at glyph size samples a mip where transparent black would bleed a
+/// dark fringe into the disc's edge. Rng-free, so it never rerolls a
+/// neighbour.
+fn essence_flake(core: [u8; 3], rim: [u8; 3]) -> RgbaImage {
+	let mut out = RgbaImage::new(SIZE, SIZE);
+	let c = SIZE as f32 / 2.0;
+	let radius = c * 0.84;
+	// The light's direction (upper left) and the highlight's centre.
+	let light = (-0.6f32, -0.8f32);
+	let (hx, hy) = (c + light.0 * radius * 0.45, c + light.1 * radius * 0.45);
+	for (x, y, p) in out.enumerate_pixels_mut() {
+		let (dx, dy) = (x as f32 + 0.5 - c, y as f32 + 0.5 - c);
+		let d = (dx * dx + dy * dy).sqrt();
+		// One-pixel analytic falloff at the edge.
+		let alpha = (radius + 0.5 - d).clamp(0.0, 1.0);
+		// Lit side toward the light: +1 facing it, -1 away.
+		let facing = if d > 0.0 {
+			(dx * light.0 + dy * light.1) / d
+		} else {
+			0.0
+		};
+		let edge = (d / radius).clamp(0.0, 1.0);
+		// The crescent: rim colour where the edge faces the light; the
+		// far edge darkens toward a third of the core.
+		let toward = (facing * edge).max(0.0).powf(1.5);
+		let away = ((-facing) * edge).max(0.0).powf(2.0);
+		// The highlight: a soft blob near the light.
+		let hd = ((x as f32 + 0.5 - hx).powi(2) + (y as f32 + 0.5 - hy).powi(2)).sqrt();
+		let gloss = (1.0 - hd / (radius * 0.35)).clamp(0.0, 1.0).powi(2);
+		let mut rgb = [0u8; 3];
+		for (i, v) in rgb.iter_mut().enumerate() {
+			let base = f32::from(core[i]);
+			let lit = base + (f32::from(rim[i]) - base) * (toward * 0.8 + gloss).min(1.0);
+			*v = clamp8(lit * (1.0 - away * 0.55));
+		}
+		p.0 = [rgb[0], rgb[1], rgb[2], (alpha * 255.0).round() as u8];
 	}
 	out
 }

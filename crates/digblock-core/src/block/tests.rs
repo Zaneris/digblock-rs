@@ -602,3 +602,49 @@ fn a_live_node_holds_a_multiple_of_its_spent_face() {
 		);
 	}
 }
+
+/// The chip sprites are UI-only layers: each essence owns one of its
+/// own, inside the array, and no block face wears it — a block row
+/// pointing at a chip would texture terrain with a UI sprite.
+#[test]
+fn every_essence_icon_layer_is_its_own_and_never_a_face() {
+	let mut seen = 0;
+	for (i, &e) in Essence::ALL.iter().enumerate() {
+		let layer = e.icon_tex();
+		assert!(layer < tex::COUNT, "{e:?} chip is outside the array");
+		assert!(
+			!Essence::ALL[..i].iter().any(|o| o.icon_tex() == layer),
+			"{e:?} shares its chip with an earlier essence"
+		);
+		for &b in &BlockType::ALL {
+			let p = b.props();
+			assert!(
+				p.tex_side != layer && p.tex_top != layer && p.tex_bottom != layer,
+				"{b:?} wears {e:?}'s chip"
+			);
+		}
+		seen += 1;
+	}
+	assert_eq!(seen, Essence::COUNT);
+}
+
+/// A surface node (the Alchemy-revealed kind) wears the palette of the
+/// one essence it pays, so the find in the world and the chip on the
+/// screen are one colour. The ore tiers are exempt on purpose: a tier's
+/// flecks are its identity, and several pay the same essence.
+#[test]
+fn a_surface_node_wears_its_essence() {
+	let mut checked = 0;
+	for node in crate::worldgen::nodes::NODES {
+		if crate::unlock::alchemy_reveal(node).is_none() {
+			continue;
+		}
+		let units = node.material().map_or(&[][..], |m| m.node_units());
+		let [(e, _)] = units else {
+			panic!("{node:?} pays more than one essence")
+		};
+		assert_eq!(node.node_flecks(), Some(e.palette()), "{node:?}");
+		checked += 1;
+	}
+	assert!(checked > 1, "no surface node to check");
+}

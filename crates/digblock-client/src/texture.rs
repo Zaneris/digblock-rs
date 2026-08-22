@@ -196,6 +196,22 @@ mod layer_tests {
 		}
 	}
 
+	/// An essence chip is a flake over a see-through field: a layer that
+	/// decodes fully opaque is a square on the screen, and a fully clear
+	/// one is nothing.
+	#[test]
+	fn an_essence_icon_has_a_see_through_surround() {
+		use digblock_core::block::Essence;
+		for e in Essence::ALL {
+			let img = image::load_from_memory(digblock_assets::tex::LAYERS[e.icon_tex() as usize])
+				.expect("decodes")
+				.to_rgba8();
+			let alphas: Vec<u8> = img.pixels().map(|p| p[3]).collect();
+			assert!(alphas.contains(&0), "{e:?} has no clear field");
+			assert!(alphas.contains(&255), "{e:?} has no solid flake");
+		}
+	}
+
 	/// A tool in a hand is a working light, never a torch — and a LEVEL
 	/// alone cannot say so.
 	///

@@ -564,6 +564,38 @@ impl Essence {
 			Essence::Aether => "aether",
 		}
 	}
+
+	/// What an essence LOOKS like — core and rim — the one authority for
+	/// its colour. `texgen` paints the chip sprite from it, the surface
+	/// nodes' [`BlockType::node_flecks`] read theirs from it, and a screen
+	/// tinting anything essence-coloured asks here, so a retint moves the
+	/// sprite, the host rock and the light together. The ore tiers keep
+	/// colours of their own: a tier's identity is the point of its flecks.
+	#[inline]
+	pub const fn palette(self) -> ([u8; 3], [u8; 3]) {
+		match self {
+			// Living green, earthen amber, spring blue, cool steel, pale gold.
+			Essence::Vitae => ([118, 196, 84], [204, 255, 164]),
+			Essence::Terra => ([198, 150, 70], [244, 208, 140]),
+			Essence::Unda => ([62, 158, 224], [172, 224, 255]),
+			Essence::Ferrum => ([150, 160, 176], [224, 232, 240]),
+			Essence::Aether => ([240, 214, 96], [255, 248, 200]),
+		}
+	}
+
+	/// The chip sprite's layer in the materials array — a UI-only image
+	/// no block wears. Named here so nothing indexes the array by
+	/// arithmetic over the variant.
+	#[inline]
+	pub const fn icon_tex(self) -> u16 {
+		match self {
+			Essence::Vitae => tex::ESSENCE_VITAE,
+			Essence::Terra => tex::ESSENCE_TERRA,
+			Essence::Unda => tex::ESSENCE_UNDA,
+			Essence::Ferrum => tex::ESSENCE_FERRUM,
+			Essence::Aether => tex::ESSENCE_AETHER,
+		}
+	}
 }
 
 /// Which vertex stream a block's faces land in.
@@ -955,11 +987,19 @@ pub mod tex {
 	/// references the same PNG, so the spell needs no texture of its own
 	/// until somebody authors one.
 	pub const WISPLIGHT: u16 = 51;
+	/// The essence chips — UI sprites in the materials array, worn by no
+	/// block row. They ride this array because the icon pipeline samples
+	/// nothing else; [`super::Essence::icon_tex`] is the only reader.
+	pub const ESSENCE_VITAE: u16 = 52;
+	pub const ESSENCE_TERRA: u16 = 53;
+	pub const ESSENCE_UNDA: u16 = 54;
+	pub const ESSENCE_FERRUM: u16 = 55;
+	pub const ESSENCE_AETHER: u16 = 56;
 
 	/// Layers in the array, i.e. `digblock_assets::tex::LAYERS.len()`.
 	/// Pinned against it by `every_block_texture_layer_is_uploaded` in
 	/// digblock-client, the one crate that can see both.
-	pub const COUNT: u16 = WISPLIGHT + 1;
+	pub const COUNT: u16 = ESSENCE_AETHER + 1;
 }
 
 impl BlockType {
@@ -1312,12 +1352,12 @@ impl BlockType {
 			BlockType::Emberore => ([214, 96, 34], [255, 176, 84]),
 			BlockType::Duskstone => ([104, 78, 168], [172, 146, 236]),
 			BlockType::Glowvein => ([72, 226, 214], [198, 255, 248]),
-			BlockType::Aetherock => ([240, 214, 96], [255, 248, 200]),
-			// The surface nodes wear their essence's own colour: living
-			// green, earthen amber, spring blue.
-			BlockType::Heartwood => ([118, 196, 84], [204, 255, 164]),
-			BlockType::Leystone => ([198, 150, 70], [244, 208, 140]),
-			BlockType::Springstone => ([62, 158, 224], [172, 224, 255]),
+			// Aetherock and the surface nodes wear their essence's own
+			// colour, so the rock and the chip can never disagree.
+			BlockType::Aetherock => Essence::Aether.palette(),
+			BlockType::Heartwood => Essence::Vitae.palette(),
+			BlockType::Leystone => Essence::Terra.palette(),
+			BlockType::Springstone => Essence::Unda.palette(),
 			_ => return None,
 		})
 	}
