@@ -305,7 +305,8 @@ physics contracts are documented at the code in `shapes.rs` and `player.rs`; the
 
 ## Skills & XP
 
-Two skills (Mining, Alchemy), designed in `SKILLS-DESIGN.md`. Everything shared lives in `digblock-core/src/skills.rs`:
+Three skills (Mining, Alchemy, Arcana), designed in `SKILLS-DESIGN.md` and — for Arcana — `MAGIC-DESIGN.md`. Everything
+shared lives in `digblock-core/src/skills.rs`:
 
 - The `Skill` enum is `repr(u8)` and **append-only** — the index is a wire/persistence format. Storage is XP-only `u64`
   totals; level is always derived. The XP curve is a **pinned integer table**, never `powf`.
@@ -334,10 +335,10 @@ the first unmet `Requirement` — the block, the skill and the level. No wording
 one into the ONE sentence that gate speaks, naming the block and the level that opens it, which is why the wire sends a
 reason and never a sentence.
 
-**XP is server-computed at exactly two chokepoints** — the dig-credit block in `sim/edits.rs` and `process_alchemy` —
-and reaches the client as `ServerMsg::XpGain` carrying the new **TOTAL** (idempotent, reorder-safe). Join sync always
-sends `ServerMsg::Skills`, even empty, right after `Layout`. Offline play awards through the same core functions in the
-engine's offline arms only — **never award in the shared prediction path, or multiplayer double-pays.**
+**XP is server-computed at exactly three chokepoints** — the dig-credit block in `sim/edits.rs`, `process_alchemy` and
+`process_cast` — and reaches the client as `ServerMsg::XpGain` carrying the new **TOTAL** (idempotent, reorder-safe).
+Join sync always sends `ServerMsg::Skills`, even empty, right after `Layout`. Offline play awards through the same core
+functions in the engine's offline arms only — **never award in the shared prediction path, or multiplayer double-pays.**
 
 ## Alchemy & the economy
 
@@ -460,10 +461,11 @@ corners are chosen must be checked against the mapping and not just the codes.
 
 ## Scheduled world jobs
 
-`digblock-core/src/worldjob.rs` is the seam and carries two rules: `grass` (creep onto sunlit dirt, smother under
-covers) and `leaves` (foliage rots once nothing anchors it). A `WorldJob` runs on a clock over blocks of a given type
-near active players. **This is not fluid and must not be built on it** — fluid is a continuous per-tick sim over cells
-in flight, this is a rare batch sweep. They share only their write path.
+`digblock-core/src/worldjob.rs` is the seam and carries three rules: `grass` (creep onto sunlit dirt, smother under
+covers), `leaves` (foliage rots once nothing anchors it) and `wisplight` (conjured light fades — the cadence IS the
+spell's whole lifetime, so a quit-and-reload can never leave a permanent free lamp). A `WorldJob` runs on a clock over
+blocks of a given type near active players. **This is not fluid and must not be built on it** — fluid is a continuous
+per-tick sim over cells in flight, this is a rare batch sweep. They share only their write path.
 
 - **The clock is the GAME's day** (`sun::DAY_SECS`), fixed by `Schedule` rather than chosen per job — a server's local
   09:00 means nothing to a player elsewhere, and the game clock is already dictated to every client.
@@ -490,9 +492,16 @@ Both modules carry thorough `//!` docs. What those don't say, and what bites:
 - **The `Edits` view is edits only, never a chunk store.** A store answers `None` for non-resident cells and the support
   test reads `None` as "trust worldgen", so wiring one in makes unloaded columns read as void. The server's journal is
   the correct and complete source, fluid included.
-- **`spawn::lock_region` is exactly the cell set the search inspects**, and `stands_clear` reads exactly those cells.
-  That equivalence is why a locked spawn is permanently valid. `/set-spawn` validates with the same predicate and
-  deliberately skips `SPAWN_FLOOR` — an operator aiming at a block has made a choice.
+- **Protection is always on, and a `protect::Region` is a set, not a box.** Every arrival pad — spawn and each resolved
+  waystone — locks a `spawn::LOCK_RADIUS` sphere, so `immutable` takes a slice and `/lock-spawn` is gone. Offline the
+  engine enforces its own spawn sphere; a SERVER's regions are its own secret and reach the client only as refusals.
+- **`spawn::lock_region` CONTAINS every cell the search inspects** — containment, not equivalence, since the sphere also
+  freezes unvalidated cells around and beneath the pad. That containment is why a locked spawn is permanently valid.
+  `/set-spawn` validates with the same predicate and deliberately skips `SPAWN_FLOOR` — an operator aiming at a block
+  has made a choice.
+- **A player-authored action asks `requester_regions`, the sim's own writers ask `protected_regions`.** Admins are
+  exempt from the first — the operator who moves spawn must be able to repair it — and never from the second, or an
+  admin merely being ONLINE would let water eat the spawn pad.
 - **Protection refuses the fluid *write*, not the schedule** — that is what stops water sourced outside a locked region
   flowing in. A protected hold is refused at `DigStart` rather than at the completing edit.
 - **Rejoin resumes in place**: `PlayerRecord` carries the last eye position *and* the return-to-spawn tick, since

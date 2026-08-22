@@ -24,12 +24,14 @@ pub const CLEAR: i32 = 2;
 pub const CAPSULE: i32 = 3;
 
 /// Radius of the protected sphere around an arrival pad — the spawn
-/// lock, and a waystone pad. Sized to CONTAIN the validated core (the
-/// [`CLEAR`] disc plus its [`CAPSULE`]): the box's farthest cells are its
-/// top corners, and this is the smallest whole-block sphere that keeps
-/// every one of them, with the lower hemisphere as the anti-undermining
-/// depth the box never had. Shrinking it below that containment breaks
-/// the "locked ⇒ permanently valid" fast path.
+/// lock, and a waystone pad. Two containments size it, both pinned
+/// rather than restated: the validated core (the [`CLEAR`] disc plus its
+/// [`CAPSULE`], farthest at its top corners —
+/// `the_lock_contains_what_stands_clear_reads`), and every cell a
+/// waystone stamp writes (the const assert in `waystones.rs`). It
+/// carries margin over both, and the lower hemisphere is the
+/// anti-undermining depth the box never had. Shrinking it until either
+/// containment fails breaks the "locked ⇒ permanently valid" fast path.
 pub const LOCK_RADIUS: i32 = 6;
 
 /// Spawn never sits below sea level — a beach at the water's edge is
