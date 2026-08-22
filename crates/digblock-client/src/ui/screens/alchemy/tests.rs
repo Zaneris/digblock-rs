@@ -241,7 +241,7 @@ fn family_selection_and_the_single_transmute_button() {
 		},
 	);
 	let batches = r.view.affordable(B::WoodSlab);
-	assert!(batches > 0 && batches < 100, "clamp is meaningful");
+	assert!(batches > 0 && batches < BULK_CTRL, "clamp is meaningful");
 	// The press QUEUES the batch rather than paying for it.
 	assert_eq!(press(&mut r, go), None, "the button starts a batch");
 	assert_eq!(r.screen.crafting, Some((B::WoodSlab, batches)));

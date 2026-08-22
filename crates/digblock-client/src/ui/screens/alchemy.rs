@@ -57,7 +57,7 @@ pub enum BenchJob {
 }
 
 const BULK_SHIFT: u32 = 10;
-const BULK_CTRL: u32 = 100;
+const BULK_CTRL: u32 = 200;
 
 // This screen's own geometry (theme tokens cover everything shared).
 const ROW_ICON: f32 = 36.0;
@@ -1014,9 +1014,9 @@ impl AlchScreen {
 							1
 						};
 						// QUEUED, not sent: `tick` drips one `Craft` per
-						// interval out of this, so a hundred-item batch is
-						// a hundred paced crafts rather than a frame's
-						// worth of XP. The clamp is unchanged — the offer
+						// interval out of this, so a bulk batch is that many
+						// paced crafts rather than a frame's worth of XP.
+						// The clamp is unchanged — the offer
 						// is still what the holdings afford right now, and
 						// the queue re-asks as it goes.
 						let count = want.min(view.affordable(item));
