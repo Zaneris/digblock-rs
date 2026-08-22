@@ -35,7 +35,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 const MAGIC: [u8; 4] = *b"DBI1";
-const VERSION: u16 = 9;
+const VERSION: u16 = 10;
 
 /// The version from which the bucket is a CRAFTED tool (SKILLS-DESIGN
 /// §13.5). Every record below it was written when the bucket was owned by
@@ -53,6 +53,21 @@ const FIRST_CRAFTED_BUCKET_VERSION: u16 = 7;
 /// unchanged; the version is the reset's whole trigger, so it runs at
 /// most once per record and a fresh account never sees it.
 const FIRST_FOUND_ESSENCE_VERSION: u16 = 8;
+
+/// The window in which a record carried the waystones its account had
+/// arrived at, for a first-arrival milestone that no longer exists. The
+/// field is gone from the BODY, so a reader in the window has bytes to
+/// skip and one above it has none. Frozen: they describe bytes on disk.
+///
+/// Below the upper bound an Arcana total may hold milestone XP, which
+/// was worth several levels at the early rungs and is not earnable now.
+/// The reader winds Arcana — and only Arcana — back to nothing, so every
+/// account walks the current ladder from the same place. It runs at most
+/// once per record, because reading rewrites at [`VERSION`], and a fresh
+/// account never sees it. Mining and Alchemy are untouched: nothing
+/// about those careers changed.
+const FIRST_ARRIVALS_VERSION: u16 = 9;
+const FIRST_VERSION_WITHOUT_ARRIVALS: u16 = 10;
 
 /// The version whose records are keyed by ACCOUNT rather than by a device
 /// hash. Anything below reads wholly into the quarantine; v6 and up say
@@ -163,24 +178,20 @@ pub struct PlayerRecord {
 	/// reconnecting was a free trip to spawn that ignored the
 	/// return-to-spawn cooldown entirely.
 	pub pos: Option<[f32; 3]>,
-	/// Server tick of the player's last return-to-spawn, so the cooldown
-	/// survives a reconnect too — resuming in place would otherwise still
-	/// leave "rejoin to reset the timer" open.
+	/// Server tick of the player's last teleport of any kind — one clock
+	/// for Return Home and every port — so the cooldown survives a
+	/// reconnect too; resuming in place would otherwise still leave
+	/// "rejoin to reset the timer" open.
 	///
 	/// Ticks are per-run and reset to 0 on restart, so a stored tick from
 	/// a previous run reads as long expired (`wrapping_sub` yields a huge
 	/// interval). That fails open across restarts, which is the safe
 	/// direction for a convenience cooldown.
-	pub last_return_tick: Option<u32>,
+	pub last_teleport_tick: Option<u32>,
 	/// Per-skill XP totals. Pre-v4 records read as empty with their
 	/// inventories intact — existing players keep their stuff and start the
 	/// skill system at the bottom like everyone else.
 	pub skills: SkillSet,
-	/// Waystones this account has ARRIVED at, as `SurfaceKind` indices —
-	/// the once-per-account first-arrival milestone's memory. Pre-v9
-	/// records read as empty: the milestone re-pays at most once, which
-	/// is the forgiving direction.
-	pub visited_waystones: Vec<u8>,
 }
 
 impl PlayerRecord {
@@ -203,19 +214,12 @@ impl PlayerRecord {
 		inventory.merge_from(&old.inventory);
 		let mut skills = self.skills.clone();
 		skills.merge_from(&old.skills);
-		let mut visited_waystones = self.visited_waystones.clone();
-		for w in &old.visited_waystones {
-			if !visited_waystones.contains(w) {
-				visited_waystones.push(*w);
-			}
-		}
 		Self {
 			inventory,
 			layout: self.layout.clone().or_else(|| old.layout.clone()),
 			pos: self.pos.or(old.pos),
-			last_return_tick: self.last_return_tick.or(old.last_return_tick),
+			last_teleport_tick: self.last_teleport_tick.or(old.last_teleport_tick),
 			skills,
-			visited_waystones,
 		}
 	}
 }
@@ -491,7 +495,7 @@ fn write_record(
 			}
 		}
 	}
-	match &rec.last_return_tick {
+	match &rec.last_teleport_tick {
 		None => buf.push(0),
 		Some(t) => {
 			buf.push(1);
@@ -505,11 +509,6 @@ fn write_record(
 	for (skill, total) in skills.iter().take(u8::MAX as usize) {
 		buf.push(*skill);
 		buf.extend_from_slice(&total.to_le_bytes());
-	}
-	// v9: visited waystones — u8 count, then the kind indices.
-	buf.push(rec.visited_waystones.len().min(u8::MAX as usize) as u8);
-	for w in rec.visited_waystones.iter().take(u8::MAX as usize) {
-		buf.push(*w);
 	}
 }
 
@@ -758,7 +757,7 @@ fn read_record(
 	};
 	// v1/v2 records end before these: the player resumes at spawn once,
 	// then stores a position from their next disconnect on.
-	let (pos, last_return_tick) = if version >= 3 {
+	let (pos, last_teleport_tick) = if version >= 3 {
 		let mut flag = [0u8; 1];
 		r.read_exact(&mut flag).map_err(|_| bad("short record"))?;
 		let pos = if flag[0] == 1 {
@@ -799,16 +798,15 @@ fn read_record(
 	} else {
 		SkillSet::default()
 	};
-	// v1-v8 records read as never-arrived; the milestone forgives once.
-	let visited_waystones = if version >= 9 {
+	// Records in the window where a first arrival paid a milestone carry
+	// its memory. Read past it: nothing pays a milestone any more, but a
+	// trailing field a reader skips is still a field a reader must read.
+	if (FIRST_ARRIVALS_VERSION..FIRST_VERSION_WITHOUT_ARRIVALS).contains(&version) {
 		let mut n = [0u8; 1];
 		r.read_exact(&mut n).map_err(|_| bad("short record"))?;
 		let mut v = vec![0u8; n[0] as usize];
 		r.read_exact(&mut v).map_err(|_| bad("short record"))?;
-		v
-	} else {
-		Vec::new()
-	};
+	}
 	let mut inventory = Inventory::from_wire(&pairs);
 	if version < FIRST_CRAFTED_BUCKET_VERSION {
 		inventory.add(digblock_core::block::BlockType::Bucket, 1);
@@ -816,15 +814,18 @@ fn read_record(
 	if version < FIRST_FOUND_ESSENCE_VERSION {
 		inventory.clear_pre_redesign_essence();
 	}
+	let mut skills = skills;
+	if version < FIRST_VERSION_WITHOUT_ARRIVALS {
+		skills.clear(digblock_core::skills::Skill::Arcana);
+	}
 	Ok((
 		key,
 		PlayerRecord {
 			inventory,
 			layout,
 			pos,
-			last_return_tick,
+			last_teleport_tick,
 			skills,
-			visited_waystones,
 		},
 	))
 }

@@ -239,22 +239,30 @@ impl Sim {
 		}
 	}
 
-	/// Teleport a live client back to spawn, subject to the caster's own
-	/// cooldown — the server holds skills, so the gate widens per level.
-	/// Violations are silently ignored — honest clients gate locally.
-	pub(super) fn handle_return_to_spawn(&mut self, conn_id: u64) {
+	/// Whether this client's teleport cooldown has run out.
+	///
+	/// ONE clock behind every teleport — Return Home and every port —
+	/// because per-spell timers would let a player ring the roster and
+	/// land home with nothing to wait for. The caster's own skills
+	/// decide the window, since the server holds them.
+	pub(super) fn teleport_ready(&self, client: &Client) -> bool {
 		use digblock_core::skills::Skill;
+		let cooldown =
+			digblock_core::unlock::teleport_cooldown_secs(client.skills.level(Skill::Arcana));
+		match client.last_teleport_tick {
+			Some(t) => self.tick.wrapping_sub(t) >= cooldown * TICK_RATE,
+			None => true,
+		}
+	}
+
+	/// Teleport a live client back to spawn, subject to the shared
+	/// teleport cooldown. Violations are silently ignored — honest
+	/// clients gate locally.
+	pub(super) fn handle_return_to_spawn(&mut self, conn_id: u64) {
 		let Some(client) = self.clients.get(&conn_id) else {
 			return;
 		};
-		if !client.live {
-			return;
-		}
-		let cooldown =
-			digblock_core::unlock::return_cooldown_secs(client.skills.level(Skill::Arcana));
-		if let Some(t) = client.last_return_tick
-			&& self.tick.wrapping_sub(t) < cooldown * TICK_RATE
-		{
+		if !client.live || !self.teleport_ready(client) {
 			return;
 		}
 		let from = client.player.pos;
@@ -262,7 +270,7 @@ impl Sim {
 		let look = self.spawn_look();
 		let tick = self.tick;
 		let client = self.clients.get_mut(&conn_id).expect("checked above");
-		client.last_return_tick = Some(tick);
+		client.last_teleport_tick = Some(tick);
 		log::info!("player {} ({}) returned to spawn", client.id, client.name);
 		self.teleport_client(conn_id, pos, look);
 		// The jump's Arcana pay, derived from the distance it covered —
@@ -307,9 +315,16 @@ impl Sim {
 		if client.skills.level(Skill::Arcana) < level {
 			return refuse(client, CastRefusal::Locked);
 		}
+		// The same clock Return Home rests on, checked BEFORE the fare so
+		// a refusal never follows a debit. Silent, the way a return
+		// inside its window is: honest clients gate locally.
+		if !self.teleport_ready(client) {
+			return;
+		}
 		let (essence, fare) =
 			digblock_core::alchemy::cast_price(skind).expect("a laddered kind has a fare");
 		let pos = self.clear_landing(eye);
+		let tick = self.tick;
 		let client = self.clients.get_mut(&conn_id).expect("checked above");
 		if !client.inventory.try_take_sub(essence, fare) {
 			let client = self.clients.get(&conn_id).expect("checked above");
@@ -320,21 +335,12 @@ impl Sim {
 		// client only ever sees this move the number it predicted.
 		let counts = client.inventory.to_wire();
 		client_send(client, &ServerMsg::InventoryFull { counts });
-		// First arrival pays its milestone exactly once per account.
-		let first = !client.visited_waystones.contains(&idx);
-		if first {
-			client.visited_waystones.push(idx);
-		}
+		client.last_teleport_tick = Some(tick);
 		let id = client.id;
 		let name = client.name.clone();
 		log::info!("player {id} ({name}) ported to the {skind:?} waystone");
 		self.teleport_client(conn_id, pos, Vec3::ZERO);
-		let mut xp = digblock_core::skills::cast_xp(fare);
-		if first {
-			xp += digblock_core::skills::waystone_milestone(skind)
-				.expect("a laddered kind has a milestone");
-		}
-		self.process_cast(conn_id, xp);
+		self.process_cast(conn_id, digblock_core::skills::cast_xp(fare));
 	}
 
 	/// The self-light. The server's whole share is the debit and the pay:

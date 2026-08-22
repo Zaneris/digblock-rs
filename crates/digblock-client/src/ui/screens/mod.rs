@@ -148,7 +148,7 @@ mod tests {
 		let mut skills = digblock_core::skills::SkillSet::default();
 		skills.add_xp(
 			digblock_core::skills::Skill::Arcana,
-			digblock_core::skills::total_xp_for(digblock_core::unlock::RETURN_SWIFT_AT + 1),
+			digblock_core::skills::total_xp_for(digblock_core::unlock::TELEPORT_SWIFT_AT + 1),
 		);
 		let mut screen = super::spellbook::SpellScreen::default();
 		screen.open();

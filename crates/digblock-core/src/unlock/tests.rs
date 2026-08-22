@@ -529,7 +529,7 @@ fn unlock_levels_are_the_threshold_levels() {
 			6,
 			KINDLE_AT,
 			14,
-			RETURN_SWIFT_AT,
+			TELEPORT_SWIFT_AT,
 			22,
 			ARC_AT,
 			CHANNEL_QUICK_AT,
@@ -539,7 +539,7 @@ fn unlock_levels_are_the_threshold_levels() {
 			ARC_WIDE_AT,
 			50,
 			KINDLE_CHEAP_AT,
-			RETURN_SWIFTER_AT,
+			TELEPORT_SWIFTER_AT,
 			60
 		],
 		"seven ports rising by remoteness, the two swift-return rungs and \
@@ -555,26 +555,24 @@ fn unlock_levels_are_the_threshold_levels() {
 	}
 }
 
-/// The three port tables are twins over ONE set of kinds — a fare
-/// without a port is as wrong as a port without a fare or a milestone —
-/// and remoteness orders fares and milestones alike: a farther port
-/// costs more and pays more, with no inversion to game. The fare is also
-/// PAYABLE when its first port opens: every fare is drawn in an essence
-/// whose node reveals earlier on its own ladder (the payability pin's
-/// question, asked cross-skill the way the siphon handshake is).
+/// The two port tables are twins over ONE set of kinds — a fare without
+/// a port is as wrong as a port without a fare — and remoteness orders
+/// the fares: a farther port costs more, with no inversion to game. The
+/// fare is also PAYABLE when its first port opens: every fare is drawn
+/// in an essence whose node reveals earlier on its own ladder (the
+/// payability pin's question, asked cross-skill the way the siphon
+/// handshake is).
 #[test]
 fn the_port_tables_are_twins_and_the_fare_is_payable() {
 	use crate::worldgen::SurfaceKind;
 	use BlockType as B;
-	let mut ports: Vec<(u32, u32, u64)> = Vec::new();
+	let mut ports: Vec<(u32, u32)> = Vec::new();
 	for k in SurfaceKind::ALL {
 		let port = waystone(k);
 		let fare = crate::alchemy::cast_price(k);
-		let stone = crate::skills::waystone_milestone(k);
 		assert_eq!(port.is_some(), fare.is_some(), "{k:?} fare/port twins");
-		assert_eq!(port.is_some(), stone.is_some(), "{k:?} milestone twin");
-		if let (Some(l), Some((_, amt)), Some(ms)) = (port, fare, stone) {
-			ports.push((l, amt, ms));
+		if let (Some(l), Some((_, amt))) = (port, fare) {
+			ports.push((l, amt));
 		}
 	}
 	assert!(
@@ -585,7 +583,6 @@ fn the_port_tables_are_twins_and_the_fare_is_payable() {
 	for w in ports.windows(2) {
 		assert!(w[0].0 < w[1].0, "two ports on one level");
 		assert!(w[0].1 < w[1].1, "a farther port must cost more");
-		assert!(w[0].2 < w[1].2, "a farther port must pay more");
 	}
 	let first_port = ports[0].0;
 	assert!(
@@ -603,14 +600,14 @@ fn the_travel_rungs_never_lengthen_with_level() {
 	for l in 2..=MAX_LEVEL {
 		examined += 1;
 		assert!(
-			return_cooldown_secs(l) <= return_cooldown_secs(l - 1),
+			teleport_cooldown_secs(l) <= teleport_cooldown_secs(l - 1),
 			"cooldown lengthened at {l}"
 		);
 		assert!(
 			channel_ticks(l) <= channel_ticks(l - 1),
 			"channel lengthened at {l}"
 		);
-		cooldown_steps += u32::from(return_cooldown_secs(l) != return_cooldown_secs(l - 1));
+		cooldown_steps += u32::from(teleport_cooldown_secs(l) != teleport_cooldown_secs(l - 1));
 		channel_steps += u32::from(channel_ticks(l) != channel_ticks(l - 1));
 	}
 	assert_eq!(examined, MAX_LEVEL - 1);

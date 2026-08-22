@@ -350,17 +350,15 @@ struct Client {
 	account: AccountId,
 	/// In-progress hold-to-dig, if any (see `edits::DigState`).
 	digging: Option<edits::DigState>,
-	/// Tick of the last granted return-to-spawn; `None` = never used
-	/// (the first request after joining is always allowed).
-	last_return_tick: Option<u32>,
+	/// Tick of the last granted teleport of ANY kind — Return Home and
+	/// every waystone port share one clock, so hops cannot be chained.
+	/// `None` = never used (the first request after joining is allowed).
+	last_teleport_tick: Option<u32>,
 	/// Per-skill XP totals — the authoritative copy. Awards happen at
 	/// the chokepoints (dig credit, alchemy, the cast) and reach the
 	/// client as `ServerMsg::XpGain` totals; levels derive from the
 	/// shared curve.
 	skills: digblock_core::skills::SkillSet,
-	/// Waystones this account has arrived at (kind indices) — the
-	/// first-arrival milestone's memory, persisted with the record.
-	visited_waystones: Vec<u8>,
 	/// The tick this client's wisp burns until, for the snapshot fx byte
 	/// alone — the light itself is per-viewer GI, computed client-side.
 	/// Session-local, exactly like the client's own copy.
@@ -411,9 +409,8 @@ impl Client {
 				grid: self.grid.to_wire(),
 			}),
 			pos: Some(self.player.pos.to_array()),
-			last_return_tick: self.last_return_tick,
+			last_teleport_tick: self.last_teleport_tick,
 			skills: self.skills.clone(),
-			visited_waystones: self.visited_waystones.clone(),
 		}
 	}
 }

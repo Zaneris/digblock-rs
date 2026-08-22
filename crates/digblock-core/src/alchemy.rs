@@ -124,13 +124,13 @@ pub fn craft_cost(ideal: u32, level: u32) -> u32 {
 pub fn cast_price(kind: crate::worldgen::SurfaceKind) -> Option<(Essence, u32)> {
 	use crate::worldgen::SurfaceKind as K;
 	Some(match kind {
-		K::Plains => (Essence::Terra, 4),
-		K::Forest => (Essence::Terra, 5),
-		K::Savanna => (Essence::Terra, 6),
-		K::Taiga => (Essence::Terra, 8),
-		K::Beach => (Essence::Terra, 10),
-		K::Mountain => (Essence::Terra, 12),
-		K::Snow => (Essence::Terra, 14),
+		K::Plains => (Essence::Terra, 8),
+		K::Forest => (Essence::Terra, 10),
+		K::Savanna => (Essence::Terra, 12),
+		K::Taiga => (Essence::Terra, 16),
+		K::Beach => (Essence::Terra, 20),
+		K::Mountain => (Essence::Terra, 24),
+		K::Snow => (Essence::Terra, 28),
 		K::Ocean | K::River | K::Lake | K::Marsh | K::GravelShore | K::Scree => return None,
 	})
 }
@@ -138,7 +138,7 @@ pub fn cast_price(kind: crate::worldgen::SurfaceKind) -> Option<(Essence, u32)> 
 /// The self-light's fare: Vitae, the day-one essence, so Arcana's own
 /// bootstrap spell is payable from the first heartwood draws.
 pub fn wisp_price() -> (Essence, u32) {
-	(Essence::Vitae, 2)
+	(Essence::Vitae, 4)
 }
 
 /// Conjured light's fare, easing at the late rung — the caster's Arcana
@@ -147,9 +147,9 @@ pub fn kindle_price(level: u32) -> (Essence, u32) {
 	(
 		Essence::Terra,
 		if level >= crate::unlock::KINDLE_CHEAP_AT {
-			2
+			4
 		} else {
-			3
+			6
 		},
 	)
 }

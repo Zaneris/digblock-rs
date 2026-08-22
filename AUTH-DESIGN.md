@@ -335,8 +335,8 @@ A claim **merges** rather than overwrites, because the account may already have 
 
 - Stuff adds, saturating at every cap — a tool owned on both sides is still one tool.
 - XP takes the higher total per skill, never the sum. One career, walked on two keys.
-- Position and the spawn cooldown stay where the ACCOUNT left them. A claim must not teleport a player who is standing
-  somewhere, nor hand them a free return by inheriting a stale tick.
+- Position and the teleport cooldown stay where the ACCOUNT left them. A claim must not teleport a player who is
+  standing somewhere, nor hand them a free return by inheriting a stale tick.
 - Whichever layout survives is reconciled against the merged counts, so what the other pile brought gets a slot.
 
 ### 6.1 What the claim key is worth to a hostile operator

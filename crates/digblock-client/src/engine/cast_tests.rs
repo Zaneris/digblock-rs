@@ -1,7 +1,8 @@
 //! The cast channel's contract: a channel takes exactly the ladder's
-//! wind-up, an interrupt resets it outright, and the home cooldown the
-//! completion starts is the caster's own rung — every expectation
-//! DERIVED from `unlock`, never a tick count written down.
+//! wind-up, an interrupt resets it outright, and the teleport cooldown
+//! the completion starts is the caster's own rung and covers EVERY
+//! teleport — every expectation DERIVED from `unlock`, never a tick
+//! count written down.
 
 use super::*;
 use digblock_core::skills::Skill;
@@ -43,12 +44,12 @@ fn a_completed_channel_takes_channel_ticks_and_starts_the_rung_cooldown() {
 		tick(&mut e);
 	}
 	assert!(e.cast.is_some(), "the channel completed early");
-	assert_eq!(e.save.spawn_cooldown, 0.0);
+	assert_eq!(e.save.teleport_cooldown, 0.0);
 	tick(&mut e);
 	assert!(e.cast.is_none(), "the channel never completed");
 	// The completion started the caster's OWN cooldown rung.
-	let want = digblock_core::unlock::return_cooldown_secs(e.skills.level(Skill::Arcana));
-	assert_eq!(e.save.spawn_cooldown.ceil() as u32, want);
+	let want = digblock_core::unlock::teleport_cooldown_secs(e.skills.level(Skill::Arcana));
+	assert_eq!(e.save.teleport_cooldown.ceil() as u32, want);
 	// And a fresh request during the cooldown opens the PAGE (where the
 	// countdown lives) instead of silently doing nothing.
 	press(&mut e, Key::H);
@@ -128,7 +129,7 @@ fn an_interrupt_resets_the_channel() {
 	tick(&mut e);
 	assert!(e.cast.is_none(), "a moving caster kept the channel");
 	assert_eq!(
-		e.save.spawn_cooldown, 0.0,
+		e.save.teleport_cooldown, 0.0,
 		"an interrupted channel must not charge the cooldown"
 	);
 	e.input(InputEvent::Key {
@@ -144,4 +145,68 @@ fn an_interrupt_resets_the_channel() {
 		tick(&mut e);
 	}
 	assert!(e.cast.is_some(), "the second channel inherited progress");
+}
+
+/// One clock, every teleport: a port cast arms the same cooldown Return
+/// Home does, and neither can start while it runs. Swept over both
+/// directions, because a per-spell timer would leave exactly one of them
+/// open and the bug is invisible from the other side.
+#[test]
+fn one_cooldown_covers_home_and_every_port() {
+	// Both orders: the spell that arms the clock, then the spell that
+	// must find it armed.
+	for (first, second) in [
+		(CastTarget::Home, CastTarget::Waystone(0)),
+		(CastTarget::Waystone(0), CastTarget::Home),
+	] {
+		let mut e = fresh();
+		let level = e.skills.level(Skill::Arcana);
+		let need = digblock_core::unlock::channel_ticks(level);
+		e.start_cast(first);
+		for _ in 0..=need {
+			tick(&mut e);
+		}
+		assert!(e.cast.is_none(), "{first:?} never completed");
+		assert_eq!(
+			e.save.teleport_cooldown.ceil() as u32,
+			digblock_core::unlock::teleport_cooldown_secs(level),
+			"{first:?} did not arm the shared clock"
+		);
+		e.start_cast(second);
+		assert!(
+			e.cast.is_none(),
+			"{second:?} started inside {first:?}'s cooldown"
+		);
+		assert!(
+			e.ui.spellbook.is_open(),
+			"a cooling {second:?} must show the page"
+		);
+	}
+}
+
+/// The light spells are NOT teleports and never touch the clock — the
+/// predicate that decides is asked, not restated here.
+#[test]
+fn a_light_spell_neither_waits_on_the_clock_nor_arms_it() {
+	let mut e = fresh();
+	let need = digblock_core::unlock::channel_ticks(e.skills.level(Skill::Arcana));
+	for target in [CastTarget::Wisp, CastTarget::Kindle] {
+		assert!(!target.teleports(), "{target:?} must not ride the clock");
+		// Mid-window: long enough that the channel cannot run it out, so
+		// "still running" is what the cast happened UNDER.
+		let armed = digblock_core::unlock::teleport_cooldown_secs(e.skills.level(Skill::Arcana));
+		let before = armed as f32 / 2.0;
+		e.save.teleport_cooldown = before;
+		e.start_cast(target);
+		assert!(e.cast.is_some(), "{target:?} was blocked by the clock");
+		for _ in 0..=need {
+			tick(&mut e);
+		}
+		let left = e.save.teleport_cooldown;
+		assert!(left > 0.0, "the window ran out — the sweep proved nothing");
+		assert!(
+			left < before,
+			"{target:?} left the clock standing instead of letting it run"
+		);
+	}
 }

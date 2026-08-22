@@ -275,7 +275,7 @@ impl Engine {
 					let ports = self.known_ports();
 					let view = crate::ui::screens::spellbook::SpellView::build(
 						&self.skills,
-						self.save.spawn_cooldown.ceil() as u32,
+						self.save.teleport_cooldown.ceil() as u32,
 						&ports,
 						&self.inventory,
 						self.arc_on,

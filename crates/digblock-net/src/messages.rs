@@ -472,11 +472,11 @@ pub enum ClientMsg {
 		text: String,
 	},
 	/// Teleport me back to the spawn point. Server-side: subject to the
-	/// per-client [`RETURN_SPAWN_COOLDOWN_SECS`] window (violations are
-	/// ignored — the menu enforces it honestly); answered with
-	/// `ServerMsg::Teleported`.
+	/// per-client [`TELEPORT_COOLDOWN_SECS`] window it SHARES with every
+	/// port (violations are ignored — the menu enforces it honestly);
+	/// answered with `ServerMsg::Teleported`.
 	///
-	/// [`RETURN_SPAWN_COOLDOWN_SECS`]: crate::protocol::RETURN_SPAWN_COOLDOWN_SECS
+	/// [`TELEPORT_COOLDOWN_SECS`]: crate::protocol::TELEPORT_COOLDOWN_SECS
 	ReturnToSpawn,
 	/// Runtime draw-distance change (settings slider). Server re-clamps
 	/// exactly like Hello's value and adjusts the sync radius from the
@@ -551,7 +551,11 @@ pub enum ClientMsg {
 	/// A completed cast channel asking for its spell. The channel itself
 	/// is client pacing (the `handle_return_to_spawn` stance: honest
 	/// clients gate locally); the server validates the UNLOCK and the
-	/// PRICE, which are the real gates. Appended in v32.
+	/// PRICE, which are the real gates, and — for anything that MOVES
+	/// the caster — the shared [`TELEPORT_COOLDOWN_SECS`] window.
+	/// Appended in v32.
+	///
+	/// [`TELEPORT_COOLDOWN_SECS`]: crate::protocol::TELEPORT_COOLDOWN_SECS
 	Cast(CastKind),
 }
 

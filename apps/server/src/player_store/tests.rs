@@ -105,11 +105,10 @@ fn eviction_spares_the_recently_used() {
 	s.put(
 		veteran,
 		PlayerRecord {
-			visited_waystones: Vec::new(),
 			inventory: inv,
 			layout: None,
 			pos: None,
-			last_return_tick: None,
+			last_teleport_tick: None,
 			skills: SkillSet::default(),
 		},
 	);
@@ -148,11 +147,10 @@ fn the_interval_flush_persists_without_blocking_the_caller() {
 		s.put(
 			id,
 			PlayerRecord {
-				visited_waystones: Vec::new(),
 				inventory: inv,
 				layout: None,
 				pos: None,
-				last_return_tick: None,
+				last_teleport_tick: None,
 				skills: SkillSet::default(),
 			},
 		);
@@ -206,11 +204,10 @@ fn round_trips_across_reopen() {
 		s.put(
 			id_a,
 			PlayerRecord {
-				visited_waystones: Vec::new(),
 				inventory: inv,
 				layout: Some(layout()),
 				pos: None,
-				last_return_tick: None,
+				last_teleport_tick: None,
 				skills: SkillSet::default(),
 			},
 		);
@@ -264,6 +261,7 @@ fn a_pre_account_file_lands_in_quarantine() {
 /// so it does not have to.
 #[test]
 fn every_format_version_still_reads() {
+	use digblock_core::skills::Skill;
 	for version in 1u16..=VERSION {
 		let mut bytes = Vec::new();
 		bytes.extend_from_slice(&MAGIC);
@@ -286,9 +284,18 @@ fn every_format_version_still_reads() {
 			bytes.push(0); // no return tick
 		}
 		if version >= 4 {
-			bytes.push(0); // no skills
+			// A career in two skills, so the Arcana wind-back below has
+			// something to bite on and Mining can prove it was spared.
+			bytes.push(2);
+			for (skill, total) in [
+				(Skill::Mining as u8, 146_751u64),
+				(Skill::Arcana as u8, 971),
+			] {
+				bytes.push(skill);
+				bytes.extend_from_slice(&total.to_le_bytes());
+			}
 		}
-		if version >= 9 {
+		if (FIRST_ARRIVALS_VERSION..FIRST_VERSION_WITHOUT_ARRIVALS).contains(&version) {
 			bytes.push(0); // no visited waystones
 		}
 		if version >= FIRST_TWO_SECTION_VERSION {
@@ -331,6 +338,22 @@ fn every_format_version_still_reads() {
 				assert_eq!(flora, 500, "v{version}: current records keep theirs");
 			}
 			assert_eq!(aether, 7, "v{version}: Aether survives either way");
+			// The Arcana wind-back: a total earned while first arrivals
+			// paid a milestone is not a total this ladder can produce,
+			// so it goes to nothing — and takes no other skill with it.
+			if version >= 4 {
+				let arcana = r.skills.xp(Skill::Arcana);
+				if version < FIRST_VERSION_WITHOUT_ARRIVALS {
+					assert_eq!(arcana, 0, "v{version}: Arcana winds back");
+				} else {
+					assert_eq!(arcana, 971, "v{version}: current records keep theirs");
+				}
+				assert_eq!(
+					r.skills.xp(Skill::Mining),
+					146_751,
+					"v{version}: only Arcana winds back"
+				);
+			}
 		}
 	}
 }
@@ -390,11 +413,10 @@ fn a_claim_merges_into_what_the_account_already_had() {
 	let dir = temp_dir("claimmerge");
 	std::fs::create_dir_all(&dir).unwrap();
 	let mut old = PlayerRecord {
-		visited_waystones: Vec::new(),
 		inventory: Inventory::default(),
 		layout: Some(layout()),
 		pos: Some([1.0, 2.0, 3.0]),
-		last_return_tick: Some(11),
+		last_teleport_tick: Some(11),
 		skills: SkillSet::default(),
 	};
 	old.inventory.add(BlockType::Dirt, 5);
@@ -411,9 +433,8 @@ fn a_claim_merges_into_what_the_account_already_had() {
 	// The account has been played on this server already.
 	let account = key(42);
 	let mut mine = PlayerRecord {
-		visited_waystones: Vec::new(),
 		pos: Some([40.0, 50.0, 60.0]),
-		last_return_tick: Some(77),
+		last_teleport_tick: Some(77),
 		..Default::default()
 	};
 	mine.inventory.add(BlockType::Dirt, 2);
@@ -435,7 +456,7 @@ fn a_claim_merges_into_what_the_account_already_had() {
 		"a claim must not teleport a player who is standing somewhere"
 	);
 	assert_eq!(
-		got.last_return_tick,
+		got.last_teleport_tick,
 		Some(77),
 		"nor hand them a fresh return by inheriting a stale cooldown"
 	);
@@ -505,11 +526,10 @@ fn absent_position_stays_absent() {
 		s.put(
 			id,
 			PlayerRecord {
-				visited_waystones: Vec::new(),
 				inventory: Inventory::default(),
 				layout: None,
 				pos: None,
-				last_return_tick: None,
+				last_teleport_tick: None,
 				skills: SkillSet::default(),
 			},
 		);
@@ -517,7 +537,7 @@ fn absent_position_stays_absent() {
 	}
 	let s = PlayerStore::open(&dir).unwrap();
 	assert_eq!(s.get(&id).pos, None);
-	assert_eq!(s.get(&id).last_return_tick, None);
+	assert_eq!(s.get(&id).last_teleport_tick, None);
 }
 
 /// THE grid-growth test: a complete file written when the grid was
@@ -576,7 +596,6 @@ fn a_file_written_at_the_old_grid_width_still_reads() {
 			buf.push(*skill);
 			buf.extend_from_slice(&total.to_le_bytes());
 		}
-		buf.push(0); // no visited waystones
 	}
 	buf.extend_from_slice(&0u32.to_le_bytes()); // empty quarantine
 	std::fs::write(&path, &buf).unwrap();
@@ -589,7 +608,7 @@ fn a_file_written_at_the_old_grid_width_still_reads() {
 	let a = s.get(&id_a);
 	assert_eq!(a.inventory.count(BlockType::Dirt), 12, "items survive");
 	assert_eq!(a.pos, Some([8.5, 133.0, -4.5]), "position survives");
-	assert_eq!(a.last_return_tick, Some(99));
+	assert_eq!(a.last_teleport_tick, Some(99));
 	assert_eq!(a.skills, skills, "XP survives");
 	// The stored arrangement lands on the SAME slots in the wider grid,
 	// with the new rows empty — a migration, not a reshuffle.
@@ -606,13 +625,7 @@ fn a_file_written_at_the_old_grid_width_still_reads() {
 
 	// And the next write stores the sized form, which round-trips at
 	// the full width.
-	s.put(
-		id_a,
-		PlayerRecord {
-			visited_waystones: Vec::new(),
-			..a
-		},
-	);
+	s.put(id_a, PlayerRecord { ..a });
 	s.sync();
 	let s = PlayerStore::open(&dir).unwrap();
 	let back = s.get(&id_a).layout.expect("still there");
@@ -658,7 +671,6 @@ fn a_wider_stored_grid_truncates_without_desyncing() {
 		buf.push(0); // no position
 		buf.push(0); // no return tick
 		buf.push(0); // no skills
-		buf.push(0); // no visited waystones
 	}
 	buf.extend_from_slice(&0u32.to_le_bytes()); // empty quarantine
 	std::fs::write(dir.join("inventories.bin"), &buf).unwrap();

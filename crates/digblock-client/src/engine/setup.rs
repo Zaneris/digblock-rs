@@ -171,7 +171,7 @@ impl Engine {
 				player_save_accum: 0.0,
 				offline_waystones: digblock_core::waystones::Roster::new(seed),
 				spawn_pos: spawn,
-				spawn_cooldown: 0.0,
+				teleport_cooldown: 0.0,
 				return_spawn_requested: false,
 				spawn_return_pending: false,
 				arrival_hold: None,
@@ -479,7 +479,7 @@ impl Engine {
 					engine.skills.add_xp(
 						Skill::Arcana,
 						digblock_core::skills::total_xp_for(
-							digblock_core::unlock::RETURN_SWIFT_AT + 1,
+							digblock_core::unlock::TELEPORT_SWIFT_AT + 1,
 						),
 					);
 					engine.ui.spellbook.open();

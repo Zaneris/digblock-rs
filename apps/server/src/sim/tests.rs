@@ -1303,7 +1303,7 @@ fn duplicate_account_refused_anonymous_pairs_ok() {
 
 #[test]
 fn return_to_spawn_teleports_with_cooldown() {
-	use digblock_net::protocol::{RETURN_SPAWN_COOLDOWN_SECS, TICK_RATE};
+	use digblock_net::protocol::{TELEPORT_COOLDOWN_SECS, TICK_RATE};
 	let request = |sim: &mut super::Sim| {
 		sim.tick_once(vec![SimEvent::Msg {
 			conn_id: 1,
@@ -1348,7 +1348,7 @@ fn return_to_spawn_teleports_with_cooldown() {
 
 	// After the window it works again. (Drain as we go — an undrained
 	// outbound queue trips the snapshot-stall reaper.)
-	for _ in 0..(RETURN_SPAWN_COOLDOWN_SECS * TICK_RATE) {
+	for _ in 0..(TELEPORT_COOLDOWN_SECS * TICK_RATE) {
 		sim.tick_once(vec![]);
 		c.drain();
 	}
@@ -1481,11 +1481,11 @@ fn waystones_ride_join_sync() {
 
 /// The two real gates of a port, in refusal order — the unlock, then
 /// the fare (refused BEFORE any debit) — and the pay: fare-derived cast
-/// XP, plus the first-arrival milestone exactly once per account, with
-/// every expectation read off the core tables.
+/// XP, the same on every trip including the first, with every
+/// expectation read off the core tables.
 #[test]
-fn a_port_validates_the_unlock_and_the_fare_and_pays_once() {
-	use digblock_core::skills::{cast_xp, total_xp_for, waystone_milestone};
+fn a_port_validates_the_unlock_and_the_fare_and_pays_its_fare_every_trip() {
+	use digblock_core::skills::{cast_xp, total_xp_for};
 	use digblock_core::worldgen::SurfaceKind;
 	use digblock_net::messages::{CastKind, CastRefusal};
 	let kind = SurfaceKind::Plains;
@@ -1495,7 +1495,6 @@ fn a_port_validates_the_unlock_and_the_fare_and_pays_once() {
 		.expect("plains is a kind") as u8;
 	let port_level = digblock_core::unlock::waystone(kind).expect("plains has a port");
 	let (essence, fare) = digblock_core::alchemy::cast_price(kind).expect("and a fare");
-	let milestone = waystone_milestone(kind).expect("and a milestone");
 
 	let mut sim = flat_sim("port");
 	let mut c = connect(&mut sim, 1);
@@ -1532,8 +1531,8 @@ fn a_port_validates_the_unlock_and_the_fare_and_pays_once() {
 		}
 	)));
 
-	// Funded for two trips: the first pays fare-derived XP plus the
-	// milestone; the second, the fare's worth alone.
+	// Funded for two trips: each pays the fare's worth, the first no
+	// differently from the second.
 	sim.test_grant_essence(1, essence, fare * 2);
 	c.msgs.clear();
 	cast(&mut sim);
@@ -1554,16 +1553,25 @@ fn a_port_validates_the_unlock_and_the_fare_and_pays_once() {
 	};
 	assert_eq!(
 		total_after(&c),
-		Some(total_xp_for(port_level) + cast_xp(fare) + milestone),
-		"first arrival pays the fare's worth plus the milestone"
+		Some(total_xp_for(port_level) + cast_xp(fare)),
+		"the first arrival pays the fare's worth"
 	);
+	// The second trip waits out the shared teleport clock — its own
+	// contract is `a_port_and_a_return_share_one_cooldown`; here it is
+	// only what stands between one arrival and the next.
+	c.msgs.clear();
+	for _ in 0..(digblock_net::protocol::TELEPORT_COOLDOWN_SECS * digblock_net::protocol::TICK_RATE)
+	{
+		sim.tick_once(vec![]);
+		c.drain();
+	}
 	c.msgs.clear();
 	cast(&mut sim);
 	c.drain();
 	assert_eq!(
 		total_after(&c),
-		Some(total_xp_for(port_level) + cast_xp(fare) * 2 + milestone),
-		"a second arrival pays the fare's worth alone"
+		Some(total_xp_for(port_level) + cast_xp(fare) * 2),
+		"a second arrival pays exactly the same"
 	);
 	// And the fare really left: two trips, two fares.
 	assert_eq!(
@@ -1617,7 +1625,7 @@ fn a_site_stamp_lands_once_and_converges() {
 #[test]
 fn a_home_cast_pays_its_distance_and_the_gate_reads_the_rung() {
 	use digblock_core::skills::{Skill, home_xp, total_xp_for};
-	use digblock_core::unlock::{RETURN_SWIFT_AT, return_cooldown_secs};
+	use digblock_core::unlock::{TELEPORT_SWIFT_AT, teleport_cooldown_secs};
 	use digblock_net::protocol::TICK_RATE;
 	let request = |sim: &mut super::Sim| {
 		sim.tick_once(vec![SimEvent::Msg {
@@ -1628,8 +1636,8 @@ fn a_home_cast_pays_its_distance_and_the_gate_reads_the_rung() {
 	let mut sim = flat_sim("rtsxp");
 	let mut c = connect(&mut sim, 1);
 	wait_live(&mut sim, 1);
-	sim.bench_set_arcana_level(1, RETURN_SWIFT_AT);
-	let base_total = total_xp_for(RETURN_SWIFT_AT);
+	sim.bench_set_arcana_level(1, TELEPORT_SWIFT_AT);
+	let base_total = total_xp_for(TELEPORT_SWIFT_AT);
 
 	// Walk far enough that the pay is provably nonzero, then jump.
 	for t in 100..400 {
@@ -1656,11 +1664,11 @@ fn a_home_cast_pays_its_distance_and_the_gate_reads_the_rung() {
 	// Standing at spawn, wait out the SWIFT cooldown — shorter than the
 	// base one, which is what the rung buys — and recast: the teleport
 	// answers (the widened gate), but a zero-length jump pays nothing.
-	for _ in 0..(return_cooldown_secs(RETURN_SWIFT_AT) * TICK_RATE) {
+	for _ in 0..(teleport_cooldown_secs(TELEPORT_SWIFT_AT) * TICK_RATE) {
 		sim.tick_once(vec![]);
 		c.drain();
 	}
-	assert!(return_cooldown_secs(RETURN_SWIFT_AT) < return_cooldown_secs(1));
+	assert!(teleport_cooldown_secs(TELEPORT_SWIFT_AT) < teleport_cooldown_secs(1));
 	c.msgs.clear();
 	request(&mut sim);
 	c.drain();
@@ -1987,4 +1995,92 @@ fn reconnect_does_not_reset_the_spawn_cooldown() {
 		sim.test_player(2).unwrap().pos.distance(away) < 1.0,
 		"rejoining reset the return-to-spawn cooldown"
 	);
+}
+
+/// One clock, both spells: a port arms the same cooldown Return Home
+/// does and waits on it, so a player cannot chain hops by alternating
+/// them. Both orders are swept — a per-spell timer leaves exactly one
+/// direction open, and the bug is invisible from the other.
+#[test]
+fn a_port_and_a_return_share_one_cooldown() {
+	use digblock_core::worldgen::SurfaceKind;
+	use digblock_net::messages::CastKind;
+	use digblock_net::protocol::{TELEPORT_COOLDOWN_SECS, TICK_RATE};
+	let kind = SurfaceKind::Plains;
+	let idx = SurfaceKind::ALL
+		.iter()
+		.position(|&k| k == kind)
+		.expect("plains is a kind") as u8;
+	let (essence, fare) = digblock_core::alchemy::cast_price(kind).expect("a port has a fare");
+	let port_level = digblock_core::unlock::waystone(kind).expect("plains has a port");
+
+	for port_first in [true, false] {
+		let mut sim = flat_sim(if port_first { "cdport" } else { "cdhome" });
+		let mut c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		let dest = FLAT_SPAWN + glam::Vec3::new(300.0, 0.0, 0.0);
+		sim.bench_add_waystone(idx, dest);
+		sim.bench_set_arcana_level(1, port_level);
+		// Two fares, so nothing the cooldown blocks can be blamed on
+		// an empty purse.
+		sim.test_grant_essence(1, essence, fare * 2);
+		let port = |sim: &mut super::Sim| {
+			sim.tick_once(vec![SimEvent::Msg {
+				conn_id: 1,
+				msg: ClientMsg::Cast(CastKind::Waystone(idx)),
+			}]);
+		};
+		let home = |sim: &mut super::Sim| {
+			sim.tick_once(vec![SimEvent::Msg {
+				conn_id: 1,
+				msg: ClientMsg::ReturnToSpawn,
+			}]);
+		};
+
+		// The first teleport lands and arms the clock.
+		if port_first {
+			port(&mut sim);
+			assert!(sim.test_player(1).unwrap().pos.distance(dest) < 3.0);
+		} else {
+			// Walk off spawn so a return has somewhere to come back from.
+			for t in 100..340 {
+				sim.tick_once(vec![batch(vec![input(t, true, no_claim())], 1)]);
+			}
+			home(&mut sim);
+			assert!(sim.test_player(1).unwrap().pos.distance(FLAT_SPAWN) < 1.0);
+		}
+		c.drain();
+
+		// The OTHER spell, immediately: refused by the shared clock, and
+		// refused before any debit.
+		let at = sim.test_player(1).unwrap().pos;
+		let purse = sim.test_essence(1, essence);
+		if port_first {
+			home(&mut sim);
+		} else {
+			port(&mut sim);
+		}
+		assert!(
+			sim.test_player(1).unwrap().pos.distance(at) < 1.0,
+			"the second teleport ignored the shared cooldown"
+		);
+		assert_eq!(
+			sim.test_essence(1, essence),
+			purse,
+			"a teleport refused by the clock must not charge a fare"
+		);
+
+		// Past the window it works.
+		for _ in 0..(TELEPORT_COOLDOWN_SECS * TICK_RATE) {
+			sim.tick_once(vec![]);
+			c.drain();
+		}
+		if port_first {
+			home(&mut sim);
+			assert!(sim.test_player(1).unwrap().pos.distance(FLAT_SPAWN) < 1.0);
+		} else {
+			port(&mut sim);
+			assert!(sim.test_player(1).unwrap().pos.distance(dest) < 3.0);
+		}
+	}
 }

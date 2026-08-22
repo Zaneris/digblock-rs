@@ -21,8 +21,8 @@ blocks — the player, and light.** The constitution binds as everywhere else:
 
 - **No RNG.** Destinations, costs and effects are pure functions; the one "discovery" in the design — arriving somewhere
   you have never walked — is a threshold unlock, the reveal-as-event grammar, not a roll.
-- **XP is server-computed.** One new chokepoint (`process_cast`, the `process_alchemy` twin) plus the first-arrival
-  milestones; offline arms award through the same core functions in the offline branches only.
+- **XP is server-computed.** One new chokepoint, `process_cast`, the `process_alchemy` twin; offline arms award through
+  the same core functions in the offline branches only.
 - **No combat spells.** The surface stays exactly as safe as it was; danger belongs to DELVE-DESIGN.
 - **No spell touches per-tick movement.** Levitation, speed, water-walking — each would run through `Player::tick` and
   the adoption envelope, making every such spell its own anti-cheat surface. Teleports dodge the problem entirely: a
@@ -44,8 +44,11 @@ became a spell in front of it:
   (`unlock::channel_ticks`, shortening at `CHANNEL_QUICK_AT`) the client paces before sending the existing message — the
   server's cooldown remains the real gate. Movement, opening a screen or starting a dig RESETS the channel
   (`Msg::CastInterrupted`); the decay mold is reserved for D3 damage.
-- **The cooldown steps down** at the Swift Return rungs (`unlock::return_cooldown_secs`; the level-1 answer IS the old
-  flat constant, aliased rather than copied), read per-caster by the server.
+- **ONE cooldown covers every teleport** (`unlock::teleport_cooldown_secs`; the level-1 answer IS the old flat constant,
+  aliased rather than copied), read per-caster by the server and stepping down at the two swift rungs. Return Home and
+  every waystone port rest on the same clock, because per-spell timers let a player ring the roster and land home with
+  nothing left to wait for. Client-side one predicate decides who rides it — `CastTarget::teleports`, asked rather than
+  restated at each gate, so a future travel spell cannot quietly arrive outside the cooldown.
 - **The recovery spell costs no essence, ever** (`the_recovery_spell_costs_no_essence`) — the essence-tool bootstrap
   rule's cousin: an essence price would strand exactly the player who is lost AND broke. Its governor is the cooldown,
   and only the cooldown (§6).
@@ -73,10 +76,13 @@ more of itself.
   minimum distance from the world ORIGIN alone, which let the roster cluster: several kinds took the first ring past the
   floor and landed within sight of each other and of spawn.
 - **The unlock IS the teleport.** Crossing the threshold makes the destination castable — no visit required, and the
-  first cast is the discovery. First arrival at each waystone pays milestone XP once per account
-  (`skills::waystone_milestone`, `visited_waystones` persisted with the player record). Because destinations are
-  canonical, two friends who cross the threshold hold the *same* place — "meet me at the mountain waystone" is a
-  sentence that works, and waystones are the game's first gathering points away from spawn.
+  first cast is the discovery. A first arrival pays exactly what every later one pays: the fare's worth, and nothing
+  else. The rejected shape, so it stays rejected: a once-per-account first-arrival MILESTONE. A flat table of them could
+  not hold a constant stride against an exponential curve — the first port paid three levels and the last paid less than
+  one — and the per-account memory it needed (`visited_waystones`, a field in the player record) existed for nothing
+  else. A discovery is its own reward; the XP is the drain. Because destinations are canonical, two friends who cross
+  the threshold hold the *same* place — "meet me at the mountain waystone" is a sentence that works, and waystones are
+  the game's first gathering points away from spawn.
 - **The site is STAMPED, not generated.** The earlier draft authored the ruin by decoration; that was superseded because
   stamping is strictly safer for existing worlds: `waystones::stamp` is a pure builder returning cell writes — a
   platform replacing the ground under the pad, footed shafts, lamp caps — and the server applies them **as ordinary
@@ -148,24 +154,26 @@ actions returned rather than applied. Four spell families shipped; the rest are 
   cooldown — the channel is feel and interruption surface, not a governor.
 - Waystone fares are a hand table in Terra (`alchemy::cast_price`), rising with the ladder; the wisp prices in Vitae
   (`wisp_price` — what a fresh player's first heartwood draws pay, the day-one bootstrap); kindle in Terra
-  (`kindle_price`, cheapening at `KINDLE_CHEAP_AT`). The payability pin asks the standing question: **a cast must be
-  payable at the level that unlocks it.**
+  (`kindle_price`, cheapening at `KINDLE_CHEAP_AT`). The fares and `CAST_XP_PER_ESSENCE` are ONE decision, never two:
+  raising a fare alone would pay more XP for costing more, which is the opposite of a sink. The payability pin asks the
+  standing question: **a cast must be payable at the level that unlocks it.**
 - **XP per priced cast derives from the price** (`skills::cast_xp` = `CAST_XP_PER_ESSENCE` × the fare), so a price
   retune moves its XP with it and no spell pays out of proportion to what it drains. Home derives from distance instead
   (§2), and the Arc pays zero — the three shapes are pinned together.
-- **First-arrival milestones** (`skills::waystone_milestone`, once per account) are Arcana's XP spine the way reveals
-  are Mining's — each unlock lands with a milestone worth several levels at that point, without dwarfing repeatable
-  play.
+- **The fares ARE Arcana's XP spine** — there is no other Arcana faucet but repeatable play: ports, returns, kindles and
+  wisps, each paying what it drains (§3 records why the first-arrival milestone was withdrawn). Records written while
+  milestones existed carry Arcana totals this ladder cannot produce, so the player store winds Arcana — and only Arcana
+  — back to nothing on read, once, at `FIRST_VERSION_WITHOUT_ARRIVALS`.
 - Every threshold lives in `unlock.rs` as always: the waystone rungs, `KINDLE_AT`, `ARC_AT`/`ARC_WIDE_AT`,
-  `WISP_BRIGHT_AT`, `RETURN_SWIFT_AT`/`RETURN_SWIFTER_AT`, `CHANNEL_QUICK_AT`, `KINDLE_CHEAP_AT`, pinned by the Arcana
-  vector in `unlock_levels_are_the_threshold_levels`.
+  `WISP_BRIGHT_AT`, `TELEPORT_SWIFT_AT`/`TELEPORT_SWIFTER_AT`, `CHANNEL_QUICK_AT`, `KINDLE_CHEAP_AT`, pinned by the
+  Arcana vector in `unlock_levels_are_the_threshold_levels`.
 
 ## 7. The skill
 
 `Skill` is `repr(u8)` append-only; Arcana is the third variant and every wire and save format already carried it.
-Storage is XP-only totals, level always derived, the pinned integer curve untouched. `visited_waystones` rides the
-player record (format-version bump, read-compat, union on merge). The character screen's teaser machinery reads unlock
-tables and therefore serves Arcana for free.
+Storage is XP-only totals, level always derived, the pinned integer curve untouched. The player record carries the
+shared teleport tick, so a rejoin cannot reset the clock. The character screen's teaser machinery reads unlock tables
+and therefore serves Arcana for free.
 
 ## 8. Wire inventory (v32)
 

@@ -232,14 +232,15 @@ impl Engine {
 		self.input.safe_area = insets;
 	}
 
-	/// Begin a cast channel. The home spell on cooldown opens the
-	/// spellbook instead — the countdown is visible there, and a silent
-	/// no-op reads as a broken key.
+	/// Begin a cast channel. A TELEPORT on cooldown opens the spellbook
+	/// instead — the countdown is visible there, and a silent no-op
+	/// reads as a broken key. One clock covers Return Home and every
+	/// port, so neither can start while the other's window runs.
 	pub(super) fn start_cast(&mut self, target: CastTarget) {
 		if self.cast.is_some() {
 			return;
 		}
-		if target == CastTarget::Home && self.save.spawn_cooldown > 0.0 {
+		if target.teleports() && self.save.teleport_cooldown > 0.0 {
 			self.input.keys = HeldKeys::default();
 			self.input.dig_held = false;
 			self.ui.spellbook.open();
@@ -252,6 +253,14 @@ impl Engine {
 			pos: None,
 			gain: 0.45,
 		});
+	}
+
+	/// Arm the shared teleport clock at the caster's own window. Every
+	/// teleport calls this — a spell that moves you and forgets to would
+	/// be a spell that outruns the cooldown.
+	fn start_teleport_cooldown(&mut self) {
+		let level = self.skills.level(digblock_core::skills::Skill::Arcana);
+		self.save.teleport_cooldown = digblock_core::unlock::teleport_cooldown_secs(level) as f32;
 	}
 
 	/// One fixed-rate step of the cast channel. A channel is STILLNESS:
@@ -317,9 +326,9 @@ impl Engine {
 	/// visit — stamped, protected and marked, what a server world did at
 	/// boot. The cast pays the roster's walk up to its own rung (pure
 	/// ring searches; the ladder resolves in order because the separation
-	/// rule is mutual), kept for the session. No first-arrival milestone
-	/// offline: that award is once per ACCOUNT, and accounts are a
-	/// multiplayer concept — a per-save copy would re-pay every save.
+	/// rule is mutual), kept for the session. The XP is the fare's worth
+	/// and nothing else, which is the whole of what a server pays too —
+	/// the two arms have no award to keep in step any more.
 	fn cast_waystone_offline(&mut self, idx: u8) {
 		use digblock_core::skills::Skill;
 		use digblock_core::worldgen::SurfaceKind;
@@ -367,9 +376,7 @@ impl Engine {
 		use digblock_core::skills::Skill;
 		match target {
 			CastTarget::Home => {
-				self.save.spawn_cooldown =
-					digblock_core::unlock::return_cooldown_secs(self.skills.level(Skill::Arcana))
-						as f32;
+				self.start_teleport_cooldown();
 				self.save.spawn_return_pending = true;
 				match self.session.client.as_mut() {
 					Some(net) if net.ready() => net.send_return_to_spawn(),
@@ -392,14 +399,20 @@ impl Engine {
 					}
 				}
 			}
-			CastTarget::Waystone(idx) => match self.session.client.as_mut() {
-				// The server validates the two real gates — the unlock
-				// and the fare — and answers Teleported or CastRefused.
-				Some(net) if net.ready() => {
-					net.send_cast(digblock_net::messages::CastKind::Waystone(idx));
+			CastTarget::Waystone(idx) => {
+				// A port rests on the same clock Return Home does, and
+				// the server enforces its own copy of it.
+				self.start_teleport_cooldown();
+				match self.session.client.as_mut() {
+					// The server validates the real gates — the unlock,
+					// the clock and the fare — and answers Teleported or
+					// CastRefused.
+					Some(net) if net.ready() => {
+						net.send_cast(digblock_net::messages::CastKind::Waystone(idx));
+					}
+					_ => self.cast_waystone_offline(idx),
 				}
-				_ => self.cast_waystone_offline(idx),
-			},
+			}
 			CastTarget::Wisp => {
 				let (essence, fare) = digblock_core::alchemy::wisp_price();
 				match self.session.client.as_mut() {

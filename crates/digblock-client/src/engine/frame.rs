@@ -234,7 +234,7 @@ impl Engine {
 			} else if self.ui.spellbook.is_open() {
 				let view = crate::ui::screens::spellbook::SpellView::build(
 					&self.skills,
-					self.save.spawn_cooldown.ceil() as u32,
+					self.save.teleport_cooldown.ceil() as u32,
 					ports.as_deref().unwrap_or(&[]),
 					&self.inventory,
 					self.arc_on,

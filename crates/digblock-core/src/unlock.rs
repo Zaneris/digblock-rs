@@ -325,29 +325,32 @@ pub fn ore_mastery(level: u32) -> u32 {
 /// is the top of the CONTENT ladder rather than the level cap.
 pub const MASTERY_AT: u32 = 60;
 
-/// Arcana's home cooldown: how long Return Home rests between casts,
-/// stepping DOWN at the two swift-return rungs — a rung is felt as "home
-/// comes back sooner". The first level's answer IS the game's base
-/// return cooldown; `digblock-net` aliases that base onto the protocol
-/// const its message doc names, so there is one number.
-pub fn return_cooldown_secs(level: u32) -> u32 {
+/// Arcana's teleport cooldown: how long EVERY teleport rests before the
+/// next one, stepping DOWN at the two swift rungs — a rung is felt as
+/// "the world comes back sooner". One clock across Return Home and every
+/// waystone port, so no chain of hops can outrun it; a per-spell timer
+/// would let a player ring the roster and land home for free. The first
+/// level's answer IS the game's base cooldown; `digblock-net` aliases
+/// that base onto the protocol const its message doc names, so there is
+/// one number.
+pub fn teleport_cooldown_secs(level: u32) -> u32 {
 	match level {
-		l if l >= RETURN_SWIFTER_AT => 30,
-		l if l >= RETURN_SWIFT_AT => 45,
-		_ => RETURN_COOLDOWN_BASE_SECS,
+		l if l >= TELEPORT_SWIFTER_AT => 30,
+		l if l >= TELEPORT_SWIFT_AT => 45,
+		_ => TELEPORT_COOLDOWN_BASE_SECS,
 	}
 }
 
 /// The cooldown every player starts at — and the one pre-Arcana players
 /// effectively keep, since a fresh skill sits at the first level.
-pub const RETURN_COOLDOWN_BASE_SECS: u32 = 60;
+pub const TELEPORT_COOLDOWN_BASE_SECS: u32 = 60;
 
-/// The first swift-return rung: the stretch between the second waystone
-/// and the third otherwise has no threshold in sight.
-pub const RETURN_SWIFT_AT: u32 = 18;
+/// The first swift-teleport rung: the stretch between the second
+/// waystone and the third otherwise has no threshold in sight.
+pub const TELEPORT_SWIFT_AT: u32 = 18;
 
 /// The second, deep in the ladder beside the last ports.
-pub const RETURN_SWIFTER_AT: u32 = 56;
+pub const TELEPORT_SWIFTER_AT: u32 = 56;
 
 /// The waystone ladder: the Arcana level that makes each biome's port
 /// castable, ordered by remoteness and rarity — common lowland first,
@@ -658,7 +661,7 @@ pub fn opens(skill: Skill, level: u32) -> bool {
 					.any(|&k| waystone(k) == Some(level))
 					|| level == KINDLE_AT
 					|| arc_cells(level) != arc_cells(level - 1)
-					|| return_cooldown_secs(level) != return_cooldown_secs(level - 1)
+					|| teleport_cooldown_secs(level) != teleport_cooldown_secs(level - 1)
 					|| channel_ticks(level) != channel_ticks(level - 1)
 					|| wisp_light(level) != wisp_light(level - 1)
 					|| crate::alchemy::kindle_price(level)

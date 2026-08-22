@@ -87,7 +87,9 @@ fn port_label(idx: u8) -> &'static str {
 /// pixels showed.
 pub struct SpellView {
 	rows: Vec<Row>,
-	home_ready: bool,
+	/// The shared teleport cooldown has run out — the readiness of Return
+	/// Home AND of every port, since one clock covers them all.
+	teleport_ready: bool,
 	wisp_ready: bool,
 	kindle_ready: bool,
 	arc_shown: bool,
@@ -96,12 +98,13 @@ pub struct SpellView {
 }
 
 impl SpellView {
-	/// `cooldown_secs` is the engine's live home-spell countdown,
-	/// ceiling-rounded by the caller (a "0s" row that is not yet ready
-	/// would be a lie).
+	/// `cooldown_secs` is the engine's live TELEPORT countdown — one
+	/// clock over Return Home and every port — ceiling-rounded by the
+	/// caller (a "0s" row that is not yet ready would be a lie).
 	/// `ports` is what THIS world offers (the engine filters online to
-	/// the sites its server resolved); the fare greys on the same counts
-	/// the cast would debit, so the offer and the rule cannot drift.
+	/// the sites its server resolved); a port greys on the same two
+	/// things the cast is refused for, its fare and that clock, so the
+	/// offer and the rule cannot drift.
 	pub fn build(
 		skills: &SkillSet,
 		cooldown_secs: u32,
@@ -110,18 +113,18 @@ impl SpellView {
 		arc_on: bool,
 	) -> Self {
 		let level = skills.level(Skill::Arcana);
-		let home_ready = cooldown_secs == 0;
+		let teleport_ready = cooldown_secs == 0;
 		let mut castable = Vec::new();
 		let mut rows = vec![Row::Title, Row::Space];
 		rows.push(Row::Spell {
 			id: InvId::Spell(0),
 			text: "RETURN HOME".to_string(),
-			state: if home_ready {
+			state: if teleport_ready {
 				"READY".to_string()
 			} else {
 				format!("{cooldown_secs}s")
 			},
-			ready: home_ready,
+			ready: teleport_ready,
 		});
 		rows.push(Row::Info(
 			"a channelled journey back to your spawn — hold still".to_string(),
@@ -170,15 +173,23 @@ impl SpellView {
 		for port in ports {
 			if port.level <= level {
 				let affordable = inventory.sub_count(port.essence) >= port.fare;
+				let castable_now = affordable && teleport_ready;
 				let slot = 1 + port.idx;
-				if affordable {
+				if castable_now {
 					castable.push((slot, port.idx));
 				}
 				rows.push(Row::Spell {
 					id: InvId::Spell(slot),
 					text: port_label(port.idx).to_string(),
-					state: format!("{} {}", port.fare, port.essence.name().to_uppercase()),
-					ready: affordable,
+					// The clock is what the row SAYS while it runs: an
+					// affordable port that still cannot be cast has to
+					// name the reason, and the fare is not it.
+					state: if teleport_ready {
+						format!("{} {}", port.fare, port.essence.name().to_uppercase())
+					} else {
+						format!("{cooldown_secs}s")
+					},
+					ready: castable_now,
 				});
 			} else if !teased {
 				teased = true;
@@ -196,7 +207,7 @@ impl SpellView {
 		}
 		Self {
 			rows,
-			home_ready,
+			teleport_ready,
 			wisp_ready,
 			kindle_ready,
 			arc_shown,
@@ -210,9 +221,9 @@ impl SpellView {
 /// fanfare surface, and the two share only the unlock tables.
 fn next_rung(level: u32) -> Option<(u32, &'static str)> {
 	[
-		(unlock::RETURN_SWIFT_AT, "home comes back sooner"),
+		(unlock::TELEPORT_SWIFT_AT, "home comes back sooner"),
 		(unlock::CHANNEL_QUICK_AT, "every channel quickens"),
-		(unlock::RETURN_SWIFTER_AT, "home comes back sooner still"),
+		(unlock::TELEPORT_SWIFTER_AT, "home comes back sooner still"),
 	]
 	.into_iter()
 	.find(|&(lvl, _)| lvl > level)
@@ -315,7 +326,7 @@ impl SpellScreen {
 				button: MouseButton::Left,
 				pressed: true,
 			} => match hits.hit(self.cursor.0, self.cursor.1)? {
-				InvId::Spell(0) if view.home_ready => Some(SpellAction::CastHome),
+				InvId::Spell(0) if view.teleport_ready => Some(SpellAction::CastHome),
 				InvId::Spell(SLOT_WISP) if view.wisp_ready => Some(SpellAction::CastWisp),
 				InvId::Spell(SLOT_KINDLE) if view.kindle_ready => Some(SpellAction::CastKindle),
 				InvId::Spell(SLOT_ARC) if view.arc_shown => Some(SpellAction::ToggleArc),

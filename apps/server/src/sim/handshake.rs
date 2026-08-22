@@ -166,7 +166,7 @@ impl Sim {
 		let draw_dist = draw_dist.clamp(DRAW_DIST_MIN, DRAW_DIST_MAX);
 		// Resume where they left off. Rejoining used to be a free trip to spawn
 		// that sidestepped the return-to-spawn cooldown; stored positions close
-		// that, and `last_return_tick` stops a rejoin resetting the timer too.
+		// that, and `last_teleport_tick` stops a rejoin resetting the timer too.
 		//
 		// The landing rule still applies: the world may have changed while they
 		// were away, so a resumed position is stepped clear the same way a spawn
@@ -358,9 +358,8 @@ impl Sim {
 				digging: None,
 				// Restored, not reset: otherwise reconnecting clears the
 				// cooldown and the timer is bypassed by rejoining.
-				last_return_tick: record.last_return_tick,
+				last_teleport_tick: record.last_teleport_tick,
 				skills: record.skills,
-				visited_waystones: record.visited_waystones,
 				wisp_until: None,
 			},
 		);

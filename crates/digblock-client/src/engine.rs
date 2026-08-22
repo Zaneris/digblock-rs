@@ -440,10 +440,11 @@ struct SaveSession {
 	/// the return-to-spawn target.
 	spawn_pos: Vec3,
 
-	/// Seconds left on the return-to-spawn cooldown (0 = ready). One
-	/// gate for local and connected play; connected, the server also
-	/// enforces its own copy.
-	spawn_cooldown: f32,
+	/// Seconds left on the teleport cooldown (0 = ready) — one clock over
+	/// Return Home and every port, so hops cannot be chained. One gate
+	/// for local and connected play; connected, the server also enforces
+	/// its own copy.
+	teleport_cooldown: f32,
 
 	/// H pressed in-game: merged with the menu's return-spawn request.
 	return_spawn_requested: bool,
@@ -655,7 +656,7 @@ struct UiState {
 }
 
 /// What a channel is winding up toward.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 enum CastTarget {
 	Home,
 	/// The port at this `SurfaceKind` declaration-order index.
@@ -665,6 +666,18 @@ enum CastTarget {
 	/// Conjured light at whatever the crosshair rests on when the
 	/// channel COMPLETES — aiming is allowed mid-channel, moving is not.
 	Kindle,
+}
+
+impl CastTarget {
+	/// Whether this spell MOVES the caster, and so rests on the shared
+	/// teleport clock. Asked rather than listed at each gate, so a new
+	/// travel spell cannot quietly arrive outside the cooldown.
+	fn teleports(self) -> bool {
+		match self {
+			CastTarget::Home | CastTarget::Waystone(_) => true,
+			CastTarget::Wisp | CastTarget::Kindle => false,
+		}
+	}
 }
 
 struct CastState {
