@@ -111,6 +111,49 @@ pub fn craft_cost(ideal: u32, level: u32) -> u32 {
 /// twin (pinned to it, so an item cannot have a price without a level or
 /// the other way round). An item may ALSO cost feedstock blocks
 /// ([`functional_feedstock`]); the two vessels cost ONLY that.
+/// A waystone passage's price, hand-tabled in [`functional_ideal`]'s
+/// spirit: the fare rises with the port's remoteness, all in Terra — the
+/// travel essence, whose node reveals early enough that the FIRST port's
+/// fare is payable by the time the port opens (the payability pin's
+/// question, asked by `a_ports_fare_is_payable_when_it_opens`). `None`
+/// is a kind with no port, exactly [`crate::unlock::waystone`]'s set —
+/// the two are pinned twins, a fare without a port being as wrong as a
+/// port without a fare. Return Home deliberately has no row here AT THE
+/// TYPE: it is not a destination kind, so the recovery spell costs no
+/// essence structurally, ever.
+pub fn cast_price(kind: crate::worldgen::SurfaceKind) -> Option<(Essence, u32)> {
+	use crate::worldgen::SurfaceKind as K;
+	Some(match kind {
+		K::Plains => (Essence::Terra, 4),
+		K::Forest => (Essence::Terra, 5),
+		K::Savanna => (Essence::Terra, 6),
+		K::Taiga => (Essence::Terra, 8),
+		K::Beach => (Essence::Terra, 10),
+		K::Mountain => (Essence::Terra, 12),
+		K::Snow => (Essence::Terra, 14),
+		K::Ocean | K::River | K::Lake | K::Marsh | K::GravelShore | K::Scree => return None,
+	})
+}
+
+/// The self-light's fare: Vitae, the day-one essence, so Arcana's own
+/// bootstrap spell is payable from the first heartwood draws.
+pub fn wisp_price() -> (Essence, u32) {
+	(Essence::Vitae, 2)
+}
+
+/// Conjured light's fare, easing at the late rung — the caster's Arcana
+/// decides, exactly as the port fares ride the port table.
+pub fn kindle_price(level: u32) -> (Essence, u32) {
+	(
+		Essence::Terra,
+		if level >= crate::unlock::KINDLE_CHEAP_AT {
+			2
+		} else {
+			3
+		},
+	)
+}
+
 pub fn functional_ideal(b: BlockType) -> Option<&'static [(Essence, u32)]> {
 	use BlockType as B;
 	use Essence as E;

@@ -61,22 +61,11 @@ impl Menu {
 						&mut y,
 						RowSpec::item(RowId::RootItem(0), "Back to Game"),
 					);
-					if self.spawn_cooldown_secs == 0 {
-						push(
-							&mut specs,
-							&mut y,
-							RowSpec::item_hint(RowId::RootItem(3), "Return to Spawn", "H"),
-						);
-					} else {
-						push(
-							&mut specs,
-							&mut y,
-							RowSpec::dim(format!(
-								"Return to Spawn ({}s)",
-								self.spawn_cooldown_secs
-							)),
-						);
-					}
+					push(
+						&mut specs,
+						&mut y,
+						RowSpec::item_hint(RowId::RootItem(3), "Spellbook", "J"),
+					);
 					push(
 						&mut specs,
 						&mut y,

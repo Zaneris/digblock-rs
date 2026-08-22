@@ -24,12 +24,14 @@ mod siphon;
 mod sky;
 mod smoothing;
 mod spray;
+mod teleport;
 mod texture;
 pub mod ui;
 mod viewmodel;
 mod voice;
 mod water;
 mod water_audio;
+mod waystone_fx;
 
 pub use engine::{DebugScreen, Engine, EngineConfig, parse_held_item, parse_node_kind};
 /// The five types a launcher needs to drive the menu. Everything else

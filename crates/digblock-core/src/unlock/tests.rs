@@ -517,6 +517,35 @@ fn unlock_levels_are_the_threshold_levels() {
 			 the first level, which is never an unlock, and the old bonus \
 			 lines left with bench extraction"
 	);
+	// Arcana: the seven waystones interleaved with the travel rungs —
+	// ports are the spine the way reveals are Mining's. Return Home and
+	// Wisp sit at the first level, which is never an unlock.
+	let arcana: Vec<u32> = (1..=MAX_LEVEL)
+		.filter(|&l| opens(Skill::Arcana, l))
+		.collect();
+	assert_eq!(
+		arcana,
+		vec![
+			6,
+			KINDLE_AT,
+			14,
+			RETURN_SWIFT_AT,
+			22,
+			ARC_AT,
+			CHANNEL_QUICK_AT,
+			34,
+			WISP_BRIGHT_AT,
+			42,
+			ARC_WIDE_AT,
+			50,
+			KINDLE_CHEAP_AT,
+			RETURN_SWIFTER_AT,
+			60
+		],
+		"seven ports rising by remoteness, the two swift-return rungs and \
+			 the channel quickening between them — the far cold port crowns \
+			 the content top"
+	);
 	// The first level is where everyone starts — you never level up into
 	// it, and the slabs sitting at that unlock must not say otherwise.
 	for s in Skill::ALL {
@@ -524,4 +553,67 @@ fn unlock_levels_are_the_threshold_levels() {
 		assert!(!opens(s, 0));
 		assert!(!opens(s, MAX_LEVEL + 1));
 	}
+}
+
+/// The three port tables are twins over ONE set of kinds — a fare
+/// without a port is as wrong as a port without a fare or a milestone —
+/// and remoteness orders fares and milestones alike: a farther port
+/// costs more and pays more, with no inversion to game. The fare is also
+/// PAYABLE when its first port opens: every fare is drawn in an essence
+/// whose node reveals earlier on its own ladder (the payability pin's
+/// question, asked cross-skill the way the siphon handshake is).
+#[test]
+fn the_port_tables_are_twins_and_the_fare_is_payable() {
+	use crate::worldgen::SurfaceKind;
+	use BlockType as B;
+	let mut ports: Vec<(u32, u32, u64)> = Vec::new();
+	for k in SurfaceKind::ALL {
+		let port = waystone(k);
+		let fare = crate::alchemy::cast_price(k);
+		let stone = crate::skills::waystone_milestone(k);
+		assert_eq!(port.is_some(), fare.is_some(), "{k:?} fare/port twins");
+		assert_eq!(port.is_some(), stone.is_some(), "{k:?} milestone twin");
+		if let (Some(l), Some((_, amt)), Some(ms)) = (port, fare, stone) {
+			ports.push((l, amt, ms));
+		}
+	}
+	assert!(
+		!ports.is_empty(),
+		"no ports at all — the sweep proved nothing"
+	);
+	ports.sort_unstable();
+	for w in ports.windows(2) {
+		assert!(w[0].0 < w[1].0, "two ports on one level");
+		assert!(w[0].1 < w[1].1, "a farther port must cost more");
+		assert!(w[0].2 < w[1].2, "a farther port must pay more");
+	}
+	let first_port = ports[0].0;
+	assert!(
+		alchemy_reveal(B::Leystone).expect("leystone reveals") <= first_port,
+		"the travel essence must be findable before the first port opens"
+	);
+}
+
+/// The travel rungs only ever help: neither the cooldown nor the channel
+/// may lengthen with a level, and each really steps somewhere — a sweep
+/// that saw no step proved nothing.
+#[test]
+fn the_travel_rungs_never_lengthen_with_level() {
+	let (mut cooldown_steps, mut channel_steps, mut examined) = (0u32, 0u32, 0u32);
+	for l in 2..=MAX_LEVEL {
+		examined += 1;
+		assert!(
+			return_cooldown_secs(l) <= return_cooldown_secs(l - 1),
+			"cooldown lengthened at {l}"
+		);
+		assert!(
+			channel_ticks(l) <= channel_ticks(l - 1),
+			"channel lengthened at {l}"
+		);
+		cooldown_steps += u32::from(return_cooldown_secs(l) != return_cooldown_secs(l - 1));
+		channel_steps += u32::from(channel_ticks(l) != channel_ticks(l - 1));
+	}
+	assert_eq!(examined, MAX_LEVEL - 1);
+	assert!(cooldown_steps > 0, "the cooldown never stepped");
+	assert!(channel_steps > 0, "the channel never stepped");
 }

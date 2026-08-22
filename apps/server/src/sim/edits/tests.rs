@@ -2651,6 +2651,114 @@ fn held_item_rides_snapshots() {
 	let _ = &mut c1;
 }
 
+/// The Mason's Arc: one placement lays the FULL line along the face
+/// normal — length read off `unlock::arc_cells`, stock debited per
+/// block — and a line that does not fit places NOTHING (all or nothing,
+/// so both ends always derive one set). Every expectation derived.
+#[test]
+fn an_arc_places_a_full_line_or_nothing() {
+	use digblock_core::unlock::{ARC_AT, arc_cells};
+	let mut sim = flat_sim("arcline");
+	let mut c = connect(&mut sim, 1);
+	wait_live(&mut sim, 1);
+	sim.bench_set_arcana_level(1, ARC_AT);
+	let n = arc_cells(ARC_AT) as u32;
+	assert!(n > 1, "the first rank must widen the line");
+	sim.test_grant(1, BlockType::Stone, n * 2);
+
+	let pos = sim.test_player(1).unwrap().pos;
+	// Aim down-and-out at open ground: the line grows straight up off
+	// the struck top face.
+	let out = Vec3::new(3.0, -2.0, 0.0).normalize();
+	let hit = raycast(pos, out, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).expect("ground");
+	assert_eq!(hit.normal, (0, 1, 0), "the fixture needs a top face");
+	let arc = |sim: &mut Sim, seq: u32| {
+		sim.tick_once(vec![SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::EditRequest {
+				seq,
+				tick: 0,
+				origin: pos.to_array(),
+				dir: out.to_array(),
+				kind: EditKind::PlaceArc {
+					block: BlockType::Stone as u16,
+				},
+				cell: [hit.cell.0, hit.cell.1, hit.cell.2],
+				normal: [hit.normal.0 as i8, hit.normal.1 as i8, hit.normal.2 as i8],
+				slot: 0,
+			},
+		}]);
+	};
+	arc(&mut sim, 1);
+	for i in 1..=n as i32 {
+		assert_eq!(
+			sim.test_cell_at(hit.cell.0, hit.cell.1 + i, hit.cell.2),
+			Some(BlockType::Stone as u16),
+			"cell {i} of the line"
+		);
+	}
+	assert_eq!(
+		sim.test_inventory_count(1, BlockType::Stone),
+		n,
+		"one debit per block of the line"
+	);
+
+	// A line that cannot fit places NOTHING: a second clear column with
+	// a cap hung where the line's SECOND cell would go, so the first
+	// cell fits and the whole line still bounces, stock intact.
+	let out2 = Vec3::new(0.0, -2.0, 3.0).normalize();
+	let hit2 = raycast(pos, out2, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).expect("ground 2");
+	assert_eq!(
+		hit2.normal,
+		(0, 1, 0),
+		"the second fixture needs a top face"
+	);
+	sim.test_set_cell(
+		hit2.cell.0,
+		hit2.cell.1 + 2,
+		hit2.cell.2,
+		BlockType::Stone as u16,
+	);
+	c.drain();
+	c.msgs.clear();
+	sim.tick_once(vec![SimEvent::Msg {
+		conn_id: 1,
+		msg: ClientMsg::EditRequest {
+			seq: 2,
+			tick: 0,
+			origin: pos.to_array(),
+			dir: out2.to_array(),
+			kind: EditKind::PlaceArc {
+				block: BlockType::Stone as u16,
+			},
+			cell: [hit2.cell.0, hit2.cell.1, hit2.cell.2],
+			normal: [
+				hit2.normal.0 as i8,
+				hit2.normal.1 as i8,
+				hit2.normal.2 as i8,
+			],
+			slot: 0,
+		},
+	}]);
+	c.drain();
+	assert!(
+		c.msgs.iter().any(|m| matches!(
+			m,
+			ServerMsg::EditRejected {
+				reason: RejectReason::Occluded,
+				..
+			}
+		)),
+		"an obstructed line must bounce wholesale: {:?}",
+		c.msgs
+	);
+	assert_eq!(
+		sim.test_inventory_count(1, BlockType::Stone),
+		n,
+		"a bounced line debits nothing"
+	);
+}
+
 /// Placing into a locked region is refused too, and reports
 /// `Protected` rather than some incidental reason — the client picks
 /// its wording ("can't build" vs "won't break") from this.
@@ -2667,7 +2775,7 @@ fn locked_spawn_refuses_a_place() {
 		.set_lock(Some(crate::spawn_store::SpawnLock {
 			eye: eye.to_array(),
 		}));
-	let region = sim.spawn_lock().expect("locked");
+	let region = sim.protected_regions()[0];
 
 	let pos = sim.test_player(1).unwrap().pos;
 	let out = Vec3::new(3.0, -2.0, 0.0).normalize();
@@ -2712,6 +2820,93 @@ fn locked_spawn_refuses_a_place() {
 		sim.test_inventory_count(1, BlockType::Stone),
 		4,
 		"a refused place must not debit stock"
+	);
+}
+
+/// The operator who moves spawn and stamps the sites must also be able
+/// to repair them: an admin's place inside the lock lands, and their
+/// hold is not refused at DigStart — while the sim's own writers keep
+/// answering to the full region set (`requester_regions` names the
+/// split). The non-admin refusals are the tests around this one.
+#[test]
+fn an_admin_edits_inside_the_arrival_regions() {
+	let mut sim = flat_sim("adminlock");
+	sim.set_admin_accounts([admin_account()]);
+	let mut c = connect_admin(&mut sim, 1, "boss");
+	wait_live(&mut sim, 1);
+	sim.test_grant(1, BlockType::Stone, 4);
+	let eye = FLAT_SPAWN + Vec3::new(4.0, 0.0, 0.0);
+	sim.spawn_store
+		.set_lock(Some(crate::spawn_store::SpawnLock {
+			eye: eye.to_array(),
+		}));
+	let region = sim.protected_regions()[0];
+
+	let pos = sim.test_player(1).unwrap().pos;
+	let out = Vec3::new(3.0, -2.0, 0.0).normalize();
+	let hit = raycast(pos, out, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).expect("ground");
+	let target = (
+		hit.cell.0 + hit.normal.0,
+		hit.cell.1 + hit.normal.1,
+		hit.cell.2 + hit.normal.2,
+	);
+	assert!(
+		region.contains(target.0, target.1, target.2),
+		"test aims outside the locked region: {target:?}"
+	);
+	sim.tick_once(vec![SimEvent::Msg {
+		conn_id: 1,
+		msg: ClientMsg::EditRequest {
+			seq: 1,
+			tick: 0,
+			origin: pos.to_array(),
+			dir: out.to_array(),
+			kind: EditKind::Place {
+				block: BlockType::Stone as u16,
+			},
+			cell: [hit.cell.0, hit.cell.1, hit.cell.2],
+			normal: [hit.normal.0 as i8, hit.normal.1 as i8, hit.normal.2 as i8],
+			slot: 0,
+		},
+	}]);
+	c.drain();
+	assert!(
+		!c.msgs.iter().any(|m| matches!(
+			m,
+			ServerMsg::EditRejected {
+				reason: RejectReason::Protected,
+				..
+			}
+		)),
+		"an admin place inside the lock was refused: {:?}",
+		c.msgs
+	);
+	assert_eq!(
+		sim.test_cell_at(target.0, target.1, target.2),
+		Some(BlockType::Stone as u16),
+		"the admin's block should land"
+	);
+
+	// And the hold: a dig start on a protected cell is not refused for
+	// the admin (a non-admin's is — the refusal test beside this one).
+	sim.tick_once(vec![SimEvent::Msg {
+		conn_id: 1,
+		msg: ClientMsg::DigStart {
+			cell: [target.0, target.1, target.2],
+			slot: 0,
+		},
+	}]);
+	c.drain();
+	assert!(
+		!c.msgs.iter().any(|m| matches!(
+			m,
+			ServerMsg::DigRefused {
+				reason: RejectReason::Protected,
+				..
+			}
+		)),
+		"an admin hold inside the lock was refused: {:?}",
+		c.msgs
 	);
 }
 
@@ -2766,11 +2961,12 @@ fn water_cannot_flow_into_a_locked_region() {
 		.set_lock(Some(crate::spawn_store::SpawnLock {
 			eye: spawn.to_array(),
 		}));
-	let region = sim.spawn_lock().expect("locked");
+	let region = sim.protected_regions()[0];
+	let x1 = region.bounds()[1];
 
 	// A source one column outside the region, level with the capsule,
 	// with a clear run straight at it.
-	let (wx, wy, wz) = (region.x1 + 1, h + 1, sz);
+	let (wx, wy, wz) = (x1 + 1, h + 1, sz);
 	assert!(!region.contains(wx, wy, wz), "source must start outside");
 	assert!(sim.store.set_block(wx, wy, wz, BlockType::Water).is_some());
 	sim.fluid.schedule_around(wx, wy, wz);
@@ -2789,7 +2985,7 @@ fn water_cannot_flow_into_a_locked_region() {
 	// And the source itself did flow somewhere — otherwise this test
 	// would pass on a fluid sim that simply never ran.
 	assert!(
-		sim.test_cell_at(region.x1 + 2, h + 1, sz)
+		sim.test_cell_at(x1 + 2, h + 1, sz)
 			.is_some_and(|c| BlockType::from_id(digblock_core::chunk::cell_id(c)).is_water()),
 		"fluid never spread at all; the test proves nothing"
 	);
@@ -2813,11 +3009,7 @@ fn a_protected_dig_is_refused_at_dig_start() {
 		FLAT_SPAWN.y.floor() as i32 - 2,
 		FLAT_SPAWN.z.floor() as i32,
 	);
-	assert!(
-		sim.spawn_lock()
-			.expect("locked")
-			.contains(cell.0, cell.1, cell.2)
-	);
+	assert!(sim.protected_regions()[0].contains(cell.0, cell.1, cell.2));
 
 	sim.tick_once(vec![SimEvent::Msg {
 		conn_id: 1,

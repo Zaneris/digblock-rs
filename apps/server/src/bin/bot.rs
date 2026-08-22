@@ -336,6 +336,8 @@ fn run_bot(
 				| NetEvent::LevelUp { .. }
 				// Bots have no camera to hold and no world to render; they
 				// simulate against the server's answers either way.
+				| NetEvent::Waystones { .. }
+				| NetEvent::CastRefused { .. }
 				| NetEvent::AreaReady => {}
 			}
 		}

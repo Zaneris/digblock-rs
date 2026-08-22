@@ -5,7 +5,7 @@
 //! the single source of truth: it drives the dispatcher, `/help`, and
 //! the `AdminCommands` advertisement the client autocompletes from.
 
-use super::{OutMsg, Sim, SpawnLock, client_send};
+use super::{OutMsg, Sim, client_send};
 use digblock_core::block::Essence;
 use digblock_core::compass::{cardinal, compass};
 use digblock_core::raycast::{REACH, raycast};
@@ -47,10 +47,6 @@ const COMMANDS: &[(&str, &str)] = &[
 		"/set-spawn-dir [n|s|e|w]",
 		"set which way players face when they spawn; no argument = your facing",
 	),
-	(
-		"/lock-spawn [on|off]",
-		"show or set spawn protection (freezes spawn and makes its cells unbreakable)",
-	),
 ];
 
 /// `/tp` coordinate clamp: far past any playable range, comfortably
@@ -70,17 +66,16 @@ fn at(eye: Vec3) -> [i32; 3] {
 	]
 }
 
-/// The one wording for "spawn is locked here", shared by `/lock-spawn`
-/// and by `/set-spawn` reporting the lock it dragged along.
-/// The lock's own description, as the cell it stands on and the box it
-/// protects. `already` distinguishes reporting a standing lock from
-/// announcing a new one — the two differ only in wording, which is
-/// exactly why the server must not be the one choosing between them.
+/// The lock's own description, as the cell it stands on and the bounds
+/// it protects — the region's enclosing box, since the wire field is a
+/// flat box and membership questions never ride this reply. `already`
+/// distinguishes reporting a standing lock from announcing a new one —
+/// the two differ only in wording, which is exactly why the server must
+/// not be the one choosing between them.
 fn describe_lock(eye: Vec3, already: bool) -> AdminReply {
-	let r = digblock_core::spawn::lock_region(eye);
 	AdminReply::SpawnLocked {
 		cell: at(eye),
-		region: [r.x0, r.x1, r.y0, r.y1, r.z0, r.z1],
+		region: digblock_core::spawn::lock_region(eye).bounds(),
 		already,
 	}
 }
@@ -191,7 +186,6 @@ impl Sim {
 			"/unban" => self.cmd_unban(conn_id, &args),
 			"/set-spawn" => self.cmd_set_spawn(conn_id, &args),
 			"/set-spawn-dir" => self.cmd_set_spawn_dir(conn_id, &args),
-			"/lock-spawn" => self.cmd_lock_spawn(conn_id, &args),
 			other => self.reply(
 				conn_id,
 				AdminReply::UnknownCommand {
@@ -287,14 +281,16 @@ impl Sim {
 				},
 			);
 		}
-		let relocked = self.spawn_store.lock().is_some();
 		self.spawn_store.set_point(eye.to_array());
 		log::info!("admin set spawn to {eye}");
+		// The structure follows the point: the new pad is stamped before
+		// the lock report, and the old site's blocks stay behind as
+		// ordinary, now-unprotected edits.
+		self.stamp_site(eye);
 		self.reply(conn_id, AdminReply::SpawnPointSet { cell: at(eye) });
-		if relocked {
-			// The lock came along: the old cells are editable again.
-			self.reply(conn_id, describe_lock(eye, false));
-		}
+		// The lock came along — protection is always on — so the old
+		// cells are editable again and the new region is announced.
+		self.reply(conn_id, describe_lock(eye, false));
 	}
 
 	/// Set which way players face when they spawn — the point stays
@@ -337,60 +333,6 @@ impl Sim {
 				compass: compass(dir).to_string(),
 			},
 		);
-	}
-
-	/// Show or toggle spawn protection.
-	///
-	/// Turning it on resolves the spawn FIRST and locks around the
-	/// *result*, never around the raw anchor: locking a spawn someone has
-	/// already dug out would freeze a broken one forever, and the "locked
-	/// ⇒ skip the search" fast path would then hand that broken spawn to
-	/// every joiner. If even the search can't find somewhere intact, the
-	/// command refuses rather than pinning a bad answer. A hand-picked
-	/// spawn resolves to itself and locks as-is — see `spawn_valid`.
-	fn cmd_lock_spawn(&mut self, conn_id: u64, args: &[&str]) {
-		let usage = AdminReply::Usage(AdminUsage::LockSpawn);
-		let arg = args.first().map(|s| s.to_ascii_lowercase());
-		if args.len() > 1 {
-			return self.reply(conn_id, usage.clone());
-		}
-		match arg.as_deref() {
-			None => {
-				let state = match (self.spawn_store.lock(), self.spawn_store.point()) {
-					(Some(l), _) => describe_lock(Vec3::from_array(l.eye), true),
-					// Unlocked, but pinned by hand: it stays put, it just
-					// isn't protected from being dug out from under itself.
-					(None, Some(p)) => AdminReply::SpawnSetButUnlocked {
-						cell: at(Vec3::from_array(p)),
-					},
-					(None, None) => AdminReply::SpawnAlreadyUnlocked,
-				};
-				self.reply(conn_id, state);
-			}
-			Some("on") => {
-				if let Some(l) = self.spawn_store.lock() {
-					return self.reply(conn_id, describe_lock(Vec3::from_array(l.eye), true));
-				}
-				let eye = self.spawn_point();
-				if !self.spawn_valid(eye) {
-					return self.reply(conn_id, AdminReply::NoClearSpawnToLock);
-				}
-				self.spawn_store.set_lock(Some(SpawnLock {
-					eye: eye.to_array(),
-				}));
-				log::info!("admin locked spawn at {eye}");
-				self.reply(conn_id, describe_lock(eye, false));
-			}
-			Some("off") => {
-				if self.spawn_store.lock().is_none() {
-					return self.reply(conn_id, AdminReply::SpawnAlreadyUnlocked);
-				}
-				self.spawn_store.set_lock(None);
-				log::info!("admin unlocked spawn");
-				self.reply(conn_id, AdminReply::SpawnUnlocked);
-			}
-			Some(_) => self.reply(conn_id, usage.clone()),
-		}
 	}
 
 	/// Resolve a display name to exactly one live connection, or a

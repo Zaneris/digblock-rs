@@ -60,6 +60,8 @@ pub enum InvId {
 	Family(u8),
 	/// Alchemy: the screen's single TRANSMUTE button.
 	CraftGo,
+	/// Spellbook: one spell row (index into the roster the page built).
+	Spell(u8),
 }
 
 /// Pixel-space rectangle, y-down from the top-left (the overlay's

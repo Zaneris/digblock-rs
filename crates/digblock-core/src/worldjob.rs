@@ -13,6 +13,7 @@
 
 pub mod grass;
 pub mod leaves;
+pub mod wisplight;
 
 use crate::block::BlockType;
 use crate::chunk::{CHUNK_SIZE, cell_id};

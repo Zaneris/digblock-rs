@@ -40,6 +40,12 @@ fn round_trip_all_variants() {
 		ClientMsg::DigCancel,
 		ClientMsg::Chat { text: "hi".into() },
 		ClientMsg::ReturnToSpawn,
+		ClientMsg::Cast(CastKind::Waystone(2)),
+		ClientMsg::Cast(CastKind::Wisp),
+		ClientMsg::Cast(CastKind::Kindle {
+			cell: [1, -2, 3],
+			face: 5,
+		}),
 		ClientMsg::EditRequest {
 			seq: 9,
 			tick: 1250,
@@ -191,6 +197,7 @@ fn round_trip_all_variants() {
 			vel: [0, -1000, 0],
 			yaw: 1234,
 			held: 5,
+			fx: 7,
 		}],
 	});
 	let bytes = codec::encode_datagram(&d).unwrap();
@@ -302,6 +309,7 @@ fn a_full_snapshot_fits_one_datagram() {
 				yaw: u16::MAX,
 				// The widest varint a `held` can encode to.
 				held: u16::MAX,
+				fx: u8::MAX,
 			})
 			.collect(),
 	};
@@ -466,6 +474,7 @@ fn golden_handshake_and_snapshot_encoding() {
 			vel: [0, 0, 0],
 			yaw: 0,
 			held: 4,
+			fx: 0,
 		}],
 	});
 	assert_eq!(
@@ -475,10 +484,11 @@ fn golden_handshake_and_snapshot_encoding() {
 		// self entry, so it sent the full shared struct twice).
 		// Variant tag, server tick, acked tick; then me = Some tag +
 		// pos + vel as le f32s; then the vec length and the remote:
-		// id, pos, its velocity components as zigzag i16, yaw, held.
+		// id, pos, its velocity components as zigzag i16, yaw, held,
+		// and the packed effect byte (appended in v32).
 		vec![
 			1, 6, 5, 1, 0, 0, 128, 63, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-			1, 1, 0, 0, 128, 63, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4
+			1, 1, 0, 0, 128, 63, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0
 		]
 	);
 }
@@ -551,6 +561,44 @@ fn golden_return_spawn_encoding() {
 		vec![
 			10, 0, 0, 128, 63, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 128, 63
 		]
+	);
+}
+
+/// Golden bytes for the v32 cast trio. `Cast` carries a `CastKind`
+/// whose variants ship ahead of their spells, so the tags are part of
+/// the contract from day one — Wisp and Kindle must decode on a server
+/// that refuses them, or their arrival would need a second bump.
+#[test]
+fn golden_cast_encoding() {
+	assert_eq!(
+		postcard::to_stdvec(&ClientMsg::Cast(CastKind::Waystone(2))).unwrap(),
+		// variant tag, kind tag, the SurfaceKind index
+		vec![13, 0, 2]
+	);
+	assert_eq!(
+		postcard::to_stdvec(&ClientMsg::Cast(CastKind::Kindle {
+			cell: [1, -2, 3],
+			face: 5,
+		}))
+		.unwrap(),
+		// variant tag, kind tag, zigzag cell, face
+		vec![13, 2, 2, 3, 6, 5]
+	);
+	assert_eq!(
+		postcard::to_stdvec(&ServerMsg::Waystones {
+			entries: vec![(2, [1.0, 2.0, 3.0])]
+		})
+		.unwrap(),
+		// variant tag, count, kind index, eye as le f32s
+		vec![21, 1, 2, 0, 0, 128, 63, 0, 0, 0, 64, 0, 0, 64, 64]
+	);
+	assert_eq!(
+		postcard::to_stdvec(&ServerMsg::CastRefused {
+			reason: CastRefusal::CantPay
+		})
+		.unwrap(),
+		// variant tag, reason tag
+		vec![22, 1]
 	);
 }
 

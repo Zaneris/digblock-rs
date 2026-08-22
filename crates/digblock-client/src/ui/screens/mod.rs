@@ -5,6 +5,7 @@
 pub mod alchemy;
 pub mod character;
 pub mod inventory;
+pub mod spellbook;
 
 #[cfg(test)]
 mod tests {
@@ -140,6 +141,35 @@ mod tests {
 		);
 		out.push(("character", dl));
 
+		let mut dl = DrawList::default();
+		let mut hits: HitMap<InvId> = HitMap::default();
+		// Past the first rung, so a passed threshold and the next teaser
+		// both draw; a live countdown on the home row for the state text.
+		let mut skills = digblock_core::skills::SkillSet::default();
+		skills.add_xp(
+			digblock_core::skills::Skill::Arcana,
+			digblock_core::skills::total_xp_for(digblock_core::unlock::RETURN_SWIFT_AT + 1),
+		);
+		let mut screen = super::spellbook::SpellScreen::default();
+		screen.open();
+		screen.build(
+			&mut Ui {
+				dl: &mut dl,
+				hits: &mut hits,
+				style,
+			},
+			size,
+			&super::spellbook::SpellView::build(
+				&skills,
+				12,
+				&super::spellbook::all_ports(),
+				&inv,
+				true,
+			),
+			1.0,
+		);
+		out.push(("spellbook", dl));
+
 		out
 	}
 
@@ -157,6 +187,7 @@ mod tests {
 			D::Alchemy => Some("alchemy"),
 			D::Skills => Some("character"),
 			D::Transmute | D::Transmuting => Some("alchemy-transmuting"),
+			D::Spellbook => Some("spellbook"),
 			// Held-item states, not pages: nothing draws a panel.
 			D::Hand | D::Bucket { .. } | D::Tool(_) | D::Torch => None,
 		}
@@ -176,6 +207,7 @@ mod tests {
 			D::Skills,
 			D::Transmute,
 			D::Transmuting,
+			D::Spellbook,
 		] {
 			let name = fixture_of(d).expect("a page maps to a fixture");
 			assert!(drawn.contains(&name), "{name} missing from the sweep");

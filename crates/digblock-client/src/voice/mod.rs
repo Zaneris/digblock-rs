@@ -38,6 +38,18 @@ pub(crate) enum Msg {
 	/// disagree about what stands there.
 	DigRefusedByServer,
 
+	/// A cast channel broken by moving, digging or opening a surface —
+	/// the player did something else, so the spell let go.
+	CastInterrupted,
+	/// A port the server refused as beyond the caster's Arcana. Rare on
+	/// an honest client — the spellbook greys what it can predict.
+	WaystoneLocked,
+	/// A port refused for the fare, before any debit.
+	CastCantPay,
+	/// A kindle with nowhere to land — no aim, or a cell that cannot
+	/// hold conjured light.
+	CastBadTarget,
+
 	// ---- progression ----
 	LevelUp {
 		skill: Skill,

@@ -116,14 +116,14 @@ impl SpawnStore {
 		self.write_if_changed(SpawnConfig { lock, ..self.cfg });
 	}
 
-	/// Hand-pick the spawn. An active lock follows the point — the old
-	/// cells become editable again and the new ones are protected — which
-	/// is what keeps the lock region and the spawn it guards from ever
-	/// describing two different places.
+	/// Hand-pick the spawn. The lock follows the point unconditionally —
+	/// protection is always on, so the old cells become editable again and
+	/// the new ones are protected — which is what keeps the lock region
+	/// and the spawn it guards from ever describing two different places.
 	pub fn set_point(&mut self, eye: [f32; 3]) {
 		self.write_if_changed(SpawnConfig {
 			point: Some(eye),
-			lock: self.cfg.lock.map(|_| SpawnLock { eye }),
+			lock: Some(SpawnLock { eye }),
 			..self.cfg
 		});
 	}
@@ -210,10 +210,11 @@ mod tests {
 		let _ = std::fs::remove_dir_all(&d);
 	}
 
-	/// Setting the spawn under an active lock moves the lock with it —
-	/// the old cells are released, the new ones protected.
+	/// Setting the spawn carries the lock with it unconditionally —
+	/// protection is always on, so the old cells are released, the new
+	/// ones protected, and a store that somehow had no lock gains one.
 	#[test]
-	fn setting_the_point_moves_an_active_lock() {
+	fn setting_the_point_always_carries_the_lock() {
 		let d = tmpdir("movelock");
 		let old = [0.5, 130.5, 0.5];
 		let new = [64.5, 140.5, 64.5];
@@ -221,10 +222,10 @@ mod tests {
 		s.set_lock(Some(SpawnLock { eye: old }));
 		s.set_point(new);
 		assert_eq!(s.lock(), Some(SpawnLock { eye: new }));
-		// ...and an inactive lock stays inactive.
+		// ...and even with no standing lock, a set re-establishes one.
 		s.set_lock(None);
 		s.set_point(old);
-		assert_eq!(s.lock(), None);
+		assert_eq!(s.lock(), Some(SpawnLock { eye: old }));
 		let _ = std::fs::remove_dir_all(&d);
 	}
 

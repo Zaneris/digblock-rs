@@ -112,6 +112,7 @@ impl Engine {
 				inv_screen: Default::default(),
 				alch_screen: Default::default(),
 				char_screen: Default::default(),
+				spellbook: Default::default(),
 				menu,
 				chat: crate::chat::Chat::default(),
 				overlay_visible,
@@ -133,8 +134,22 @@ impl Engine {
 				confetti: Vec::new(),
 				confetti_seq: 0,
 				siphon: None,
+				casts: Vec::new(),
+				cast_seq: 0,
+				channel_env: 0.0,
+				flash: 0.0,
+				// The startup world marks its spawn too: the marker is the
+				// pad's identity, and captures photograph it here.
+				marker_sites: vec![Vec3::new(
+					spawn.x,
+					spawn.y - digblock_core::player::EYE_TO_FEET,
+					spawn.z,
+				)],
+				fx_scratch: Vec::new(),
+				marker_scratch: Vec::new(),
 				view_bob: crate::viewmodel::Bob::default(),
 				view_swing: crate::viewmodel::Swing::default(),
+				view_cast: crate::viewmodel::Cast::default(),
 				view_swap: crate::viewmodel::Swap::default(),
 				xp_toasts: Vec::new(),
 				nametag_scratch: Vec::new(),
@@ -154,6 +169,7 @@ impl Engine {
 				world_store: None,
 				in_local_save: false,
 				player_save_accum: 0.0,
+				offline_waystones: std::collections::HashMap::new(),
 				spawn_pos: spawn,
 				spawn_cooldown: 0.0,
 				return_spawn_requested: false,
@@ -239,10 +255,18 @@ impl Engine {
 			refused_cell: None,
 			drawn_cell: None,
 			dig: None,
+			cast: None,
+			arc_on: false,
+			wisp_left: 0.0,
 			dig_accum: 0.0,
 			target: None,
 			inventory: Inventory::default(),
 			hotbar: Hotbar::new(),
+			// The startup world is ephemeral (a backdrop, or a capture
+			// scene) — no arrival lock; entering a NAMED save or a server
+			// world replaces this per `world_session`.
+			protected: Vec::new(),
+			pending_stamp: Vec::new(),
 			fluid: digblock_core::fluid::FluidSim::new(),
 			world_jobs: digblock_core::worldjob::Scheduler::new(),
 			flow_accum: 0.0,
@@ -255,6 +279,7 @@ impl Engine {
 				pending_ack: None,
 				correction_offset: Vec3::ZERO,
 				tick_lerp: crate::smoothing::TickLerp::new(spawn),
+				waystones: Vec::new(),
 				net_corrections: 0,
 				net_error_accum: 0.0,
 				net_log_timer: 0.0,
@@ -446,6 +471,19 @@ impl Engine {
 					engine.skills.add_xp(Skill::Alchemy, 30_000);
 					engine.ui.char_screen.open();
 				}
+				DebugScreen::Spellbook => {
+					// Past the first rung, so a passed threshold and the
+					// next teaser both photograph. XP derived from the
+					// rung it must pass, never a magic total.
+					use digblock_core::skills::Skill;
+					engine.skills.add_xp(
+						Skill::Arcana,
+						digblock_core::skills::total_xp_for(
+							digblock_core::unlock::RETURN_SWIFT_AT + 1,
+						),
+					);
+					engine.ui.spellbook.open();
+				}
 			}
 		}
 		// ONE sync, after every scene has had its say. The pipeline stamps nodes
@@ -467,6 +505,9 @@ impl Engine {
 			engine.register_world_job(job);
 		}
 		for job in digblock_core::worldjob::leaves::jobs() {
+			engine.register_world_job(job);
+		}
+		for job in digblock_core::worldjob::wisplight::jobs() {
 			engine.register_world_job(job);
 		}
 		engine

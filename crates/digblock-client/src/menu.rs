@@ -270,7 +270,9 @@ enum Act {
 	/// save and go back to the locked title menu (engine drains
 	/// [`Menu::take_leave_world`]).
 	LeaveWorld,
-	ReturnSpawn,
+	/// Close the menu and open the spellbook screen (engine drains
+	/// [`Menu::take_spellbook`]).
+	OpenSpellbook,
 	/// Close the menu and open the inventory screen (engine drains
 	/// [`Menu::take_inventory`]).
 	OpenInventory,
@@ -371,15 +373,12 @@ pub(crate) struct Menu {
 	connected: bool,
 	/// The player has entered the world at least once (picked Play Local
 	/// or completed a join). Until then there is no game to go back to:
-	/// Return to Spawn is hidden and Escape can't dismiss the menu.
+	/// the in-game rows are hidden and Escape can't dismiss the menu.
 	entered_world: bool,
-	/// Engine-maintained: seconds left on the return-to-spawn cooldown
-	/// (0 = ready). On cooldown the row renders dim with the countdown.
-	spawn_cooldown_secs: u32,
 	pending_cmds: Vec<MenuCommand>,
 	wants_disconnect: bool,
 	wants_leave_world: bool,
-	wants_return_spawn: bool,
+	wants_spellbook: bool,
 	wants_inventory: bool,
 	wants_alchemy: bool,
 	wants_character: bool,
@@ -421,11 +420,10 @@ impl Menu {
 			account,
 			connected: false,
 			entered_world: false,
-			spawn_cooldown_secs: 0,
 			pending_cmds: Vec::new(),
 			wants_disconnect: false,
 			wants_leave_world: false,
-			wants_return_spawn: false,
+			wants_spellbook: false,
 			wants_inventory: false,
 			wants_alchemy: false,
 			wants_character: false,
@@ -548,11 +546,6 @@ impl Menu {
 		self.entered_world |= connected;
 	}
 
-	/// Seconds left on the return-to-spawn cooldown (0 = ready).
-	pub(crate) fn set_spawn_cooldown(&mut self, secs: u32) {
-		self.spawn_cooldown_secs = secs;
-	}
-
 	pub(crate) fn take_commands(&mut self) -> Vec<MenuCommand> {
 		std::mem::take(&mut self.pending_cmds)
 	}
@@ -567,8 +560,9 @@ impl Menu {
 		std::mem::take(&mut self.wants_leave_world)
 	}
 
-	pub(crate) fn take_return_spawn(&mut self) -> bool {
-		std::mem::take(&mut self.wants_return_spawn)
+	/// The Spellbook row was picked: the engine opens the screen.
+	pub(crate) fn take_spellbook(&mut self) -> bool {
+		std::mem::take(&mut self.wants_spellbook)
 	}
 
 	/// The Inventory row was picked: the engine opens the screen.
@@ -1258,8 +1252,8 @@ impl Menu {
 				self.wants_leave_world = true;
 				self.screen = None;
 			}
-			Act::ReturnSpawn => {
-				self.wants_return_spawn = true;
+			Act::OpenSpellbook => {
+				self.wants_spellbook = true;
 				self.screen = None;
 			}
 			Act::OpenInventory => {
@@ -1408,10 +1402,7 @@ impl Menu {
 				// now goes through Leave.
 				if self.entered_world {
 					acts.push((RowId::RootItem(0), Act::CloseMenu));
-					// On cooldown the row renders dim and is not an act.
-					if self.spawn_cooldown_secs == 0 {
-						acts.push((RowId::RootItem(3), Act::ReturnSpawn));
-					}
+					acts.push((RowId::RootItem(3), Act::OpenSpellbook));
 					acts.push((RowId::RootItem(6), Act::OpenInventory));
 					acts.push((RowId::RootItem(7), Act::OpenAlchemy));
 					acts.push((RowId::RootItem(9), Act::OpenCharacter));

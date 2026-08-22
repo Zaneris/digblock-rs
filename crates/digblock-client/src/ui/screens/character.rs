@@ -73,6 +73,7 @@ fn teasers(skill: Skill) -> Vec<(u32, &'static str)> {
 	match skill {
 		Skill::Mining => mining_teasers(),
 		Skill::Alchemy => alch_teasers(),
+		Skill::Arcana => arcana_teasers(),
 	}
 }
 
@@ -154,6 +155,42 @@ fn alch_teasers() -> Vec<(u32, &'static str)> {
 		),
 		(item_at(B::MastersSigil), "the master's sigil"),
 	]
+}
+
+/// Arcana's: the waystones humming into reach, with the travel rungs
+/// between them — the ports are the spine, the way Mining's reveals are.
+fn arcana_teasers() -> Vec<(u32, &'static str)> {
+	use digblock_core::worldgen::SurfaceKind as K;
+	vec![
+		(port_at(K::Plains), "the plains waystone hums into reach"),
+		(unlock::KINDLE_AT, "kindle — conjured light in the world"),
+		(port_at(K::Forest), "the forest waystone"),
+		(
+			unlock::RETURN_SWIFT_AT,
+			"swift return — home comes back sooner",
+		),
+		(port_at(K::Savanna), "the savanna waystone"),
+		(
+			unlock::ARC_AT,
+			"the mason's arc — one placement lays a line of three",
+		),
+		(unlock::CHANNEL_QUICK_AT, "every channel quickens"),
+		(port_at(K::Taiga), "the taiga waystone"),
+		(
+			unlock::WISP_BRIGHT_AT,
+			"the wisp burns brighter, and longer",
+		),
+		(port_at(K::Beach), "the shore waystone"),
+		(unlock::ARC_WIDE_AT, "the arc reaches five"),
+		(port_at(K::Mountain), "the mountain waystone"),
+		(unlock::KINDLE_CHEAP_AT, "kindle costs less"),
+		(unlock::RETURN_SWIFTER_AT, "swifter return"),
+		(port_at(K::Snow), "the far cold waystone — the last port"),
+	]
+}
+
+fn port_at(kind: digblock_core::worldgen::SurfaceKind) -> u32 {
+	unlock::waystone(kind).expect("a laddered kind has a port level")
 }
 
 // The three `Option` levels, with the case that cannot happen stated: an
@@ -406,7 +443,9 @@ mod tests {
 		skills.set_total(Skill::Mining, skills::total_xp_for(AT));
 		let all = texts(&emit(&skills)).join("\n");
 		let need = skills::total_xp_for(AT + 1) - skills::total_xp_for(AT);
-		let total_level = AT + skills.level(Skill::Alchemy);
+		// Summed over the roster, not written as arithmetic — a new skill
+		// must move this total without anyone revisiting the test.
+		let total_level: u32 = Skill::ALL.iter().map(|&s| skills.level(s)).sum();
 		for want in [
 			group(0),
 			group(need),

@@ -35,7 +35,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 const MAGIC: [u8; 4] = *b"DBI1";
-const VERSION: u16 = 8;
+const VERSION: u16 = 9;
 
 /// The version from which the bucket is a CRAFTED tool (SKILLS-DESIGN
 /// §13.5). Every record below it was written when the bucket was owned by
@@ -176,6 +176,11 @@ pub struct PlayerRecord {
 	/// inventories intact — existing players keep their stuff and start the
 	/// skill system at the bottom like everyone else.
 	pub skills: SkillSet,
+	/// Waystones this account has ARRIVED at, as `SurfaceKind` indices —
+	/// the once-per-account first-arrival milestone's memory. Pre-v9
+	/// records read as empty: the milestone re-pays at most once, which
+	/// is the forgiving direction.
+	pub visited_waystones: Vec<u8>,
 }
 
 impl PlayerRecord {
@@ -198,12 +203,19 @@ impl PlayerRecord {
 		inventory.merge_from(&old.inventory);
 		let mut skills = self.skills.clone();
 		skills.merge_from(&old.skills);
+		let mut visited_waystones = self.visited_waystones.clone();
+		for w in &old.visited_waystones {
+			if !visited_waystones.contains(w) {
+				visited_waystones.push(*w);
+			}
+		}
 		Self {
 			inventory,
 			layout: self.layout.clone().or_else(|| old.layout.clone()),
 			pos: self.pos.or(old.pos),
 			last_return_tick: self.last_return_tick.or(old.last_return_tick),
 			skills,
+			visited_waystones,
 		}
 	}
 }
@@ -494,6 +506,11 @@ fn write_record(
 		buf.push(*skill);
 		buf.extend_from_slice(&total.to_le_bytes());
 	}
+	// v9: visited waystones — u8 count, then the kind indices.
+	buf.push(rec.visited_waystones.len().min(u8::MAX as usize) as u8);
+	for w in rec.visited_waystones.iter().take(u8::MAX as usize) {
+		buf.push(*w);
+	}
 }
 
 /// Atomic whole-file replace: tmp + fsync + rename.
@@ -782,6 +799,16 @@ fn read_record(
 	} else {
 		SkillSet::default()
 	};
+	// v1-v8 records read as never-arrived; the milestone forgives once.
+	let visited_waystones = if version >= 9 {
+		let mut n = [0u8; 1];
+		r.read_exact(&mut n).map_err(|_| bad("short record"))?;
+		let mut v = vec![0u8; n[0] as usize];
+		r.read_exact(&mut v).map_err(|_| bad("short record"))?;
+		v
+	} else {
+		Vec::new()
+	};
 	let mut inventory = Inventory::from_wire(&pairs);
 	if version < FIRST_CRAFTED_BUCKET_VERSION {
 		inventory.add(digblock_core::block::BlockType::Bucket, 1);
@@ -797,6 +824,7 @@ fn read_record(
 			pos,
 			last_return_tick,
 			skills,
+			visited_waystones,
 		},
 	))
 }

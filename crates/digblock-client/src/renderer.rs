@@ -322,6 +322,12 @@ pub(crate) struct Renderer {
 	/// The Essence Siphon's draw — motes off a vein's face, streaming into
 	/// the tool. Fed per-frame by the engine, which owns the envelope.
 	siphon: crate::siphon::Siphon,
+	/// Teleport light: cast channel, departure and arrival — fed
+	/// per-frame by the engine, which owns the ages and the envelope.
+	teleport: crate::teleport::Teleport,
+	/// The standing spirals over arrival pads, culled and packed by the
+	/// engine each frame.
+	waystone_fx: crate::waystone_fx::WaystoneFx,
 	/// Remote-player boxes (multiplayer), fed per-frame by the engine.
 	players: crate::players::RemotePlayersDraw,
 	/// Target-block outline + dig-crack decal (scene pass).

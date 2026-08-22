@@ -79,14 +79,22 @@ impl Engine {
 	/// A world with no overlay (an unsaved session) has no recorded edits
 	/// to reason about, so the anchor stands; `ascend_clear` still steps
 	/// over anything built there this session.
-	pub(super) fn local_spawn(&self) -> Vec3 {
-		let resolved = match self.pipeline.overlay() {
+	/// The offline spawn as resolved against the save's edits — the eye
+	/// the arrival lock centres on. Split from [`Self::local_spawn`]
+	/// because the lock must anchor on the PAD, before the landing rule
+	/// steps over any residual obstruction.
+	pub(super) fn local_spawn_resolved(&self) -> Vec3 {
+		match self.pipeline.overlay() {
 			Some(o) => digblock_core::spawn::resolve(self.save.spawn_pos, self.seed, &|x, y, z| {
 				o.column(x.div_euclid(16), z.div_euclid(16))
 					.and_then(|cells| cells.get(&(x, y, z)).copied())
 			}),
 			None => self.save.spawn_pos,
-		};
+		}
+	}
+
+	pub(super) fn local_spawn(&self) -> Vec3 {
+		let resolved = self.local_spawn_resolved();
 		let pipeline = &self.pipeline;
 		digblock_core::player::ascend_clear(resolved, &|x, y, z| pipeline.cell_at(x, y, z))
 	}
@@ -178,10 +186,11 @@ impl Engine {
 	}
 
 	pub(super) fn diggable(&self, hit: &RayHit) -> bool {
-		// Permanently protected cells never start a hold. Only the world
-		// floor is knowable client-side — a server's spawn lock is its own
-		// secret, so a cell it has already refused is remembered instead.
-		if digblock_core::protect::immutable(hit.cell.0, hit.cell.1, hit.cell.2, None)
+		// Permanently protected cells never start a hold: the world floor
+		// everywhere, plus the offline arrival regions. A SERVER's regions
+		// are its own secret, so a cell it has already refused is
+		// remembered instead.
+		if digblock_core::protect::immutable(hit.cell.0, hit.cell.1, hit.cell.2, &self.protected)
 			|| self.refused_cell == Some(hit.cell)
 		{
 			return false;
@@ -223,6 +232,260 @@ impl Engine {
 		self.input.safe_area = insets;
 	}
 
+	/// Begin a cast channel. The home spell on cooldown opens the
+	/// spellbook instead — the countdown is visible there, and a silent
+	/// no-op reads as a broken key.
+	pub(super) fn start_cast(&mut self, target: CastTarget) {
+		if self.cast.is_some() {
+			return;
+		}
+		if target == CastTarget::Home && self.save.spawn_cooldown > 0.0 {
+			self.input.keys = HeldKeys::default();
+			self.input.dig_held = false;
+			self.ui.spellbook.open();
+			return;
+		}
+		self.cast = Some(CastState { target, ticks: 0 });
+		self.emit(crate::audio::AudioCmd::LoopStart {
+			id: crate::audio::LOOP_CAST,
+			sound: crate::audio::Sfx::CastLoop,
+			pos: None,
+			gain: 0.45,
+		});
+	}
+
+	/// One fixed-rate step of the cast channel. A channel is STILLNESS:
+	/// any movement intent, a dig hold, or a surface opening resets it
+	/// outright — the decay mold is a dig's, deliberately not borrowed.
+	pub(super) fn step_cast(&mut self) {
+		if self.cast.is_none() {
+			return;
+		}
+		let keys = &self.input.keys;
+		let moving = keys.w
+			|| keys.a || keys.s
+			|| keys.d || keys.up
+			|| keys.down
+			|| self.input.touch.move_axis() != glam::Vec2::ZERO;
+		let surface = self.ui.menu.is_open()
+			|| self.ui.inv_screen.is_open()
+			|| self.ui.alch_screen.is_open()
+			|| self.ui.char_screen.is_open()
+			|| self.ui.spellbook.is_open()
+			|| self.ui.chat.is_open();
+		if moving || surface || self.dig_active() {
+			self.cast = None;
+			self.emit(crate::audio::AudioCmd::LoopStop {
+				id: crate::audio::LOOP_CAST,
+			});
+			self.push_feed(Msg::CastInterrupted);
+			return;
+		}
+		let need = digblock_core::unlock::channel_ticks(
+			self.skills.level(digblock_core::skills::Skill::Arcana),
+		);
+		let done = {
+			let cast = self.cast.as_mut().expect("checked above");
+			cast.ticks += 1;
+			(cast.ticks >= need).then_some(cast.target)
+		};
+		if let Some(target) = done {
+			self.cast = None;
+			self.emit(crate::audio::AudioCmd::LoopStop {
+				id: crate::audio::LOOP_CAST,
+			});
+			self.complete_cast(target);
+		}
+	}
+
+	/// The ports this world offers: online, exactly the sites its server
+	/// RESOLVED (a port to nowhere must not exist); offline, the whole
+	/// ladder — a kind this seed never generated refuses at the cast.
+	pub(super) fn known_ports(&self) -> Vec<crate::ui::screens::spellbook::Port> {
+		let all = crate::ui::screens::spellbook::all_ports();
+		if self.session.client.is_some() {
+			all.into_iter()
+				.filter(|p| self.session.waystones.iter().any(|&(i, _)| i == p.idx))
+				.collect()
+		} else {
+			all
+		}
+	}
+
+	/// The offline arm of a waystone cast: the same tables the server
+	/// validates with, the same debit, and the site materializes on first
+	/// visit — stamped, protected and marked, what a server world did at
+	/// boot. The first cast to a kind pays the anchor walk (a pure ring
+	/// search), cached for the session. No first-arrival milestone
+	/// offline: that award is once per ACCOUNT, and accounts are a
+	/// multiplayer concept — a per-save copy would re-pay every save.
+	fn cast_waystone_offline(&mut self, idx: u8) {
+		use digblock_core::skills::Skill;
+		use digblock_core::worldgen::SurfaceKind;
+		let Some(&kind) = SurfaceKind::ALL.get(idx as usize) else {
+			return;
+		};
+		let Some(level) = digblock_core::unlock::waystone(kind) else {
+			return;
+		};
+		if self.skills.level(Skill::Arcana) < level {
+			self.push_feed(Msg::WaystoneLocked);
+			return;
+		}
+		let eye = match self.save.offline_waystones.get(&idx).copied() {
+			Some(cached) => cached,
+			None => {
+				let found = digblock_core::waystones::anchor(kind, self.seed);
+				self.save.offline_waystones.insert(idx, found);
+				found
+			}
+		};
+		let Some(eye) = eye else {
+			// This seed never made such a place — a port to nowhere.
+			self.push_feed(Msg::WaystoneLocked);
+			return;
+		};
+		let (essence, fare) =
+			digblock_core::alchemy::cast_price(kind).expect("a laddered kind has a fare");
+		if !self.inventory.try_take_sub(essence, fare) {
+			self.push_feed(Msg::CastCantPay);
+			return;
+		}
+		let region = digblock_core::spawn::lock_region(eye);
+		if !self.protected.contains(&region) {
+			self.protected.push(region);
+			self.pending_stamp
+				.extend(digblock_core::waystones::stamp(eye));
+			self.vfx.marker_sites.push(Vec3::new(
+				eye.x,
+				eye.y - digblock_core::player::EYE_TO_FEET,
+				eye.z,
+			));
+		}
+		self.apply_teleport(eye, Vec3::ZERO);
+		// Offline arm ONLY — the shared path never awards.
+		self.award_xp_offline(Skill::Arcana, digblock_core::skills::cast_xp(fare));
+	}
+
+	/// A completed channel fires its spell. The teleport that answers —
+	/// this frame offline, a round trip later online — is what words the
+	/// arrival, via `spawn_return_pending`.
+	fn complete_cast(&mut self, target: CastTarget) {
+		use digblock_core::skills::Skill;
+		match target {
+			CastTarget::Home => {
+				self.save.spawn_cooldown =
+					digblock_core::unlock::return_cooldown_secs(self.skills.level(Skill::Arcana))
+						as f32;
+				self.save.spawn_return_pending = true;
+				match self.session.client.as_mut() {
+					Some(net) if net.ready() => net.send_return_to_spawn(),
+					_ => {
+						// Same rule the server runs: relocate sideways out
+						// of anything dug into the spawn, never descend
+						// into it. The overlay — not `pipeline.cell_at` —
+						// is the edit view: the pipeline answers None for
+						// unloaded columns, which the support test would
+						// read as void.
+						let from = self.player.pos;
+						let pos = self.local_spawn();
+						self.apply_teleport(pos, Vec3::ZERO);
+						// The offline award arm ONLY — the shared path
+						// never awards, or multiplayer double-pays.
+						self.award_xp_offline(
+							Skill::Arcana,
+							digblock_core::skills::home_xp(from.distance(pos)),
+						);
+					}
+				}
+			}
+			CastTarget::Waystone(idx) => match self.session.client.as_mut() {
+				// The server validates the two real gates — the unlock
+				// and the fare — and answers Teleported or CastRefused.
+				Some(net) if net.ready() => {
+					net.send_cast(digblock_net::messages::CastKind::Waystone(idx));
+				}
+				_ => self.cast_waystone_offline(idx),
+			},
+			CastTarget::Wisp => {
+				let (essence, fare) = digblock_core::alchemy::wisp_price();
+				match self.session.client.as_mut() {
+					Some(net) if net.ready() => {
+						// Predicted: the light shows now, the debit rides
+						// the rebase, and a CastRefused puts it out.
+						net.send_cast(digblock_net::messages::CastKind::Wisp);
+						self.wisp_left =
+							digblock_core::unlock::wisp_secs(self.skills.level(Skill::Arcana))
+								as f32;
+					}
+					_ => {
+						if !self.inventory.try_take_sub(essence, fare) {
+							self.push_feed(Msg::CastCantPay);
+							return;
+						}
+						self.wisp_left =
+							digblock_core::unlock::wisp_secs(self.skills.level(Skill::Arcana))
+								as f32;
+						self.award_xp_offline(Skill::Arcana, digblock_core::skills::cast_xp(fare));
+					}
+				}
+			}
+			CastTarget::Kindle => {
+				// The air cell just off the aimed face — resolved at
+				// COMPLETION, so the caster aims through the channel.
+				let Some(hit) = self.target else {
+					self.push_feed(Msg::CastBadTarget);
+					return;
+				};
+				let cell = (
+					hit.cell.0 + hit.normal.0,
+					hit.cell.1 + hit.normal.1,
+					hit.cell.2 + hit.normal.2,
+				);
+				match self.session.client.as_mut() {
+					Some(net) if net.ready() => {
+						net.send_cast(digblock_net::messages::CastKind::Kindle {
+							cell: [cell.0, cell.1, cell.2],
+							face: 0,
+						});
+					}
+					_ => self.cast_kindle_offline(cell),
+				}
+			}
+		}
+	}
+
+	/// The offline arm of conjured light: the same rung, target and fare
+	/// rules the server runs, applied through the pipeline. The wisplight
+	/// sweep both arms register is the whole expiry.
+	fn cast_kindle_offline(&mut self, cell: (i32, i32, i32)) {
+		use digblock_core::skills::Skill;
+		let level = self.skills.level(Skill::Arcana);
+		if level < digblock_core::unlock::KINDLE_AT {
+			self.push_feed(Msg::WaystoneLocked);
+			return;
+		}
+		if digblock_core::protect::immutable(cell.0, cell.1, cell.2, &self.protected)
+			|| self.pipeline.cell_at(cell.0, cell.1, cell.2)
+				!= Some(digblock_core::block::BlockType::Air as u16)
+		{
+			self.push_feed(Msg::CastBadTarget);
+			return;
+		}
+		let (essence, fare) = digblock_core::alchemy::kindle_price(level);
+		if !self.inventory.try_take_sub(essence, fare) {
+			self.push_feed(Msg::CastCantPay);
+			return;
+		}
+		self.pipeline.set_cell(
+			cell.0,
+			cell.1,
+			cell.2,
+			digblock_core::block::BlockType::Wisplight as u16,
+		);
+		self.award_xp_offline(Skill::Arcana, digblock_core::skills::cast_xp(fare));
+	}
+
 	/// Mouse hold or touch hold — the one question the dig machinery asks.
 	/// Touch is deliberately NOT folded into `dig_held`: that flag is
 	/// force-cleared at many sites (screen opens, focus loss, slot swaps)
@@ -255,7 +518,7 @@ impl Engine {
 		// `DigRefused` instead. The latch keeps each refusal to one feed
 		// line per aim, same as the server path.
 		if let Some((cell, msg)) = self.target.and_then(|h| {
-			if digblock_core::protect::immutable(h.cell.0, h.cell.1, h.cell.2, None) {
+			if digblock_core::protect::immutable(h.cell.0, h.cell.1, h.cell.2, &self.protected) {
 				Some((h.cell, Msg::DigProtected))
 			} else if self.node_dig_mode(h.cell)
 				== digblock_core::worldgen::nodes::DigMode::NeedsSiphon
@@ -728,6 +991,40 @@ impl Engine {
 		// (identical to the server's InsidePlayer scan). Doors check
 		// both halves.
 		let mut placements = vec![(target, placed_cell)];
+		// The Mason's Arc: with the stance on and the rank earned, a
+		// plain block extends into the full line along the face normal —
+		// ALL OR NOTHING (both ends must derive one set), falling back to
+		// the ordinary single place when the line does not fit. Slabs,
+		// doors and water keep their own machinery, un-multiplied.
+		let mut arc_len = 1u32;
+		if self.arc_on && !grow && !block.is_door() && !block.is_slab() && block != BlockType::Water
+		{
+			let n = digblock_core::unlock::arc_cells(
+				self.skills.level(digblock_core::skills::Skill::Arcana),
+			);
+			if n > 1 {
+				let mut line = Vec::new();
+				for i in 2..=n as i32 {
+					let c = (
+						hit.cell.0 + hit.normal.0 * i,
+						hit.cell.1 + hit.normal.1 * i,
+						hit.cell.2 + hit.normal.2 * i,
+					);
+					if !self.cell_is_replaceable(c)
+						|| digblock_core::protect::immutable(c.0, c.1, c.2, &self.protected)
+						|| digblock_core::player::placement_blocked(self.body_pos(), c, placed_cell)
+					{
+						line.clear();
+						break;
+					}
+					line.push((c, placed_cell));
+				}
+				if line.len() == n - 1 {
+					arc_len = n as u32;
+					placements.extend(line);
+				}
+			}
+		}
 		if block.is_door() {
 			let upper = (target.0, target.1 + 1, target.2);
 			// The upper cell, same rule (mirrors the server's gate).
@@ -746,11 +1043,11 @@ impl Engine {
 		// thing between a place and the world floor was
 		// `cell_is_replaceable`, which asks about block IDENTITY, and the
 		// floor rule is the one rule that must never depend on what
-		// happens to be standing there. Only the floor is knowable
-		// client-side; a spawn lock arrives as a rejection instead.
+		// happens to be standing there. Offline the arrival regions ride
+		// along; a SERVER's regions arrive as a rejection instead.
 		if placements
 			.iter()
-			.any(|&(c, _)| digblock_core::protect::immutable(c.0, c.1, c.2, None))
+			.any(|&(c, _)| digblock_core::protect::immutable(c.0, c.1, c.2, &self.protected))
 		{
 			self.push_feed(Msg::PlaceProtected);
 			return;
@@ -762,8 +1059,8 @@ impl Engine {
 			return;
 		}
 		// Stock gate BEFORE the world mutation: no stock, no prediction.
-		// One debit covers a door's two cells.
-		if !self.inventory.try_take(block, 1) {
+		// One debit covers a door's two cells; an arc costs its length.
+		if !self.inventory.try_take(block, arc_len) {
 			return;
 		}
 		let mut entries = Vec::new();
@@ -771,7 +1068,7 @@ impl Engine {
 			match self.pipeline.set_cell(c.0, c.1, c.2, v) {
 				Some(prev) => entries.push((c, prev, v)),
 				None if entries.is_empty() => {
-					self.inventory.add(block, 1); // refund: nothing happened
+					self.inventory.add(block, arc_len); // refund: nothing happened
 					return;
 				}
 				None => {}
@@ -791,7 +1088,9 @@ impl Engine {
 		match self.session.client.as_mut() {
 			Some(net) if net.ready() => {
 				let tick = net.predictor.current_tick();
-				let seq = net.edits.begin_multi(&entries, tick, Some((block, -1)));
+				let seq = net
+					.edits
+					.begin_multi(&entries, tick, Some((block, -(arc_len as i32))));
 				// Slabs always travel as the canonical state-0 cell: the
 				// server derives the grow AND the anchor from the normal
 				// it verified, so neither is a state a client can assert.
@@ -800,12 +1099,17 @@ impl Engine {
 				} else {
 					placed_cell
 				};
+				let kind = if arc_len > 1 {
+					digblock_net::messages::EditKind::PlaceArc { block: wire_cell }
+				} else {
+					digblock_net::messages::EditKind::Place { block: wire_cell }
+				};
 				net.send_edit(
 					seq,
 					tick,
 					origin,
 					dir,
-					digblock_net::messages::EditKind::Place { block: wire_cell },
+					kind,
 					hit.cell,
 					hit.normal,
 					self.hotbar.selected_index() as u8,
@@ -823,7 +1127,8 @@ impl Engine {
 				// has a companion write to unwind.
 				for &(c, _, v) in &entries {
 					let below = (c.0, c.1 - 1, c.2);
-					if digblock_core::protect::immutable(below.0, below.1, below.2, None) {
+					if digblock_core::protect::immutable(below.0, below.1, below.2, &self.protected)
+					{
 						continue;
 					}
 					let Some(dirt) = self
@@ -866,7 +1171,7 @@ impl Engine {
 		// with only its upper cell reachable.
 		if entries
 			.iter()
-			.any(|&(c, _, _)| digblock_core::protect::immutable(c.0, c.1, c.2, None))
+			.any(|&(c, _, _)| digblock_core::protect::immutable(c.0, c.1, c.2, &self.protected))
 		{
 			return;
 		}

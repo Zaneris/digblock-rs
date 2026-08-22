@@ -360,6 +360,9 @@ pub(crate) fn dig_hold(
 			}
 			Skill::Alchemy if req.level > 1 => sim.bench_set_alchemy_level(conn_id, req.level),
 			Skill::Alchemy => {}
+			// No dig requirement keys on Arcana — casting moves players
+			// and light, never a dig gate.
+			Skill::Arcana => {}
 		}
 	}
 	let permille = digblock_core::skills::dig_speed_permille(hit.block.dig_family(), level);

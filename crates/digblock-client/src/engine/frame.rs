@@ -35,6 +35,15 @@ impl Engine {
 				.and_then(crate::ui::hud::icon_block),
 			self.skills.level(digblock_core::skills::Skill::Mining),
 		);
+		// The wisp: a second light on the same body while it burns.
+		if self.wisp_left > 0.0 {
+			let (level, whitened) = digblock_core::unlock::wisp_light(
+				self.skills.level(digblock_core::skills::Skill::Arcana),
+			);
+			self.vfx
+				.carried
+				.push_wisp(carried::CARRIER_WISP, self.camera.pos, level, whitened);
+		}
 		if let Some(net) = self.session.client.as_ref() {
 			net.remotes.sample(&mut self.vfx.remote_scratch);
 			for i in 0..self.vfx.remote_scratch.len() {
@@ -49,6 +58,7 @@ impl Engine {
 						pos: d.pos,
 						yaw: d.yaw,
 						held: d.held,
+						fx: d.fx,
 					},
 				);
 			}
@@ -77,6 +87,7 @@ impl Engine {
 					pos: p,
 					yaw,
 					held,
+					fx: 0,
 				},
 			);
 		}
@@ -198,6 +209,8 @@ impl Engine {
 				&self.input.tool_swap,
 			);
 			let owned_tools = self.owned_tools();
+			// Hoisted before the DrawList borrow: `known_ports` reads self.
+			let ports = self.ui.spellbook.is_open().then(|| self.known_ports());
 			let mut ui = crate::ui::Ui {
 				dl: &mut self.ui.ui_dl,
 				hits: &mut self.ui.ui_hits,
@@ -218,6 +231,15 @@ impl Engine {
 					self.camera.pos.y.floor() as i32,
 				);
 				self.ui.char_screen.build(&mut ui, size, &view, daylight);
+			} else if self.ui.spellbook.is_open() {
+				let view = crate::ui::screens::spellbook::SpellView::build(
+					&self.skills,
+					self.save.spawn_cooldown.ceil() as u32,
+					ports.as_deref().unwrap_or(&[]),
+					&self.inventory,
+					self.arc_on,
+				);
+				self.ui.spellbook.build(&mut ui, size, &view, daylight);
 			} else {
 				crate::ui::hud::crosshair(ui.dl, size, ui.style.scale);
 			}
@@ -225,6 +247,18 @@ impl Engine {
 				crate::ui::InvId::Bar(i as u8)
 			});
 			crate::ui::hud::xp_toasts(ui.dl, &ui.style, size, &self.vfx.xp_toasts);
+			// The teleport instant's wash: one full-rect quad over the
+			// whole overlay, gone in under half a second. Ghost is the
+			// topmost layer, which is the point — arrival paints across
+			// everything for one beat.
+			if self.vfx.flash > 0.0 {
+				let a = ((self.vfx.flash * 0.5).min(1.0) * 255.0) as u32;
+				ui.dl.quad(
+					crate::ui::draw::Layer::Ghost,
+					crate::ui::Rect::new(0.0, 0.0, size.0 as f32, size.1 as f32),
+					(a << 24) | 0x00FF_FFFF,
+				);
+			}
 			// The background bench's tell: only while a job runs with the
 			// screen CLOSED — open, the screen's own progress row is the
 			// richer version of the same fact.
@@ -250,7 +284,8 @@ impl Engine {
 			if self.config.touch_hud {
 				let screen_open = self.ui.inv_screen.is_open()
 					|| self.ui.alch_screen.is_open()
-					|| self.ui.char_screen.is_open();
+					|| self.ui.char_screen.is_open()
+					|| self.ui.spellbook.is_open();
 				crate::ui::hud::touch_buttons(
 					ui.dl,
 					ui.style.scale,
@@ -288,7 +323,8 @@ impl Engine {
 		let viewmodel = (in_game
 			&& !self.ui.inv_screen.is_open()
 			&& !self.ui.alch_screen.is_open()
-			&& !self.ui.char_screen.is_open())
+			&& !self.ui.char_screen.is_open()
+			&& !self.ui.spellbook.is_open())
 		.then(|| self.viewmodel_frame(&frame))
 		.flatten();
 		self.bench.pending.prep_ms = self
@@ -297,6 +333,45 @@ impl Engine {
 			.take()
 			.map(ms_since)
 			.unwrap_or_default();
+		// Pack the teleport light: live bursts, plus the channel aura for
+		// as long as its envelope still shows. DIG_CAST poses the channel
+		// at a fixed progress — standing in a hold is the one thing a
+		// headless run cannot do (the DIG_SIPHON rule).
+		self.vfx.fx_scratch.clear();
+		for fx in &self.vfx.casts {
+			self.vfx.fx_scratch.push(crate::teleport::instance(
+				fx.pos.to_array(),
+				fx.mode,
+				fx.age,
+				1.0,
+				fx.seed,
+			));
+		}
+		if self.vfx.channel_env > 0.0 {
+			let progress = self.config.debug_cast.unwrap_or_else(|| {
+				self.cast.as_ref().map_or(1.0, |c| {
+					let need = digblock_core::unlock::channel_ticks(
+						self.skills.level(digblock_core::skills::Skill::Arcana),
+					)
+					.max(1);
+					(c.ticks as f32 / need as f32).min(1.0)
+				})
+			});
+			let feet = self.player.pos - Vec3::new(0.0, digblock_core::player::EYE_TO_FEET, 0.0);
+			self.vfx.fx_scratch.push(crate::teleport::instance(
+				feet.to_array(),
+				crate::teleport::Mode::Channel,
+				progress,
+				self.vfx.channel_env,
+				3.7,
+			));
+		}
+		// The standing markers, culled here on the CPU (reused scratch).
+		{
+			let mut scratch = std::mem::take(&mut self.vfx.marker_scratch);
+			crate::waystone_fx::visible(&self.vfx.marker_sites, self.camera.pos, &mut scratch);
+			self.vfx.marker_scratch = scratch;
+		}
 		if let Some(r) = self.renderer.as_mut() {
 			// A carried light that has travelled — or has just gone out —
 			// re-places itself through the same hook a block edit uses, so
@@ -336,6 +411,8 @@ impl Engine {
 						s.envelope,
 					)
 				}),
+				teleport: &self.vfx.fx_scratch,
+				markers: &self.vfx.marker_scratch,
 				overlay: overlay_stats
 					.as_ref()
 					.map(|s| (s, self.vfx.history_scratch.as_slice())),

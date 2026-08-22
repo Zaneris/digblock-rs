@@ -73,9 +73,9 @@ impl Sim {
 		if writes.is_empty() {
 			return;
 		}
-		let lock = self.spawn_lock();
+		let regions = self.protected_regions();
 		for (cell, val) in writes {
-			if digblock_core::protect::immutable(cell.0, cell.1, cell.2, lock.as_ref()) {
+			if digblock_core::protect::immutable(cell.0, cell.1, cell.2, &regions) {
 				continue;
 			}
 			// The sweep read through the journal, so a cell it names may

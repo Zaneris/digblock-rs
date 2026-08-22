@@ -39,8 +39,8 @@ fn open_browser(menu: &mut Menu) {
 	menu.handle_key(Key::Enter);
 }
 
-/// The in-game root offers Inventory (hint "I") and Return to Spawn
-/// (hint "H"); picking Inventory raises the intent and closes.
+/// The in-game root offers Inventory (hint "I") and the Spellbook
+/// (hint "J"); picking Inventory raises the intent and closes.
 #[test]
 fn inventory_row_raises_intent_and_hotkey_hints_show() {
 	let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
@@ -64,9 +64,9 @@ fn inventory_row_raises_intent_and_hotkey_hints_show() {
 	};
 	assert_eq!(hint("Inventory"), Some("I"));
 	assert_eq!(hint("Alchemy"), Some("K"));
-	assert_eq!(hint("Return to Spawn"), Some("H"));
+	assert_eq!(hint("Spellbook"), Some("J"));
 
-	menu.handle_key(Key::Down); // Return to Spawn
+	menu.handle_key(Key::Down); // Spellbook
 	menu.handle_key(Key::Down); // Inventory
 	menu.handle_key(Key::Enter);
 	assert!(menu.take_inventory());
@@ -80,7 +80,7 @@ fn alchemy_row_raises_intent() {
 	let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
 	menu.handle_key(Key::Enter); // Play Local
 	menu.open();
-	menu.handle_key(Key::Down); // Return to Spawn
+	menu.handle_key(Key::Down); // Spellbook
 	menu.handle_key(Key::Down); // Inventory
 	menu.handle_key(Key::Down); // Alchemy
 	menu.handle_key(Key::Enter);
@@ -264,18 +264,18 @@ fn multiplayer_requires_services() {
 #[test]
 fn startup_menu_locks_until_first_world() {
 	let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
-	// No Return to Spawn row (not even dim), and Escape is a no-op.
+	// No Spellbook row, and Escape is a no-op.
 	let view = menu.view(SIZE, 1.0, false);
-	assert!(!view.rows.iter().any(|r| r.text.contains("Return to Spawn")));
+	assert!(!view.rows.iter().any(|r| r.text.contains("Spellbook")));
 	menu.handle_key(Key::Escape);
 	assert!(menu.is_open(), "Escape must not dismiss the startup menu");
 
 	// Entering the world (Play Local) unlocks both.
 	menu.handle_key(Key::Enter);
-	assert!(!menu.take_return_spawn(), "Enter was Play Local, not spawn");
+	assert!(!menu.take_spellbook(), "Enter was Play Local, not the book");
 	menu.open();
 	let view = menu.view(SIZE, 1.0, false);
-	assert!(view.rows.iter().any(|r| r.text.contains("Return to Spawn")));
+	assert!(view.rows.iter().any(|r| r.text.contains("Spellbook")));
 	assert!(view.rows.iter().any(|r| r.text.contains("Back to Game")));
 	menu.handle_key(Key::Escape);
 	assert!(!menu.is_open());
@@ -594,56 +594,22 @@ fn leave_world_is_the_local_counterpart_of_leave_server() {
 }
 
 #[test]
-fn return_to_spawn_ready_activates_and_cooldown_greys() {
+fn spellbook_row_raises_intent_and_closes() {
 	let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
 	menu.handle_key(Key::Enter); // Play Local: the row now exists
 	menu.open();
-	// Ready: directly after Back to Game (no services); activating
-	// raises the intent and closes the menu.
-	menu.handle_key(Key::Down); // Return to Spawn
+	// Directly after Back to Game (no services); activating raises the
+	// intent and closes the menu — the cooldown lives on the PAGE now,
+	// so the row itself is never greyed.
+	assert!(
+		offers(&menu, |a| matches!(a, Act::OpenSpellbook)),
+		"the row is always an act"
+	);
+	menu.handle_key(Key::Down); // Spellbook
 	menu.handle_key(Key::Enter);
-	assert!(menu.take_return_spawn());
+	assert!(menu.take_spellbook());
+	assert!(!menu.take_spellbook(), "intent is one-shot");
 	assert!(!menu.is_open());
-
-	// On cooldown: dim countdown row, not selectable, no intent.
-	menu.open();
-	menu.set_spawn_cooldown(42);
-	let acts = menu.acts();
-	assert!(
-		!acts.iter().any(|(id, _)| *id == RowId::RootItem(3)),
-		"greyed spawn row is not an act"
-	);
-	assert!(
-		!acts.iter().any(|(_, a)| matches!(a, Act::ReturnSpawn)),
-		"a greyed row must raise no act at all"
-	);
-	let view = menu.view(SIZE, 1.0, false);
-	assert!(
-		view.rows
-			.iter()
-			.any(|r| r.text.contains("Return to Spawn (42s)"))
-	);
-	// Down skips the greyed row entirely: no spawn intent is ever
-	// raised on the way to Settings.
-	menu.handle_key(Key::Down); // Inventory (greyed spawn skipped)
-	menu.handle_key(Key::Down); // Alchemy
-	menu.handle_key(Key::Down); // Character
-	menu.handle_key(Key::Down); // Leave World
-	menu.handle_key(Key::Down); // Settings
-	menu.handle_key(Key::Enter);
-	assert!(!menu.take_return_spawn());
-	menu.handle_key(Key::Escape); // out of Settings
-	menu.handle_key(Key::Enter); // Back to Game
-	assert!(!menu.take_return_spawn());
-	assert!(!menu.is_open());
-
-	// Cooldown over: selectable again.
-	menu.open();
-	menu.set_spawn_cooldown(0);
-	assert!(
-		offers(&menu, |a| matches!(a, Act::ReturnSpawn)),
-		"spawn row is back"
-	);
 }
 
 /// Does the menu offer an act matching `f`?

@@ -29,7 +29,7 @@ pub const DEFAULT_MASTER_URL: &str = "https://master.digblock.net";
 /// discriminants by declaration order, so variants and fields are
 /// APPEND-ONLY — never reorder, never remove. `git log -S PROTOCOL_VERSION`
 /// is the history of what each bump carried.
-pub const PROTOCOL_VERSION: u16 = 31;
+pub const PROTOCOL_VERSION: u16 = 32;
 
 /// Chunk-column radius around an arrival — a join or a teleport — whose
 /// journaled columns must reach the client before it may render or
@@ -72,7 +72,7 @@ pub const AREA_SYNC_TIMEOUT_SECS: f32 = 5.0;
 /// render a stained pane as a hole, walk through it, and have every dig
 /// near it refused, while the server holds the cell solid. Adding block
 /// rows therefore raises the floor as surely as moving a field does.
-pub const MIN_PROTOCOL: u16 = 31;
+pub const MIN_PROTOCOL: u16 = 32;
 
 // ---- handshake preamble ----------------------------------------------
 //
@@ -360,11 +360,13 @@ pub fn sanitize_chat(text: &str) -> Option<String> {
 	(!trimmed.is_empty()).then(|| trimmed.to_string())
 }
 
-/// Return-to-spawn cooldown, seconds. The menu greys the row with a
-/// countdown; the server enforces it authoritatively per client (a
-/// request inside the window is silently ignored — honest clients gate
-/// locally, so only a tampered client ever sends one).
-pub const RETURN_SPAWN_COOLDOWN_SECS: u32 = 60;
+/// Return-to-spawn cooldown, seconds — the BASE, aliased from the Arcana
+/// ladder so there is one number: the server enforces the caster's own
+/// `unlock::return_cooldown_secs(level)`, which starts here and only
+/// ever steps down. The client greys its cast tile with a countdown;
+/// a request inside the window is silently ignored — honest clients
+/// gate locally, so only a tampered client ever sends one.
+pub const RETURN_SPAWN_COOLDOWN_SECS: u32 = digblock_core::unlock::RETURN_COOLDOWN_BASE_SECS;
 
 /// Give up on a transport stuck in `Connecting` after this long.
 pub const CONNECT_TIMEOUT_SECS: f32 = 10.0;

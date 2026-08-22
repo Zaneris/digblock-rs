@@ -175,6 +175,19 @@ pub struct Engine {
 	/// In-progress hold-to-dig, advanced at the fixed sim rate while
 	/// `dig_held` stays on a valid, unchanged target.
 	dig: Option<DigProgress>,
+	/// The Mason's Arc stance: while on (and the rank is earned), a
+	/// plain placement extends into a full line. A mode, not a buff —
+	/// toggled on the spellbook page, costing only the blocks it lays.
+	arc_on: bool,
+	/// Seconds the wisp's self-light keeps burning; zero = no wisp.
+	/// Session-local on purpose — a buff is not a possession, so nothing
+	/// persists or syncs it, and a world swap puts it out.
+	wisp_left: f32,
+	/// In-progress cast channel, advanced at the same fixed rate. A
+	/// channel is stillness: any movement intent, dig hold, or surface
+	/// opening resets it — the decay mold is deliberately NOT borrowed
+	/// here (that is a dig's, and later the damage-interrupt's).
+	cast: Option<CastState>,
 	/// Fixed-rate accumulator for the dig state machine — independent of
 	/// the walk/fly tick loops so digging works in both modes.
 	dig_accum: f32,
@@ -186,6 +199,15 @@ pub struct Engine {
 	/// confirms/rejects keep it honest. Offline it is simply the truth.
 	inventory: Inventory,
 	hotbar: Hotbar,
+	/// The spawn structure still owed to an offline world: the stamp's
+	/// writes, drained as their chunks become resident. Named saves only
+	/// — a server stamps its own, and a backdrop world is ephemeral.
+	pending_stamp: Vec<(i32, i32, i32, u16)>,
+	/// Protected arrival regions this engine ENFORCES — offline only,
+	/// where the pipeline is the authority and the spawn sphere is derived
+	/// at world entry. Empty in multiplayer on purpose: a server's regions
+	/// are its own secret and refusals arrive as `DigRefused`.
+	protected: Vec<digblock_core::protect::Region>,
 	/// Edit-time water flow (digblock-core fluid rules); idle unless
 	/// edits schedule cells.
 	fluid: digblock_core::fluid::FluidSim,
@@ -330,6 +352,30 @@ struct Vfx {
 	/// forget it.
 	siphon: Option<SiphonDraw>,
 
+	/// Live teleport bursts (departure/arrival), aged in `update` — world
+	/// state, exactly as confetti is.
+	casts: Vec<TeleportFx>,
+
+	/// Burst counter — the per-effect seed, confetti's arrangement.
+	cast_seq: u32,
+
+	/// The channel aura's fade envelope: opens while a cast channels,
+	/// dissolves when one ends or breaks — an interrupted channel fades
+	/// rather than pops.
+	channel_env: f32,
+
+	/// The teleport instant's full-screen flash, decayed in `update`.
+	flash: f32,
+
+	/// The arrival pads this world marks with a standing spiral — spawn
+	/// today, the waystones when they land. Set at world entry.
+	marker_sites: Vec<Vec3>,
+
+	/// Per-frame packed scratch for the two instanced effects (reused
+	/// allocations, the nametag arrangement).
+	fx_scratch: Vec<crate::teleport::FxInstance>,
+	marker_scratch: Vec<crate::waystone_fx::MarkerInstance>,
+
 	/// Held-item animation. Advanced in `update`, NOT in `step_audio` —
 	/// that returns early with no audio sink attached (bench, screenshot,
 	/// iOS), which would silently freeze the hand in exactly the
@@ -337,6 +383,10 @@ struct Vfx {
 	view_bob: crate::viewmodel::Bob,
 
 	view_swing: crate::viewmodel::Swing,
+
+	/// The casting gesture, strength-driven by the channel's envelope so
+	/// hand and aura rise and dissolve together.
+	view_cast: crate::viewmodel::Cast,
 
 	/// Owns which item the hand is DRAWING — it lags `hotbar.selected`
 	/// by half a swap, so the exchange happens below the frame.
@@ -380,6 +430,11 @@ struct SaveSession {
 
 	/// Seconds since the last player/inventory snapshot handoff.
 	player_save_accum: f32,
+
+	/// Offline port anchors, derived on first cast and cached — the ring
+	/// walk is pure but not free, and a session casts to the same few
+	/// places. `None` caches a kind this seed never offers.
+	offline_waystones: std::collections::HashMap<u8, Option<Vec3>>,
 
 	/// The world's spawn point (the server's after a Welcome swap):
 	/// the return-to-spawn target.
@@ -490,6 +545,11 @@ struct NetSession {
 	/// network does.
 	tick_lerp: crate::smoothing::TickLerp,
 
+	/// The server's resolved waystones for THIS world, from join sync —
+	/// `(SurfaceKind index, eye)`. The spellbook's roster and the
+	/// standing spirals' anchors; empty offline (ports derive lazily).
+	waystones: Vec<(u8, [f32; 3])>,
+
 	/// Reconciliation health, logged on a slow cadence while connected.
 	net_corrections: u32,
 
@@ -582,6 +642,9 @@ struct UiState {
 	/// The character screen (C toggles): per-skill levels + XP bars.
 	char_screen: crate::ui::screens::character::CharScreen,
 
+	/// The spellbook screen (J toggles): Arcana's casting surface.
+	spellbook: crate::ui::screens::spellbook::SpellScreen,
+
 	/// Startup/pause menu state (pure; overlay renders its view).
 	menu: crate::menu::Menu,
 
@@ -589,6 +652,24 @@ struct UiState {
 	chat: crate::chat::Chat,
 
 	overlay_visible: bool,
+}
+
+/// What a channel is winding up toward.
+#[derive(Clone, Copy, PartialEq)]
+enum CastTarget {
+	Home,
+	/// The port at this `SurfaceKind` declaration-order index.
+	Waystone(u8),
+	/// The timed self-light.
+	Wisp,
+	/// Conjured light at whatever the crosshair rests on when the
+	/// channel COMPLETES — aiming is allowed mid-channel, moving is not.
+	Kindle,
+}
+
+struct CastState {
+	target: CastTarget,
+	ticks: u32,
 }
 
 struct DigProgress {
@@ -617,6 +698,15 @@ impl DigProgress {
 			u32::from(self.idle),
 		) as u16
 	}
+}
+
+/// One live teleport burst: where, which half of the jump, and how old.
+/// The whole simulation is aging it — every mote derives in the shader.
+struct TeleportFx {
+	pos: Vec3,
+	mode: crate::teleport::Mode,
+	age: f32,
+	seed: f32,
 }
 
 /// The essence draw the siphon is running, if any — presentation only,
@@ -822,6 +912,7 @@ impl Game for Engine {
 			&& !self.ui.inv_screen.is_open()
 			&& !self.ui.alch_screen.is_open()
 			&& !self.ui.char_screen.is_open()
+			&& !self.ui.spellbook.is_open()
 	}
 
 	fn wants_text_input(&self) -> bool {
@@ -917,7 +1008,7 @@ impl Game for Engine {
 /// The fluid sim's view of the chunk pipeline: set_block already handles
 /// copy-on-write and remesh invalidation, and returns None for unloaded
 /// cells, which the sim treats as a dropped write.
-struct PipelineWorld<'a>(&'a mut Pipeline);
+struct PipelineWorld<'a>(&'a mut Pipeline, &'a [digblock_core::protect::Region]);
 
 impl digblock_core::worldjob::CellSource for PipelineWorld<'_> {
 	fn cell_at(&self, x: i32, y: i32, z: i32) -> Option<u16> {
@@ -960,9 +1051,10 @@ impl digblock_core::fluid::FluidWorld for PipelineWorld<'_> {
 		// `cur.props().collides` kept water out of it — a property of
 		// whatever block happens to sit there, which is precisely what
 		// the floor rule must not depend on. The sim reads `false` as
-		// "didn't land" and declines to propagate onward. A spawn lock is
-		// server-only knowledge and stays unpredicted, hence `None`.
-		if digblock_core::protect::immutable(x, y, z, None) {
+		// "didn't land" and declines to propagate onward. Offline the
+		// engine's own arrival regions ride along; multiplayer passes an
+		// empty set, because a server's regions are its own secret.
+		if digblock_core::protect::immutable(x, y, z, self.1) {
 			return false;
 		}
 		self.0.set_block(x, y, z, b).is_some()
@@ -995,6 +1087,9 @@ mod touch_hud_tests;
 
 #[cfg(test)]
 mod dig_decay_tests;
+
+#[cfg(test)]
+mod cast_tests;
 
 #[cfg(test)]
 mod ore_capture_tests;

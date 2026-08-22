@@ -1,6 +1,6 @@
 //! The spawn point, the walk that finds a valid one, and the
-//! teleports that use it. `lock_region` is exactly the cell set the
-//! search inspects, which is why a locked spawn stays valid.
+//! teleports that use it. `lock_region` contains every cell the search
+//! inspects, which is why a locked spawn stays valid.
 
 use super::*;
 
@@ -134,20 +134,111 @@ impl Sim {
 		self.residency_dirty = true;
 	}
 
-	/// Teleport a live client back to spawn, subject to the cooldown.
+	/// Protection is always on: with no stored lock, resolve spawn against
+	/// the journal and lock the RESULT — never the raw anchor, so an
+	/// existing world whose anchor was dug out locks the relocated spawn
+	/// rather than the crater. On the pathological seed where even the
+	/// search gives up, boot proceeds unlocked and retries next boot
+	/// instead of pinning a bad answer.
+	pub(super) fn ensure_spawn_lock(&mut self) {
+		if self.spawn_store.lock().is_some() {
+			return;
+		}
+		let eye = self.spawn_point();
+		if !self.spawn_valid(eye) {
+			log::warn!("spawn protection deferred: no clear spawn to lock");
+			return;
+		}
+		self.spawn_store.set_lock(Some(SpawnLock {
+			eye: eye.to_array(),
+		}));
+		log::info!("spawn locked at {eye}");
+	}
+
+	/// Resolve, stamp and record every arrival site: spawn's structure,
+	/// and one waystone per laddered biome kind. Idempotent — a stored
+	/// site is never re-derived (its region cannot change), and a
+	/// re-stamp skips cells the journal already holds — so boot converges
+	/// to a no-op after the first run. A kind whose anchor walk finds
+	/// nothing is skipped and retried next boot; a port to nowhere must
+	/// not exist.
+	pub(super) fn ensure_arrival_sites(&mut self) {
+		if let Some(l) = self.spawn_store.lock() {
+			self.stamp_site(Vec3::from_array(l.eye));
+		}
+		let seed = self.store.seed();
+		for (idx, kind) in digblock_core::worldgen::SurfaceKind::ALL.iter().enumerate() {
+			if digblock_core::unlock::waystone(*kind).is_none() {
+				continue;
+			}
+			let eye = match self.waystone_store.get(idx as u8) {
+				Some(e) => Vec3::from_array(e),
+				None => {
+					let Some(a) = digblock_core::waystones::anchor(*kind, seed) else {
+						log::warn!("no {kind:?} anywhere the walk reaches — port deferred");
+						continue;
+					};
+					// An existing world may have built through the
+					// pristine site: resolve sideways off the damage the
+					// way spawn does, then the answer is FOREVER.
+					let eye = if digblock_core::spawn::valid(a, seed, &|x, y, z| {
+						self.journal_cell(x, y, z)
+					}) {
+						a
+					} else {
+						digblock_core::spawn::resolve(a, seed, &|x, y, z| {
+							self.journal_cell(x, y, z)
+						})
+					};
+					log::info!("waystone resolved: {kind:?} at {eye}");
+					self.waystone_store.set(idx as u8, eye.to_array());
+					eye
+				}
+			};
+			self.stamp_site(eye);
+		}
+	}
+
+	/// Apply one site's structure as ordinary journaled edits — the
+	/// worldjob write discipline. A resident cell takes the full landed
+	/// path; a non-resident one is journal-only, which join sync and the
+	/// standing resync repair deliver exactly like any other edit.
+	pub(super) fn stamp_site(&mut self, eye: Vec3) {
+		for (x, y, z, v) in digblock_core::waystones::stamp(eye) {
+			if self.journal_cell(x, y, z) == Some(v) {
+				continue;
+			}
+			if let Some(prev) = self.store.set_cell(x, y, z, v) {
+				self.apply_write((x, y, z), v, prev, SERVER_ID, NO_CLIENT_SEQ, true);
+			} else {
+				let edit = digblock_net::messages::BlockEdit { x, y, z, block: v };
+				let (_, new_column) = self.journal.append(edit, SERVER_ID);
+				if new_column {
+					self.enroll_new_column(edit);
+				}
+			}
+		}
+	}
+
+	/// Teleport a live client back to spawn, subject to the caster's own
+	/// cooldown — the server holds skills, so the gate widens per level.
 	/// Violations are silently ignored — honest clients gate locally.
 	pub(super) fn handle_return_to_spawn(&mut self, conn_id: u64) {
+		use digblock_core::skills::Skill;
 		let Some(client) = self.clients.get(&conn_id) else {
 			return;
 		};
 		if !client.live {
 			return;
 		}
+		let cooldown =
+			digblock_core::unlock::return_cooldown_secs(client.skills.level(Skill::Arcana));
 		if let Some(t) = client.last_return_tick
-			&& self.tick.wrapping_sub(t) < RETURN_SPAWN_COOLDOWN_SECS * TICK_RATE
+			&& self.tick.wrapping_sub(t) < cooldown * TICK_RATE
 		{
 			return;
 		}
+		let from = client.player.pos;
 		let pos = self.safe_spawn();
 		let look = self.spawn_look();
 		let tick = self.tick;
@@ -155,5 +246,178 @@ impl Sim {
 		client.last_return_tick = Some(tick);
 		log::info!("player {} ({}) returned to spawn", client.id, client.name);
 		self.teleport_client(conn_id, pos, look);
+		// The jump's Arcana pay, derived from the distance it covered —
+		// a recast standing at spawn covers nothing and pays nothing.
+		self.process_cast(conn_id, digblock_core::skills::home_xp(from.distance(pos)));
+	}
+
+	/// A completed cast asking for its spell. The channel was client
+	/// pacing; the two REAL gates are validated here — the unlock against
+	/// the caster's own Arcana, and the fare, refused BEFORE any debit
+	/// (the headroom rule). Wisp and Kindle decode and refuse until their
+	/// spells land.
+	pub(super) fn handle_cast(&mut self, conn_id: u64, kind: digblock_net::messages::CastKind) {
+		use digblock_core::skills::Skill;
+		use digblock_net::messages::{CastKind, CastRefusal};
+		let refuse = |client: &Client, reason: CastRefusal| {
+			client_send(client, &ServerMsg::CastRefused { reason });
+		};
+		let Some(client) = self.clients.get(&conn_id) else {
+			return;
+		};
+		if !client.live {
+			return;
+		}
+		let idx = match kind {
+			CastKind::Waystone(idx) => idx,
+			CastKind::Wisp => return self.cast_wisp(conn_id),
+			CastKind::Kindle { cell, face: _ } => return self.cast_kindle(conn_id, cell),
+		};
+		let Some(&skind) = digblock_core::worldgen::SurfaceKind::ALL.get(idx as usize) else {
+			return refuse(client, CastRefusal::Locked);
+		};
+		let (level, eye) = match (
+			digblock_core::unlock::waystone(skind),
+			self.waystone_store.get(idx),
+		) {
+			(Some(l), Some(eye)) => (l, Vec3::from_array(eye)),
+			// No port on this kind, or a site this world never managed
+			// to resolve — a port to nowhere must not exist.
+			_ => return refuse(client, CastRefusal::Locked),
+		};
+		if client.skills.level(Skill::Arcana) < level {
+			return refuse(client, CastRefusal::Locked);
+		}
+		let (essence, fare) =
+			digblock_core::alchemy::cast_price(skind).expect("a laddered kind has a fare");
+		let pos = self.clear_landing(eye);
+		let client = self.clients.get_mut(&conn_id).expect("checked above");
+		if !client.inventory.try_take_sub(essence, fare) {
+			let client = self.clients.get(&conn_id).expect("checked above");
+			return refuse(client, CastRefusal::CantPay);
+		}
+		// The debit's rebase, the standing answer to every alchemy-side
+		// mutation — the offer greyed on the same headroom, so an honest
+		// client only ever sees this move the number it predicted.
+		let counts = client.inventory.to_wire();
+		client_send(client, &ServerMsg::InventoryFull { counts });
+		// First arrival pays its milestone exactly once per account.
+		let first = !client.visited_waystones.contains(&idx);
+		if first {
+			client.visited_waystones.push(idx);
+		}
+		let id = client.id;
+		let name = client.name.clone();
+		log::info!("player {id} ({name}) ported to the {skind:?} waystone");
+		self.teleport_client(conn_id, pos, Vec3::ZERO);
+		let mut xp = digblock_core::skills::cast_xp(fare);
+		if first {
+			xp += digblock_core::skills::waystone_milestone(skind)
+				.expect("a laddered kind has a milestone");
+		}
+		self.process_cast(conn_id, xp);
+	}
+
+	/// The self-light. The server's whole share is the debit and the pay:
+	/// the buff's LIGHT is per-viewer GI, applied client-side (each
+	/// viewer computes lighting locally), and its expiry is the caster's
+	/// own clock. A refusal answers so a predicted buff can cancel.
+	fn cast_wisp(&mut self, conn_id: u64) {
+		use digblock_net::messages::CastRefusal;
+		let (essence, fare) = digblock_core::alchemy::wisp_price();
+		let Some(client) = self.clients.get_mut(&conn_id) else {
+			return;
+		};
+		if !client.inventory.try_take_sub(essence, fare) {
+			client_send(
+				client,
+				&ServerMsg::CastRefused {
+					reason: CastRefusal::CantPay,
+				},
+			);
+			return;
+		}
+		let level = client.skills.level(digblock_core::skills::Skill::Arcana);
+		client.wisp_until = Some(self.tick + digblock_core::unlock::wisp_secs(level) * TICK_RATE);
+		let counts = client.inventory.to_wire();
+		client_send(client, &ServerMsg::InventoryFull { counts });
+		self.process_cast(conn_id, digblock_core::skills::cast_xp(fare));
+	}
+
+	/// Conjured light: validate the rung, the aim (an AIR cell within an
+	/// honest reach of the caster, unprotected, resident), then debit and
+	/// write the Wisplight as an ordinary journaled edit — the wisplight
+	/// sweep is its whole expiry.
+	fn cast_kindle(&mut self, conn_id: u64, cell: [i32; 3]) {
+		use digblock_core::skills::Skill;
+		use digblock_net::messages::CastRefusal;
+		let refuse = |client: &Client, reason: CastRefusal| {
+			client_send(client, &ServerMsg::CastRefused { reason });
+		};
+		let regions = self.requester_regions(conn_id);
+		let Some(client) = self.clients.get(&conn_id) else {
+			return;
+		};
+		if !client.live {
+			return;
+		}
+		let level = client.skills.level(Skill::Arcana);
+		if level < digblock_core::unlock::KINDLE_AT {
+			return refuse(client, CastRefusal::Locked);
+		}
+		let at = (cell[0], cell[1], cell[2]);
+		let center = Vec3::new(at.0 as f32 + 0.5, at.1 as f32 + 0.5, at.2 as f32 + 0.5);
+		let reach = digblock_core::raycast::REACH + digblock_net::protocol::EDIT_POS_TOLERANCE;
+		if client.player.pos.distance(center) > reach
+			|| digblock_core::protect::immutable(at.0, at.1, at.2, &regions)
+			|| self.store.cell_at(at.0, at.1, at.2)
+				!= Some(digblock_core::block::BlockType::Air as u16)
+		{
+			return refuse(client, CastRefusal::BadTarget);
+		}
+		let (essence, fare) = digblock_core::alchemy::kindle_price(level);
+		let client = self.clients.get_mut(&conn_id).expect("checked above");
+		if !client.inventory.try_take_sub(essence, fare) {
+			let client = self.clients.get(&conn_id).expect("checked above");
+			return refuse(client, CastRefusal::CantPay);
+		}
+		let counts = client.inventory.to_wire();
+		client_send(client, &ServerMsg::InventoryFull { counts });
+		let v = digblock_core::block::BlockType::Wisplight as u16;
+		if let Some(prev) = self.store.set_cell(at.0, at.1, at.2, v) {
+			self.apply_write(at, v, prev, SERVER_ID, NO_CLIENT_SEQ, true);
+		}
+		self.process_cast(conn_id, digblock_core::skills::cast_xp(fare));
+	}
+
+	/// The cast chokepoint — Arcana's twin of `process_alchemy`'s award
+	/// tail: the one place a landed cast becomes XP, the wire total, the
+	/// persisted record and the level-up announcement. Offline play
+	/// awards through the same core tables in the engine's offline arm.
+	pub(super) fn process_cast(&mut self, conn_id: u64, xp: u64) {
+		use digblock_core::skills::Skill;
+		if xp == 0 {
+			return;
+		}
+		let Some(client) = self.clients.get_mut(&conn_id) else {
+			return;
+		};
+		let before = client.skills.level(Skill::Arcana);
+		let total = client.skills.add_xp(Skill::Arcana, xp);
+		client_send(
+			client,
+			&ServerMsg::XpGain {
+				skill: Skill::Arcana as u8,
+				total,
+			},
+		);
+		let after = client.skills.level(Skill::Arcana);
+		let id = client.id;
+		if let Some(hash) = client.identity {
+			self.player_store.put(hash, client.record());
+		}
+		if after > before {
+			self.announce_level_up(id, Skill::Arcana, after);
+		}
 	}
 }

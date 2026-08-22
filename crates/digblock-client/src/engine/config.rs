@@ -49,6 +49,9 @@ pub enum DebugScreen {
 	/// and needs a press to start, so this is the only way it reaches a
 	/// capture at all.
 	Transmuting,
+	/// The spellbook, with Arcana XP stocked past the first rung so a
+	/// passed threshold and the next teaser both photograph.
+	Spellbook,
 }
 
 impl DebugScreen {
@@ -69,6 +72,7 @@ impl DebugScreen {
 			"skills" | "character" => Some(Self::Skills),
 			"transmute" => Some(Self::Transmute),
 			"transmuting" => Some(Self::Transmuting),
+			"spellbook" => Some(Self::Spellbook),
 			_ => None,
 		}
 	}
@@ -275,6 +279,11 @@ pub struct EngineConfig {
 	/// launcher refuses the pair unset rather than capturing an empty
 	/// wall. Set by the desktop launcher from DIG_SIPHON.
 	pub debug_siphon: Option<f32>,
+	/// Debug: hold the cast channel's aura at a fixed progress with no
+	/// hold behind it — standing in a channel is the one thing a headless
+	/// run cannot do (the DIG_SIPHON rule). Set by the desktop launcher
+	/// from DIG_CAST.
+	pub debug_cast: Option<f32>,
 	/// Debug: open a UI screen at startup with a stocked inventory, so a
 	/// headless `--screenshot` run can capture it. Set by the desktop
 	/// launcher from DIG_SCREEN.
@@ -496,6 +505,7 @@ impl EngineConfig {
 			debug_confetti: false,
 			debug_crack: None,
 			debug_siphon: None,
+			debug_cast: None,
 			debug_shapes: false,
 			debug_doors: false,
 			debug_vault: false,

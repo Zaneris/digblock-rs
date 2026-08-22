@@ -36,6 +36,13 @@ pub enum Sfx {
 	SiphonTake,
 	LevelUp,
 	LevelUnlock,
+	/// The cast channel's wind — TEMPORARILY the siphon's resonant loop
+	/// (see assets/sfx/SOURCES.md): the roster carries its real names now
+	/// so the recordings can swap in without touching a call site.
+	CastLoop,
+	/// The departure's release, and the arrival's landing.
+	TeleportOut,
+	TeleportIn,
 }
 
 /// The embedded bytes for a sound — the enum↔asset pairing lives here
@@ -64,11 +71,15 @@ pub fn bytes(s: Sfx) -> &'static [u8] {
 		Sfx::SiphonTake => a::SIPHON_TAKE,
 		Sfx::LevelUp => a::LEVEL_UP,
 		Sfx::LevelUnlock => a::LEVEL_UNLOCK,
+		// Placeholder recordings — see the variants' doc comments.
+		Sfx::CastLoop => a::SIPHON_DRAW,
+		Sfx::TeleportOut => a::SIPHON_TAKE,
+		Sfx::TeleportIn => a::LEVEL_UNLOCK,
 	}
 }
 
 /// Every playable [`Sfx`], for filler decode caches and tests.
-pub const ALL_SFX: [Sfx; 20] = [
+pub const ALL_SFX: [Sfx; 23] = [
 	Sfx::DigStone,
 	Sfx::DigEarth,
 	Sfx::DigWood,
@@ -89,6 +100,9 @@ pub const ALL_SFX: [Sfx; 20] = [
 	Sfx::SiphonTake,
 	Sfx::LevelUp,
 	Sfx::LevelUnlock,
+	Sfx::CastLoop,
+	Sfx::TeleportOut,
+	Sfx::TeleportIn,
 ];
 
 /// The fanfare a level-up speaks: the plain chime, or the bigger one
@@ -240,6 +254,8 @@ pub struct LoopId(pub u32);
 pub const LOOP_DIG: LoopId = LoopId(1);
 /// The non-positional ambient bed (one at a time; restarted on change).
 pub const LOOP_AMBIENT: LoopId = LoopId(2);
+/// The cast channel's wind (one at a time — a player channels one spell).
+pub const LOOP_CAST: LoopId = LoopId(3);
 /// Water voices allocate upward from here (see `water_audio.rs`).
 pub const LOOP_WATER_BASE: u32 = 16;
 

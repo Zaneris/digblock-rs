@@ -18,14 +18,13 @@ impl Engine {
 		let eye = (p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32);
 		let (secs, seed) = (self.world_secs, self.seed);
 		let writes = {
-			let world = PipelineWorld(&mut self.pipeline);
+			let world = PipelineWorld(&mut self.pipeline, &self.protected);
 			self.world_jobs.tick(secs, seed, &[eye], &world)
 		};
 		for (cell, val) in writes {
-			// The floor, refused exactly where `PipelineWorld::set`
-			// refuses it. A spawn lock is server-only knowledge, so
-			// offline there is none.
-			if digblock_core::protect::immutable(cell.0, cell.1, cell.2, None) {
+			// The floor and the offline arrival regions, refused exactly
+			// where `PipelineWorld::set` refuses them.
+			if digblock_core::protect::immutable(cell.0, cell.1, cell.2, &self.protected) {
 				continue;
 			}
 			self.pipeline.set_cell(cell.0, cell.1, cell.2, val);

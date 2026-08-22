@@ -927,26 +927,18 @@ fn a_protected_cell_refuses_the_whole_pick_swing() {
 	let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();
 	// Lock a region whose NEAR edge is the aimed cell's +x neighbour,
 	// so the aimed cell itself is free and the refusal can only come
-	// from a cell the swing reached. (`lock_region` is a box CLEAR
-	// out from the eye's column, floored just below the eye.)
-	let lock_x = hit.cell.0 + 1 + digblock_core::spawn::CLEAR;
+	// from a cell the swing reached. (`lock_region` is a sphere of
+	// `LOCK_RADIUS` around the eye's floor cell.)
+	let lock_x = hit.cell.0 + 1 + digblock_core::spawn::LOCK_RADIUS;
 	sim.bench_lock_spawn_at(Vec3::new(
 		lock_x as f32 + 0.5,
 		hit.cell.1 as f32 + 2.5,
 		hit.cell.2 as f32 + 0.5,
 	));
+	let locks = sim.protected_regions();
 	assert!(
-		digblock_core::protect::immutable(
-			hit.cell.0 + 1,
-			hit.cell.1,
-			hit.cell.2,
-			sim.spawn_lock().as_ref()
-		) && !digblock_core::protect::immutable(
-			hit.cell.0,
-			hit.cell.1,
-			hit.cell.2,
-			sim.spawn_lock().as_ref()
-		),
+		digblock_core::protect::immutable(hit.cell.0 + 1, hit.cell.1, hit.cell.2, &locks)
+			&& !digblock_core::protect::immutable(hit.cell.0, hit.cell.1, hit.cell.2, &locks),
 		"the lock has to straddle the plane, not swallow it"
 	);
 	let mut t = 100;
@@ -1362,6 +1354,329 @@ fn return_to_spawn_teleports_with_cooldown() {
 	}
 	request(&mut sim);
 	assert!(sim.test_player(1).unwrap().pos.distance(FLAT_SPAWN) < 1.0);
+}
+
+/// The two utility spells' server halves: a wisp is a debit and its
+/// fare's XP (the light is per-viewer, client-side); a kindle validates
+/// the rung and the AIM — an air cell in honest reach — then conjures
+/// the Wisplight as an ordinary journaled edit. Every figure read off
+/// the core tables.
+#[test]
+fn a_wisp_debits_and_a_kindle_conjures() {
+	use digblock_core::skills::cast_xp;
+	use digblock_net::messages::{CastKind, CastRefusal};
+	let mut sim = flat_sim("wispkindle");
+	let mut c = connect(&mut sim, 1);
+	wait_live(&mut sim, 1);
+	let cast = |sim: &mut super::Sim, kind: CastKind| {
+		sim.tick_once(vec![SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::Cast(kind),
+		}]);
+	};
+
+	// The wisp: broke refuses before any debit; funded debits exactly
+	// and pays the fare's worth.
+	let (w_essence, w_fare) = digblock_core::alchemy::wisp_price();
+	cast(&mut sim, CastKind::Wisp);
+	c.drain();
+	assert!(c.msgs.iter().any(|m| matches!(
+		m,
+		ServerMsg::CastRefused {
+			reason: CastRefusal::CantPay
+		}
+	)));
+	sim.test_grant_essence(1, w_essence, w_fare);
+	c.msgs.clear();
+	cast(&mut sim, CastKind::Wisp);
+	c.drain();
+	assert_eq!(sim.test_essence(1, w_essence), Some(0), "the fare left");
+	assert_eq!(
+		sim.test_skill_xp(1, digblock_core::skills::Skill::Arcana),
+		cast_xp(w_fare)
+	);
+
+	// The kindle: below its rung, locked; at it, an aimed AIR cell
+	// becomes conjured light and a solid one refuses as a bad target.
+	let eye = sim.test_player(1).unwrap().pos;
+	let over = (
+		eye.x.floor() as i32,
+		eye.y.floor() as i32 + 2,
+		eye.z.floor() as i32,
+	);
+	let ground = (over.0, FLAT_GROUND_TOP as i32, over.2);
+	let level = digblock_core::unlock::KINDLE_AT;
+	let (k_essence, k_fare) = digblock_core::alchemy::kindle_price(level);
+	sim.test_grant_essence(1, k_essence, k_fare * 2);
+	c.msgs.clear();
+	cast(
+		&mut sim,
+		CastKind::Kindle {
+			cell: [over.0, over.1, over.2],
+			face: 0,
+		},
+	);
+	c.drain();
+	assert!(
+		c.msgs.iter().any(|m| matches!(
+			m,
+			ServerMsg::CastRefused {
+				reason: CastRefusal::Locked
+			}
+		)),
+		"kindle below its rung must refuse"
+	);
+	sim.bench_set_arcana_level(1, level);
+	cast(
+		&mut sim,
+		CastKind::Kindle {
+			cell: [over.0, over.1, over.2],
+			face: 0,
+		},
+	);
+	assert_eq!(
+		sim.test_cell_at(over.0, over.1, over.2),
+		Some(digblock_core::block::BlockType::Wisplight as u16),
+		"conjured light stands where it was aimed"
+	);
+	c.msgs.clear();
+	cast(
+		&mut sim,
+		CastKind::Kindle {
+			cell: [ground.0, ground.1, ground.2],
+			face: 0,
+		},
+	);
+	c.drain();
+	assert!(
+		c.msgs.iter().any(|m| matches!(
+			m,
+			ServerMsg::CastRefused {
+				reason: CastRefusal::BadTarget
+			}
+		)),
+		"a solid cell cannot hold conjured light"
+	);
+}
+
+/// The resolved sites ride join sync, right behind Skills — the client
+/// cannot derive them, and the spellbook's roster is empty without them.
+#[test]
+fn waystones_ride_join_sync() {
+	let mut sim = flat_sim("wsync");
+	sim.bench_add_waystone(2, FLAT_SPAWN + glam::Vec3::new(150.0, 0.0, 0.0));
+	let mut c = connect(&mut sim, 1);
+	wait_live(&mut sim, 1);
+	c.drain();
+	let entries = c
+		.msgs
+		.iter()
+		.find_map(|m| match m {
+			ServerMsg::Waystones { entries } => Some(entries.clone()),
+			_ => None,
+		})
+		.expect("join sync carries the waystones");
+	assert!(entries.iter().any(|&(k, _)| k == 2));
+}
+
+/// The two real gates of a port, in refusal order — the unlock, then
+/// the fare (refused BEFORE any debit) — and the pay: fare-derived cast
+/// XP, plus the first-arrival milestone exactly once per account, with
+/// every expectation read off the core tables.
+#[test]
+fn a_port_validates_the_unlock_and_the_fare_and_pays_once() {
+	use digblock_core::skills::{cast_xp, total_xp_for, waystone_milestone};
+	use digblock_core::worldgen::SurfaceKind;
+	use digblock_net::messages::{CastKind, CastRefusal};
+	let kind = SurfaceKind::Plains;
+	let idx = SurfaceKind::ALL
+		.iter()
+		.position(|&k| k == kind)
+		.expect("plains is a kind") as u8;
+	let port_level = digblock_core::unlock::waystone(kind).expect("plains has a port");
+	let (essence, fare) = digblock_core::alchemy::cast_price(kind).expect("and a fare");
+	let milestone = waystone_milestone(kind).expect("and a milestone");
+
+	let mut sim = flat_sim("port");
+	let mut c = connect(&mut sim, 1);
+	wait_live(&mut sim, 1);
+	let dest = FLAT_SPAWN + glam::Vec3::new(200.0, 0.0, 0.0);
+	sim.bench_add_waystone(idx, dest);
+	let cast = |sim: &mut super::Sim| {
+		sim.tick_once(vec![SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::Cast(CastKind::Waystone(idx)),
+		}]);
+	};
+
+	// Below the port's level: refused as locked, unmoved, undebited.
+	cast(&mut sim);
+	c.drain();
+	assert!(c.msgs.iter().any(|m| matches!(
+		m,
+		ServerMsg::CastRefused {
+			reason: CastRefusal::Locked
+		}
+	)));
+	assert!(sim.test_player(1).unwrap().pos.distance(dest) > 100.0);
+
+	// Unlocked but broke: refused for the fare, BEFORE any debit.
+	sim.bench_set_arcana_level(1, port_level);
+	c.msgs.clear();
+	cast(&mut sim);
+	c.drain();
+	assert!(c.msgs.iter().any(|m| matches!(
+		m,
+		ServerMsg::CastRefused {
+			reason: CastRefusal::CantPay
+		}
+	)));
+
+	// Funded for two trips: the first pays fare-derived XP plus the
+	// milestone; the second, the fare's worth alone.
+	sim.test_grant_essence(1, essence, fare * 2);
+	c.msgs.clear();
+	cast(&mut sim);
+	c.drain();
+	assert!(sim.test_player(1).unwrap().pos.distance(dest) < 3.0);
+	let total_after = |c: &TestClient| {
+		c.msgs
+			.iter()
+			.filter_map(|m| match m {
+				ServerMsg::XpGain { skill, total }
+					if *skill == digblock_core::skills::Skill::Arcana as u8 =>
+				{
+					Some(*total)
+				}
+				_ => None,
+			})
+			.next_back()
+	};
+	assert_eq!(
+		total_after(&c),
+		Some(total_xp_for(port_level) + cast_xp(fare) + milestone),
+		"first arrival pays the fare's worth plus the milestone"
+	);
+	c.msgs.clear();
+	cast(&mut sim);
+	c.drain();
+	assert_eq!(
+		total_after(&c),
+		Some(total_xp_for(port_level) + cast_xp(fare) * 2 + milestone),
+		"a second arrival pays the fare's worth alone"
+	);
+	// And the fare really left: two trips, two fares.
+	assert_eq!(
+		sim.test_essence(1, essence),
+		Some(0),
+		"both fares debited exactly"
+	);
+}
+
+/// A site stamp lands once and converges: every cell the pure builder
+/// names holds its value afterwards, and a second stamp broadcasts
+/// nothing at all — boot after boot is a no-op, not a journal leak.
+#[test]
+fn a_site_stamp_lands_once_and_converges() {
+	let mut sim = flat_sim("stamp");
+	let mut c = connect(&mut sim, 1);
+	wait_live(&mut sim, 1);
+	c.drain();
+	c.msgs.clear();
+	sim.stamp_site(FLAT_SPAWN);
+	sim.tick_once(vec![]);
+	c.drain();
+	let landed = c
+		.msgs
+		.iter()
+		.filter(|m| matches!(m, ServerMsg::EditApplied { .. }))
+		.count();
+	assert!(landed > 0, "the stamp wrote nothing");
+	for (x, y, z, v) in digblock_core::waystones::stamp(FLAT_SPAWN) {
+		assert_eq!(sim.test_cell_at(x, y, z), Some(v), "cell ({x},{y},{z})");
+	}
+	// Idempotence: the journal already holds every value.
+	c.msgs.clear();
+	sim.stamp_site(FLAT_SPAWN);
+	sim.tick_once(vec![]);
+	c.drain();
+	assert_eq!(
+		c.msgs
+			.iter()
+			.filter(|m| matches!(m, ServerMsg::EditApplied { .. }))
+			.count(),
+		0,
+		"a re-stamp re-broadcast cells it already owns"
+	);
+}
+
+/// The cast chokepoint: a home jump pays Arcana by the DISTANCE it
+/// covered (every figure derived from `skills::home_xp`), and the gate
+/// widens to the caster's own rung — a request inside the base cooldown
+/// but past the swift one teleports.
+#[test]
+fn a_home_cast_pays_its_distance_and_the_gate_reads_the_rung() {
+	use digblock_core::skills::{Skill, home_xp, total_xp_for};
+	use digblock_core::unlock::{RETURN_SWIFT_AT, return_cooldown_secs};
+	use digblock_net::protocol::TICK_RATE;
+	let request = |sim: &mut super::Sim| {
+		sim.tick_once(vec![SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::ReturnToSpawn,
+		}]);
+	};
+	let mut sim = flat_sim("rtsxp");
+	let mut c = connect(&mut sim, 1);
+	wait_live(&mut sim, 1);
+	sim.bench_set_arcana_level(1, RETURN_SWIFT_AT);
+	let base_total = total_xp_for(RETURN_SWIFT_AT);
+
+	// Walk far enough that the pay is provably nonzero, then jump.
+	for t in 100..400 {
+		sim.tick_once(vec![batch(vec![input(t, true, no_claim())], 1)]);
+	}
+	let from = sim.test_player(1).unwrap().pos;
+	assert!(
+		from.distance(FLAT_SPAWN) > digblock_core::skills::HOME_XP_STRIDE,
+		"never walked a stride's worth"
+	);
+	request(&mut sim);
+	let landed = sim.test_player(1).unwrap().pos;
+	c.drain();
+	let total = c
+		.msgs
+		.iter()
+		.find_map(|m| match m {
+			ServerMsg::XpGain { skill, total } if *skill == Skill::Arcana as u8 => Some(*total),
+			_ => None,
+		})
+		.expect("a jump that covered ground pays");
+	assert_eq!(total, base_total + home_xp(from.distance(landed)));
+
+	// Standing at spawn, wait out the SWIFT cooldown — shorter than the
+	// base one, which is what the rung buys — and recast: the teleport
+	// answers (the widened gate), but a zero-length jump pays nothing.
+	for _ in 0..(return_cooldown_secs(RETURN_SWIFT_AT) * TICK_RATE) {
+		sim.tick_once(vec![]);
+		c.drain();
+	}
+	assert!(return_cooldown_secs(RETURN_SWIFT_AT) < return_cooldown_secs(1));
+	c.msgs.clear();
+	request(&mut sim);
+	c.drain();
+	assert!(
+		c.msgs
+			.iter()
+			.any(|m| matches!(m, ServerMsg::Teleported { .. })),
+		"the swift rung's window should already be open"
+	);
+	assert!(
+		!c.msgs.iter().any(|m| matches!(
+			m,
+			ServerMsg::XpGain { skill, .. } if *skill == Skill::Arcana as u8
+		)),
+		"a zero-length jump paid XP"
+	);
 }
 
 /// Blocks built at the spawn point raise the landing — for a joiner

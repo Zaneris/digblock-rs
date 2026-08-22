@@ -28,6 +28,8 @@ impl Renderer {
 			overlay,
 			confetti,
 			siphon,
+			teleport,
+			markers,
 			feed,
 			target: highlight_target,
 			viewmodel,
@@ -83,6 +85,8 @@ impl Renderer {
 		);
 		let confetti_n = self.confetti.prepare(gpu, confetti);
 		let siphon_n = self.siphon.prepare(gpu, siphon.as_ref());
+		let teleport_n = self.teleport.prepare(gpu, teleport);
+		let marker_n = self.waystone_fx.prepare(gpu, markers);
 
 		let mut encoder = gpu
 			.device
@@ -413,6 +417,15 @@ impl Renderer {
 				let siphon_tris = self.siphon.draw(&mut pass, siphon_n);
 				stats.draw_calls += u32::from(siphon_tris > 0);
 				stats.triangles += siphon_tris;
+
+				// The rest of the additive light: teleport effects and
+				// the standing markers, on the siphon's own rules.
+				let teleport_tris = self.teleport.draw(&mut pass, teleport_n);
+				stats.draw_calls += u32::from(teleport_tris > 0);
+				stats.triangles += teleport_tris;
+				let marker_tris = self.waystone_fx.draw(&mut pass, marker_n);
+				stats.draw_calls += u32::from(marker_tris > 0);
+				stats.triangles += marker_tris;
 			}
 
 			// The item in your own hand, over the finished world. Its own

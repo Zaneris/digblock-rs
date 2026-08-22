@@ -40,8 +40,7 @@ use digblock_net::messages::{
 };
 use digblock_net::protocol::{
 	AccountId, CHAT_BURST, EDIT_BURST, MIN_PROTOCOL, NO_CLIENT_SEQ, PROTOCOL_VERSION, PlayerId,
-	RETURN_SPAWN_COOLDOWN_SECS, SERVER_ID, SNAPSHOT_DIVISOR, TICK_RATE, TOD_SYNC_TICKS,
-	sanitize_chat, sanitize_name,
+	SERVER_ID, SNAPSHOT_DIVISOR, TICK_RATE, TOD_SYNC_TICKS, sanitize_chat, sanitize_name,
 };
 use edits::{ClientAction, PendingEditReq};
 use glam::Vec3;
@@ -355,9 +354,17 @@ struct Client {
 	/// (the first request after joining is always allowed).
 	last_return_tick: Option<u32>,
 	/// Per-skill XP totals — the authoritative copy. Awards happen at
-	/// the two chokepoints (dig credit, alchemy) and reach the client as
-	/// `ServerMsg::XpGain` totals; levels derive from the shared curve.
+	/// the chokepoints (dig credit, alchemy, the cast) and reach the
+	/// client as `ServerMsg::XpGain` totals; levels derive from the
+	/// shared curve.
 	skills: digblock_core::skills::SkillSet,
+	/// Waystones this account has arrived at (kind indices) — the
+	/// first-arrival milestone's memory, persisted with the record.
+	visited_waystones: Vec<u8>,
+	/// The tick this client's wisp burns until, for the snapshot fx byte
+	/// alone — the light itself is per-viewer GI, computed client-side.
+	/// Session-local, exactly like the client's own copy.
+	wisp_until: Option<u32>,
 }
 
 impl Client {
@@ -406,6 +413,7 @@ impl Client {
 			pos: Some(self.player.pos.to_array()),
 			last_return_tick: self.last_return_tick,
 			skills: self.skills.clone(),
+			visited_waystones: self.visited_waystones.clone(),
 		}
 	}
 }
@@ -457,6 +465,9 @@ pub struct Sim {
 	/// Persistent bans (account + IP), enforced at Hello and driven by
 	/// `/ban`.
 	ban_store: BanStore,
+	/// Resolved waystone sites (kind index → eye), stored once and never
+	/// re-derived — a lock's region cannot change.
+	waystone_store: crate::waystone_store::WaystoneStore,
 	/// The accounts granted admin chat commands.
 	///
 	/// Accounts, not names. Admin used to be a case-insensitive compare
@@ -485,6 +496,8 @@ impl Sim {
 		let store = ChunkStore::new(seed, workers);
 		let mut sim = Self::with_store(seed, data_dir, sim_radius, store, player::spawn(seed))?;
 		sim.spawn_search = true;
+		sim.ensure_spawn_lock();
+		sim.ensure_arrival_sites();
 		Ok(sim)
 	}
 
@@ -514,6 +527,7 @@ impl Sim {
 		let player_store = PlayerStore::open(data_dir)?;
 		let ban_store = BanStore::open(data_dir)?;
 		let spawn_store = SpawnStore::open(data_dir)?;
+		let waystone_store = crate::waystone_store::WaystoneStore::open(data_dir)?;
 		Ok(Self {
 			tick: 0,
 			store,
@@ -536,6 +550,7 @@ impl Sim {
 			snap_buf: Vec::new(),
 			player_store,
 			ban_store,
+			waystone_store,
 			admin_accounts: FxHashSet::default(),
 			tod_offset_secs: 0.0,
 			world_jobs: digblock_core::worldjob::Scheduler::new(),
@@ -847,6 +862,7 @@ impl Sim {
 				// stream (edit raycasts re-validate against the player's
 				// position when they run anyway).
 				ClientMsg::ReturnToSpawn => self.handle_return_to_spawn(conn_id),
+				ClientMsg::Cast(kind) => self.handle_cast(conn_id, kind),
 				// Inline like chat: sync radius is read fresh each tick, so the
 				// change applies from the next sync pass.
 				//

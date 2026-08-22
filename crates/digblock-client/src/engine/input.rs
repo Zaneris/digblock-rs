@@ -61,7 +61,8 @@ impl Engine {
 					|| (!self.ui.menu.is_open()
 						&& (self.ui.inv_screen.is_open()
 							|| self.ui.alch_screen.is_open()
-							|| self.ui.char_screen.is_open())))
+							|| self.ui.char_screen.is_open()
+							|| self.ui.spellbook.is_open())))
 			{
 				let (px, py) = (x * self.ui.size.0 as f32, y * self.ui.size.1 as f32);
 				if crate::ui::hud::corner_button_rect(
@@ -89,6 +90,7 @@ impl Engine {
 						self.ui.inv_screen.close();
 						self.ui.alch_screen.close();
 						self.ui.char_screen.close();
+						self.ui.spellbook.close();
 					}
 					return;
 				}
@@ -97,6 +99,7 @@ impl Engine {
 				|| self.ui.inv_screen.is_open()
 				|| self.ui.alch_screen.is_open()
 				|| self.ui.char_screen.is_open()
+				|| self.ui.spellbook.is_open()
 			{
 				let (px, py) = (x * self.ui.size.0 as f32, y * self.ui.size.1 as f32);
 				match phase {
@@ -137,6 +140,7 @@ impl Engine {
 			self.ui.inv_screen.close();
 			self.ui.alch_screen.close();
 			self.ui.char_screen.close();
+			self.ui.spellbook.close();
 			if matches!(event, InputEvent::FocusLost | InputEvent::PointerLockLost) {
 				self.input.keys = HeldKeys::default();
 				self.clear_touch_state();
@@ -249,6 +253,60 @@ impl Engine {
 					pressed: true,
 				} => self.ui.char_screen.close(),
 				_ => {}
+			}
+			return;
+		}
+		// Spellbook open: cursor is free; a click on a ready spell closes
+		// the page and starts the channel — the cast is watched, not
+		// menued. J/Escape close (Escape consumed like the others').
+		if self.ui.spellbook.is_open() {
+			match event {
+				InputEvent::FocusLost | InputEvent::PointerLockLost => {
+					self.input.keys = HeldKeys::default();
+					self.clear_touch_state();
+					self.input.dig_held = false;
+				}
+				InputEvent::Key {
+					key: Key::J | Key::Escape,
+					pressed: true,
+				} => self.ui.spellbook.close(),
+				_ => {
+					use crate::ui::screens::spellbook::SpellAction;
+					let ports = self.known_ports();
+					let view = crate::ui::screens::spellbook::SpellView::build(
+						&self.skills,
+						self.save.spawn_cooldown.ceil() as u32,
+						&ports,
+						&self.inventory,
+						self.arc_on,
+					);
+					match self
+						.ui
+						.spellbook
+						.handle_input(&event, &self.ui.ui_hits, &view)
+					{
+						Some(SpellAction::CastHome) => {
+							self.ui.spellbook.close();
+							self.start_cast(CastTarget::Home);
+						}
+						Some(SpellAction::CastWaystone(idx)) => {
+							self.ui.spellbook.close();
+							self.start_cast(CastTarget::Waystone(idx));
+						}
+						Some(SpellAction::CastWisp) => {
+							self.ui.spellbook.close();
+							self.start_cast(CastTarget::Wisp);
+						}
+						Some(SpellAction::CastKindle) => {
+							self.ui.spellbook.close();
+							self.start_cast(CastTarget::Kindle);
+						}
+						// A stance flip, not a cast: the page stays open,
+						// showing the new state.
+						Some(SpellAction::ToggleArc) => self.arc_on = !self.arc_on,
+						None => {}
+					}
+				}
 			}
 			return;
 		}
@@ -380,11 +438,19 @@ impl Engine {
 						self.ui.char_screen.open();
 					}
 				}
-				// Home: same request the menu row raises; update() gates
-				// it on the shared cooldown.
+				// Home: begin the Return Home channel (on cooldown the
+				// request opens the spellbook instead, where the countdown
+				// is visible). Drained in update() beside the cast step.
 				Key::H => {
 					if pressed {
 						self.save.return_spawn_requested = true;
+					}
+				}
+				Key::J => {
+					if pressed {
+						self.input.keys = HeldKeys::default();
+						self.input.dig_held = false;
+						self.ui.spellbook.open();
 					}
 				}
 				// Chat is multiplayer-only — there is no one to hear a

@@ -23,6 +23,10 @@ use glam::Vec3;
 /// Carrier key for the local player. Remote carriers key on their
 /// `PlayerId`, which is a `u8`, so the two spaces cannot collide.
 pub(super) const CARRIER_SELF: u16 = u16::MAX;
+/// Carrier key for the local player's wisp — a SECOND light on the same
+/// body, so it needs its own re-placement bookkeeping.
+pub(super) const CARRIER_WISP: u16 = u16::MAX - 2;
+
 /// Carrier key for `DIG_PLAYERBOX`'s fake remote. Out of the `PlayerId`
 /// space on purpose: it borrows a real id for its COLOUR, and keying off
 /// that made it share a `Carried::fired` slot with the live player wearing
@@ -41,7 +45,15 @@ pub(super) struct Remote {
 	pub(super) pos: Vec3,
 	pub(super) yaw: f32,
 	pub(super) held: u16,
+	/// The snapshot's packed effect byte (`messages::pack_fx`).
+	pub(super) fx: u8,
 }
+
+/// Bank a remote's wisp key lives in: a wisp is a SECOND light on the
+/// same body (the local player's is [`CARRIER_WISP`]), so it needs its
+/// own re-placement slot — the body's key ORed into a range no
+/// `PlayerId` or special key reaches.
+pub(super) const REMOTE_WISP_BANK: u16 = 0x8000;
 
 /// Everything one remote contributes to this frame: the body box, the
 /// item in its hand, and the light that item carries.
@@ -58,6 +70,14 @@ pub(super) fn push_remote(
 	let Remote { id, pos, yaw, .. } = *r;
 	let c = player_color(id);
 	bodies.push([pos.x, pos.y, pos.z, yaw, c[0], c[1], c[2], 0.0]);
+	// A remote's wisp casts exactly what its caster earned — the level
+	// and whitening ride the fx byte because their skills are not in the
+	// snapshot, the same reasoning as the held tool's level 0 below.
+	if let digblock_net::messages::RemoteFx::Wisp { level, whitened } =
+		digblock_net::messages::unpack_fx(r.fx)
+	{
+		carried.push_wisp(REMOTE_WISP_BANK | r.key, pos, level, whitened);
+	}
 	let Some(kind) = held_icon(r.held) else {
 		return;
 	};
@@ -186,6 +206,25 @@ impl Carried {
 			// it otherwise is the item's own geometry, and an emissive
 			// face a few inches across is a point at any distance that
 			// matters.
+			face: None,
+		});
+		self.keys.push(key);
+	}
+
+	/// The wisp's own entry: arcane light with no item behind it. It
+	/// wears the Wisplight row's class — the same LUT row a kindled cell
+	/// uses, so the self-light and the placed light are one colour — and
+	/// its level and whitening answer to the CASTER's Arcana
+	/// (`unlock::wisp_light`), the pick's carried-light rule.
+	pub(super) fn push_wisp(&mut self, key: u16, eye: Vec3, level: u8, whitened: bool) {
+		self.lights.push(crate::gi::Emitter {
+			pos: digblock_core::gi::carried_origin(eye).to_array(),
+			class: digblock_core::gi::gi_class(digblock_core::chunk::make_cell(
+				BlockType::Wisplight,
+				0,
+			)),
+			level,
+			whitened,
 			face: None,
 		});
 		self.keys.push(key);
@@ -551,5 +590,58 @@ mod carried_tests {
 	fn the_debug_carrier_key_is_nobodys_player_id() {
 		assert!(u16::from(u8::MAX) < CARRIER_DEBUG);
 		assert_ne!(CARRIER_DEBUG, CARRIER_SELF);
+	}
+
+	/// A remote whose fx byte carries a wisp is a light — at exactly the
+	/// level and whitening the byte says, under the Wisplight row's class,
+	/// keyed into the wisp bank so it never shares a `fired` slot with the
+	/// same body's held item. The whole point of the fx byte: their skills
+	/// are not in the snapshot, so the light rides the wire instead.
+	#[test]
+	fn a_remotes_wisp_fx_casts_what_the_byte_says() {
+		use digblock_net::messages::{RemoteFx, pack_fx};
+		let pos = Vec3::new(64.0, 70.0, 64.0);
+		let mut c = Carried::default();
+		c.begin();
+		let mut bodies = Vec::new();
+		let mut held = Vec::new();
+		let (level, whitened) = (9u8, true);
+		push_remote(
+			&mut bodies,
+			&mut held,
+			&mut c,
+			&Remote {
+				key: 3,
+				id: 3,
+				pos,
+				yaw: 0.0,
+				held: u16::MAX,
+				fx: pack_fx(RemoteFx::Wisp { level, whitened }),
+			},
+		);
+		assert_eq!(c.lights.len(), 1, "an empty hand, but a burning wisp");
+		let want =
+			digblock_core::gi::gi_class(digblock_core::chunk::make_cell(BlockType::Wisplight, 0));
+		assert_eq!(c.lights[0].class, want);
+		assert_eq!(c.lights[0].level, level);
+		assert!(c.lights[0].whitened);
+		assert_eq!(c.keys[0], REMOTE_WISP_BANK | 3, "its own fired slot");
+		// And fx = 0 is nobody's wisp.
+		let mut c = Carried::default();
+		c.begin();
+		push_remote(
+			&mut bodies,
+			&mut held,
+			&mut c,
+			&Remote {
+				key: 3,
+				id: 3,
+				pos,
+				yaw: 0.0,
+				held: u16::MAX,
+				fx: 0,
+			},
+		);
+		assert!(c.lights.is_empty());
 	}
 }

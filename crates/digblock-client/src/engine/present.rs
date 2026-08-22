@@ -178,6 +178,7 @@ impl Engine {
 				self.vfx.view_bob.pose(),
 				self.vfx.view_swing.pose(),
 				self.vfx.view_swap.pose(),
+				self.vfx.view_cast.pose(),
 			]
 			.into_iter()
 			.fold(Default::default(), crate::viewmodel::combine),

@@ -321,10 +321,11 @@ impl Sim {
 			return reject(RejectReason::ServerError);
 		}
 
+		let arc = matches!(req.kind, EditKind::PlaceArc { .. });
 		let place_cell = match req.kind {
 			EditKind::Dig | EditKind::Collect => None,
 			EditKind::Interact => unreachable!("routed to process_interact"),
-			EditKind::Place { block } => {
+			EditKind::Place { block } | EditKind::PlaceArc { block } => {
 				// Strict: unknown ids, spare bits, and states the id's
 				// shape doesn't define are refused (`state_valid` is the
 				// one gate). Door requests must be the LOWER+CLOSED cell —
@@ -347,6 +348,12 @@ impl Sim {
 				// anchor from the normal it verified rather than taking
 				// the client's word.
 				if b.is_slab() && digblock_core::chunk::cell_state(block) != 0 {
+					return reject(RejectReason::BadBlock);
+				}
+				// The arc multiplies a PLAIN placement only: slabs grow,
+				// doors pair and water pours — each its own machinery the
+				// line must not multiply.
+				if arc && (b.is_slab() || b.is_door() || b.is_fluid_source()) {
 					return reject(RejectReason::BadBlock);
 				}
 				Some(block)
@@ -545,6 +552,27 @@ impl Sim {
 						v
 					};
 					writes.push((target, placed));
+					if arc {
+						// The Mason's Arc: the full line along the verified
+						// normal, all or nothing — a partial line would
+						// leave the two ends deriving different sets.
+						let arcana = self
+							.clients
+							.get(&req.conn_id)
+							.map_or(1, |c| c.skills.level(digblock_core::skills::Skill::Arcana));
+						let n = digblock_core::unlock::arc_cells(arcana) as i32;
+						for i in 2..=n {
+							let t = (
+								req.cell.0 + hit.normal.0 * i,
+								req.cell.1 + hit.normal.1 * i,
+								req.cell.2 + hit.normal.2 * i,
+							);
+							if !self.cell_is_replaceable(t) {
+								return reject(RejectReason::Occluded);
+							}
+							writes.push((t, placed));
+						}
+					}
 					if place_b.is_some_and(|b| b.is_door()) {
 						// The derived upper half, same rule.
 						let upper = (target.0, target.1 + 1, target.2);
@@ -570,15 +598,16 @@ impl Sim {
 			}
 		};
 
-		// Protected cells: the world floor, and the spawn lock's region
-		// when one is active. Checked against the assembled `writes` so
-		// every path is covered at once — a plain dig, a place landing on
-		// the neighbour cell, a door's derived upper half, a slab grow.
-		// Honest clients predict this and never send the edit.
-		let lock = self.spawn_lock();
+		// Protected cells: the world floor, and the arrival regions.
+		// Checked against the assembled `writes` so every path is covered
+		// at once — a plain dig, a place landing on the neighbour cell, a
+		// door's derived upper half, a slab grow. Honest clients predict
+		// this and never send the edit; an admin's are exempt
+		// (`requester_regions`).
+		let regions = self.requester_regions(req.conn_id);
 		if writes
 			.iter()
-			.any(|&(c, _)| digblock_core::protect::immutable(c.0, c.1, c.2, lock.as_ref()))
+			.any(|&(c, _)| digblock_core::protect::immutable(c.0, c.1, c.2, &regions))
 		{
 			return reject(RejectReason::Protected);
 		}
@@ -598,7 +627,7 @@ impl Sim {
 			EditKind::Collect => {
 				slot_item == Some(Some(HotbarItem::WaterTool)) && active_tool == BlockType::Bucket
 			}
-			EditKind::Place { .. } => match slot_item {
+			EditKind::Place { .. } | EditKind::PlaceArc { .. } => match slot_item {
 				Some(Some(HotbarItem::Block(b))) => place_b == Some(b),
 				// Pouring the bucket. Water is the ONLY thing the tool
 				// places, and the tool is the only thing that places water:
@@ -645,8 +674,11 @@ impl Sim {
 		if req.kind == EditKind::Collect && client.inventory.bucket_full() {
 			return reject(RejectReason::BucketFull);
 		}
+		// One debit per BLOCK: a door's derived half is free, an arc's
+		// line costs its length.
+		let debit = if arc { writes.len() as u32 } else { 1 };
 		if let Some(b) = place_b
-			&& !client.inventory.try_take(b, 1)
+			&& !client.inventory.try_take(b, debit)
 		{
 			let inv = client.inventory.to_wire();
 			reject(RejectReason::NoStock);
@@ -671,7 +703,7 @@ impl Sim {
 			if let Some(b) = place_b
 				&& let Some(client) = self.clients.get_mut(&req.conn_id)
 			{
-				client.inventory.add(b, 1);
+				client.inventory.add(b, debit);
 			}
 			return reject(RejectReason::NotLoaded);
 		};
@@ -805,10 +837,10 @@ impl Sim {
 		// must not be able to reject a place, and the client deliberately
 		// does not predict it, so this broadcast is its one delivery.
 		if place_cell.is_some() {
-			let lock = self.spawn_lock();
+			let regions = self.protected_regions();
 			for &(cell, val) in &writes {
 				let below = (cell.0, cell.1 - 1, cell.2);
-				if digblock_core::protect::immutable(below.0, below.1, below.2, lock.as_ref()) {
+				if digblock_core::protect::immutable(below.0, below.1, below.2, &regions) {
 					continue;
 				}
 				let Some(dirt) = self
@@ -923,11 +955,12 @@ impl Sim {
 		{
 			writes.push((partner, pc, door_toggled(pc)));
 		}
-		// A door inside a protected region is furniture, not a mechanism.
-		let lock = self.spawn_lock();
+		// A door inside a protected region is furniture, not a mechanism
+		// — except under an admin's hand.
+		let regions = self.requester_regions(req.conn_id);
 		if writes
 			.iter()
-			.any(|&(c, _, _)| digblock_core::protect::immutable(c.0, c.1, c.2, lock.as_ref()))
+			.any(|&(c, _, _)| digblock_core::protect::immutable(c.0, c.1, c.2, &regions))
 		{
 			return reject(RejectReason::Protected);
 		}
@@ -1064,7 +1097,7 @@ impl Sim {
 	/// BEFORE the broadcast, so the `EditApplied` itself carries the data
 	/// and no JournalColumn resend is ever needed for it. This is what
 	/// lets the steady-state residency sync skip journal scans entirely.
-	fn enroll_new_column(&mut self, edit: BlockEdit) {
+	pub(super) fn enroll_new_column(&mut self, edit: BlockEdit) {
 		let col = (edit.x.div_euclid(16), edit.z.div_euclid(16));
 		for c in self.clients.values_mut() {
 			if in_radius(col, c.residency.center, c.residency.draw_dist) {
@@ -1105,14 +1138,14 @@ impl Sim {
 			return;
 		}
 		self.flow_accum = (self.flow_accum + TICK).min(1.0);
-		let lock = self.spawn_lock();
+		let locks = self.protected_regions();
 		while self.flow_accum >= FLOW_STEP_SECS {
 			self.flow_accum -= FLOW_STEP_SECS;
 			let mut edits = Vec::new();
 			let mut world = StoreWorld {
 				store: &mut self.store,
 				edits: &mut edits,
-				lock,
+				locks: locks.clone(),
 			};
 			self.fluid.step(&mut world, FLOW_BUDGET);
 			for (edit, prev) in edits {
@@ -1137,8 +1170,8 @@ impl Sim {
 	/// below) — never add to it. The action-queue cap bounds the
 	/// per-tick volume.
 	fn handle_dig_start(&mut self, conn_id: u64, cell: (i32, i32, i32), slot: u8) {
-		// Before the client borrow: `spawn_lock` reads all of `self`.
-		let lock = self.spawn_lock();
+		// Before the client borrow: `requester_regions` reads all of `self`.
+		let regions = self.requester_regions(conn_id);
 		let Some(client) = self.clients.get_mut(&conn_id) else {
 			return;
 		};
@@ -1157,7 +1190,7 @@ impl Sim {
 		// reject it anyway, but only after the player held the button
 		// through the block's full dig time for nothing — the refusal is
 		// only useful if it arrives when the hold starts.
-		if digblock_core::protect::immutable(cell.0, cell.1, cell.2, lock.as_ref()) {
+		if digblock_core::protect::immutable(cell.0, cell.1, cell.2, &regions) {
 			client.digging = None;
 			client_send(
 				client,
@@ -1273,11 +1306,40 @@ impl Sim {
 		};
 	}
 
-	/// The active spawn lock's protected region, if any.
-	pub(super) fn spawn_lock(&self) -> Option<Region> {
+	/// The regions THIS requester's action must respect: every arrival
+	/// region for a player, none for an admin — the operator who moves
+	/// spawn and stamps the sites must also be able to repair them.
+	/// Only player-authored actions (edits, holds, door toggles, casts)
+	/// ask this; the sim's own writers — fluid, the sweeps, the smother
+	/// — always answer to [`Self::protected_regions`], or an admin
+	/// merely being ONLINE would let water eat the spawn pad.
+	pub(super) fn requester_regions(&self, conn_id: u64) -> Vec<Region> {
+		let admin = self
+			.clients
+			.get(&conn_id)
+			.is_some_and(|c| self.is_admin(c.account));
+		if admin {
+			Vec::new()
+		} else {
+			self.protected_regions()
+		}
+	}
+
+	/// Every protected arrival region — the spawn lock's sphere and the
+	/// resolved waystone pads. Owned on purpose: every caller hoists it
+	/// before taking a mutable client borrow.
+	pub(super) fn protected_regions(&self) -> Vec<Region> {
 		self.spawn_store
 			.lock()
 			.map(|l| digblock_core::spawn::lock_region(Vec3::from_array(l.eye)))
+			.into_iter()
+			.chain(
+				self.waystone_store
+					.sites()
+					.iter()
+					.map(|&(_, eye)| digblock_core::spawn::lock_region(Vec3::from_array(eye))),
+			)
+			.collect()
 	}
 }
 

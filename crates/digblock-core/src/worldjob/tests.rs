@@ -120,6 +120,28 @@ fn drain(s: &mut Scheduler, secs: f64, w: &dyn CellSource) -> (Vec<Write>, usize
 	}
 }
 
+/// The production wisplight rule through the real scheduler: a kindled
+/// cell (an EDIT, which is how every Wisplight exists) sweeps back to
+/// Air within one cadence, and a cell of anything else is left alone —
+/// counted, so an empty sweep could not pass.
+#[test]
+fn the_wisplight_sweep_clears_conjured_light() {
+	let mut s = Scheduler::new();
+	for job in super::wisplight::jobs() {
+		s.register(job);
+	}
+	let mut w = Slab::of(BlockType::Air);
+	w.record((3, 64, 2), BlockType::Wisplight as u16);
+	w.record((4, 64, 2), BlockType::Torch as u16);
+	let cadence = f64::from(DAY_SECS) / f64::from(super::wisplight::jobs()[0].schedule().per_day);
+	let (writes, _) = drain(&mut s, cadence * 1.5, &w);
+	assert_eq!(
+		writes,
+		vec![((3, 64, 2), BlockType::Air as u16)],
+		"exactly the conjured light fades, and nothing beside it"
+	);
+}
+
 #[test]
 fn a_slot_index_rises_once_per_slot_and_never_falls() {
 	let day = f64::from(DAY_SECS);

@@ -239,6 +239,46 @@ pub struct RemoteState {
 	/// (`WIRE_EMPTY`/`WIRE_TOOL`/[`HELD_TOOL_FULL`]/block id) — remote
 	/// clients render it in hand. Appended in v10.
 	pub held: u16,
+	/// The player's visible effect, packed by [`pack_fx`]: the wisp they
+	/// burn today, with a kind reserved for the siphon draw's remote half
+	/// (which needs the drawn CELL, a field of its own when it lands).
+	/// Appending a struct field is the one genuinely breaking postcard
+	/// change, which is what the v32 `MIN_PROTOCOL` raise carries.
+	/// Appended in v32.
+	pub fx: u8,
+}
+
+/// The remote-effect kinds [`RemoteState::fx`] can carry. Two bits.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RemoteFx {
+	None,
+	/// A burning wisp; the argument is its cast light level, with the
+	/// whitened flag beside it — a remote's wisp must cast exactly what
+	/// its caster earned, and their skills are not in the snapshot.
+	Wisp {
+		level: u8,
+		whitened: bool,
+	},
+}
+
+/// Kind in the top two bits, the whitened flag under it, the level in
+/// the low five — one byte, decoded by [`unpack_fx`], its round-trip
+/// pinned by `fx_round_trips`.
+pub fn pack_fx(fx: RemoteFx) -> u8 {
+	match fx {
+		RemoteFx::None => 0,
+		RemoteFx::Wisp { level, whitened } => (1 << 6) | (u8::from(whitened) << 5) | (level & 0x1F),
+	}
+}
+
+pub fn unpack_fx(b: u8) -> RemoteFx {
+	match b >> 6 {
+		1 => RemoteFx::Wisp {
+			level: b & 0x1F,
+			whitened: b & 0x20 != 0,
+		},
+		_ => RemoteFx::None,
+	}
 }
 
 /// `held` sentinel for a CHARGED water tool.
@@ -317,12 +357,21 @@ pub enum EditKind {
 	/// (one unit of Water). Subject to the same hold-to-dig timing gate
 	/// as `Dig`, and refused with `BucketFull` if the tool already holds
 	/// one — the bucket carries a charge, not a stack.
+	// (PlaceArc is appended at the enum's tail — postcard is append-only.)
 	Collect,
 	/// Use/interact click (door open-close toggle): validated with the
 	/// interact-aware raycast (`raycast_interact` — an open door's swung
 	/// leaf still stops it); the hit must be interactive. `normal` may
 	/// be zero. Appended in v8.
 	Interact,
+	/// A Mason's Arc placement: `Place`, extended into a full line of
+	/// `unlock::arc_cells` along the verified face normal — all or
+	/// nothing, so both ends derive one set or the request bounces.
+	/// Refused for slabs, doors and water (each carries machinery of its
+	/// own the line must not multiply). Appended in v32.
+	PlaceArc {
+		block: u16,
+	},
 }
 
 /// One alchemy request (wire form; ids are validated server-side against
@@ -499,6 +548,40 @@ pub enum ClientMsg {
 	/// trade, and it is the right way round for a client that would
 	/// otherwise be unable to play at all.
 	Unreliable(Vec<u8>),
+	/// A completed cast channel asking for its spell. The channel itself
+	/// is client pacing (the `handle_return_to_spawn` stance: honest
+	/// clients gate locally); the server validates the UNLOCK and the
+	/// PRICE, which are the real gates. Appended in v32.
+	Cast(CastKind),
+}
+
+/// What a [`ClientMsg::Cast`] winds up toward — shaped for the whole
+/// spell roster from day one so the message never needs a second form.
+/// `Wisp` and `Kindle` decode today and are refused until their spells
+/// land (the retired-verb pattern, run in reverse).
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
+pub enum CastKind {
+	/// A port to the biome waystone at this `SurfaceKind`
+	/// declaration-order index.
+	Waystone(u8),
+	Wisp,
+	Kindle {
+		cell: [i32; 3],
+		face: u8,
+	},
+}
+
+/// Why a cast was refused — a reason, never a sentence; `voice` chooses
+/// the words. Appended in v32.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
+pub enum CastRefusal {
+	/// The destination (or the spell) is beyond the caster's Arcana.
+	Locked,
+	/// The caster cannot pay the passage. Refused BEFORE any debit.
+	CantPay,
+	/// A kindle aimed at a cell that cannot hold conjured light — not
+	/// air, out of reach, protected, or not resident.
+	BadTarget,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
@@ -728,6 +811,21 @@ pub enum ServerMsg {
 	/// that used to ride `Chat` from `SERVER_ID`; the sentence is now
 	/// `voice`'s. Appended in v29.
 	Admin(AdminReply),
+	/// The world's RESOLVED waystones — `(SurfaceKind index, eye)` — sent
+	/// once in join sync after `Skills`. Server state the client cannot
+	/// derive: each eye was resolved against the journal ONCE and stored,
+	/// so re-deriving from the seed would disagree exactly on damaged
+	/// worlds. Appended in v32.
+	Waystones {
+		entries: Vec<(u8, [f32; 3])>,
+	},
+	/// A cast the server would not perform, and why — the spellbook greys
+	/// what it can predict, so an honest client sees this only across a
+	/// race (levelling down is impossible, but spending essence between
+	/// build and click is not). Appended in v32.
+	CastRefused {
+		reason: CastRefusal,
+	},
 }
 
 #[cfg(test)]

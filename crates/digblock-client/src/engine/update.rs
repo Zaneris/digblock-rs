@@ -130,13 +130,12 @@ impl Engine {
 			self.push_feed(crate::voice::Msg::LeftWorld);
 			self.return_to_title();
 		}
-		// Return to spawn: one shared cooldown gates the menu row.
-		// Connected, the server teleports us (Teleported lands in
-		// pump_net); local play resolves and lands immediately.
+		// The home spell's cooldown ticks here; the spellbook page reads
+		// it live. Connected, the server teleports us (Teleported lands
+		// in pump_net); local play resolves and lands immediately.
 		self.save.spawn_cooldown = (self.save.spawn_cooldown - dt).max(0.0);
-		self.ui
-			.menu
-			.set_spawn_cooldown(self.save.spawn_cooldown.ceil() as u32);
+		// The wisp burns down on the same clock.
+		self.wisp_left = (self.wisp_left - dt).max(0.0);
 		// The menu's Inventory/Alchemy rows: the menu closed itself; the
 		// screen takes over the free cursor seamlessly.
 		if self.ui.menu.take_inventory() {
@@ -148,25 +147,13 @@ impl Engine {
 		if self.ui.menu.take_character() {
 			self.ui.char_screen.open();
 		}
-		let spawn_requested = self.ui.menu.take_return_spawn()
-			| std::mem::take(&mut self.save.return_spawn_requested);
-		if spawn_requested && self.save.spawn_cooldown == 0.0 {
-			self.save.spawn_cooldown = digblock_net::protocol::RETURN_SPAWN_COOLDOWN_SECS as f32;
-			// Set before the arms: it is what the teleport that lands —
-			// this frame locally, or a round trip later — words itself by.
-			self.save.spawn_return_pending = true;
-			match self.session.client.as_mut() {
-				Some(net) if net.ready() => net.send_return_to_spawn(),
-				_ => {
-					// Same rule the server runs: relocate sideways out of
-					// anything dug into the spawn, never descend into it.
-					// The overlay — not `pipeline.cell_at` — is the edit
-					// view: the pipeline answers None for unloaded columns,
-					// which the support test would read as void.
-					let pos = self.local_spawn();
-					self.apply_teleport(pos, Vec3::ZERO);
-				}
-			}
+		if self.ui.menu.take_spellbook() {
+			self.ui.spellbook.open();
+		}
+		// The H shortcut: begin the home channel — or, on cooldown, show
+		// the page with the countdown instead of doing nothing silently.
+		if std::mem::take(&mut self.save.return_spawn_requested) {
+			self.start_cast(super::CastTarget::Home);
 		}
 		if let Some(services) = &self.services {
 			for cmd in self.ui.menu.take_commands() {
@@ -236,6 +223,21 @@ impl Engine {
 			b[3] += dt;
 		}
 		self.vfx.confetti.retain(|b| b[3] < crate::confetti::LIFE);
+		// Teleport bursts age the same way — the age IS the simulation —
+		// and the channel aura's envelope opens while a cast channels and
+		// dissolves when one ends or breaks, so an interrupt fades rather
+		// than pops. The flash is the teleport instant's overlay wash.
+		for fx in &mut self.vfx.casts {
+			fx.age += dt;
+		}
+		self.vfx.casts.retain(|fx| fx.age < crate::teleport::LIFE);
+		let channel_live = self.cast.is_some() || self.config.debug_cast.is_some();
+		self.vfx.channel_env = if channel_live {
+			(self.vfx.channel_env + dt / crate::teleport::FADE_IN_SECS).min(1.0)
+		} else {
+			(self.vfx.channel_env - dt / crate::teleport::FADE_OUT_SECS).max(0.0)
+		};
+		self.vfx.flash = (self.vfx.flash - dt * 2.2).max(0.0);
 		// DIG_CONFETTI=1: a burst every couple of seconds a few blocks
 		// ahead, so a capture run can photograph one at every age.
 		if self.config.debug_confetti && self.vfx.confetti.is_empty() {
@@ -293,6 +295,7 @@ impl Engine {
 		while self.dig_accum >= TICK {
 			self.dig_accum -= TICK;
 			self.step_dig();
+			self.step_cast();
 		}
 		// The siphon's stream reads the state those ticks just left, so it
 		// ages after them and on the FRAME clock rather than the sim one:
@@ -308,10 +311,22 @@ impl Engine {
 			self.flow_accum = (self.flow_accum + dt).min(1.0);
 			while self.flow_accum >= FLOW_STEP_SECS {
 				self.flow_accum -= FLOW_STEP_SECS;
-				let mut world = PipelineWorld(&mut self.pipeline);
+				let mut world = PipelineWorld(&mut self.pipeline, &self.protected);
 				self.fluid.step(&mut world, FLOW_BUDGET);
 			}
 			self.step_world_jobs();
+			// The spawn structure owed to this save, landed as chunks
+			// become resident — the engine's arm of the server's boot
+			// stamp. `set_cell` answering None keeps the cell owed.
+			if !self.pending_stamp.is_empty() {
+				let pipeline = &mut self.pipeline;
+				self.pending_stamp
+					.retain(|&(x, y, z, v)| match pipeline.cell_at(x, y, z) {
+						Some(cur) if cur == v => false,
+						Some(_) => pipeline.set_cell(x, y, z, v).is_none(),
+						None => true,
+					});
+			}
 		}
 		self.bench.pending.sim_ms = ms_since(t_sim);
 
@@ -521,6 +536,9 @@ impl Engine {
 		// `step_dig` — one stroke per bucket, so there is nothing to
 		// re-arm here.
 		self.vfx.view_swing.advance(dt);
+		// The casting hand rides the channel's own envelope, so gesture
+		// and aura rise and dissolve together. DIG_CAST holds both.
+		self.vfx.view_cast.advance(dt, self.vfx.channel_env);
 		// At the TAIL on the interactive path, after `reconcile_layout` and
 		// `pump_net`: a slot whose count reached zero is only released by
 		// the reconcile above, so reading the bar ahead of it drew — and

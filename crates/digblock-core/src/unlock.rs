@@ -325,6 +325,104 @@ pub fn ore_mastery(level: u32) -> u32 {
 /// is the top of the CONTENT ladder rather than the level cap.
 pub const MASTERY_AT: u32 = 60;
 
+/// Arcana's home cooldown: how long Return Home rests between casts,
+/// stepping DOWN at the two swift-return rungs — a rung is felt as "home
+/// comes back sooner". The first level's answer IS the game's base
+/// return cooldown; `digblock-net` aliases that base onto the protocol
+/// const its message doc names, so there is one number.
+pub fn return_cooldown_secs(level: u32) -> u32 {
+	match level {
+		l if l >= RETURN_SWIFTER_AT => 30,
+		l if l >= RETURN_SWIFT_AT => 45,
+		_ => RETURN_COOLDOWN_BASE_SECS,
+	}
+}
+
+/// The cooldown every player starts at — and the one pre-Arcana players
+/// effectively keep, since a fresh skill sits at the first level.
+pub const RETURN_COOLDOWN_BASE_SECS: u32 = 60;
+
+/// The first swift-return rung: the stretch between the second waystone
+/// and the third otherwise has no threshold in sight.
+pub const RETURN_SWIFT_AT: u32 = 18;
+
+/// The second, deep in the ladder beside the last ports.
+pub const RETURN_SWIFTER_AT: u32 = 56;
+
+/// The waystone ladder: the Arcana level that makes each biome's port
+/// castable, ordered by remoteness and rarity — common lowland first,
+/// the far cold last, crowning the content top. `None` is a kind with no
+/// port: the water kinds are not destinations, and a shore band or a
+/// slope patch is scenery, not a place (the doc comment on the arm is
+/// the roster's record). The sites themselves derive in
+/// `waystones::anchor`; this table is the only place their levels live.
+pub fn waystone(kind: crate::worldgen::SurfaceKind) -> Option<u32> {
+	use crate::worldgen::SurfaceKind as K;
+	Some(match kind {
+		K::Plains => 6,
+		K::Forest => 14,
+		K::Savanna => 22,
+		K::Taiga => 34,
+		K::Beach => 42,
+		K::Mountain => 50,
+		K::Snow => 60,
+		// Not destinations: the water kinds, and the two narrow bands.
+		K::Ocean | K::River | K::Lake | K::Marsh | K::GravelShore | K::Scree => return None,
+	})
+}
+
+/// The cast wind-up, in sim ticks — every spell channels through this,
+/// so the quickening rung is felt on the whole spellbook at once.
+pub fn channel_ticks(level: u32) -> u32 {
+	if level >= CHANNEL_QUICK_AT { 72 } else { 120 }
+}
+
+/// Where every channel quickens — the ladder's midpoint breather between
+/// the arc's first rank and the fourth waystone.
+pub const CHANNEL_QUICK_AT: u32 = 30;
+
+/// Where Kindle opens — conjured light in the world, a few levels past
+/// the first port so the illumination family paces the travel one.
+pub const KINDLE_AT: u32 = 10;
+
+/// Where Kindle's fare eases, deep beside the last ports.
+pub const KINDLE_CHEAP_AT: u32 = 54;
+
+/// The Mason's Arc: how many cells one placement lays along the face
+/// normal — Arcana's mirror of [`pick_cells`], the placing half of the
+/// pick's breaking. The single cell below the first rank IS the
+/// ordinary place.
+pub fn arc_cells(level: u32) -> usize {
+	match level {
+		l if l >= ARC_WIDE_AT => 5,
+		l if l >= ARC_AT => 3,
+		_ => 1,
+	}
+}
+
+/// The arc's two ranks.
+pub const ARC_AT: u32 = 26;
+pub const ARC_WIDE_AT: u32 = 46;
+
+/// Wisp's second rank: brighter AND whitened — level alone reads as
+/// more of the same hue, never as brighter (the carried-light lesson).
+pub const WISP_BRIGHT_AT: u32 = 38;
+
+/// The wisp's cast light for a caster at this Arcana: GI level and
+/// whitening. The self-light answers to its CASTER, the pick's rule.
+pub fn wisp_light(level: u32) -> (u8, bool) {
+	if level >= WISP_BRIGHT_AT {
+		(12, true)
+	} else {
+		(8, false)
+	}
+}
+
+/// Seconds a wisp burns, doubling at the second rank.
+pub fn wisp_secs(level: u32) -> u32 {
+	if level >= WISP_BRIGHT_AT { 360 } else { 180 }
+}
+
 // There is deliberately NO per-substance draw gate. The reveal IS the
 // gate: a node you cannot see draws as its host, and one you can needs
 // only the siphon — a second level axis on top of the reveal would be
@@ -549,6 +647,23 @@ pub fn opens(skill: Skill, level: u32) -> bool {
 		}
 		// A new recipe, or a surface node fading into view.
 		Skill::Alchemy => craft(b) == Some(level) || alchemy_reveal(b) == Some(level),
+		// A waystone humming into reach, or a travel rung — the home
+		// cooldown stepping down, the channel quickening: levels that
+		// hand you something without handing you an item, on the
+		// prospector/mastery pattern.
+		Skill::Arcana => {
+			b == BlockType::Air
+				&& (crate::worldgen::SurfaceKind::ALL
+					.iter()
+					.any(|&k| waystone(k) == Some(level))
+					|| level == KINDLE_AT
+					|| arc_cells(level) != arc_cells(level - 1)
+					|| return_cooldown_secs(level) != return_cooldown_secs(level - 1)
+					|| channel_ticks(level) != channel_ticks(level - 1)
+					|| wisp_light(level) != wisp_light(level - 1)
+					|| crate::alchemy::kindle_price(level)
+						!= crate::alchemy::kindle_price(level - 1))
+		}
 	})
 }
 

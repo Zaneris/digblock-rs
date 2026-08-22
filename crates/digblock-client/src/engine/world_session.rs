@@ -14,6 +14,9 @@ impl Engine {
 		self.push_feed(crate::voice::Msg::Connected);
 		self.seed = seed;
 		self.save.spawn_pos = spawn;
+		// A server's protected regions are its own secret: refusals arrive
+		// as `DigRefused`, never predicted.
+		self.protected.clear();
 		// No overlay: the server's journal owns this world's edits.
 		self.install_pipeline(Pipeline::new(
 			seed,
@@ -45,6 +48,9 @@ impl Engine {
 	/// state, and silence the old world.
 	pub(super) fn reset_world_transients(&mut self, pos: Vec3, world_replaced: bool) {
 		self.dig = None;
+		self.cast = None;
+		self.arc_on = false;
+		self.wisp_left = 0.0;
 		self.target = None;
 		self.fluid = digblock_core::fluid::FluidSim::new();
 		self.flow_accum = 0.0;
@@ -67,6 +73,8 @@ impl Engine {
 		// (A stale `Welcome` in there re-swaps the world to the old seed; a
 		// stale `Disconnected` kills the fresh connection on arrival.)
 		self.session.net_backlog.clear();
+		// A stamp owed to the world being left must not pave the next one.
+		self.pending_stamp.clear();
 		// Likewise session state: a cell one server refused stays refused at
 		// the same coordinates in the next world otherwise, because the only
 		// other clear needs the dig button held AND aimed elsewhere.
@@ -74,9 +82,20 @@ impl Engine {
 		self.drawn_cell = None;
 		// Confetti is thrown at a world position; a new world has none of
 		// them left hanging in the air. Same for the essence draw, which
-		// names a cell in the world just left.
+		// names a cell in the world just left, the teleport light, and
+		// the channel's fade.
 		self.vfx.confetti.clear();
 		self.vfx.siphon = None;
+		self.vfx.casts.clear();
+		self.vfx.channel_env = 0.0;
+		self.vfx.flash = 0.0;
+		// The arrival marker follows the world's own spawn: the pad's
+		// floor centre under the spawn eye.
+		self.vfx.marker_sites = vec![Vec3::new(
+			self.save.spawn_pos.x,
+			self.save.spawn_pos.y - digblock_core::player::EYE_TO_FEET,
+			self.save.spawn_pos.z,
+		)];
 		// And the bench job, which survives the SCREEN closing but not
 		// the world: it points at this world's stacks and this server's
 		// bucket, neither of which exists in whatever comes next.
@@ -108,11 +127,15 @@ impl Engine {
 		self.emit(crate::audio::AudioCmd::LoopStop {
 			id: crate::audio::LOOP_DIG,
 		});
+		self.emit(crate::audio::AudioCmd::LoopStop {
+			id: crate::audio::LOOP_CAST,
+		});
 		self.audio.ambient.reset();
 		self.audio.prospect.reset();
 		self.audio.swim_strokes.reset();
 		self.vfx.view_bob.reset();
 		self.vfx.view_swing.reset();
+		self.vfx.view_cast.reset();
 		self.vfx.view_swap.reset();
 		// The tool slot's handover animates whenever the active tool changes,
 		// which is right for a cycle and wrong for a world entry: the bar we
@@ -136,6 +159,18 @@ impl Engine {
 		self.audio.prev_player_pos = pos;
 		self.audio.prev_wet = true;
 		self.audio.fall_from_y = pos.y;
+	}
+
+	/// Rebuild the standing-spiral anchors from what this world knows:
+	/// the spawn pad, plus every resolved waystone. Eyes become pad-floor
+	/// positions — the spiral rises out of the platform, not the air.
+	pub(super) fn refresh_marker_sites(&mut self) {
+		let pad = |eye: Vec3| Vec3::new(eye.x, eye.y - digblock_core::player::EYE_TO_FEET, eye.z);
+		let mut sites = vec![pad(self.save.spawn_pos)];
+		for &(_, eye) in &self.session.waystones {
+			sites.push(pad(Vec3::from_array(eye)));
+		}
+		self.vfx.marker_sites = sites;
 	}
 
 	/// Flush and detach the active named save (leaving for a server,
@@ -171,6 +206,9 @@ impl Engine {
 		self.seed = seed;
 		let spawn = digblock_core::player::spawn(seed);
 		self.save.spawn_pos = spawn;
+		// The backdrop is ephemeral — nothing persists, so nothing needs
+		// an arrival lock, and the world just left must not leak its own.
+		self.protected.clear();
 		self.install_pipeline(Pipeline::with_overlay(
 			seed,
 			self.config.draw_dist,
@@ -248,6 +286,13 @@ impl Engine {
 		if save.rev < digblock_persist::REV_FOUND_ESSENCE {
 			self.inventory.clear_pre_redesign_essence();
 		}
+		// Protection is always on offline too: the pipeline is the
+		// authority here, so it enforces the spawn sphere itself — around
+		// the RESOLVED spawn, so a save whose anchor was dug out before
+		// this rule existed locks the relocated pad, never the crater.
+		self.protected = vec![digblock_core::spawn::lock_region(
+			self.local_spawn_resolved(),
+		)];
 		// The save's skill totals (empty for pre-skills saves = level 1);
 		// stale toasts belong to whatever world we just left.
 		self.skills = digblock_core::skills::SkillSet::from_wire(&save.skills);
@@ -267,6 +312,19 @@ impl Engine {
 			&mut self.inv_grid,
 		);
 		self.reset_world_transients(start, !reuse);
+		// The marker stands on the RESOLVED pad — the eye the lock
+		// anchors on — not the pristine anchor a damaged save moved off.
+		let pad = self.local_spawn_resolved();
+		self.vfx.marker_sites = vec![Vec3::new(
+			pad.x,
+			pad.y - digblock_core::player::EYE_TO_FEET,
+			pad.z,
+		)];
+		// And the pad wears its structure offline too: the same pure
+		// stamp the server applies, owed until each chunk is resident
+		// and drained in `update` — idempotent, so an already-stamped
+		// save owes nothing.
+		self.pending_stamp = digblock_core::waystones::stamp(pad);
 		self.save.in_local_save = true;
 		self.save.player_save_accum = 0.0;
 		self.ui.menu.on_world_entered();

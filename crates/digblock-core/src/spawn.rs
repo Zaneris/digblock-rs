@@ -11,7 +11,7 @@
 //! The search never looks downward, and [`SPAWN_FLOOR`] keeps it out of pits.
 
 use crate::decoration::box_obstructed;
-use crate::protect::Region;
+use crate::protect::{Region, Sphere};
 use crate::worldgen::{SEA_LEVEL, carved, column_shape_above, column_shapes_in};
 use glam::Vec3;
 
@@ -22,6 +22,17 @@ pub const CLEAR: i32 = 2;
 /// Height of the air cylinder above the floor, in cells. The player
 /// capsule stands on `h + 1`, so cells `h+1 ..= h+CAPSULE` must be clear.
 pub const CAPSULE: i32 = 3;
+
+/// Radius of the protected sphere around an arrival pad — the spawn
+/// lock, and a waystone pad. Two containments size it, both pinned
+/// rather than restated: the validated core (the [`CLEAR`] disc plus its
+/// [`CAPSULE`], farthest at its top corners —
+/// `the_lock_contains_what_stands_clear_reads`), and every cell a
+/// waystone stamp writes (the const assert in `waystones.rs`). It
+/// carries margin over both, and the lower hemisphere is the
+/// anti-undermining depth the box never had. Shrinking it until either
+/// containment fails breaks the "locked ⇒ permanently valid" fast path.
+pub const LOCK_RADIUS: i32 = 6;
 
 /// Spawn never sits below sea level — a beach at the water's edge is
 /// fine, an excavated pit is not.
@@ -84,24 +95,24 @@ fn column(eye: Vec3) -> (i32, i32, i32) {
 	)
 }
 
-/// The cells a spawn lock protects: one block down (the floor the player
-/// stands on), [`CLEAR`] out, [`CAPSULE`] high.
+/// The cells an arrival lock protects: a [`LOCK_RADIUS`] sphere centred
+/// on the pad's floor cell.
 ///
-/// Deliberately the exact set of cells [`accepts`] inspects — that
-/// equivalence, pinned by `lock_region_covers_what_the_test_reads`, is
+/// The sphere CONTAINS every cell [`accepts`] inspects — that
+/// containment, pinned by `lock_region_covers_what_the_test_reads`, is
 /// what makes a locked spawn *permanently* valid: no edit the lock
 /// permits can change the search's answer, so callers holding a lock can
-/// skip [`resolve`] outright.
+/// skip [`resolve`] outright. The cells beyond the validated core are
+/// protected without being validated — whatever terrain they are,
+/// frozen, the lower half against undermining the pad.
 pub fn lock_region(eye: Vec3) -> Region {
 	let (x, h, z) = column(eye);
-	Region {
-		x0: x - CLEAR,
-		x1: x + CLEAR,
-		y0: h,
-		y1: h + CAPSULE,
-		z0: z - CLEAR,
-		z1: z + CLEAR,
-	}
+	Region::Sphere(Sphere {
+		cx: x,
+		cy: h,
+		cz: z,
+		r: LOCK_RADIUS,
+	})
 }
 
 /// The pristine half of the test: `Some(h)` when worldgen alone would be
@@ -283,16 +294,32 @@ fn ring(d: i32, step: i32) -> impl Iterator<Item = (i32, i32)> {
 /// spawning tracks the terrain instead of hardcoding a height — and never
 /// drops the player into the ocean.
 pub fn anchor(seed: f64) -> Vec3 {
+	anchor_walk(&|x, z| pristine_floor(x, z, seed))
+		// Pathological seed: no clear land anywhere the walk reaches —
+		// tread water.
+		.unwrap_or_else(|| Vec3::new(0.5, SEA_LEVEL as f32 + 3.5, 0.5))
+}
+
+/// The pristine ring walk, generalized: the nearest column to the origin
+/// that `accept` answers a floor for. Spawn's own anchor and the waystone
+/// anchors share it, so "a pad the search likes" means exactly one thing
+/// — an accept that WRAPS [`pristine_floor`] inherits every clearance
+/// rule, and tightening only ever narrows the set.
+pub(crate) fn anchor_walk(accept: &dyn Fn(i32, i32) -> Option<i32>) -> Option<Vec3> {
 	for r in 0..=ANCHOR_RINGS {
 		for (x, z) in ring(r * ANCHOR_STEP, ANCHOR_STEP) {
-			if let Some(h) = pristine_floor(x, z, seed) {
-				return eye(x, h, z);
+			if let Some(h) = accept(x, z) {
+				return Some(eye(x, h, z));
 			}
 		}
 	}
-	// Pathological seed: no clear land anywhere the walk reaches — tread
-	// water.
-	Vec3::new(0.5, SEA_LEVEL as f32 + 3.5, 0.5)
+	None
+}
+
+/// [`pristine_floor`], for sibling modules building accepts over it —
+/// the clearance rule itself stays private.
+pub(crate) fn pristine_pad(x: i32, z: i32, seed: f64) -> Option<i32> {
+	pristine_floor(x, z, seed)
 }
 
 /// The spawn point to actually use: the anchor if players have left it

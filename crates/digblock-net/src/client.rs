@@ -186,6 +186,16 @@ pub enum NetEvent {
 		skill: u8,
 		level: u32,
 	},
+	/// The world's resolved waystone sites, sent in join sync — server
+	/// state the client cannot derive (each eye was resolved against the
+	/// journal once and stored).
+	Waystones {
+		entries: Vec<(u8, [f32; 3])>,
+	},
+	/// A cast the server refused, and why — `voice` chooses the words.
+	CastRefused {
+		reason: crate::messages::CastRefusal,
+	},
 	Disconnected {
 		reason: String,
 	},
@@ -722,6 +732,8 @@ impl NetClient {
 			ServerMsg::AdminCommands { commands } => {
 				out.push(NetEvent::AdminCommands { commands });
 			}
+			ServerMsg::Waystones { entries } => out.push(NetEvent::Waystones { entries }),
+			ServerMsg::CastRefused { reason } => out.push(NetEvent::CastRefused { reason }),
 			ServerMsg::InventoryFull { counts } => {
 				// Raw pairs through to the engine — `Inventory::from_wire`
 				// does the strict decode (unknown ids dropped, flagged
@@ -782,6 +794,7 @@ impl NetClient {
 					),
 					yaw: p.yaw,
 					held: p.held,
+					fx: p.fx,
 				},
 			);
 		}
@@ -872,6 +885,12 @@ impl NetClient {
 	/// the shared cooldown; the server enforces it authoritatively.
 	pub fn send_return_to_spawn(&mut self) {
 		self.send_msg(&ClientMsg::ReturnToSpawn);
+	}
+
+	/// A completed channel asks for its spell — the server validates the
+	/// unlock and the price, which are the real gates.
+	pub fn send_cast(&mut self, kind: crate::messages::CastKind) {
+		self.send_msg(&ClientMsg::Cast(kind));
 	}
 
 	/// Tell the server the draw distance changed (settings slider), so

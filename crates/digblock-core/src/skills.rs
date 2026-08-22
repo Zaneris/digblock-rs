@@ -19,16 +19,18 @@ use crate::block::BlockType;
 pub enum Skill {
 	Mining = 0,
 	Alchemy = 1,
+	Arcana = 2,
 }
 
 impl Skill {
-	pub const COUNT: usize = 2;
-	pub const ALL: [Skill; Self::COUNT] = [Skill::Mining, Skill::Alchemy];
+	pub const COUNT: usize = 3;
+	pub const ALL: [Skill; Self::COUNT] = [Skill::Mining, Skill::Alchemy, Skill::Arcana];
 
 	pub fn try_from_index(i: u8) -> Option<Self> {
 		match i {
 			0 => Some(Skill::Mining),
 			1 => Some(Skill::Alchemy),
+			2 => Some(Skill::Arcana),
 			_ => None,
 		}
 	}
@@ -40,6 +42,7 @@ impl Skill {
 		match self {
 			Skill::Mining => "Mining",
 			Skill::Alchemy => "Alchemy",
+			Skill::Arcana => "Arcana",
 		}
 	}
 }
@@ -525,6 +528,51 @@ pub fn field_xp(node: BlockType) -> Option<(u64, u64)> {
 /// repeated against an unbounded supply.
 pub fn craft_xp(item: BlockType) -> u64 {
 	u64::from(crate::alchemy::craft_worth(item))
+}
+
+/// Arcana XP for a Return Home cast, derived from the DISTANCE the jump
+/// covered rather than a flat figure — the depth ramp's spirit: the
+/// world scales the award, both ends compute it from positions the
+/// server already holds, and a zero-length jump pays zero, which is the
+/// anti-idle rule stated as arithmetic. Capped, so no journey is worth
+/// making only to be teleported back out of.
+pub fn home_xp(dist_blocks: f32) -> u64 {
+	((dist_blocks.max(0.0) / HOME_XP_STRIDE) as u64).min(HOME_XP_CAP)
+}
+
+/// Blocks per point of the home award.
+pub const HOME_XP_STRIDE: f32 = 8.0;
+
+/// The home award's ceiling, per jump.
+pub const HOME_XP_CAP: u64 = 60;
+
+/// Arcana XP for a PRICED cast, derived from what it drains — the
+/// `craft_xp` rule: the award rides the price, so a fare retune moves
+/// its XP with it and no spell pays out of proportion to its drain.
+/// Zero-cost casts pay zero structurally.
+pub fn cast_xp(essence_price: u32) -> u64 {
+	u64::from(essence_price) * CAST_XP_PER_ESSENCE
+}
+
+/// Points per essence unit a cast drains.
+pub const CAST_XP_PER_ESSENCE: u64 = 15;
+
+/// The once-per-account first-arrival milestone at each biome's
+/// waystone, flat and authored (the `field_xp` mold): rising with the
+/// port's remoteness, sized so the waystone hunt is Arcana's XP spine
+/// the way reveals are Mining's. `None` mirrors the portless kinds.
+pub fn waystone_milestone(kind: crate::worldgen::SurfaceKind) -> Option<u64> {
+	use crate::worldgen::SurfaceKind as K;
+	Some(match kind {
+		K::Plains => 400,
+		K::Forest => 600,
+		K::Savanna => 900,
+		K::Taiga => 1_400,
+		K::Beach => 2_000,
+		K::Mountain => 3_000,
+		K::Snow => 4_500,
+		K::Ocean | K::River | K::Lake | K::Marsh | K::GravelShore | K::Scree => return None,
+	})
 }
 
 /// Total Alchemy XP for one validated alchemy op (call only after
