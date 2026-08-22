@@ -169,7 +169,7 @@ impl Engine {
 				world_store: None,
 				in_local_save: false,
 				player_save_accum: 0.0,
-				offline_waystones: std::collections::HashMap::new(),
+				offline_waystones: digblock_core::waystones::Roster::new(seed),
 				spawn_pos: spawn,
 				spawn_cooldown: 0.0,
 				return_spawn_requested: false,

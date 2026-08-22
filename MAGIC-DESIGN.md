@@ -60,10 +60,18 @@ was considered and dropped. It reads well solo and sours in multiplayer — ever
 expedition before a group can convene anywhere. The shipped grammar is better: a threshold fires and the world offers
 more of itself.
 
-- **One canonical waystone per biome kind per world, derived from the seed.** `waystones::anchor(kind, seed)` is
-  `spawn::anchor`'s ring walk generalized (shared accept-closure walk, per-kind salted start so kinds don't contend for
-  one ring). The roster is the seven kinds `unlock::waystone` answers for; GravelShore and Scree are excluded — a narrow
-  shore band and a slope patch are not destinations.
+- **One canonical waystone per biome kind per world, derived from the seed.** `waystones::Roster` is `spawn::anchor`'s
+  ring walk generalized (shared accept-closure walk, per-kind surface gate). The roster is the seven kinds
+  `unlock::waystone` answers for; GravelShore and Scree are excluded — a narrow shore band and a slope patch are not
+  destinations.
+- **No two arrival pads crowd each other.** Every site — spawn included — stands at least `waystones::MIN_SEPARATION`
+  from every other, which is why the roster resolves as a SET rather than a function per kind: the rule is mutual, so a
+  pad can only be judged against the pads already placed and a per-kind answer would depend on who asked first. Rungs
+  are placed lowest-first (order derived from `unlock::waystone`, never written down), so the first port a player
+  unlocks gets the nearest site the map can offer and later rungs are pushed outward; a rung resolves lazily and its
+  prefix is exact, so an interactive cast pays one near ring walk rather than the whole ladder's. The earlier rule was a
+  minimum distance from the world ORIGIN alone, which let the roster cluster: several kinds took the first ring past the
+  floor and landed within sight of each other and of spawn.
 - **The unlock IS the teleport.** Crossing the threshold makes the destination castable — no visit required, and the
   first cast is the discovery. First arrival at each waystone pays milestone XP once per account
   (`skills::waystone_milestone`, `visited_waystones` persisted with the player record). Because destinations are
@@ -79,7 +87,12 @@ more of itself.
 - **Existing-world damage resolves once, then the answer is stored.** First boot validates each anchor pad against the
   journal (`stands_clear`), resolves sideways if ruined (`spawn::resolve`'s mold), stamps, stores the eye in
   `waystones.json`, and locks it. Stored rather than re-derived because a lock's whole purpose is that its region cannot
-  change.
+  change. Damage resolution is also the one thing that can nudge a stored pad inside another's exclusion — by a few
+  blocks, and the alternative is a port standing in a crater.
+- **A stored roster moves for exactly one reason: the placement rule itself changing.** `waystones::PLACEMENT_RULE` is
+  stamped into `waystones.json`; a file written under an older rule is archived beside itself and re-placed once, and
+  the structures the old sites stamped stay standing as ordinary now-unprotected edits — the same answer `/set-spawn`
+  gives when it moves spawn out from under a pad.
 - **Every site also wears a standing marker** — the slow rising spiral of `waystone.wgsl`, distance-culled client-side
   over every resolved site. The spiral doubles as the protection-boundary hint (§9's old open question, answered).
 

@@ -431,10 +431,10 @@ struct SaveSession {
 	/// Seconds since the last player/inventory snapshot handoff.
 	player_save_accum: f32,
 
-	/// Offline port anchors, derived on first cast and cached — the ring
-	/// walk is pure but not free, and a session casts to the same few
-	/// places. `None` caches a kind this seed never offers.
-	offline_waystones: std::collections::HashMap<u8, Option<Vec3>>,
+	/// Offline port anchors, resolved rung by rung as casts ask for them
+	/// and kept for the session — the ring walks are pure but the far
+	/// ones are not cheap, and a session casts to the same few places.
+	offline_waystones: digblock_core::waystones::Roster,
 
 	/// The world's spawn point (the server's after a Welcome swap):
 	/// the return-to-spawn target.

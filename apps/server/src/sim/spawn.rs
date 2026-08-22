@@ -159,22 +159,41 @@ impl Sim {
 	/// and one waystone per laddered biome kind. Idempotent — a stored
 	/// site is never re-derived (its region cannot change), and a
 	/// re-stamp skips cells the journal already holds — so boot converges
-	/// to a no-op after the first run. A kind whose anchor walk finds
-	/// nothing is skipped and retried next boot; a port to nowhere must
-	/// not exist.
+	/// to a no-op after the first run. A kind whose walk finds nothing is
+	/// skipped and retried next boot; a port to nowhere must not exist.
+	///
+	/// The unresolved kinds are derived TOGETHER, because the separation
+	/// rule is mutual (`waystones::sites`) — and only when at least one
+	/// is missing, so a settled world pays no ring walks at all. Damage
+	/// resolution still nudges a pad sideways off whatever players built
+	/// through it, which is the one thing that can put a stored site
+	/// inside another's exclusion; it moves a pad by a few blocks, and
+	/// the alternative is a port standing in a crater.
 	pub(super) fn ensure_arrival_sites(&mut self) {
 		if let Some(l) = self.spawn_store.lock() {
 			self.stamp_site(Vec3::from_array(l.eye));
 		}
 		let seed = self.store.seed();
-		for (idx, kind) in digblock_core::worldgen::SurfaceKind::ALL.iter().enumerate() {
-			if digblock_core::unlock::waystone(*kind).is_none() {
-				continue;
-			}
-			let eye = match self.waystone_store.get(idx as u8) {
+		let ladder: Vec<(u8, digblock_core::worldgen::SurfaceKind)> =
+			digblock_core::worldgen::SurfaceKind::ALL
+				.iter()
+				.enumerate()
+				.filter(|(_, k)| digblock_core::unlock::waystone(**k).is_some())
+				.map(|(i, &k)| (i as u8, k))
+				.collect();
+		let derived = if ladder
+			.iter()
+			.any(|&(idx, _)| self.waystone_store.get(idx).is_none())
+		{
+			digblock_core::waystones::sites(seed)
+		} else {
+			Vec::new()
+		};
+		for (idx, kind) in ladder {
+			let eye = match self.waystone_store.get(idx) {
 				Some(e) => Vec3::from_array(e),
 				None => {
-					let Some(a) = digblock_core::waystones::anchor(*kind, seed) else {
+					let Some(&(_, a)) = derived.iter().find(|&&(i, _)| i == idx) else {
 						log::warn!("no {kind:?} anywhere the walk reaches — port deferred");
 						continue;
 					};
@@ -191,7 +210,7 @@ impl Sim {
 						})
 					};
 					log::info!("waystone resolved: {kind:?} at {eye}");
-					self.waystone_store.set(idx as u8, eye.to_array());
+					self.waystone_store.set(idx, eye.to_array());
 					eye
 				}
 			};

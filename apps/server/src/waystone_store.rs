@@ -4,19 +4,24 @@
 //! Stored rather than re-derived, for the lock's reason (`spawn.json`'s
 //! doc): a site's whole purpose is that its region cannot change, so the
 //! answer the first boot resolved against the journal is the answer
-//! forever. Same durability policy as its siblings — tmp + fsync +
-//! rename, an unparseable file archives rather than crashing, mutations
-//! write through.
+//! forever — with exactly one exception, the placement rule itself
+//! changing (`waystones::PLACEMENT_RULE`), which archives the roster and
+//! re-places it once. Same durability policy as its siblings — tmp +
+//! fsync + rename, an unparseable file archives rather than crashing,
+//! mutations write through.
 
 use serde::{Deserialize, Serialize};
 use std::io;
 use std::path::{Path, PathBuf};
 
-/// The persisted body: `(kind index, resolved eye)` pairs. Every field
-/// defaults so an older build reads a newer file's absence as empty.
+/// The persisted body: the placement rule the sites were resolved
+/// under, and the `(kind index, resolved eye)` pairs themselves. Every
+/// field defaults so an older build reads a newer file's absence as
+/// empty.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 struct WaystoneConfig {
+	rule: u32,
 	sites: Vec<(u8, [f32; 3])>,
 }
 
@@ -41,7 +46,43 @@ impl WaystoneStore {
 			Err(e) if e.kind() == io::ErrorKind::NotFound => WaystoneConfig::default(),
 			Err(e) => return Err(e),
 		};
-		Ok(Self { path, cfg })
+		let mut store = Self { path, cfg };
+		store.migrate();
+		Ok(store)
+	}
+
+	/// A roster resolved under an older placement rule is discarded so
+	/// boot re-places it — the one thing that may move a stored site,
+	/// and the reason `PLACEMENT_RULE` exists. Destructive, and
+	/// server-only like its journal sibling: the old file is archived
+	/// under the rule it was written for, and the re-placement is
+	/// written through immediately so a boot that resolves nothing
+	/// cannot archive twice.
+	///
+	/// The structures the old sites stamped stay standing as ordinary,
+	/// now-unprotected edits — the same answer `/set-spawn` gives when
+	/// it moves spawn out from under a pad.
+	fn migrate(&mut self) {
+		let rule = digblock_core::waystones::PLACEMENT_RULE;
+		if self.cfg.rule == rule {
+			return;
+		}
+		if !self.cfg.sites.is_empty() {
+			let bak = self
+				.path
+				.with_extension(format!("v{}.json.bak", self.cfg.rule));
+			log::warn!(
+				"waystones.json was resolved under placement rule {} (now {rule}) — archiving \
+				 {} site(s) to {} and re-placing",
+				self.cfg.rule,
+				self.cfg.sites.len(),
+				bak.display()
+			);
+			let _ = std::fs::rename(&self.path, &bak);
+			self.cfg.sites.clear();
+		}
+		self.cfg.rule = rule;
+		self.write();
 	}
 
 	/// Every resolved site, as stored.
@@ -109,6 +150,35 @@ mod tests {
 		assert_eq!(s.get(2), Some([10.5, 130.5, -6.5]));
 		assert_eq!(s.get(6), Some([900.5, 140.5, 44.5]));
 		assert_eq!(s.sites().len(), 2);
+		let _ = std::fs::remove_dir_all(&d);
+	}
+
+	/// A roster written under an older placement rule is archived and
+	/// cleared, so boot re-places it — and the archive keeps the old
+	/// answers rather than dropping them on the floor.
+	#[test]
+	fn an_older_placement_rule_is_archived_and_re_placed() {
+		let d = tmpdir("replace");
+		std::fs::create_dir_all(&d).unwrap();
+		let stale = digblock_core::waystones::PLACEMENT_RULE - 1;
+		std::fs::write(
+			d.join("waystones.json"),
+			format!(r#"{{"rule":{stale},"sites":[[2,[8.5,130.5,8.5]]]}}"#),
+		)
+		.unwrap();
+		let s = WaystoneStore::open(&d).unwrap();
+		assert!(s.sites().is_empty(), "the stale roster must be dropped");
+		let bak = d.join(format!("waystones.v{stale}.json.bak"));
+		assert!(bak.exists(), "the stale roster is archived, not deleted");
+		// The rule is written through, so a boot that resolves nothing
+		// does not archive a second time next boot.
+		drop(s);
+		let s = WaystoneStore::open(&d).unwrap();
+		assert!(s.sites().is_empty());
+		assert!(
+			!d.join("waystones.json.bak").exists(),
+			"a migrated file must not migrate again"
+		);
 		let _ = std::fs::remove_dir_all(&d);
 	}
 

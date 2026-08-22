@@ -75,6 +75,9 @@ impl Engine {
 		self.session.net_backlog.clear();
 		// A stamp owed to the world being left must not pave the next one.
 		self.pending_stamp.clear();
+		// Ports are derived from the SEED, so a roster resolved against
+		// the world just left would send a cast to a place in it.
+		self.save.offline_waystones = digblock_core::waystones::Roster::new(self.seed);
 		// Likewise session state: a cell one server refused stays refused at
 		// the same coordinates in the next world otherwise, because the only
 		// other clear needs the dig button held AND aimed elsewhere.

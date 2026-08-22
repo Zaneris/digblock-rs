@@ -315,8 +315,9 @@ impl Engine {
 	/// The offline arm of a waystone cast: the same tables the server
 	/// validates with, the same debit, and the site materializes on first
 	/// visit — stamped, protected and marked, what a server world did at
-	/// boot. The first cast to a kind pays the anchor walk (a pure ring
-	/// search), cached for the session. No first-arrival milestone
+	/// boot. The cast pays the roster's walk up to its own rung (pure
+	/// ring searches; the ladder resolves in order because the separation
+	/// rule is mutual), kept for the session. No first-arrival milestone
 	/// offline: that award is once per ACCOUNT, and accounts are a
 	/// multiplayer concept — a per-save copy would re-pay every save.
 	fn cast_waystone_offline(&mut self, idx: u8) {
@@ -332,15 +333,7 @@ impl Engine {
 			self.push_feed(Msg::WaystoneLocked);
 			return;
 		}
-		let eye = match self.save.offline_waystones.get(&idx).copied() {
-			Some(cached) => cached,
-			None => {
-				let found = digblock_core::waystones::anchor(kind, self.seed);
-				self.save.offline_waystones.insert(idx, found);
-				found
-			}
-		};
-		let Some(eye) = eye else {
+		let Some(eye) = self.save.offline_waystones.site(idx) else {
 			// This seed never made such a place — a port to nowhere.
 			self.push_feed(Msg::WaystoneLocked);
 			return;

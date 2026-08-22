@@ -1,11 +1,14 @@
 //! Waystone sites: one canonical arrival pad per biome per world, and
 //! the structure every arrival pad wears (spawn's included).
 //!
-//! [`anchor`] is spawn's own pristine ring walk with a per-kind gate, so
+//! [`Roster`] is spawn's own pristine ring walk with a per-kind gate, so
 //! every rule that makes a spawn standable makes a waystone standable —
-//! derived from the seed, never stored HERE. The authority resolves an
-//! anchor against its edits once, stamps the structure as ORDINARY
-//! journaled edits, stores the answer and locks the sphere; that model
+//! derived from the seed, never stored HERE. It is a roster rather than
+//! a function per kind because [`MIN_SEPARATION`] is a MUTUAL rule: a
+//! pad can only be judged against the pads already placed, so a per-kind
+//! answer would depend on who asked first. The authority resolves the
+//! set against its edits once, stamps each structure as ORDINARY
+//! journaled edits, stores the answers and locks the spheres; that model
 //! (and why worldgen never changes) is MAGIC-DESIGN §5's record.
 //!
 //! [`stamp`] is a pure builder in the debug-plan shape: it RETURNS
@@ -20,11 +23,21 @@ use crate::spawn::{CLEAR, LOCK_RADIUS};
 use crate::worldgen::SurfaceKind;
 use glam::Vec3;
 
-/// How far a waystone stands from the world origin at minimum, in
-/// blocks. Spawn's own walk starts at the origin too, so without a floor
-/// the first waystone lands within sight of spawn and "the first port"
-/// is a sentence about nothing — a trip has to be a trip.
-pub const MIN_DIST: i32 = 96;
+/// How far every arrival pad stands from every other, in blocks, spawn
+/// included — measured horizontally, because a pad is a place on the
+/// map rather than a point in the air.
+///
+/// The floor is generous on purpose: a port that sets you down within
+/// sight of the pad you left is not a trip, and "the first port" has to
+/// be a sentence about somewhere else. Comfortably past the draw
+/// distance a player actually runs, so arriving at one pad never puts
+/// another on screen.
+pub const MIN_SEPARATION: i32 = 320;
+
+/// The placement rule's version — bumped whenever a change here would
+/// move a site an authority has already resolved and stored, so a stored
+/// roster written under an older rule is discarded and re-placed once.
+pub const PLACEMENT_RULE: u32 = 2;
 
 /// Where the four standing stones rise, as offsets from the pad centre:
 /// outside the validated CLEAR disc (the site must pass its own
@@ -40,14 +53,115 @@ const _: () = assert!(STONE_OUT > CLEAR, "stones must clear the validated disc")
 const _: () =
 	assert!(STONE_OUT * STONE_OUT + (STONE_H + 1) * (STONE_H + 1) <= LOCK_RADIUS * LOCK_RADIUS);
 
-/// The canonical anchor for `kind`, derived from the seed alone: the
-/// nearest column past [`MIN_DIST`] whose pristine surface classifies as
-/// `kind` and whose pad passes every spawn clearance rule. `None` when
-/// the walk finds no such column — a seed's map simply may not offer a
-/// kind, and a port to nowhere must not exist.
-pub fn anchor(kind: SurfaceKind, seed: f64) -> Option<Vec3> {
+/// The world's waystones, resolved rung by rung.
+///
+/// The roster resolves as a SET because [`MIN_SEPARATION`] is mutual —
+/// see the module header. Placement order is the ladder's, lowest rung
+/// first (ties by kind index, so `unlock::waystone` alone decides it):
+/// the earliest port a player unlocks gets the nearest site the map can
+/// offer, and every later rung is pushed outward by the ones already
+/// standing. Spawn's own anchor is placed before any of them, so no pad
+/// can crowd the place everybody starts.
+///
+/// Rungs resolve LAZILY and in order, and the answer is identical to
+/// resolving the lot: a rung's site depends only on the rungs below it,
+/// so a prefix is exact. That is what lets an interactive caller pay one
+/// near ring walk for the first port instead of the whole ladder's — the
+/// walks are pure but the far ones are not cheap.
+pub struct Roster {
+	seed: f64,
+	/// Every pad standing so far, spawn's included — the exclusion set.
+	/// Empty until the first rung resolves: constructing a roster must
+	/// stay free, since a world swap builds one whether or not anybody
+	/// ever casts.
+	taken: Vec<Vec3>,
+	/// The rungs still unresolved, lowest first.
+	pending: Vec<(u8, SurfaceKind)>,
+	/// What each resolved rung answered. `None` = this seed's map never
+	/// offered the kind outside the pads already standing, and a port to
+	/// nowhere must not exist.
+	placed: Vec<(u8, Option<Vec3>)>,
+}
+
+impl Roster {
+	pub fn new(seed: f64) -> Self {
+		let mut pending: Vec<(u8, SurfaceKind, u32)> = SurfaceKind::ALL
+			.iter()
+			.enumerate()
+			.filter_map(|(i, &k)| crate::unlock::waystone(k).map(|lvl| (i as u8, k, lvl)))
+			.collect();
+		pending.sort_by_key(|&(idx, _, level)| (level, idx));
+		Self {
+			seed,
+			taken: Vec::new(),
+			pending: pending.into_iter().map(|(i, k, _)| (i, k)).collect(),
+			placed: Vec::new(),
+		}
+	}
+
+	/// The site for one `SurfaceKind` index, resolving every rung below
+	/// it that is not resolved yet. A kind off the ladder answers `None`
+	/// without walking anything — asking for one would otherwise resolve
+	/// the whole roster only to find it was never in it.
+	pub fn site(&mut self, idx: u8) -> Option<Vec3> {
+		if !self.pending.iter().any(|&(i, _)| i == idx)
+			&& !self.placed.iter().any(|&(i, _)| i == idx)
+		{
+			return None;
+		}
+		while !self.placed.iter().any(|&(i, _)| i == idx) {
+			self.resolve_next()?;
+		}
+		self.placed
+			.iter()
+			.find(|&&(i, _)| i == idx)
+			.and_then(|&(_, eye)| eye)
+	}
+
+	/// Every site this seed offers, in kind order — the whole ladder
+	/// resolved. What an authority asks at boot, once.
+	pub fn all(&mut self) -> Vec<(u8, Vec3)> {
+		while self.resolve_next().is_some() {}
+		let mut out: Vec<(u8, Vec3)> = self
+			.placed
+			.iter()
+			.filter_map(|&(i, eye)| eye.map(|e| (i, e)))
+			.collect();
+		out.sort_by_key(|&(idx, _)| idx);
+		out
+	}
+
+	/// Place the next rung, or `None` once the ladder is exhausted.
+	fn resolve_next(&mut self) -> Option<()> {
+		let (idx, kind) = self.pending.first().copied()?;
+		self.pending.remove(0);
+		if self.taken.is_empty() {
+			// Spawn is an arrival pad like any other, and it stands
+			// first — nothing may be placed before it is in the set.
+			self.taken.push(crate::spawn::anchor(self.seed));
+		}
+		let eye = anchor(kind, self.seed, &self.taken);
+		if let Some(eye) = eye {
+			self.taken.push(eye);
+		}
+		self.placed.push((idx, eye));
+		Some(())
+	}
+}
+
+/// Every waystone this seed offers, as `(SurfaceKind` index, eye)` pairs
+/// in kind order — [`Roster::all`] for a caller with nothing to cache.
+pub fn sites(seed: f64) -> Vec<(u8, Vec3)> {
+	Roster::new(seed).all()
+}
+
+/// The nearest column to the origin that classifies as `kind`, passes
+/// every spawn clearance rule, and clears every pad in `taken`.
+fn anchor(kind: SurfaceKind, seed: f64, taken: &[Vec3]) -> Option<Vec3> {
 	crate::spawn::anchor_walk(&|x, z| {
-		if x * x + z * z < MIN_DIST * MIN_DIST {
+		// Cheapest gate first — the classify and the pad walk both read
+		// terrain, and an excluded column can be rejected on arithmetic.
+		if taken.iter().any(|&t| crowds(x, z, t)) {
 			return None;
 		}
 		if crate::worldgen::column_shape(x, z, seed).surface != kind {
@@ -55,6 +169,13 @@ pub fn anchor(kind: SurfaceKind, seed: f64) -> Option<Vec3> {
 		}
 		crate::spawn::pristine_pad(x, z, seed)
 	})
+}
+
+/// Whether column `(x, z)` sits inside `other`'s exclusion.
+fn crowds(x: i32, z: i32, other: Vec3) -> bool {
+	let dx = x - other.x.floor() as i32;
+	let dz = z - other.z.floor() as i32;
+	dx * dx + dz * dz < MIN_SEPARATION * MIN_SEPARATION
 }
 
 /// The structure every arrival pad wears, as writes against the world:
@@ -179,32 +300,96 @@ mod tests {
 		assert!(crate::spawn::stands_clear(eye, &cell));
 	}
 
-	/// The walk really answers per kind: on a real seed, each anchor it
-	/// finds classifies as its own kind, sits past MIN_DIST, and the
-	/// common lowland kind is always on offer (a map without plains is
-	/// not a map the terrain generator makes). Counted, so a sweep where
-	/// every kind came back None could not pass vacuously.
+	/// The walk really answers per kind: on a real seed, each site it
+	/// finds classifies as its own kind, only laddered kinds are placed,
+	/// and the common lowland kind is always on offer (a map without
+	/// plains is not a map the terrain generator makes). Counted, so a
+	/// seed that placed nothing could not pass vacuously.
 	#[test]
-	fn every_found_anchor_sits_on_its_own_surface() {
-		let mut found = 0u32;
-		for kind in SurfaceKind::ALL {
-			let Some(eye) = anchor(kind, SEED) else {
-				continue;
-			};
-			found += 1;
+	fn every_found_site_sits_on_its_own_surface() {
+		let sites = sites(SEED);
+		assert!(
+			!sites.is_empty(),
+			"nothing placed at all — the walk is broken"
+		);
+		for &(idx, eye) in &sites {
+			let kind = SurfaceKind::ALL[idx as usize];
+			assert!(
+				crate::unlock::waystone(kind).is_some(),
+				"{kind:?} is not on the ladder and must not be placed"
+			);
 			let (x, z) = (eye.x.floor() as i32, eye.z.floor() as i32);
-			assert!(x * x + z * z >= MIN_DIST * MIN_DIST, "{kind:?} too near");
 			assert_eq!(
 				crate::worldgen::column_shape(x, z, SEED).surface,
 				kind,
-				"the {kind:?} anchor is not standing on {kind:?}"
+				"the {kind:?} site is not standing on {kind:?}"
 			);
 		}
-		assert!(found > 0, "no kind anchored at all — the walk is broken");
+		let plains = SurfaceKind::ALL
+			.iter()
+			.position(|&k| k == SurfaceKind::Plains)
+			.expect("plains is a kind") as u8;
 		assert!(
-			anchor(SurfaceKind::Plains, SEED).is_some(),
+			sites.iter().any(|&(idx, _)| idx == plains),
 			"plains always exists"
 		);
+	}
+
+	/// The lazy path and the eager one are the same placement: asking
+	/// for one rung resolves exactly the prefix that `all` would have,
+	/// so an interactive caller's cheap answer is never a different
+	/// answer. Swept over every laddered kind, counted.
+	#[test]
+	fn asking_one_rung_places_it_where_the_whole_ladder_would() {
+		let eager = sites(SEED);
+		let mut asked = 0u32;
+		for (i, &kind) in SurfaceKind::ALL.iter().enumerate() {
+			if crate::unlock::waystone(kind).is_none() {
+				continue;
+			}
+			asked += 1;
+			let i = i as u8;
+			// A fresh roster per kind: the point is that asking for this
+			// rung ALONE lands it where the full resolve put it.
+			let lazy = Roster::new(SEED).site(i);
+			assert_eq!(
+				lazy,
+				eager.iter().find(|&&(j, _)| j == i).map(|&(_, e)| e),
+				"{kind:?} moved between the lazy and the eager resolve"
+			);
+		}
+		assert_eq!(asked as usize, eager.len(), "every laddered kind placed");
+		// A kind off the ladder is not a port, and asking costs nothing.
+		let ocean = SurfaceKind::ALL
+			.iter()
+			.position(|&k| crate::unlock::waystone(k).is_none())
+			.expect("some kind is off the ladder") as u8;
+		assert_eq!(Roster::new(SEED).site(ocean), None);
+	}
+
+	/// The separation rule, swept over every pair the roster forms —
+	/// spawn included, since spawn is an arrival pad like any other.
+	/// Pairs are counted, because a roster that placed one site (or
+	/// none) would satisfy this vacuously.
+	#[test]
+	fn no_two_arrival_pads_crowd_each_other() {
+		let mut pads = vec![crate::spawn::anchor(SEED)];
+		pads.extend(sites(SEED).into_iter().map(|(_, eye)| eye));
+		let mut pairs = 0u32;
+		for (i, &a) in pads.iter().enumerate() {
+			for &b in &pads[i + 1..] {
+				pairs += 1;
+				let (x, z) = (b.x.floor() as i32, b.z.floor() as i32);
+				assert!(
+					!crowds(x, z, a),
+					"{a} and {b} are closer than the separation rule allows"
+				);
+			}
+		}
+		// Spawn plus every laddered kind this seed placed: the sweep is
+		// only meaningful once it has seen a site-to-site pair too.
+		assert_eq!(pairs, (pads.len() * (pads.len() - 1) / 2) as u32);
+		assert!(pads.len() > 2, "the roster is too thin to test");
 	}
 
 	/// The lock region a stamped site takes is the same shape spawn's is

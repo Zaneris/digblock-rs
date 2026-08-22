@@ -355,7 +355,7 @@ pub const RETURN_SWIFTER_AT: u32 = 56;
 /// port: the water kinds are not destinations, and a shore band or a
 /// slope patch is scenery, not a place (the doc comment on the arm is
 /// the roster's record). The sites themselves derive in
-/// `waystones::anchor`; this table is the only place their levels live.
+/// `waystones::Roster`; this table is the only place their levels live.
 pub fn waystone(kind: crate::worldgen::SurfaceKind) -> Option<u32> {
 	use crate::worldgen::SurfaceKind as K;
 	Some(match kind {
