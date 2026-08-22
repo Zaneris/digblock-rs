@@ -735,8 +735,17 @@ column.
 
 Family tiles rotate through their members on a shared clock; selecting a family lays its member tiles out beneath
 (locked members visible but dim, affordable ones badged with their batch count); a detail strip shows the selected
-member's name and post-waste cost at your level; and the page has exactly ONE `TRANSMUTE` button, disabled for a locked
-or unaffordable pick. `CLICK 1 · SHIFT 10 · CTRL 100` multipliers on that button.
+member's icon and its post-waste price at your level; and the page has exactly ONE `TRANSMUTE` button, disabled for a
+locked or unaffordable pick, with a legend naming the plain, `SHIFT` (`BULK_SHIFT`) and `CTRL` (`BULK_CTRL`) batch
+sizes.
+
+**An amount of essence or feedstock is never text.** A price, a holding and a fare are *chips* — the thing's icon and a
+number (`widgets::Chip`), a line the holdings cannot cover drawn in `theme::SHORT_INK` — and the readout wraps rather
+than eliding. The essence icons are flat sprites in the materials array, painted by texgen from `Essence::palette`, the
+one colour authority (the surface nodes' flecks derive from it). **A name is a tooltip**: nothing on the page is
+labelled; every tile, chip and bar slot names itself on hover, and the screen that owns the page emits that name last,
+so it covers what it names. This replaced a strip line that carried the name and the price together and dropped the
+price whenever the line did not fit — which, at the grid's width, was half the catalog.
 
 That button **queues** its count rather than buying it. A batch drips one paced craft at a time, the row beneath carries
 its progress, and the button stands as its CANCEL. This is also the §7.2 grid's natural UI: a new material × shape pair
@@ -765,7 +774,8 @@ expand the full unlock list; v1 is the summary.
 ### 8.3 Feedback
 
 - **XP toasts**: a small accumulating `+N MINING` above the hotbar, HUD-layer text over a `FILL_BG` backdrop (sized from
-  `line_h`), coalescing rapid awards and fading out on their own.
+  `line_h`), coalescing rapid awards and fading out on their own. An essence toast is `+N` and the essence's chip — the
+  §8.1 rule holds on the HUD too.
 - **Level-up**: chat-feed line ("Mining is now level 48"), a one-shot sfx, and on reveal thresholds the remesh sweep
   plus a distinct line ("new veins shimmer into view").
 - Both new screens get `DIG_SCREEN` stocking (essences + ores + XP included) so `--screenshot` can photograph them — the

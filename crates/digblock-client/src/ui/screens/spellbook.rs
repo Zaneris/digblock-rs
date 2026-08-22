@@ -119,11 +119,11 @@ impl SpellView {
 		rows.push(Row::Spell {
 			id: InvId::Spell(0),
 			text: "RETURN HOME".to_string(),
-			state: if teleport_ready {
+			state: State::Text(if teleport_ready {
 				"READY".to_string()
 			} else {
 				format!("{cooldown_secs}s")
-			},
+			}),
 			ready: teleport_ready,
 		});
 		rows.push(Row::Info(
@@ -136,7 +136,7 @@ impl SpellView {
 		rows.push(Row::Spell {
 			id: InvId::Spell(SLOT_WISP),
 			text: "WISP".to_string(),
-			state: format!("{wisp_fare} {}", wisp_essence.name().to_uppercase()),
+			state: State::fare(wisp_essence, wisp_fare, wisp_ready),
 			ready: wisp_ready,
 		});
 		let mut kindle_ready = false;
@@ -146,7 +146,7 @@ impl SpellView {
 			rows.push(Row::Spell {
 				id: InvId::Spell(SLOT_KINDLE),
 				text: "KINDLE".to_string(),
-				state: format!("{k_fare} {}", k_essence.name().to_uppercase()),
+				state: State::fare(k_essence, k_fare, kindle_ready),
 				ready: kindle_ready,
 			});
 		}
@@ -157,11 +157,11 @@ impl SpellView {
 			rows.push(Row::Spell {
 				id: InvId::Spell(SLOT_ARC),
 				text: "MASON'S ARC".to_string(),
-				state: if arc_on {
+				state: State::Text(if arc_on {
 					"ON".to_string()
 				} else {
 					"OFF".to_string()
-				},
+				}),
 				ready: true,
 			});
 		}
@@ -185,9 +185,9 @@ impl SpellView {
 					// affordable port that still cannot be cast has to
 					// name the reason, and the fare is not it.
 					state: if teleport_ready {
-						format!("{} {}", port.fare, port.essence.name().to_uppercase())
+						State::fare(port.essence, port.fare, affordable)
 					} else {
-						format!("{cooldown_secs}s")
+						State::Text(format!("{cooldown_secs}s"))
 					},
 					ready: castable_now,
 				});
@@ -237,11 +237,50 @@ enum Row {
 	Spell {
 		id: InvId,
 		text: String,
-		state: String,
+		state: State,
 		ready: bool,
 	},
 	/// Dim detail line (a spell's description, the teaser).
 	Info(String),
+}
+
+/// What a spell row's right column says: a word (ready, a countdown,
+/// on/off) or a fare — an amount of essence, which is a chip and never
+/// a word.
+enum State {
+	Text(String),
+	Fare {
+		essence: digblock_core::block::Essence,
+		n: u32,
+		affordable: bool,
+	},
+}
+
+impl State {
+	fn fare(essence: digblock_core::block::Essence, n: u32, affordable: bool) -> Self {
+		State::Fare {
+			essence,
+			n,
+			affordable,
+		}
+	}
+
+	/// The fare as the chip the row draws — `None` for a word.
+	fn chip(&self, color: u32) -> Option<widgets::Chip> {
+		match self {
+			State::Text(_) => None,
+			State::Fare {
+				essence,
+				n,
+				affordable,
+			} => Some(widgets::Chip {
+				kind: hud::IconKind::Essence(*essence),
+				tint: 0xFFFF_FFFF,
+				n: *n,
+				ink: if *affordable { color } else { theme::SHORT_INK },
+			}),
+		}
+	}
 }
 
 fn row_text(row: &Row) -> &str {
@@ -276,9 +315,13 @@ fn measure_rows(rows: &[Row], style: &Style) -> (f32, f32) {
 			Row::Space => 0.0,
 			// A spell row carries its right-aligned state text.
 			Row::Spell { state, .. } => {
-				theme::text_row_w(style, row_text(row))
-					+ style.measure(state)
-					+ theme::SECTION_GAP * s
+				let right = match state {
+					State::Text(t) => style.measure(t),
+					fare => fare
+						.chip(WHITE)
+						.map_or(0.0, |c| widgets::chips_w(style, &[c])),
+				};
+				theme::text_row_w(style, row_text(row)) + right + theme::SECTION_GAP * s
 			}
 			_ => theme::text_row_w(style, row_text(row)),
 		};
@@ -365,6 +408,7 @@ impl SpellScreen {
 		widgets::panel(ui.dl, Layer::Backdrop, panel, theme::PANEL_BG);
 
 		let mut y = row_y;
+		let mut hover: Option<(Rect, String)> = None;
 		for row in &view.rows {
 			let rect = Rect::new(row_x, y, row_w, box_h(row, s));
 			y += row_h(row, s);
@@ -396,6 +440,29 @@ impl SpellScreen {
 				} => {
 					let hovered = *ready && rect.contains(self.cursor.0, self.cursor.1);
 					let color = if *ready { WHITE } else { DIM };
+					let right = match state {
+						State::Text(t) => widgets::RowRight::Text(t, color),
+						fare => {
+							let chip = fare.chip(color).expect("a fare");
+							// The chip's own rect, as `widgets::row` places
+							// it, so hovering the fare names its essence.
+							let run = [chip];
+							let w = widgets::chips_w(&ui.style, &run);
+							let pad_x = crate::ui::scale::text_pad_x(s);
+							let chip_rect = Rect::new(
+								rect.x + rect.w - pad_x - w,
+								rect.y + (rect.h - theme::ROW_H * s) / 2.0,
+								w,
+								theme::ROW_H * s,
+							);
+							if let (hud::IconKind::Essence(e), true) =
+								(chip.kind, chip_rect.contains(self.cursor.0, self.cursor.1))
+							{
+								hover = Some((chip_rect, e.name().to_string()));
+							}
+							widgets::RowRight::Chip(chip)
+						}
+					};
 					widgets::row(
 						ui.dl,
 						&ui.style,
@@ -403,7 +470,7 @@ impl SpellScreen {
 						rect,
 						widgets::RowContent {
 							text: row_text(row),
-							right: Some(widgets::RowRight::Text(state, color)),
+							right: Some(right),
 							bar: None,
 							color,
 							highlight: hovered,
@@ -415,6 +482,9 @@ impl SpellScreen {
 					}
 				}
 			}
+		}
+		if let Some((anchor, name)) = hover {
+			widgets::tooltip(ui.dl, &ui.style, size, anchor, &name);
 		}
 	}
 }

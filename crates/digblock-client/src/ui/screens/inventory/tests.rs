@@ -528,3 +528,91 @@ fn ghost_appears_only_mid_drag_and_build_emits_every_slot() {
 	// One cube icon = three projected faces.
 	assert_eq!(dl.cmds(Layer::Ghost).0.len(), 3, "ghost mid-drag");
 }
+
+/// Every text on the Ghost layer — the tooltip's, and nothing else's
+/// while no drag is running.
+fn ghost_texts(dl: &DrawList) -> Vec<String> {
+	let (cmds, arena) = dl.cmds(Layer::Ghost);
+	cmds.iter()
+		.filter_map(|c| match c {
+			crate::ui::draw::Cmd::Text { range, .. } => {
+				Some(arena[range.0 as usize..range.1 as usize].to_string())
+			}
+			_ => None,
+		})
+		.collect()
+}
+
+/// A slot names what it holds while the cursor is on it — grid or bar,
+/// at the page's own glyph — and only then: an empty slot, a running
+/// drag and a cursor that has left all show nothing.
+#[test]
+fn hovering_a_slot_names_it_and_leaving_clears_it() {
+	let mut r = rig();
+	let inv = {
+		let mut inv = Inventory::default();
+		inv.add(B::Dirt, 5);
+		inv.add(B::Stone, 2);
+		inv
+	};
+	let feed = |r: &mut Rig, ev: &InputEvent| {
+		r.screen
+			.handle_input(ev, &r.hits, &r.style, &r.grid, &r.bar)
+	};
+	let frame = |r: &Rig| {
+		let mut dl = DrawList::default();
+		let mut hits = HitMap::default();
+		let mut ui = Ui {
+			dl: &mut dl,
+			hits: &mut hits,
+			style: r.style,
+		};
+		r.screen.build(&mut ui, SIZE, &r.grid, &inv, &r.bar, 1.0);
+		let glyph = ui.style.glyph;
+		(ghost_texts(&dl), glyph)
+	};
+	// The parked stone, in the grid.
+	let at = center(r.hits.rect_of(InvId::Grid(1)).unwrap());
+	feed(&mut r, &InputEvent::CursorMoved { x: at.0, y: at.1 });
+	let (names, glyph) = frame(&r);
+	assert_eq!(names, vec![B::Stone.name().to_uppercase()]);
+	assert_eq!(glyph, r.style.glyph, "named at the page's glyph");
+	// The dirt on the bar: named by the PAGE, since the bar draws later
+	// at the window's scale.
+	let at = center(r.hits.rect_of(InvId::Bar(0)).unwrap());
+	feed(&mut r, &InputEvent::CursorMoved { x: at.0, y: at.1 });
+	assert_eq!(frame(&r).0, vec![B::Dirt.name().to_uppercase()]);
+	// An empty slot has no name.
+	let at = center(r.hits.rect_of(InvId::Grid(5)).unwrap());
+	feed(&mut r, &InputEvent::CursorMoved { x: at.0, y: at.1 });
+	assert!(frame(&r).0.is_empty(), "an empty slot has nothing to say");
+	// Mid-drag the ghost rides the cursor and no name does.
+	let src = center(r.hits.rect_of(InvId::Grid(1)).unwrap());
+	feed(&mut r, &InputEvent::CursorMoved { x: src.0, y: src.1 });
+	feed(
+		&mut r,
+		&InputEvent::MouseButton {
+			button: MouseButton::Left,
+			pressed: true,
+		},
+	);
+	feed(
+		&mut r,
+		&InputEvent::CursorMoved {
+			x: src.0 + 80.0,
+			y: src.1,
+		},
+	);
+	assert!(frame(&r).0.is_empty(), "no name under a drag");
+	feed(
+		&mut r,
+		&InputEvent::MouseButton {
+			button: MouseButton::Left,
+			pressed: false,
+		},
+	);
+	// A cursor that has left — what a lifted touch sends — clears it.
+	feed(&mut r, &InputEvent::CursorMoved { x: at.0, y: at.1 });
+	feed(&mut r, &InputEvent::CursorMoved { x: -1.0, y: -1.0 });
+	assert!(frame(&r).0.is_empty(), "a cursor that left names nothing");
+}

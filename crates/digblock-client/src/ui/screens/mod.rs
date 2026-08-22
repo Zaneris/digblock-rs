@@ -58,50 +58,79 @@ mod tests {
 		let mut skills = digblock_core::skills::SkillSet::default();
 		skills.add_xp(digblock_core::skills::Skill::Alchemy, 20_000);
 
-		for (name, batch) in [("alchemy", false), ("alchemy-transmuting", true)] {
-			let mut dl = DrawList::default();
-			let mut hits: HitMap<InvId> = HitMap::default();
+		// Three states of the ONE page: freshly opened, mid-batch with a
+		// family picked, and hovering the first family tile — the hover
+		// state exists because a tooltip draws NOTHING in the other two,
+		// and a sweep that never sees one is not sweeping it.
+		for (name, batch, hover) in [
+			("alchemy", false, false),
+			("alchemy-transmuting", true, false),
+			("alchemy-hover", false, true),
+		] {
 			let mut alch = super::alchemy::AlchScreen::default();
 			alch.open();
 			if batch {
 				alch.debug_batch(B::WoodSlab, 5, 0.4);
 			}
-			alch.build(
-				&mut Ui {
-					dl: &mut dl,
-					hits: &mut hits,
-					style,
-				},
-				size,
-				&super::alchemy::AlchView::build(&inv, &skills),
-				&bar,
-				1.0,
-			);
+			let view = super::alchemy::AlchView::build(&inv, &skills);
+			let mut dl = DrawList::default();
+			let mut hits: HitMap<InvId> = HitMap::default();
+			let build =
+				|alch: &super::alchemy::AlchScreen, dl: &mut DrawList, hits: &mut HitMap<InvId>| {
+					hits.clear();
+					alch.build(&mut Ui { dl, hits, style }, size, &view, &bar, 1.0);
+				};
+			build(&alch, &mut dl, &mut hits);
+			if hover {
+				let r = hits.rect_of(InvId::Family(0)).expect("a family tile");
+				alch.handle_input(
+					&digblock_platform::InputEvent::CursorMoved {
+						x: r.x + r.w / 2.0,
+						y: r.y + r.h / 2.0,
+					},
+					&hits,
+					&view,
+				);
+				dl = DrawList::default();
+				build(&alch, &mut dl, &mut hits);
+			}
 			out.push((name, dl));
 		}
 
-		let mut dl = DrawList::default();
-		let mut hits: HitMap<InvId> = HitMap::default();
-		let mut screen = super::inventory::InvScreen::default();
-		screen.open();
 		// Filled, not default: an empty grid draws no stack counts, and
 		// those are exactly the text this screen once got wrong.
 		let mut grid = InvGrid::default();
 		grid.file(B::Wood);
 		grid.file(B::Stone);
-		screen.build(
-			&mut Ui {
-				dl: &mut dl,
-				hits: &mut hits,
-				style,
-			},
-			size,
-			&grid,
-			&inv,
-			&bar,
-			1.0,
-		);
-		out.push(("inventory", dl));
+		for (name, hover) in [("inventory", false), ("inventory-hover", true)] {
+			let mut screen = super::inventory::InvScreen::default();
+			screen.open();
+			let mut dl = DrawList::default();
+			let mut hits: HitMap<InvId> = HitMap::default();
+			let build = |screen: &super::inventory::InvScreen,
+			             dl: &mut DrawList,
+			             hits: &mut HitMap<InvId>| {
+				hits.clear();
+				screen.build(&mut Ui { dl, hits, style }, size, &grid, &inv, &bar, 1.0);
+			};
+			build(&screen, &mut dl, &mut hits);
+			if hover {
+				let r = hits.rect_of(InvId::Grid(0)).expect("a grid slot");
+				screen.handle_input(
+					&digblock_platform::InputEvent::CursorMoved {
+						x: r.x + r.w / 2.0,
+						y: r.y + r.h / 2.0,
+					},
+					&hits,
+					&style,
+					&grid,
+					&bar,
+				);
+				dl = DrawList::default();
+				build(&screen, &mut dl, &mut hits);
+			}
+			out.push((name, dl));
+		}
 
 		let mut dl = DrawList::default();
 		let menu = crate::menu::Menu::new(true, Default::default(), None, None);
@@ -191,13 +220,48 @@ mod tests {
 		match d {
 			D::Menu => Some("menu"),
 			D::Inventory => Some("inventory"),
+			D::InventoryHover => Some("inventory-hover"),
 			D::Alchemy => Some("alchemy"),
+			D::AlchemyHover => Some("alchemy-hover"),
 			D::Skills => Some("character"),
 			D::Transmute | D::Transmuting => Some("alchemy-transmuting"),
 			D::Spellbook => Some("spellbook"),
 			// Held-item states, not pages: nothing draws a panel.
 			D::Hand | D::Bucket { .. } | D::Tool(_) | D::Torch => None,
 		}
+	}
+
+	/// The hover fixtures exist so the sweeps SEE a tooltip; this keeps
+	/// them hovering something real — the derived name of the tile the
+	/// cursor was parked on — and keeps every other fixture silent.
+	#[test]
+	fn a_hover_fixture_names_what_it_points_at() {
+		let mut checked = 0;
+		for (name, dl) in each_screen((1280, 800), 1.0) {
+			let (cmds, arena) = dl.cmds(Layer::Ghost);
+			let names: Vec<&str> = cmds
+				.iter()
+				.filter_map(|c| match c {
+					Cmd::Text { range, .. } => Some(&arena[range.0 as usize..range.1 as usize]),
+					_ => None,
+				})
+				.collect();
+			match name {
+				"inventory-hover" => {
+					assert_eq!(names, vec![B::Wood.name().to_uppercase()]);
+					checked += 1;
+				}
+				"alchemy-hover" => {
+					assert_eq!(
+						names,
+						vec![super::alchemy::families()[0].name.to_uppercase()]
+					);
+					checked += 1;
+				}
+				_ => assert!(names.is_empty(), "{name} names something unhovered"),
+			}
+		}
+		assert_eq!(checked, 2);
 	}
 
 	#[test]
@@ -285,7 +349,7 @@ mod tests {
 						"{name} mixed sizes {sizes:?}"
 					);
 					assert!(px <= want, "{name} grew its text: {px} > {want}");
-					if name.starts_with("alchemy") || name == "inventory" {
+					if name.starts_with("alchemy") || name.starts_with("inventory") {
 						// The screens that can outgrow their window, so a fit
 						// pass may step the whole page down. Both draw the
 						// same inventory grid — the inventory screen with a

@@ -524,6 +524,14 @@ there. Three load-bearing rules, the last two pinned by `screens::every_screen_d
 2. **A frame has exactly one text size**, with `scale::FIXED_GLYPH_PX` the only sanctioned exception.
 3. **A screen is one panel colour over one dim**, menu included.
 
+**An amount of essence or feedstock is never text** — it is a `widgets::Chip` (icon + number, `theme::SHORT_INK` when
+the holdings cannot cover it), on the alchemy strip and readout, the spellbook's fares and the HUD's toasts alike; the
+essence icons are UI-only layers in the materials array painted from `Essence::palette`. **A name is a tooltip**: no
+tile is labelled, the screen that owns the page emits `widgets::tooltip` LAST on `Layer::Ghost` — bar slots included,
+because the bar draws later at the window's scale and the page's fitted glyph is the frame's one size — and a lifted
+touch sends the cursor off-screen so the name does not stay pinned. The sweeps only see a tooltip through the `*-hover`
+fixtures, so a page that grows hover needs one.
+
 `theme::fit_scale` steps the WHOLE style down in fixed increments, re-measuring per rung — never a fractional glyph.
 `ui_scale` quantizes **only** its derived half; the user's preference multiplies in exactly, so the effective scale is
 NOT on that quantized grid — don't write a test that assumes it is.

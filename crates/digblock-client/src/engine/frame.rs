@@ -173,6 +173,18 @@ impl Engine {
 		// bench captures' default state comparability is preserved (bench
 		// never digs, hotbar renders its fixed default row).
 		let in_game = menu_view.is_none();
+		// A capture's parked hover: the tile exists in LAST frame's hit
+		// map, so it is fed here, before the clear, as the cursor move it
+		// would have been.
+		if let Some(id) = self.ui.debug_hover
+			&& let Some(r) = self.ui.ui_hits.rect_of(id)
+		{
+			self.ui.debug_hover = None;
+			self.input(digblock_platform::InputEvent::CursorMoved {
+				x: r.x + r.w / 2.0,
+				y: r.y + r.h / 2.0,
+			});
+		}
 		self.ui.ui_dl.clear();
 		self.ui.ui_hits.clear();
 		// The menus' full-screen dim fades with the world's own darkness

@@ -850,3 +850,114 @@ fn an_owned_tool_is_no_longer_on_offer() {
 		StripReason::AtCap { tool: true }
 	);
 }
+
+/// Every text on the Ghost layer — the tooltip's, and nothing else's
+/// while no drag is running.
+fn ghost_texts(dl: &DrawList) -> Vec<String> {
+	let (cmds, arena) = dl.cmds(Layer::Ghost);
+	cmds.iter()
+		.filter_map(|c| match c {
+			crate::ui::draw::Cmd::Text { range, .. } => {
+				Some(arena[range.0 as usize..range.1 as usize].to_string())
+			}
+			_ => None,
+		})
+		.collect()
+}
+
+/// Every tile and chip on the page names itself on hover, and the name
+/// is DERIVED — the family's, the member's, the essence's — with
+/// nothing drawn when the cursor is on none of them.
+#[test]
+fn every_tile_and_chip_names_itself_on_hover() {
+	let mut r = rig_at(99, |inv| {
+		for b in B::ALL {
+			inv.add(b, 99);
+		}
+		for e in Essence::ALL {
+			inv.add_sub(e, 999);
+		}
+	});
+	let frame = |r: &Rig| {
+		let mut dl = DrawList::default();
+		let mut hits = HitMap::default();
+		r.screen.build(
+			&mut Ui {
+				dl: &mut dl,
+				hits: &mut hits,
+				style: r.style,
+			},
+			SIZE,
+			&r.view,
+			&empty_bar(),
+			1.0,
+		);
+		(ghost_texts(&dl), dl)
+	};
+	assert!(frame(&r).0.is_empty(), "nothing hovered, nothing named");
+	let mut named = 0;
+	// Every family tile, then every member of the last one picked.
+	for (i, fam) in families().iter().enumerate() {
+		let Some(rect) = r.hits.rect_of(InvId::Family(i as u8)) else {
+			continue;
+		};
+		let at = center(rect);
+		feed(&mut r, &InputEvent::CursorMoved { x: at.0, y: at.1 });
+		assert_eq!(frame(&r).0, vec![fam.name.to_uppercase()], "family {i}");
+		named += 1;
+		press(&mut r, at);
+		rebuild(&mut r);
+		for (j, &item) in fam.members.iter().enumerate() {
+			let Some(rect) = r.hits.rect_of(InvId::Craft(j as u8)) else {
+				continue;
+			};
+			let at = center(rect);
+			feed(&mut r, &InputEvent::CursorMoved { x: at.0, y: at.1 });
+			assert_eq!(frame(&r).0, vec![item.name().to_uppercase()], "{item:?}");
+			named += 1;
+		}
+	}
+	// The readout's chips: each essence icon names its essence.
+	feed(&mut r, &InputEvent::CursorMoved { x: -1.0, y: -1.0 });
+	let (_, dl) = frame(&r);
+	let chips: Vec<(Rect, Essence)> = dl
+		.cmds(Layer::Icons)
+		.0
+		.iter()
+		.filter_map(|c| match c {
+			crate::ui::draw::Cmd::Icon {
+				rect, tex_layer, ..
+			} => Essence::ALL
+				.iter()
+				.find(|e| e.icon_tex() == *tex_layer)
+				.map(|e| (*rect, *e)),
+			_ => None,
+		})
+		.collect();
+	assert!(chips.len() >= Essence::COUNT, "the readout is drawn");
+	for (rect, e) in chips {
+		let at = center(rect);
+		feed(&mut r, &InputEvent::CursorMoved { x: at.0, y: at.1 });
+		assert_eq!(frame(&r).0, vec![e.name().to_uppercase()], "{e:?} chip");
+		named += 1;
+	}
+	assert!(
+		named > families().len() + Essence::COUNT,
+		"too little examined"
+	);
+}
+
+/// The legend under the button names the multipliers the keys really
+/// apply — a literal here went stale once.
+#[test]
+fn the_legend_names_the_real_multipliers() {
+	let mut r = rig_at(1, |_| {});
+	// The legend describes the button, and waits with it for a pick.
+	let tools = center(r.hits.rect_of(family(&r, "Tools")).unwrap());
+	press(&mut r, tools);
+	rebuild(&mut r);
+	let text = text_of(&r);
+	for want in [format!("SHIFT {BULK_SHIFT}"), format!("CTRL {BULK_CTRL}")] {
+		assert!(text.contains(&want), "{want} missing from {text}");
+	}
+}

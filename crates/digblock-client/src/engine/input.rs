@@ -123,6 +123,11 @@ impl Engine {
 							button: MouseButton::Left,
 							pressed: false,
 						});
+						// A lifted finger is nowhere: the release lands at
+						// the finger so a drop resolves, then the cursor
+						// leaves, or every hover — and the name it shows —
+						// would stay pinned under the last tap.
+						self.input(InputEvent::CursorMoved { x: -1.0, y: -1.0 });
 					}
 					_ => {} // secondary touches park while a UI is up
 				}

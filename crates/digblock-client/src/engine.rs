@@ -648,6 +648,10 @@ struct UiState {
 	/// The drag-and-drop overflow inventory screen (I toggles).
 	inv_screen: crate::ui::screens::inventory::InvScreen,
 
+	/// A capture's standing hover: the tile the cursor is parked on once
+	/// a frame has laid it out (`DebugScreen::*Hover`). Cleared when fed.
+	debug_hover: Option<crate::ui::InvId>,
+
 	/// The alchemy screen (K toggles): block → sub-material conversion
 	/// and shaped-item crafting.
 	alch_screen: crate::ui::screens::alchemy::AlchScreen,

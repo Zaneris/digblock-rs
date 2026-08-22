@@ -110,6 +110,7 @@ impl Engine {
 				ui_dl: crate::ui::DrawList::default(),
 				ui_hits: crate::ui::HitMap::default(),
 				inv_screen: Default::default(),
+				debug_hover: None,
 				alch_screen: Default::default(),
 				char_screen: Default::default(),
 				spellbook: Default::default(),
@@ -445,14 +446,25 @@ impl Engine {
 						engine.hotbar.select_digit(i as u8 + 1);
 					}
 				}
-				DebugScreen::Inventory => engine.ui.inv_screen.open(),
-				DebugScreen::Alchemy | DebugScreen::Transmute | DebugScreen::Transmuting => {
+				DebugScreen::Inventory | DebugScreen::InventoryHover => {
+					engine.ui.inv_screen.open();
+					if screen == DebugScreen::InventoryHover {
+						engine.ui.debug_hover = Some(crate::ui::InvId::Grid(0));
+					}
+				}
+				DebugScreen::Alchemy
+				| DebugScreen::AlchemyHover
+				| DebugScreen::Transmute
+				| DebugScreen::Transmuting => {
 					// A mid-curve level so the header's bar, the pace,
 					// and a mix of locked/unlocked rows all photograph.
 					engine
 						.skills
 						.add_xp(digblock_core::skills::Skill::Alchemy, 20_000);
 					engine.ui.alch_screen.open();
+					if screen == DebugScreen::AlchemyHover {
+						engine.ui.debug_hover = Some(crate::ui::InvId::Family(0));
+					}
 					if screen == DebugScreen::Transmuting {
 						// Stocked well past the batch, so the row reads as
 						// a batch running rather than as one about to be

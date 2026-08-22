@@ -11,6 +11,11 @@ pub enum DebugScreen {
 	Menu,
 	Inventory,
 	Alchemy,
+	/// The same two pages with the cursor parked on their first tile, so
+	/// the name it shows on hover is photographable — a tooltip is
+	/// otherwise invisible to every capture and every sweep.
+	InventoryHover,
+	AlchemyHover,
 	/// Not a screen: stock the inventory and open NOTHING, so the
 	/// first-person viewmodel is on screen for `--screenshot`. It is
 	/// here for the same reason the screens are — an empty starting
@@ -62,6 +67,8 @@ impl DebugScreen {
 			"menu" => Some(Self::Menu),
 			"inventory" | "inv" => Some(Self::Inventory),
 			"alchemy" | "alch" => Some(Self::Alchemy),
+			"inventory-hover" => Some(Self::InventoryHover),
+			"alchemy-hover" => Some(Self::AlchemyHover),
 			"hand" => Some(Self::Hand),
 			"bucket" => Some(Self::Bucket { full: false }),
 			"bucket-full" => Some(Self::Bucket { full: true }),

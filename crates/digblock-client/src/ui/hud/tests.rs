@@ -400,3 +400,59 @@ fn an_essence_icon_is_one_flat_sprite() {
 	}
 	assert_eq!(seen, Essence::COUNT);
 }
+
+/// An essence toast carries its chip and never its name; an XP toast
+/// has no icon, because a skill has none.
+#[test]
+fn an_essence_toast_carries_its_icon_not_its_name() {
+	use digblock_core::block::Essence;
+	use digblock_core::skills::Skill;
+	let style = Style::new(1.0);
+	let mut seen = 0;
+	for e in Essence::ALL {
+		let mut dl = DrawList::default();
+		let toast = Toast {
+			label: ToastLabel::Essence(e),
+			amount: 37,
+			ttl: TOAST_TTL,
+		};
+		toasts(&mut dl, &style, SIZE, std::slice::from_ref(&toast));
+		let icons: Vec<u16> = dl
+			.cmds(Layer::Icons)
+			.0
+			.iter()
+			.filter_map(|c| match c {
+				Cmd::Icon { tex_layer, .. } => Some(*tex_layer),
+				_ => None,
+			})
+			.collect();
+		assert_eq!(icons, vec![e.icon_tex()], "{e:?}");
+		let (cmds, arena) = dl.cmds(Layer::Content);
+		let texts: Vec<&str> = cmds
+			.iter()
+			.filter_map(|c| match c {
+				Cmd::Text { range, .. } => Some(&arena[range.0 as usize..range.1 as usize]),
+				_ => None,
+			})
+			.collect();
+		assert!(texts.iter().any(|t| t.contains(&toast.amount.to_string())));
+		assert!(
+			!texts.iter().any(|t| t.contains(&e.name().to_uppercase())),
+			"{e:?} is named in words"
+		);
+		seen += 1;
+	}
+	assert_eq!(seen, Essence::COUNT);
+	let mut dl = DrawList::default();
+	toasts(
+		&mut dl,
+		&style,
+		SIZE,
+		&[Toast {
+			label: ToastLabel::Xp(Skill::Mining),
+			amount: 5,
+			ttl: TOAST_TTL,
+		}],
+	);
+	assert!(dl.cmds(Layer::Icons).0.is_empty(), "a skill has no chip");
+}

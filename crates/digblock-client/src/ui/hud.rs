@@ -639,17 +639,6 @@ pub enum ToastLabel {
 	Essence(digblock_core::block::Essence),
 }
 
-impl ToastLabel {
-	/// The stored-case name the toast shouts; the HUD upper-cases it
-	/// where it draws.
-	pub fn name(self) -> &'static str {
-		match self {
-			ToastLabel::Xp(s) => s.name(),
-			ToastLabel::Essence(e) => e.name(),
-		}
-	}
-}
-
 /// One live "+N LABEL" toast above the hotbar. The engine owns the
 /// state — [`toasts`] just draws whatever is live.
 pub struct Toast {
@@ -685,20 +674,40 @@ pub fn toasts(
 	let pad_x = super::scale::text_pad_x(scale);
 	let gap = 4.0 * scale;
 	let mut bottom = row_grid(size, scale).origin.1 - super::theme::GAP_ABOVE_BAR * scale;
+	let chip_gap = super::theme::CHIP_GAP * scale;
 	for toast in toasts.iter().rev() {
 		let fade = (toast.ttl / TOAST_FADE).clamp(0.0, 1.0);
-		let text = format!("+{} {}", toast.amount, toast.label.name().to_uppercase());
-		let w = style.measure(&text) + 2.0 * pad_x;
+		// An XP toast says the skill; an essence toast shows the chip —
+		// an amount of essence is never a word.
+		let (text, icon) = match toast.label {
+			ToastLabel::Xp(skill) => (
+				format!("+{} {}", toast.amount, skill.name().to_uppercase()),
+				None,
+			),
+			ToastLabel::Essence(e) => (format!("+{}", toast.amount), Some(IconKind::Essence(e))),
+		};
+		let text_w = style.measure(&text);
+		let w = text_w + icon.map_or(0.0, |_| chip_gap + px) + 2.0 * pad_x;
 		let rect = super::Rect::new((size.0 as f32 - w) / 2.0, bottom - line, w, line);
 		dl.quad(Layer::Backdrop, rect, faded(super::theme::FILL_BG, fade));
+		let top = rect.y + (line - px) / 2.0;
 		dl.text(
 			Layer::Content,
 			rect.x + pad_x,
-			rect.y + (line - px) / 2.0,
+			top,
 			px,
 			faded(WHITE, fade),
 			&text,
 		);
+		if let Some(kind) = icon {
+			draw_icon(
+				dl,
+				Layer::Icons,
+				super::Rect::new(rect.x + pad_x + text_w + chip_gap, top, px, px),
+				kind,
+				faded(WHITE, fade),
+			);
+		}
 		bottom = rect.y - gap;
 	}
 }
