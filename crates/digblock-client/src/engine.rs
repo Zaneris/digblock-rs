@@ -269,6 +269,9 @@ pub struct Engine {
 	/// asynchronously; each update retries what's left). Empty = done
 	/// or disabled.
 	debug_shapes_pending: Vec<(i32, i32, i32, u16)>,
+	/// DIG_WARD=<r>: a sphere still waiting for every cell it would touch
+	/// to be resident. `None` = landed or disabled.
+	debug_ward_pending: Option<i32>,
 }
 
 /// Client-side hold-to-dig progress (mirrors the server's `DigState`;
@@ -695,6 +698,9 @@ enum CastTarget {
 	/// Conjured light standing in the cell the head is in when the
 	/// channel COMPLETES, on its own clock (`digblock_core::kindle`).
 	Kindle,
+	/// The glass sphere about the head at completion
+	/// (`digblock_core::ward`).
+	Ward,
 }
 
 impl CastTarget {
@@ -704,7 +710,7 @@ impl CastTarget {
 	fn teleports(self) -> bool {
 		match self {
 			CastTarget::Home | CastTarget::Waystone(_) => true,
-			CastTarget::Wisp | CastTarget::Kindle => false,
+			CastTarget::Wisp | CastTarget::Kindle | CastTarget::Ward => false,
 		}
 	}
 }

@@ -530,22 +530,25 @@ fn unlock_levels_are_the_threshold_levels() {
 			6,
 			KINDLE_AT,
 			14,
+			WARD_AT,
 			TELEPORT_SWIFT_AT,
 			22,
 			ARC_AT,
 			CHANNEL_QUICK_AT,
 			34,
+			WARD_WIDE_AT,
 			WISP_BRIGHT_AT,
 			42,
 			ARC_WIDE_AT,
 			50,
+			WARD_VAST_AT,
 			KINDLE_CHEAP_AT,
 			TELEPORT_SWIFTER_AT,
 			60
 		],
-		"seven ports rising by remoteness, the two swift-return rungs and \
-			 the channel quickening between them — the far cold port crowns \
-			 the content top"
+		"seven ports rising by remoteness, the two swift-return rungs, the \
+			 ward's three spheres and the channel quickening between them — \
+			 the far cold port crowns the content top"
 	);
 	// The first level is where everyone starts — you never level up into
 	// it, and the slabs sitting at that unlock must not say otherwise.
@@ -556,39 +559,96 @@ fn unlock_levels_are_the_threshold_levels() {
 	}
 }
 
+/// The earliest level, on whichever ladder owns the node, at which a
+/// node paying `e` can be seen — so the essence can be DRAWN. Derived
+/// from the node tables, never listed: a new faucet moves every pin that
+/// asks this.
+fn essence_findable_at(e: crate::block::Essence) -> Option<u32> {
+	BlockType::ALL
+		.into_iter()
+		.filter(|b| {
+			b.material()
+				.is_some_and(|m| m.node_units().iter().any(|&(x, _)| x == e))
+		})
+		.filter_map(|b| reveal(b).or(alchemy_reveal(b)))
+		.min()
+}
+
 /// The two port tables are twins over ONE set of kinds — a fare without
 /// a port is as wrong as a port without a fare — and remoteness orders
-/// the fares: a farther port costs more, with no inversion to game. The
-/// fare is also PAYABLE when its first port opens: every fare is drawn
-/// in an essence whose node reveals earlier on its own ladder (the
-/// payability pin's question, asked cross-skill the way the siphon
-/// handshake is).
+/// the fares WITHIN an essence: a farther port in the same essence costs
+/// more, with no inversion to game, and the essences themselves never
+/// step back down the ladder as the ports climb. Every fare is also
+/// PAYABLE when its port opens: drawn in an essence whose node reveals
+/// no later on its own ladder (the payability pin's question, asked
+/// cross-skill the way the siphon handshake is). Counted, so a table
+/// that happened to price everything in one essence would be noticed.
 #[test]
 fn the_port_tables_are_twins_and_the_fare_is_payable() {
+	use crate::block::Essence;
 	use crate::worldgen::SurfaceKind;
-	use BlockType as B;
-	let mut ports: Vec<(u32, u32)> = Vec::new();
+	let mut ports: Vec<(u32, Essence, u32)> = Vec::new();
 	for k in SurfaceKind::ALL {
 		let port = waystone(k);
 		let fare = crate::alchemy::cast_price(k);
 		assert_eq!(port.is_some(), fare.is_some(), "{k:?} fare/port twins");
-		if let (Some(l), Some((_, amt))) = (port, fare) {
-			ports.push((l, amt));
+		if let (Some(l), Some((e, amt))) = (port, fare) {
+			ports.push((l, e, amt));
 		}
 	}
 	assert!(
 		!ports.is_empty(),
 		"no ports at all — the sweep proved nothing"
 	);
-	ports.sort_unstable();
+	ports.sort_unstable_by_key(|p| p.0);
 	for w in ports.windows(2) {
 		assert!(w[0].0 < w[1].0, "two ports on one level");
-		assert!(w[0].1 < w[1].1, "a farther port must cost more");
+		assert!(
+			(w[0].1 as u8) <= (w[1].1 as u8),
+			"the fare essence never steps back down the ladder"
+		);
+		if w[0].1 == w[1].1 {
+			assert!(w[0].2 < w[1].2, "a farther port must cost more");
+		}
 	}
-	let first_port = ports[0].0;
+	let essences: std::collections::HashSet<u8> = ports.iter().map(|p| p.1 as u8).collect();
+	assert!(essences.len() > 1, "the spine spends more than one faucet");
+	for &(level, e, _) in &ports {
+		let found = essence_findable_at(e).expect("every fare essence has a faucet");
+		assert!(
+			found <= level,
+			"{e:?} prices a port at {level} but is found at {found}"
+		);
+	}
+}
+
+/// The ward's fare and its radius are one rung: the price steps exactly
+/// where the sphere widens, in the same essence, doubling each time — a
+/// wider ward at the narrow fare would be a free upgrade. The first
+/// rank is payable when it opens, in the essence that names it.
+#[test]
+fn the_ward_fare_doubles_with_its_radius() {
+	use crate::alchemy::ward_price;
+	let mut steps = 0;
+	for l in 2..=MAX_LEVEL {
+		let (e0, f0) = ward_price(l - 1);
+		let (e1, f1) = ward_price(l);
+		assert_eq!(e0, e1, "one essence at every rung");
+		let widens = ward_radius(l) != ward_radius(l - 1);
+		assert_eq!(f0 != f1, widens && l != WARD_AT, "level {l}");
+		if widens && l != WARD_AT {
+			assert_eq!(f1, f0 * 2, "level {l}");
+			steps += 1;
+		}
+		if l == WARD_AT {
+			assert_eq!(ward_radius(l - 1), 0, "nothing below the first rank");
+		}
+	}
+	assert!(steps > 0, "no step at all — the sweep proved nothing");
+	let (e, _) = ward_price(WARD_AT);
 	assert!(
-		alchemy_reveal(B::Leystone).expect("leystone reveals") <= first_port,
-		"the travel essence must be findable before the first port opens"
+		essence_findable_at(e).expect("a faucet") <= WARD_AT,
+		"the ward must be payable when it opens"
 	);
 }
 

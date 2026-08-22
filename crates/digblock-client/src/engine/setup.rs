@@ -179,6 +179,7 @@ impl Engine {
 				spawn_return_pending: false,
 				arrival_hold: None,
 			},
+			debug_ward_pending: config.debug_ward,
 			debug_shapes_pending: {
 				let mut plan = if config.debug_shapes {
 					debug_shapes_plan(spawn)

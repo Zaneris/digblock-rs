@@ -184,13 +184,13 @@ fn one_cooldown_covers_home_and_every_port() {
 	}
 }
 
-/// The light spells are NOT teleports and never touch the clock — the
-/// predicate that decides is asked, not restated here.
+/// The conjuring spells are NOT teleports and never touch the clock —
+/// the predicate that decides is asked, not restated here.
 #[test]
 fn a_light_spell_neither_waits_on_the_clock_nor_arms_it() {
 	let mut e = fresh();
 	let need = digblock_core::unlock::channel_ticks(e.skills.level(Skill::Arcana));
-	for target in [CastTarget::Wisp, CastTarget::Kindle] {
+	for target in [CastTarget::Wisp, CastTarget::Kindle, CastTarget::Ward] {
 		assert!(!target.teleports(), "{target:?} must not ride the clock");
 		// Mid-window: long enough that the channel cannot run it out, so
 		// "still running" is what the cast happened UNDER.

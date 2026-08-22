@@ -212,6 +212,9 @@ fn main() {
 	] {
 		save_rgba(name, tinted_pane(tint));
 	}
+	// Wardglass — the conjured pane: whiter and denser than clear glass
+	// so a ward reads as a dome from inside and out. Rng-free, same rule.
+	save_rgba("Wardglass.png", wardglass());
 	// The essence chips — the UI's only sprites, one flake per essence in
 	// its own palette. Also rng-free and also saved last, for the same
 	// reason as the panes.
@@ -316,6 +319,18 @@ fn tinted_pane(tint: [u8; 3]) -> RgbaImage {
 	let mut out = RgbaImage::new(SIZE, SIZE);
 	for p in out.pixels_mut() {
 		p.0 = [tint[0], tint[1], tint[2], 200];
+	}
+	out
+}
+
+/// The ward's pane: one flat, cool near-white at an alpha well above
+/// clear glass's, so a ward reads as a dome from inside and out — and
+/// nothing else, since any mark tiles into a pattern across a sphere.
+/// Deliberately rng-free (see the call site).
+fn wardglass() -> RgbaImage {
+	let mut out = RgbaImage::new(SIZE, SIZE);
+	for p in out.pixels_mut() {
+		p.0 = [214, 226, 240, 150];
 	}
 	out
 }

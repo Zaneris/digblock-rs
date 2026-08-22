@@ -79,7 +79,8 @@ fn dig_table_sanity() {
 				);
 				assert_ne!(d, BlockType::Air, "{b:?} never drops Air");
 			}
-			None => assert!(b.hardness_ticks().is_none(), "{b:?}"),
+			// A conjured row is the one diggable thing that credits nothing.
+			None => assert!(b.hardness_ticks().is_none() || b.is_conjured(), "{b:?}"),
 		}
 		// A row says either "always this" or "this, unless somebody
 		// made it" — never both, or the unconditional one silently wins.
@@ -191,6 +192,9 @@ fn dig_families_are_pinned() {
 		(B::Duskstone, Rock),
 		(B::Glowvein, Rock),
 		(B::Aetherock, Rock),
+		// Conjured matter swings as the gentlest ground: anyone can dig
+		// their way out of a ward.
+		(B::Wardglass, Soft),
 		(B::DepletedStone, Rock),
 		(B::DepletedEmberore, Rock),
 		(B::DepletedDuskstone, Rock),
@@ -370,6 +374,9 @@ fn material_roster_is_pinned() {
 			// Conjured light: a LUT row for the arcane emitters, never a
 			// cell, so it is neither substance nor priced item.
 			B::Wisplight,
+			// Conjured matter: a spell's write, never a grid cell — it
+			// has no recipe and no price, only a fare.
+			B::Wardglass,
 		]
 	);
 }

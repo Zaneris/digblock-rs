@@ -24,15 +24,18 @@ pub enum SpellAction {
 	CastWisp,
 	/// Begin conjured light's channel (it stands where the head is at completion).
 	CastKindle,
+	/// Begin the Ward's channel (the sphere closes about the head at completion).
+	CastWard,
 	/// Flip the Mason's Arc stance.
 	ToggleArc,
 }
 
-/// The two non-port spell slots in the `InvId::Spell` space — ports use
+/// The non-port spell slots in the `InvId::Spell` space — ports use
 /// `1 + kind index`, which tops out well below these.
 const SLOT_WISP: u8 = 100;
 const SLOT_KINDLE: u8 = 101;
 const SLOT_ARC: u8 = 102;
+const SLOT_WARD: u8 = 103;
 
 /// One port as the page lists it — everything derived from the core
 /// tables by [`all_ports`], so the roster and the rules cannot drift.
@@ -92,6 +95,7 @@ pub struct SpellView {
 	teleport_ready: bool,
 	wisp_ready: bool,
 	kindle_ready: bool,
+	ward_ready: bool,
 	arc_shown: bool,
 	/// The ports a click may cast right now, by `InvId::Spell` slot.
 	castable: Vec<(u8, u8)>,
@@ -148,6 +152,17 @@ impl SpellView {
 				text: "KINDLE".to_string(),
 				state: State::fare(k_essence, k_fare, kindle_ready),
 				ready: kindle_ready,
+			});
+		}
+		let mut ward_ready = false;
+		if unlock::ward_radius(level) > 0 {
+			let (w_essence, w_fare) = digblock_core::alchemy::ward_price(level);
+			ward_ready = inventory.sub_count(w_essence) >= w_fare;
+			rows.push(Row::Spell {
+				id: InvId::Spell(SLOT_WARD),
+				text: "WARD".to_string(),
+				state: State::fare(w_essence, w_fare, ward_ready),
+				ready: ward_ready,
 			});
 		}
 		// The arc is a STANCE, not a channel: the row flips it, and the
@@ -210,6 +225,7 @@ impl SpellView {
 			teleport_ready,
 			wisp_ready,
 			kindle_ready,
+			ward_ready,
 			arc_shown,
 			castable,
 		}
@@ -221,8 +237,11 @@ impl SpellView {
 /// fanfare surface, and the two share only the unlock tables.
 fn next_rung(level: u32) -> Option<(u32, &'static str)> {
 	[
+		(unlock::WARD_AT, "a ward of glass closes about you"),
 		(unlock::TELEPORT_SWIFT_AT, "home comes back sooner"),
 		(unlock::CHANNEL_QUICK_AT, "every channel quickens"),
+		(unlock::WARD_WIDE_AT, "the ward widens"),
+		(unlock::WARD_VAST_AT, "the ward widens again"),
 		(unlock::TELEPORT_SWIFTER_AT, "home comes back sooner still"),
 	]
 	.into_iter()
@@ -372,6 +391,7 @@ impl SpellScreen {
 				InvId::Spell(0) if view.teleport_ready => Some(SpellAction::CastHome),
 				InvId::Spell(SLOT_WISP) if view.wisp_ready => Some(SpellAction::CastWisp),
 				InvId::Spell(SLOT_KINDLE) if view.kindle_ready => Some(SpellAction::CastKindle),
+				InvId::Spell(SLOT_WARD) if view.ward_ready => Some(SpellAction::CastWard),
 				InvId::Spell(SLOT_ARC) if view.arc_shown => Some(SpellAction::ToggleArc),
 				InvId::Spell(slot) => view
 					.castable

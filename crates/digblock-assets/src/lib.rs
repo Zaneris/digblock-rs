@@ -99,6 +99,7 @@ pub mod tex {
 	pub const ESSENCE_UNDA: &[u8] = include_bytes!("../../../assets/textures/EssenceUnda.png");
 	pub const ESSENCE_FERRUM: &[u8] = include_bytes!("../../../assets/textures/EssenceFerrum.png");
 	pub const ESSENCE_AETHER: &[u8] = include_bytes!("../../../assets/textures/EssenceAether.png");
+	pub const WARDGLASS: &[u8] = include_bytes!("../../../assets/textures/Wardglass.png");
 
 	/// Texture-array layer order — the layer index is what block PROPS
 	/// reference, and `digblock_core::block::tex` mirrors this list
@@ -111,7 +112,7 @@ pub mod tex {
 	/// assert in digblock-client (`texture.rs`, the only file that can see
 	/// both crates) fails the BUILD on a length skew, so move them
 	/// together.
-	pub const LAYERS: [&[u8]; 57] = [
+	pub const LAYERS: [&[u8]; 58] = [
 		WATER,
 		DIRT,
 		GRASS_SIDE,
@@ -170,6 +171,7 @@ pub mod tex {
 		ESSENCE_UNDA,
 		ESSENCE_FERRUM,
 		ESSENCE_AETHER,
+		WARDGLASS,
 	];
 }
 

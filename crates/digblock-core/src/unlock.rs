@@ -408,6 +408,26 @@ pub fn arc_cells(level: u32) -> usize {
 pub const ARC_AT: u32 = 26;
 pub const ARC_WIDE_AT: u32 = 46;
 
+/// The Ward's radius in cells for a caster at this Arcana — the sphere
+/// `ward::sets` draws about the head. Zero below the first rank IS
+/// "cannot cast". Three ranks, each a wider sphere and (`ward_price`) a
+/// steeper fare.
+pub fn ward_radius(level: u32) -> i32 {
+	match level {
+		l if l >= WARD_VAST_AT => 10,
+		l if l >= WARD_WIDE_AT => 8,
+		l if l >= WARD_AT => 6,
+		_ => 0,
+	}
+}
+
+/// The Ward's three ranks: after the second port, the breather past the
+/// wisp's brightening, and the deep rung between the mountain port and
+/// kindle's easing.
+pub const WARD_AT: u32 = 16;
+pub const WARD_WIDE_AT: u32 = 36;
+pub const WARD_VAST_AT: u32 = 52;
+
 /// Wisp's second rank: brighter AND whitened — level alone reads as
 /// more of the same hue, never as brighter (the carried-light lesson).
 pub const WISP_BRIGHT_AT: u32 = 38;
@@ -662,6 +682,7 @@ pub fn opens(skill: Skill, level: u32) -> bool {
 					.any(|&k| waystone(k) == Some(level))
 					|| level == KINDLE_AT
 					|| arc_cells(level) != arc_cells(level - 1)
+					|| ward_radius(level) != ward_radius(level - 1)
 					|| teleport_cooldown_secs(level) != teleport_cooldown_secs(level - 1)
 					|| channel_ticks(level) != channel_ticks(level - 1)
 					|| wisp_light(level) != wisp_light(level - 1)

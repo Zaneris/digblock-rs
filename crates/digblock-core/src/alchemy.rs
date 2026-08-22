@@ -118,10 +118,13 @@ pub fn craft_cost(ideal: u32, level: u32) -> u32 {
 /// the other way round). An item may ALSO cost feedstock blocks
 /// ([`functional_feedstock`]); the two vessels cost ONLY that.
 /// A waystone passage's price, hand-tabled in [`functional_ideal`]'s
-/// spirit: the fare rises with the port's remoteness, all in Terra — the
-/// travel essence, whose node reveals early enough that the FIRST port's
-/// fare is payable by the time the port opens (the payability pin's
-/// question, asked by `a_ports_fare_is_payable_when_it_opens`). `None`
+/// spirit: the fare rises with the port's remoteness WITHIN an essence,
+/// and the essence climbs the ladder with the port — the lowland ports
+/// in the day-one Vitae, then Terra, the cold and the shore in Unda, the
+/// mountain in Ferrum and the far cold in Aether, so the spine spends
+/// every faucet the other ladders open rather than one. Each essence's
+/// node reveals before the first port priced in it opens (the
+/// payability pin, `the_port_tables_are_twins_and_the_fare_is_payable`). `None`
 /// is a kind with no port, exactly [`crate::unlock::waystone`]'s set —
 /// the two are pinned twins, a fare without a port being as wrong as a
 /// port without a fare. Return Home deliberately has no row here AT THE
@@ -130,13 +133,13 @@ pub fn craft_cost(ideal: u32, level: u32) -> u32 {
 pub fn cast_price(kind: crate::worldgen::SurfaceKind) -> Option<(Essence, u32)> {
 	use crate::worldgen::SurfaceKind as K;
 	Some(match kind {
-		K::Plains => (Essence::Terra, 8),
-		K::Forest => (Essence::Terra, 10),
+		K::Plains => (Essence::Vitae, 8),
+		K::Forest => (Essence::Vitae, 10),
 		K::Savanna => (Essence::Terra, 12),
-		K::Taiga => (Essence::Terra, 16),
-		K::Beach => (Essence::Terra, 20),
-		K::Mountain => (Essence::Terra, 24),
-		K::Snow => (Essence::Terra, 28),
+		K::Taiga => (Essence::Unda, 16),
+		K::Beach => (Essence::Unda, 20),
+		K::Mountain => (Essence::Ferrum, 24),
+		K::Snow => (Essence::Aether, 6),
 		K::Ocean | K::River | K::Lake | K::Marsh | K::GravelShore | K::Scree => return None,
 	})
 }
@@ -168,6 +171,21 @@ pub fn kindle_price(level: u32) -> (Essence, u32) {
 			6
 		},
 	)
+}
+
+/// The Ward's fare: Unda, the water essence, for the spell that drives
+/// water out — and the one sink that essence has beyond a bed and a
+/// snowdrift. Doubles with each rank, as the sphere's shell roughly
+/// does (`unlock::ward_radius`), so a wider ward is never a free
+/// upgrade.
+pub fn ward_price(level: u32) -> (Essence, u32) {
+	const BASE: u32 = 12;
+	let rank = match level {
+		l if l >= crate::unlock::WARD_VAST_AT => 2,
+		l if l >= crate::unlock::WARD_WIDE_AT => 1,
+		_ => 0,
+	};
+	(Essence::Unda, BASE << rank)
 }
 
 pub fn functional_ideal(b: BlockType) -> Option<&'static [(Essence, u32)]> {

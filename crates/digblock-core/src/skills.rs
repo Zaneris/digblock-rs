@@ -359,7 +359,7 @@ pub fn dig_decayed(progress: u32, required: u32, idle: u32) -> u32 {
 /// [`dig_award`] is what puts the two together (its cap is what keeps a
 /// zero-worth block's swing cells at zero too).
 pub fn dig_xp(block: BlockType) -> u64 {
-	if block.is_foliage() || block == BlockType::Torch {
+	if block.is_foliage() || block == BlockType::Torch || block.is_conjured() {
 		return 0;
 	}
 	match block.hardness_ticks() {

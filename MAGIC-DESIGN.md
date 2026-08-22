@@ -127,7 +127,7 @@ more of itself.
 ## 5. The spellbook — what casts today
 
 The book (J) is one screen in the alchemy-page mold: a pure `SpellView::build`, unlocked tiles plus one teaser tier,
-actions returned rather than applied. Four spell families shipped; the rest are §10's tail.
+actions returned rather than applied. Five spell families shipped; the rest are §10's tail.
 
 - **Wisp** — a timed raise of the caster's own carried light: an ordinary entry in the GI light list wearing the
   Wisplight row's class, level and whitening answering to the caster's Arcana (`unlock::wisp_light`, brightening and
@@ -142,6 +142,17 @@ actions returned rather than applied. Four spell families shipped; the rest are 
   schedule regardless (the sim's list is what a joiner is handed). Nothing is predicted: the caster learns of their own
   light from the same broadcast as everyone else. The earlier block-plus-sweep form tied the lifetime to the world's day
   and the caster's vicinity; `CastKind::Kindle { cell, face }` is that form's retired verb, decodable and refused.
+- **The Ward** — a one-cell-thick sphere of glass closed about the caster's head, and the first spell that WRITES cells.
+  Every cell is derived on both ends from the head and the rank's radius (`ward::sets`: the shell is the interior's
+  face-boundary, which makes it sealed against fluid and as thin as a sealed shell can be), so `CastKind::Ward` carries
+  nothing. The shell claims air and water alike (a wave left standing is a hole) and leaves terrain in place, so a ward
+  cast on the ground is a dome fused to it; interior water turns to air. All or nothing, the Arc's rule — a player in
+  the shell or an unresident cell refuses the whole cast before any debit; a protected cell is simply not written, the
+  way a fluid write is refused at the cell, so the sphere closes around a locked pad exactly as water would. The glass
+  is `Wardglass`, a `conjured` row: diggable by anyone, so nobody is walled in, but a dig credits nothing and pays no XP
+  and no slot holds one — a sphere would otherwise be a faucet of panes. Nothing is predicted: the cells land through
+  `apply_write` under `NO_CLIENT_SEQ` and the caster sees them as everyone does. Three ranks (`unlock::ward_radius`),
+  each a wider sphere at a doubled fare.
 - **The Mason's Arc** — Arcana's answer to the Resonant Pick: the pick widens *breaking*, the Arc widens *placing*. A
   toggle in the book; while on, a plain placement extends along the verified normal to `unlock::arc_cells` cells under
   one seq (`EditKind::PlaceArc`), debiting one block per cell. The server re-derives the line from its own raycast (the
@@ -154,12 +165,15 @@ actions returned rather than applied. Four spell families shipped; the rest are 
 
 - **One governor per spell.** Home is cooldown-governed and free forever; everything else is price-governed with no
   cooldown — the channel is feel and interruption surface, not a governor.
-- Waystone fares are a hand table in Terra (`alchemy::cast_price`), rising with the ladder; the wisp prices in Vitae
-  (`wisp_price` — what a fresh player's first heartwood draws pay, the day-one bootstrap, doubling with the burn at
-  `WISP_BRIGHT_AT`); kindle in Terra (`kindle_price`, cheapening at `KINDLE_CHEAP_AT`). The fares and
-  `CAST_XP_PER_ESSENCE` are ONE decision, never two: raising a fare alone would pay more XP for costing more, which is
-  the opposite of a sink. The payability pin asks the standing question: **a cast must be payable at the level that
-  unlocks it.**
+- Waystone fares are a hand table (`alchemy::cast_price`) that climbs the ESSENCES with the ladder as well as the
+  amounts: the lowland ports in Vitae, then Terra, the cold and the shore in Unda, the mountain in Ferrum and the far
+  cold in Aether — so Arcana's spine spends every faucet the other two ladders open rather than one, and the payability
+  pin asks each essence's own faucet. The wisp prices in Vitae (`wisp_price` — what a fresh player's first heartwood
+  draws pay, the day-one bootstrap, doubling with the burn at `WISP_BRIGHT_AT`); kindle in Terra (`kindle_price`,
+  cheapening at `KINDLE_CHEAP_AT`); the ward in Unda (`ward_price`, doubling with each radius), the water essence for
+  the spell that drives water out and the one real sink that essence has. The fares and `CAST_XP_PER_ESSENCE` are ONE
+  decision, never two: raising a fare alone would pay more XP for costing more, which is the opposite of a sink. The
+  payability pin asks the standing question: **a cast must be payable at the level that unlocks it.**
 - **XP per priced cast derives from the price** (`skills::cast_xp` = `CAST_XP_PER_ESSENCE` × the fare), so a price
   retune moves its XP with it and no spell pays out of proportion to what it drains. Home derives from distance instead
   (§2), and the Arc pays zero — the three shapes are pinned together.
@@ -168,8 +182,8 @@ actions returned rather than applied. Four spell families shipped; the rest are 
   milestones existed carry Arcana totals this ladder cannot produce, so the player store winds Arcana — and only Arcana
   — back to nothing on read, once, at `FIRST_VERSION_WITHOUT_ARRIVALS`.
 - Every threshold lives in `unlock.rs` as always: the waystone rungs, `KINDLE_AT`, `ARC_AT`/`ARC_WIDE_AT`,
-  `WISP_BRIGHT_AT`, `TELEPORT_SWIFT_AT`/`TELEPORT_SWIFTER_AT`, `CHANNEL_QUICK_AT`, `KINDLE_CHEAP_AT`, pinned by the
-  Arcana vector in `unlock_levels_are_the_threshold_levels`.
+  `WARD_AT`/`WARD_WIDE_AT`/`WARD_VAST_AT`, `WISP_BRIGHT_AT`, `TELEPORT_SWIFT_AT`/`TELEPORT_SWIFTER_AT`,
+  `CHANNEL_QUICK_AT`, `KINDLE_CHEAP_AT`, pinned by the Arcana vector in `unlock_levels_are_the_threshold_levels`.
 
 ## 7. The skill
 
@@ -182,12 +196,15 @@ and therefore serves Arcana for free.
 
 - **The spawn spell needed no wire at all**: the channel is client pacing in front of `ClientMsg::ReturnToSpawn`.
 - **`ClientMsg::Cast(CastKind)`** — shaped for the whole roster from day one (`Waystone(kind)`, `Wisp`,
-  `Kindle { cell, face }`, and v33's `KindleHere`, which carries nothing because the server already holds the head) so
-  it never needs a v2. **`ServerMsg::Kindled { cell, secs_left }`** (v33) is every standing light, to everyone on the
-  cast and to a joiner as backlog — and the reason `MIN_PROTOCOL` is v33, since an older client would be disconnected by
-  anybody's cast. **`ServerMsg::Waystones`** carries the world's resolved sites in join sync (server state the client
-  cannot derive — each eye was resolved against the journal once and stored). **`ServerMsg::CastRefused(CastRefusal)`**
-  is a reason, never a sentence — `voice` chooses the words.
+  `Kindle { cell, face }`, v33's `KindleHere`, which carries nothing because the server already holds the head, and
+  v34's `Ward`, which carries nothing for the same reason) so it never needs a v2. The ward's cells ride the standing
+  `EditApplied` broadcast — no new message — and so `MIN_PROTOCOL` stays: a v33 client never casts one and decodes the
+  sphere's edits as ordinary cells (an unknown id renders as air, so it sees a hole, not a disconnect).
+  **`ServerMsg::Kindled { cell, secs_left }`** (v33) is every standing light, to everyone on the cast and to a joiner as
+  backlog — and the reason `MIN_PROTOCOL` is v33, since an older client would be disconnected by anybody's cast.
+  **`ServerMsg::Waystones`** carries the world's resolved sites in join sync (server state the client cannot derive —
+  each eye was resolved against the journal once and stored). **`ServerMsg::CastRefused(CastRefusal)`** is a reason,
+  never a sentence — `voice` chooses the words.
 - **`EditKind::PlaceArc`** rides the standing edit request so craft-then-place ordering and slot declaration hold.
 - **Remote-visible casting** is one appended snapshot byte: `RemoteState.fx` (`pack_fx`/`unpack_fx` — kind, whitened,
   level), today carrying **the wisp only**, because a wisp is the one effect whose look depends on state not in the
@@ -217,7 +234,9 @@ and therefore serves Arcana for free.
 ## 10. What is NOT built
 
 - **Conjured passage** — temporary bridge cells on a reversion clock. Waits on DELVE-DESIGN D2's scheduled-cell-write
-  substrate; kindle deliberately did NOT build it (a kindled light is an emitter on a timer, never a cell).
+  substrate; kindle deliberately did NOT build it (a kindled light is an emitter on a timer, never a cell), and the ward
+  sidesteps it by being PERMANENT: its glass is ordinary journaled matter that digs to nothing, so no clock has to take
+  it back.
 - **Prospect pulse** — the passive audio senses recast as an on-demand ping. Audio only; the no-ESP stance holds.
 - **Mending** — waits on D3 health.
 - **Teleport-to-friend** — consent required, addressed by account id and never by name (the `--admin` lesson).

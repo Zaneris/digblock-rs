@@ -29,7 +29,7 @@ pub const DEFAULT_MASTER_URL: &str = "https://master.digblock.net";
 /// discriminants by declaration order, so variants and fields are
 /// APPEND-ONLY — never reorder, never remove. `git log -S PROTOCOL_VERSION`
 /// is the history of what each bump carried.
-pub const PROTOCOL_VERSION: u16 = 33;
+pub const PROTOCOL_VERSION: u16 = 34;
 
 /// Chunk-column radius around an arrival — a join or a teleport — whose
 /// journaled columns must reach the client before it may render or

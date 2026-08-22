@@ -313,6 +313,13 @@ blocks! {
 	// Walk-through on purpose — it is light, not matter. Lamp mold
 	// (`emits(glows(...))`), never `seams`, which is the node rows' alone.
 	Wisplight = 89 => emits(glows(props(RenderClass::Opaque, false, tex::WISPLIGHT, tex::WISPLIGHT, tex::WISPLIGHT)), 13),
+	// The Ward's pane — the one block a spell writes (`ward`). Conjured:
+	// digs to nothing and claims no slot, or a sphere would be a faucet
+	// of panes; no material, so it sits in no grid and at no bench.
+	// Glass class on purpose: a ward is see-through in every sense the
+	// renderer and the GI have (R35's bucket predicate). Soft and
+	// diggable by anyone, so nobody is walled in by a spell.
+	Wardglass = 90 => conjured(dig(translucent(props(RenderClass::Glass, true, tex::WARDGLASS, tex::WARDGLASS, tex::WARDGLASS)), 25, DigFamily::Soft)),
 }
 
 /// The indestructible world floor: cells at this height can never be
@@ -682,6 +689,10 @@ pub struct BlockProps {
 	/// Mutually exclusive with [`Self::drops`] (pinned by `table_sanity`): a
 	/// row says either "always this" or "this, unless somebody made it".
 	pub crumbles: Option<BlockType>,
+	/// Written by a spell, never crafted or found: a dig yields nothing
+	/// and no slot holds one (`dig_drop`, `is_slottable`). See
+	/// [`conjured`].
+	pub conjured: bool,
 	/// Sub-block shape family; `Some` ⟺ `class == RenderClass::Shaped`
 	/// (pinned by `table_sanity`).
 	pub shape: Option<ShapeKind>,
@@ -775,7 +786,16 @@ const fn props(class: RenderClass, collides: bool, side: u16, top: u16, bottom: 
 		surface_light: false,
 		dig_family: DigFamily::Fixed,
 		material: None,
+		conjured: false,
 	}
+}
+
+/// Spell-written matter: diggable, so nobody is sealed in, but a dig
+/// hands back NOTHING and the block claims no slot — what a spell puts
+/// in the world for free must never come out of it as an item.
+const fn conjured(mut p: BlockProps) -> BlockProps {
+	p.conjured = true;
+	p
 }
 
 /// A sub-block shaped row: tags the shape family the `shapes` registry
@@ -898,6 +918,7 @@ const fn water_props(amount: u8, source: bool, falling: bool) -> BlockProps {
 		surface_light: false,
 		dig_family: DigFamily::Fixed,
 		material: None,
+		conjured: false,
 	}
 }
 
@@ -995,11 +1016,13 @@ pub mod tex {
 	pub const ESSENCE_UNDA: u16 = 54;
 	pub const ESSENCE_FERRUM: u16 = 55;
 	pub const ESSENCE_AETHER: u16 = 56;
+	/// The Ward's conjured pane.
+	pub const WARDGLASS: u16 = 57;
 
 	/// Layers in the array, i.e. `digblock_assets::tex::LAYERS.len()`.
 	/// Pinned against it by `every_block_texture_layer_is_uploaded` in
 	/// digblock-client, the one crate that can see both.
-	pub const COUNT: u16 = ESSENCE_AETHER + 1;
+	pub const COUNT: u16 = WARDGLASS + 1;
 }
 
 impl BlockType {
@@ -1126,6 +1149,7 @@ impl BlockType {
 			BlockType::Lantern => "Lantern".into(),
 			BlockType::Aetherlamp => "Aetherlamp".into(),
 			BlockType::MastersSigil => "Master's Sigil".into(),
+			BlockType::Wardglass => "Wardglass".into(),
 			_ => "?".into(),
 		}
 	}
@@ -1239,6 +1263,9 @@ impl BlockType {
 	pub fn dig_drop(self) -> Option<BlockType> {
 		self.hardness_ticks()?;
 		let p = self.props();
+		if p.conjured {
+			return None;
+		}
 		Some(p.drops.or(p.crumbles).unwrap_or(self))
 	}
 
@@ -1261,6 +1288,9 @@ impl BlockType {
 	pub fn dig_credit(self, edited: bool, alchemy: u32) -> Option<BlockType> {
 		self.hardness_ticks()?;
 		let p = self.props();
+		if p.conjured {
+			return None;
+		}
 		if let Some(d) = p.drops {
 			return Some(d);
 		}
@@ -1317,7 +1347,14 @@ impl BlockType {
 	/// reconcile rather than needing a version.
 	#[inline]
 	pub fn is_slottable(self) -> bool {
-		self != BlockType::Water && !self.is_tool() && !self.is_node_block()
+		self != BlockType::Water && !self.is_tool() && !self.is_node_block() && !self.is_conjured()
+	}
+
+	/// Spell-written matter — see [`BlockProps::conjured`]. Never an item,
+	/// never XP: a ward is cast for a fare and must pay nothing back.
+	#[inline]
+	pub fn is_conjured(self) -> bool {
+		self.props().conjured
 	}
 
 	/// One of the LIVE node faces — an ore tier or a surface node, the

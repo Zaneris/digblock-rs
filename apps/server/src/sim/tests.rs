@@ -1470,6 +1470,126 @@ fn a_wisp_debits_and_a_kindle_conjures() {
 	);
 }
 
+/// The Ward lands whole or not at all, from the server's own view of
+/// the caster: below its rung it is refused before any debit; at it,
+/// every shell cell that was air stands as wardglass — except inside a
+/// locked region, which the sphere leaves exactly as it found it, the
+/// way a fluid write is refused at the cell — the caster's interior is
+/// untouched, the fare is gone and its XP paid, and each write reaches
+/// the caster as an ordinary edit, none under their seq.
+#[test]
+fn a_ward_closes_about_the_caster_as_ordinary_edits() {
+	use digblock_core::block::BlockType;
+	use digblock_core::chunk::{cell_id, make_cell};
+	use digblock_core::skills::cast_xp;
+	use digblock_net::messages::{CastKind, CastRefusal};
+	use digblock_net::protocol::NO_CLIENT_SEQ;
+
+	let mut sim = flat_sim("ward");
+	let mut c = connect(&mut sim, 1);
+	wait_live(&mut sim, 1);
+	let cast = |sim: &mut super::Sim| {
+		sim.tick_once(vec![SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::Cast(CastKind::Ward),
+		}]);
+	};
+	let level = digblock_core::unlock::WARD_AT;
+	let (essence, fare) = digblock_core::alchemy::ward_price(level);
+	sim.test_grant_essence(1, essence, fare);
+	c.msgs.clear();
+	cast(&mut sim);
+	c.drain();
+	assert!(
+		c.msgs.iter().any(|m| matches!(
+			m,
+			ServerMsg::CastRefused {
+				reason: CastRefusal::Locked
+			}
+		)),
+		"a ward below its rung must refuse"
+	);
+	assert_eq!(
+		sim.test_essence(1, essence),
+		Some(fare),
+		"and costs nothing"
+	);
+
+	sim.bench_set_arcana_level(1, level);
+	// A locked pad beside the caster, well inside the sphere.
+	sim.spawn_store
+		.set_lock(Some(crate::spawn_store::SpawnLock {
+			eye: (FLAT_SPAWN + glam::Vec3::new(4.0, 0.0, 0.0)).to_array(),
+		}));
+	let regions = sim.protected_regions();
+	let r = digblock_core::unlock::ward_radius(level);
+	let head = digblock_core::kindle::host_cell(sim.test_player(1).unwrap().pos);
+	let (shell, interior) = digblock_core::ward::sets(head, r);
+	let was: Vec<Option<u16>> = shell
+		.iter()
+		.map(|&(x, y, z)| sim.test_cell_at(x, y, z))
+		.collect();
+	c.msgs.clear();
+	cast(&mut sim);
+	c.drain();
+	assert!(
+		!c.msgs
+			.iter()
+			.any(|m| matches!(m, ServerMsg::CastRefused { .. })),
+		"the ward lands"
+	);
+	let glass = make_cell(BlockType::Wardglass, 0);
+	let (mut glassed, mut spared) = (0, 0);
+	for (&(x, y, z), &before) in shell.iter().zip(&was) {
+		let before = before.expect("a flat world is resident about spawn");
+		let now = sim.test_cell_at(x, y, z).unwrap();
+		if digblock_core::protect::immutable(x, y, z, &regions) {
+			assert_eq!(now, before, "a locked cell stands at {x},{y},{z}");
+			spared += 1;
+		} else if cell_id(before) == BlockType::Air as u16 {
+			assert_eq!(now, glass, "air in the shell at {x},{y},{z}");
+			glassed += 1;
+		} else {
+			assert_eq!(now, before, "terrain in the shell stands");
+		}
+	}
+	assert!(
+		glassed > 0 && spared > 0,
+		"the shell met neither air nor the lock — the sweep proved nothing"
+	);
+	for &(x, y, z) in &interior {
+		assert_ne!(
+			cell_id(sim.test_cell_at(x, y, z).unwrap()),
+			BlockType::Wardglass as u16,
+			"nothing inside is glassed"
+		);
+	}
+	let edits: Vec<(i32, i32, i32, u32)> = c
+		.msgs
+		.iter()
+		.filter_map(|m| match m {
+			ServerMsg::EditApplied {
+				edit, client_seq, ..
+			} => Some((edit.x, edit.y, edit.z, *client_seq)),
+			_ => None,
+		})
+		.collect();
+	assert_eq!(
+		edits.len(),
+		glassed,
+		"one edit per glassed cell, to the caster too"
+	);
+	assert!(
+		edits.iter().all(|e| e.3 == NO_CLIENT_SEQ),
+		"none rides the caster's seq — nothing was predicted"
+	);
+	assert_eq!(sim.test_essence(1, essence), Some(0), "the fare left");
+	assert_eq!(
+		sim.test_skill_xp(1, digblock_core::skills::Skill::Arcana),
+		digblock_core::skills::total_xp_for(level) + cast_xp(fare)
+	);
+}
+
 /// A kindled light is the SIM's, not the caster's: it reaches a joiner
 /// as a backlog entry counting down from the cast, after the caster has
 /// left, and is gone from the backlog once its span has run — on the

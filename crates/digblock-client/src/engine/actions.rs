@@ -444,6 +444,16 @@ impl Engine {
 					_ => self.cast_kindle_offline(),
 				}
 			}
+			CastTarget::Ward => {
+				// Not predicted either: the sphere arrives as ordinary
+				// edits from the server, the caster's copy included.
+				match self.session.client.as_mut() {
+					Some(net) if net.ready() => {
+						net.send_cast(digblock_net::messages::CastKind::Ward);
+					}
+					_ => self.cast_ward_offline(),
+				}
+			}
 		}
 	}
 
@@ -481,6 +491,44 @@ impl Engine {
 			return;
 		}
 		self.kindle_light(cell, digblock_core::kindle::SECS as f32);
+		self.award_xp_offline(Skill::Arcana, digblock_core::skills::cast_xp(fare));
+	}
+
+	/// The offline arm of the Ward: the same rung, plan, player scan and
+	/// fare the server runs, protected cells skipped the same way, then
+	/// the cells land through the pipeline's own write path.
+	fn cast_ward_offline(&mut self) {
+		use digblock_core::skills::Skill;
+		let level = self.skills.level(Skill::Arcana);
+		let r = digblock_core::unlock::ward_radius(level);
+		if r == 0 {
+			self.push_feed(Msg::WaystoneLocked);
+			return;
+		}
+		let head = digblock_core::kindle::host_cell(self.player.pos);
+		let Ok(writes) =
+			digblock_core::ward::plan(head, r, |c| self.pipeline.cell_at(c.0, c.1, c.2))
+		else {
+			self.push_feed(Msg::CastBadTarget);
+			return;
+		};
+		if writes
+			.iter()
+			.any(|&(c, v)| digblock_core::player::placement_blocked(self.body_pos(), c, v))
+		{
+			self.push_feed(Msg::CastBadTarget);
+			return;
+		}
+		let mut writes = writes;
+		writes.retain(|&(c, _)| !digblock_core::protect::immutable(c.0, c.1, c.2, &self.protected));
+		let (essence, fare) = digblock_core::alchemy::ward_price(level);
+		if !self.inventory.try_take_sub(essence, fare) {
+			self.push_feed(Msg::CastCantPay);
+			return;
+		}
+		for (c, v) in writes {
+			self.pipeline.set_cell(c.0, c.1, c.2, v);
+		}
 		self.award_xp_offline(Skill::Arcana, digblock_core::skills::cast_xp(fare));
 	}
 

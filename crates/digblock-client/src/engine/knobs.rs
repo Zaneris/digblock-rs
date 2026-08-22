@@ -64,6 +64,11 @@ pub const SHAPES: Knob = flag(
 	"every shaped block laid out in a row",
 );
 pub const DOORS: Knob = flag("doors", "DIG_DOORS", "doors in every state");
+pub const WARD: Knob = value(
+	"ward",
+	"DIG_WARD",
+	"a ward of <radius> closed about spawn, with no cast behind it",
+);
 pub const VAULT: Knob = flag("vault", "DIG_VAULT", "a sealed stone vault with a torch");
 pub const VAULT_DARK: Knob = flag(
 	"vaultdark",
@@ -154,6 +159,7 @@ pub const ALL: &[Knob] = &[
 	CONFETTI,
 	SHAPES,
 	DOORS,
+	WARD,
 	VAULT,
 	VAULT_DARK,
 	ROOF,
@@ -252,6 +258,15 @@ pub fn apply(
 			.map_err(|_| format!("{} wants a level, got {v:?}", MINING.name))?;
 	}
 	config.debug_crack = percent(&CRACK)?;
+	if let Some(r) = count(&WARD)? {
+		if r < 1 {
+			return Err(format!(
+				"{} wants a radius of at least one, got {r}",
+				WARD.name
+			));
+		}
+		config.debug_ward = Some(r);
+	}
 	if let Some(n) = count(&TORCHES)? {
 		config.debug_torches = n;
 	}

@@ -577,6 +577,10 @@ pub enum CastKind {
 	},
 	/// Appended in v33.
 	KindleHere,
+	/// The Ward: a glass sphere about the caster's head, every cell
+	/// derived on the server (`digblock_core::ward`) — so, like
+	/// `KindleHere`, it carries nothing to trust. Appended in v34.
+	Ward,
 }
 
 /// Why a cast was refused — a reason, never a sentence; `voice` chooses
@@ -587,8 +591,9 @@ pub enum CastRefusal {
 	Locked,
 	/// The caster cannot pay the passage. Refused BEFORE any debit.
 	CantPay,
-	/// A kindle aimed at a cell that cannot hold conjured light — not
-	/// air, out of reach, protected, or not resident.
+	/// A conjuring with no place to land: a kindle whose head cell
+	/// cannot hold light, or a ward whose shell would close on a player
+	/// or over ground not resident.
 	BadTarget,
 }
 

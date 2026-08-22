@@ -134,12 +134,13 @@ For `just run`:
   the torch and implies it), `DIG_ROOF`, `DIG_TUNNEL` (sealed bore past the cascades' coverage — the unproven-daylight
   capture; pair with a low `--pos`, and the same run above `SEA_LEVEL` is the geometry-identical control), `DIG_DIVE`,
   `DIG_SHAPES`, `DIG_RIVER` (flooded basin + `--pitch -35`, the only pose with a SHADED water surface on screen),
-  `DIG_PLAYERBOX=<item>` (a fake remote holding a HELD-ITEM WIRE id, so the scene walks the real `held_icon` decode),
-  `DIG_MINING=<level>`, `DIG_TORCHES=<n>` / `DIG_TORCHES_FAR=<n>` / `DIG_TORCHES_WALL=1`, `DIG_CONFETTI=1`,
-  `DIG_CRACK=<percent>`, `DIG_SIPHON=<percent>` (rides `DIG_ORE`, fatal without it), `DIG_DOORS=1`, `DIG_CAST=<percent>`
-  (poses the cast channel's aura at that progress with no hold behind it), `DIG_ORE=<tier 1..=4>` (hollows a chamber
-  around the nearest deposit and grants its level — the carve must not touch the vein, or the anti-dupe deletes what is
-  being photographed), `DIG_NODE=<heartwood|leystone|springstone>`,
+  `DIG_WARD=<radius>` (a ward closed about spawn with no cast behind it), `DIG_PLAYERBOX=<item>` (a fake remote holding
+  a HELD-ITEM WIRE id, so the scene walks the real `held_icon` decode), `DIG_MINING=<level>`, `DIG_TORCHES=<n>` /
+  `DIG_TORCHES_FAR=<n>` / `DIG_TORCHES_WALL=1`, `DIG_CONFETTI=1`, `DIG_CRACK=<percent>`, `DIG_SIPHON=<percent>` (rides
+  `DIG_ORE`, fatal without it), `DIG_DOORS=1`, `DIG_CAST=<percent>` (poses the cast channel's aura at that progress with
+  no hold behind it), `DIG_ORE=<tier 1..=4>` (hollows a chamber around the nearest deposit and grants its level — the
+  carve must not touch the vein, or the anti-dupe deletes what is being photographed),
+  `DIG_NODE=<heartwood|leystone|springstone>`,
   `DIG_SCREEN=menu|inventory|alchemy|transmute|transmuting|skills|spellbook|hand|bucket|bucket-full|torch|siphon|pick|sigil`
   (the pages are input-only and otherwise invisible to headless capture; the tool names cycle the roster, and screen
   stocking grants every tool since a fresh player owns none).
@@ -312,7 +313,9 @@ physics contracts are documented at the code in `shapes.rs` and `player.rs`; the
 ## Skills & XP
 
 Three skills (Mining, Alchemy, Arcana), designed in `SKILLS-DESIGN.md` and — for Arcana — `MAGIC-DESIGN.md`. Everything
-shared lives in `digblock-core/src/skills.rs`:
+shared lives in `digblock-core/src/skills.rs`. **A `conjured` block row (`Wardglass`) is the one diggable thing that
+credits nothing, pays no XP and claims no slot** — the Ward writes hundreds of them for one fare, so any of the three
+would make a spell a faucet; `ward::plan` derives every cell on both ends and lands all or nothing, the Arc's rule:
 
 - The `Skill` enum is `repr(u8)` and **append-only** — the index is a wire/persistence format. Storage is XP-only `u64`
   totals; level is always derived. The XP curve is a **pinned integer table**, never `powf`.

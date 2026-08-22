@@ -306,6 +306,10 @@ impl Engine {
 							self.ui.spellbook.close();
 							self.start_cast(CastTarget::Kindle);
 						}
+						Some(SpellAction::CastWard) => {
+							self.ui.spellbook.close();
+							self.start_cast(CastTarget::Ward);
+						}
 						// A stance flip, not a cast: the page stays open,
 						// showing the new state.
 						Some(SpellAction::ToggleArc) => self.arc_on = !self.arc_on,

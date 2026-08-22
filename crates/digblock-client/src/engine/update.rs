@@ -39,6 +39,20 @@ impl Engine {
 			});
 			self.debug_shapes_pending = pending;
 		}
+		// DIG_WARD showcase: the plan refuses until every cell is resident,
+		// so ask each frame and land the sphere whole the first time it
+		// answers — the same plan a cast lands.
+		if let Some(r) = self.debug_ward_pending {
+			let head = digblock_core::kindle::host_cell(self.player.pos);
+			if let Ok(writes) =
+				digblock_core::ward::plan(head, r, |c| self.pipeline.cell_at(c.0, c.1, c.2))
+			{
+				for (c, v) in writes {
+					self.pipeline.set_cell(c.0, c.1, c.2, v);
+				}
+				self.debug_ward_pending = None;
+			}
+		}
 		// A fixed --tod freezes the sun angle (dev builds only): advance
 		// the day cycle, then re-assert the override on top, so a capture
 		// run has a genuinely static sun for the GI to converge against.

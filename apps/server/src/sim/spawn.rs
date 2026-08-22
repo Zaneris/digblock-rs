@@ -299,6 +299,7 @@ impl Sim {
 			CastKind::Waystone(idx) => idx,
 			CastKind::Wisp => return self.cast_wisp(conn_id),
 			CastKind::KindleHere => return self.cast_kindle(conn_id),
+			CastKind::Ward => return self.cast_ward(conn_id),
 			// The retired aimed form: a cell the client named is exactly
 			// what the spell no longer trusts.
 			CastKind::Kindle { .. } => return refuse(client, CastRefusal::BadTarget),
@@ -410,6 +411,74 @@ impl Sim {
 		};
 		self.broadcast(&self.kindled_msg(&light));
 		self.kindled.push(light);
+		self.process_cast(conn_id, digblock_core::skills::cast_xp(fare));
+	}
+
+	/// The Ward: the sphere is derived from the caster's head as the
+	/// SERVER holds it (`ward::plan`), scanned whole for players and
+	/// refused whole — the Arc's rule — before the fare is taken.
+	/// Protected cells are simply not written, exactly as a fluid write
+	/// is refused at the cell: the sphere closes around a locked pad the
+	/// way water does. Every other cell lands through `apply_write` under
+	/// `NO_CLIENT_SEQ`, so the journal, the fluid schedule and every
+	/// client see ordinary edits: nothing is predicted, and the caster
+	/// learns of their own ward exactly as everyone else does.
+	fn cast_ward(&mut self, conn_id: u64) {
+		use digblock_core::skills::Skill;
+		use digblock_net::messages::CastRefusal;
+		let refuse = |client: &Client, reason: CastRefusal| {
+			client_send(client, &ServerMsg::CastRefused { reason });
+		};
+		let Some(client) = self.clients.get(&conn_id) else {
+			return;
+		};
+		if !client.live {
+			return;
+		}
+		let level = client.skills.level(Skill::Arcana);
+		let r = digblock_core::unlock::ward_radius(level);
+		if r == 0 {
+			return refuse(client, CastRefusal::Locked);
+		}
+		let head = digblock_core::kindle::host_cell(client.player.pos);
+		let Ok(writes) = digblock_core::ward::plan(head, r, |c| self.store.cell_at(c.0, c.1, c.2))
+		else {
+			return refuse(client, CastRefusal::BadTarget);
+		};
+		// The shell closes on nobody — every live player, the caster
+		// included, who stands inside by construction.
+		let closes_on_someone = self.clients.values().filter(|c| c.live).any(|c| {
+			writes.iter().any(|&(cell, val)| {
+				digblock_core::player::placement_blocked(c.player.pos, cell, val)
+			})
+		});
+		if closes_on_someone {
+			return refuse(client, CastRefusal::BadTarget);
+		}
+		let regions = self.requester_regions(conn_id);
+		let mut writes = writes;
+		writes.retain(|&(c, _)| !digblock_core::protect::immutable(c.0, c.1, c.2, &regions));
+		let (essence, fare) = digblock_core::alchemy::ward_price(level);
+		let client = self.clients.get_mut(&conn_id).expect("checked above");
+		if !client.inventory.try_take_sub(essence, fare) {
+			let client = self.clients.get(&conn_id).expect("checked above");
+			return refuse(client, CastRefusal::CantPay);
+		}
+		let counts = client.inventory.to_wire();
+		client_send(client, &ServerMsg::InventoryFull { counts });
+		let id = client.id;
+		for (cell, val) in writes {
+			if let Some(prev) = self.store.set_cell(cell.0, cell.1, cell.2, val) {
+				self.apply_write(
+					cell,
+					val,
+					prev,
+					id,
+					digblock_net::protocol::NO_CLIENT_SEQ,
+					false,
+				);
+			}
+		}
 		self.process_cast(conn_id, digblock_core::skills::cast_xp(fare));
 	}
 
