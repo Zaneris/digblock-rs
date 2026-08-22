@@ -191,6 +191,12 @@ pub(crate) fn run(game: impl Game, options: RunOptions) -> Result<(), crate::Run
 		.build()
 		.expect("event loop");
 	event_loop.set_control_flow(ControlFlow::Wait);
+	// winit's web backend drops device events (mouse look) whenever the
+	// canvas lacks DOM focus, and the text bridge holds that focus for the
+	// whole of a chat line. Pointer lock already bounds where motion comes
+	// from, so the focus gate buys nothing here.
+	#[cfg(target_arch = "wasm32")]
+	event_loop.listen_device_events(winit::event_loop::DeviceEvents::Always);
 	let auto_drill = options.auto_drill;
 	let app = App {
 		state: AppState::Uninitialized,
@@ -1043,8 +1049,15 @@ impl<G: Game> App<G> {
 				toggle_browser_fullscreen();
 			}
 			let game = &self.game;
-			if let Some(bridge) = &mut self.text_bridge {
-				bridge.sync(game.text_entry_active(), || game.text_field_contents());
+			if let Some(bridge) = &mut self.text_bridge
+				&& let AppState::Running(r) = &self.state
+				&& let Some(canvas) = winit::platform::web::WindowExtWebSys::canvas(&*r.window)
+			{
+				bridge.sync(
+					game.text_entry_active(),
+					|| game.text_field_contents(),
+					&canvas,
+				);
 			}
 		}
 		#[cfg(not(target_arch = "wasm32"))]
@@ -1402,6 +1415,13 @@ impl<G: Game> ApplicationHandler<UserEvent> for App<G> {
 				el.exit();
 			}
 			WindowEvent::Focused(false) => {
+				// The text bridge taking focus blurs the canvas too; that
+				// is the game's own field, not a loss — forwarding it
+				// closed the chat on the very keypress that opened it.
+				#[cfg(target_arch = "wasm32")]
+				if self.text_bridge.as_ref().is_some_and(|b| b.owns_focus()) {
+					return;
+				}
 				self.game.input(InputEvent::FocusLost);
 			}
 			WindowEvent::MouseInput { state, button, .. } => {

@@ -8,6 +8,10 @@
 //! keydowns nor `insertText`. Named keys (Enter, Tab, arrows) still travel as
 //! keydowns — they navigate rather than edit. Lives in the platform crate
 //! because focus must run inside the tap's own dispatch (`after_game_input`).
+//! Taking DOM focus is the one side effect the rest of the shell must see:
+//! winit gates device events and canvas keydowns on the CANVAS holding
+//! focus, so the falling edge hands focus back to it (`owns_focus` tells the
+//! `Focused(false)` arm the rising edge's blur was ours, not a real loss).
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -134,7 +138,17 @@ impl TextBridge {
 	/// the keyboard, and a mobile browser only honours it there. Also the
 	/// recovery path: while the field stays active, any tap whose dispatch
 	/// reaches here re-takes the focus winit's canvas grab just stole.
-	pub(crate) fn sync(&mut self, active: bool, contents: impl FnOnce() -> String) {
+	/// The falling edge also returns focus to `canvas`: a blur alone leaves
+	/// it on the body, where winit delivers neither mouse motion nor keys
+	/// until the next click — the dead-mouse-after-chat symptom on desktop
+	/// browsers. A canvas is not editable, so a phone's keyboard still goes
+	/// down.
+	pub(crate) fn sync(
+		&mut self,
+		active: bool,
+		contents: impl FnOnce() -> String,
+		canvas: &web_sys::HtmlElement,
+	) {
 		if active {
 			if !self.active || !self.dom_focused.get() {
 				self.active = true;
@@ -145,7 +159,16 @@ impl TextBridge {
 			self.active = false;
 			self.input.set_value("");
 			let _ = self.input.blur();
+			let _ = canvas.focus();
 		}
+	}
+
+	/// Whether the bridge holds, or is taking, DOM focus on the game's
+	/// behalf. Keyed on the game-side edge rather than `dom_focused`: the
+	/// canvas's blur is dispatched BEFORE the input's focus, so the DOM flag
+	/// is still false at the moment the shell asks.
+	pub(crate) fn owns_focus(&self) -> bool {
+		self.active
 	}
 
 	/// Make the DOM buffer the engine's truth, caret at the end — on
