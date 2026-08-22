@@ -13,10 +13,10 @@ impl GiDraw {
 		encoder: &mut wgpu::CommandEncoder,
 		timer: Option<&GpuTimer>,
 		frame: &FrameUniforms,
-		carried: &[Emitter],
+		lights: LightInputs<'_>,
 	) {
 		let cam = [frame.cam_pos[0], frame.cam_pos[1], frame.cam_pos[2]];
-		self.flush_lights(gpu, cam, carried);
+		self.flush_lights(gpu, cam, lights);
 		// Rescan the sky ceiling when the mirror moved (R18).
 		if self.coarse_mips_dirty {
 			self.coarse_mips_dirty = false;

@@ -714,9 +714,10 @@ const GI_NEE_ITERS = 64;
 //
 // What is left is visibility, which the target cannot see: a point that can see
 // half of what it samples gets a Bernoulli on the pool TOTAL rather than on a
-// huge radiance spike. A temporal reservoir (ReSTIR DI) would remove that and is
-// deliberately NOT built — the measurement decides, and it needs a scene with
-// emitters occluded from each other (`DIG_TORCHES_WALL`).
+// huge radiance spike. A temporal reservoir (ReSTIR DI) was built and REFUTED
+// (R37): the accumulator and a-trous behind this term already average the
+// Bernoulli with a longer window than any M-clamp, so reuse only shifted the
+// noise below the frequencies they remove. Do not rebuild it in front of them.
 //
 // **The R20 property that must not regress**: this is still what lights the
 // block a torch STANDS ON. Every march steps before it tests, so a gather ray

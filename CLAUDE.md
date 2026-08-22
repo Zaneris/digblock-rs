@@ -121,7 +121,9 @@ For `just run`:
   `wvert wsun wssr wripple wrefract wflat spray nowater`, GI `gisun gigather ginee giflat giatrous`, raster
   `noscene noraster noglass`. Uniform-branch gated, so an un-stubbed run pays nothing; a typo is fatal. `noscene` is the
   CLEAN raster stub; `noraster` drops the prepass too and is an UPPER BOUND only. Never subtract the two to "get" the
-  prepass.
+  prepass. On web the same masks ride `?stub=`. `--max-lights` / `?maxlights=` cap the GI light list (the Light Sources
+  slider's lever, unsnapped for sweeps) and `DIG_GI_ITERS=<gather>,<sun>` / `?giiters=` set the resolve's ray budgets —
+  A/B levers only, GI-DESIGN.md R36 owns the rules.
 - **Scenes**: `DIG_VAULT` (sealed stone vault + torch; `DIG_VAULT_DARK=1` drops the torch and implies it), `DIG_ROOF`,
   `DIG_TUNNEL` (sealed bore past the cascades' coverage — the unproven-daylight capture; pair with a low `--pos`, and
   the same run above `SEA_LEVEL` is the geometry-identical control), `DIG_DIVE`, `DIG_SHAPES`, `DIG_RIVER` (flooded
@@ -458,9 +460,10 @@ corners are chosen must be checked against the mapping and not just the codes.
 
 ## Scheduled world jobs
 
-`digblock-core/src/worldjob.rs` is a seam with no rule in it yet: a `WorldJob` runs on a clock over blocks of a given
-type near active players (grass creeping onto dirt is the shape). **This is not fluid and must not be built on it** —
-fluid is a continuous per-tick sim over cells in flight, this is a rare batch sweep. They share only their write path.
+`digblock-core/src/worldjob.rs` is the seam and carries two rules: `grass` (creep onto sunlit dirt, smother under
+covers) and `leaves` (foliage rots once nothing anchors it). A `WorldJob` runs on a clock over blocks of a given type
+near active players. **This is not fluid and must not be built on it** — fluid is a continuous per-tick sim over cells
+in flight, this is a rare batch sweep. They share only their write path.
 
 - **The clock is the GAME's day** (`sun::DAY_SECS`), fixed by `Schedule` rather than chosen per job — a server's local
   09:00 means nothing to a player elsewhere, and the game clock is already dictated to every client.
@@ -473,6 +476,12 @@ fluid is a continuous per-tick sim over cells in flight, this is a rare batch sw
   `Pipeline::set_cell` offline. Both arms run the same scheduler, or a rule forks.
 - Catch-up is capped at one run (`last_run` advances when a sweep STARTS); one sweep at a time; the column set is
   snapshotted at the start, because players move and a shifting set gives uneven coverage.
+- **Leaf decay's frontier candidates are its propagation engine**: a felled trunk's edits expose only the adjacent ring
+  of leaves, and each rotted ring's own writes recruit the next — decay applied anywhere but the edit path stops
+  canopies melting. A leaf is anchored by trunk blocks INCLUDING the heartwood faces (a siphon must not orphan the
+  canopy), or by foliage resting on ground — which is what spares bushes, so "a leaf implies wood nearby" is a trap.
+  `every_pristine_structure_leaf_survives` walks real worldgen to keep the walk cap ahead of the canopies decoration
+  grows — **watch it when widening a canopy.**
 
 ## Spawn & protected cells
 
@@ -553,9 +562,10 @@ multiplayer would be recording a guess.
 ## Browser client
 
 Chrome via wasm32-unknown-unknown + WebGPU. Query params mirror desktop flags
-(`?seed= ?tod= ?draw= ?ssr=0 ?overlay ?mute ?master= ?join&server= ?workers= ?frames= ?nodatagrams ?mobile ?uiscale=`);
-defaults are full desktop quality, and a coarse-pointer device boots `EngineConfig::web_mobile` instead with saved
-settings and URL params still winning.
+(`?seed= ?tod= ?draw= ?ssr=0 ?overlay ?mute ?master= ?join&server= ?workers= ?frames= ?nodatagrams ?mobile ?uiscale=
+?maxlights= ?stub= ?torches= ?torchesfar= ?giiters=`);
+defaults are full desktop quality, and a coarse-pointer device boots `EngineConfig::web_mobile` instead — shorter draw
+distance with the slider's lower rungs open (`settings::DRAW_FLOOR`) — with saved settings and URL params still winning.
 
 - The loading overlay is a fixed contract with the platform layer (`digblock-gpu-ready`, `digblock-first-frame`,
   `digblock-fatal`), and **it must be PAINTED before wasm instantiation begins** — the double-rAF in index.html is what

@@ -191,6 +191,9 @@ fn main() {
 	for job in digblock_core::worldjob::grass::jobs() {
 		sim.register_world_job(job);
 	}
+	for job in digblock_core::worldjob::leaves::jobs() {
+		sim.register_world_job(job);
+	}
 	for job in digblock_core::worldjob::wisplight::jobs() {
 		sim.register_world_job(job);
 	}

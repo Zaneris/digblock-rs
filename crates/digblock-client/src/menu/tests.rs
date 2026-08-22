@@ -1,4 +1,5 @@
 use super::*;
+use crate::settings::DRAW_FLOOR;
 use std::assert_matches;
 
 const SIZE: (u32, u32) = (1280, 800);
@@ -684,13 +685,44 @@ fn settings_adjust_clamp_and_dirty_once() {
 	);
 	menu.handle_key(Key::Left);
 	assert!(menu.take_settings_change().is_none(), "already coarsest");
-	// And back up to full res.
+	// And back up to the sharpest rung the slider offers.
 	for _ in 0..10 {
 		menu.handle_key(Key::Right);
 	}
-	assert_eq!(menu.take_settings_change().unwrap().gi_scale_div, 1);
+	assert_eq!(
+		menu.take_settings_change().unwrap().gi_scale_div,
+		GI_SCALE_DIVISORS[0]
+	);
 
-	// Interface scale: sel 2, one notch down from neutral, then on
+	// Light sources: sel 2, one step per press, floored at the slider's
+	// own minimum — every expectation derived from the cap constants.
+	menu.handle_key(Key::Down);
+	menu.handle_key(Key::Left);
+	assert_eq!(
+		menu.take_settings_change().unwrap().max_lights,
+		Settings::default().max_lights - LIGHT_CAP_STEP
+	);
+	for _ in 0..40 {
+		menu.handle_key(Key::Left);
+	}
+	assert_eq!(
+		menu.take_settings_change().unwrap().max_lights,
+		LIGHT_CAP_MIN
+	);
+	menu.handle_key(Key::Left);
+	assert!(
+		menu.take_settings_change().is_none(),
+		"already at the floor"
+	);
+	for _ in 0..40 {
+		menu.handle_key(Key::Right);
+	}
+	assert_eq!(
+		menu.take_settings_change().unwrap().max_lights,
+		LIGHT_CAP_MAX
+	);
+
+	// Interface scale: sel 3, one notch down from neutral, then on
 	// down to the min.
 	menu.handle_key(Key::Down);
 	menu.handle_key(Key::Left);
@@ -723,7 +755,7 @@ fn settings_adjust_clamp_and_dirty_once() {
 	menu.handle_key(Key::Left);
 	assert!(menu.take_settings_change().is_none(), "already at the min");
 
-	// Music volume: sel 3, one notch below the default, floor at silence.
+	// Music volume: sel 4, one notch below the default, floor at silence.
 	menu.handle_key(Key::Down);
 	menu.handle_key(Key::Left);
 	let s = menu.take_settings_change().unwrap();
@@ -733,7 +765,7 @@ fn settings_adjust_clamp_and_dirty_once() {
 	}
 	assert_eq!(menu.take_settings_change().unwrap().music_vol, 0.0);
 
-	// SSR: sel 5, Enter toggles, Left also toggles.
+	// SSR: sel 6, Enter toggles, Left also toggles.
 	menu.handle_key(Key::Down);
 	menu.handle_key(Key::Down);
 	menu.handle_key(Key::Enter);
@@ -764,7 +796,7 @@ fn settings_adjust_clamp_and_dirty_once() {
 	assert!(
 		view.rows
 			.iter()
-			.any(|r| r.text.contains("Lighting Detail: Ultra"))
+			.any(|r| r.text.contains("Lighting Detail: High"))
 	);
 }
 
@@ -871,6 +903,52 @@ fn settings_bar_click_sets_snapped_value() {
 		1.0,
 	);
 	assert!(menu.take_settings_change().is_none());
+}
+
+/// A platform that declared the lower floor (`Menu::set_draw_min` — mobile
+/// web) opens the slider's lower rungs: the far-left click lands on the
+/// floor, still on the step grid, and keyboard steps walk down to it.
+#[test]
+fn the_declared_draw_floor_opens_the_sliders_lower_rungs() {
+	let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
+	menu.set_draw_min(DRAW_FLOOR);
+	open_settings(&mut menu);
+	for _ in 0..40 {
+		menu.handle_key(Key::Left);
+	}
+	assert_eq!(menu.take_settings_change().unwrap().draw_dist, DRAW_FLOOR);
+
+	let view = menu.view(SIZE, 1.0, false);
+	let row = view
+		.rows
+		.iter()
+		.find(|r| r.id == Some(RowId::SettingsRow(0)))
+		.expect("draw slider row");
+	let [bx, by, _, bh] = bar_rect(row.rect, 1.0);
+	// Walk off the floor first so the far-left click is a CHANGE.
+	menu.handle_key(Key::Right);
+	menu.take_settings_change().expect("stepped off the floor");
+	menu.handle_input(
+		&InputEvent::CursorMoved {
+			x: bx,
+			y: by + bh * 0.5,
+		},
+		SIZE,
+		1.0,
+	);
+	menu.handle_input(
+		&InputEvent::MouseButton {
+			button: MouseButton::Left,
+			pressed: true,
+		},
+		SIZE,
+		1.0,
+	);
+	let s = menu
+		.take_settings_change()
+		.expect("bar click changes value");
+	assert_eq!(s.draw_dist, DRAW_FLOOR);
+	assert_eq!((s.draw_dist - DRAW_FLOOR) % DRAW_STEP, 0);
 }
 
 /// Pressing Multiplayer while signed out walks the whole route:

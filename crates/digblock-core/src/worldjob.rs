@@ -12,6 +12,7 @@
 //! coverage.
 
 pub mod grass;
+pub mod leaves;
 pub mod wisplight;
 
 use crate::block::BlockType;

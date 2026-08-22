@@ -30,6 +30,10 @@ pub(crate) struct RenderConfig {
 	/// can only stub INSIDE a shader can never tell you what its geometry
 	/// costs.
 	pub stub: u32,
+	/// The GI resolve's ray budgets (`EngineConfig::gi_gather_iters` /
+	/// `gi_sun_iters`) — see `gi::GI_GATHER_ITERS` for the rule.
+	pub gi_gather_iters: u32,
+	pub gi_sun_iters: u32,
 }
 
 /// Cost-stub bits (`DIG_STUB=<name>[,<name>…]`). Each removes one term
@@ -174,6 +178,14 @@ pub(crate) struct FrameScene<'a> {
 	/// because `flush_lights` runs inside `GiDraw::encode` and an
 	/// out-of-order setter would be a hazard for nothing.
 	pub carried: &'a [crate::gi::Emitter],
+	/// The camera's look direction (unit), leading the light-selection
+	/// anchor — see `gi::SELECT_AHEAD`.
+	pub cam_forward: [f32; 3],
+	/// This frame's `Settings::max_lights`, handed to `flush_lights` with
+	/// the frame like `carried` is, and for the same reason: the flush
+	/// runs inside `GiDraw::encode`, so an out-of-order setter would be a
+	/// hazard for nothing.
+	pub light_cap: usize,
 	/// Live level-up confetti bursts `[origin.xyz, age][seed, …]`, aged
 	/// by the engine — the flakes themselves are a pure function of these
 	/// in the shader.

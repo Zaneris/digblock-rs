@@ -26,6 +26,9 @@ mod probes;
 mod resolve;
 mod window;
 
+pub(crate) use build::GiConfig;
+pub(crate) use resolve::{GI_GATHER_ITERS, GI_SUN_ITERS};
+
 pub(crate) const C0_DIMS: (u32, u32, u32) = (32, 24, 32);
 /// C0's probe spacing in blocks — the finest scale the bounce field can
 /// resolve, and therefore the granularity a moving emitter has to be
@@ -38,8 +41,25 @@ const PROBES_PER_DISPATCH: u32 = 512;
 /// World height in blocks — the window's fixed Y extent (an up-ray
 /// always reaches sky; the window never scrolls vertically).
 const WORLD_H: u32 = 256;
-/// Light-list capacity (GI-DESIGN.md): nearest emitters win.
-const MAX_LIGHTS: usize = 256;
+/// Light-list capacity (GI-DESIGN.md): the buffer allocation, the probe
+/// uniform and the shader clamps are all sized to it at compile time.
+/// The RUNTIME cap (`Settings::max_lights`) can only sit at or below it,
+/// which is what keeps a slider move a header rewrite instead of a
+/// reallocation. `pub(crate)` so settings derives its slider maximum
+/// from the one capacity instead of copying it.
+pub(crate) const MAX_LIGHTS: usize = 256;
+
+/// How far ahead of the camera the selection anchor leads, in blocks —
+/// the shader's `LIGHT_RANGE`, pinned by
+/// `the_selection_lead_matches_the_shaders_light_range`. Under
+/// oversubscription the survivors are the nearest to the SEGMENT from
+/// the eye to this far ahead, so a wall of vein glow behind the player
+/// loses its slots before the torches in front do, while anything close
+/// to the eye itself — your own carried light above all — still
+/// measures from the eye and can never be the one dropped. The reach
+/// filter stays camera-centred: it mirrors the shader's own march
+/// bound, and probes behind the camera still need their lights.
+const SELECT_AHEAD: f32 = 24.0;
 
 /// One entry in the light list: world position and the GI class byte
 /// whose LUT row carries its cast level and its tint.
@@ -280,6 +300,11 @@ pub(crate) struct GiDraw {
 	/// Cost-stub mask (DIG_STUB) — rides `jitter.w` into gi_resolve.wgsl,
 	/// which has no frame UBO of its own to read `misc.z` from.
 	stub: u32,
+	/// The resolve's ray budgets (`resolve::GI_GATHER_ITERS`/
+	/// `GI_SUN_ITERS` unless the config's tier lever moved them) — ride
+	/// `rz.budget` the same way the stub mask rides `jitter.w`.
+	gather_iters: u32,
+	sun_iters: u32,
 	emitters: FxHashMap<ChunkPos, Vec<Emitter>>,
 	/// Surface emitters per chunk — a revealed vein's exposed faces, merged
 	/// into rectangles by the MESHER and delivered on its output rather
@@ -311,11 +336,19 @@ pub(crate) struct GiDraw {
 	frame_i: u32,
 	lights_dirty: bool,
 	lights_buf: wgpu::Buffer,
-	/// Camera position at the last light-list flush — see flush_lights.
-	lights_cam: [f32; 3],
+	/// Selection anchor (`select_anchor`) at the last light-list flush —
+	/// see flush_lights. An anchor rather than the camera position so a
+	/// heading swing while oversubscribed re-flushes on the same rule a
+	/// walk does: either one moves the anchor.
+	lights_anchor: [f32; 3],
 	/// Emitters written at that flush, so a move that changes WHICH are in
-	/// reach re-flushes even under `MAX_LIGHTS`.
+	/// reach re-flushes even under the cap.
 	lights_len: usize,
+	/// The runtime cap the list was last flushed under
+	/// (`Settings::max_lights`, ≤ `MAX_LIGHTS`). Tracked so a slider move
+	/// re-flushes in BOTH directions — without it a raised cap would not
+	/// re-admit the lights it dropped until the anchor next moved.
+	light_cap: usize,
 	/// Positions awaiting probe invalidation (the drain is bounded per
 	/// frame), each flagged with whether it came from a MOVING light
 	/// rather than a world edit — see `resolve_inval` for the only thing
@@ -464,28 +497,34 @@ fn lateral_max(window_chunks: u32) -> f32 {
 	(window_chunks * 16) as f32 * 0.5 - 1.0
 }
 
-/// The light list's payload: every reachable emitter, at most the `MAX_LIGHTS`
-/// nearest `cam`, in the GPU entry form (`[x, y, z, bitcast(class)]`).
+/// The light list's payload: every reachable emitter, at most `cap` nearest to
+/// the forward-leading segment (see `SELECT_AHEAD`), in the GPU entry form
+/// (`[x, y, z, bitcast(class)]`).
 ///
 /// Split out of `flush_lights` because that needs a `Gpu` to upload and this is
 /// the part with a rule in it.
 ///
 /// Carried lights are simply more candidates. There is no reservation and no
 /// separate cap, because the distance rule already does the right thing at both
-/// ends: a carrier's own light sits half a block from the camera and can never
-/// be the one dropped, and a distant player's torch losing its slot to nearer
-/// emitters is the correct answer under the same rule.
+/// ends: a carrier's own light sits half a block from the camera — the near end
+/// of the segment — and can never be the one dropped, and a distant player's
+/// torch losing its slot to nearer emitters is the correct answer under the
+/// same rule.
 ///
 /// Selection, NOT ordering. No reader cares about the order, so the only thing
 /// the distance is for is deciding which ones survive the cap:
 /// `select_nth_unstable_by` partitions in O(n) rather than sorting in
 /// O(n log n). That matters now in a way it did not before — a carried light
-/// moves, so this runs EVERY frame while anyone is walking.
+/// moves, so this runs EVERY frame while anyone is walking. Under the cap the
+/// key never decides anything, so an undersubscribed list is independent of
+/// `fwd` and the common case pays only the key's arithmetic.
 fn select_lights(
 	emitters: impl Iterator<Item = Emitter>,
 	carried: &[Emitter],
 	cam: [f32; 3],
+	fwd: [f32; 3],
 	reach: f32,
+	cap: usize,
 ) -> Vec<[f32; 8]> {
 	let entry = |e: Emitter, carried: u32| {
 		let w = u32::from(e.class)
@@ -526,15 +565,47 @@ fn select_lights(
 			dx * dx + dz * dz <= reach * reach
 		})
 		.map(|(p, e)| {
-			let d2 = (p[0] - cam[0]).powi(2) + (p[1] - cam[1]).powi(2) + (p[2] - cam[2]).powi(2);
+			// Distance to the eye→anchor SEGMENT, not to a point ahead:
+			// the eye stays on the key's zero set, which is what keeps
+			// the carrier's-own-light guarantee above intact while a
+			// candidate ahead of the camera still outranks its mirror
+			// image behind it.
+			let t =
+				((p[0] - cam[0]) * fwd[0] + (p[1] - cam[1]) * fwd[1] + (p[2] - cam[2]) * fwd[2])
+					.clamp(0.0, SELECT_AHEAD);
+			let d2 = (p[0] - (cam[0] + fwd[0] * t)).powi(2)
+				+ (p[1] - (cam[1] + fwd[1] * t)).powi(2)
+				+ (p[2] - (cam[2] + fwd[2] * t)).powi(2);
 			(d2, e)
 		})
 		.collect();
-	if all.len() > MAX_LIGHTS {
-		all.select_nth_unstable_by(MAX_LIGHTS, |a, b| a.0.total_cmp(&b.0));
-		all.truncate(MAX_LIGHTS);
+	if all.len() > cap {
+		all.select_nth_unstable_by(cap, |a, b| a.0.total_cmp(&b.0));
+		all.truncate(cap);
 	}
 	all.into_iter().map(|(_, e)| e).collect()
+}
+
+/// The per-frame inputs to the light-list flush, handed over WITH the frame
+/// (see `FrameScene::carried` for why an out-of-order setter would be a
+/// hazard): the camera's look direction, the carried emitters, and the
+/// player's cap.
+pub(crate) struct LightInputs<'a> {
+	pub fwd: [f32; 3],
+	pub carried: &'a [Emitter],
+	pub cap: usize,
+}
+
+/// Where the light selection measures from: the far end of the segment the
+/// ranking key uses. One function so `flush_lights`' staleness test and the
+/// key cannot lead by two different distances — a heading swing is a move of
+/// exactly this point.
+fn select_anchor(cam: [f32; 3], fwd: [f32; 3]) -> [f32; 3] {
+	[
+		cam[0] + fwd[0] * SELECT_AHEAD,
+		cam[1] + fwd[1] * SELECT_AHEAD,
+		cam[2] + fwd[2] * SELECT_AHEAD,
+	]
 }
 
 /// Could any cell of this chunk be within `reach` of `cam` laterally?

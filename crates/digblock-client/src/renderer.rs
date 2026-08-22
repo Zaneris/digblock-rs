@@ -693,6 +693,8 @@ mod tests {
 				debug_gi: false,
 				debug_gi_probes: false,
 				stub: 0,
+				gi_gather_iters: crate::gi::GI_GATHER_ITERS,
+				gi_sun_iters: crate::gi::GI_SUN_ITERS,
 			},
 		);
 		if let Some(err) = pollster::block_on(scope.pop()) {

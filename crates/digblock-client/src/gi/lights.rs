@@ -36,19 +36,29 @@ impl GiDraw {
 		self.inval_queue.push((pos, moving));
 	}
 
-	/// Rebuild the flattened light list when it changed: the nearest
-	/// MAX_LIGHTS emitters to the camera, count in the header.
+	/// Rebuild the flattened light list when it changed: the `cap` nearest
+	/// emitters to the selection anchor, count in the header.
 	///
 	/// Order never matters to a reader — the probes sample uniformly and
 	/// the resolve's NEE scans actual positions — so a stale SELECTION
-	/// only bites through the MAX_LIGHTS truncation: with more emitters
-	/// than slots, "nearest to a camera that has since left" quietly
-	/// drops the torches around the player. The refresh below re-selects
-	/// on real movement in exactly that oversubscribed case, and stays
-	/// free in the common far-under-MAX_LIGHTS world. Nothing is sorted:
-	/// `select_lights` partitions, and under the cap does not even do
-	/// that.
-	pub(super) fn flush_lights(&mut self, gpu: &Gpu, cam: [f32; 3], carried: &[Emitter]) {
+	/// only bites through the truncation: with more emitters than the cap,
+	/// "nearest to an anchor that has since left" quietly drops the
+	/// torches around the player. The refresh below re-selects on real
+	/// anchor movement — a walk or a heading swing alike — in exactly that
+	/// oversubscribed case, and stays free in the common under-cap world.
+	/// Nothing is sorted: `select_lights` partitions, and under the cap
+	/// does not even do that.
+	///
+	/// `cap` is the player's `Settings::max_lights`; the buffer and the
+	/// shader clamps stay sized to `MAX_LIGHTS`, so a cap is only ever a
+	/// shorter header count over the same allocation.
+	pub(super) fn flush_lights(&mut self, gpu: &Gpu, cam: [f32; 3], lights: LightInputs<'_>) {
+		let LightInputs { fwd, carried, cap } = lights;
+		let cap = cap.clamp(1, MAX_LIGHTS);
+		if cap != self.light_cap {
+			self.light_cap = cap;
+			self.lights_dirty = true;
+		}
 		// Only emitters a march can actually REACH belong in the list.
 		// Every trace breaks at `gi_lateral_max` (= side/2 − 1) of the
 		// camera, so an emitter past it cannot light anything however
@@ -79,20 +89,26 @@ impl GiDraw {
 		let total: usize = reachable(&self.emitters)
 			+ reachable(&self.surfaces)
 			+ carried.iter().copied().filter(&in_reach).count();
+		// The anchor, not the camera: a pure heading swing moves it too,
+		// so an oversubscribed list refreshes when the player turns
+		// around, on the same rule and the same distance a walk uses. At
+		// rest both position and heading are bit-identical frame to
+		// frame, so the early-out below survives unchanged.
+		let anchor = select_anchor(cam, fwd);
 		let moved = {
 			let d = [
-				cam[0] - self.lights_cam[0],
-				cam[1] - self.lights_cam[1],
-				cam[2] - self.lights_cam[2],
+				anchor[0] - self.lights_anchor[0],
+				anchor[1] - self.lights_anchor[1],
+				anchor[2] - self.lights_anchor[2],
 			];
 			d[0] * d[0] + d[1] * d[1] + d[2] * d[2] > 16.0 * 16.0
 		};
 		// Any real move can change WHICH emitters are in reach, not just
-		// which MAX_LIGHTS of them are nearest — so the oversubscription
+		// which `cap` of them are nearest — so the oversubscription
 		// clause is no longer the only reason to re-flush. Under the cap
 		// this costs one walk and one small buffer write each time the
-		// camera clears the refresh distance above.
-		let stale = moved && (total > MAX_LIGHTS || total != self.lights_len);
+		// anchor clears the refresh distance above.
+		let stale = moved && (total > cap || total != self.lights_len);
 		// A carried light moves with its carrier, so the list is stale the
 		// moment one does. EXACT equality, not an epsilon, and that is the
 		// load-bearing part: at rest the presentation eye is bit-identical
@@ -121,7 +137,7 @@ impl GiDraw {
 		self.carried
 			.extend(carried.iter().copied().filter(&in_reach));
 		self.lights_dirty = false;
-		self.lights_cam = cam;
+		self.lights_anchor = anchor;
 		let all = select_lights(
 			self.emitters
 				.iter()
@@ -130,7 +146,9 @@ impl GiDraw {
 				.flat_map(|(_, v)| v.iter().copied()),
 			&self.carried,
 			cam,
+			fwd,
 			reach,
+			cap,
 		);
 		let count = all.len() as u32;
 		self.lights_len = all.len();
