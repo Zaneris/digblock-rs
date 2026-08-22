@@ -320,6 +320,8 @@ impl Engine {
 				players: &self.vfx.remote_instances,
 				held: &self.vfx.held_instances,
 				carried: &self.vfx.carried.lights,
+				cam_forward: self.camera.dir().to_array(),
+				light_cap: self.config.max_lights.max(1) as usize,
 				confetti: &self.vfx.confetti,
 				// The stream ends where the tool's own light hangs, and
 				// the destination is handed over rather than derived in

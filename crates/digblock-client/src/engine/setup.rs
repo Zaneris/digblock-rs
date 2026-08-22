@@ -86,11 +86,13 @@ impl Engine {
 				ui_scale: config.ui_scale,
 				render_scale: config.render_scale,
 				gi_scale_div: config.gi_scale_div,
+				max_lights: config.max_lights,
 				touch_jump_button: config.touch_jump_button,
 			},
 			config.auto_join.clone(),
 			config.account.clone(),
 		);
+		menu.set_draw_min(config.draw_min);
 		if config.touch_hud {
 			menu.set_touch();
 		}
@@ -620,6 +622,9 @@ impl Engine {
 		// nothing to keep in sync.
 		self.config.render_scale = s.render_scale;
 		self.config.gi_scale_div = s.gi_scale_div;
+		// The light cap rides the frame into `flush_lights`, which tracks
+		// it and re-flushes on a change — storing it IS applying it.
+		self.config.max_lights = s.max_lights;
 		if let Some(store) = &mut self.settings_store {
 			store(&s);
 		}

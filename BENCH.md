@@ -1,5 +1,30 @@
 # Bench baseline & hotspot analysis
 
+## 2026-08-21 — a temporal reservoir (ReSTIR DI) cannot beat the accumulator it feeds (R37, reverted)
+
+The measurement that refuted R27's deferred fix — full reasoning in GI-DESIGN.md R37; this entry holds the numbers.
+Protocol: `DIG_TORCHES=8` (± `DIG_TORCHES_WALL=1`),
+`--offscreen --fixed-dt 0.0166667 --bench --fly 2000 --walk
+--tod 180 --seed 42`, screenshots at `--frames 600` and
+`690` (one walk oscillation apart, the 90-frame same-pose diff), mean |Δ|/255 over the frame and over its far quarter.
+The baseline reproduces R27's published shape (wall 0.094/0.125 vs the recorded 0.103/0.099 on different hardware; open
+0.068/0.036 vs 0.070/0.035).
+
+```
+                          wall  mean/far      open  mean/far
+shipped build             0.0944 / 0.1250     0.0675 / 0.0357
+reservoir, temporal OFF   0.0944 / 0.1252     0.0675 / 0.0357   (restructure bit-clean)
+reservoir, temporal ON    0.0996 / 0.1225     0.0774 / 0.0355   (worse where it counts)
+raw NEE term, fresh-only  0.6461 / 0.8524
+raw NEE term, temporal    0.1592 / 0.1669                       (the estimator itself: 4x)
+```
+
+The 4× on the raw term against no movement on the finished frame is the whole finding: the accumulator + a-trous already
+average the NEE Bernoulli over a longer window than the reservoir's M-clamp, so the reuse only recolors the noise below
+the frequencies they remove — and the open case, where the estimator is provably exact, pays 15% for the added
+correlation. Stills: converged `DIG_VAULT` diffed old-vs-new at 0.086/255 mean (accumulation dither), i.e. the estimator
+change alone moves no picture. Apple M2 Max, dev-opt build, 1600×1200 logical.
+
 ## 2026-08-20 — blended glass and tinted transmission ride free where there is no glass
 
 The translucency feature (R35): a third mesh bucket with a two-pass tint/shine draw in the water pass, LUT op 4 with a

@@ -72,6 +72,13 @@ struct GiResolve {
 	// N_MOVING, the same short-history + a-trous regime motion already
 	// uses, so the change lands in a small fraction of that time.
 	inval: array<vec4f, 4>,
+	// x the gather ray's iteration budget, y the sun ray's (gi/resolve.rs
+	// owns the shipped values; zw reserved). Budgets, not capacities: each
+	// march's own hard loop bound stays the ceiling, so an over-budget
+	// value runs the full march rather than overrunning anything — and a
+	// budget can only truncate, which silently un-shadows whatever lies
+	// past the cut, so it moves on a MEASURED call, never a hunch.
+	budget: vec4f,
 }
 
 @group(0) @binding(0) var<uniform> rz: GiResolve;
@@ -214,9 +221,10 @@ fn sample_cone(dir: vec3f, u: vec2f, cos_max: f32) -> vec3f {
 // cache. It only has to cover the range where a per-pixel answer beats a
 // probe blend at C0's spacing — contact darkening, a wall's own bounce, a
 // tree's shade. Past that the cascades already hold the right answer and
-// tracing further would just buy variance.
+// tracing further would just buy variance. The ITERATION budget rides
+// `rz.budget` (gi/resolve.rs), so a platform can spend fewer steps over
+// the same reach without a second shader.
 const GI_GATHER_T = 32.0;
-const GI_GATHER_ITERS = 96;
 
 // A cosine-weighted direction about `n` (Malley's method). Cosine
 // sampling is what makes this estimator weightless: the cos theta in the
@@ -355,7 +363,10 @@ fn path_radiance(side: i32, h: GiHit, dir: vec3f) -> vec3f {
 	if rz.sun.w > 0.5 {
 		let ndl = max(dot(hn, rz.sun_exact.xyz), 0.0);
 		if ndl > 0.0 {
-			let sv = gi_sun_vis(side, rz.jitter.z, rz.cam.xz, rz.sun, hp, GI_GATHER_ITERS);
+			// The secondary sun check spends the GATHER budget, not the
+			// primary sun ray's: it shades a point inside a one-sample
+			// estimate, so it inherits the cheap tier by design.
+			let sv = gi_sun_vis(side, rz.jitter.z, rz.cam.xz, rz.sun, hp, i32(rz.budget.x));
 			e += rz.sun_color.rgb * ndl * sv.vis * medium_water_tr(sv.water) * sv.thru;
 		}
 	}
@@ -530,7 +541,7 @@ fn fs(i: VsOut) -> FsOut {
 		} else {
 			let ui = sample2(uv + vec2i(7919, 104729), rz.jitter.x);
 			let rd = cosine_hemi(n, ui);
-			let hit = gi_march(side, rz.jitter.z, rz.cam.xz, sp, rd, GI_GATHER_T, GI_GATHER_ITERS);
+			let hit = gi_march(side, rz.jitter.z, rz.cam.xz, sp, rd, GI_GATHER_T, i32(rz.budget.x));
 			indirect = path_radiance(side, hit, rd) + nee;
 		}
 	}
@@ -562,7 +573,7 @@ fn fs(i: VsOut) -> FsOut {
 	sv.dist = 0.0;
 	sv.thru = vec3f(1.0);
 	if !stubbed(STUB_GISUN) {
-		sv = gi_sun_vis(side, rz.jitter.z, rz.cam.xz, sdir, sp, 320);
+		sv = gi_sun_vis(side, rz.jitter.z, rz.cam.xz, sdir, sp, i32(rz.budget.y));
 	}
 	let view_dist = length(p - rz.cam.xyz);
 	// Penumbra width: occluder distance x tan(cone half-angle) is the

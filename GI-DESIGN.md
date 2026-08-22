@@ -51,7 +51,10 @@ Named here because this document previously described several of these as done:
   it up: re-measure with the Chrome window genuinely focused for the whole run, and note that capping the half-res
   target is not a one-line change — chunk.wgsl's bilateral upsample hard-codes the ratio
   (`base = (vec2i(i.pos.xy) - 1)
-  / 2`), so the real gi/full ratio has to be plumbed in first.
+  / 2`), so the real gi/full ratio has to be plumbed in first. R36 built the
+  measurement path and the ray-budget lever (`?stub=`, `?giiters=`, the emitter bed) without moving a default — the
+  re-measurement this bullet asks for now has its instruments, and R36 records the decision rule the numbers will be fed
+  into.
 - **The atlases are still ping-ponged 3D textures** with a full GPU->GPU copy per frame. That copy was M5a's headline
   target and it was measured out: it costs a sliver of the frame far too small to justify anything. Pricing it by ADDING
   four more copies is the exact measurement, because the result stays bit-identical; pricing it by DELETING it says the
@@ -520,8 +523,9 @@ same-pose diff above.
 so a point that can only see some of what it samples gets a Bernoulli on the pool total — the one thing the target
 function cannot price. `DIG_TORCHES_WALL` exists to measure it rather than argue it: 8 torches screened in half read
 **0.103 / 0.099** against 0.070 / 0.035 in the open. Real, and still 4× better than the shipped build's OPEN case. The
-fix is a temporal reservoir (ReSTIR DI — reproject through `prev_vp`, which the resolve already does, with an M-clamp
-around 20); it is deliberately NOT built here, and **0.103 is the number to beat**.
+assumed fix was a temporal reservoir (ReSTIR DI — reproject through `prev_vp`, with an M-clamp around 20), with **0.103
+as the number to beat** — R37 built it, watched the estimator work and the image not move, and reverted it. Read the
+refutation there before reaching for it again: the residual is real, and the filters behind this term already spend it.
 
 ### R28 — a torch in a hand is a torch
 
@@ -630,9 +634,9 @@ while you hold a torch, other torches' shadows wash out rather than get noisy. U
 `DIG_VAULT_DARK` cannot measure this: it is a room with exactly one emitter, which is why it shipped unseen. The capture
 is `DIG_TORCHES=8 DIG_TORCHES_WALL=1 DIG_SCREEN=torch`, screened emitters plus a carried one, read against the same
 scene with a non-emitting item in hand — R27's 0.103 is what it has to be compared with, since this is the same
-estimator and the same fix (a temporal reservoir, M-clamped, reprojected through `prev_vp`). It is deliberately not
-built here either; what is new is only that the carried light makes R27's residual reachable in ordinary play rather
-than in a contrived screen.
+estimator and the same assumed fix (a temporal reservoir), which R37 built and refuted: its argument — the accumulator
+is a longer filter than any M-clamp — covers this residual identically. What is new is only that the carried light makes
+R27's residual reachable in ordinary play rather than in a contrived screen.
 
 ### R29 — the torch was a white stick
 
@@ -1034,6 +1038,101 @@ brick accumulates no throughput, so a wall of panes would go untinted. The one-l
 `opacity()`'s bucket arm answering `Air` — shipped as this feature's intermediate phase and lives in git if a bench ever
 charges the marches more than the picture is worth.
 
+### R36 — the light list took a cap, and the ray budgets became numbers a platform can set
+
+Two levers landed together, both aimed at the mobile browser. The RAY budgets moved no default; the cap did —
+`web_mobile()` now ships the Low lighting notch and the Light Sources floor (`LIGHT_CAP_MIN`), a start-cheap default a
+phone player buys back up from, while every other profile keeps the full list. The motivating cost is scene-dependent:
+`resample_light` scans the whole light list per resolve pixel per frame, so a torch field or a cave wall of revealed
+veins is exactly where the frame gets expensive — and the platform that pays most is the one with the least headroom.
+
+**The cap.** `Settings::max_lights` ("Light Sources") caps the flushed list at runtime. CPU-side ONLY: the buffer
+allocation, the probe uniform's capacity word and the shader clamps stay sized to `MAX_LIGHTS` at compile time, and the
+slider's own maximum is DERIVED from that capacity (`settings::LIGHT_CAP_MAX`), so a cap is never anything but a shorter
+header count over the same allocation. `GiDraw` tracks the cap it last flushed under and dirties the list when it moves,
+in either direction — without that, RAISING the cap would not re-admit the dropped lights until the camera next cleared
+the refresh distance.
+
+**Selection leans forward under pressure.** With more candidates than slots, nearest-to-the-camera kept a vein wall
+BEHIND the player at the cost of the torches in front. The ranking key is now distance to the segment from the eye to
+`SELECT_AHEAD` blocks along the look direction — the shader's `LIGHT_RANGE`, pinned by
+`the_selection_lead_matches_the_shaders_light_range` — so under oversubscription the behind lights lose their slots
+first. Three properties held on purpose: the eye stays on the key's zero set, so the carrier's own light still cannot be
+the one dropped (`the_carriers_own_light_survives_any_cap`); the REACH filter stays camera-centred, because it mirrors
+the marches' own lateral bound and probes behind the camera still need their lights — the bias reorders eviction, it
+never culls; and an undersubscribed list is independent of the heading
+(`an_oversubscribed_list_drops_the_lights_behind_first` sweeps both), so the common case pays only the key's arithmetic.
+Staleness now compares the ANCHOR rather than the camera: a heading swing while oversubscribed moves the anchor exactly
+as a walk does, so turning around refreshes the list on the same rule and the same distance, and a resting camera still
+early-outs bit-exactly.
+
+**The budgets.** The resolve's gather and sun iteration counts — the frame's two largest ray budgets, per BENCH.md's
+attribution — moved from WGSL literals into the resolve uniform (`rz.budget`), with the shipped values now owned by
+`gi/resolve.rs` (`GI_GATHER_ITERS`/`GI_SUN_ITERS`) and every profile shipping them unchanged. The marches' own loop
+bounds stay literals in the shader as CAPACITIES — an over-budget value self-clamps in the loop, and
+`budgets_fit_the_shaders_capacities` keeps the shipped budgets inside them. The levers are `DIG_GI_ITERS=<gather>,<sun>`
+on desktop and `?giiters=` on web, and they are A/B levers, not settings: a shorter march silently un-shadows whatever
+lies past the cut, so a default only moves on the measurement the "No tier scaling" bullet has always asked for — a
+genuinely focused browser run — judged against the gi_scale_div image bar (BENCH.md 2026-08-12) and the 90-frame flicker
+method. The decision rule is recorded here ahead of the numbers: within the bars at desktop resolution AND faster, the
+default drops for everyone; within them only on mobile-web measurements, `web_mobile()` alone; outside them, the
+defaults stay and the refutation goes to BENCH.md.
+
+**The browser can finally measure itself.** `?stub=` gives the web launcher DIG_STUB's per-term attribution (same
+parser, same fatal-typo rule), and `?torches=`/`?torchesfar=`/`?maxlights=` put the emitter-count bed and the cap on the
+GPUs the mobile defaults are actually for — the far pad rides the courtyard plan, so `?torchesfar=` without `?torches=`
+builds no scene. The pad's capacity grew from its R27 clamp to the light list's own, so the bed can oversubscribe
+`MAX_LIGHTS`: the first 64 keep the exact cells R27 and R34 measured on, and the extension stacks VERTICALLY over a
+compact footprint, because the reach filter is lateral and a pad growing away from the camera would fall out of reach at
+precisely the short draw distances the bed exists to price.
+
+### R37 — the temporal reservoir was built, measured working, and reverted anyway
+
+R27 and R28 both end on the same deferred fix: visibility is the one thing `gi_light_score` cannot price, so wherever
+emitters occlude each other the whole in-range pool rides one shadow ray's Bernoulli, and a temporal reservoir (ReSTIR
+DI) was the assumed cure with 0.103 (`DIG_TORCHES_WALL`, the 90-frame walk diff) as the number to beat. R37 built it,
+validated the estimator, and reverted the build on the measurement. This note is what remains, and it exists so the next
+reader spends an afternoon here instead of the week.
+
+**What was built.** A second fragment entry in the resolve module — its own pass, because the resolve's two accumulator
+targets already spend the whole WebGPU default `maxColorAttachmentBytesPerSample` — holding the exact discrete RIS scan
+plus the reservoir: ONE shadow ray on the FRESH winner, whose occlusion zeroes its merge weight while still counting in
+M (that zero-yet-counted entry is the entire estimator — drop the "counts in M" half and a half-occluded wall converges
+2× bright); a temporal candidate re-entering at its current score × stored weight × clamped M, reprojected through
+`prev_vp` and validated against the resolve's own history attachments at the GRAZE-widened tolerance (the strict one
+starves the reservoir on walking frames, the same population the resolve's relaxed pass exists for); identity stored as
+position + packed w word and re-matched inside the scan, because `flush_lights` selects and never sorts, so an index
+means nothing across frames; and trusted visibility for the un-marched winner — safe in this engine alone, because
+occluders are voxels and every voxel change carries an inval sphere, which restarts the reservoir. A Monte Carlo
+reference implementation preceded the WGSL: unbiased on every occlusion pattern tried, EXACT on an all-visible pool, ~9×
+less flicker in the sim. One trap worth keeping from the wreckage: `fs`'s `uv` is scaled for the RENDER-size depth copy,
+so a GI-sized input read at `uv` lands its content a factor of `gi_scale_div` up-left — a new same-size input must be
+read at `i.pos.xy`.
+
+**The estimator works.** Night, 8 torches, walking, the 90-frame same-pose diff, on the real build: the raw NEE term's
+own flicker fell 0.646 → 0.159 with the wall screened — the 4× the sim promised, before any filter.
+
+**The image does not move, and the open case regresses.** Same protocol on the finished frame: with the temporal half
+force-disabled the restructure is bit-identical to the shipped build (wall 0.0944, open 0.0675 — the baseline
+reproduced); enabled, the wall reads 0.0996 and the open 0.0774. The wall's excess over the open case — the exact number
+the reservoir was built to close — did not shrink, and the open case, where the estimator is provably exact, picked up
+15%. Full table in BENCH.md 2026-08-21.
+
+**Why, and why it is structural rather than a tuning miss.** The NEE term is folded into `indirect` and then filtered
+twice — the screen accumulator (`N_MOVING` deep on exactly the walking frames that flicker) and the a-trous pass. A
+temporal reservoir is itself a temporal filter whose window is the M-clamp, and that window is SHORTER than the
+accumulator's. Reuse does not remove variance, it moves it down the spectrum: the memoryless Bernoulli is white,
+per-pixel independent noise — precisely what the accumulator and a spatial filter suppress best — while the reservoir's
+slowly-relaxing weight rides through a filter whose gain assumes independent samples. The reservoir traded noise the
+pipeline already removes for wander it cannot, which is why 4× off the raw term bought slightly WORSE on the finished
+frame. No M-clamp fixes this: shorter clamps converge back to the memoryless estimator, longer ones wander slower still.
+ReSTIR earns its keep where the reservoir's output is shaded with little or no history behind it; this engine's direct
+term does not qualify, and that is a property of the architecture, not of the tuning.
+
+**What would reopen it.** Removing or drastically shortening the screen accumulator, or a consumer that needs
+low-variance direct light with no filter behind it — and the unfiltered consumers this engine has (players, confetti)
+already run `sum_lights` instead, deterministically, for exactly that reason (R34).
+
 ## Non-goals (v1)
 
 - Specular GI / reflections (SSR stays as-is for water).
@@ -1125,7 +1224,10 @@ dispatch** and **rays per probe** together set how long a full sweep takes — m
 GPU time every frame; the **resolve divisor** trades reconstruction detail against the cost of the two per-pixel rays
 (web additionally caps the resolve's absolute size); and the **per-frame GI upload budget** trades how fast new terrain
 enters the window against a hitch on the frame that pays for it. Desktop takes the largest of each, web the smallest
-sweep, iOS the coarsest resolve.
+sweep, iOS the coarsest resolve. The full-resolution divisor is a capture lever (`settings::GI_SCALE_DIV_FULL`), never a
+settings rung: behind the à-trous filter and the bilateral upsample it buys almost no visible picture for the largest
+cost step the slider could take (BENCH.md 2026-08-12), and its accumulators at retina fullscreen are large enough to
+destabilize a browser's GPU process.
 
 - Hysteresis alpha by probe age: a freshly reset probe takes its estimate whole, and the alpha steps down by rungs to a
   steady-state floor.
@@ -1227,6 +1329,12 @@ The ones that bite if broken. CLAUDE.md points here rather than restating them.
   `a_translucent_cell_never_covers_whatever_its_shape`. A render CLASS cannot answer this — a crystal slab is `Shaped`.
 - **The glass draw's two halves do not commute** (R35), so the chunk list is walked BACK TO FRONT with both halves run
   per chunk. Running all tints then all shines lets every shine escape every filter, which diverges as panes stack.
+- **The light cap is CPU-side only** (R36): `Settings::max_lights` shortens the flushed header count, while the buffer,
+  the probe uniform and the shader clamps stay sized to `MAX_LIGHTS` at compile time — the slider maximum is DERIVED
+  from that capacity. Under oversubscription selection ranks by distance to the eye→`SELECT_AHEAD` segment (the shader's
+  `LIGHT_RANGE`, pinned); the eye stays on the key's zero set so the carrier's own light is never the one dropped, and
+  the REACH filter stays camera-centred — the forward bias reorders eviction, it never culls a light the probes behind
+  the camera still need.
 
 ## Test pins (grown per phase)
 

@@ -28,6 +28,178 @@ fn the_light_reach_matches_the_shaders_bound() {
 	}
 }
 
+/// The shipped ray budgets must fit inside the marches' own hard loop
+/// bounds, read out of gi_common.wgsl rather than restated: a budget past
+/// the capacity would be silently truncated by the loop, so the shipped
+/// numbers would lie about what the frame spends.
+#[test]
+fn budgets_fit_the_shaders_capacities() {
+	let src = digblock_assets::shader::GI_COMMON;
+	let capacity = |func: &str| -> u32 {
+		src.split(&format!("fn {func}"))
+			.nth(1)
+			.unwrap_or_else(|| panic!("gi_common.wgsl must declare {func}"))
+			.split("for (var i = 0; i <")
+			.nth(1)
+			.and_then(|s| s.split(';').next())
+			.and_then(|s| s.trim().parse().ok())
+			.unwrap_or_else(|| panic!("{func}'s loop bound must be a literal"))
+	};
+	assert!(
+		GI_GATHER_ITERS <= capacity("gi_march"),
+		"the gather budget exceeds gi_march's loop capacity"
+	);
+	assert!(
+		GI_SUN_ITERS <= capacity("gi_sun_vis"),
+		"the sun budget exceeds gi_sun_vis's loop capacity"
+	);
+}
+
+/// The selection anchor leads the camera by the shader's `LIGHT_RANGE` —
+/// the distance past which a light cannot affect a shaded point — read
+/// out of BOTH declaring shaders rather than restated, exactly like the
+/// reach pin above.
+#[test]
+fn the_selection_lead_matches_the_shaders_light_range() {
+	let mut found = 0;
+	for (name, src) in [
+		("gi_common.wgsl", digblock_assets::shader::GI_COMMON),
+		("gi_probe.wgsl", digblock_assets::shader::GI_PROBE),
+	] {
+		let decl = src
+			.split("const LIGHT_RANGE")
+			.nth(1)
+			.unwrap_or_else(|| panic!("{name} must declare LIGHT_RANGE"));
+		let value: f32 = decl
+			.split('=')
+			.nth(1)
+			.and_then(|v| v.split(';').next())
+			.and_then(|v| v.trim().parse().ok())
+			.unwrap_or_else(|| panic!("{name}'s LIGHT_RANGE must be a literal"));
+		assert_eq!(
+			value, SELECT_AHEAD,
+			"{name}'s LIGHT_RANGE and gi::SELECT_AHEAD must agree"
+		);
+		found += 1;
+	}
+	assert_eq!(found, 2);
+}
+
+/// Helpers for the selection tests: a point emitter of the torch class,
+/// and the position packed in a selected entry.
+#[cfg(test)]
+fn point_at(pos: [f32; 3]) -> Emitter {
+	Emitter {
+		pos,
+		class: 1,
+		level: 0,
+		whitened: false,
+		face: None,
+	}
+}
+
+#[cfg(test)]
+fn entry_pos(e: &[f32; 8]) -> [f32; 3] {
+	[e[0], e[1], e[2]]
+}
+
+/// The cap bounds the selection: at most `cap` entries survive, every
+/// candidate survives while it fits, and the count is exact under
+/// oversubscription — swept over caps, with the sweep itself counted.
+#[test]
+fn the_cap_bounds_the_selection() {
+	let cam = [0.0, 8.0, 0.0];
+	let fwd = [0.0, 0.0, 1.0];
+	let n = MAX_LIGHTS + 32;
+	let field: Vec<Emitter> = (0..n)
+		.map(|i| point_at([(i % 40) as f32 - 20.0, 8.0, (i / 40) as f32 + 2.0]))
+		.collect();
+	let mut swept = 0;
+	for cap in [1, MAX_LIGHTS / 4, MAX_LIGHTS / 2, MAX_LIGHTS] {
+		let all = select_lights(field.iter().copied(), &[], cam, fwd, 1000.0, cap);
+		assert_eq!(all.len(), cap.min(n), "cap {cap}");
+		swept += 1;
+	}
+	assert_eq!(swept, 4);
+	// Under the cap nothing is dropped, whatever the cap.
+	let few: Vec<Emitter> = field.iter().copied().take(MAX_LIGHTS / 8).collect();
+	let all = select_lights(few.iter().copied(), &[], cam, fwd, 1000.0, MAX_LIGHTS / 4);
+	assert_eq!(all.len(), few.len());
+}
+
+/// Under oversubscription the survivors lean FORWARD: of two clusters at
+/// the same camera distance, the one ahead keeps its slots and the one
+/// behind loses them. Under the cap the selection is independent of the
+/// heading — the common case must pay nothing for the bias.
+#[test]
+fn an_oversubscribed_list_drops_the_lights_behind_first() {
+	let cam = [0.0, 8.0, 0.0];
+	let fwd = [0.0, 0.0, 1.0];
+	let d = SELECT_AHEAD;
+	// Mirror-image clusters, equidistant from the camera.
+	let fore: Vec<Emitter> = (0..8).map(|i| point_at([i as f32 - 4.0, 8.0, d])).collect();
+	let aft: Vec<Emitter> = (0..8)
+		.map(|i| point_at([i as f32 - 4.0, 8.0, -d]))
+		.collect();
+	let both: Vec<Emitter> = fore.iter().chain(aft.iter()).copied().collect();
+	let picked = select_lights(both.iter().copied(), &[], cam, fwd, 1000.0, fore.len());
+	assert_eq!(picked.len(), fore.len());
+	for e in &picked {
+		assert!(
+			entry_pos(e)[2] > 0.0,
+			"a light behind the camera survived while its mirror image ahead was dropped"
+		);
+	}
+	// Same field, opposite heading, cap covering everything: the heading
+	// must not change WHAT is selected, only (under pressure) what wins.
+	let a = select_lights(both.iter().copied(), &[], cam, fwd, 1000.0, MAX_LIGHTS);
+	let b = select_lights(
+		both.iter().copied(),
+		&[],
+		cam,
+		[0.0, 0.0, -1.0],
+		1000.0,
+		MAX_LIGHTS,
+	);
+	let key = |v: &[[f32; 8]]| {
+		let mut k: Vec<[u32; 3]> = v.iter().map(|e| entry_pos(e).map(f32::to_bits)).collect();
+		k.sort_unstable();
+		k
+	};
+	assert_eq!(key(&a), key(&b));
+}
+
+/// The carrier's own light can never be the one dropped: the eye sits on
+/// the ranking key's zero set, so half a block beats any emitter a full
+/// block out — even against an oversubscribed field packed AHEAD, where
+/// the forward lead is strongest.
+#[test]
+fn the_carriers_own_light_survives_any_cap() {
+	let cam = [0.0, 8.0, 0.0];
+	let fwd = [0.0, 0.0, 1.0];
+	let own = point_at([0.0, 7.5, 0.3]);
+	// Lateral offsets never reach zero, so no field emitter sits ON the
+	// eye→anchor segment — the carrier's half-block is the closest thing
+	// to it, which is the property under test.
+	let field: Vec<Emitter> = (0..MAX_LIGHTS * 2)
+		.map(|i| point_at([((i % 16) as f32 - 7.5) * 2.0, 8.0, (i / 16) as f32 + 1.0]))
+		.collect();
+	for cap in [1, MAX_LIGHTS / 4] {
+		let picked = select_lights(
+			field.iter().copied(),
+			std::slice::from_ref(&own),
+			cam,
+			fwd,
+			1000.0,
+			cap,
+		);
+		assert!(
+			picked.iter().any(|e| entry_pos(e) == own.pos),
+			"cap {cap} dropped the carrier's own light"
+		);
+	}
+}
+
 /// The unproven-daylight fade (R32) is bit-identical above its top
 /// edge because `smoothstep` saturates there — which is only the
 /// surface-world guarantee while that edge IS the surface's floor.
@@ -94,7 +266,14 @@ fn a_carried_light_is_a_light_like_any_other() {
 		whitened: false,
 		face: None,
 	}];
-	let out = select_lights(placed.iter().copied(), &carried, cam, reach);
+	let out = select_lights(
+		placed.iter().copied(),
+		&carried,
+		cam,
+		[0.0, 0.0, 1.0],
+		reach,
+		MAX_LIGHTS,
+	);
 	assert_eq!(out.len(), MAX_LIGHTS, "the list still fills exactly once");
 	let entry = out
 		.iter()
@@ -132,7 +311,17 @@ fn a_carried_light_is_a_light_like_any_other() {
 		whitened: false,
 		face: None,
 	}];
-	assert!(select_lights(std::iter::empty(), &far, cam, reach).is_empty());
+	assert!(
+		select_lights(
+			std::iter::empty(),
+			&far,
+			cam,
+			[0.0, 0.0, 1.0],
+			reach,
+			MAX_LIGHTS
+		)
+		.is_empty()
+	);
 }
 
 /// A per-entry level has to reach the shader ON TOP of the class and
@@ -154,7 +343,15 @@ fn a_wielders_level_rides_the_entry_and_nothing_elses() {
 			whitened,
 			face: None,
 		}];
-		select_lights(std::iter::empty(), &e, cam, 8.0)[0][3].to_bits()
+		select_lights(
+			std::iter::empty(),
+			&e,
+			cam,
+			[0.0, 0.0, 1.0],
+			8.0,
+			MAX_LIGHTS,
+		)[0][3]
+			.to_bits()
 	};
 	let plain = held(0, false);
 	assert_eq!(
@@ -361,7 +558,14 @@ fn a_surface_emitter_packs_its_rectangle_beside_its_position() {
 		whitened: false,
 		face: None,
 	};
-	let out = select_lights([seam, point].into_iter(), &[], cam, 32.0);
+	let out = select_lights(
+		[seam, point].into_iter(),
+		&[],
+		cam,
+		[0.0, 0.0, 1.0],
+		32.0,
+		MAX_LIGHTS,
+	);
 	assert_eq!(out.len(), 2, "one entry each, whatever their shape");
 	let e = out
 		.iter()

@@ -3,15 +3,29 @@
 
 use super::*;
 
+/// The `RenderConfig` slice GiDraw consumes at construction — one bundle
+/// so a new knob is a field here, not another positional argument.
+pub(crate) struct GiConfig {
+	pub debug_probes: bool,
+	pub stub: u32,
+	pub gather_iters: u32,
+	pub sun_iters: u32,
+}
+
 impl GiDraw {
 	pub(crate) fn new(
 		gpu: &Gpu,
 		window_chunks: u32,
 		layer_means: &[[u8; 4]],
 		surface_format: wgpu::TextureFormat,
-		debug_probes: bool,
-		stub: u32,
+		cfg: GiConfig,
 	) -> Self {
+		let GiConfig {
+			debug_probes,
+			stub,
+			gather_iters,
+			sun_iters,
+		} = cfg;
 		let device = &gpu.device;
 		let queue = &gpu.queue;
 		let side = window_chunks * 16;
@@ -524,13 +538,13 @@ impl GiDraw {
 		});
 		let resolve_buf = device.create_buffer(&wgpu::BufferDescriptor {
 			label: Some("gi resolve uniforms"),
-			// The camera matrices, the resolve's vec4 block, then the
-			// invalidation spheres. Grew at M4 by
+			// The camera matrices, the resolve's vec4 block, the
+			// invalidation spheres, then the ray-budget lane. Grew at M4 by
 			// prev_view_proj, the previous camera + history-valid flag, the
 			// exact caster, and the sample-sequence lane; the spheres came
 			// with the deterministic sun (screen history follows a lighting
 			// edit at the short rate).
-			size: 352,
+			size: 368,
 			usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
 			mapped_at_creation: false,
 		});
@@ -688,6 +702,8 @@ impl GiDraw {
 			sky_y: 255.0,
 			window_chunks,
 			stub,
+			gather_iters,
+			sun_iters,
 			emitters: FxHashMap::default(),
 			surfaces: FxHashMap::default(),
 			carried: Vec::new(),
@@ -698,8 +714,9 @@ impl GiDraw {
 			frame_i: 0,
 			lights_dirty: false,
 			lights_buf,
-			lights_cam: [f32::INFINITY; 3],
+			lights_anchor: [f32::INFINITY; 3],
 			lights_len: 0,
+			light_cap: MAX_LIGHTS,
 			inval_queue: Vec::new(),
 			resolve_inval: Vec::new(),
 			resolve_pipeline,
