@@ -207,10 +207,10 @@ impl Pipeline {
 		self.apply_deferred_for(&landed);
 	}
 
-	/// Nearest-first across both heaps; generation wins ties so terrain
-	/// exists before meshes want it. Loops past stale heap entries; None
-	/// means both heaps are exhausted.
-	pub(super) fn pop_next_job(&mut self) -> Option<Job> {
+	/// Nearest-first across both heaps; generation wins ties so terrain exists before meshes want
+	/// it. Loops past superseded heap entries, spending `skips` as it goes; None means both heaps
+	/// are exhausted OR the budget ran out. See [`STALE_SKIP_BUDGET`] for why there is one.
+	pub(super) fn pop_next_job(&mut self, skips: &mut usize) -> Option<Job> {
 		loop {
 			let gen_d = self.gen_heap.peek().map(|(Reverse(d), _)| *d);
 			let mesh_d = self.mesh_heap.peek().map(|(Reverse(d), _)| *d);
@@ -229,6 +229,14 @@ impl Pipeline {
 			if let Some(job) = job {
 				return Some(job);
 			}
+			// A refused entry: its slot was evicted, is still generating (its arrival re-pushes),
+			// is air, or already has an equal-or-newer job in flight — so the entry itself had no
+			// work behind it. Stopping abandons the SEARCH, never a job: whatever is deeper in
+			// the heap is still there next call, so a spent budget delays streaming by a frame.
+			if *skips == 0 {
+				return None;
+			}
+			*skips -= 1;
 		}
 	}
 
@@ -241,11 +249,12 @@ impl Pipeline {
 		let start = web_time::Instant::now();
 		let mut meshes = 0usize;
 		let mut floor_done = false;
+		let mut skips = STALE_SKIP_BUDGET;
 		loop {
 			if floor_done && allowance.is_none() {
 				break;
 			}
-			let Some(job) = self.pop_next_job() else {
+			let Some(job) = self.pop_next_job(&mut skips) else {
 				break;
 			};
 			let is_gen = matches!(job, Job::Generate { .. });
@@ -285,11 +294,12 @@ impl Pipeline {
 			return 0;
 		}
 		let mut submitted = 0usize;
+		let mut skips = STALE_SKIP_BUDGET;
 		loop {
 			if submitted > 0 && deadline.is_some_and(|d| web_time::Instant::now() >= d) {
 				break;
 			}
-			let Some(job) = self.pop_next_job() else {
+			let Some(job) = self.pop_next_job(&mut skips) else {
 				break;
 			};
 			let d2 = self.job_dist2(&job);

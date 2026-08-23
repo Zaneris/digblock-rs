@@ -82,8 +82,12 @@ impl Pipeline {
 						continue;
 					}
 					let np = ChunkPos::new(pos.x + ox, pos.y + oy, pos.z + oz);
+					// Ready AND not the air sentinel: an air chunk emits no faces, so
+					// `next_mesh_job` pops the entry and refuses it — and since the bump left
+					// `mesh_gen` permanently past `submitted_gen`, every later edit against that
+					// border queued another. The arrival path skips air for the same reason.
 					if let Some(nslot) = self.store.get_mut(&np)
-						&& matches!(nslot.state, ChunkState::Ready(_))
+						&& matches!(&nslot.state, ChunkState::Ready(d) if !is_air_chunk(d))
 					{
 						nslot.mesh_gen += 1;
 						self.mesh_heap.push((

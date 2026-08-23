@@ -76,11 +76,11 @@ fn candidates_are_deterministic_and_shared_across_the_apron() {
 	}
 }
 
-/// Every structure keeps the apron contract and reports an EXACT
-/// top(): build_column's sky-chunk skipping truncates canopies at
-/// chunk-stack seams if top() ever under-reports.
+/// Every structure keeps the apron contract and reports an EXACT y span. Both ends are
+/// load-bearing: `build_column`'s sky-chunk skipping truncates canopies at chunk-stack seams if
+/// top() under-reports, and `decorate_chunk`'s per-chunk skip drops a trunk root if base() over-.
 #[test]
-fn structures_respect_apron_and_exact_tops() {
+fn structures_respect_apron_and_their_exact_y_span() {
 	let seed = 1234.5678;
 	let mut seen = 0u32;
 	for ccz in -16..16 {
@@ -88,12 +88,17 @@ fn structures_respect_apron_and_exact_tops() {
 			for s in structures_near(ccx * 16, ccz * 16, seed) {
 				seen += 1;
 				let (ox, oz) = s.origin();
-				let mut max_y = i32::MIN;
+				let (mut min_y, mut max_y) = (i32::MAX, i32::MIN);
 				s.for_each_block(|x, y, z, _| {
 					assert!((x - ox).abs() <= STRUCTURE_APRON, "apron x {s:?}");
 					assert!((z - oz).abs() <= STRUCTURE_APRON, "apron z {s:?}");
+					min_y = min_y.min(y);
 					max_y = max_y.max(y);
 				});
+				// Both ends exact, not merely containing: `decorate_chunk` skips a whole
+				// structure whose span misses the chunk, so a base above the lowest block
+				// drops it and a top below the highest drops that.
+				assert_eq!(min_y, s.base(), "exact base for {s:?}");
 				assert_eq!(max_y, s.top() - 1, "exact top for {s:?}");
 			}
 		}
@@ -376,4 +381,36 @@ fn landmark_fallback_only_adds() {
 			anchors.len()
 		);
 	}
+}
+
+/// The property `decorate_chunk`'s per-chunk skip rests on, asserted directly rather than through
+/// the bounds: a structure emits into a chunk if and only if its y span reaches one. Both
+/// directions, so a skip can neither drop a block nor stop paying its way, and across several
+/// seeds — the span pin above runs one, and a bound exact there could still be wrong elsewhere.
+#[test]
+fn a_structure_emits_into_a_chunk_exactly_when_its_span_reaches_it() {
+	let n = CHUNK_SIZE as i32;
+	let mut checked = 0u32;
+	let mut nonempty = 0u32;
+	for seed in [42.0f64, 1234.5678, -7.25, 99991.0] {
+		for ccz in -6..6 {
+			for ccx in -6..6 {
+				for s in structures_near(ccx * 16, ccz * 16, seed) {
+					for cy in 0..crate::chunk::WORLD_VCHUNK {
+						let py = cy * n;
+						let skip = s.top() <= py || s.base() >= py + n;
+						let mut hit = false;
+						s.for_each_block(|_, y, _, _| hit |= (py..py + n).contains(&y));
+						assert_eq!(!skip, hit, "seed {seed} chunk y {cy} for {s:?}");
+						checked += 1;
+						nonempty += u32::from(hit);
+					}
+				}
+			}
+		}
+	}
+	assert!(
+		checked > 0 && nonempty > 0,
+		"{checked} pairs, {nonempty} landed"
+	);
 }

@@ -430,23 +430,25 @@ pub(crate) const MAX_QUADS: usize = 4 * digblock_core::shapes::MAX_SHAPE_QUADS +
 /// `mesher::quad_indices`.
 pub(crate) fn build(kind: IconKind, out: &mut Vec<Vert>) {
 	out.clear();
-	for f in item_geom::faces(kind) {
-		let face = f.dir as u32;
-		// The ink bit rides above the layer index rather than taking an
-		// attribute of its own: this vertex feeds TWO pipelines (your own
-		// hand and a remote's), so a new attribute would be a format
-		// change in both, and the layer word has every bit spare.
-		let layer = u32::from(f.tex_layer) | (u32::from(f.emissive) << INK_BIT);
-		for i in 0..4 {
-			let c = f.corners[i];
-			out.push(Vert {
-				pos: [c[0] as f32, c[1] as f32, c[2] as f32],
-				uv: f.uv[i],
-				layer,
-				face,
-			});
+	item_geom::faces(kind, |faces| {
+		for f in faces.iter() {
+			let face = f.dir as u32;
+			// The ink bit rides above the layer index rather than taking an
+			// attribute of its own: this vertex feeds TWO pipelines (your own
+			// hand and a remote's), so a new attribute would be a format
+			// change in both, and the layer word has every bit spare.
+			let layer = u32::from(f.tex_layer) | (u32::from(f.emissive) << INK_BIT);
+			for i in 0..4 {
+				let c = f.corners[i];
+				out.push(Vert {
+					pos: [c[0] as f32, c[1] as f32, c[2] as f32],
+					uv: f.uv[i],
+					layer,
+					face,
+				});
+			}
 		}
-	}
+	});
 }
 
 /// Where [`ItemFace::emissive`](item_geom::ItemFace::emissive) rides in

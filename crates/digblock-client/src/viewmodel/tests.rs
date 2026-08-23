@@ -28,7 +28,7 @@ fn the_ink_bit_matches_the_shaders() {
 #[test]
 fn a_tool_glows_in_one_place_and_is_shaded_everywhere_else() {
 	for kind in [IconKind::Siphon, IconKind::Pick] {
-		let faces = crate::item_geom::faces(kind);
+		let faces = crate::item_geom::faces(kind, |f| f.clone());
 		assert!(
 			faces.iter().any(|f| f.emissive),
 			"{kind:?} has no lit part — it is a light source with nothing to see"

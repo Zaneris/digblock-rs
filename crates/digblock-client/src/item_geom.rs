@@ -13,6 +13,8 @@
 //!
 //! Everything is pure integer twelfths; f32 appears only in UVs.
 
+use std::cell::RefCell;
+
 use digblock_core::block::BlockType;
 use digblock_core::dir::{DIRS, Dir};
 use digblock_core::shapes::{self, Facing, door_state, slab_state, stair_state};
@@ -21,6 +23,7 @@ use crate::ui::hud::IconKind;
 
 /// One face to draw: geometry in twelfths (y may run past a single cell
 /// for the door's stacked halves), UVs already 0..1.
+#[derive(Clone, Copy)]
 pub(crate) struct ItemFace {
 	pub dir: Dir,
 	pub corners: [[i32; 3]; 4],
@@ -245,40 +248,57 @@ pub(crate) fn height(kind: IconKind) -> i32 {
 	}
 }
 
-/// Every face of `kind`, unculled and unsorted. Callers filter (the
-/// icon keeps the three visible directions) or draw the lot (the
-/// viewmodel, which turns the item).
-pub(crate) fn faces(kind: IconKind) -> Vec<ItemFace> {
-	let mut out = Vec::with_capacity(6 * shapes::MAX_SHAPE_QUADS);
+thread_local! {
+	/// The buffer [`faces`] fills. One per thread rather than one per call: a screen full of
+	/// icons tessellates the same pure function of `kind` once per icon per frame, and the
+	/// widest item reserves `6 * MAX_SHAPE_QUADS` faces — the allocation, not the geometry, was
+	/// the cost. Borrowed for the whole of a caller's closure, so nothing inside one may ask for
+	/// faces of its own; neither consumer does, and a nested ask panics rather than corrupting.
+	static FACES: RefCell<Vec<ItemFace>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Every face of `kind`, unculled and unsorted, handed to `f` in a reused buffer. Callers filter
+/// (the icon keeps the three visible directions) or draw the lot (the viewmodel, which turns the
+/// item). Mutable because filtering and sorting in place is what keeps the icon path free of a
+/// second buffer; the contents are rebuilt on every call, so nothing survives `f`.
+pub(crate) fn faces<R>(kind: IconKind, f: impl FnOnce(&mut Vec<ItemFace>) -> R) -> R {
+	FACES.with_borrow_mut(|out| {
+		out.clear();
+		out.reserve(6 * shapes::MAX_SHAPE_QUADS);
+		build_faces(kind, out);
+		f(out)
+	})
+}
+
+fn build_faces(kind: IconKind, out: &mut Vec<ItemFace>) {
 	match kind {
-		IconKind::Cube(b) => box_faces([0, 0, 0], [12, 12, 12], |d| b.texture(d) as u16, &mut out),
+		IconKind::Cube(b) => box_faces([0, 0, 0], [12, 12, 12], |d| b.texture(d) as u16, out),
 		IconKind::Shaped(b) => {
 			if b.is_door() {
-				shape_faces(b, door_state(Facing::NegX, false, false), 0, &mut out);
-				shape_faces(b, door_state(Facing::NegX, false, true), 12, &mut out);
+				shape_faces(b, door_state(Facing::NegX, false, false), 0, out);
+				shape_faces(b, door_state(Facing::NegX, false, true), 12, out);
 			} else if b.is_slab() {
 				// The 1/3 variant: that IS the item. A placed slab starts
 				// at a third and only grows by stacking more on top, so a
 				// 2/3 icon advertised a stack you don't have.
-				shape_faces(b, slab_state(false, false), 0, &mut out);
+				shape_faces(b, slab_state(false, false), 0, out);
 			} else if b.takes_facing() {
 				// Stairs and furniture with a front, turned the same way
 				// so the icon shows the piece three-quarters on.
-				shape_faces(b, stair_state(Facing::NegX), 0, &mut out);
+				shape_faces(b, stair_state(Facing::NegX), 0, out);
 			} else {
 				// Stateless shaped items — the torch, the table.
-				shape_faces(b, 0, 0, &mut out);
+				shape_faces(b, 0, 0, out);
 			}
 		}
-		IconKind::WaterTool { full } => bucket_faces(full, &mut out),
-		IconKind::Siphon => siphon_faces(&mut out),
-		IconKind::Pick => pick_faces(&mut out),
-		IconKind::Sigil => sigil_faces(&mut out),
+		IconKind::WaterTool { full } => bucket_faces(full, out),
+		IconKind::Siphon => siphon_faces(out),
+		IconKind::Pick => pick_faces(out),
+		IconKind::Sigil => sigil_faces(out),
 		// A chip is a sprite, never geometry: `hud::draw_icon` routes it
 		// to the flat path before this is asked.
 		IconKind::Essence(_) => {}
 	}
-	out
 }
 
 #[cfg(test)]
@@ -354,7 +374,7 @@ mod tests {
 			IconKind::Sigil,
 		];
 		for kind in kinds {
-			let f = faces(kind);
+			let f = faces(kind, |f| f.clone());
 			assert!(!f.is_empty(), "{kind:?} drew nothing");
 			let h = height(kind);
 			for face in &f {
@@ -380,7 +400,7 @@ mod tests {
 	#[test]
 	fn an_empty_bucket_holds_no_water() {
 		let water = BlockType::Water.props().tex_side;
-		let f = faces(IconKind::WaterTool { full: false });
+		let f = faces(IconKind::WaterTool { full: false }, |f| f.clone());
 		assert!(
 			!f.iter().any(|q| q.tex_layer == water),
 			"an empty bucket drew water"
@@ -401,7 +421,7 @@ mod tests {
 
 	#[test]
 	fn the_bucket_is_wood_around_water() {
-		let f = faces(IconKind::WaterTool { full: true });
+		let f = faces(IconKind::WaterTool { full: true }, |f| f.clone());
 		let wood = digblock_core::block::tex::LUMBER_LIGHT;
 		let water = BlockType::Water.props().tex_side;
 		assert!(f.iter().any(|q| q.tex_layer == wood));

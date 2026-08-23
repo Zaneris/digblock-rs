@@ -48,25 +48,19 @@ fn depth_key(q: &item_geom::ItemFace) -> i32 {
 	q.corners.iter().map(|c| c[0] + c[1] + c[2]).sum()
 }
 
-/// The visible faces of `kind`, far first — painter's order.
+/// Reduce `faces` to the visible ones in painter's order, far first.
 ///
-/// One fixed viewpoint means half the geometry is provably behind the
-/// rest: it is dropped before sorting rather than overdrawn.
-fn painter_order(kind: IconKind) -> Vec<item_geom::ItemFace> {
-	let mut quads: Vec<item_geom::ItemFace> = item_geom::faces(kind)
-		.into_iter()
-		.filter(|q| visible(q.dir))
-		.collect();
-	quads.sort_by_key(depth_key);
-	quads
+/// One fixed viewpoint means half the geometry is provably behind the rest: it is dropped before
+/// sorting rather than overdrawn. In place, because the buffer belongs to `item_geom` and a
+/// screen's worth of icons must not each take a copy of it.
+fn painter_order(faces: &mut Vec<item_geom::ItemFace>) {
+	faces.retain(|q| visible(q.dir));
+	faces.sort_by_key(depth_key);
 }
 
 /// Emit `kind` as a 3D icon filling `rect`. Faces are painter-sorted
 /// far-to-near; `tint`'s RGB is scaled by the per-face shading.
 pub fn emit(dl: &mut DrawList, layer: Layer, rect: Rect, kind: IconKind, tint: u32) {
-	// One fixed viewpoint means half the geometry is provably behind
-	// the rest: drop it before sorting rather than overdrawing it.
-	let quads = painter_order(kind);
 	let height = item_geom::height(kind);
 
 	// 2:1 dimetric: sx = x − z ∈ [−12, 12]; sy = (x + z)/2 − y ∈
@@ -81,21 +75,24 @@ pub fn emit(dl: &mut DrawList, layer: Layer, rect: Rect, kind: IconKind, tint: u
 		let sy = (c[0] + c[2]) as f32 / 2.0 - c[1] as f32;
 		[cx + sx * s, cy + (sy - mid_sy) * s]
 	};
-	for q in &quads {
-		// A glowing face takes no directional shading. This projection has
-		// no light in it at all — the axis factors are a convention
-		// borrowed from the mesher — so "unshaded" is the whole of what
-		// fullbright can mean here, and it is enough to keep a tool's lit
-		// part reading as the lit part at hotbar size.
-		let f = if q.emissive { 1.0 } else { face_shade(q.dir) };
-		dl.icon_quad(
-			layer,
-			q.corners.map(project),
-			q.uv,
-			q.tex_layer,
-			shade(tint, f),
-		);
-	}
+	item_geom::faces(kind, |faces| {
+		painter_order(faces);
+		for q in faces.iter() {
+			// A glowing face takes no directional shading. This projection has
+			// no light in it at all — the axis factors are a convention
+			// borrowed from the mesher — so "unshaded" is the whole of what
+			// fullbright can mean here, and it is enough to keep a tool's lit
+			// part reading as the lit part at hotbar size.
+			let f = if q.emissive { 1.0 } else { face_shade(q.dir) };
+			dl.icon_quad(
+				layer,
+				q.corners.map(project),
+				q.uv,
+				q.tex_layer,
+				shade(tint, f),
+			);
+		}
+	});
 }
 
 #[cfg(test)]
@@ -159,8 +156,10 @@ mod tests {
 	/// is painted first and the far one covers it.
 	#[test]
 	fn stairs_emit_multiple_front_faces_far_to_near() {
-		let order = painter_order(IconKind::Shaped(BlockType::WoodStairs));
-		let depths: Vec<i32> = order.iter().map(depth_key).collect();
+		let depths: Vec<i32> = item_geom::faces(IconKind::Shaped(BlockType::WoodStairs), |f| {
+			painter_order(f);
+			f.iter().map(depth_key).collect()
+		});
 		let mut sorted = depths.clone();
 		sorted.sort_unstable();
 		assert_eq!(depths, sorted, "faces are not drawn far-to-near");

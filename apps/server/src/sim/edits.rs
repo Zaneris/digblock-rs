@@ -1140,14 +1140,26 @@ impl Sim {
 			return;
 		}
 		self.flow_accum = (self.flow_accum + TICK).min(1.0);
-		let locks = self.protected_regions();
+		let mut regions = None;
 		while self.flow_accum >= FLOW_STEP_SECS {
+			// Drained whether or not there is work, so an idle spell leaves no backlog: clamped
+			// alone, the accumulator would saturate and the first tick with cells in it would
+			// spend several budgets at once.
 			self.flow_accum -= FLOW_STEP_SECS;
+			// A world at rest costs nothing — the sim owns only a work queue. The region list is
+			// built at most once a tick and only where a step has something to relax: it is a
+			// sphere per arrival pad, and a still world would pay for one on every tick forever.
+			if self.fluid.pending() == 0 {
+				continue;
+			}
+			let locks = regions
+				.get_or_insert_with(|| self.protected_regions())
+				.clone();
 			let mut edits = Vec::new();
 			let mut world = StoreWorld {
 				store: &mut self.store,
 				edits: &mut edits,
-				locks: locks.clone(),
+				locks,
 			};
 			self.fluid.step(&mut world, FLOW_BUDGET);
 			for (edit, prev) in edits {

@@ -193,10 +193,10 @@ impl GiDraw {
 	}
 
 	/// Drop every piece of GI state that only ever GROWS, so the next upload sweep rebuilds it
-	/// from what is actually resident (F7). A diagnostic, not a fix: the coarse mirror and the
-	/// emitter map are never pruned on eviction, so both ratchet as a session explores, and every
-	/// ray in the resolve pays for the difference. Pair with `gi_redirty_all` on the pipeline —
-	/// this clears, that re-queues. If frame time recovers after F7, the fix belongs in eviction.
+	/// from what is actually resident (F7). A diagnostic, not a fix: the coarse MIRROR is never
+	/// pruned on eviction (see [`Self::remove_chunk`] for why it must not be), so it ratchets as
+	/// a session explores and every ray in the resolve pays for the difference. Pair with
+	/// `gi_redirty_all` on the pipeline — this clears, that re-queues.
 	pub(crate) fn clear_derived_state(&mut self) {
 		self.coarse_mirror.fill(0);
 		self.coarse_mips_dirty = true;
@@ -206,11 +206,11 @@ impl GiDraw {
 		self.lights_dirty = true;
 	}
 
-	/// The sky ceiling and the emitter-cell count, for the debug overlay
-	/// and the CSV. Both ratchet as the world is explored (the coarse
-	/// mirror and the emitter map are never pruned on eviction), which is
-	/// exactly why they are worth showing: they are the two pieces of GI
-	/// state that make a settled session cost more than a fresh one.
+	/// The sky ceiling and the emitter-cell count, for the debug overlay and the CSV. `sky_y`
+	/// ratchets as the world is explored — it reads the coarse mirror, which eviction leaves
+	/// alone — which is exactly why it is worth showing: it is what makes a settled session cost
+	/// more than a fresh one. The emitter count tracks residency instead, since
+	/// [`Self::remove_chunk`] prunes both maps, so a climb in it is real terrain in the window.
 	pub(crate) fn debug_state(&self) -> (f32, u32) {
 		(
 			self.sky_y,

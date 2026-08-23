@@ -53,20 +53,17 @@ impl GiDraw {
 			let (dx, dz) = (e.pos[0] - cam[0], e.pos[2] - cam[2]);
 			dx * dx + dz * dz <= reach * reach
 		};
-		// Carried lights count toward `total` like any other: they are in the list the
-		// truncation applies to, so leaving them out of the tally would let a full world hide
-		// one. Chunks outside the reach are skipped WHOLE, before their entries are touched — a
-		// vein contributes a rectangle per exposed face and caves are made of exposed faces, so
-		// most of the map is nowhere a march can go.
+		// Carried lights count toward the tally like any other: they are in the list the
+		// truncation applies to, so leaving them out would let a full world hide one. Chunks
+		// outside the reach are skipped WHOLE, before their entries are touched — a vein
+		// contributes a rectangle per exposed face and caves are made of exposed faces, so most
+		// of the map is nowhere a march can go.
 		let reachable = |m: &'_ FxHashMap<ChunkPos, Vec<Emitter>>| -> usize {
 			m.iter()
 				.filter(|(p, _)| chunk_in_reach(**p, cam, reach))
 				.map(|(_, v)| v.iter().copied().filter(&in_reach).count())
 				.sum()
 		};
-		let total: usize = reachable(&self.emitters)
-			+ reachable(&self.surfaces)
-			+ carried.iter().copied().filter(&in_reach).count();
 		// The anchor, not the camera: a pure heading swing moves it too,
 		// so an oversubscribed list refreshes when the player turns
 		// around, on the same rule and the same distance a walk uses. At
@@ -81,12 +78,17 @@ impl GiDraw {
 			];
 			d[0] * d[0] + d[1] * d[1] + d[2] * d[2] > 16.0 * 16.0
 		};
-		// Any real move can change WHICH emitters are in reach, not just
-		// which `cap` of them are nearest — so the oversubscription
-		// clause is no longer the only reason to re-flush. Under the cap
-		// this costs one walk and one small buffer write each time the
-		// anchor clears the refresh distance above.
-		let stale = moved && (total > cap || total != self.lights_len);
+		// Any real move can change WHICH emitters are in reach, not just which `cap` of them are
+		// nearest — so the oversubscription clause is not the only reason to re-flush. Under the
+		// cap this costs one walk and one small buffer write each time the anchor clears the
+		// refresh distance above. The tally rides INSIDE `moved`, and not beside it: it walks
+		// both emitter maps, and a frame that has not moved would pay for an answer it discards.
+		let stale = moved && {
+			let total = reachable(&self.emitters)
+				+ reachable(&self.surfaces)
+				+ carried.iter().copied().filter(&in_reach).count();
+			total > cap || total != self.lights_len
+		};
 		// A carried light moves with its carrier, so the list is stale the moment one does.
 		// EXACT equality, not an epsilon: at rest the presentation eye is bit-identical frame to
 		// frame (pinned by `a_resting_camera_does_not_drift`), so a standing player keeps the

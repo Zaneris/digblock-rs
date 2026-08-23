@@ -214,26 +214,52 @@ pub struct Chip {
 	pub ink: u32,
 }
 
-/// The run of `chips` laid out from `(x, y)` — one rect per chip spanning
-/// its icon and number — wrapping past `max_w` onto the next
-/// [`super::theme::ROW_H`] row. Pure: the measure half of [`chips`], so
-/// the two cannot disagree, and what a screen hit-tests for hover.
-pub fn chip_layout(style: &Style, x: f32, y: f32, max_w: f32, chips: &[Chip]) -> Vec<Rect> {
+/// A `u32` written into a caller's stack buffer. The amount on a chip is measured through
+/// `Face::run` like any other string — never from a digit count, which tells you nothing about a
+/// proportional face — but a heap `String` per chip is pure per-frame churn, and a screen sizes
+/// itself around its own chips several times before drawing them once.
+fn digits(n: u32, buf: &mut [u8; 10]) -> &str {
+	let mut i = buf.len();
+	let mut n = n;
+	loop {
+		i -= 1;
+		buf[i] = b'0' + (n % 10) as u8;
+		n /= 10;
+		if n == 0 {
+			break;
+		}
+	}
+	std::str::from_utf8(&buf[i..]).expect("decimal digits are ASCII")
+}
+
+/// The one placement walk behind [`chip_layout`], [`chips_extent`] and [`chips`]: a rect per chip
+/// spanning its icon and number, wrapping past `max_w` onto the next [`super::theme::ROW_H`] row.
+/// Shared rather than re-derived so a run measured for a panel's width and the run drawn into it
+/// cannot disagree, and so the callers that only need an extent never build a list to fold it.
+fn walk_chips(style: &Style, x: f32, y: f32, max_w: f32, chips: &[Chip], mut f: impl FnMut(Rect)) {
 	let glyph = style.glyph;
 	let row_h = super::theme::ROW_H * style.scale;
 	let gap = super::theme::CHIP_GAP * style.scale;
 	let sep = super::theme::CHIP_SEP * style.scale;
-	let mut out = Vec::with_capacity(chips.len());
 	let (mut cx, mut cy) = (x, y);
+	let mut buf = [0u8; 10];
 	for c in chips {
-		let w = glyph + gap + style.measure(&c.n.to_string());
+		let w = glyph + gap + style.measure(digits(c.n, &mut buf));
 		if cx > x && cx + w - x > max_w {
 			cx = x;
 			cy += row_h;
 		}
-		out.push(Rect::new(cx, cy, w, row_h));
+		f(Rect::new(cx, cy, w, row_h));
 		cx += w + sep;
 	}
+}
+
+/// The run of `chips` laid out from `(x, y)`, as [`walk_chips`] places
+/// them — the measure half of [`chips`], and what a screen hit-tests for
+/// hover.
+pub fn chip_layout(style: &Style, x: f32, y: f32, max_w: f32, chips: &[Chip]) -> Vec<Rect> {
+	let mut out = Vec::with_capacity(chips.len());
+	walk_chips(style, x, y, max_w, chips, |r| out.push(r));
 	out
 }
 
@@ -242,11 +268,12 @@ pub fn chip_layout(style: &Style, x: f32, y: f32, max_w: f32, chips: &[Chip]) ->
 /// needs: how tall the run becomes once it wraps, which is the height
 /// the row holding it has to reserve.
 pub fn chips_extent(style: &Style, max_w: f32, chips: &[Chip]) -> (f32, f32) {
-	chip_layout(style, 0.0, 0.0, max_w, chips)
-		.iter()
-		.fold((0.0f32, 0.0f32), |(w, h), r| {
-			(w.max(r.x + r.w), h.max(r.y + r.h))
-		})
+	let (mut w, mut h) = (0.0f32, 0.0f32);
+	walk_chips(style, 0.0, 0.0, max_w, chips, |r| {
+		w = w.max(r.x + r.w);
+		h = h.max(r.y + r.h);
+	});
+	(w, h)
 }
 
 /// Width of `chips` in one unwrapped run — what a panel sizes itself by.
@@ -461,6 +488,31 @@ impl GridSpec {
 mod tests {
 	use super::*;
 	use crate::ui::draw::Cmd;
+
+	/// A chip is MEASURED through [`digits`] and DRAWN through `text_fmt`'s `{}`, so the two have
+	/// to render a `u32` the same way or every chip is laid out to a width its number does not
+	/// fill. Swept across the decade boundaries and both ends of the range rather than spot-checked,
+	/// since what would break is a carry — and counted, so a sweep that stopped early fails.
+	#[test]
+	fn a_chips_measured_digits_are_the_ones_it_draws() {
+		let mut buf = [0u8; 10];
+		let mut checked = 0u32;
+		// Every power of ten a u32 holds, and the value either side of it.
+		let edges = (0..10).flat_map(|p: u32| {
+			let d = 10u32.pow(p);
+			[d - 1, d, d + 1]
+		});
+		let extremes = [0, u32::MAX - 1, u32::MAX];
+		for n in edges.chain(extremes).chain(0..2048) {
+			assert_eq!(digits(n, &mut buf), n.to_string(), "{n}");
+			checked += 1;
+		}
+		assert_eq!(
+			checked,
+			(30 + extremes.len() + 2048) as u32,
+			"the sweep covered what it meant to"
+		);
+	}
 
 	#[test]
 	fn slot_emits_backdrop_icon_and_hit() {

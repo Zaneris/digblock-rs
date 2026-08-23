@@ -70,6 +70,12 @@ impl Pipeline {
 				id if want_springs && id == crate::block::BlockType::Sand as u16 => sand = true,
 				_ => {}
 			}
+			// Every WANTED host seen: the rest of the box can only say so again. This runs on the
+			// main thread out of the streaming budget, and underground — where the deposit
+			// stream is the whole point — the first cell read is usually already Stone.
+			if stone == want_deposits && wood == want_heartwood && sand == want_springs {
+				break;
+			}
 		}
 		// `deposits_near` is the expensive half and asks worldgen, so it
 		// waits until a host has actually been seen.

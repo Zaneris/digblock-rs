@@ -223,6 +223,21 @@ impl Structure {
 		}
 	}
 
+	/// Inclusive lower bound on the world y this structure occupies — the trunk ROOT for anything
+	/// that has one, since that is the single cell reaching below the surface. `decorate_chunk`
+	/// tests `base..top` against a chunk before enumerating, so a bound that sat above the lowest
+	/// emitted block would silently drop it; `structures_respect_apron_and_their_exact_y_span`
+	/// walks real worldgen to keep both ends exact, and
+	/// `a_structure_emits_into_a_chunk_exactly_when_its_span_reaches_it` pins the skip itself.
+	pub fn base(&self) -> i32 {
+		match self {
+			Structure::Tree(t) => t.y - 1,
+			Structure::Landmark(l) => l.y - 1,
+			Structure::Boulder(b) => b.y,
+			Structure::Bush(b) => b.y,
+		}
+	}
+
 	pub fn for_each_block(&self, f: impl FnMut(i32, i32, i32, BlockType)) {
 		match self {
 			Structure::Tree(t) => t.for_each_block(f),
@@ -720,6 +735,12 @@ pub fn decorate_chunk(data: &mut ChunkData, pos: ChunkPos, structures: &[Structu
 	let n = CHUNK_SIZE as i32;
 	let (px, py, pz) = (pos.x * n, pos.y * n, pos.z * n);
 	for st in structures {
+		// A column's whole vertical stack is decorated against the SAME candidate list, and a
+		// structure stands in one or two of its chunks — so without this every other chunk
+		// enumerates every block of every structure only to range-test it away.
+		if st.top() <= py || st.base() >= py + n {
+			continue;
+		}
 		st.for_each_block(|x, y, z, block| {
 			let (lx, ly, lz) = (x - px, y - py, z - pz);
 			if (0..n).contains(&lx) && (0..n).contains(&ly) && (0..n).contains(&lz) {

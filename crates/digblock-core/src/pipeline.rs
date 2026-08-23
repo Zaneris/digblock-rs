@@ -334,6 +334,16 @@ impl Executor {
 /// runs regardless.
 const INLINE_MESH_CAP: usize = 4;
 
+/// Refused heap entries one dispatch stage may skip past before giving up for this frame.
+///
+/// An edit leaves an entry per neighbour whose shell saw the cell and only the last is live, so a
+/// burst — a fluid cascade, a Causeway span — can bury the heap in entries with no work behind
+/// them. The skip walk sits BETWEEN two dispatched jobs, where the stage's own clock is never
+/// consulted, so without a bound it is the one piece of unbudgeted work in `maintain`. A count and
+/// not a deadline because a skip is a heap pop and a map probe, far cheaper than `Instant::now` on
+/// the web; sized so a whole budget spent costs well under the streaming floor.
+const STALE_SKIP_BUDGET: usize = 4096;
+
 /// Worst-of-recent window for inline job-cost prediction.
 const COST_N: usize = 8;
 
