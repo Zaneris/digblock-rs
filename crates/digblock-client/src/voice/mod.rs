@@ -14,7 +14,67 @@ mod en;
 
 use digblock_core::skills::Skill;
 use digblock_core::unlock::Requirement;
+use digblock_net::messages::AdminReply;
 use digblock_net::protocol::PlayerId;
+use std::ops::Range;
+
+/// What a piece of a line IS, so the feed can colour STRUCTURE rather
+/// than words. The locale divides its own sentence: where a command ends
+/// and the note explaining it begins is a fact about the language, and a
+/// caller that split on punctuation would be guessing at one.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Ink {
+	/// The feed entry's own colour — chat keeps its sender's tint.
+	Plain,
+	Command,
+	Arg,
+	Note,
+}
+
+/// A spoken line and where its colour changes. `runs` covers `text` end
+/// to end in order, so a caller wraps the whole string ONCE and still
+/// knows what each row it gets back is made of.
+#[derive(Clone, Debug)]
+pub(crate) struct Line {
+	pub text: String,
+	pub runs: Vec<(Range<usize>, Ink)>,
+}
+
+impl Line {
+	/// One undivided run, which is what all but the catalog rows speak.
+	pub(crate) fn plain(text: String) -> Self {
+		Self {
+			runs: vec![(0..text.len(), Ink::Plain)],
+			text,
+		}
+	}
+
+	/// Concatenate inked pieces, merging neighbours that share an ink so
+	/// a row draws in as few runs as it has colours.
+	pub(crate) fn parts(parts: &[(&str, Ink)]) -> Self {
+		let mut text = String::new();
+		let mut runs: Vec<(Range<usize>, Ink)> = Vec::with_capacity(parts.len());
+		for &(s, ink) in parts {
+			let start = text.len();
+			text.push_str(s);
+			match runs.last_mut() {
+				Some((r, prev)) if *prev == ink => r.end = text.len(),
+				_ => runs.push((start..text.len(), ink)),
+			}
+		}
+		Self { text, runs }
+	}
+
+	/// The pieces of one wrapped row, clipped to it and in order — one
+	/// draw each. `row` is a byte range of `text` as `font::wrap` hands
+	/// them back, which may skip the space a soft break ate.
+	pub(crate) fn row(&self, row: Range<usize>) -> impl Iterator<Item = (&str, Ink)> {
+		self.runs.iter().filter_map(move |(r, ink)| {
+			let (a, b) = (r.start.max(row.start), r.end.min(row.end));
+			(a < b).then(|| (&self.text[a..b], *ink))
+		})
+	}
+}
 
 /// Which spell a refusal answers. A refusal that cannot name its spell says the wrong thing about
 /// two spells out of three — the ward's fare refused as a waystone's passage, kindle's rung as a
@@ -109,8 +169,24 @@ pub(crate) enum Msg {
 /// `fn line(&Msg) -> Option<String>` beside [`en`] and an arm here that falls back to English, a
 /// partial translation being the normal state of a shipped one. English itself may never be
 /// partial: `en::line` matches exhaustively, so a new variant fails the BUILD until it has words.
-pub(crate) fn render(msg: &Msg) -> String {
-	en::line(msg)
+pub(crate) fn render(msg: &Msg) -> Line {
+	match msg {
+		// The two divided lines are lifted out rather than given a second
+		// template: `en::command_hint` is the one place the row's words
+		// live, and `en::line` takes its text for everything that only
+		// wants a sentence.
+		Msg::CommandHint { usage, desc } | Msg::Admin(AdminReply::CommandHint { usage, desc }) => {
+			en::command_hint(usage, desc)
+		}
+		_ => Line::plain(en::line(msg)),
+	}
+}
+
+/// One catalog row for a caller that holds the advertised pair rather
+/// than a [`Msg`] — the suggestion list under the chat box, which offers
+/// commands the server never replied about.
+pub(crate) fn command_hint(usage: &str, desc: &str) -> Line {
+	en::command_hint(usage, desc)
 }
 
 /// What to call a player whose name has not reached us. A NAME rather

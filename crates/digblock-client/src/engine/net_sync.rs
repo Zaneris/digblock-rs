@@ -3,6 +3,7 @@
 //! dispatched ahead of the edit-budgeted queue — see `pump_net`.
 
 use super::*;
+use digblock_net::messages::AdminReply;
 
 impl Engine {
 	/// Adopt an authoritative facing: yaw from the horizontal direction,
@@ -203,6 +204,13 @@ impl Engine {
 			self.session.feed.remove(0);
 		}
 		self.session.feed.push((msg, FEED_TTL_SECS, color));
+	}
+
+	/// Queue a line rather than showing it now: `update` lets one in every
+	/// `FEED_DRIP_SECS`. For a burst that is a LIST — one the player reads
+	/// top to bottom — where arriving all at once is arriving as a wall.
+	pub(super) fn drip_feed(&mut self, msg: crate::voice::Msg) {
+		self.session.feed_queue.push_back((msg, 0xFFFF_FFFF));
 	}
 
 	/// Hang up deliberately: say goodbye, then drop the connection. `true` when there was one to
@@ -598,6 +606,12 @@ impl Engine {
 				// paused clock (backgrounded tab) a snap is what we want.
 				NetEvent::TimeOfDay { tod } => self.sun.tod = tod,
 				NetEvent::AdminCommands { commands } => self.ui.chat.set_commands(commands),
+				// The catalog is a list and arrives as a dozen replies in
+				// one drain, so it is spoken a couple a second. Every other
+				// reply answers something just typed and waits for nothing.
+				NetEvent::AdminReply(
+					reply @ (AdminReply::CommandHint { .. } | AdminReply::CompassHint),
+				) => self.drip_feed(Msg::Admin(reply)),
 				NetEvent::AdminReply(reply) => self.push_feed(Msg::Admin(reply)),
 				NetEvent::Chat { from, text } => {
 					if from == digblock_net::protocol::SERVER_ID {

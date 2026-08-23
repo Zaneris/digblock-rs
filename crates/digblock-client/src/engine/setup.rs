@@ -294,6 +294,8 @@ impl Engine {
 				net_error_accum: 0.0,
 				net_log_timer: 0.0,
 				feed: Vec::new(),
+				feed_queue: std::collections::VecDeque::new(),
+				feed_drip: 0.0,
 				player_names: rustc_hash::FxHashMap::default(),
 				my_player_id: None,
 				last_layout_sent: None,

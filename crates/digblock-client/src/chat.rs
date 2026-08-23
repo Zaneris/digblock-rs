@@ -24,6 +24,8 @@ pub(crate) struct ChatView<'a> {
 	pub line: &'a str,
 	/// Caret blink phase, driven by the engine clock.
 	pub caret: bool,
+	/// Commands still matching what is typed — see [`Chat::offers`].
+	pub matches: &'a [(String, String)],
 }
 
 #[derive(Default)]
@@ -41,6 +43,10 @@ pub(crate) struct Chat {
 	/// Tab-cycle state: the stem being completed and the next match
 	/// index. Cleared by any other edit.
 	cycle: Option<(String, usize)>,
+	/// What the box offers for the line as typed, recomputed on every
+	/// edit so the view is a borrow rather than a search — and so the
+	/// list cannot lag a keystroke behind the buffer it describes.
+	suggest: Vec<(String, String)>,
 }
 
 impl Chat {
@@ -51,6 +57,7 @@ impl Chat {
 	/// Install the server's command set (`ServerMsg::AdminCommands`).
 	pub(crate) fn set_commands(&mut self, commands: Vec<(String, String)>) {
 		self.commands = commands;
+		self.refresh();
 	}
 
 	pub(crate) fn open(&mut self) {
@@ -58,6 +65,7 @@ impl Chat {
 			self.open = true;
 			self.buffer.clear();
 			self.suppress_text = true;
+			self.refresh();
 		}
 	}
 
@@ -78,19 +86,67 @@ impl Chat {
 		for ch in text.chars() {
 			let _ = self.handle_input(&InputEvent::Text { ch });
 		}
+		self.refresh();
 	}
 
 	pub(crate) fn view(&self, caret: bool) -> ChatView<'_> {
 		ChatView {
 			line: &self.buffer,
 			caret,
+			matches: &self.suggest,
 		}
+	}
+
+	/// A usage line's command token — the dispatch key, the autocomplete
+	/// stem and what the feed colours as the command, all one answer.
+	fn name(usage: &str) -> &str {
+		usage.split_ascii_whitespace().next().unwrap_or(usage)
+	}
+
+	/// The advertised commands whose name starts with `stem`, in the
+	/// order advertised. ONE walk behind both Tab and the offered list,
+	/// so what is listed is exactly what Tab will cycle.
+	fn matching<'a>(&'a self, stem: &'a str) -> impl Iterator<Item = &'a (String, String)> {
+		self.commands
+			.iter()
+			.filter(move |(usage, _)| Self::name(usage).starts_with(stem))
+	}
+
+	/// What to offer for the line as typed: every command the typed stem
+	/// prefixes, or — once a space has settled WHICH command it is — that
+	/// one alone, so its usage stays on screen while arguments are typed.
+	/// Empty for ordinary chat, and for a player nothing was advertised to.
+	fn offers(&self) -> Vec<(String, String)> {
+		if !self.buffer.starts_with('/') {
+			return Vec::new();
+		}
+		let (stem, settled) = match self.buffer.split_once(' ') {
+			Some((s, _)) => (s, true),
+			None => (self.buffer.as_str(), false),
+		};
+		self.matching(stem)
+			.filter(|(usage, _)| !settled || Self::name(usage) == stem)
+			.cloned()
+			.collect()
+	}
+
+	fn refresh(&mut self) {
+		self.suggest = self.offers();
 	}
 
 	/// Handle one input while open. Returns an action when the box
 	/// closes; `None` while it stays open. Must only be called while
 	/// `is_open()`.
 	pub(crate) fn handle_input(&mut self, event: &InputEvent) -> Option<ChatAction> {
+		let action = self.edit(event);
+		// One refresh for every way the buffer can move, rather than one
+		// per editing arm — an arm added without it would offer the line
+		// before last.
+		self.refresh();
+		action
+	}
+
+	fn edit(&mut self, event: &InputEvent) -> Option<ChatAction> {
 		match event {
 			InputEvent::Text { ch } => {
 				if std::mem::take(&mut self.suppress_text) {
@@ -157,24 +213,11 @@ impl Chat {
 			Some(state) => state,
 			None => (self.buffer.clone(), 0),
 		};
-		let matches: Vec<&(String, String)> = self
-			.commands
-			.iter()
-			.filter(|(usage, _)| {
-				usage
-					.split_ascii_whitespace()
-					.next()
-					.is_some_and(|name| name.starts_with(&stem))
-			})
-			.collect();
-		let (usage, desc) = matches.get(idx % matches.len().max(1))?;
-		let name = usage.split_ascii_whitespace().next().unwrap_or(usage);
-		self.buffer = name.to_string();
+		let matches: Vec<(String, String)> = self.matching(&stem).cloned().collect();
+		let (usage, desc) = matches.get(idx % matches.len().max(1))?.clone();
+		self.buffer = Self::name(&usage).to_string();
 		self.cycle = Some((stem, idx + 1));
-		Some(ChatAction::Hint {
-			usage: usage.clone(),
-			desc: desc.clone(),
-		})
+		Some(ChatAction::Hint { usage, desc })
 	}
 }
 
@@ -314,6 +357,60 @@ mod tests {
 		// Typing resumes normal editing after a completion.
 		text(&mut c, " ted");
 		assert_eq!(c.view(false).line, "/ban ted");
+	}
+
+	/// The list and Tab are ONE walk: what is offered for a stem is exactly
+	/// what repeated Tab lands on, in the same order. Two filters would
+	/// drift apart the moment either learned a rule.
+	#[test]
+	fn the_list_offers_exactly_what_tab_cycles() {
+		let mut c = with_commands();
+		text(&mut c, "/b");
+		let offered: Vec<String> = c
+			.view(false)
+			.matches
+			.iter()
+			.map(|(usage, _)| Chat::name(usage).to_string())
+			.collect();
+		assert!(
+			offered.len() > 1,
+			"the stem needs several matches to prove order"
+		);
+		let mut cycled = Vec::new();
+		for _ in 0..offered.len() {
+			key(&mut c, Key::Tab);
+			cycled.push(c.view(false).line.to_string());
+		}
+		assert_eq!(cycled, offered);
+	}
+
+	/// A space settles WHICH command it is, so the list narrows to that one
+	/// and stays: its usage is what you need while typing the arguments.
+	#[test]
+	fn a_settled_command_keeps_its_own_usage_offered() {
+		let mut c = with_commands();
+		text(&mut c, "/ban");
+		assert_eq!(c.view(false).matches.len(), 2, "/ban and /ban-list");
+		text(&mut c, " ted");
+		let offered = c.view(false).matches;
+		assert_eq!(offered.len(), 1);
+		assert_eq!(Chat::name(&offered[0].0), "/ban");
+	}
+
+	/// Ordinary chat offers nothing, and neither does a box nothing was
+	/// advertised to — the list must not be where a non-admin learns the
+	/// catalog exists.
+	#[test]
+	fn nothing_is_offered_without_a_slash_or_a_catalog() {
+		let mut c = with_commands();
+		text(&mut c, "hello");
+		assert!(c.view(false).matches.is_empty());
+
+		let mut c = Chat::default();
+		c.open();
+		c.suppress_text = false;
+		text(&mut c, "/b");
+		assert!(c.view(false).matches.is_empty());
 	}
 
 	#[test]

@@ -244,11 +244,65 @@ fn samples() -> Vec<Msg> {
 fn every_message_has_words_of_its_own() {
 	let mut seen: Vec<String> = Vec::new();
 	for m in samples() {
-		let line = render(&m);
+		let line = render(&m).text;
 		assert!(!line.trim().is_empty(), "{m:?} renders to nothing");
 		assert!(!seen.contains(&line), "{m:?} speaks a line already taken");
 		seen.push(line);
 	}
+}
+
+/// The runs tile the text: contiguous, in order, covering every byte. The
+/// feed draws run by run, so a gap would silently drop what it skipped and
+/// an overlap would draw the same glyphs twice in two colours.
+#[test]
+fn every_line_is_covered_by_its_runs() {
+	let all = samples();
+	let (n, mut seen) = (all.len(), 0);
+	for m in all {
+		let l = render(&m);
+		let mut at = 0;
+		for (r, _) in &l.runs {
+			assert_eq!(r.start, at, "{m:?} leaves a gap or overlaps at {at}");
+			at = r.end;
+		}
+		assert_eq!(at, l.text.len(), "{m:?} runs stop short of its text");
+		seen += 1;
+	}
+	assert_eq!(seen, n);
+}
+
+/// A catalog row divides into the three the feed colours apart, each read
+/// back from the usage it was BUILT from — so a reworded note, a renamed
+/// command or a new argument shape all cost nothing here.
+#[test]
+fn a_catalog_row_divides_at_its_stem() {
+	let (usage, desc) = ("/tp <x> <z> [n|s|e|w]", "land on the column top");
+	let (stem, args) = usage.split_once(' ').expect("usage with arguments");
+	let mut seen = 0;
+	for m in [
+		Msg::CommandHint {
+			usage: usage.into(),
+			desc: desc.into(),
+		},
+		Msg::Admin(AdminReply::CommandHint {
+			usage: usage.into(),
+			desc: desc.into(),
+		}),
+	] {
+		let l = render(&m);
+		let inked = |want: Ink| -> String {
+			l.runs
+				.iter()
+				.filter(|(_, ink)| *ink == want)
+				.map(|(r, _)| &l.text[r.clone()])
+				.collect()
+		};
+		assert_eq!(inked(Ink::Command), stem, "{m:?}");
+		assert!(inked(Ink::Arg).contains(args), "{m:?} loses its arguments");
+		assert!(inked(Ink::Note).contains(desc), "{m:?} loses its note");
+		seen += 1;
+	}
+	assert_eq!(seen, 2);
 }
 
 /// A message's arguments must actually reach its words: VARY each one and demand the line change,
@@ -748,8 +802,8 @@ fn every_argument_reaches_the_words() {
 	];
 	for (x, y) in pairs {
 		assert_ne!(
-			render(&x),
-			render(&y),
+			render(&x).text,
+			render(&y).text,
 			"{x:?} and {y:?} render alike, so an argument never reaches the words"
 		);
 	}
@@ -775,7 +829,7 @@ fn a_refusal_names_the_block_and_the_level() {
 		),
 	] {
 		let req = unlock::requirement(block, kind).expect("gated");
-		let line = render(&Msg::DigRefused(req));
+		let line = render(&Msg::DigRefused(req)).text;
 		for want in [
 			block.name().to_string(),
 			req.skill.name().to_string(),
@@ -793,7 +847,7 @@ fn a_refusal_names_the_block_and_the_level() {
 /// refusal repeat the word it just rejected.
 #[test]
 fn the_give_usage_names_every_essence() {
-	let line = render(&Msg::Admin(AdminReply::Usage(AdminUsage::Give)));
+	let line = render(&Msg::Admin(AdminReply::Usage(AdminUsage::Give))).text;
 	for e in Essence::ALL {
 		assert!(
 			line.contains(e.ident()),

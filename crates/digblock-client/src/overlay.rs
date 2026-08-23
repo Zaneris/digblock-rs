@@ -71,6 +71,10 @@ const CARET_W: f32 = 0.5;
 /// Already-faded messages the chat column brings back while the input
 /// box is open, so you can see what you are replying to.
 const CHAT_HISTORY_LINES: usize = 6;
+/// How many matching commands the box offers at once. A bare `/` matches
+/// every one of them, and the whole catalog under the input line is the
+/// wall this list exists to avoid.
+const CHAT_SUGGESTIONS: usize = 6;
 /// Alpha for those recalled lines: legible, but plainly in the past.
 const HISTORY_ALPHA: f32 = 0.45;
 
@@ -101,6 +105,17 @@ const GRAPH_H: f32 = 66.0;
 /// Vertical scale of the frame-time graph, in px per ms.
 const MS_TO_PX: f32 = 3.0;
 
+/// A run's colour: `Plain` keeps the entry's own, so chat stays tinted by
+/// its sender and only a line the locale divided spends the inks.
+fn ink_color(ink: crate::voice::Ink, own: u32) -> u32 {
+	match ink {
+		crate::voice::Ink::Plain => own,
+		crate::voice::Ink::Command => INK_COMMAND,
+		crate::voice::Ink::Arg => INK_ARG,
+		crate::voice::Ink::Note => INK_NOTE,
+	}
+}
+
 /// Scale a color's alpha byte (0xAABBGGRR layout) by `a` in 0..=1.
 fn fade(color: u32, a: f32) -> u32 {
 	let alpha = ((color >> 24) as f32 * a) as u32;
@@ -114,6 +129,13 @@ const YELLOW: u32 = 0xFF30D0F0;
 const RED: u32 = 0xFF4040F0;
 /// Backdrop behind loose HUD text (chat lines, the debug panel) — the
 /// same fill the UI framework puts behind slots and buttons.
+/// The feed's three structural inks, for a line the locale divided: the
+/// command, the arguments it takes, and the note explaining it. Only a
+/// catalog row divides today — everything else draws in its own colour.
+const INK_COMMAND: u32 = 0xFF5AC8F0;
+const INK_ARG: u32 = 0xFFE6C878;
+const INK_NOTE: u32 = 0xFFAAAAAA;
+
 const BG: u32 = crate::ui::theme::FILL_BG;
 const REF_LINE: u32 = 0x80FFFFFF;
 
@@ -768,33 +790,46 @@ impl Overlay {
 		top: f32,
 		chat_open: bool,
 	) {
-		let s = self.scale;
-		let (line, margin, pad, glyph) = (LINE_PX * s, MARGIN * s, PAD * s, self.glyph);
 		let wrap_w = self.wrap_w(size);
 		let mut y = top;
-		let mut scratch = std::mem::take(&mut self.wrap_scratch);
 		for (msg, a, color) in visible_feed(feed, chat_open) {
 			// Rendered HERE, not where it was pushed: a message keeps its
 			// arguments until the frame that draws it, which is what lets
 			// a language change re-word lines already on screen.
-			let text = crate::voice::render(msg);
-			font::wrap(font::ui(), &text, glyph, wrap_w, &mut scratch);
-			for r in &scratch {
-				let chunk = &text[r.clone()];
-				let w = font::ui().measure(chunk, glyph) + pad * 2.0;
-				self.push_quad(margin, y, w, line, fade(BG, a));
-				self.push_text(
-					font::FaceId::Ui,
-					margin + pad,
-					y + (line - glyph) / 2.0,
-					glyph,
-					fade(color, a),
-					chunk,
-				);
-				y += line;
+			y = self.push_column_line(&crate::voice::render(msg), wrap_w, y, color, a);
+		}
+	}
+
+	/// One spoken line into the chat column: wrapped, each row backed by
+	/// its own panel and drawn one run per ink, the pen carried across
+	/// them by the advance `push_text` returns — never a width guessed
+	/// from the piece before it. Returns the y below the last row.
+	fn push_column_line(
+		&mut self,
+		spoken: &crate::voice::Line,
+		wrap_w: f32,
+		top: f32,
+		own: u32,
+		a: f32,
+	) -> f32 {
+		let s = self.scale;
+		let (line, margin, pad, glyph) = (LINE_PX * s, MARGIN * s, PAD * s, self.glyph);
+		let mut scratch = std::mem::take(&mut self.wrap_scratch);
+		font::wrap(font::ui(), &spoken.text, glyph, wrap_w, &mut scratch);
+		let mut y = top;
+		for r in &scratch {
+			let w = font::ui().measure(&spoken.text[r.clone()], glyph) + pad * 2.0;
+			self.push_quad(margin, y, w, line, fade(BG, a));
+			let ty = y + (line - glyph) / 2.0;
+			let mut x = margin + pad;
+			for (piece, ink) in spoken.row(r.clone()) {
+				let c = fade(ink_color(ink, own), a);
+				x += self.push_text(font::FaceId::Ui, x, ty, glyph, c, piece);
 			}
+			y += line;
 		}
 		self.wrap_scratch = scratch;
+		y
 	}
 
 	/// Chat input: pinned to the top-left corner, wrapping at the screen
@@ -835,6 +870,18 @@ impl Overlay {
 			y += line;
 		}
 		self.wrap_scratch = scratch;
+		// Commands still matching the stem, listed under the box as it is
+		// typed: the same rows `/help` speaks and the same three inks, so
+		// what Tab would cycle is on screen before anyone presses it.
+		for (usage, desc) in view.matches.iter().take(CHAT_SUGGESTIONS) {
+			y = self.push_column_line(
+				&crate::voice::command_hint(usage, desc),
+				wrap_w,
+				y,
+				WHITE,
+				1.0,
+			);
+		}
 		y
 	}
 

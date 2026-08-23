@@ -7,10 +7,30 @@
 //! the game answering your hand; the rest is the game telling you
 //! something happened.
 
-use super::{Msg, Spell};
+use super::{Ink, Line, Msg, Spell};
 use digblock_core::block::Essence;
 use digblock_net::messages::{AdminReply, AdminUsage, NoPlayer};
 use digblock_net::protocol::PlayerId;
+
+/// One catalog row — `/help`'s and Tab's alike — divided so the feed can
+/// colour the command, the arguments it takes and the note apart. The
+/// usage stem arrives as one token plus the rest; a stem with no
+/// arguments simply has no middle piece.
+pub(super) fn command_hint(usage: &str, desc: &str) -> Line {
+	let (cmd, args) = usage.split_once(' ').unwrap_or((usage, ""));
+	let sep = (" - ", Ink::Note);
+	if args.is_empty() {
+		Line::parts(&[(cmd, Ink::Command), sep, (desc, Ink::Note)])
+	} else {
+		Line::parts(&[
+			(cmd, Ink::Command),
+			(" ", Ink::Arg),
+			(args, Ink::Arg),
+			sep,
+			(desc, Ink::Note),
+		])
+	}
+}
 
 pub(super) fn line(msg: &Msg) -> String {
 	match msg {
@@ -62,7 +82,7 @@ pub(super) fn line(msg: &Msg) -> String {
 		// a player's.
 		Msg::ServerNotice { text } => format!("[server] {text}"),
 		Msg::Chat { name, text } => format!("{name}: {text}"),
-		Msg::CommandHint { usage, desc } => format!("{usage} - {desc}"),
+		Msg::CommandHint { usage, desc } => command_hint(usage, desc).text,
 		Msg::Admin(reply) => admin(reply),
 	}
 }
@@ -124,7 +144,7 @@ fn cell(c: &[i32; 3]) -> String {
 fn admin(r: &AdminReply) -> String {
 	match r {
 		AdminReply::Usage(u) => usage(*u),
-		AdminReply::CommandHint { usage, desc } => format!("{usage} - {desc}"),
+		AdminReply::CommandHint { usage, desc } => command_hint(usage, desc).text,
 		AdminReply::UnknownCommand { typed } => format!("unknown command {typed} - try /help"),
 		AdminReply::CompassHint => "compass: e = sunrise (-x), n = -z".into(),
 		AdminReply::NoSuchPlayer { name, why } => match why {

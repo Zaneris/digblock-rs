@@ -19,33 +19,29 @@ const COMMANDS: &[(&str, &str)] = &[
 	("/help", "list admin commands"),
 	(
 		"/tp <x> <z> [n|s|e|w]",
-		"teleport to the column top; ~ or ~<d> = relative, facing optional",
+		"land on the column top; ~ or ~<d> is relative",
 	),
-	("/goto <name>", "teleport to an online player"),
+	("/goto <name>", "go to a player"),
 	(
 		"/time [hh:mm]",
-		"show or set the time of day (24h; 6:00 sunrise, 12:00 noon, 18:00 sunset)",
+		"show or set the clock; 6:00 sunrise, 18:00 sunset",
 	),
-	("/bring <name>", "teleport an online player to you"),
+	("/bring <name>", "pull a player to you"),
 	(
 		"/give <name> <essence> [n]",
-		"credit essence stocks; the reagent names are the ones the screens \
-		 print, and /give with no essence lists them. n defaults to one",
+		"credit essence; naming none lists them",
 	),
 	(
 		"/reset <name>",
-		"testing: zero an online player's skills and wipe their inventory, tools included",
+		"testing: wipe a player's skills and inventory",
 	),
-	("/ban <name>", "ban an online player by IP and kick them"),
+	("/ban <name>", "kick a player and ban their IP"),
 	("/ban-list", "list bans"),
 	("/unban <name-or-ip>", "remove a ban"),
-	(
-		"/set-spawn",
-		"move spawn to the top of the block you are looking at",
-	),
+	("/set-spawn", "move spawn to the block you aim at"),
 	(
 		"/set-spawn-dir [n|s|e|w]",
-		"set which way players face when they spawn; no argument = your facing",
+		"set spawn facing; no argument uses yours",
 	),
 ];
 

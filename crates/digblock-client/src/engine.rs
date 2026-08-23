@@ -141,7 +141,7 @@ const _: () = assert!(NET_EDIT_MIN.is_multiple_of(NET_EDIT_CHECK));
 /// Messages the feed keeps. Also the scrollback: entries are no longer
 /// dropped when they expire, so this is how far back the chat box can
 /// show while you type.
-const FEED_MAX: usize = 12;
+const FEED_MAX: usize = 16;
 /// How long a message stays lit before it fades out of the HUD. It stays
 /// in `feed` afterwards with a non-positive ttl — see [`FEED_TTL_FLOOR`].
 const FEED_TTL_SECS: f32 = 15.0;
@@ -149,6 +149,10 @@ const FEED_TTL_SECS: f32 = 15.0;
 /// long-lived message would run away into large negatives; nothing reads
 /// the magnitude, only the sign, so it just needs to stay finite.
 const FEED_TTL_FLOOR: f32 = -1.0;
+/// How long between lines of a QUEUED burst. The admin catalog arrives as
+/// a dozen replies in one drain and a wall of them is unreadable; nothing
+/// else queues, so an answer to something you typed still lands at once.
+const FEED_DRIP_SECS: f32 = 0.5;
 
 pub struct Engine {
 	config: EngineConfig,
@@ -648,6 +652,15 @@ struct NetSession {
 	/// (text, ttl, 0xAABBGGRR color), drawn by the overlay
 	/// above the HUD; (text, seconds left) — fades over the last second.
 	feed: Vec<(crate::voice::Msg, f32, u32)>,
+
+	/// Lines waiting their turn — see [`FEED_DRIP_SECS`]. Separate from
+	/// `feed` because an entry here has no ttl yet: it starts fading when
+	/// it is SHOWN, not when it arrived.
+	feed_queue: std::collections::VecDeque<(crate::voice::Msg, u32)>,
+
+	/// Seconds until the next queued line is let in. Parked at zero while
+	/// the queue is empty, so a burst's first line never waits.
+	feed_drip: f32,
 
 	/// id → name, learned from PlayerJoined (roster + live joins), so
 	/// PlayerLeft (id-only on the wire) can be displayed by name.

@@ -247,6 +247,18 @@ impl Engine {
 		for m in &mut self.session.feed {
 			m.1 = (m.1 - dt).max(FEED_TTL_FLOOR);
 		}
+		// A queued burst lands a line at a time. The timer parks at zero
+		// when the queue runs dry rather than carrying a leftover interval
+		// forward, so the next burst opens immediately.
+		self.session.feed_drip -= dt;
+		while self.session.feed_drip <= 0.0 {
+			let Some((msg, color)) = self.session.feed_queue.pop_front() else {
+				self.session.feed_drip = 0.0;
+				break;
+			};
+			self.push_feed_colored(msg, color);
+			self.session.feed_drip += FEED_DRIP_SECS;
+		}
 		// Toasts fade out and drop (unlike the feed, nothing rereads an
 		// expired toast).
 		for t in &mut self.vfx.toasts {
