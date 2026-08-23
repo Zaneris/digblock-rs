@@ -305,6 +305,7 @@ impl Engine {
 				gi_queue: VecDeque::new(),
 				gi_queued: rustc_hash::FxHashSet::default(),
 				upload_sort_center: ChunkPos::new(i32::MAX, 0, i32::MAX),
+				evict_burst: false,
 				stream_budget: digblock_core::stream_budget::StreamBudget::new(stream_floor),
 			},
 			ambient_height: None,

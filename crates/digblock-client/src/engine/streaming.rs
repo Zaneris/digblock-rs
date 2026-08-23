@@ -211,9 +211,21 @@ impl Engine {
 					dx * dx + dz * dz
 				});
 		}
-		// Release evicted GPU buffers under the same clock as everything
-		// else, always making some progress so the queue can't grow without
-		// bound while the player keeps moving.
+		// Release evicted GPU buffers under the same clock as everything else, always making some
+		// progress so the queue can't grow without bound while the player keeps moving.
+		//
+		// An ARRIVAL raises the floor instead of riding it: past `rim_backlog` this is a world
+		// leaving, not a crescent, and the two worlds' meshes are live together until it drains.
+		// The derived GI state goes with it, once — the coarse mirror is keyed by a TOROIDAL wrap,
+		// so a window that has jumped holds another region's occupancy in every slot the new world
+		// has yet to write, and marching against it is both wrong and dear. `remove_chunk` prunes
+		// the emitter maps per chunk, so only the mirror needs saying.
+		let arrival = self.stream.pending_evicts.len() > rim_backlog(self.config.draw_dist);
+		if arrival && !self.stream.evict_burst {
+			renderer.gi_clear_derived_state();
+		}
+		self.stream.evict_burst = arrival;
+		let floor = if arrival { EVICT_BURST } else { EVICT_MIN };
 		let mut released = 0usize;
 		while let Some(pos) = self.stream.pending_evicts.pop_front() {
 			// Cancelled: the chunk came back (walked around the rim, or a
@@ -226,7 +238,7 @@ impl Engine {
 			renderer.remove_chunk(pos);
 			self.audio.water_audio.remove_chunk(pos);
 			released += 1;
-			if released >= EVICT_MIN && web_time::Instant::now() >= deadline {
+			if released >= floor && web_time::Instant::now() >= deadline {
 				break;
 			}
 		}

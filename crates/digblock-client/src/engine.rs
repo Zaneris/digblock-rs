@@ -91,6 +91,26 @@ const UPLOAD_BYTES_MAX_CONSTRAINED: usize = 768 << 10;
 /// Evicted chunks released per frame even with the budget spent, so a
 /// player who keeps walking can't outrun the release queue.
 const EVICT_MIN: usize = 8;
+/// The same, once the backlog is a WORLD leaving rather than a rim crescent — see
+/// [`rim_backlog`]. Still a cap and not a free hand: releasing a whole disc at once is thousands
+/// of buffer destroys, which is a stall on the web rather than a bill that idles.
+const EVICT_BURST: usize = 2048;
+
+/// Evicted chunks a rim crescent can plausibly leave, above which a backlog is an ARRIVAL: a
+/// teleport, a draw-distance cut, a world swap.
+///
+/// The per-frame cap exists because a retired buffer merely idles until it is dropped, which is
+/// true of a crescent and false of a world: the old world's meshes stay live beside the new one's
+/// for as long as the drain takes, the cull walks both every frame, and at [`EVICT_MIN`] a
+/// full disc takes thousands of frames to clear. Crossing one boundary retires a column per row of
+/// the disc, so a crescent is O(draw distance) columns where a disc is O(draw distance²); the
+/// margin is several crossings' worth, since a diagonal run crosses on both axes and the queue is
+/// drained lazily behind them.
+fn rim_backlog(draw_dist: i32) -> usize {
+	const CROSSINGS: usize = 4;
+	let rows = 2 * draw_dist.max(0) as usize + 1;
+	CROSSINGS * rows * digblock_core::chunk::WORLD_VCHUNK as usize
+}
 /// Share of one display interval `pump_net` may spend applying authoritative edits. A COUNT could
 /// not express it: what one edit costs swings by more than an order of magnitude — whether its
 /// chunk is still shared decides a whole-chunk copy-on-write — and the mesh jobs it queues are
@@ -373,6 +393,11 @@ struct StreamQueues {
 
 	/// Camera chunk the upload queue was last ordered for.
 	upload_sort_center: ChunkPos,
+
+	/// The release queue is draining an ARRIVAL rather than a rim crescent ([`rim_backlog`]).
+	/// A latch, not a re-test: it is what makes the GI mirror wipe fire ONCE per arrival instead
+	/// of on every frame the backlog stays over the line.
+	evict_burst: bool,
 
 	/// Adaptive streaming-budget controller (web/inline builds; the fixed
 	/// config budget elsewhere — see `EngineConfig::adaptive_stream`).
