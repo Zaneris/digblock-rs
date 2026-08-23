@@ -1,30 +1,23 @@
-// Water shader — fork of chunk.wgsl with the shared two-word vertex: word 0 is
-// the solid geometry packing, word 1 the texture layer with the per-vertex
-// surface payload above it (drop code, falling flag, flow dir, splash code,
-// fall distance).
+// Water shader — fork of chunk.wgsl with the shared two-word vertex: word 0 is the solid geometry
+// packing, word 1 the texture layer with the per-vertex surface payload above it (drop code,
+// falling flag, flow dir, splash code, fall distance).
 //
-// The drop code sinks a vertex below its lattice height by the strongest water
-// amount at that CORNER, so adjacent cells share exactly the level the sim
-// computed and there are no cracks.
+// The drop code sinks a vertex below its lattice height by the strongest water amount at that
+// CORNER, so adjacent cells share exactly the level the sim computed and there are no cracks.
 //
-// Lighting is RTGI: a probe gather at the surface world position evaluated PER
-// VERTEX and interpolated (R17 — water quads are strictly per-cell against a
-// probe field spaced wider and smooth by construction), plus a short
-// per-fragment sun DDA, which stays per pixel because shadow edges on the
-// surface are the one lighting signal sharper than the lattice.
+// Lighting is RTGI: a probe gather at the surface world position evaluated PER VERTEX and
+// interpolated (R17 — water quads are strictly per-cell against a probe field spaced wider and
+// smooth by construction), plus a short per-fragment sun DDA, which stays per pixel because shadow
+// edges on the surface are the one lighting signal sharper than the lattice.
 //
-// Water never reads the half-res resolve buffers, whose depth belongs to the
-// solids BEHIND it. **It writes OPAQUE** — the fragment owns its own backdrop
-// (see the alpha note in `fs`).
+// Water never reads the half-res resolve buffers, whose depth belongs to the solids BEHIND it. **It
+// writes OPAQUE** — the fragment owns its own backdrop (see the alpha note in `fs`).
 
-// The Frame struct + group(0) binding(0) come from frame_common.wgsl
-// (prepended by digblock-assets, before sky_common). The water pipelines
-// extend group 0 with the scene targets: the pre-water solid depth copy
-// and the offscreen scene color — water column thickness, absorption,
-// soft shores, refraction, and the SSR march read these.
-// R32Float resolve of the pre-water solid depth (see depth_blit.wgsl —
-// WebGPU forbids copying into a depth texture, so it arrives as a
-// color format and loads return vec4).
+// The Frame struct + group(0) binding(0) come from frame_common.wgsl (prepended by digblock-assets,
+// before sky_common). The water pipelines extend group 0 with the scene targets: the pre-water
+// solid depth copy and the offscreen scene color, read for column thickness, absorption, soft
+// shores, refraction and the SSR march. The depth arrives as an R32Float color (see
+// depth_blit.wgsl — WebGPU forbids copying into a depth texture), so loads return vec4.
 @group(0) @binding(1) var scene_depth: texture_2d<f32>;
 @group(0) @binding(2) var scene_tex: texture_2d<f32>;
 @group(0) @binding(3) var scene_smp: sampler;
@@ -41,16 +34,11 @@
 // carries what's left (P5 revisits the number against the bench).
 const SUN_STEPS = 12;
 
-// Below this much RADIANCE a term is not worth a ray march. An IMPORTANCE
-// threshold, not a quality knob: the error it admits is exactly
-// `weight × (what the march would have returned)`, and the gate multiplies the
-// weight by the light colour before comparing, so it is in the pixel's own
-// units.
-//
-// Weighting by the light colour is not fussiness. This engine has no tonemap,
-// so radiance is HDR and 1.0 is merely "white": a small weight against a sky
-// several times brighter is a proportionally larger error. Comparing bare
-// weights put a ripple-banded difference across a whole basin at DIG_RIVER.
+// Below this much RADIANCE a term is not worth a ray march. An IMPORTANCE threshold, not a quality
+// knob: the error it admits is exactly `weight × (what the march would have returned)`, and the
+// gate multiplies the weight by the light colour before comparing, so it is in the pixel's own
+// units. That weighting is load-bearing: the engine has no tonemap, so radiance is HDR and a small
+// weight against a bright sky is a proportionally larger error. Bare weights banded DIG_RIVER.
 const SUN_MIN_L = 0.002;
 // The mirror gate gets NO tolerance, for the same reason. `mirror_w` is
 // pinned to EXACTLY zero on the underside of a surface seen from below
@@ -59,16 +47,10 @@ const SUN_MIN_L = 0.002;
 // real reflection against an HDR sky, and gets marched.
 const MIRROR_MIN_W = 0.0;
 
-// Cost stubs (DIG_STUB; renderer.rs's `stub` module owns the names and
-// the bit numbers, and this is the mirror). `frame.misc.z` is a UNIFORM,
-// so every branch below is uniform: an un-stubbed run pays nothing and a
-// stubbed one cannot diverge inside a wave, which is what makes the
-// difference between two runs the term and only the term.
-//
-// This exists because two rounds of water perf work were reasoned from
-// reading the code and measured on a pose that could not show what they
-// moved. Attribution is not a nicety here; it is the thing that was
-// missing.
+// Cost stubs (DIG_STUB; renderer.rs's `stub` module owns the names and the bit numbers, and this is
+// the mirror). `frame.misc.z` is a UNIFORM, so every branch below is uniform: an un-stubbed run
+// pays nothing and a stubbed one cannot diverge inside a wave, which is what makes the difference
+// between two runs the term and only the term.
 const STUB_WVERT = 1u;
 const STUB_WSUN = 2u;
 const STUB_WSSR = 4u;
@@ -91,28 +73,19 @@ const NORMALS = array<vec3f, 6>(
 	vec3f(-1.0, 0.0, 0.0),
 );
 
-// Surface drop per code, in levels — LINEAR, and that is load-bearing:
-// d is DROP_LEVELS − the strongest water amount at the corner, so
-// d / DROP_LEVELS puts the vertex at exactly the level the sim computed
-// and nothing else. This was a hand-tuned concave curve from back when
-// corners took the MEAN amount and every code bunched up near the top;
-// once corners take the max, the codes land straight on the sim's
-// ladder and the curve just falsified them — a flowing lip came out
-// well under its own level.
-// A zero code pins full height (submerged water and all bottom-plane
-// vertices); the full code is the cascade plunge, sinking the corner a
-// whole block to meet the water one step down. Divided, not tabulated,
-// so the mapping cannot drift from the levels the mesher packs.
+// Surface drop per code, in levels — LINEAR, and that is load-bearing: d is DROP_LEVELS minus the
+// strongest water amount at the corner, so d / DROP_LEVELS puts the vertex at exactly the level the
+// sim computed. Not the old hand-tuned concave curve, which fitted corners taking the MEAN and
+// falsified the codes once they took the max. A zero code pins full height, the full code is the
+// cascade plunge; divided, not tabulated, so the mapping cannot drift from what the mesher packs.
 const DROP_LEVELS = 9.0;
 
 struct VsOut {
-	// Invariant: the depth prepass and color pass run this vs in two
-	// different pipelines, and the color pass depth-tests LessEqual
-	// against the prepass result. Without @invariant the compiler may
-	// contract the position math differently per pipeline (the depth
-	// pipeline strips every varying, changing the optimization context),
-	// and an ulp of divergence fails the depth test — water full of
-	// view-dependent holes.
+	// Invariant: the depth prepass and color pass run this vs in two different pipelines, and the
+	// color pass depth-tests LessEqual against the prepass result. Without @invariant the compiler
+	// may contract the position math differently per pipeline (the depth pipeline strips every
+	// varying, changing the optimization context), and an ulp of divergence fails the depth test —
+	// water full of view-dependent holes.
 	@invariant @builtin(position) pos: vec4f,
 	@location(0) uv: vec2f,
 	@location(1) @interpolate(flat) layer: u32,
@@ -191,13 +164,11 @@ fn ripple_grad(p: vec2f, t: f32, flow: vec2f, boost: f32, dist: f32) -> vec2f {
 	return g;
 }
 
-// Reflected environment along `ray` from `origin`: a screen-space
-// march over the pre-water solid depth (desktop, water_misc.y), with
-// the procedural sky (sky_base + stars) as the always-available
-// fallback — so shoreline blocks, trees, and cliffs mirror where the
-// screen knows them, and open water still mirrors the actual sky. The
-// sun/moon discs are deliberately absent — the analytic specular lobe
-// plays their role on the rippled surface.
+// Reflected environment along `ray` from `origin`: a screen-space march over the pre-water solid
+// depth (desktop, water_misc.y), with the procedural sky (sky_base + stars) as the always-available
+// fallback — so shoreline blocks, trees and cliffs mirror where the screen knows them, and open
+// water still mirrors the actual sky. The sun/moon discs are deliberately absent: the analytic
+// specular lobe plays their role on the rippled surface.
 fn reflection_color(origin: vec3f, ray: vec3f, dist: f32, weight: f32) -> vec3f {
 	var sky = sky_base(ray, frame.horizon.rgb, frame.zenith.rgb, frame.sun_dir, frame.moon_dir);
 	sky += vec3f(sky_stars(ray)) * frame.sun_dir.w * smoothstep(0.0, 0.3, ray.y);
@@ -221,14 +192,11 @@ fn reflection_color(origin: vec3f, ray: vec3f, dist: f32, weight: f32) -> vec3f 
 	if weight <= MIRROR_MIN_W || frame.water_misc.y < 0.5 || stubbed(STUB_WSSR) {
 		return sky;
 	}
-	// World-space steps with a growing stride, projected per step; a
-	// depth crossing within a thickness bound is a hit. The stride
-	// scales with the fragment's distance (its pixel footprint), so
-	// the fixed tap count resolves fine shoreline detail up close AND
-	// reaches the mountains across a lake from far water — where the
-	// reflection is low-frequency and coarse hits look right.
-	// Explicit-LOD fetches are legal in this varying branch; the march
-	// itself is gated by a uniform flag.
+	// World-space steps with a growing stride, projected per step; a depth crossing within a
+	// thickness bound is a hit. The stride scales with the fragment's distance (its pixel
+	// footprint), so a fixed tap count resolves fine shoreline detail up close AND reaches the far
+	// shore from open water, where the reflection is low-frequency and coarse hits look right.
+	// Explicit-LOD fetches are legal in this varying branch; the march is gated by a uniform flag.
 	let dims = vec2f(textureDimensions(scene_depth));
 	var t_step = 0.4 * (1.0 + dist * 0.04);
 	var t = t_step * 2.0; // skip immediate self-intersection
@@ -485,33 +453,20 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 			suv = suv2;
 		}
 	}
-	// What is behind the surface, seen through the water body. The old
-	// hand-tuned Beer-Lambert depth tint, the Snell window and the TIR
-	// mirror ring came out at the M1 demolition; this is the same
-	// transport computed rather than tuned, over the reconstructed
-	// column. Water tints by DEPTH because red is absorbed an order of
-	// magnitude harder than blue (medium_common's measured sigma), not
-	// because a constant said which way to lean.
-	// Contact foam line where the water meets ground (meaningless on the
-	// underside — thick is pinned to 0 there and would foam everything).
+	// What is behind the surface, seen through the water body: transport computed rather than
+	// tuned, over the reconstructed column. Water tints by DEPTH because red is absorbed an order
+	// of magnitude harder than blue (medium_common's measured sigma), not because a constant said
+	// which way to lean. Below, the contact foam line where water meets ground — meaningless on the
+	// underside, where `thick` is pinned to zero and would foam everything.
 	let shore = (1.0 - smoothstep(0.05, 0.45, thick)) * f32(!below);
 	// Glassy crest sheen where flow tips over a lip: strongest in the
 	// first fallen block, keyed to the plunging drop edge.
 	let lip = f32(i.falling) * (1.0 - min(i.fall_y, 1.0)) * smoothstep(6.0, 9.0, i.drop);
-	// RTGI: probe-field indirect at the surface (sky, bounce, torches — one
-	// gathered term), per VERTEX and interpolated (see the header), plus a
-	// short per-fragment sun DDA. `sh` folds twilight exactly as mapped
-	// shadows did; it multiplies foam and specular, never the indirect (a
-	// torch has no sun glint lobe to borrow).
-	//
-	// AND IT IS GATED ON ITS OWN COEFFICIENT, the single biggest thing in the
-	// water pass. Water has no diffuse sun response — a transparent surface's
-	// colour is the refracted backdrop and the reflection. Sun visibility
-	// reaches the pixel ONLY through foam, the glint lobe and the lip sheen,
-	// and on calm open water away from the glint, or ANY surface seen from
-	// below, every one of those weights is ~0. Importance, not approximation:
-	// the admitted error is the weight times the radiance the march would
-	// have contributed, and both are in the sum below.
+	// RTGI: probe-field indirect at the surface, per VERTEX and interpolated (see the header), plus
+	// a short per-fragment sun DDA. `sh` multiplies foam and specular, never the indirect — a torch
+	// has no sun glint lobe to borrow. The DDA is GATED ON ITS OWN COEFFICIENT, the biggest saving
+	// in the pass: water has no diffuse sun response, so sun reaches the pixel only through foam,
+	// glint and lip sheen — all ~0 on calm open water or any surface seen from below.
 	let side = i32(frame.gi_misc.x);
 	let indirect = i.indirect;
 	let lc = max(frame.light_color.r, max(frame.light_color.g, frame.light_color.b));
@@ -549,12 +504,10 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 		),
 		thick,
 	);
-	// How much of this pixel is still the refracted BACKDROP. That part
-	// already carries chunk.wgsl's medium the whole way from the camera,
-	// so fogging it again below would make distant water haze about
-	// twice as hard as the shore beside it — a visible step at the
-	// waterline. Only the surface's own light (froth, mirror, glint) has
-	// not travelled yet, and every term below is a `mix`, so one scalar
+	// How much of this pixel is still the refracted BACKDROP, which already carries chunk.wgsl's
+	// medium the whole way from the camera — fogging it again hazes distant water about twice as
+	// hard as the shore beside it, a visible step at the waterline. Only the surface's own light
+	// (froth, mirror, glint) has not travelled yet, and every term below is a `mix`, so one scalar
 	// tracks the split exactly.
 	var backdrop = 1.0;
 	let backdrop_col = col;
@@ -589,32 +542,17 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	}
 	col += frame.light_color.rgb * spec * sh * 2.0 * mirror;
 	col += frame.light_color.rgb * lip * sh * 0.15;
-	// Alpha: the falling-sheet streak gate, and nothing else.
-	//
-	// This fragment is not a pane laid OVER the scene. It sampled the scene
-	// itself (`scene_tex`) and ran the whole water transport across `thick`
-	// of it, so `back + surf` below already IS the backdrop, absorbed.
-	// Blending that over the same backdrop a second time re-adds an
-	// UNABSORBED copy — invisible near shore, and the entire picture under a
-	// bay's worth of water, where the transport had correctly taken the
-	// backdrop's red to zero and the seabed came through anyway as grey rock
-	// under glass beside blue shallows.
-	//
-	// The streak gaps stay: a torn falling sheet genuinely is see-through in
-	// its gaps, and `thick` — reconstructed from the depth buffer — cannot
-	// know about the tear. `s` sits at its neutral midpoint on every still
-	// surface, so this is exactly 1.0 everywhere else.
+	// Alpha: the falling-sheet streak gate, and nothing else. This fragment sampled the scene
+	// itself and ran the whole water transport across `thick` of it, so blending it over the same
+	// backdrop again re-adds an UNABSORBED copy — the whole picture under a bay's worth of water.
+	// The streak gaps stay: a torn falling sheet is genuinely see-through and `thick`, rebuilt from
+	// depth, cannot know about the tear; `s` is neutral on a still surface, so this is exactly 1.0.
 	let alpha = clamp(0.75 + 0.5 * s, 0.0, 1.0);
-	// The camera-to-surface medium, applied to the surface's own light
-	// only (see `backdrop` above). Every term above is a linear mix, so
-	// after n of them the pixel is exactly
-	//     col = B*backdrop + (surface light)
-	// with backdrop = prod(1 - w_k) and B the pre-mix backdrop. Peel the
-	// backdrop off, normalise what remains to a full-coverage radiance,
-	// fog THAT, and re-weight — which puts the in-scatter in proportional
-	// to how much of the pixel is actually surface. Fogging the composite
-	// instead would in-scatter a full pixel's worth of haze behind a
-	// pane that is mostly see-through.
+	// The camera-to-surface medium, applied to the surface's own light only (see `backdrop` above).
+	// Every term above is a linear mix, so one scalar tracks coverage exactly: peel the backdrop
+	// off, normalise what remains to a full-coverage radiance, fog THAT, and re-weight. Fogging the
+	// composite instead would in-scatter a full pixel's worth of haze behind a pane that is mostly
+	// see-through.
 	let cover = max(1.0 - backdrop, 1e-4);
 	let back = backdrop_col * backdrop;
 	let sky_in = sky_base(vray, frame.horizon.rgb, frame.zenith.rgb, frame.sun_dir, frame.moon_dir);

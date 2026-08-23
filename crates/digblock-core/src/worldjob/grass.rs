@@ -89,12 +89,11 @@ pub fn jobs() -> [Box<dyn WorldJob>; 3] {
 	]
 }
 
-/// The rule's inverse half: a placed cell that seals the cell below off
-/// from the sky starves the grass there back to Dirt. "Seals" is the
-/// mesher's culling answer — a cover smothers exactly when the grass top
-/// face stops being drawn (pinned against a real mesh) — so water and
-/// open undersides spare it. Both arms apply the write as a
-/// CONSEQUENCE of a place, never a predicted or validated part of one.
+/// The rule's inverse half: a placed cell that seals the cell below off from the sky starves the
+/// grass there back to Dirt. "Seals" is the mesher's culling answer — a cover smothers exactly
+/// when the grass top face stops being drawn (pinned against a real mesh) — so water and open
+/// undersides spare it. Both arms apply the write as a CONSEQUENCE of a place, never a predicted
+/// or validated part of one.
 pub fn smothered_by(placed: u16, below: u16) -> Option<u16> {
 	let b = BlockType::from_id(cell_id(placed));
 	// The bucket guard mirrors `neighbor_cover`'s: a see-through cover

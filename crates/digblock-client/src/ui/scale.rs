@@ -26,31 +26,20 @@ pub const WINDOW_FACTOR_CAP: f32 = 1.5;
 /// below it deliberately.
 pub const UI_SCALE_FLOOR: f32 = 0.75;
 
-/// Interface-scale slider: bounds and step on the user's multiplier over
-/// the derived scale. Lives here rather than in `settings.rs` (which
-/// re-exports it) because [`ui_scale`] is what gives the numbers meaning.
-///
-/// Every notch changes something: `ui_scale` quantizes only the derived
-/// half, then applies the preference exactly. A step matching that
-/// quantization was the old contract — it made the slider coarse for no
-/// benefit once the preference stopped being quantized with everything
-/// else.
+/// Interface-scale slider: bounds and step on the user's multiplier over the derived scale. Lives
+/// here rather than in `settings.rs` (which re-exports it) because [`ui_scale`] is what gives the
+/// numbers meaning. Every notch changes something: `ui_scale` quantizes only the derived half,
+/// then applies the preference exactly, so a step matching that quantization would only make the
+/// slider coarse for no benefit.
 pub const UI_SCALE_MIN: f32 = 0.70;
 pub const UI_SCALE_MAX: f32 = 1.50;
 pub const UI_SCALE_STEP: f32 = 0.05;
 
-/// Whole-UI scale: the display's own scale factor × a window-size factor × the
-/// user's preference. Reference: the design's own logical window at 1× with a
-/// neutral preference is exactly the pre-scaling design (scale 1.0).
-///
-/// `scale_factor` is the OS's own setting, straight from the window — a display
-/// at 125% arrives here as 1.25 and is applied as-is, which is why the slider
-/// reads a *multiplier* and not an absolute size.
-///
-/// Only the derived half (`sf × win`) is quantized, onto a coarse grid: that
-/// half moves continuously as a window is dragged or crosses onto another
-/// display, and unquantized it shimmers. The user's preference is a deliberate
-/// discrete choice, so it is applied exactly.
+/// Whole-UI scale: the display's own scale factor × a window-size factor × the user's preference,
+/// referenced so the design's own logical window at 1× with a neutral preference is exactly the
+/// pre-scaling design. `scale_factor` is the OS's own setting straight from the window, applied
+/// as-is, which is why the slider reads a *multiplier*. Only the derived half (`sf × win`) is
+/// quantized — it shimmers as a window is dragged otherwise; the preference is applied exactly.
 pub fn ui_scale(size: (u32, u32), scale_factor: f32, user: f32) -> f32 {
 	let sf = scale_factor.max(0.5);
 	let (lw, lh) = (size.0 as f32 / sf, size.1 as f32 / sf);
@@ -165,12 +154,10 @@ mod tests {
 		}
 	}
 
-	// The ladder is continuous now, not the bitmap font's multiples of its
-	// cell — that coarseness was a Nearest-sampler artifact and is what
-	// made a UI-scale slider pointless before. Asserted as the properties
-	// the blitter depends on rather than a table of products: a product
-	// only restates the multiply, and all of them move together the day
-	// the base size is retuned.
+	// The ladder is continuous, not the bitmap font's multiples of its cell — that coarseness was a
+	// Nearest-sampler artifact and is what made a UI-scale slider pointless. Asserted as the
+	// properties the blitter depends on rather than a table of products: a product only restates
+	// the multiply, and all of them move together the day the base size is retuned.
 	#[test]
 	fn text_size_tracks_scale_in_whole_pixels() {
 		let mut prev = 0.0f32;

@@ -15,16 +15,11 @@ use crate::remote::{RemotePlayers, RemoteSnap};
 use crate::transport::{ConnStatus, NetTransport, TransportEvent};
 use glam::Vec3;
 
-/// Engine events one `poll` will produce before stopping and leaving the
-/// rest buffered for the next call.
-///
-/// A `JournalColumn` frame expands to one event PER CELL, so a budget in
-/// frames would not bound anything: a few hundred columns of join sync is
-/// six figures of events, materialised into `out` and then into the
-/// engine's backlog inside a single rAF callback on wasm — tens of
-/// megabytes of transient allocation and a visible stall. Matched to the
-/// engine's own per-frame apply budget so the backlog cannot outrun its
-/// drain either.
+/// Engine events one `poll` will produce before stopping and leaving the rest buffered for the
+/// next call. A `JournalColumn` frame expands to one event PER CELL, so a budget in frames
+/// would not bound anything: a few hundred columns of join sync is six figures of events,
+/// materialised inside a single rAF callback on wasm. Matched to the engine's own per-frame
+/// apply budget so the backlog cannot outrun its drain either.
 const POLL_EVENT_BUDGET: usize = 256;
 
 pub struct NetClientConfig {
@@ -34,14 +29,10 @@ pub struct NetClientConfig {
 	/// and verified server-side before admission. All zeros = no token
 	/// (loopback tests only — real servers refuse it).
 	pub token: [u8; 16],
-	/// The key this machine's pre-account character was filed under, if
-	/// one is still on disk — the truncated hash of the old identity
-	/// secret, computed by the LAUNCHER so the secret itself stays there.
-	///
-	/// Sent once per connection as `ClaimLegacy`, and sent to EVERY server,
-	/// because each dedicated server holds its own records and a player
-	/// migrates on each one separately. The client cannot know which
-	/// servers it has already claimed on and does not try to: an
+	/// The key this machine's pre-account character was filed under, if one is still on disk —
+	/// the truncated hash of the old identity secret, computed by the LAUNCHER so the secret
+	/// itself stays there. Sent once per connection as `ClaimLegacy`, and to EVERY server,
+	/// because each holds its own records and a player migrates on each separately; an
 	/// already-claimed or never-played server answers with silence.
 	pub legacy_identity: Option<[u8; 16]>,
 }
@@ -63,21 +54,14 @@ pub enum NetEvent {
 	Refused {
 		reason: String,
 	},
-	/// The journaled columns around the last arrival have all landed — see
-	/// [`crate::messages::ServerMsg::AreaReady`]. Releases the hold the
-	/// engine puts on rendering and the player sim at `Welcome` and at
-	/// `Teleported`.
+	/// The journaled columns around the last arrival have landed — releases the engine's hold.
 	AreaReady,
-	/// Local-player slice of a snapshot (remote players are consumed
-	/// internally by `remotes`).
+	/// Local-player slice of a snapshot (remotes are consumed internally by `remotes`).
 	Ack {
 		acked_input_tick: u32,
 		me: digblock_core::player::PlayerState,
 	},
-	/// Authoritative cell value (id + state nibble) — apply directly
-	/// (no-op if already predicted). Our own pending predictions on the
-	/// cell are superseded internally: the value owns the cell, and each
-	/// prediction's inventory delta rides until its seq's own verdict.
+	/// Authoritative cell value (id + state nibble) — it owns the cell, superseding predictions.
 	Edit {
 		cell: (i32, i32, i32),
 		cell_value: u16,
@@ -87,26 +71,19 @@ pub enum NetEvent {
 		/// off this so a join replay never plays a thud storm.
 		remote_author: Option<PlayerId>,
 	},
-	/// One cell of a rejected prediction — revert the predicted
-	/// `.inv_delta` always, and the cell to `.prev` unless
-	/// `.superseded`, in which case an authoritative write owns the
-	/// cell. Multi-cell actions emit one event per entry.
+	/// One cell of a rejected prediction: revert `.inv_delta`, the cell unless `.superseded`.
 	EditRejected {
 		edit: PendingEdit,
 		/// The server's verdict, for rejections worth explaining to the
 		/// player.
 		reason: RejectReason,
 	},
-	/// The server refused a hold-to-dig as it started (a protected cell).
-	/// Abandon the local hold now rather than running the timer out
-	/// against a block that was never going to break.
+	/// The server refused a hold-to-dig as it started — abandon the local hold, don't time out.
 	DigRefused {
 		cell: (i32, i32, i32),
 		reason: RejectReason,
 	},
-	/// Authoritative inventory snapshot as raw wire pairs (block ids plus
-	/// flagged sub-material families): re-base the local counts as
-	/// `Inventory::from_wire + Σ pending`.
+	/// Authoritative inventory as raw wire pairs: re-base as `Inventory::from_wire + Σ pending`.
 	Inventory {
 		counts: Vec<(u16, u32)>,
 		/// The predictions still in flight when `counts` was DECODED.
@@ -123,8 +100,7 @@ pub enum NetEvent {
 		/// one until the next snapshot.
 		pending: Vec<(digblock_core::block::BlockType, i32)>,
 	},
-	/// Another player joined. Also delivered as a roster right after
-	/// Welcome: one event per player already online.
+	/// Another player joined. Also delivered as a roster right after Welcome, one event each.
 	PlayerJoined {
 		id: PlayerId,
 		name: String,
@@ -132,63 +108,47 @@ pub enum NetEvent {
 	PlayerLeft {
 		id: PlayerId,
 	},
-	/// A chat line, already server-sanitized. `from` may be our own id
-	/// (the echo confirms delivery).
+	/// A chat line, already server-sanitized; `from` may be our own id (the echo confirms it).
 	Chat {
 		from: PlayerId,
 		text: String,
 	},
-	/// The server teleported us (return to spawn, admin /tp). Hard-set
-	/// the player there — the predictor has already dropped its
-	/// pre-teleport buffer and in-flight acks. `look` zero = keep the
-	/// current view; non-zero = adopt this facing.
+	/// The server teleported us — hard-set the player there; `look` zero = keep the current view.
 	Teleported {
 		pos: Vec3,
 		look: Vec3,
 	},
-	/// The server's chat-command set (admin only): `(usage, description)`
-	/// pairs for the chat box's Tab-autocomplete.
+	/// The server's chat-command set (admin only): `(usage, description)` for Tab-autocomplete.
 	AdminCommands {
 		commands: Vec<(String, String)>,
 	},
-	/// An admin command's answer, as typed data. The sentence is the
-	/// client's to compose — see `voice`.
+	/// An admin command's answer, as typed data — the sentence is the client's to compose.
 	AdminReply(crate::messages::AdminReply),
-	/// The identity's persisted item layout (hotbar wire encoding), sent
-	/// in join sync after the inventory. Sanitize + reconcile against the
-	/// counts; absent for anonymous/first-join identities.
+	/// The identity's persisted item layout, sent in join sync after the inventory; reconcile it.
 	Layout {
 		hotbar: Vec<u16>,
 		grid: Vec<u16>,
 	},
-	/// World-clock heartbeat: hard-set the sun's angle (inter-beat drift
-	/// is far below visible, so no smoothing is needed).
+	/// World-clock heartbeat: hard-set the sun's angle, inter-beat drift being below visible.
 	TimeOfDay {
 		tod: f32,
 	},
-	/// Full per-skill XP totals `(skill index, total)`, sent in join
-	/// sync — adopt wholesale (no toasts; this is state, not an award).
+	/// Full per-skill XP totals `(skill index, total)`, join sync — adopt wholesale, no toasts.
 	Skills {
 		xp: Vec<(u8, u64)>,
 	},
-	/// One skill's new authoritative XP total after a server-side
-	/// award. The client takes the max (reorder-safe) and animates the
-	/// delta itself.
+	/// One skill's new authoritative XP total: take the max (reorder-safe), animate the delta.
 	XpGain {
 		skill: u8,
 		total: u64,
 	},
-	/// SOMEONE ELSE crossed a level (never our own — the server keeps
-	/// the author out of the broadcast). Presentation only: confetti over
-	/// their head, nothing about game state.
+	/// SOMEONE ELSE crossed a level (never our own). Presentation only, nothing about state.
 	LevelUp {
 		player: PlayerId,
 		skill: u8,
 		level: u32,
 	},
-	/// The world's resolved waystone sites, sent in join sync — server
-	/// state the client cannot derive (each eye was resolved against the
-	/// journal once and stored).
+	/// The world's resolved waystone sites, join sync — server state the client cannot derive.
 	Waystones {
 		entries: Vec<(u8, [f32; 3])>,
 	},
@@ -196,23 +156,19 @@ pub enum NetEvent {
 	CastRefused {
 		reason: crate::messages::CastRefusal,
 	},
-	/// Conjured light standing in `cell` for `secs_left` more seconds —
-	/// anyone's, a joiner's backlog included.
+	/// Conjured light standing in `cell` for `secs_left` more seconds — anyone's, backlog included.
 	Kindled {
 		cell: [i32; 3],
 		secs_left: u16,
 	},
-	/// A Ward's channel BEGAN — anyone's, our own included: a sphere of
-	/// `radius` about `head`, climbing over `span` ticks. The cells are
-	/// derived from the sphere, never sent.
+	/// A Ward's channel BEGAN — anyone's, ours included; the cells derive, and are never sent.
 	WardWinding {
 		by: PlayerId,
 		head: [i32; 3],
 		radius: u8,
 		span: u32,
 	},
-	/// A Ward's channel ENDED with `landed` cells of its plan handed to
-	/// the world — `sealed` says whether they stayed.
+	/// A Ward's channel ENDED with `landed` cells in the world; `sealed` says whether they stayed.
 	WardEnded {
 		by: PlayerId,
 		head: [i32; 3],
@@ -265,13 +221,10 @@ pub struct NetClient {
 	stats: StatsAcc,
 }
 
-/// Rolling traffic and health counters behind [`NetClient::stats`].
-///
-/// Rates come from a fixed one-second bucket rather than an EWMA: a
-/// bytes/second figure a player reads off an overlay should mean the last
-/// second, not an exponentially-weighted blend nobody can invert. RTT is
-/// smoothed, because a single sample is dominated by where in the snapshot
-/// cadence the ack happened to land.
+/// Rolling traffic and health counters behind [`NetClient::stats`]. Rates come from a fixed
+/// one-second bucket rather than an EWMA: a bytes/second figure a player reads off an overlay
+/// should mean the last second, not a blend nobody can invert. RTT is smoothed, because a
+/// single sample is dominated by where in the snapshot cadence the ack happened to land.
 #[derive(Default)]
 struct StatsAcc {
 	window: f32,
@@ -360,19 +313,11 @@ impl NetClient {
 		}
 	}
 
-	/// Report the outcome of a reconcile. The ENGINE owns that call — it needs
-	/// the world borrow for the replay — so the round trip and the replay count
-	/// come back here rather than being sampled from inside.
-	///
-	/// Takes the OUTCOME rather than a `replayed` bool because a STALE ack is
-	/// not a round trip and must not be sampled as one.
-	/// [`Predictor::reconcile`] returns early on a stale ack, before it assigns
-	/// `last_rtt`, so the value still describes the PREVIOUS ack and feeding it
-	/// again re-blends a measurement already in the average — halving the EWMA's
-	/// response and deflating the reported jitter, since a duplicate deviates
-	/// from the running mean by nothing. The stale share climbs with latency
-	/// until it is half of all acks on the worst link, so the overlay was least
-	/// trustworthy on exactly the links a player opens it to diagnose.
+	/// Report the outcome of a reconcile. The ENGINE owns that call — it needs the world borrow
+	/// for the replay — so the round trip and the replay count come back here. Takes the OUTCOME
+	/// rather than a `replayed` bool: a STALE ack is not a round trip, and `Predictor::reconcile`
+	/// returns early before it assigns `last_rtt`, so re-sampling re-blends a measurement already
+	/// in the average, halving the EWMA's response on exactly the links a player opens it to see.
 	pub fn note_reconciled(&mut self, outcome: Reconciled) {
 		if matches!(outcome, Reconciled::Replayed { .. }) {
 			self.stats.replays += 1;
@@ -399,13 +344,10 @@ impl NetClient {
 		self.transport.status()
 	}
 
-	/// Drain the transport and demux into engine-shaped events. `dt` is
-	/// the frame delta; it drives the connect/handshake deadlines.
-	///
-	/// Reliable bytes are always taken from the transport in full — leaving
-	/// them there just moves the queue — but DECODING them is budgeted (see
-	/// [`POLL_EVENT_BUDGET`]). Whatever does not fit stays in the frame
-	/// reader and is picked up next call.
+	/// Drain the transport and demux into engine-shaped events. `dt` is the frame delta; it
+	/// drives the connect/handshake deadlines. Reliable bytes are always taken from the transport
+	/// in full — leaving them there just moves the queue — but DECODING them is budgeted (see
+	/// [`POLL_EVENT_BUDGET`]); whatever does not fit stays in the frame reader.
 	pub fn poll(&mut self, out: &mut Vec<NetEvent>, dt: f32) {
 		self.check_deadlines(out, dt);
 		self.predictor.advance(dt);
@@ -987,20 +929,11 @@ impl NetClient {
 		});
 	}
 
-	/// Say goodbye, and give it a moment to leave the machine.
-	///
-	/// Call this on every path where the player is knowingly going. The server
-	/// drops the session the instant it reads a `Bye`, and without one it has to
-	/// wait out QUIC's idle timeout instead — which matters now that one account
-	/// holds one live connection: the player whose session is being held is the
-	/// same player trying to get back in.
-	///
-	/// The pairing is the whole point and is why this is one method rather than
-	/// two. `Bye` alone is a message queued into a stream buffer; dropping the
-	/// transport a line later takes it with it.
-	///
-	/// Best effort throughout — a pulled cable, a killed process and a closed
-	/// laptop all skip it, and the server still reaps the connection.
+	/// Say goodbye, and give it a moment to leave the machine. Call this on every path where the
+	/// player is knowingly going: without a `Bye` the server waits out QUIC's idle timeout, and
+	/// with one account holding one live connection the player being held is the one trying to
+	/// get back in. The pairing is why this is ONE method — `Bye` alone only reaches a stream
+	/// buffer, and dropping the transport a line later takes it with it. Best effort throughout.
 	pub fn disconnect(&mut self) {
 		if self.left || self.transport.status() == crate::transport::ConnStatus::Closed {
 			return;
@@ -1026,17 +959,11 @@ fn valid_cell(v: u16) -> Option<u16> {
 	digblock_core::shapes::state_valid(v).then_some(v)
 }
 
-/// The float half of the same contract: no NaN and no infinity crosses the
-/// wire boundary into the engine.
-///
-/// The server has always checked this on ITS inputs
-/// (`sim/edits.rs`'s `req.origin.is_finite()`); the client had no
-/// counterpart, and every consumer of a wire position — `swap_world`,
-/// `apply_teleport`, reconcile — fed it straight to `camera.pos`. One NaN
-/// there hangs the process: `raycast`'s DDA walk exits only on
-/// `t > max_dist`, and with NaN every comparison is false, so the loop
-/// steps a cell at a time forever. Since anyone can list a server with the
-/// master, that is reachable, not hypothetical.
+/// The float half of the same contract: no NaN and no infinity crosses the wire boundary into
+/// the engine. The server has always checked this on ITS inputs (`sim/edits.rs`); the client
+/// had no counterpart, and every consumer of a wire position fed it straight to `camera.pos`.
+/// One NaN there hangs the process: `raycast`'s DDA exits only on `t > max_dist`, and with NaN
+/// every comparison is false, so the loop steps a cell at a time forever.
 fn finite_pos(v: [f32; 3]) -> Option<Vec3> {
 	let v = Vec3::from_array(v);
 	v.is_finite().then_some(v)

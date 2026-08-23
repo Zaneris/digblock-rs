@@ -215,12 +215,11 @@ impl Engine {
 		self.save.in_local_save = false;
 	}
 
-	/// Swap to a fresh backdrop world and relock the startup menu — the
-	/// shared tail of leaving a server and leaving a local world. Don't
-	/// keep phantom-playing the world we just left: a new clock-derived
-	/// seed means the menu's backdrop is visibly not the save behind it.
-	/// The caller detaches whatever it was attached to first
-	/// ([`Self::close_local_save`] / dropping the transport).
+	/// Swap to a fresh backdrop world and relock the startup menu — the shared tail of leaving a
+	/// server and leaving a local world. A new clock-derived seed means the menu's backdrop is
+	/// visibly not the save behind it, rather than phantom-playing the world we just left. The
+	/// caller detaches whatever it was attached to first ([`Self::close_local_save`] / dropping
+	/// the transport).
 	pub(super) fn return_to_title(&mut self) {
 		// While the world under it is still this one: a climb in flight
 		// has glass standing in it and a fare spent on it. The local-save
@@ -268,13 +267,11 @@ impl Engine {
 		let spawn = digblock_core::player::spawn(save.meta.seed);
 		self.save.spawn_pos = spawn;
 		let overlay: digblock_core::overlay::EditOverlay = save.edits.into_iter().collect();
-		// Same world already streamed in behind the menu (Create adopts
-		// the backdrop's seed to hit this deliberately), no edits on
-		// either side: keep the pipeline — and its generated chunks and
-		// uploaded meshes — instead of regenerating from scratch. That
-		// window is when the player would otherwise stand over an empty
-		// world (held by the walk gate, seconds long on web's inline
-		// executor).
+		// Same world already streamed in behind the menu (Create adopts the backdrop's seed to hit
+		// this deliberately) and no edits on either side: keep the pipeline, its generated chunks
+		// and uploaded meshes, instead of regenerating. That window is when the player would
+		// otherwise stand over an empty world, held by the walk gate — seconds long on web's
+		// inline executor.
 		let reuse = self.session.client.is_none()
 			&& save.meta.seed == self.seed
 			&& overlay.is_empty()
@@ -379,12 +376,10 @@ impl Engine {
 		match intent {
 			WorldIntent::Refresh => self.push_world_list(),
 			WorldIntent::Create { name } => {
-				// On a backdrop world (not in a save, not on a server),
-				// adopt the backdrop's seed: the world behind the menu is
-				// exactly the one being created, so `enter_local_world`
-				// keeps the already-streamed pipeline instead of
-				// regenerating it from scratch. Otherwise a fresh
-				// clock-derived seed (no `rand` — wasm cleanliness).
+				// On a backdrop world (not in a save, not on a server), adopt the backdrop's
+				// seed: the world behind the menu is exactly the one being created, so
+				// `enter_local_world` keeps the already-streamed pipeline instead of regenerating
+				// it. Otherwise a fresh clock-derived seed (no `rand` — wasm cleanliness).
 				let seed = if self.session.client.is_none() && !self.save.in_local_save {
 					self.seed
 				} else {
@@ -456,18 +451,11 @@ impl Engine {
 		self.ui.menu.set_world_list(rows);
 	}
 
-	/// Hold the world after an arrival — a join or a teleport — until the server
-	/// reports the journaled columns around the destination sent
-	/// (`NetEvent::AreaReady`), or the wait runs out.
-	///
-	/// Offline arrivals never hold: a local world's edits are already in the
-	/// overlay before the pipeline classifies air. That is guaranteed by the
-	/// CALL SITES — both are `pump_net` arms, and an offline session produces no
-	/// `NetEvent`s at all. It must not be guarded on `self.session.client` here: `pump_net`
-	/// owns the connection by value for the whole drain, so `is_some()` reads
-	/// false on exactly the two paths that need the hold, which stranded every
-	/// join on "Joining world..." forever — a timeout escape hatch cannot fire
-	/// on a hold that was never set.
+	/// Hold the world after an arrival — a join or a teleport — until the server reports the
+	/// journaled columns around the destination sent (`NetEvent::AreaReady`), or the wait runs out.
+	/// Offline arrivals never hold, guaranteed by the CALL SITES: both are `pump_net` arms and an
+	/// offline session produces no `NetEvent`s. Never guard this on `self.session.client` —
+	/// `pump_net` owns it by value for the drain, so `is_some()` reads false on both hold paths.
 	pub(super) fn begin_arrival_hold(&mut self) {
 		self.save.arrival_hold = Some(digblock_net::protocol::AREA_SYNC_TIMEOUT_SECS);
 	}

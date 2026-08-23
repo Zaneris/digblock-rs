@@ -11,24 +11,19 @@ impl GiDraw {
 		self.queue_invalidation(pos, false);
 	}
 
-	/// The same, for a light that MOVED rather than a cell that changed —
-	/// a player carrying a torch.
-	///
-	/// Identical to the probes, which is the whole design: re-placement,
-	/// not a second mechanism. The flag rides along only so the resolve's
-	/// four-slot screen-cap ring can keep the two streams from starving
-	/// each other; see `resolve_inval`.
+	/// The same, for a light that MOVED rather than a cell that changed — a player carrying a
+	/// torch. Identical to the probes, which is the whole design: re-placement, not a second
+	/// mechanism. The flag rides along only so the resolve's screen-cap ring can keep the two
+	/// streams from starving each other; see `resolve_inval`.
 	pub(crate) fn invalidate_moving(&mut self, pos: [f32; 3]) {
 		self.queue_invalidation(pos, true);
 	}
 
 	pub(super) fn queue_invalidation(&mut self, pos: [f32; 3], moving: bool) {
-		// Bounded: only a few spheres drain per frame, and an unbounded
-		// queue grows without limit under any burst of edits (a fluid
-		// cascade, a bulk placement) and then spends minutes replaying
-		// invalidations for cells that have since changed again. Dropping
-		// the OLDEST is right — the newest edits are the ones whose light
-		// is most wrong.
+		// Bounded: only a few spheres drain per frame, and an unbounded queue grows without
+		// limit under any burst of edits, then spends minutes replaying invalidations for cells
+		// that have since changed again. Dropping the OLDEST is right — the newest edits are the
+		// ones whose light is most wrong.
 		const INVAL_MAX: usize = 256;
 		if self.inval_queue.len() >= INVAL_MAX {
 			self.inval_queue.remove(0);
@@ -36,22 +31,11 @@ impl GiDraw {
 		self.inval_queue.push((pos, moving));
 	}
 
-	/// Rebuild the flattened light list when it changed: the `cap` nearest
-	/// emitters to the selection anchor, count in the header.
-	///
-	/// Order never matters to a reader — the probes sample uniformly and
-	/// the resolve's NEE scans actual positions — so a stale SELECTION
-	/// only bites through the truncation: with more emitters than the cap,
-	/// "nearest to an anchor that has since left" quietly drops the
-	/// torches around the player. The refresh below re-selects on real
-	/// anchor movement — a walk or a heading swing alike — in exactly that
-	/// oversubscribed case, and stays free in the common under-cap world.
-	/// Nothing is sorted: `select_lights` partitions, and under the cap
-	/// does not even do that.
-	///
-	/// `cap` is the player's `Settings::max_lights`; the buffer and the
-	/// shader clamps stay sized to `MAX_LIGHTS`, so a cap is only ever a
-	/// shorter header count over the same allocation.
+	/// Rebuild the flattened light list when it changed: the `cap` nearest emitters to the
+	/// selection anchor, count in the header. Order never matters to a reader, so a stale
+	/// SELECTION bites only through the truncation — "nearest to an anchor that has since left"
+	/// drops the torches around the player. Nothing is sorted: `select_lights` partitions. `cap`
+	/// is `Settings::max_lights`; the buffer and shader clamps stay sized to `MAX_LIGHTS`.
 	pub(super) fn flush_lights(&mut self, gpu: &Gpu, cam: [f32; 3], lights: LightInputs<'_>) {
 		let LightInputs { fwd, carried, cap } = lights;
 		let cap = cap.clamp(1, MAX_LIGHTS);
@@ -59,27 +43,21 @@ impl GiDraw {
 			self.light_cap = cap;
 			self.lights_dirty = true;
 		}
-		// Only emitters a march can actually REACH belong in the list.
-		// Every trace breaks at `gi_lateral_max` (= side/2 − 1) of the
-		// camera, so an emitter past it cannot light anything however
-		// close it sorts — and with more than MAX_LIGHTS emitters it
-		// displaces one that can. Residency is a RADIUS in chunks while
-		// the window is that many chunks on a SIDE, so "resident" reaches
-		// well past "traceable" and this is not a rare edge.
+		// Only emitters a march can actually REACH belong in the list. Every trace breaks at
+		// `gi_lateral_max` of the camera, so an emitter past it cannot light anything however
+		// close it sorts — and with more than MAX_LIGHTS emitters it displaces one that can.
+		// Residency is a RADIUS in chunks while the window is that many chunks on a SIDE, so
+		// "resident" reaches well past "traceable" and this is not a rare edge.
 		let reach = lateral_max(self.window_chunks);
 		let in_reach = |e: &Emitter| {
 			let (dx, dz) = (e.pos[0] - cam[0], e.pos[2] - cam[2]);
 			dx * dx + dz * dz <= reach * reach
 		};
-		// Carried lights count toward `total` like any other: they are in
-		// the list the truncation applies to, so leaving them out of the
-		// tally would let a full world hide one.
-		//
-		// Chunks outside the reach are skipped WHOLE, before their entries
-		// are touched: a vein contributes a rectangle per exposed face and
-		// caves are made of exposed faces, so the map is far larger than
-		// the torch-only one this walk was written for, and most of it is
-		// nowhere a march can go.
+		// Carried lights count toward `total` like any other: they are in the list the
+		// truncation applies to, so leaving them out of the tally would let a full world hide
+		// one. Chunks outside the reach are skipped WHOLE, before their entries are touched — a
+		// vein contributes a rectangle per exposed face and caves are made of exposed faces, so
+		// most of the map is nowhere a march can go.
 		let reachable = |m: &'_ FxHashMap<ChunkPos, Vec<Emitter>>| -> usize {
 			m.iter()
 				.filter(|(p, _)| chunk_in_reach(**p, cam, reach))
@@ -109,22 +87,11 @@ impl GiDraw {
 		// this costs one walk and one small buffer write each time the
 		// anchor clears the refresh distance above.
 		let stale = moved && (total > cap || total != self.lights_len);
-		// A carried light moves with its carrier, so the list is stale the
-		// moment one does. EXACT equality, not an epsilon, and that is the
-		// load-bearing part: at rest the presentation eye is bit-identical
-		// frame to frame (`TickLerp::render_pos` returns `prev` exactly when
-		// `prev == curr` — pinned by `a_resting_camera_does_not_drift` — and
-		// the reconciliation offset snaps to zero rather than decaying
-		// forever). So a player standing still with a torch keeps the early-out
-		// and a room lit by it converges as deeply as one lit from the floor.
-		// An epsilon would invent tolerance for a quantity that has none, and
-		// the number chosen would quietly decide when a slow creep stops
-		// lighting the room.
-		//
-		// Compared AFTER the reach filter, which is not a detail: remotes ride
-		// snapshots out to the client's whole draw distance while `reach` is a
-		// fraction of it, so an unfiltered compare lets a torch-bearer nobody
-		// can be lit by defeat the early-out every frame.
+		// A carried light moves with its carrier, so the list is stale the moment one does.
+		// EXACT equality, not an epsilon: at rest the presentation eye is bit-identical frame to
+		// frame (pinned by `a_resting_camera_does_not_drift`), so a standing player keeps the
+		// early-out, and an epsilon would decide when a slow creep stops lighting a room.
+		// Compared AFTER the reach filter, or a torch-bearer nobody can be lit by defeats it.
 		let carried_moved = !carried
 			.iter()
 			.copied()

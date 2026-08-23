@@ -18,19 +18,11 @@ pub use draw::{DrawList, Layer};
 pub use hit::HitMap;
 pub use widgets::{Style, Ui};
 
-/// One item trading places with another **in a single slot**: at `u` (0..=1
-/// through the handover), is the INCOMING item the one to draw, and how present
-/// is it (0..=1, scaling both its size and its alpha)?
-///
-/// The outgoing item shrinks away over the first half and the incoming one grows
-/// in over the second, so the slot never shows two icons at once — cross-fading
-/// two overlapping 3D icons is a double exposure of their internal faces, and
-/// the effect wanted is a rotation, not a dissolve. Present passes through
-/// exactly 0 at the changeover, which is what lets everything else about the
-/// exchange happen unseen.
-///
-/// Shared by the transmute tab's rotating family tiles and the hotbar's tool
-/// slot: a swap should look like a swap wherever it happens.
+/// One item trading places with another **in a single slot**: at `u` (0..=1 through the
+/// handover), is the INCOMING item the one to draw, and how present is it (0..=1, scaling size
+/// and alpha)? Outgoing shrinks away, then incoming grows in, so the slot never shows two icons
+/// at once — cross-fading two 3D icons is a double exposure of their internal faces — and
+/// present passes through exactly 0 at the changeover. Shared by transmute tiles and the hotbar.
 pub fn handover(u: f32) -> (bool, f32) {
 	if u < 0.5 {
 		(false, 1.0 - 2.0 * u)
@@ -62,11 +54,7 @@ pub enum InvId {
 	CraftGo,
 	/// Spellbook: one spell row (index into the roster the page built).
 	Spell(u8),
-	/// Spellbook: the fare chip inside spell row `Spell(n)`. Its own id
-	/// because the chip is what a tooltip NAMES, and a name has to come
-	/// from the same geometry pass that drew it — a capture or a sweep
-	/// parks on this rect, and a click on it acts on the row it belongs
-	/// to.
+	/// Spellbook: the fare chip in `Spell(n)`, its own id so a tooltip can name the rect it drew.
 	SpellFare(u8),
 }
 

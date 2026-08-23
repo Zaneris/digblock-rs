@@ -21,12 +21,11 @@ fn totals_folds_a_repeated_key() {
 	assert!(totals(std::iter::empty::<(E, u32)>()).is_empty());
 }
 
-/// The legacy-character migration's inventory rule: two piles one
-/// player owns become one, and every cap still holds.
+/// The legacy-character migration's inventory rule: two piles one player owns become one, and every
+/// cap still holds.
 ///
-/// The tool line is the point. Both sides own a bucket, and a merge
-/// that summed counts would hand back two — an item the game has no
-/// way to represent, from a path no player ever asked for.
+/// The tool line is the point. Both sides own a bucket, and a merge that summed counts would hand
+/// back two — an item the game has no way to represent.
 #[test]
 fn merging_two_of_a_players_inventories_respects_every_cap() {
 	let mut mine = Inventory::default();
@@ -380,12 +379,10 @@ fn the_bucket_charge_is_never_crafted() {
 	assert_eq!(inv, before, "nothing paid, nothing filled");
 }
 
-/// Owning a tool is a yes/no (§7.3), so the bench sells you exactly
-/// one. Both ways to ask for a second are refused BEFORE any debit:
-/// a batch multiplier — the transmute tab aims those at every member,
-/// tools included — and a plain craft once it's in the bag. `add`
-/// saturates, so an unrefused one would take the whole batch's essence
-/// and hand back nothing.
+/// Owning a tool is a yes/no (§7.3), so the bench sells you exactly one. Both ways to ask for a
+/// second are refused BEFORE any debit: a batch multiplier — the transmute tab aims those at every
+/// member, tools included — and a plain craft once it's in the bag. `add` saturates, so an
+/// unrefused one would take the whole batch's essence and hand back nothing.
 #[test]
 fn a_tool_is_crafted_once_and_never_paid_for_twice() {
 	let held =

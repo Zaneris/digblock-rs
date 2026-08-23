@@ -1,24 +1,18 @@
 //! Adaptive per-frame streaming budget for the wasm client.
 //!
-//! It governs the whole main-thread streaming deadline — pulling a job
-//! pool's replies, the result drain, evictions and GPU uploads — and NOT
-//! only the jobs, which is why it is not conditioned on where jobs run.
-//! Moving jobs to a pool moves the jobs; absorbing their results stays
+//! It governs the whole main-thread streaming deadline — pulling a job pool's replies, the result
+//! drain, evictions and GPU uploads — and NOT only the jobs, which is why it is not conditioned on
+//! where jobs run: moving jobs to a pool moves the jobs, while absorbing their results stays
 //! pinned to the thread that owns the device.
 //!
-//! Feedback controller over measured frame headroom: grows the budget
-//! slowly while the worst recent frame still has slack against the
-//! protected frame interval, collapses to the floor on any near-miss.
-//! The floor is the fixed budget the engine ships with, so "no headroom
-//! proven" is exactly today's behavior.
+//! Feedback controller over measured frame headroom: it grows the budget slowly while the worst
+//! recent frame still has slack against the protected frame interval, and collapses to the floor
+//! on any near-miss. The floor is the fixed budget the engine ships with, so "no headroom proven"
+//! is exactly today's behavior.
 //!
-//! Headroom says how much the frame CAN afford; [`urgency`] says how
-//! much the pending work DESERVES. Steady-state walking only churns
-//! chunks at the draw-distance rim, and burning the full ceiling on
-//! those trades visible stutter for fill speed nobody perceives — so
-//! the ceiling is scaled by how near the closest pending job is, and
-//! rim-only churn streams at the fixed floor exactly like the
-//! pre-adaptive build.
+//! Headroom says how much the frame CAN afford; [`urgency`] says how much the pending work
+//! DESERVES. Rim-only churn — steady-state walking — buys fill speed nobody perceives at the cost
+//! of visible stutter, so the ceiling is scaled by how near the closest pending job is.
 
 /// The frame interval this controller protects — deliberately a fixed
 /// target rather than the display's, so high-refresh displays are allowed
@@ -95,21 +89,11 @@ impl StreamBudget {
 		self.head = 0;
 	}
 
-	/// Feed the previous frame's wall delta and its MEASURED main-thread
-	/// occupancy; returns the budget for this frame. Growth requires a full
-	/// window of valid samples, so cold starts and throttled tabs sit at
-	/// the floor. `urgency` (see [`urgency`]) scales the ceiling between
-	/// the floor and `CEIL_MS`; a drop clamps the stored budget
-	/// immediately, and recovery re-grows additively — near work appearing
-	/// never slams the full ceiling onto an unproven frame.
-	///
-	/// `busy_ms` must be measured (platform `frame_busy` minus the acquire
-	/// wait), NEVER derived as `frame_ms − acquire_ms`. That subtraction is
-	/// right only where vsync blocks inside the swapchain acquire: on the
-	/// web `getCurrentTexture` cannot block, pacing lives in rAF between
-	/// frames, and the derived value reads as a full interval every frame —
-	/// headroom is then permanently negative and this controller pins to
-	/// its floor forever. See `web_signal_shape_still_grows`.
+	/// Feed the previous frame's wall delta and its MEASURED main-thread occupancy; returns this
+	/// frame's budget. Growth needs a full window of valid samples, so cold starts and throttled
+	/// tabs sit at the floor; `urgency` scales the ceiling. `busy_ms` must be MEASURED, never
+	/// derived as `frame_ms − acquire_ms`: on the web `getCurrentTexture` cannot block, so the
+	/// derived value reads full every frame and pins the floor. See `web_signal_shape_still_grows`.
 	pub fn on_frame(&mut self, frame_ms: f32, busy_ms: f32, urgency: f32) -> f32 {
 		if frame_ms <= 0.0 || frame_ms >= STALE_MS {
 			self.reset();
@@ -243,14 +227,11 @@ mod tests {
 		assert!(out > FLOOR, "recovers after real frames resume");
 	}
 
-	/// REGRESSION: the web frame shape must still prove headroom.
-	///
-	/// On the web the swapchain acquire never blocks and rAF paces the loop
-	/// between frames, so every frame's wall delta is a full display
-	/// interval no matter how little work it did. The controller previously
-	/// derived busy as `frame − acquire`, which on this shape reads as
-	/// "always full" and pinned the budget to its floor forever — the
-	/// adaptive path was inert on the one platform it exists for.
+	/// REGRESSION: the web frame shape must still prove headroom. On the web the swapchain acquire
+	/// never blocks and rAF paces the loop between frames, so every frame's wall delta is a full
+	/// display interval no matter how little work it did. Deriving busy as `frame − acquire` on
+	/// that shape reads as "always full" and pins the budget to its floor — the adaptive path
+	/// inert on the one platform it exists for.
 	#[test]
 	fn web_signal_shape_still_grows() {
 		for &busy in &[1.0f32, 2.0, 5.0, 8.0] {

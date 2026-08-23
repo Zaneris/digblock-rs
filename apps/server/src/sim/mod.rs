@@ -105,29 +105,16 @@ pub enum SimEvent {
 #[derive(Debug)]
 pub enum OutMsg {
 	Datagram(Vec<u8>),
-	/// A length-prefixed reliable frame, SHARED between recipients.
-	///
-	/// `Arc` rather than `Vec` because the interesting sends are
-	/// broadcasts: every landed edit goes to every client whose
-	/// `synced_columns` covers it, and fluid alone lands a whole
-	/// `FLOW_BUDGET` of edits every flow step. Encoding per recipient meant
-	/// several allocations and a fresh postcard pass PER RECIPIENT,
-	/// multiplied by the crowd — tens of thousands of allocations a second
-	/// around a waterfall, all producing byte-identical output. Now the
-	/// fan-out is a refcount bump.
+	/// A length-prefixed reliable frame, `Arc`-shared so a broadcast fan-out is a refcount bump.
 	Frame(std::sync::Arc<[u8]>),
 	/// Ask the net layer to close the connection (refused handshake).
 	Close,
 }
 
-/// Per-client input-path instrumentation. Purely diagnostic — no field
-/// here feeds a decision, so sampling or ignoring it changes nothing.
-///
-/// It exists because the intake path used to drop inputs three different
-/// ways in silence (below the high-water mark, evicted at `INPUT_BUF_CAP`,
-/// or never delivered at all), which made every claim about jitter
-/// unfalsifiable. `late_lost` is the one counter that means an input was
-/// lost for good.
+/// Per-client input-path instrumentation. Purely diagnostic — no field here feeds a decision, so
+/// sampling or ignoring it changes nothing. It exists because the intake path used to drop inputs
+/// three different ways in silence, which made every claim about jitter unfalsifiable.
+/// `late_lost` is the one counter that means an input was lost for good.
 #[derive(Default, Clone, Copy, Debug)]
 pub struct InputStats {
 	/// Inputs actually applied, ever. The netbench divides this by what the
@@ -180,15 +167,11 @@ impl InputStats {
 	}
 }
 
-/// Per-client edit-path instrumentation. Purely diagnostic, like
-/// [`InputStats`], and deliberately a separate struct — this measures what
-/// a CLICK costs, not what the input buffer does.
-///
-/// It exists to price the two constants that are sized against how far the
-/// server's simulated player trails the client's: [`EDIT_POS_TOLERANCE`]
-/// and [`digblock_net::protocol::dig_grace`]. Both are fixed numbers whose
-/// remaining headroom has never been measured, and any change that makes
-/// the server consume inputs later spends that headroom.
+/// Per-client edit-path instrumentation. Purely diagnostic, like [`InputStats`], and deliberately
+/// a separate struct — this measures what a CLICK costs, not what the input buffer does. It
+/// prices the two constants sized against how far the server's simulated player trails the
+/// client's, [`EDIT_POS_TOLERANCE`] and [`digblock_net::protocol::dig_grace`]: any change that
+/// makes the server consume inputs later spends their unmeasured headroom.
 #[derive(Default, Clone, Copy, Debug)]
 pub struct EditStats {
 	/// `req.origin.distance(player_pos)` at the tolerance check, in blocks
@@ -387,17 +370,11 @@ struct Client {
 }
 
 impl Client {
-	/// The held item for snapshots, in hotbar wire encoding. The tool
-	/// reports its charge too — a bucket is a different thing full than
-	/// empty, and the difference is the whole point of holding one.
-	///
-	/// WHICH tool, though, is the second axis: the slot only ever says
-	/// `WaterTool`, so reporting the slot drew every remote player's
-	/// Resonant Pick as a bucket — or, if their bucket happened to be
-	/// charged, as a cube of water. The encoding needed nothing new for
-	/// it: tools are real block ids, so this sends the tool's own id and
-	/// keeps the sentinels for the bucket, exactly as `Hotbar::to_wire`
-	/// does on the Layout wire.
+	/// The held item for snapshots, in hotbar wire encoding. The tool reports its charge too — a
+	/// bucket is a different thing full than empty. WHICH tool is the second axis: the slot only
+	/// ever says `WaterTool`, so reporting the slot drew every remote's Resonant Pick as a bucket.
+	/// Tools are real block ids, so this sends the tool's own id and keeps the sentinels for the
+	/// bucket, exactly as `Hotbar::to_wire` does on the Layout wire.
 	fn held_wire(&self) -> u16 {
 		use digblock_core::block::BlockType;
 		use digblock_core::hotbar::{HotbarItem, WIRE_EMPTY, WIRE_TOOL};
@@ -527,17 +504,11 @@ pub struct Sim {
 	owed_planks: std::collections::VecDeque<digblock_core::causeway::Cell>,
 }
 
-/// One ward climbing about a channelling caster: the cells still to
-/// land, who is paying, where they stood when it began (a step away
-/// breaks the channel — stillness is the channel's contract on the
-/// client, and the server holds its own copy), and the fare to hand
-/// back on an unwind.
-///
-/// `plan_len` and `span` are here because the wire carries the climb's
-/// PROGRESS rather than its cells: every client re-derives the same plan
-/// from `head` and `radius`, so how far the sphere got is a prefix
-/// length, and that is a question about the plan the closing consumed
-/// rather than about the cells it managed to write.
+/// One ward climbing about a channelling caster: the cells still to land, who is paying, where
+/// they stood when it began (a step away breaks the channel — the client's contract, and the
+/// server holds its own copy), and the fare to hand back on an unwind. `plan_len` and `span` are
+/// here because the wire carries the climb's PROGRESS rather than its cells: every client
+/// re-derives the plan from `head` and `radius`, so how far the sphere got is a prefix length.
 struct WardClosing {
 	conn_id: u64,
 	by: PlayerId,
@@ -902,16 +873,11 @@ impl Sim {
 				// sanitize lines drop silently — a talkative client gets
 				// throttled, never disconnected.
 				ClientMsg::Chat { text } => {
-					// Sanitize BEFORE deciding what the line IS. These used
-					// to read different strings — `is_command` looked at the
-					// raw text while everything downstream ran on the
-					// sanitized one — and they disagree for any character
-					// the sanitizer strips that `trim_start` does not count
-					// as whitespace. `U+200B` is exactly that: not
-					// `White_Space`, not inside `TEXT_RANGES`. So
-					// `"\u{200B}/ban griefer"` read as ordinary chat, then
-					// sanitized to `/ban griefer` and was BROADCAST to
-					// everyone instead of being privately refused.
+					// Sanitize BEFORE deciding what the line IS. `is_command` used to
+					// read the raw text while everything downstream ran on the sanitized
+					// one, and they disagree for any character the sanitizer strips that
+					// `trim_start` does not count as whitespace — `U+200B` is exactly
+					// that, so a zero-width space made a command BROADCAST as chat.
 					let Some(text) = sanitize_chat(&text) else {
 						return;
 					};
@@ -1072,12 +1038,10 @@ impl Sim {
 			self.cell_edited(hit.cell.0, hit.cell.1, hit.cell.2),
 			alchemy,
 		);
-		// A LOCKED cell is deliberately not filtered here: the assembled
-		// writes are scanned for protection and the whole swing is refused,
-		// which is what `a_protected_cell_refuses_the_whole_pick_swing`
-		// pins ("nothing partially breaks"). The world floor is a different
-		// matter and is handled inside the rule — it is not a policy, it is
-		// a cell no dig of any kind can touch, and letting the plane reach
+		// A LOCKED cell is deliberately not filtered here: the assembled writes are scanned for
+		// protection and the whole swing refused, which is what
+		// `a_protected_cell_refuses_the_whole_pick_swing` pins. The world floor is handled inside
+		// the rule instead — not a policy but a cell no dig can touch, and letting the plane reach
 		// it made the pick refuse every swing at the bottom of a mine.
 		let mut out = digblock_core::pick::cells(
 			hit.cell,
@@ -1110,15 +1074,11 @@ fn column_of(pos: Vec3) -> (i32, i32) {
 	)
 }
 
-/// Squared-distance test in i64: `col` is any edited column in the journal
-/// and `center` is any client's, so the separation is bounded only by
-/// `TP_LIMIT`. In i32 the product overflows well inside that range —
-/// release wraps, and a wrapped negative sum passes the test, which syncs
-/// a client columns it is nowhere near and force-drops it when the queue
-/// refuses; debug panics. The subtraction is widened too:
-/// `col.0 - center.0` alone overflows at the i32 extremes.
-/// Squared column distance — the ordering key `in_radius` tests against,
-/// shared so "near" means the same thing to the sort and to the gate.
+/// Squared column distance — the ordering key `in_radius` tests against, shared so "near" means
+/// the same thing to the sort and to the gate. i64 throughout: `col` and `center` are separated
+/// by at most `TP_LIMIT`, and in i32 both the subtraction at the extremes and the product well
+/// inside that range overflow — release wraps, and a wrapped negative sum passes the test, which
+/// syncs a client columns it is nowhere near and force-drops it when the queue refuses.
 fn radius_key(col: (i32, i32), center: (i32, i32)) -> i64 {
 	let (dx, dz) = (
 		col.0 as i64 - center.0 as i64,

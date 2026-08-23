@@ -1,27 +1,18 @@
-//! The unified NODE layer — every world source of essence behind one question.
-//! **Essence is found, not ground.**
+//! The unified NODE layer: every world source of essence behind one question. **Essence is found,
+//! not ground.**
 //!
-//! A node is a derived find: a salted hash or a pure worldgen query says where
-//! one stands, the mesh stamp reveals it at a skill level, the siphon draws it
-//! in place, and the draw leaves the kind's own SPENT face. Nothing is stored,
-//! so nodes appear retroactively in existing worlds and the goldens do not move.
+//! A node is a derived find: a salted hash or a pure worldgen query says where one stands, the
+//! mesh stamp reveals it at a skill level, the siphon draws it in place, and the draw leaves the
+//! kind's own SPENT face. Nothing is stored, so nodes appear retroactively in existing worlds and
+//! the goldens do not move. Seven live faces, two reveal skills: the four ORE tiers in pristine
+//! deep Stone on MINING; Leystone, Heartwood and Springstone on ALCHEMY, so Alchemy owns the
+//! surface hunt the way Mining owns the deep one.
 //!
-//! Seven live faces, two reveal skills: the four ORE tiers in pristine deep
-//! Stone on MINING; and Leystone, Heartwood and Springstone on ALCHEMY, so
-//! Alchemy owns the surface hunt the way Mining owns the deep one.
-//!
-//! **The unedited rule is the anti-dupe**: a node manifests only where the cell
-//! still holds its pristine host and has never been written.
-//! `JournalIndex::record` only ever inserts, so a spent node cannot be regrown
-//! by placing the host back.
-//!
-//! The one node that IS stored: a spent face the regrowth sweep
-//! ([`crate::worldjob::regrow`]) has given back. The edited bit is monotone, so
-//! the only way a find can return is the sweep writing the live face itself
-//! into the cell — which the anti-dupe permits because only the sweep can:
-//! no live face is ever an item ([`BlockType::is_slottable`]), so no player
-//! can place one. A stored face is ordinary chunk data everyone sees, and
-//! [`revealed`] treats it as found at any level.
+//! **The unedited rule is the anti-dupe**: a node manifests only where the cell still holds its
+//! pristine host and has never been written, and `JournalIndex::record` only ever inserts, so a
+//! spent node cannot be regrown by placing the host back. The one node that IS stored is a spent
+//! face the regrowth sweep ([`crate::worldjob::regrow`]) gave back — safe because no live face is
+//! ever an item ([`BlockType::is_slottable`]), so [`revealed`] finds a stored one at any level.
 
 use crate::block::BlockType;
 use crate::worldgen::ore;
@@ -58,16 +49,11 @@ impl Levels {
 	}
 }
 
-/// Does this player SEE this node kind at all? Each kind answers to
-/// exactly one skill's reveal table; a block in neither table is not a
-/// node and is never revealed.
-///
-/// Public because it must be the ONLY spelling of the question. The mesh
-/// stamp used to carry its own, written as a disjunction rather than this
-/// if/else — which answers the opposite way for a block in neither table,
-/// and the stamp's second pass reverts a claim on exactly that answer. A
-/// tier shipped or retired without a reveal entry would have been left
-/// standing in the picture and refused at the dig.
+/// Does this player SEE this node kind at all? Each kind answers to exactly one skill's reveal
+/// table; a block in neither table is not a node and is never revealed. Public because it must be
+/// the ONLY spelling of the question — a disjunction instead of this if/else answers the opposite
+/// way for a block in neither table, and the mesh stamp's second pass reverts a claim on exactly
+/// that answer, leaving a tier with no reveal entry in the picture and refused at the dig.
 #[inline]
 pub fn reveal_met(node: BlockType, levels: Levels) -> bool {
 	if let Some(need) = crate::unlock::reveal(node) {
@@ -79,21 +65,11 @@ pub fn reveal_met(node: BlockType, levels: Levels) -> bool {
 	}
 }
 
-/// THE visibility question, asked identically by the mesh stamp, the
-/// client's dig prediction and the server's validation: what node does
-/// this cell show to a player at these levels?
-///
-/// `cell` is the world's CURRENT cell value and `edited` says whether that
-/// coordinate has ever been written. Both gates matter and neither is
-/// redundant: the host-id test is what makes a spent node stay spent, and
-/// the edit test is what stops someone placing the host back into the
-/// coordinate to regrow it. The host id is also what [`node_at`] routes
-/// on, which is why the two questions cannot disagree.
-///
-/// A cell holding a live face OUTRIGHT — a regrown node — is found by
-/// anyone, ahead of both gates: it is stored, so every client's mesh
-/// already shows it, and a node you can see and cannot draw is the worst
-/// outcome this whole system has.
+/// THE visibility question, asked identically by the mesh stamp, the client's dig prediction and
+/// the server's validation. Both gates matter: the host-id test makes a spent node stay spent, the
+/// `edited` test stops someone placing the host back to regrow it, and the host id is also what
+/// [`node_at`] routes on. A cell holding a live face OUTRIGHT — a regrown node — is found by
+/// anyone ahead of both: it is stored, so every client's mesh already shows it.
 pub fn revealed(
 	cell: u16,
 	at: (i32, i32, i32),
@@ -112,16 +88,11 @@ pub fn revealed(
 	reveal_met(node, levels).then_some(node)
 }
 
-/// The node worldgen puts at this coordinate IN THIS HOST — no edit bit
-/// and no level, but the same routing [`revealed`] does, because it is
-/// the routing: `revealed` asks this and then applies the two gates.
-///
-/// The host is load-bearing rather than a shortcut. Asked of the position
-/// alone the three streams overlap: a trunk's heart span is a heartwood
-/// answer at coordinates where the tree grew LEAVES, or nothing at all.
-/// The regrowth sweep is the caller that notices — it asks whether a
-/// spent face stands where its find was, and a host-blind answer would
-/// let one carried in and placed manufacture a node site.
+/// The node worldgen puts at this coordinate IN THIS HOST — no edit bit and no level, but the same
+/// routing [`revealed`] does, because it IS the routing. The host is load-bearing rather than a
+/// shortcut: asked of the position alone the three streams overlap, and the regrowth sweep is the
+/// caller that notices — it asks whether a spent face stands where its find was, and a host-blind
+/// answer would let one carried in and placed manufacture a node site.
 pub fn node_at(host: BlockType, at: (i32, i32, i32), seed: f64) -> Option<BlockType> {
 	let (x, y, z) = at;
 	match host {
@@ -132,13 +103,10 @@ pub fn node_at(host: BlockType, at: (i32, i32, i32), seed: f64) -> Option<BlockT
 	}
 }
 
-/// The pristine host a node of this kind manifests in — the id
-/// [`node_at`] routes on, inverted for a caller holding the KIND and
-/// asking where it could stand. Total on [`NODES`].
-///
-/// Leystone's host is Stone and not soil: it rides the ore deposit
-/// stream as its surface tier and only its reveal is on the other
-/// ladder.
+/// The pristine host a node of this kind manifests in — the id [`node_at`] routes on, inverted for
+/// a caller holding the KIND and asking where it could stand. Total on [`NODES`]. Leystone's host
+/// is Stone and not soil: it rides the ore deposit stream as its surface tier, and only its reveal
+/// is on the other ladder.
 #[inline]
 pub fn host_block(node: BlockType) -> Option<BlockType> {
 	Some(match node {
@@ -168,22 +136,9 @@ pub fn drawn_kind(face: BlockType) -> Option<BlockType> {
 pub enum DigMode {
 	/// Ordinary: the cell breaks and drops what it drops.
 	Break,
-	/// A revealed node with the siphon in hand: the cell becomes the
-	/// kind's [`spent_block`] and the node's ESSENCE lands in the player's
-	/// stocks. Drawing a node never excavates, so the mountainside — and
-	/// the tree, and the lake bed — keeps its shape.
-	///
-	/// Essence rather than a block, which is the whole of what the tool is
-	/// for: a siphon draws a find out where it stands, so a node never
-	/// becomes something you carry to a bench. What you can carry home is
-	/// the spent face afterwards. The yield is
-	/// `alchemy::field_yield`, so the Alchemy level scales every draw the
-	/// same way wherever it happens.
+	/// Siphon in hand: the cell becomes the kind's [`spent_block`] — never air — and pays essence.
 	Extract(BlockType),
-	/// A revealed node and no siphon. Refused at `DigStart`, not at the
-	/// completing edit — if you can SEE the find, the game will not let
-	/// you spend it on an ordinary dig by accident, and it says so before
-	/// you hold the button through a full timer for nothing.
+	/// A revealed node and no siphon: refused at `DigStart`, not at the completing edit.
 	NeedsSiphon,
 }
 
@@ -210,14 +165,10 @@ pub fn dig_mode(
 	}
 }
 
-/// The block a dig is TIMED and paid XP as. A node lives in a cell that
-/// still holds its host — the reveal is a mesh stamp, not a world write —
-/// so without this a draw would take the host's own hold time and pay the
-/// host's XP however rich the find was, and the node rows' hardnesses
-/// would be dead numbers on blocks nobody ever digs.
-///
-/// It does not decide what the dig CREDITS: a draw pays essence, not a
-/// block (see [`DigMode::Extract`]).
+/// The block a dig is TIMED and paid XP as. A node lives in a cell that still holds its host — the
+/// reveal is a mesh stamp, not a world write — so without this a draw would take the host's own
+/// hold time and pay the host's XP however rich the find was. It does not decide what the dig
+/// CREDITS: a draw pays essence, not a block (see [`DigMode::Extract`]).
 #[inline]
 pub fn dig_block(mode: DigMode, cell_block: BlockType) -> BlockType {
 	match mode {
@@ -226,17 +177,10 @@ pub fn dig_block(mode: DigMode, cell_block: BlockType) -> BlockType {
 	}
 }
 
-/// The face a drawn node leaves standing — the kind's own spent block.
-///
-/// One per kind rather than one grey face for all: a worked find should
-/// still read as the find you worked, and the block you break out of it
-/// afterwards is a trophy of that kind and no other. It is also the ONLY
-/// thing a node ever puts in a player's hands, since the live face is
-/// never an item ([`BlockType::is_slottable`]).
-///
-/// Total on [`NODES`], so a caller holding a [`DigMode::Extract`] cannot
-/// be handed one it has no face for; anything else is not a node and
-/// answers `None`.
+/// The face a drawn node leaves standing — the kind's own spent block, one per kind rather than
+/// one grey face for all, and the ONLY thing a node ever puts in a player's hands, since the live
+/// face is never an item ([`BlockType::is_slottable`]). Total on [`NODES`], so a caller holding a
+/// [`DigMode::Extract`] cannot be handed one it has no face for; anything else answers `None`.
 #[inline]
 pub fn spent_block(node: BlockType) -> Option<BlockType> {
 	Some(match node {
@@ -262,30 +206,17 @@ const HEARTWOOD_SALT: u64 = 0x8ea7_c0de_57ee_d001;
 /// walks between finds.
 const HEARTWOOD_IN_100: u64 = 12;
 
-/// How many trunk cells of a heartwood tree manifest, counted up from the
-/// cell above the root — the heart sits low, at eye height, where a
-/// standing player's crosshair naturally lands.
-///
-/// Every trunk column that carries a heart carries this much of one, a
-/// landmark's four included: what the giant is worth is settled by its
-/// footprint and by never rolling, and a heart that also grew with the
-/// trunk would make one tree worth a session.
+/// How many trunk cells of a heartwood tree manifest, counted up from the cell above the root —
+/// the heart sits low, at eye height, where a standing player's crosshair naturally lands. Every
+/// trunk column that carries a heart carries this much of one, a landmark's four included: a heart
+/// that grew with the trunk would make one tree worth a session.
 const HEART_CELLS: i32 = 2;
 
-/// Does this cell hold heartwood — the living core of a worldgen tree?
-///
-/// Pure in `(x, y, z, seed)` like [`ore::ore_at`]: the trunk comes from
-/// [`crate::decoration::trunk_at`], and whether a tree HAS a heart is one
-/// salted roll on the tree's anchor column, so every cell of one trunk agrees.
-/// A landmark tree skips the roll and always has one. What it does NOT get is a
-/// bigger heart — both carry it in the [`HEART_CELLS`] above the root, so the
-/// giant's reward is its four trunk columns and the certainty. Paying by the
-/// cell, a full-trunk landmark was worth more Alchemy XP than the first dozen
-/// levels cost put together.
-///
-/// Callers still need the LIVE cell to hold Wood and be unedited ([`revealed`]
-/// checks both): a canopy written first, a cliff that left the trunk cell
-/// unwritten, or a felled-and-rebuilt trunk are all cells this cannot see.
+/// Does this cell hold heartwood — the living core of a worldgen tree? Pure in `(x, y, z, seed)`
+/// like [`ore::ore_at`]: the trunk comes from [`crate::decoration::trunk_at`], and whether a tree
+/// HAS a heart is one salted roll on its anchor column, so every cell of one trunk agrees. A
+/// landmark skips the roll but gets no BIGGER heart — its reward is its four trunk columns and the
+/// certainty. Callers still need the live cell to hold Wood and be unedited ([`revealed`] checks).
 pub fn heartwood_at(x: i32, y: i32, z: i32, seed: f64) -> bool {
 	let Some(t) = crate::decoration::trunk_at(x, z, seed) else {
 		return false;
@@ -319,31 +250,20 @@ const _: () = assert!(
 /// seen from the sand, not the open floor.
 const SHORE_DEPTH: i32 = 3;
 
-/// Does this cell hold a springstone — a charged stone in the pristine
-/// bed of standing water?
-///
-/// The rate rolls first because it is a hash where the bed test is five
-/// field evaluations ([`crate::worldgen::column_shape`]); only the cells
-/// that pass pay for the classification. Lake and river beds at the full
-/// rate, the ocean's shoreline shallows at the rarer one, and never the
-/// open ocean floor or a marsh puddle — and only the bed surface cell
-/// itself, which is what puts the find under water and makes water
-/// features destinations.
+/// Does this cell hold a springstone — a charged stone in the pristine bed of standing water? The
+/// rate rolls first because it is a hash where the bed test is five field evaluations
+/// ([`crate::worldgen::column_shape`]); only the cells that pass pay for the classification. Lake
+/// and river beds at the full rate, the ocean's shoreline shallows at the rarer one, never the
+/// open floor or a marsh puddle, and only the bed surface cell — which puts the find under water.
 pub fn springstone_at(x: i32, y: i32, z: i32, seed: f64) -> bool {
 	springstone_bed(x, z, seed) == Some(y)
 }
 
-/// The bed cell this column's spring occupies, or `None` for a column
-/// that carries none.
-///
-/// The column-level half of [`springstone_at`], separate because a
-/// caller that wants to FIND springs — the `DIG_NODE` capture scene —
-/// otherwise has to evaluate [`crate::worldgen::column_shape`] itself
-/// just to learn the height to ask about, and then pays for it a second
-/// time in here. Sharing one answer is also what keeps the rate test
-/// genuinely first: it is a hash, the classification behind it is five
-/// field evaluations, and the hash rejects all but a small share of
-/// columns before any of them run.
+/// The bed cell this column's spring occupies, or `None` for a column that carries none — the
+/// column-level half of [`springstone_at`], separate because a caller that wants to FIND springs
+/// (the `DIG_NODE` capture scene) would otherwise evaluate [`crate::worldgen::column_shape`] just
+/// to learn the height to ask about and pay for it a second time in here. Sharing one answer also
+/// keeps the rate test genuinely first: the hash rejects all but a small share of columns.
 pub fn springstone_bed(x: i32, z: i32, seed: f64) -> Option<i32> {
 	let roll = ore::mix(x, 0, z, seed.to_bits(), SPRING_SALT) & 0xFF;
 	if roll >= SPRING_IN_256 {

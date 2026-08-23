@@ -74,13 +74,10 @@ impl GlyphAtlas {
 		[h / ATLAS_W as f32, h / ATLAS_H as f32]
 	}
 
-	/// Start a frame. Wipes the page when the set of (face, size) pairs in
-	/// use changed — i.e. the UI scale moved — or when the previous frame
-	/// ran out of room.
-	///
-	/// This is the ONLY place a reset may happen. Resetting mid-frame
-	/// would invalidate UVs already written into the vertex buffer and
-	/// flash one frame of scrambled text.
+	/// Start a frame. Wipes the page when the set of (face, size) pairs in use changed — i.e. the
+	/// UI scale moved — or when the previous frame ran out of room. This is the ONLY place a reset
+	/// may happen: resetting mid-frame would invalidate UVs already written into the vertex buffer
+	/// and flash one frame of scrambled text.
 	pub(crate) fn begin_frame(&mut self, live: &[(FaceId, u32)]) {
 		if !self.overflow && self.live == live {
 			return;

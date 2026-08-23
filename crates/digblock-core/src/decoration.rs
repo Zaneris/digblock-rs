@@ -107,13 +107,10 @@ fn jroll(salt: u16, dx: i32, dz: i32, dy: i32) -> bool {
 	v & 1 == 0
 }
 
-/// The candidate column of a decoration cell, or `None` when it sits at
-/// or below the waterline band. Nothing grows or piles there: every
-/// surface a structure family accepts (any tree density, boulders)
-/// classifies strictly above `SEA_LEVEL + 1`, since at or below it a
-/// column is ocean, river, lake, or shore. Rejecting on altitude costs
-/// one field evaluation where a classification costs five, and columns
-/// that survive pay nothing extra.
+/// The candidate column of a decoration cell, or `None` when it sits at or below the waterline
+/// band. Nothing grows or piles there: every surface a structure family accepts classifies strictly
+/// above the band, since at or below it a column is ocean, river, lake, or shore. Rejecting on
+/// altitude costs one field evaluation where a classification costs five.
 fn candidate_column(x: i32, z: i32, seed: f64) -> Option<ColumnShape> {
 	column_shape_above(x, z, seed, SEA_LEVEL + 1)
 }
@@ -259,14 +256,11 @@ impl Structure {
 	}
 }
 
-/// The landmark candidate (if any) of one coarse-grid cell.
-///
-/// Two-stage placement, and the ORDER is load-bearing: the first
-/// attempt is the original single-roll position, verbatim, so every
-/// landmark that stood before the fallback existed still stands at its
-/// exact spot — which is what lets the fallback ride a protocol bump
-/// with saves kept (`landmark_fallback_only_adds` is the proof). The
-/// scan runs only where that attempt fails, so it can only ADD trees.
+/// The landmark candidate (if any) of one coarse-grid cell. Two-stage placement, and the ORDER is
+/// load-bearing: the first attempt is the original single-roll position, verbatim, so every
+/// landmark that stood before the fallback existed still stands at its exact spot — which is what
+/// lets the fallback ride a protocol bump with saves kept (`landmark_fallback_only_adds` is the
+/// proof). The scan runs only where that attempt fails, so it can only ADD trees.
 fn cell_landmark(cell_x: i32, cell_z: i32, seed: f64) -> Option<Landmark> {
 	let h = hash(cell_x, cell_z, seed, LANDMARK_SALT);
 	if h % 1000 >= LANDMARK_PCT {
@@ -491,14 +485,11 @@ fn cell_candidates(cell_x: i32, cell_z: i32, seed: f64) -> CellCandidates {
 /// self-evicts.
 const MEMO_SLOTS: usize = 256;
 
-/// A bounded, direct-mapped memo of validated candidate cells. Aprons of
-/// neighbouring chunks overlap two cells on each axis, so the same fine
-/// cell is validated by four column jobs (and the same landmark cell by
-/// sixteen) while validation — a terrain probe per candidate — is the
-/// expensive part. The key carries the entire input, so a hit is by
-/// construction what a miss would have computed and worldgen stays a pure
-/// function of `(x, z, seed)`. Thread-local, so worker threads never
-/// share one, and fixed-size, so it can't grow with the explored world.
+/// A bounded, direct-mapped memo of validated candidate cells. Aprons of neighbouring chunks
+/// overlap on each axis, so the same cell is validated by several column jobs while validation — a
+/// terrain probe per candidate — is the expensive part. The key carries the entire input, so a hit
+/// is by construction what a miss would have computed and worldgen stays a pure function of
+/// `(x, z, seed)`. Thread-local, so workers never share one, and fixed-size, so it cannot grow.
 struct CellMemo<T> {
 	keys: [Option<(i32, i32, u64)>; MEMO_SLOTS],
 	vals: [T; MEMO_SLOTS],
@@ -603,14 +594,11 @@ pub struct TrunkInfo {
 	pub landmark: bool,
 }
 
-/// The trunk whose cells stand in column `(x, z)`, if any — landmarks
-/// first, matching `decorate_chunk`'s write order, so where a landmark and
-/// a fine tree could both claim a column the answer is the one whose wood
-/// actually stands there. A pure function of `(x, z, seed)` like every
-/// candidate rule here; callers that need the CELL to really hold wood
-/// (a canopy may have covered a trunk cell first, a cliff may have left it
-/// unwritten) must check the live cell themselves — the `ore::revealed`
-/// shape.
+/// The trunk whose cells stand in column `(x, z)`, if any — landmarks first, matching
+/// `decorate_chunk`'s write order, so where a landmark and a fine tree could both claim a column
+/// the answer is the one whose wood actually stands there. A pure function of `(x, z, seed)`;
+/// callers needing the CELL to really hold wood — a canopy may have covered a trunk cell, a cliff
+/// may have left it unwritten — must check the live cell themselves, the `ore::revealed` shape.
 pub fn trunk_at(x: i32, z: i32, seed: f64) -> Option<TrunkInfo> {
 	for cell_z in (z - 1).div_euclid(LANDMARK_CELL)..=z.div_euclid(LANDMARK_CELL) {
 		for cell_x in (x - 1).div_euclid(LANDMARK_CELL)..=x.div_euclid(LANDMARK_CELL) {
@@ -723,13 +711,11 @@ impl Tree {
 	}
 }
 
-/// Apply every reachable structure to one chunk's freshly filled data.
-/// Structures never erase terrain — only Air cells are written — with one
-/// exception: trunk root cells replace the Grass/Dirt/DryGrass surface
-/// block of their own columns, rooting trees into the ground. Root cells
-/// are unique per structure (one candidate per grid cell), and every
-/// other block still never overwrites solids, so structures cannot
-/// clobber each other beyond first-writer-wins in Air.
+/// Apply every reachable structure to one chunk's freshly filled data. Structures never erase
+/// terrain — only Air cells are written — with one exception: trunk root cells replace the surface
+/// block of their own columns, rooting trees into the ground. Root cells are unique per structure,
+/// and every other block still never overwrites solids, so structures cannot clobber each other
+/// beyond first-writer-wins in Air.
 pub fn decorate_chunk(data: &mut ChunkData, pos: ChunkPos, structures: &[Structure]) {
 	let n = CHUNK_SIZE as i32;
 	let (px, py, pz) = (pos.x * n, pos.y * n, pos.z * n);

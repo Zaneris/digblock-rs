@@ -13,13 +13,11 @@ impl Engine {
 		self.camera.pitch_deg = 0.0;
 	}
 
-	/// The jump's light and sound, shared by our own teleport and a
-	/// remote's so the two can never look different: a departure collapse
-	/// at `from`, an arrival bloom at `to` (both eye positions). Engine
-	/// state, so a world swap forgets the bursts like confetti. `own`
-	/// keys the halves that belong to the jumper alone — the overlay
-	/// flash, and an arrival heard flat rather than placed, because it
-	/// lands in YOUR ears.
+	/// The jump's light and sound, shared by our own teleport and a remote's so the two can never
+	/// look different: a departure collapse at `from`, an arrival bloom at `to` (both eye
+	/// positions). Engine state, so a world swap forgets the bursts like confetti. `own` keys the
+	/// halves that belong to the jumper alone — the overlay flash, and an arrival heard flat
+	/// rather than placed, because it lands in YOUR ears.
 	pub(super) fn jump_bursts(&mut self, from: Vec3, to: Vec3, own: bool) {
 		let feet = Vec3::new(0.0, digblock_core::player::EYE_TO_FEET, 0.0);
 		let seq = self.vfx.cast_seq;
@@ -67,18 +65,11 @@ impl Engine {
 		});
 	}
 
-	/// A Ward's channel BEGAN. The sphere's cells never travel: this end
-	/// draws the same plan from the same head and radius, and climbs it
-	/// over the same span, so one frame stands for the hundreds of edits
-	/// a sphere is.
-	///
-	/// EVERY caster's sphere climbs here, ours and a stranger's alike:
-	/// the head, the radius and the span are all we need to walk the
-	/// same plan they are walking, so a remote's glass rises through
-	/// their channel instead of appearing whole at the seal. One climb
-	/// per caster. A plan this end cannot draw (a cell outside what we
-	/// hold) is left to the journal, which carries every cell the server
-	/// wrote and delivers them on the next sync of that column.
+	/// A Ward's channel BEGAN. The sphere's cells never travel: this end draws the same plan from
+	/// the same head and radius and climbs it over the same span, so one frame stands for the
+	/// hundreds of edits a sphere is. EVERY caster's sphere climbs here, ours and a stranger's
+	/// alike — one climb per caster — so a remote's glass rises through their channel instead of
+	/// appearing whole at the seal. A plan this end cannot draw is left to the journal.
 	pub(super) fn ward_winding(
 		&mut self,
 		by: digblock_net::protocol::PlayerId,
@@ -102,21 +93,11 @@ impl Engine {
 		});
 	}
 
-	/// A Ward's channel ENDED, sealed or unwound — THAT caster's, and no
-	/// other's: a second sphere climbing in this world is still climbing
-	/// after this.
-	///
-	/// The climb is first walked to `landed`, the server's own count of
-	/// what it handed the world, because this end's clock is a round
-	/// trip out of step with the server's in either direction. Then it
-	/// answers out of its OWN record — the cells it wrote and what each
-	/// replaced — so an unwind puts back exactly what went up and leaves
-	/// a pane somebody dug out of it alone. Re-deriving instead would be
-	/// the resurrection bug: a plan drawn against a standing sphere
-	/// names precisely the cells that are missing from it. A climb that
-	/// already sealed on this end has already chimed, which is why a
-	/// seal with nothing climbing is silent for the caster and the whole
-	/// spell for everyone else.
+	/// A Ward's channel ENDED, sealed or unwound — THAT caster's alone. The climb is first walked
+	/// to `landed`, the server's count of what it handed the world, since this end's clock is a
+	/// round trip out of step either way. Then it answers out of its OWN record — the cells it
+	/// wrote and what each replaced — so an unwind puts back exactly what went up; re-deriving
+	/// would be the resurrection bug, a plan against a standing sphere naming precisely its holes.
 	pub(super) fn ward_ended(
 		&mut self,
 		by: digblock_net::protocol::PlayerId,
@@ -171,17 +152,11 @@ impl Engine {
 		.ok()
 	}
 
-	/// Land a teleport (return to spawn, admin /tp): hard-set the player
-	/// and camera — the reconciliation slide across half the map would
-	/// fight streaming — and drop everything that describes the
-	/// pre-teleport position (the decaying correction offset, a stashed
-	/// ack, any dig in progress, the footstep odometer). A non-zero
-	/// `look` adopts that facing (level pitch); zero keeps the view.
-	///
-	/// The feed line keys on `spawn_return_pending` — what WE asked for —
-	/// not on whether a facing came back: a server with `/set-spawn-dir`
-	/// set answers a return-to-spawn with a look, and reading that as
-	/// "an admin teleported me" got the wording backwards.
+	/// Land a teleport (return to spawn, admin /tp): hard-set the player and camera — the
+	/// reconciliation slide across half the map would fight streaming — and drop everything that
+	/// describes the pre-teleport position. A non-zero `look` adopts that facing (level pitch).
+	/// The feed line keys on `spawn_return_pending`, what WE asked for, not on whether a facing
+	/// came back: a server with `/set-spawn-dir` set answers a return-to-spawn with a look.
 	pub(super) fn apply_teleport(&mut self, pos: Vec3, look: Vec3) {
 		let from = self.player.pos;
 		self.jump_bursts(from, pos, true);
@@ -230,13 +205,10 @@ impl Engine {
 		self.session.feed.push((msg, FEED_TTL_SECS, color));
 	}
 
-	/// Hang up deliberately: say goodbye, then drop the connection.
-	/// `true` when there was one to drop.
-	///
-	/// EVERY path that ends a session on purpose goes through here —
-	/// Leave Server, Leave World, closing the window. The server frees
-	/// the account the moment it reads the `Bye`; skip it and the player
-	/// waits out an idle timeout before they can rejoin, since one
+	/// Hang up deliberately: say goodbye, then drop the connection. `true` when there was one to
+	/// drop. EVERY path that ends a session on purpose goes through here — Leave Server, Leave
+	/// World, closing the window. The server frees the account the moment it reads the `Bye`;
+	/// skip it and the player waits out an idle timeout before they can rejoin, since one
 	/// account may hold only one live connection.
 	pub(super) fn leave_server(&mut self) -> bool {
 		let Some(mut net) = self.session.client.take() else {
@@ -265,17 +237,11 @@ impl Engine {
 		events.clear();
 		net.poll(&mut events, dt);
 		use digblock_net::NetEvent;
-		// Carry-over first, then this frame's fresh events. Applying edits
-		// is bounded per frame, but the ORDER of the whole stream is not
-		// negotiable — an Edit followed by a Layout must stay that way — so
-		// hitting the cap parks the entire remaining queue rather than
-		// letting cheap events overtake the expensive ones.
-		//
-		// Join sync is what forces this: the server streams its whole
-		// journal as one Edit per cell, and applying thousands of them in
-		// the frame they arrive is a multi-hundred-millisecond stall right
-		// at the moment the world appears. Fluid broadcasts are the same
-		// shape, smaller and recurring.
+		// Carry-over first, then this frame's fresh events. Applying edits is bounded per
+		// frame, but the ORDER of the whole stream is not negotiable — an Edit followed by a
+		// Layout must stay that way — so hitting the cap parks the entire remaining queue
+		// rather than letting cheap events overtake the expensive ones. Join sync forces it:
+		// the server streams its whole journal as one Edit per cell, and fluid is the same shape.
 		let mut queue = std::mem::take(&mut self.session.net_backlog);
 		for ev in events.drain(..) {
 			match ev {
@@ -440,12 +406,10 @@ impl Engine {
 						self.refused_cell = Some(cell);
 						use digblock_core::unlock::{self, Kind};
 						use digblock_net::messages::RejectReason as R;
-						// The wire carries a REASON and never a sentence, so
-						// the message is built here — over the block still
-						// under the crosshair, so a verdict speaks exactly
-						// what prediction would have. A cell this client can
-						// no longer see is the one case with nothing of its
-						// own to say.
+						// The wire carries a REASON and never a sentence, so the message is
+						// built here, over the block still under the crosshair, so a verdict
+						// speaks exactly what prediction would have. A cell this client can no
+						// longer see is the one case with nothing of its own to say.
 						let msg = {
 							let named = |kind| {
 								self.pipeline

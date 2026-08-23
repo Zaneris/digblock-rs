@@ -69,13 +69,11 @@ public sealed class AuthRequestStore
         return code;
     }
 
-    /// <summary>Redeem a code against its PKCE verifier.
-    ///
-    /// The code is removed whatever happens — a wrong verifier burns it
-    /// rather than letting an attacker who read the code out of a browser
-    /// history or a proxy log keep guessing. The verifier is what actually
-    /// authorizes: only the client that started the flow knows it, which is
-    /// what makes a leaked code useless (RFC 7636).</summary>
+    /// <summary>Redeem a code against its PKCE verifier. The code is removed whatever
+    /// happens — a wrong verifier burns it rather than letting an attacker who read it
+    /// out of a browser history or a proxy log keep guessing. The verifier is what
+    /// authorizes: only the client that started the flow knows it, which makes a leaked
+    /// code useless (RFC 7636).</summary>
     public ExchangeCode? Redeem(string? code, string? verifier)
     {
         if (string.IsNullOrEmpty(code) || !_codes.TryRemove(Key(code), out var entry))

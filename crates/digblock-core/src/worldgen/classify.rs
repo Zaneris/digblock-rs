@@ -59,11 +59,9 @@ pub enum SurfaceKind {
 	Beach,
 	/// Grass over dirt, scattered trees.
 	Plains,
-	/// Bare rock above the (temperature-shifted) stone line — or any
-	/// steep face.
+	/// Bare rock above the (temperature-shifted) stone line — or any steep face.
 	Mountain,
-	/// Snow-capped rock above the (dithered, temperature-shifted) snow
-	/// line.
+	/// Snow-capped rock above the (dithered, temperature-shifted) snow line.
 	Snow,
 	/// Inside a river channel: sand bed under river water.
 	River,
@@ -317,14 +315,11 @@ pub(super) fn holds_water(f: &Fields) -> bool {
 	f.water > f.h
 }
 
-/// Discretize fields + neighbor fields into a ColumnShape. Both call
-/// paths (per-column and padded chunk grid) feed identical f64 inputs
-/// here, so their classifications are bit-identical.
-///
-/// Order matters: ocean, then the (dithered) beach band, then steepness
-/// — so cliffs are bare rock at any altitude, and snowfields break into
-/// rock faces wherever the terrain stands too steep to hold snow.
-/// `nbrs` is the neighbor fields at `[x-1, x+1, z-1, z+1]`.
+/// Discretize fields + neighbor fields into a ColumnShape. Both call paths (per-column and
+/// padded chunk grid) feed identical f64 inputs here, so their classifications are bit-identical.
+/// Order matters: ocean, then the (dithered) beach band, then steepness — so cliffs are bare
+/// rock at any altitude, and snowfields break into rock faces wherever the terrain stands too
+/// steep to hold snow. `nbrs` is the neighbor fields at `[x-1, x+1, z-1, z+1]`.
 pub(super) fn classify(f: &Fields, nbrs: [Fields; 4], x: i32, z: i32, seed: f64) -> ColumnShape {
 	let [nxm, nxp, nzm, nzp] = &nbrs;
 	let height = f.h.floor() as i32;
@@ -471,17 +466,11 @@ pub(super) fn column_block(wy: i32, shape: ColumnShape) -> BlockType {
 mod tests {
 	use super::*;
 
-	/// The table's rows hang together, asserted as the rules that make
-	/// them coherent rather than as a copy of their values: what a kind
-	/// is made of decides its band, whether it grows trees decides
-	/// whether you can stand on it, and so on. The values themselves are
-	/// already pinned to the BYTE by `worldgen_golden_hash_pins_sim_version`
-	/// and re-derived independently by `tests/worldgen.rs::expect_terrain`,
-	/// so restating them here was a third copy that moved on every retune
-	/// and caught nothing the goldens did not.
-	///
-	/// The `match` stays exhaustive on purpose: it is what makes a new
-	/// kind a compile error here instead of a silently untested row.
+	/// The table's rows hang together, asserted as the rules that make them coherent rather than
+	/// as a copy of their values: what a kind is made of decides its band, whether it grows trees
+	/// decides whether you can stand on it. The values are already pinned to the BYTE by
+	/// `worldgen_golden_hash_pins_sim_version` and re-derived by `tests/worldgen.rs`. The `match`
+	/// stays exhaustive on purpose: a new kind is a compile error, not a silently untested row.
 	#[test]
 	fn surface_props_are_pinned() {
 		use SurfaceKind::*;

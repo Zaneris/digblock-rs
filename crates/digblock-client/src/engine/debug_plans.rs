@@ -41,12 +41,10 @@ pub(super) fn shaped_roster(s: digblock_core::block::ShapeFamily) -> Vec<BlockTy
 		.collect()
 }
 
-/// DIG_SHAPES=1 layout: every shaped variant in rows floating at eye
-/// height near spawn (render verification needs no ground) — every stair
-/// material × 4 facings, then closed and open doors in every material,
-/// then the slabs. Rows run back in z, one material per row, so the rank
-/// grows backward as the catalog does instead of off the sides of the
-/// frame.
+/// DIG_SHAPES=1 layout: every shaped variant in rows floating at eye height near spawn (render
+/// verification needs no ground) — every stair material × 4 facings, then closed and open doors in
+/// every material, then the slabs. Rows run back in z, one material per row, so the rank grows
+/// backward as the catalog does instead of off the sides of the frame.
 pub(super) fn debug_shapes_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 	use digblock_core::block::{BlockType as B, ShapeFamily};
 	use digblock_core::chunk::make_cell;
@@ -168,25 +166,16 @@ pub(super) fn debug_shapes_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 	out
 }
 
-/// DIG_ORE=<tier 1..=4>: a chamber hollowed out around the nearest
-/// deposit of that tier, the vein left standing in its wall, and a torch
-/// on the floor to see it by. Returns the plan and where to stand.
-///
-/// Ore is DERIVED and invisible below its level, which makes it the least
-/// photographable thing in the game: there is no cell to teleport to,
-/// because the cell is Stone until someone with the level looks at it.
-/// Hence a scene rather than a pose — and hence the one rule that makes
-/// the scene work at all: **the carve must not touch the vein**. An edited
-/// cell never shows ore (that is the anti-dupe), so hollowing the box
-/// naively would delete the very thing being photographed. Every cell the
-/// deposit claims is left exactly as worldgen made it.
-/// The reach of `DIG_ORE`'s chamber, in cells either side of the vein.
-///
-/// Module-scoped so the capture test can read the footprint it has to
-/// reason about instead of keeping a copy — a copy that drifted would
-/// have the test checking a box the plan never carved.
+/// The reach of `DIG_ORE`'s chamber, in cells either side of the vein. Module-scoped so the
+/// capture test can read the footprint it has to reason about instead of keeping a copy — a copy
+/// that drifted would have the test checking a box the plan never carved.
 pub(super) const ORE_CHAMBER_R: i32 = 5;
 
+/// DIG_ORE=<tier 1..=4>: a chamber hollowed out around the nearest deposit of that tier, the vein
+/// left standing in its wall, and a torch to see it by. Returns the plan and where to stand. Ore
+/// is DERIVED and invisible below its level, so there is no cell to teleport to — hence a scene,
+/// and hence the one rule that makes it work: **the carve must not touch the vein**, an edited
+/// cell never showing ore (the anti-dupe), so a naive hollow deletes what is being photographed.
 pub(super) fn debug_ore_plan(
 	spawn: Vec3,
 	seed: f64,
@@ -194,22 +183,11 @@ pub(super) fn debug_ore_plan(
 ) -> (Vec3, Vec<(i32, i32, i32, u16)>) {
 	use digblock_core::worldgen::{self, ore};
 	let (sx, sz) = (spawn.x.floor() as i32, spawn.z.floor() as i32);
-	// Nearest deposit of the tier — a search box wide enough that even the
-	// rarest tier is found from any spawn.
-	//
-	// It has to be BURIED, and that is not automatic: a deposit is placed by a
-	// hash over a grid that knows nothing about terrain, so a shallow band
-	// routinely rolls one into open air above the surface — or under a lake.
-	// `apply_nodes` stamps only cells that hold pristine Stone, so such a
-	// deposit reveals nothing whatever level is granted, and the capture is an
-	// empty stone-plated box that looks like a stamp bug. Every band grew a
-	// floor in the redesign, which is what made this common.
-	//
-	// Distance is 3D for the same reason it is a scene at all: with the
-	// vertical term the pick prefers a deposit at eye height over one the same
-	// distance away and 80 blocks down.
-	// The chamber: a box around the vein, minus the vein itself. Stood off far
-	// enough on -z that the camera is outside it looking in.
+	// Nearest deposit of the tier, over a search box wide enough that even the rarest is found
+	// from any spawn, and BURIED — a deposit is a hash over a grid that knows nothing about
+	// terrain, and one in open air reveals nothing, since `apply_nodes` stamps only pristine
+	// Stone. Distance is 3D so the pick prefers a deposit at eye height. The chamber is a box
+	// around the vein minus the vein itself, stood off on -z so the camera looks in from outside.
 	const R: i32 = ORE_CHAMBER_R;
 	let buried = |d: &ore::Deposit| {
 		// Clear of the surface by the CHAMBER's reach, not the blob's: the
@@ -254,27 +232,11 @@ pub(super) fn debug_ore_plan(
 			}
 		}
 	}
-	// A floor two below the vein, so a standing player's EYE lands level with
-	// it — physics drops the camera onto that floor within a frame or two, and
-	// a pose that has to be looked up at is a pose nobody frames correctly.
-	//
-	// Guarded exactly like the carve, and for the same reason: this plate is
-	// laid THROUGH the blob. A max-radius deposit reaches `ore::MAX_RADIUS`
-	// straight down, so the cell right under the centre sits on the rim, and
-	// the plan is applied through `pipeline.set_cell`, after which
-	// `nodes::revealed` answers None for that cell forever. An unguarded plate
-	// quietly deletes the vein it was laid down to photograph.
-	//
-	// Dropping the whole plane clear of the deposit instead would not replace
-	// this guard and would cost the pose: `ore_at` answers for every deposit in
-	// the 3x3x3 apron, so a neighbour's blob can cross whatever plane we pick,
-	// and a floor a block lower puts the eye UNDER the vein. Where a vein does
-	// cross, the cell keeps its pristine worldgen value — ore-bearing Stone —
-	// so the floor stays walkable and the seam runs through it.
-	// Never at or below the world floor. `deposit_in` keeps a whole BLOB clear
-	// of `BEDROCK_Y + MAX_RADIUS`, so this `max` cannot bite today; it is here
-	// because that is a coupling two modules apart. Clamped rather than skipped
-	// so the plate stays whole.
+	// A floor two below the vein, so a standing player's EYE lands level with it. Guarded exactly
+	// like the carve and for the same reason: the plate is laid THROUGH the blob and applied via
+	// `pipeline.set_cell`, after which `nodes::revealed` answers None for that cell forever, so an
+	// unguarded plate deletes the vein it was laid to photograph. Dropping the plane clear of the
+	// deposit instead replaces nothing and costs the pose; the `max` clamps rather than skips.
 	let floor = (d.y - 2).max(digblock_core::block::BEDROCK_Y + 1);
 	for z in (d.z - R)..=(d.z + R) {
 		for x in (d.x - R)..=(d.x + R) {
@@ -311,12 +273,10 @@ pub fn parse_node_kind(v: &str) -> Option<BlockType> {
 	})
 }
 
-/// DIG_NODE=<heartwood|leystone|springstone>: pose the camera at the
-/// nearest node of that kind, with the reveal granted so the stamp shows
-/// it. Leystone rides the deposit stream and reuses the ore chamber; the
-/// two surface kinds are outdoor finds, so their scenes WRITE nothing —
-/// a node is exactly as photographable as the world makes it, which is
-/// the point of the capture.
+/// DIG_NODE=<heartwood|leystone|springstone>: pose the camera at the nearest node of that kind,
+/// with the reveal granted so the stamp shows it. Leystone rides the deposit stream and reuses the
+/// ore chamber; the two surface kinds are outdoor finds, so their scenes WRITE nothing — a node is
+/// exactly as photographable as the world makes it, which is the point of the capture.
 pub(super) fn debug_node_plan(
 	spawn: Vec3,
 	seed: f64,
@@ -467,14 +427,11 @@ pub(super) fn debug_vault_plan(spawn: Vec3, torch: bool) -> Vec<(i32, i32, i32, 
 	out
 }
 
-/// DIG_TUNNEL=1 layout: a long sealed stone tunnel running ahead of the
-/// spawn camera, no torch — the unproven-daylight capture (GI-DESIGN.md
-/// R32). The length is the scene: the far end sits beyond the probe
-/// cascades' coverage and beyond the gather ray's reach, so every
-/// "answer sky on no data" fallback fires along it, which no room-sized
-/// scene can reach. Combine with `--pos` at a low y for the depth-gated
-/// fade; a run above `SKY_FADE_FULL_Y` is the geometry-identical
-/// control, since the fade saturates there.
+/// DIG_TUNNEL=1 layout: a long sealed stone tunnel running ahead of the spawn camera, no torch —
+/// the unproven-daylight capture (GI-DESIGN.md R32). The length IS the scene: the far end sits
+/// beyond the probe cascades' coverage and beyond the gather ray's reach, so every "answer sky on
+/// no data" fallback fires along it, which no room-sized scene can reach. Combine with `--pos` at
+/// a low y for the depth-gated fade; a run above `SKY_FADE_FULL_Y` is the identical control.
 pub(super) fn debug_tunnel_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 	use digblock_core::block::BlockType as B;
 	let (bx, by, bz) = (
@@ -510,14 +467,11 @@ pub(super) fn debug_tunnel_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 	out
 }
 
-/// DIG_DIVE=1 layout: an open-topped stone tank flooded around the
-/// spawn camera, so the eye starts one block below the surface — the
-/// RTGI underwater capture. Open sky above is the light source: the
-/// sun DDA crosses the water column (transmittance dims submerged
-/// terrain), the probes see the pool through the same window, and the
-/// surface overhead photographs as a plane from below (Snell window /
-/// TIR mirror). Furniture on the floor gives the light something to
-/// model.
+/// DIG_DIVE=1 layout: an open-topped stone tank flooded around the spawn camera, so the eye starts
+/// one block below the surface — the RTGI underwater capture. Open sky above is the light source:
+/// the sun DDA crosses the water column (transmittance dims submerged terrain), the probes see the
+/// pool through the same window, and the surface overhead photographs as a plane from below (Snell
+/// window / TIR mirror). Furniture on the floor gives the light something to model.
 pub(super) fn debug_dive_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 	use digblock_core::block::BlockType as B;
 	use digblock_core::chunk::make_cell;
@@ -564,14 +518,11 @@ pub(super) fn debug_dive_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 	out
 }
 
-/// DIG_RIVER=1 layout: a wide, deep flooded basin AHEAD of the spawn
-/// camera (yaw 0 faces +z), its surface a few blocks below the eye — the
-/// "standing at a river's edge looking into it" frame-cost scene (R17).
-/// Pair with `--pitch -35` so near water fills most of the screen. All
-/// of it sits inside C0 beside bank geometry (the expensive gather
-/// path), and the submerged stone floor keeps the resolve's rays
-/// crossing the water column, which is the other half of that scene's
-/// cost.
+/// DIG_RIVER=1 layout: a wide, deep flooded basin AHEAD of the spawn camera (yaw 0 faces +z), its
+/// surface a few blocks below the eye — the "standing at a river's edge looking into it"
+/// frame-cost scene (R17). Pair with `--pitch -35` so near water fills most of the screen. All of
+/// it sits inside C0 beside bank geometry (the expensive gather path), and the submerged stone
+/// floor keeps the resolve's rays crossing the water column, the other half of that scene's cost.
 pub(super) fn debug_river_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 	use digblock_core::block::BlockType as B;
 	let (bx, by, bz) = (
@@ -604,15 +555,11 @@ pub(super) fn debug_river_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 	out
 }
 
-/// DIG_CRACK=&lt;p&gt; layout: a flat wall of blocks two cells ahead of the
-/// spawn camera, tall and wide enough that the crosshair lands on one
-/// whatever the eye height resolves to.
-///
-/// Dirt, not Stone: the decal only draws on a cell `diggable` says yes
-/// to, and rock is behind the Mining gate, so a fresh capture profile
-/// would photograph nothing at all. The neighbours either side are a
-/// second material because the crack is seeded per (cell, face) — three
-/// blocks in one frame is what shows the pattern is not one stamp.
+/// DIG_CRACK=&lt;p&gt; layout: a flat wall two cells ahead of the spawn camera, tall and wide
+/// enough that the crosshair lands on one whatever the eye height resolves to. Dirt, not Stone:
+/// the decal only draws on a cell `diggable` says yes to, and rock is behind the Mining gate, so a
+/// fresh capture profile would photograph nothing. The neighbours either side are a second
+/// material because the crack is seeded per (cell, face) — three blocks show it is not one stamp.
 pub(super) fn debug_crack_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 	use digblock_core::block::BlockType as B;
 	let (bx, by, bz) = (
@@ -630,21 +577,11 @@ pub(super) fn debug_crack_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 	out
 }
 
-/// DIG_DOORS=1 layout: a rank of door pairs standing three cells ahead of the
-/// spawn camera with nothing in front of them, plus a plain Lumber column beside
-/// them as the tint reference.
-///
-/// DIG_SHAPES already stands every door variant, so this looks like a duplicate
-/// and is not: it stands them EIGHT blocks out behind three rows of stairs
-/// sharing their x columns, and from eye height a one-block stair projects
-/// straight over the lower half of the door behind it. The seam between a door's
-/// two cells is the one thing a door has to be judged on — one object wearing
-/// two cells, so the tint has to match across it and the outline has to wrap
-/// both. Three cells out also puts the pair inside the interact ray.
-///
-/// The reference column is deliberately the door's OWN material: the leaf must
-/// read as one piece of timber down its own middle while still differing from
-/// the timber beside it.
+/// DIG_DOORS=1 layout: a rank of door pairs three cells ahead — inside the interact ray — with
+/// nothing in front of them, plus a Lumber column as the tint reference, the door's OWN material,
+/// since the leaf must read as one piece of timber while still differing from the timber beside
+/// it. Not a duplicate of DIG_SHAPES, which stands doors eight blocks out behind stairs that
+/// project over their lower halves: the seam between a door's two cells is what it is judged on.
 pub(super) fn debug_doors_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 	use digblock_core::block::BlockType as B;
 	use digblock_core::chunk::make_cell;
@@ -678,12 +615,11 @@ pub(super) fn debug_doors_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 	out
 }
 
-/// DIG_ROOF=1 layout: a wide stone plate hanging over the ground ahead
-/// of spawn with NO walls — the beam-veto capture. Skylight under it
-/// drops (lateral spread decays toward the middle), so this scene is
-/// exactly where scaling direct sun by the nibble went wrong: a morning
-/// sun slants in from the open side and must light the ground precisely
-/// where the shadow map says, with only the ambient dome dimming.
+/// DIG_ROOF=1 layout: a wide stone plate hanging over the ground ahead of spawn with NO walls —
+/// the beam-veto capture. Skylight under it drops (lateral spread decays toward the middle), so
+/// this is exactly where scaling direct sun by the nibble went wrong: a morning sun slants in from
+/// the open side and must light the ground precisely where the shadow map says, with only the
+/// ambient dome dimming.
 pub(super) fn debug_roof_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 	use digblock_core::block::BlockType as B;
 	let (bx, by, bz) = (
@@ -700,20 +636,11 @@ pub(super) fn debug_roof_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 	out
 }
 
-/// DIG_TORCHES=&lt;n&gt; layout: an open-topped stone courtyard ahead of spawn
-/// with `n` torches clustered at its near end and forty blocks of bare floor
-/// running away from them.
-///
-/// DIG_VAULT cannot photograph the remaining local-light noise, for two reasons
-/// that are the whole point of this scene. Its room is eleven blocks deep, so
-/// every surface sits inside `LIGHT_RANGE` and well inside the near-field clamp
-/// — there is no "far from the torch" band at all. And it holds exactly ONE
-/// torch, the single case the resolve's NEE covers completely.
-///
-/// So: `n` is a knob (1 vs 8 with the geometry held fixed) and the floor runs
-/// well past `LIGHT_RANGE`, so a capture crosses that edge with the same
-/// material and face code either side. No roof — the report is about NIGHT, so
-/// `--tod 180` is the pose and `--tod 0` the control.
+/// DIG_TORCHES=&lt;n&gt; layout: an open-topped stone courtyard ahead of spawn, `n` torches at
+/// its near end and bare floor running well past `LIGHT_RANGE`, so a capture crosses that edge
+/// with the same material and face code either side. DIG_VAULT cannot photograph this: its room
+/// is inside `LIGHT_RANGE` throughout, with no "far from the torch" band, and holds exactly ONE
+/// torch, the single case the resolve's NEE covers completely. No roof; the report is about NIGHT.
 pub(super) fn debug_torches_plan(
 	spawn: Vec3,
 	n: i32,
@@ -748,16 +675,11 @@ pub(super) fn debug_torches_plan(
 			}
 		}
 	}
-	// The cluster: the `SPOTS` roster, spaced a few blocks apart, laid down
-	// in a fixed order so `n` = 1 keeps the same first torch in the same
-	// cell as `n` = 8 and the A/B moves one variable.
-	//
-	// Parked well down the courtyard rather than at the camera's feet,
-	// because the report is about distance: an eye-height camera at spawn
-	// then holds all three regimes in one frame — near floor lit only by
-	// what reaches it (the band the artifact is reported in, and the one a
-	// half-res texel magnifies most), the pools themselves, and floor
-	// running out past `LIGHT_RANGE` behind them where no NEE fires at all.
+	// The cluster, laid down in a FIXED order so a smaller `n` keeps the same first torch in the
+	// same cell and the A/B moves one variable. Parked well down the courtyard rather than at the
+	// camera's feet because the report is about distance: an eye-height camera at spawn then holds
+	// all three regimes in one frame — near floor lit only by what reaches it, the pools
+	// themselves, and floor past `LIGHT_RANGE` where no NEE fires at all.
 	const SPOTS: [(i32, i32); 8] = [
 		(0, 17),
 		(3, 17),
@@ -771,15 +693,11 @@ pub(super) fn debug_torches_plan(
 	for &(dx, dz) in SPOTS.iter().take(n.clamp(0, 8) as usize) {
 		out.push((bx + dx, by - 2, bz + dz, B::Torch as u16));
 	}
-	// `wall` cuts the cluster in half with a solid screen, so a floor
-	// point on either side sees some of the torches and not the others.
-	//
-	// That is the one case a resampled NEE cannot price: the draw is
-	// proportional to UNSHADOWED contribution, so a point that can only
-	// see half of what it samples gets a Bernoulli on the pool total. The
-	// open courtyard cannot show it — with every emitter visible the
-	// estimator is exact — so without this the residual would have to be
-	// argued rather than measured.
+	// `wall` cuts the cluster in half with a solid screen, so a floor point on either side sees
+	// some torches and not the others — the one case a resampled NEE cannot price: the draw is
+	// proportional to UNSHADOWED contribution, so a point seeing half of what it samples gets a
+	// Bernoulli on the pool total. The open courtyard cannot show it, every emitter being visible
+	// there and the estimator exact.
 	if wall {
 		for dy in 0..4 {
 			for dx in -7..=7 {
@@ -787,26 +705,11 @@ pub(super) fn debug_torches_plan(
 			}
 		}
 	}
-	// `far` torches on a pad well BEHIND the camera, outside the
-	// courtyard wall. They cannot light one pixel of the capture — every
-	// visible surface is past `LIGHT_RANGE` from them and the wall is in
-	// the way — but they are well inside the reach `flush_lights` keeps,
-	// so they land in the light LIST.
-	//
-	// That is the entire experiment. The resolve scans the list by
-	// position, so it does not care; gi_probe's `nee` picks ONE entry
-	// UNIFORMLY over the whole list and divides by 1/count, so every entry
-	// that cannot contribute still takes its turn and multiplies the ones
-	// that can. If flicker tracks `far` with the picture held fixed, the
-	// probe cache's light selection is a source in its own right.
-	// Capacity is the light list's own: the emitter-count bed has to be
-	// able to oversubscribe `MAX_LIGHTS` (with the courtyard cluster on
-	// top it does). The first 64 keep the exact cells R27 measured on, so
-	// its flicker numbers stay reproducible; the extension stacks
-	// VERTICALLY over a compact footprint because the reach filter is
-	// lateral — a pad that grew away from the camera instead would fall
-	// out of reach at exactly the short draw distances the bed exists to
-	// measure.
+	// `far` torches on a pad behind the camera, outside the wall: they light no visible pixel, yet
+	// sit inside the reach `flush_lights` keeps, so they land in the light LIST — and `nee` picks
+	// ONE entry UNIFORMLY over it, so an entry that cannot contribute still takes its turn. Flicker
+	// tracking `far` therefore indicts the probe cache's light selection. The first 64 keep the
+	// cells R27 measured on; the extension stacks VERTICALLY, since the reach filter is lateral.
 	let far = far.clamp(0, crate::gi::MAX_LIGHTS as i32);
 	for i in 0..far.min(64) {
 		let x = bx - 6 + (i % 8) * 3;

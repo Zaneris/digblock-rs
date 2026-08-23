@@ -4,18 +4,10 @@ using System.Net;
 namespace DigBlock.Master.Servers;
 
 /// <summary>Short bans on registering, applied to the source address of a
-/// takeover attempt.
-///
-/// The attempt this exists for: read a live server's <c>host</c>, <c>port</c>
-/// and <c>certHash</c> out of the public listing, POST them back as your own
-/// registration, and inherit its id and key while the victim goes dark.
-/// Refusing that is the fix; banning the source is what makes retrying it
-/// pointless, since the interesting version is a loop that re-fires every time
-/// the victim re-registers.
-///
-/// In memory, like every other short-lived thing here: losing the bans on a
-/// restart costs an attacker one more attempt, and persisting them would mean
-/// writing attacker-controlled rows to disk on demand.</summary>
+/// takeover attempt: re-POSTing a live server's host, port and certHash as
+/// your own to inherit its id and key. Refusing that is the fix; the ban is
+/// what makes a loop re-firing on every re-registration pointless. In memory
+/// on purpose — persisting writes attacker-controlled rows on demand.</summary>
 public sealed class RegistrationBans
 {
     /// <summary>First offence. Doubles per repeat while the ban is still

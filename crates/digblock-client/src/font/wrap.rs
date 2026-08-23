@@ -9,15 +9,11 @@
 use super::Face;
 use std::ops::Range;
 
-/// Greedy word wrap. Appends byte ranges of `text` into `out` (cleared
-/// first). Breaks at spaces where possible, or after a `-` or `/`; a
-/// word wider than `max_w` hard-breaks at the last char that fits; a
-/// single char wider than `max_w` still gets its own line, so this never
-/// emits an empty range and never loops.
-///
-/// The space at a soft break belongs to neither line. A `-` or `/`
-/// belongs to the line above it, which is why it is only recorded as a
-/// break opportunity once it is known to fit.
+/// Greedy word wrap. Appends byte ranges of `text` into `out` (cleared first). Breaks at spaces
+/// where possible, or after a `-` or `/`; a word wider than `max_w` hard-breaks at the last char
+/// that fits, and a single char wider than `max_w` still gets its own line, so this never emits
+/// an empty range and never loops. The space at a soft break belongs to neither line; a `-` or
+/// `/` belongs to the line above, which is why it is only a break opportunity once it fits.
 pub(crate) fn wrap(face: &Face, text: &str, px: f32, max_w: f32, out: &mut Vec<Range<usize>>) {
 	out.clear();
 	if text.is_empty() {
@@ -141,12 +137,10 @@ mod tests {
 		assert_eq!(lines("", 16.0, 100.0), vec![""]);
 	}
 
-	/// The property the chat column actually depends on, stated directly:
-	/// a break may only land where a space was, unless the word itself is
-	/// too wide for a whole line. Checked at the real chat geometry (the
-	/// column is half the window wide, in the UI face) over a message at
-	/// the wire's length limit, because a rule that holds for "the quick
-	/// brown fox" can still fail on a realistic sentence.
+	/// The property the chat column depends on: a break may only land where a space was, unless the
+	/// word itself is too wide for a whole line. Checked at the real chat geometry over a message
+	/// at the wire's length limit — a rule that holds for "the quick brown fox" can still fail on
+	/// a realistic sentence.
 	#[test]
 	fn a_full_length_chat_line_only_breaks_between_words() {
 		let px = 16.0;

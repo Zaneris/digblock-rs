@@ -27,12 +27,10 @@ pub(super) struct PendingEditReq {
 	pub(super) slot: u8,
 }
 
-/// One queued client action, processed in WIRE ORDER within the tick.
-/// DigStart/DigCancel must ride the same queue as edit requests: back-to-
-/// back digs put "complete block A" and "start block B" in the same tick
-/// drain, and applying the start out of order would clobber the hold that
-/// A's completion is about to be validated against (an honest dig would
-/// bounce with DigIncomplete).
+/// One queued client action, processed in WIRE ORDER within the tick. DigStart/DigCancel must ride
+/// the same queue as edit requests: back-to-back digs put "complete block A" and "start block B"
+/// in the same tick drain, and applying the start out of order would clobber the hold A's
+/// completion is about to be validated against (an honest dig would bounce with DigIncomplete).
 pub(super) enum ClientAction {
 	Edit(PendingEditReq),
 	DigStart {
@@ -43,14 +41,12 @@ pub(super) enum ClientAction {
 	DigCancel {
 		conn_id: u64,
 	},
-	/// Alchemy rides the same queue: a craft-then-place in one tick must
-	/// debit before the place's stock gate runs (wire order).
+	/// Alchemy rides the same queue: a craft-then-place must debit before the place's stock gate.
 	Alchemy {
 		conn_id: u64,
 		op: digblock_net::messages::AlchemyOp,
 	},
-	/// Layout updates ride the same queue: an assign-to-bar-then-place in
-	/// one tick must land the arrangement before the place's slot gate.
+	/// Layout rides the same queue: assign-to-bar-then-place lands before the place's slot gate.
 	Layout {
 		conn_id: u64,
 		hotbar: Vec<u16>,
@@ -90,17 +86,11 @@ impl DigState {
 }
 
 impl Sim {
-	/// Aim-tracking for in-progress holds: every tick, re-raycast each digging
-	/// client from the server's OWN simulated position and look. An on-target
-	/// tick advances `progress`; a missed tick merely doesn't, since the server's
-	/// view of the aim lags the client's by jitter buffering and reconciliation
-	/// offsets. Only a sustained miss — longer than [`DIG_OFF_TARGET_RESET`]
-	/// consecutive ticks — or the cell's content changing abandons the hold.
-	///
-	/// This is what makes the completion check unforgeable: the only
-	/// client-supplied input is the initial cell. Do NOT "optimize" it away — it
-	/// is one short DDA walk per DIGGING client per tick, and it is the
-	/// anti-cheat.
+	/// Aim-tracking for in-progress holds: every tick, re-raycast each digging client from the
+	/// server's OWN simulated position and look. An on-target tick advances `progress`; a missed
+	/// one merely doesn't, the server's view of the aim lagging the client's. Only a sustained miss
+	/// — [`DIG_OFF_TARGET_RESET`] consecutive ticks — or the cell's content changing abandons the
+	/// hold. This is the anti-cheat: the only client input is the cell. Do NOT optimize it away.
 	pub(super) fn verify_digs(&mut self) {
 		let store = &self.store;
 		for client in self.clients.values_mut() {
@@ -129,12 +119,11 @@ impl Sim {
 			} else {
 				raycast
 			};
-			// Reach slack: this ray starts at the server's eye, which may
-			// trail the client's by up to the claimed-origin tolerance — a
-			// target the client legitimately picked at max reach would
-			// otherwise miss every verify tick and never bank progress.
-			// The completing edit still enforces exact REACH from its
-			// (tolerance-checked) claimed origin.
+			// Reach slack: this ray starts at the server's eye, which may trail
+			// the client's by up to the claimed-origin tolerance — a target the
+			// client legitimately picked at max reach would otherwise miss every
+			// verify tick and never bank progress. The completing edit still
+			// enforces exact REACH from its (tolerance-checked) claimed origin.
 			let hit = cast(
 				client.player.pos,
 				client.look,
@@ -280,12 +269,10 @@ impl Sim {
 			if client.live && has_token && !plank {
 				client.edit_tokens -= 1.0;
 			}
-			// The declared slot's item (None for an out-of-range slot).
-			// An edit is also evidence of selection — mirror it so the
-			// held-item broadcast tracks a click that outran the
-			// jitter-buffered input path, and so `tool_in_hand` below
-			// answers for the hand this very edit was made with rather
-			// than for whatever the last consumed input tick claimed.
+			// The declared slot's item (None for an out-of-range slot). An edit is
+			// also evidence of selection — mirror it so the held-item broadcast
+			// tracks a click that outran the jitter-buffered input path, and so
+			// `tool_in_hand` below answers for the hand this edit was made with.
 			let slot_item = ((req.slot as usize) < HOTBAR_SLOTS).then(|| {
 				client.hotbar.set_selected(req.slot as usize);
 				client.hotbar.slots()[req.slot as usize]
@@ -426,26 +413,21 @@ impl Sim {
 		// lags the client's by the input jitter buffer.
 		if place_cell.is_none() {
 			// How many verified ticks the completion was missing, for the
-			// instrumentation: it prices how much of `dig_grace` an honest
-			// hold on this link still had left over. Only meaningful when
-			// the hold is on the right cell — a mismatch is a different
-			// failure, and reporting it as a shortfall would read as the
-			// grace being too small when nothing was banked at all.
+			// instrumentation: it prices how much of `dig_grace` an honest hold on
+			// this link still had left over. Only meaningful when the hold is on the
+			// right cell — a mismatch is a different failure, and reporting it as a
+			// shortfall would read as the grace being too small.
 			let mut short = 0u32;
 			let mining_level = self
 				.clients
 				.get(&req.conn_id)
 				.map_or(1, |c| c.skills.level(digblock_core::skills::Skill::Mining));
 			let satisfied = dig_state.is_some_and(|(cell, cell_value, progress, idle)| {
-				// An extraction is timed as the ORE, which means BOTH halves
-				// come from the ore: the block (for its `DigFamily`) and the
-				// hardness. Taking the family from the ore and the hardness
-				// from the cell left the server asking for Stone's hold
-				// while the client's bar ran on Aetherock's — several times
-				// apart, far outside `dig_grace`, so an honest client dug
-				// long past the requirement and a modified one completed the
-				// draw in a fraction of the intended time with the server
-				// agreeing.
+				// An extraction is timed as the ORE, which means BOTH halves come
+				// from the ore: the block (for its `DigFamily`) and the hardness.
+				// Taking the family from the ore and the hardness from the cell left
+				// the server asking for Stone's hold while the client's bar ran on
+				// Aetherock's — several times apart, far outside `dig_grace`.
 				let timed = digblock_core::worldgen::nodes::dig_block(
 					self.ore_dig_mode(req.conn_id, req.cell),
 					hit.block,
@@ -624,11 +606,10 @@ impl Sim {
 			}
 		};
 
-		// Protected cells: the world floor, and the arrival regions.
-		// Checked against the assembled `writes` so every path is covered
-		// at once — a plain dig, a place landing on the neighbour cell, a
-		// door's derived upper half, a slab grow. Honest clients predict
-		// this and never send the edit; an admin's are exempt
+		// Protected cells: the world floor, and the arrival regions. Checked
+		// against the assembled `writes` so every path is covered at once — a
+		// plain dig, a place landing on the neighbour cell, a door's derived upper
+		// half, a slab grow. Honest clients predict this; an admin's are exempt
 		// (`requester_regions`).
 		let regions = self.requester_regions(req.conn_id);
 		if writes
@@ -638,12 +619,11 @@ impl Sim {
 			return reject(RejectReason::Protected);
 		}
 
-		// Slot enforcement: the edit must use the item actually in its
-		// declared hotbar slot (the arrangement arrived in-order on the
-		// same stream, so honest clients can never trip this). Digs are
-		// tool-free and exempt. Sits with the stock gate, after every
-		// world-shaped rejection, so rejection precedence is unchanged
-		// for pre-v10-shaped mistakes.
+		// Slot enforcement: the edit must use the item actually in its declared
+		// hotbar slot (the arrangement arrived in-order on the same stream, so
+		// honest clients can never trip this). Digs are tool-free and exempt. Sits
+		// with the stock gate, after every world-shaped rejection, so rejection
+		// precedence is unchanged for pre-v10-shaped mistakes.
 		let slot_ok = match req.kind {
 			EditKind::Dig => true,
 			EditKind::CausewayStep => unreachable!("returned above"),
@@ -656,12 +636,11 @@ impl Sim {
 			}
 			EditKind::Place { .. } | EditKind::PlaceArc { .. } => match slot_item {
 				Some(Some(HotbarItem::Block(b))) => place_b == Some(b),
-				// Pouring the bucket. Water is the ONLY thing the tool
-				// places, and the tool is the only thing that places water:
-				// `reconcile_layout` refuses to leave water in a block slot,
-				// so the arm above can no longer match it. The stock gate
-				// below enforces the charge — an empty bucket's pour bounces
-				// as NoStock.
+				// Pouring the bucket. Water is the ONLY thing the tool places,
+				// and the tool is the only thing that places water:
+				// `reconcile_layout` refuses to leave water in a block slot, so
+				// the arm above can no longer match it. The stock gate below
+				// enforces the charge — an empty bucket's pour bounces as NoStock.
 				Some(Some(HotbarItem::WaterTool)) => {
 					place_b == Some(BlockType::Water) && active_tool == BlockType::Bucket
 				}
@@ -796,18 +775,11 @@ impl Sim {
 					&mut client.grid,
 				);
 			}
-			// XP from the journaled truth (`prev`), the same authority as
-			// the credit, and from the cell's own depth (§5.2's reward for
-			// digging deep). The frame carries the new TOTAL, so a lost or
-			// reordered frame can never double-pay.
-			//
-			// A field extraction pays BOTH skills (§5.4): full Mining, plus
-			// a minor Alchemy cut at the rock face, with the substantial
-			// Alchemy XP waiting at the bench. Each ore is a fixed total
-			// split across two moments, so neither skill can be levelled
-			// entirely from inside the other. ONE call decides all of it —
-			// the offline arm makes the same one, so the two economies
-			// cannot drift.
+			// XP from the journaled truth (`prev`), the same authority as the
+			// credit, and from the cell's own depth (§5.2). The frame carries the
+			// new TOTAL, so a lost or reordered frame can never double-pay. A field
+			// extraction pays BOTH skills (§5.4) from ONE call — the offline arm
+			// makes the same one, so the two economies cannot drift.
 			let (mining_xp, alch_xp) =
 				digblock_core::skills::dig_award(prev, extracting, broken, req.cell.1);
 			for (skill, xp) in [
@@ -901,18 +873,11 @@ impl Sim {
 		self.broadcast_edit(seq, by, client_seq, edit, prev_cell);
 	}
 
-	/// The durable half of [`Self::apply_write`], for cells every client
-	/// DERIVES rather than being told: journal, enroll, schedule fluid —
-	/// no `EditApplied`.
-	///
-	/// The Ward owns this. Both ends draw the same sphere from the same
-	/// head and radius (`ward::plan`), so a per-cell broadcast would be
-	/// redundant with a derivation the client already runs — and it is a
-	/// fan-out of hundreds of frames per cast, against an outbound queue
-	/// whose refusal DROPS the peer. The journal still takes every cell,
-	/// which is what a joiner, the resync rotation and an evicted column
-	/// all read; the enrollment is honest for the same reason the
-	/// broadcast's was, since the client holds the cells either way.
+	/// The durable half of [`Self::apply_write`], for cells every client DERIVES rather than being
+	/// told: journal, enroll, schedule fluid — no `EditApplied`. The Ward owns this. Both ends draw
+	/// the same sphere from the same head and radius (`ward::plan`), so a per-cell broadcast would
+	/// be redundant, and a fan-out of hundreds of frames per cast against an outbound queue whose
+	/// refusal DROPS the peer. The journal still takes every cell, which is what a joiner reads.
 	pub(super) fn journal_write(
 		&mut self,
 		cell: (i32, i32, i32),
@@ -1037,19 +1002,11 @@ impl Sim {
 		}
 	}
 
-	/// Alchemy craft: validate against the core tables, apply the shared
-	/// `apply_alchemy` rule, persist, and answer — success or failure — with the
-	/// authoritative `InventoryFull` rebase.
-	///
-	/// The wire's legacy `Convert` decodes and is REFUSED here: bench extraction
-	/// left with the essence redesign, and a frame kept decodable is how an
-	/// append-only wire retires a verb.
-	///
-	/// Every craft additionally draws from the per-player BENCH bucket, charged
-	/// per item. A modified client flooding ops, or smuggling a bulk `count`,
-	/// runs the bucket dry and refuses through the same standing rebase. The gate
-	/// lives HERE, not in `apply_alchemy` — pacing is anti-cheat, not an economy
-	/// rule, and offline worlds keep running the identical economy unpaced.
+	/// Alchemy craft: validate against the core tables, apply the shared `apply_alchemy` rule,
+	/// persist, and answer — success or failure — with the authoritative `InventoryFull` rebase.
+	/// The wire's legacy `Convert` decodes and is REFUSED here: a frame kept decodable is how an
+	/// append-only wire retires a verb. Every craft also draws from the per-player BENCH bucket,
+	/// charged per item; the gate lives HERE, not in `apply_alchemy`, since pacing is anti-cheat.
 	fn process_alchemy(&mut self, conn_id: u64, op: digblock_net::messages::AlchemyOp) {
 		use digblock_core::inventory::{AlchemyOp as CoreOp, apply_alchemy};
 		let Some(client) = self.clients.get_mut(&conn_id) else {
@@ -1074,22 +1031,18 @@ impl Sim {
 			}
 		};
 		let level = client.skills.level(digblock_core::skills::Skill::Alchemy);
-		// The bench bucket, charged per ITEM BEFORE the economy runs (an
-		// op it can't cover must not debit anything). The bucket is in
-		// ticks and a craft costs its own pace, so a bulk `count` can't
-		// sidestep the drip and neither can a stream of cheap ops — a
-		// craft used to be the one bench action that answered instantly,
-		// and the transmute tab's CTRL multiplier paid a hundred crafts'
-		// XP in a frame.
+		// The bench bucket, charged per ITEM BEFORE the economy runs — an op it
+		// can't cover must not debit anything. The bucket is in ticks and a craft
+		// costs its own pace, so neither a bulk `count` nor a stream of cheap ops
+		// can sidestep the drip: a craft used to answer instantly, and the
+		// transmute tab's CTRL multiplier paid a hundred crafts' XP in a frame.
 		let core_op = core_op.filter(|op| {
 			let CoreOp::Craft { item, count } = *op;
-			// Saturating, because `count` is an unvalidated wire u32 and
-			// this multiply runs BEFORE `apply_alchemy`'s own range check.
-			// Debug builds have overflow checks on and `just server` and
-			// `just play` build debug, so a crafted `count` near the
-			// type's ceiling panicked the sim thread while the process
-			// stayed up. A saturated cost is unaffordable, which is the
-			// right answer anyway.
+			// Saturating, because `count` is an unvalidated wire u32 and this
+			// multiply runs BEFORE `apply_alchemy`'s own range check. Debug builds
+			// have overflow checks on and `just server` builds debug, so a crafted
+			// `count` near the type's ceiling panicked the sim thread. A saturated
+			// cost is unaffordable, which is the right answer anyway.
 			let cost =
 				digblock_core::alchemy::craft_pace_ticks(item, level).saturating_mul(count) as f32;
 			if client.bench_tokens < cost {
@@ -1207,17 +1160,11 @@ impl Sim {
 		}
 	}
 
-	/// Record a hold-to-dig start (called from the ordered queue drain):
-	/// capture the cell's CURRENT block — the client never gets to claim
-	/// what it is digging. Within a tick the LAST start wins, exactly
-	/// like the client's retarget stream — an old first-wins per-tick cap
-	/// silently dropped the restart of a cancel+restart pair bunched into
-	/// one tick drain, leaving an honest hold with no server record
-	/// (DigIncomplete pop-back on completion). Floods still can't spin
-	/// the timer: a start on a new cell zeroes progress, and one on the
-	/// same cell can only ever RE-READ what the decay has left (see
-	/// below) — never add to it. The action-queue cap bounds the
-	/// per-tick volume.
+	/// Record a hold-to-dig start (called from the ordered queue drain): capture the cell's CURRENT
+	/// block — the client never gets to claim what it is digging. Within a tick the LAST start
+	/// wins, like the client's retarget stream; first-wins silently dropped the restart of a
+	/// cancel+restart pair bunched into one drain. Floods still can't spin the timer: a start on a
+	/// new cell zeroes progress, and one on the same cell can only RE-READ what the decay left.
 	fn handle_dig_start(&mut self, conn_id: u64, cell: (i32, i32, i32), slot: u8) {
 		// Before the client borrow: `requester_regions` reads all of `self`.
 		let regions = self.requester_regions(conn_id);
@@ -1295,27 +1242,20 @@ impl Sim {
 			}
 			return;
 		}
-		// The resume's `required` has to be the SAME number the completion
-		// gate will check against, or the decay clamps a resumed hold at
-		// one figure while the client's bar bleeds from another. That
-		// means the ore, not the stone the cell still holds — this arm
-		// asked `dig_block` nothing at all and read Stone's hardness for a
-		// seam several times harder. Resolved before the client borrow,
-		// since it reads the store.
+		// The resume's `required` has to be the SAME number the completion gate
+		// will check against, or the decay clamps a resumed hold at one figure
+		// while the client's bar bleeds from another. That means the ore, not the
+		// stone the cell still holds. Resolved before the client borrow, since it
+		// reads the store.
 		let mode = self.ore_dig_mode(conn_id, cell);
 		let Some(client) = self.clients.get_mut(&conn_id) else {
 			return;
 		};
-		// Re-opening a hold on the SAME unchanged cell resumes it: it is
-		// worth whatever the decay has left, which is the number the
-		// client's own bar is showing. Everything else starts at zero.
-		//
-		// `off_target` is deliberately carried across the resume rather
-		// than cleared. It is what still limits a start FLOOD: a client
-		// spamming DigStart to freeze the decay on a nearly-broken block
-		// while looking elsewhere goes on accumulating misses, trips
-		// `DIG_OFF_TARGET_RESET`, and bleeds out anyway. An honest
-		// resumer is on target, so its first verify tick zeroes this.
+		// Re-opening a hold on the SAME unchanged cell resumes it at whatever the
+		// decay has left, the number the client's own bar shows; everything else
+		// starts at zero. `off_target` is carried across rather than cleared — it
+		// is what still limits a start FLOOD: a client spamming DigStart to freeze
+		// the decay while looking elsewhere trips `DIG_OFF_TARGET_RESET` anyway.
 		let level = client.skills.level(digblock_core::skills::Skill::Mining);
 		let tool = client.hotbar.tool_in_hand();
 		let resumed = client
@@ -1355,13 +1295,11 @@ impl Sim {
 		};
 	}
 
-	/// The regions THIS requester's action must respect: every arrival
-	/// region for a player, none for an admin — the operator who moves
-	/// spawn and stamps the sites must also be able to repair them.
-	/// Only player-authored actions (edits, holds, door toggles, casts)
-	/// ask this; the sim's own writers — fluid, the sweeps, the smother
-	/// — always answer to [`Self::protected_regions`], or an admin
-	/// merely being ONLINE would let water eat the spawn pad.
+	/// The regions THIS requester's action must respect: every arrival region for a player, none
+	/// for an admin — the operator who moves spawn and stamps the sites must also be able to repair
+	/// them. Only player-authored actions (edits, holds, door toggles, casts) ask this; the sim's
+	/// own writers — fluid, the sweeps, the smother — always answer to [`Self::protected_regions`],
+	/// or an admin merely being ONLINE would let water eat the spawn pad.
 	pub(super) fn requester_regions(&self, conn_id: u64) -> Vec<Region> {
 		let admin = self
 			.clients

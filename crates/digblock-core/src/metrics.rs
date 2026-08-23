@@ -12,17 +12,11 @@ const WINDOW: usize = 600; // frames of rolling history
 const HITCH_MS: f32 = 33.4;
 /// EMA weight for the smoothed per-phase timings shown on the overlay.
 const SMOOTH_ALPHA: f32 = 0.05;
-/// A frame past this multiple of the estimated display interval missed its
-/// slot outright. Below 2.0 so a SINGLE dropped frame counts, but not as
-/// tight as 1.5: `refresh_ms` is a low percentile of noise that's
-/// symmetric about the true period, so it reads UNDER the true interval,
-/// and a factor that tight then lands below the honest bar — where
-/// ordinary jitter gets counted as a drop. This margin covers that bias
-/// and still sits well below a genuinely doubled frame.
-///
-/// Correcting the percentile instead would be worse: p10 is deliberate, so
-/// that an app dropping every OTHER frame can't have its own half-rate
-/// cadence adopted as the display period and report zero drops.
+/// A frame past this multiple of the estimated display interval missed its slot outright. Under a
+/// doubled frame, so a SINGLE dropped frame counts, but with margin: `refresh_ms` is a low
+/// percentile of noise symmetric about the true period, so it reads UNDER the true interval and a
+/// tighter factor lands below the honest bar, counting ordinary jitter as a drop. Correcting the
+/// percentile instead is worse — it lets a half-rate app adopt its own cadence as the period.
 const DROP_FACTOR: f32 = 1.75;
 /// Percentile of the frame window taken as the display interval: fast
 /// frames are the ones that hit their slot, so the low end of the
@@ -35,17 +29,11 @@ const REFRESH_PCTL: f32 = 0.10;
 const REFRESH_MIN_MS: f32 = 2.0;
 const REFRESH_MAX_MS: f32 = 40.0;
 
-/// CPU cost of one frame, split by phase. `total_ms` is filled by
-/// [`Metrics::frame`] from the frame-to-frame delta; the rest are timed at
-/// their call sites and handed in.
-///
-/// Phases partition the frame, summing to roughly `busy_ms`: acquire,
-/// update, maintain, gi, upload, prep, encode. Note that `sim`, `net` and
-/// `persist` are a BREAKDOWN of `update_ms` rather than phases of their
-/// own — don't sum them alongside it.
-///
-/// `busy_ms + acquire_ms + outside_ms` then partitions `total_ms`, so
-/// every millisecond of the frame lands in exactly one bucket.
+/// CPU cost of one frame, split by phase. `total_ms` is filled by [`Metrics::frame`] from the
+/// frame-to-frame delta; the rest are timed at their call sites and handed in. The phases
+/// partition the frame, summing to roughly `busy_ms`, but `sim`, `net` and `persist` are a
+/// BREAKDOWN of `update_ms` rather than phases of their own — don't sum them alongside it.
+/// `busy_ms + acquire_ms + outside_ms` then partitions `total_ms`, one bucket per millisecond.
 #[derive(Clone, Copy, Default)]
 pub struct FrameTimings {
 	/// Swapchain acquire wait. On native FIFO this is where vsync blocks;
@@ -75,26 +63,17 @@ pub struct FrameTimings {
 	pub prep_ms: f32,
 	/// Renderer encode + submit.
 	pub encode_ms: f32,
-	/// Main-thread occupancy: redraw-handler entry through submit, minus
-	/// the acquire wait. THE signal the adaptive stream budget feeds on.
-	///
-	/// It must be measured, not derived from `total_ms`: the frame-to-frame
-	/// delta includes whatever the platform spends idle between frames, and
-	/// on the web (rAF-paced, non-blocking acquire) that idle is the whole
-	/// margin the controller is trying to detect.
+	/// Main-thread occupancy: redraw-handler entry through submit, minus the acquire wait. THE
+	/// signal the adaptive stream budget feeds on, and it must be measured, not derived from
+	/// `total_ms` — the frame-to-frame delta includes whatever the platform spends idle between
+	/// frames, and on the web (rAF-paced, non-blocking acquire) that idle is the whole margin the
+	/// controller is trying to detect.
 	pub busy_ms: f32,
-	/// The complement of `busy_ms` + `acquire_ms`: everything the frame
-	/// spent with the main thread NOT running. Present, the compositor,
-	/// the browser's rAF dispatch — and, on the web, Chrome's GPU-process
-	/// staging transfer, which `write_buffer` defers to submit (see the
-	/// upload loop's byte cap). That transfer is charged to no phase at
-	/// all: `upload_ms` times the record, never the copy.
-	///
-	/// Derived, not measured, so it absorbs every accounting error too.
-	/// On a healthy vsync-paced frame it IS the idle margin and should be
-	/// most of the period. A frame that grows HERE while `busy_ms` holds
-	/// flat spent its time somewhere the main thread never ran, which is
-	/// the one conclusion no other phase can support.
+	/// The complement of `busy_ms` + `acquire_ms`: everything the frame spent with the main thread
+	/// NOT running — present, the compositor, rAF dispatch, and on the web Chrome's GPU-process
+	/// staging transfer, charged to no phase at all since `upload_ms` times the record, never the
+	/// copy. Derived rather than measured, so it absorbs every accounting error; a frame that grows
+	/// HERE while `busy_ms` holds flat spent its time where the main thread never ran.
 	pub outside_ms: f32,
 	pub total_ms: f32,
 }
@@ -162,35 +141,20 @@ impl JobTiming {
 	}
 }
 
-/// Live connection health, filled by the net client each frame.
-///
-/// Lives here rather than in `digblock-net` so the overlay and the CSV can
-/// read it without core depending on net (net already depends on core, so
-/// the arrow only points one way).
-///
-/// `rtt_*` is measured on the INPUT→ACK loop, not a separate ping: the
-/// client stamps a tick when it first goes on the wire and stops the clock
-/// when a snapshot acknowledges that tick. That is the latency a player
-/// actually feels — it includes the server's jitter buffer and the
-/// snapshot cadence, which a ping/pong would quietly exclude — and it
-/// needs no protocol round trip of its own.
+/// Live connection health, filled by the net client each frame. Lives here rather than in
+/// `digblock-net` so the overlay and the CSV can read it without core depending on net — the arrow
+/// only points one way. `rtt_*` is measured on the INPUT→ACK loop, not a separate ping: it is the
+/// latency a player actually feels, including the server's jitter buffer and the snapshot cadence
+/// a ping/pong would quietly exclude, and it needs no protocol round trip of its own.
 #[derive(Clone, Copy, Default)]
 pub struct NetStats {
 	/// Smoothed input→ack round trip.
 	pub rtt_ms: f32,
-	/// The TRANSPORT's own round trip — QUIC's estimate, what a ping reports,
-	/// and the same quantity the server browser's probe shows. Zero when the
-	/// transport has none (loopback, the benchmark wires).
-	///
-	/// Kept beside `rtt_ms` rather than replacing it because they answer
-	/// different questions: this one is "how far away is the server", and
-	/// `rtt_ms` is "how long until my action is authoritative", which carries
-	/// the tick boundary, the snapshot cadence and the input buffer on top.
-	/// Their DIFFERENCE is the server-side pipeline.
-	///
-	/// Deriving one from the other by subtracting a constant was measured not
-	/// to work: on a LAN every `rtt_ms` sample is one tick or two, and the wire
-	/// itself is not present in the signal.
+	/// The TRANSPORT's own round trip — QUIC's estimate, what a ping reports, and what the server
+	/// browser's probe shows; zero when the transport has none (loopback, the benchmark wires).
+	/// Kept beside `rtt_ms`, which answers a different question — "how long until my action is
+	/// authoritative", carrying the tick boundary, snapshot cadence and input buffer — so their
+	/// DIFFERENCE is the pipeline, and deriving one from the other was measured not to work.
 	pub wire_rtt_ms: f32,
 	/// Mean absolute deviation of the same signal — the number that says
 	/// whether an average RTT is trustworthy.
@@ -248,15 +212,11 @@ pub struct RenderStats {
 	pub water_draws: u32,
 	pub draw_calls: u32,
 	pub triangles: u32,
-	/// The GI window's sky ceiling (R18) — the highest occupied cell in the
-	/// whole window, and the early-out every non-descending ray in the
-	/// resolve breaks on. It is a session HIGH-WATER MARK in practice: the
-	/// coarse mirror it is scanned from is never cleared on eviction, so
-	/// this climbs as terrain is explored and does not come back down. That
-	/// makes it the number to watch when frame time degrades over a session
-	/// — a filled window is the cost the engine actually has, and an empty
-	/// one (the no-occupied-cell sentinel, where every ray breaks on its
-	/// first step) is the cheapest it can ever be.
+	/// The GI window's sky ceiling (R18) — the highest occupied cell in the window, and the
+	/// early-out every non-descending ray in the resolve breaks on. A session HIGH-WATER MARK in
+	/// practice: the coarse mirror it is scanned from is never cleared on eviction, so it climbs
+	/// as terrain is explored and never comes back down — the number to watch when frame time
+	/// degrades over a session.
 	pub sky_y: f32,
 	/// Emitter cells the GI knows about. Bounded by `MAX_LIGHTS` on the
 	/// GPU but NOT on the CPU: the map is only pruned when a chunk
@@ -290,14 +250,11 @@ pub struct GpuPassMs {
 	pub upscale_ms: f32,
 }
 
-/// Where the camera is standing and when — the overlay's reproduction
-/// line, and the only part of [`OverlayStats`] that is not a measurement.
-///
-/// It exists because a screenshot of a rendering bug is nearly useless
-/// without the world it was taken in: every field here is an argument the
-/// capture flags take (`--seed --pos --yaw --pitch --tod`), so a photo of
-/// the panel is a runnable repro. `Metrics` cannot know any of it — the
-/// engine fills this in after `overlay_stats()`.
+/// Where the camera is standing and when — the overlay's reproduction line, and the only part of
+/// [`OverlayStats`] that is not a measurement. A screenshot of a rendering bug is nearly useless
+/// without the world it was taken in, so every field here is an argument the capture flags take
+/// (`--seed --pos --yaw --pitch --tod`) and a photo of the panel is a runnable repro. `Metrics`
+/// cannot know any of it — the engine fills this in after `overlay_stats()`.
 #[derive(Clone, Copy, Default)]
 pub struct WorldStats {
 	/// Eye position: exactly what `--pos` sets, so it can be typed back.
@@ -558,13 +515,11 @@ impl Metrics {
 				self.dropped += 1;
 				self.dropped_total += 1;
 			}
-			// Per-spike phase attribution (see `spike_log`), on the SAME bar
-			// as `dropped` — so every counted drop gets exactly one logged
-			// breakdown and the counter leads straight to a cause. It was a
-			// separate factor barely above the estimate, which under vsync
-			// sat below the AVERAGE frame (see `DROP_FACTOR` for why the
-			// estimate reads low) and logged every frame instead of the
-			// anomalies.
+			// Per-spike phase attribution (see `spike_log`), on the SAME bar as `dropped`, so
+			// every counted drop gets exactly one logged breakdown and the counter leads
+			// straight to a cause. A separate factor barely above the estimate would sit below
+			// the AVERAGE frame under vsync (see `DROP_FACTOR` for why the estimate reads low)
+			// and log every frame instead of the anomalies.
 			let spike_over = if self.refresh_ms > 0.0 {
 				self.refresh_ms * DROP_FACTOR
 			} else {

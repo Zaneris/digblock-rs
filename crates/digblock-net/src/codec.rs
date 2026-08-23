@@ -78,12 +78,9 @@ pub fn decode<T: DeserializeOwned>(frame: &[u8]) -> Result<T, CodecError> {
 	postcard::from_bytes(frame).map_err(CodecError::Decode)
 }
 
-/// Incremental reassembly of length-prefixed frames from a byte stream.
-///
-/// `Default` accepts frames up to [`MAX_FRAME`] — the right cap for a
-/// client reading a server's journal batches. The server reads the other
-/// direction and should use [`FrameReader::with_limit`] with
-/// [`MAX_CLIENT_FRAME`], which is sized for what a client actually sends.
+/// Incremental reassembly of length-prefixed frames from a byte stream. `Default` accepts frames
+/// up to [`MAX_FRAME`] — the cap for a client reading a server's journal batches; the server reads
+/// the other direction and should use [`FrameReader::with_limit`] with [`MAX_CLIENT_FRAME`].
 ///
 /// [`MAX_CLIENT_FRAME`]: crate::protocol::MAX_CLIENT_FRAME
 pub struct FrameReader {

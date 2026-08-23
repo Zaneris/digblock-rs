@@ -5,10 +5,8 @@
 //! inside the synchronous `on_suspend` contract, and after LWW compaction a save
 //! is live-cells small.
 //!
-//! Sharding is why the save cost is bounded. A single blob meant every write
-//! re-serialized the world's ENTIRE edit history, base64'd it and handed it to a
-//! synchronous `setItem` — inside the frame, growing forever with the age of the
-//! save. Now only regions that actually changed are rewritten.
+//! Sharding is why the save cost is bounded: only changed regions are rewritten,
+//! never the whole edit history through a synchronous in-frame `setItem`.
 //!
 //! The store never mirrors the live index: `maintain`/`flush` receive the
 //! Pipeline's authoritative `EditOverlay` and a region is serialized by asking

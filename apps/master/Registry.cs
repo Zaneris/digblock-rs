@@ -19,13 +19,11 @@ public sealed class ServerEntry
     public required string Name { get; init; }
     public required string Host { get; init; }
 
-    /// <summary>Where health probes dial. Equal to <see cref="Host"/> except
-    /// under Master:Dev:ProbeHostOverride, which exists for the containerized
-    /// dev stack (a LAN-IP hairpin breaks QUIC address validation behind
-    /// Docker's NAT). This used to be a field of the registration REQUEST,
-    /// which meant an anonymous caller chose the only address the master ever
-    /// dialed while clients were handed a different one. It is master-side
-    /// configuration now.</summary>
+    /// <summary>Where health probes dial: master-side configuration, never a
+    /// field of the registration request, or an anonymous caller would choose
+    /// the only address the master dials. Equal to <see cref="Host"/> except
+    /// under Master:Dev:ProbeHostOverride, for the containerized dev stack —
+    /// a LAN-IP hairpin breaks QUIC address validation behind Docker's NAT.</summary>
     public required string ProbeHost { get; init; }
 
     public required int Port { get; init; }
@@ -53,14 +51,11 @@ public sealed class ServerEntry
     public string CertHashHex => Convert.ToHexStringLower(CertHash);
 }
 
-/// <summary>Which registered servers are alive right now, and at what.
-///
-/// Still in memory, still lost on restart — a game server re-registers when
-/// its heartbeat gets a 404, and rebuilding from heartbeats takes under a
-/// minute. What is NOT here is the claim on an address and the key that
-/// proves it; those are persisted (see
-/// <see cref="Servers.ServerClaims"/>), because losing them on a restart
-/// would reopen the address every deploy.</summary>
+/// <summary>Which registered servers are alive right now, and at what. In
+/// memory and lost on restart — a server re-registers when its heartbeat gets
+/// a 404. What is NOT here is the claim on an address and the key that proves
+/// it: <see cref="Servers.ServerClaims"/> persists those, because losing them
+/// on a restart would reopen the address every deploy.</summary>
 public sealed class ServerRegistry
 {
     private readonly ConcurrentDictionary<Guid, ServerEntry> _servers = new();
@@ -96,13 +91,11 @@ public sealed class ServerRegistry
     /// <summary>Ceiling for a listed player count.</summary>
     public const int MaxPlayerCount = 1000;
 
-    /// <summary>Player counts are display-only, so like names they are
-    /// repaired rather than rejected — but they MUST be repaired, because
-    /// the clients decode them as unsigned. A negative count fails the whole
-    /// server-list decode on the client side, so one server registering
-    /// <c>players: -1</c> hid every server on the master from everyone. The
-    /// clients now clamp too; this is the other half, so the bad value never
-    /// leaves here.</summary>
+    /// <summary>Player counts are display-only, so like names they are repaired
+    /// rather than rejected — but they MUST be repaired, because the clients
+    /// decode them as unsigned: a negative count fails the whole server-list
+    /// decode, so one server registering a negative hid every server from
+    /// everyone. The clients clamp too; this is the other half.</summary>
     public static int SanitizeCount(int n) => Math.Clamp(n, 0, MaxPlayerCount);
 
     /// <summary>Server names are display-only, so a bad one is repaired, never

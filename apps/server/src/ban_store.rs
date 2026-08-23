@@ -75,16 +75,11 @@ impl BanStore {
 		})
 	}
 
-	/// Add (or re-label) a ban and write through. Matching on the account
-	/// when there is one, so re-banning someone who has changed address
-	/// updates their entry rather than accumulating a row per IP.
+	/// Add (or re-label) a ban and write through, matching on the account when there is one so
+	/// re-banning someone who changed address updates their entry rather than adding a row per IP.
 	///
-	/// The account-less fallback is what ADOPTS a pre-account row rather than
-	/// shadowing it. Without it, banning an account never matched a legacy
-	/// IP-only entry for the same player, so a second row was pushed and the
-	/// first became unreachable: `/unban <account-id>` matches neither its
-	/// name nor its (unparseable-as-IP) argument, so the orphan kept
-	/// enforcing by address after an unban that reported success.
+	/// The account-less fallback ADOPTS a pre-account row rather than shadowing it: a second,
+	/// unreachable row keeps enforcing by address after an `/unban` that reported success.
 	pub fn ban(&mut self, name: &str, ip: IpAddr, account: AccountId) {
 		let key = (!account.is_none()).then(|| account.to_string());
 		let existing = self.entries.iter_mut().find(|e| match &key {

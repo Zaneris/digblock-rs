@@ -1,23 +1,18 @@
 //! Predicted block edits awaiting server confirmation.
 //!
-//! Precedence is structural, not timing-based: every authoritative edit
-//! broadcast first `confirm`s our own seq (if it is ours), then
-//! `on_authoritative(cell)` drops any other pending entries on that cell, then
-//! the broadcast value is applied. A rejection arriving after an authoritative
-//! write to the same cell finds no entry and reverts nothing — authority always
-//! wins.
+//! Precedence is structural, not timing-based: every authoritative edit broadcast first `confirm`s
+//! our own seq (if it is ours), then `on_authoritative(cell)` drops any other pending entries on
+//! that cell, then the broadcast value is applied. A rejection arriving after an authoritative
+//! write to the same cell finds no entry and reverts nothing — authority wins.
 //!
-//! Each entry also carries the inventory delta predicted with it. The cell and
-//! the delta settle on different events: a superseding authoritative write owns
-//! the CELL at once, while the DELTA must wait for the seq's own verdict — the
-//! server answers every request and may yet apply a superseded edit (two
-//! places racing on one slab cell), so a refund at supersede time would part
-//! the two ends' counts by the whole delta, permanently.
+//! Each entry also carries the inventory delta predicted with it. The cell and the delta settle on
+//! different events: a superseding authoritative write owns the CELL at once, while the DELTA must
+//! wait for the seq's own verdict — the server answers every request and may yet apply a superseded
+//! edit, so a refund at supersede time would part the two ends' counts permanently.
 //!
-//! Multi-cell actions are LINKED entries sharing one seq via `begin_multi`:
-//! confirm drops them all, reject returns every SURVIVING entry for revert, and
-//! the shared inventory delta rides only the first entry so it reverts exactly
-//! once.
+//! Multi-cell actions are LINKED entries sharing one seq via `begin_multi`: confirm drops them all,
+//! reject returns every SURVIVING entry for revert, and the shared inventory delta rides only the
+//! first entry so it reverts exactly once.
 
 use crate::protocol::NO_CLIENT_SEQ;
 use digblock_core::block::BlockType;
@@ -114,16 +109,11 @@ impl PendingEdits {
 		dropped
 	}
 
-	/// Is a prediction of ours still in flight on this cell?
-	///
-	/// For the JOURNAL sync alone, which is a bulk restatement of what the
-	/// server had rather than news about a cell. A restatement must not
-	/// overwrite a cell we are waiting on: the server's own answer is
-	/// coming, as `EditApplied` or `EditRejected`, and either settles it —
-	/// whereas the restatement would flick the block back to its old value
-	/// for a round trip. Nothing else needs this: a real authoritative
-	/// edit IS the news, and supersedes through
-	/// [`Self::on_authoritative`].
+	/// Is a prediction of ours still in flight on this cell? For the JOURNAL sync alone, a bulk
+	/// restatement of what the server had rather than news about a cell. A restatement must not
+	/// overwrite a cell we are waiting on: the server's own answer is coming, as `EditApplied` or
+	/// `EditRejected`, and either settles it, whereas the restatement would flick the block back
+	/// for a round trip. A real authoritative edit IS the news: [`Self::on_authoritative`].
 	pub fn pending_at(&self, cell: (i32, i32, i32)) -> bool {
 		// A superseded entry no longer owns its cell — a restatement of
 		// what took it is free to land.

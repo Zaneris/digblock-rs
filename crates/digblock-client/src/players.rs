@@ -15,27 +15,18 @@ use digblock_platform::Gpu;
 use crate::ui::hud::IconKind;
 use crate::viewmodel::Vert;
 
-/// Comfortably past `MAX_SNAPSHOT_PLAYERS` with room for the debug
-/// carrier; the per-instance record is small, so the buffer is too.
+/// Comfortably past `MAX_SNAPSHOT_PLAYERS` with room for the debug carrier; the per-instance
+/// record is small, so the buffer is too.
 ///
-/// It used to be smaller AND shared between bodies and held items, which
-/// truncated silently once a busy server filled half of it: each player
-/// pushed two instances into one stream. Splitting the streams is what
-/// fixes it, and the headroom is what keeps it fixed.
+/// Bodies and held items get SEPARATE streams — each player pushes two instances, so one shared
+/// buffer this size truncates silently once a busy server fills half of it.
 const MAX_INSTANCES: usize = 128;
 
-/// Quad budget for the cached item meshes.
+/// Quad budget for the cached item meshes: every item a hand can hold, together. The whole catalog
+/// fits with room to spare, so the cache never needs eviction, and overflow logs and SKIPS the kind
+/// rather than truncating a mesh — half an item drops faces silently.
 ///
-/// Every item a hand can hold, together: the slottable catalog (a cube's
-/// faces, a door up to two shape variants), both bucket charges, and the
-/// authored tools, which are the expensive ones. The whole catalog fits
-/// with room to spare, so the cache never needs eviction. Overflow logs
-/// and SKIPS the kind rather than truncating a mesh, which would silently
-/// drop faces.
-///
-/// Sized against `every_held_item_fits_the_quad_budget`, which counts
-/// exactly what the cache can be asked for — so the catalog growing past
-/// it fails a test rather than dropping an item from somebody's hand.
+/// Sized against `every_held_item_fits_the_quad_budget`, so a catalog outgrowing it fails a test.
 const ITEM_QUAD_BUDGET: usize = 2048;
 
 /// One item's geometry inside the shared vertex buffer.
@@ -85,14 +76,11 @@ fn kind_key(k: IconKind) -> u32 {
 	}
 }
 
-/// Sort a frame's held items into one contiguous run per distinct item,
-/// and answer where each run sits.
+/// Sort a frame's held items into one contiguous run per distinct item, and answer where each run
+/// sits.
 ///
-/// Its own function so the pin can call THIS rather than a copy of it —
-/// a test that restates the sort-and-scan in its own body proves the
-/// restatement works and nothing about the draw path. The set is one
-/// entry per person on screen, so this is a sort over a couple of dozen
-/// entries at most.
+/// Its own function so the pin can call THIS rather than a copy of it — a test that restates the
+/// sort-and-scan proves the restatement works and nothing about the draw path.
 fn group_by_kind(items: &mut [(IconKind, [f32; 8])]) -> Vec<(IconKind, std::ops::Range<usize>)> {
 	items.sort_unstable_by_key(|(k, _)| kind_key(*k));
 	let mut runs = Vec::new();
@@ -122,12 +110,10 @@ impl RemotePlayersDraw {
 			label: Some("players"),
 			source: wgpu::ShaderSource::Wgsl(digblock_assets::shader::PLAYERS.into()),
 		});
-		// Group 1 (block materials) textures the held items; the scene
-		// pass has it bound already when we draw. Group 2 is gi_common's
-		// GI world data — the renderer binds the front gather group
-		// before our draw (the resolve outputs the solids hold at 2 don't
-		// know player surfaces). ONE layout for both pipelines, so
-		// switching between them leaves every bound group valid.
+		// Group 1 (block materials) textures the held items; the scene pass has it bound already.
+		// Group 2 is gi_common's GI world data — the renderer binds the front gather group before
+		// our draw (the resolve outputs the solids hold at 2 don't know player surfaces). ONE
+		// layout for both pipelines, so switching between them leaves every bound group valid.
 		let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
 			label: Some("players"),
 			bind_group_layouts: &[Some(frame_bgl), Some(materials_bgl), Some(gi_gather_bgl)],
@@ -274,13 +260,11 @@ impl RemotePlayersDraw {
 		}
 	}
 
-	/// Cache `kind`'s geometry if this is the first time it has been in
-	/// anybody's hand, and answer where it landed.
+	/// Cache `kind`'s geometry if this is the first time it has been in anybody's hand, and answer
+	/// where it landed.
 	///
-	/// A kind that CANNOT be cached is remembered too, as a zero-quad
-	/// entry. Without that the lookup below misses it every frame, so
-	/// `viewmodel::build` re-tessellates and `log::warn!` fires once a
-	/// frame for as long as anybody holds the thing.
+	/// A kind that CANNOT be cached is remembered too, as a zero-quad entry: without that the
+	/// lookup misses it every frame and `viewmodel::build` re-tessellates once a frame forever.
 	fn ensure_mesh(&mut self, gpu: &Gpu, kind: IconKind) -> Option<usize> {
 		if let Some(i) = self.items.iter().position(|m| m.kind == kind) {
 			return (self.items[i].quads > 0).then_some(i);
@@ -331,10 +315,9 @@ impl RemotePlayersDraw {
 
 	/// Upload this frame's held items and plan their draws.
 	///
-	/// `held` is `(kind, [eye.xyz, yaw, emissive, height in twelfths, then
-	/// padding])`. Grouped by kind so each distinct item is ONE instanced
-	/// draw; the set is one entry per person on screen, so the sort is
-	/// over a handful of entries.
+	/// `held` is `(kind, [eye.xyz, yaw, emissive, height in twelfths, then padding])`. Grouped by
+	/// kind so each distinct item is ONE instanced draw; the set is one entry per person on screen,
+	/// so the sort is over a handful of entries.
 	pub(crate) fn set_held(&mut self, gpu: &Gpu, held: &[(IconKind, [f32; 8])]) {
 		self.batches.clear();
 		self.instances.clear();
@@ -470,13 +453,11 @@ mod tests {
 		);
 	}
 
-	/// Grouping is what keeps a crowd to one draw per distinct item
-	/// rather than one per player, and every instance must land in
-	/// exactly one contiguous run.
+	/// Grouping is what keeps a crowd to one draw per distinct item rather than one per player, and
+	/// every instance must land in exactly one contiguous run.
 	///
-	/// Calls `group_by_kind` — the function `set_held` calls — so that
-	/// changing the grouping breaks this rather than leaving it green
-	/// against a copy of the old logic.
+	/// Calls `group_by_kind` — the function `set_held` calls — so changing the grouping breaks this
+	/// rather than leaving it green against a copy of the old logic.
 	#[test]
 	fn held_items_group_one_run_per_kind() {
 		let inst = |n: f32| [n, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];

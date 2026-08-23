@@ -38,21 +38,11 @@ pub fn claims(cell: u16) -> bool {
 	b == BlockType::Air || b.is_water()
 }
 
-/// The cell a plank goes in for an eye here: the highest one whose TOP
-/// lies at or below the feet, so the plank meets the feet rather than
-/// closing around them. Asked only of an unsupported player
-/// ([`Trail::wants`]) — a foot resting mid-cell on a slab is standing on
-/// something already, and this would name the cell beneath it.
-///
-/// **Ask it on the tick support was lost, never later.** The resolver
-/// leaves the feet exactly on the top they walk off, and one tick of
-/// gravity puts them a hair under it — which moves the answer a WHOLE
-/// cell down, because a cell top either is at or below the feet or is
-/// not. A road asked once a frame instead of once a tick therefore
-/// descends a block per plank at any rate but one tick per frame. The
-/// tolerance that would paper over it cannot exist: a plank the feet
-/// already overlap is refused by `player::placement_blocked` as
-/// standing inside the caster.
+/// The cell a plank goes in for an eye here: the highest one whose TOP lies at or below the feet,
+/// so the plank meets the feet rather than closing around them. Asked only of an unsupported
+/// player ([`Trail::wants`]). **Ask it on the tick support was lost, never later** — one tick of
+/// gravity moves the answer a WHOLE cell down, so a road asked once a frame descends a block per
+/// plank, and no tolerance can paper that over: `player::placement_blocked` refuses an overlap.
 pub fn step_cell(pos: Vec3) -> Cell {
 	let feet = pos.y - crate::player::EYE_TO_FEET;
 	(

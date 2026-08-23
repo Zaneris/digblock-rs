@@ -168,16 +168,10 @@ pub fn button<Id: Copy + PartialEq>(
 	}
 }
 
-/// Stack-count badge in a slot's bottom-right corner, saturating at
-/// "99+", with a drop shadow so digits stay readable on light icons
-/// (snow, sand).
-///
-/// Drawn at the frame's text size like everything else. It used to be
-/// pinned at [`scale::FIXED_GLYPH_PX`] — a holdover from the bitmap font,
-/// whose sizes snapped to multiples of its cell, so "one step down" was
-/// the only way to get a small badge. With a real face there is no ladder
-/// to step down, and a pinned badge just read as half-size text beside a
-/// scaled-up UI on a dense display.
+/// Stack-count badge in a slot's bottom-right corner, saturating at "99+", with a drop shadow so
+/// digits stay readable on light icons (snow, sand). Drawn at the frame's one text size like
+/// everything else, not pinned at [`scale::FIXED_GLYPH_PX`] — a pinned badge reads as half-size
+/// text beside a scaled-up UI on a dense display.
 pub fn count_badge(dl: &mut DrawList, layer: Layer, style: &Style, slot: Rect, count: u32, c: u32) {
 	const SHADOW: u32 = 0xE0000000;
 	let px = style.glyph;
@@ -296,16 +290,11 @@ pub fn chips(
 	rects
 }
 
-/// The name of whatever the cursor is on: a [`super::theme::PANEL_BG`] box
-/// on [`Layer::Ghost`] — above everything, the drag ghost included — at the
-/// frame's one text size, above its anchor, inside the window, and below
-/// the anchor when above would leave the window. The screen that knows
-/// what is hovered emits it LAST, so it covers what it names.
-///
-/// A name WIDER than the window is a real case (the longest block name at
-/// the scale cap outgrows a phone held upright): the box pins to the left
-/// edge and its tail runs off the right, because the start of a name is
-/// what identifies it and there is no smaller text size to fall back on.
+/// The name of whatever the cursor is on: a [`super::theme::PANEL_BG`] box on [`Layer::Ghost`] —
+/// above everything, the drag ghost included — at the frame's one text size, above its anchor and
+/// inside the window, flipping below when above would leave it. The screen that knows what is
+/// hovered emits it LAST, so it covers what it names. A name WIDER than the window pins to the
+/// left edge and lets its tail run off the right: the start of a name is what identifies it.
 pub fn tooltip(dl: &mut DrawList, style: &Style, size: (u32, u32), anchor: Rect, name: &str) {
 	let text = name.to_uppercase();
 	let glyph = style.glyph;
@@ -374,14 +363,11 @@ pub fn row(dl: &mut DrawList, style: &Style, layer: Layer, rect: Rect, c: RowCon
 	let pad_x = scale::text_pad_x(style.scale);
 	let text_y = rect.y + (rect.h - glyph) / 2.0;
 	if c.highlight {
-		// The wash has to sit UNDER the row's own icon: a chip draws its
-		// icon in `Layer::Icons`, which the whole of `Layer::Content`
-		// covers, so a wash on the caller's layer greys the icon and
-		// leaves its number crisp — one row reading as two states.
-		// [`slot`] and [`button`] wash on `Layer::Backdrop` for the same
-		// reason. A row with no icon keeps the caller's layer, because a
-		// caller may draw its own panel there (`menu.rs` does) and a wash
-		// beneath that panel would not be seen at all.
+		// The wash has to sit UNDER the row's own icon: a chip draws its icon in `Layer::Icons`,
+		// which the whole of `Layer::Content` covers, so a wash on the caller's layer greys the
+		// icon and leaves its number crisp — one row reading as two states. [`slot`] and
+		// [`button`] wash on `Layer::Backdrop` for the same reason. A row with no icon keeps the
+		// caller's layer, since a caller may panel there (`menu.rs`) and a wash beneath is unseen.
 		let wash = match c.right {
 			Some(RowRight::Chip(_)) => Layer::Backdrop,
 			_ => layer,
@@ -660,16 +646,11 @@ mod tests {
 		);
 	}
 
-	/// Whatever it is anchored to, the name stays inside the window — a
-	/// tooltip off the top flips below, one off a side slides in — and the
-	/// TEXT rides with the box instead of being clamped on its own.
-	///
-	/// Swept over every name a tooltip can carry (blocks and essences,
-	/// which is the whole vocabulary) at the scales the screen sweeps use,
-	/// in windows short and narrow enough for the clamp to bite. The
-	/// widest name at the scale cap is WIDER than a phone held upright,
-	/// and that case is decided rather than clamped: the box pins to the
-	/// left edge and its tail runs off the right.
+	/// Whatever it is anchored to, the name stays inside the window — a tooltip off the top flips
+	/// below, one off a side slides in — and the TEXT rides with the box instead of being clamped
+	/// on its own. Swept over every name a tooltip can carry (blocks and essences, the whole
+	/// vocabulary) at the screen sweeps' scales, in windows small enough for the clamp to bite. A
+	/// name wider than the window is decided rather than clamped: pinned left, tail off the right.
 	#[test]
 	fn a_tooltip_never_leaves_the_window() {
 		use digblock_core::block::{BlockType, Essence};

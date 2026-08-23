@@ -28,24 +28,17 @@ pub(crate) struct ItemFace {
 	pub tex_layer: u16,
 	/// Draw this face as fullbright ink, whatever the light is.
 	///
-	/// Per FACE, and that is the whole reason it exists. A block says
-	/// this once for its whole self (`glows`), which is right for a torch
-	/// — one material, and a post authored dark enough to take the gain
-	/// (R29). A tool is not one material: it is a body worth shading with
-	/// one lit part set into it, and a per-draw flag can only choose
-	/// between a tool with no form and a glow that isn't one.
+	/// Per FACE, and that is the whole reason it exists. A block says this once for its whole self
+	/// (`glows`), which is right for a torch (R29); a tool is a body worth shading with one lit
+	/// part set into it, and a per-draw flag could only pick between no form and a whole glow.
 	pub emissive: bool,
 }
 
-/// An axis-aligned face of a box. Corners follow `mesher::face_corners`
-/// EXACTLY — (TL, TR, BL, BR) as that table orders them — because the
-/// baked `shapes` quads next to these obey it too, and both are drawn
-/// through `mesher::quad_indices`' pattern. Get it wrong and back-face
-/// culling keeps the half of the item you can't see.
-///
-/// UVs are proportional to the covered span, so a partial face samples
-/// the matching window of its texture rather than stretching the whole
-/// thing across a sliver.
+/// An axis-aligned face of a box. Corners follow `mesher::face_corners` EXACTLY — (TL, TR, BL, BR)
+/// as that table orders them — because the baked `shapes` quads next to these obey it too, and
+/// both are drawn through `mesher::quad_indices`' pattern. Get it wrong and back-face culling
+/// keeps the half of the item you can't see. UVs are proportional to the covered span, so a
+/// partial face samples the matching window of its texture rather than stretching over a sliver.
 fn box_face(dir: Dir, min: [i32; 3], max: [i32; 3], tex_layer: u16) -> ItemFace {
 	// (lo, hi) planes of the box, addressed the way `face_corners`
 	// addresses the (0, 1) planes of a unit cell.
@@ -154,13 +147,11 @@ fn shape_faces(b: BlockType, state: u8, y_off: i32, out: &mut Vec<ItemFace>) {
 	}
 }
 
-/// The water tool: a little bucket — a wooden base plate, four walls
-/// standing on it, and (only when charged) a source sitting inside.
-///
-/// The base is what makes the empty state readable: with walls alone you
-/// looked straight through the opening and out the bottom, and an empty
-/// bucket has nothing else to fill the hole. It also means the charge is
-/// a real difference in the silhouette's interior rather than a tint.
+/// The water tool: a little bucket — a wooden base plate, four walls standing on it, and (only
+/// when charged) a source sitting inside. The base is what makes the empty state readable: with
+/// walls alone you look straight through the opening and out the bottom, and an empty bucket has
+/// nothing else to fill the hole. It also makes the charge a real difference in the silhouette's
+/// interior rather than a tint.
 fn bucket_faces(full: bool, out: &mut Vec<ItemFace>) {
 	// Planed timber, not the log's bark: a pail is a made thing. This is
 	// the one place a layer is named directly rather than taken from a
@@ -186,29 +177,18 @@ fn bucket_faces(full: bool, out: &mut Vec<ItemFace>) {
 	}
 }
 
-/// The Essence Siphon: a funnel that swallows the rock face, a neck rising out
-/// of it, and the glowing vessel the drawn essence collects in, capped with a
-/// collar.
-///
-/// **The taper is the item.** A flat plate, a straight stem and a cube on top
-/// read as a rubber stamp: three slabs of decreasing width say "pressed onto
-/// something", while a cone says "drawing out of it". The funnel is stepped
-/// rather than smooth because everything here is axis boxes in twelfths — at the
-/// size this is ever seen, three steps read as a taper.
-///
-/// The vessel is what makes it name itself at hotbar size, and its glow is
-/// authored: `SIPHON_GLOW` is the siphon row's own texture, so the light this
-/// tool casts is the colour of the thing you can see it collecting.
+/// The Essence Siphon: a funnel that swallows the rock face, a neck rising out of it, and the
+/// glowing vessel the drawn essence collects in, capped with a collar. **The taper is the item** —
+/// a flat plate, a straight stem and a cube on top read as a rubber stamp, while a cone says
+/// "drawing out of it"; it is stepped rather than smooth because everything here is axis boxes in
+/// twelfths. `SIPHON_GLOW` is the siphon row's own texture, so the tool casts what it collects.
 fn siphon_faces(out: &mut Vec<ItemFace>) {
 	let metal = digblock_core::block::tex::METAL;
 	let grip = digblock_core::block::tex::LUMBER_DARK;
 	let glow = digblock_core::block::tex::SIPHON_GLOW;
-	// A small foot and a stem, not a wide mouth. A funnel hood was tried
-	// first, on the reasoning that a cone says "draws out of" — and it
-	// cannot, in this projection: both views of an item look DOWN at it,
-	// so a downward cone shows only the tops of its rings and reads as
-	// the flat pad of a rubber stamp, which is exactly what it was
-	// called.
+	// A small foot and a stem, not a wide mouth. A funnel hood cannot work in this projection:
+	// both views of an item look DOWN at it, so a downward cone shows only the tops of its
+	// rings and reads as the flat pad of a rubber stamp.
 	box_faces([5, 0, 5], [7, 1, 7], |_| metal, out);
 	box_faces([5, 1, 5], [7, 3, 7], |_| metal, out);
 	// The barrel is the item: a tall column of what has been drawn up
@@ -229,15 +209,11 @@ fn siphon_faces(out: &mut Vec<ItemFace>) {
 	box_faces([3, 10, 3], [9, 12, 9], |_| grip, out);
 }
 
-/// The Resonant Pick: a timber haft with a broad metal-dark head, and a
-/// resonating core at the join.
-///
-/// The head is WIDE rather than pointed on purpose — the tool breaks a
-/// PLANE, and a narrow pick would promise a bore. The lit core is the
-/// same trick the siphon plays: at hotbar size a silhouette needs one
-/// bright thing to be recognisable at all — and here it is the tool's
-/// own light, `PICK_GLOW` being the pick row's texture too, so what
-/// resonates and what it lights the tunnel with are the same blue.
+/// The Resonant Pick: a timber haft with a broad metal-dark head, and a resonating core at the
+/// join. The head is WIDE rather than pointed on purpose — the tool breaks a PLANE, and a narrow
+/// pick would promise a bore. The lit core is the same trick the siphon plays: at hotbar size a
+/// silhouette needs one bright thing to be recognisable, and `PICK_GLOW` is the pick row's own
+/// texture, so what resonates and what it lights the tunnel with are the same blue.
 fn pick_faces(out: &mut Vec<ItemFace>) {
 	let haft = digblock_core::block::tex::LUMBER_LIGHT;
 	let head = digblock_core::block::tex::LUMBER_DARK;
@@ -247,15 +223,11 @@ fn pick_faces(out: &mut Vec<ItemFace>) {
 	glow_faces([5, 8, 4], [7, 10, 8], core, out);
 }
 
-/// The Master's Sigil: a crystal set in a standing metal plate on a
-/// small foot. It DOES nothing — an Aether price for the last line of
-/// the catalog — so it is drawn as a thing you display rather than a
-/// thing you swing: an emblem, face-on, with the gem proud of the plate
-/// on both sides so the shape reads at hotbar size.
-///
-/// It needs authored geometry for the same reason its siblings do: a
-/// tool carries no texture layers, so the cube fallback would draw the
-/// game's most expensive item as a block of whatever sits at layer 0.
+/// The Master's Sigil: a crystal set in a standing metal plate on a small foot. It DOES nothing —
+/// an Aether price for the last line of the catalog — so it is drawn as a thing you display rather
+/// than one you swing: an emblem, face-on, with the gem proud of the plate on both sides so the
+/// shape reads at hotbar size. It needs authored geometry for the same reason its siblings do: a
+/// tool carries no texture layers, so the cube fallback would draw it as whatever sits at layer 0.
 fn sigil_faces(out: &mut Vec<ItemFace>) {
 	let frame = digblock_core::block::tex::METAL;
 	let gem = digblock_core::block::tex::CRYSTAL;

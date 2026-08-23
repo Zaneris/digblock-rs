@@ -1,22 +1,18 @@
 // The essence draw: motes of a vein's own colour prised off the rock and pulled
-// into the tool, over a kindle on the face they leave from. The one action in
-// the game that takes a block apart without breaking it, and so the one the dig
-// crack deliberately says nothing about.
+// into the tool, over a kindle on the face they leave from.
 //
 // One instance per live draw — a player holds one button — and every mote's
-// flight is a pure function of (source, destination, progress, envelope, clock):
-// the CPU owns an envelope and nothing else, exactly the arrangement spray.wgsl
-// and confetti.wgsl use, so there is nothing to simulate, nothing to save on
-// suspend and nothing to rebuild on device loss but the pipeline. vertex_index
-// picks the particle (vi / 6) and the quad corner (vi % 6); particle 0 is the
-// face kindle and the rest are motes.
+// flight is a pure function of (source, destination, progress, envelope, clock);
+// the CPU owns an envelope and nothing else, spray.wgsl's and confetti.wgsl's
+// arrangement, so there is nothing to simulate, save on suspend, or rebuild on
+// device loss but the pipeline. vertex_index picks the particle (vi / 6) and the
+// quad corner (vi % 6); particle 0 is the face kindle and the rest are motes.
 //
-// The one effect in the engine drawn ADDITIVELY, because essence is light. That
-// is also why it does not call `medium_view`: the in-scatter half of the medium
-// belongs to a SURFACE seen through air, and adding sky to an emissive term
-// would make a far mote brighter than a near one. It takes the transmittance
-// halves alone. The rim term is skipped for a second reason — a draw is always
-// within a raycast's REACH of the eye.
+// The one effect drawn ADDITIVELY, because essence is light. That is also why it
+// does not call `medium_view`: the in-scatter half belongs to a SURFACE seen
+// through air, and adding sky to an emissive term would make a far mote brighter
+// than a near one. It takes the transmittance halves alone, and skips the rim
+// term because a draw is always within a raycast's REACH of the eye.
 
 // The Frame struct + group(0) binding come from frame_common.wgsl, the
 // extinction from medium_common.wgsl (both prepended by digblock-assets).
@@ -50,13 +46,10 @@ const LIFT_MAX: f32 = 0.44;
 // "thrown at the camera", and it costs one sin and one cos.
 const TWIST: f32 = 6.0;
 // Where a mote stops being drawn, as its DISTANCE from the eye in blocks
-// rather than a point in its flight. It has to stop short: the
-// destination is where a carried light hangs, which is under the player's
-// own chin, and a mote that survives to it ends the effect by flying into
-// the lens. Keying that on distance and not on phase is what makes it
-// hold at any range — a vein an arm's length away and one at the end of
-// the reach have paths of very different lengths, and a phase cutoff that
-// suits either one is wrong for the other.
+// rather than a point in its flight. It has to stop short: the destination
+// is under the player's own chin, and a mote that survives to it flies into
+// the lens. Distance and not phase is what holds at any range — a near vein
+// and one at the end of the reach have paths of very different lengths.
 const NEAR_GONE: f32 = 0.45;
 const NEAR_FULL: f32 = 1.10;
 // The distance, in blocks, at which a mote is its full world size.

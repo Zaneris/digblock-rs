@@ -37,13 +37,9 @@ fn the_gather_and_the_single_cell_query_agree() {
 	}
 }
 
-/// Golden per-seed positions, in the mould of `spawn_positions_are_pinned`:
-/// a test that only asks whether ore MOVED cannot catch ore that moved
-/// somewhere bad, so this pins where it actually is.
-///
-/// The set moved once, deliberately: the original was pinning a bug, with
-/// nearly every cell in the first course above the world floor. Everything
-/// here is now clear of `BEDROCK_Y + MAX_RADIUS`, which
+/// Golden per-seed positions, in the mould of `spawn_positions_are_pinned`: a test that only asks
+/// whether ore MOVED cannot catch ore that moved somewhere bad, so this pins where it actually is.
+/// Everything here is clear of `BEDROCK_Y + MAX_RADIUS`, which
 /// `no_vein_reaches_the_undiggable_floor` enforces in general.
 #[test]
 fn ore_positions_are_pinned() {
@@ -71,16 +67,11 @@ fn ore_positions_are_pinned() {
 	}
 }
 
-/// No ore is ever placed where no dig can reach it.
-///
-/// Asked of the CELLS rather than the deposits, because that is the
-/// property the centre-only guard missed: `deposit_in` refused a centre at
-/// or below the floor, but a blob reaches [`MAX_RADIUS`] further down. There
-/// is no bedrock block — `column_block` fills the floor with ordinary Stone
-/// — so the reveal stamped a pristine cell and `dig_hardness` then refused
-/// every hold on the seam forever.
-///
-/// Swept over several seeds because the failure is a hash away.
+/// No ore is ever placed where no dig can reach it, asked of the CELLS rather than the deposits
+/// because a centre-only guard misses it: `deposit_in` refuses a centre at or below the floor, but
+/// a blob reaches [`MAX_RADIUS`] further down. There is no bedrock block — `column_block` fills
+/// the floor with ordinary Stone — so the reveal would stamp a pristine cell and `dig_hardness`
+/// refuse every hold on the seam forever. Swept over several seeds: the failure is a hash away.
 #[test]
 fn no_vein_reaches_the_undiggable_floor() {
 	use crate::block::BEDROCK_Y;
@@ -267,17 +258,11 @@ fn a_tier_is_invisible_below_its_level() {
 	assert_eq!(at(1, need), Some(BlockType::Leystone), "leystone");
 }
 
-/// **Every tier in the stream is reachable by the gate that decides
-/// whether the stamp runs at all.** A player standing at exactly a
-/// tier's reveal level, and nothing else, must get past
-/// [`lowest_reveal`] / [`lowest_alchemy_reveal`] — or the mesh stamp
-/// skips the whole deposit pass while `nodes::revealed` reveals the
-/// tier anyway, which is a find you can see and cannot extract.
-///
-/// Both gates used to name Leystone by hand, in two files, because
-/// [`ORES`] is the Mining roster and [`TIERS`] is the stream. A second
-/// Alchemy-revealed tier would have been stamped by nobody, and the
-/// only symptom is rock that looks ordinary and refuses every hold.
+/// **Every tier in the stream is reachable by the gate that decides whether the stamp runs at
+/// all.** A player at exactly a tier's reveal level must get past [`lowest_reveal`] /
+/// [`lowest_alchemy_reveal`], or the mesh stamp skips the whole deposit pass while
+/// `nodes::revealed` reveals the tier anyway — a find you can see and cannot extract. [`ORES`] is
+/// the Mining roster and [`TIERS`] the stream, so a gate naming a tier by hand misses the next one.
 #[test]
 fn the_stamps_gate_admits_every_tier_at_its_own_reveal() {
 	for &(tier, ..) in &TIERS {

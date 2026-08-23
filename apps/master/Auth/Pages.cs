@@ -3,18 +3,11 @@ using System.Text;
 
 namespace DigBlock.Master.Auth;
 
-/// <summary>The master's only HTML. Two pages: pick a provider, and say
-/// what went wrong.
-///
-/// Everything else a player sees lives in the game client — there is no
-/// account website, deliberately. Choosing a name, reading your account id
-/// and signing out are all in-game screens, so the browser's whole job is
-/// the provider round trip and then getting out of the way.
-///
-/// Self-contained by construction: inline styles, no scripts, no fonts,
-/// nothing fetched — the provider logomarks are inline SVG. A sign-in page
-/// that depends on a CDN is a sign-in page that breaks when the CDN
-/// does.</summary>
+/// <summary>The master's only HTML. Two pages: pick a provider, and say what went wrong.
+/// Everything else a player sees lives in the game client — there is no account website,
+/// deliberately, so the browser's whole job is the provider round trip and then getting out of the
+/// way. Self-contained by construction: inline styles, no scripts, no fonts, nothing fetched (the
+/// logomarks are inline SVG): a sign-in page needing a CDN breaks when the CDN does.</summary>
 public static class Pages
 {
     public static string Chooser(IReadOnlyList<(string Slug, string Label)> providers, string handle) =>
@@ -32,16 +25,11 @@ public static class Pages
             <p class="fine">Close this tab and start sign-in again from the game.</p>
             """);
 
-    // A provider's sign-in button is trade dress the provider dictates, not
-    // ours to style: Google's branding guidelines are a stated requirement of
-    // OAuth app verification, and Facebook's and Microsoft's brand kits make
-    // the same shape of demand. So the known providers get their own markup and
-    // only a provider without a kit falls back to the house button.
-    //
-    // The WORDING is per provider for the same reason: Microsoft's guidelines
-    // approve "Sign in with Microsoft" and "Sign up with Microsoft" and nothing
-    // else, so the row that reads "Continue with" everywhere else cannot read
-    // that way here.
+    // A provider's sign-in button is trade dress the provider dictates, not ours to style:
+    // Google's branding guidelines are a stated requirement of OAuth app verification, and
+    // Facebook's and Microsoft's brand kits make the same demand, so only a provider without a
+    // kit falls back to the house button. The WORDING is per provider for the same reason:
+    // Microsoft approves "Sign in with Microsoft" and "Sign up with Microsoft" and nothing else.
     private static string ProviderButton(string slug, string label, string handle)
     {
         var href = $"/auth/go/{Esc(slug)}?h={Esc(handle)}";
@@ -67,36 +55,21 @@ public static class Pages
         <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="#fff" d="M24 12.07C24 5.41 18.63 0 12 0S0 5.4 0 12.07C0 18.1 4.39 23.09 10.13 24v-8.44H7.08v-3.49h3.04V9.41c0-3.02 1.8-4.7 4.54-4.7 1.31 0 2.68.24 2.68.24v2.97h-1.5c-1.5 0-1.96.93-1.96 1.89v2.26h3.32l-.53 3.5h-2.8V24C19.62 23.1 24 18.1 24 12.07z"/></svg>
         """;
 
-    // The four squares from Microsoft's brand kit, in the kit's own colors
-    // and its 23-unit grid — the mark is 21 units with a unit of clear
-    // space around it, which is why it reads a shade smaller than the G
-    // beside it at the same box size. That clear space is part of the mark,
-    // not padding to be reclaimed, and the squares may not be recolored,
-    // outlined, or reordered.
+    // The four squares from Microsoft's brand kit, in the kit's own colors and its 23-unit grid —
+    // the mark is 21 units with a unit of clear space around it, which is why it reads a shade
+    // smaller than the G beside it at the same box size. That clear space is part of the mark, not
+    // padding to be reclaimed, and the squares may not be recolored, outlined, or reordered.
     private const string MicrosoftSquares = """
         <svg viewBox="0 0 23 23" aria-hidden="true"><path fill="#F25022" d="M1 1h10v10H1z"/><path fill="#7FBA00" d="M12 1h10v10H12z"/><path fill="#00A4EF" d="M1 12h10v10H1z"/><path fill="#FFB900" d="M12 12h10v10H12z"/></svg>
         """;
 
     private static string Esc(string s) => WebUtility.HtmlEncode(s);
 
-    // $$ so that CSS braces are plain content and interpolation is {{...}}: a
-    // raw string literal has no brace-doubling escape, it raises the
-    // interpolation delimiter instead.
-    //
-    // The .google, .facebook and .microsoft metrics and palettes are copied
-    // from those providers' own brand kits. Microsoft's is the most
-    // prescriptive — its own height, square corners, Segoe UI at its own size —
-    // so the three buttons do NOT agree on height or radius, and that is the
-    // correct outcome rather than a layout bug to tidy away.
-    //
-    // Two details are ours, because the kit specifies neither. The border is
-    // the kit's own, which it draws on the LIGHT button: the dark one is drawn
-    // for a light page and would sit here as a near-invisible rectangle. The
-    // hover is a plain lift of the fill, matching the other two rows.
-    //
-    // Roboto and Segoe UI are the faces those specs name — first in their
-    // stacks so they are used where installed, but never fetched, because
-    // self-contained outranks pixel-perfect here.
+    // $$ so that CSS braces are plain content and interpolation is {{...}}: a raw string literal
+    // has no brace-doubling escape, it raises the interpolation delimiter instead.
+    // The .google/.facebook/.microsoft metrics and palettes come from those providers' brand kits,
+    // so the three buttons do NOT agree on height or radius — the correct outcome, not a layout
+    // bug to tidy. Ours: the kit's LIGHT-button border, the dark one being invisible on this page.
     private static string Shell(string title, string body) => $$"""
         <!doctype html>
         <html lang="en">

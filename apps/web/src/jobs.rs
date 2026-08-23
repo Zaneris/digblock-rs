@@ -21,46 +21,23 @@ use wasm_bindgen::prelude::*;
 
 /// Jobs one worker may have outstanding.
 ///
-/// This is a FEED RATE, not a fairness knob, and it is the whole
-/// throughput story. `top_up_workers` refills once per `maintain`, so a
-/// worker that empties its queue mid-frame idles until the next one:
-/// throughput caps at `DEPTH × workers × fps` no matter how fast the jobs
-/// are. At a shallow depth that measured a few hundred jobs/s on a
-/// high-refresh browser with the pool barely utilized and a thousand
-/// columns still queued — the same starvation BENCH.md's second pass found
-/// natively with `bounded(workers*2)`, whose fix was `workers*16`. Deep
-/// enough that a worker always has a backlog; the queue costs nothing but
-/// the encoded jobs sitting in it.
+/// A FEED RATE, not a fairness knob, and the whole throughput story: `top_up_workers` refills once
+/// per `maintain`, so throughput caps at `DEPTH × workers × fps`. Deep enough that a worker always
+/// has a backlog; the queue costs nothing but the encoded jobs sitting in it.
 const DEPTH: usize = 16;
 
-/// Sweeps a slot may go without a reply while holding work before it is
-/// written off.
+/// Sweeps a slot may go without a reply while holding work before it is written off.
 ///
-/// Counted in SWEEPS — one per `maintain` that found the inbox dry, so
-/// roughly one per frame — rather than in seconds, and that is the point.
-/// A hidden tab throttles the workers as hard as it throttles the page, so
-/// a wall clock would declare a perfectly healthy pool dead on the first
-/// frame back from a background tab; a sweep counter simply doesn't
-/// advance while nothing is running. At a display-paced frame rate this is
-/// seconds of grace against jobs that cost about a millisecond and a queue
-/// that drains in tens of milliseconds — two orders of magnitude of slack,
-/// so it fires only on a worker that is genuinely not coming back.
+/// Counted in SWEEPS — one per `maintain` that found the inbox dry — rather than in seconds: a
+/// hidden tab throttles the workers as hard as the page, so a wall clock would declare a healthy
+/// pool dead on the first frame back from the background, while a sweep counter does not advance.
 const WEDGE_SWEEPS: u32 = 600;
 
-/// Default ceiling on workers, whatever the machine reports.
+/// Default ceiling on workers, whatever the machine reports. The sweep behind it is in BENCH.md.
 ///
-/// The sweep behind this — fill time, p99, worst frame and dropped-frame count
-/// against worker count — is in BENCH.md.
-///
-/// **The next rung up was measured and declined, not overlooked.** It fills much
-/// faster and still beats the inline path on p99, but it is the only arm that
-/// drops a frame, and this whole change exists to buy frame time rather than
-/// spend it: jobs move off-thread, but ABSORBING their results is pinned to the
-/// thread that owns the device and cannot follow them.
-///
-/// This constant is NOT what protects weak hardware — `default_count` does, via
-/// `cores - 2`. Raising it only ever affects machines with cores to spare, so
-/// re-measure THERE, and on the fill, which is what a player actually waits on.
+/// The next rung up was measured and DECLINED: it fills faster and still beats the inline path on
+/// p99, but it is the only arm that drops a frame, and absorbing results is pinned to the thread
+/// that owns the device. `default_count` is what protects weak hardware, so re-measure there.
 pub(crate) const MAX_WORKERS: usize = 2;
 
 /// Absolute ceiling for an explicit `?workers=` override. The override
@@ -145,12 +122,10 @@ impl WorkerPool {
 			return None;
 		}
 		let absolute = absolute_url(module_url)?;
-		// The bootstrap is generated here and lives in a blob rather than
-		// as a file in the bundle, so the deployed bundle stays exactly
-		// one stamped pair per module. A third, unstamped `.js` would be
-		// a cacheable file whose contents can drift from the module it
-		// imports — the precise shape of the LinkError this project has
-		// shipped twice (see apps/web/_headers).
+		// The bootstrap lives in a blob rather than as a file in the bundle, so the deployed
+		// bundle stays exactly one stamped pair per module. A third, unstamped `.js` would be a
+		// cacheable file whose contents can drift from the module it imports — the LinkError
+		// shape (see apps/web/_headers).
 		let source = bootstrap_source(&absolute);
 		let parts = js_sys::Array::of1(&JsValue::from_str(&source));
 		let bag = web_sys::BlobPropertyBag::new();
@@ -186,18 +161,11 @@ impl WorkerPool {
 		})
 	}
 
-	/// Retire workers that took work and stopped answering, and hand back
-	/// what any dead slot was holding.
+	/// Retire workers that took work and stopped answering, and hand back what a dead slot held.
 	///
-	/// This is the difference between a pool that degrades and one that
-	/// stalls. `outstanding` only ever retires on a reply, so a worker
-	/// that traps once and never answers holds that depth forever; with
-	/// every slot in that state `submit` refuses everything, and because
-	/// the pipeline runs jobs inline only when the pool reports UNREADY —
-	/// a refusal means "busy", which is not the same thing — streaming
-	/// would stop for the rest of the page session with nothing in the
-	/// log. On a machine that `default_count` gives a single worker, one
-	/// trap is the whole pool.
+	/// `outstanding` only retires on a reply, so a worker that traps once holds its depth forever;
+	/// with every slot so wedged `submit` refuses everything, and a refusal means "busy" rather
+	/// than the UNREADY that sends the pipeline inline, so streaming would stop for the session.
 	fn sweep(&mut self) {
 		for (i, slot) in self.slots.iter_mut().enumerate() {
 			if !slot.dead.get() {

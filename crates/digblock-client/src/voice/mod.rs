@@ -16,12 +16,10 @@ use digblock_core::skills::Skill;
 use digblock_core::unlock::Requirement;
 use digblock_net::protocol::PlayerId;
 
-/// Which spell a refusal answers.
-///
-/// A refusal that cannot name its spell says the wrong thing about two
-/// spells out of three — the ward's fare refused as a waystone's
-/// passage, kindle's rung refused as a locked port. So the spell is an
-/// ARGUMENT, and every caller that knows which one it cast passes it.
+/// Which spell a refusal answers. A refusal that cannot name its spell says the wrong thing about
+/// two spells out of three — the ward's fare refused as a waystone's passage, kindle's rung as a
+/// locked port. So the spell is an ARGUMENT, and every caller that knows which one it cast passes
+/// it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Spell {
 	Waystone,
@@ -37,39 +35,25 @@ pub(crate) enum Spell {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub(crate) enum Msg {
 	// ---- refusals, the four a dig or a place can meet ----
-	/// A level gate: the requirement names the block, the skill and the
-	/// level, so the line can say all three.
 	DigRefused(Requirement),
-	/// A permanently protected cell, and its opposite number. Two
-	/// messages and not one: "won't break" and "can't build here" are
-	/// different situations, and one sentence for both reads as a bug.
+	/// A protected cell and its opposite number — two messages, since one line for both misleads.
 	DigProtected,
 	PlaceProtected,
-	/// A revealed vein with the wrong tool in hand — the one refusal a
-	/// player clears by switching hands rather than by levelling.
+	/// A revealed vein with the wrong tool in hand — cleared by switching hands, not by levelling.
 	NeedsSiphon,
-	/// A refusal the server named a reason for that this client cannot
-	/// turn into a gate — the cell is no longer resident, or the two
-	/// disagree about what stands there.
+	/// A server refusal the client cannot turn into a gate: the cell is gone, or the two disagree.
 	DigRefusedByServer,
 
-	/// A cast channel broken by moving, digging or opening a surface —
-	/// the player did something else, so the spell let go.
+	/// A cast channel broken by moving, digging or opening a surface — the spell let go.
 	CastInterrupted,
 	/// A spell beyond the caster's Arcana, and the one they tried.
 	SpellLocked(Spell),
 	/// A spell refused for its fare, before any debit.
 	SpellFareShort(Spell),
-	/// The same two, as the SERVER refuses them. `CastRefusal` carries a
-	/// reason and no spell, and the client has cleared the channel by
-	/// the time the answer lands, so these two cannot name what was
-	/// refused and must not pretend to. They fold into the pair above
-	/// the moment the refusal can say which spell it answers.
+	/// The same two, as the SERVER refuses them — `CastRefusal` carries no spell to name.
 	WaystoneLocked,
 	CastCantPay,
-	/// A conjuring with no place to land: the caster's head is in a cell
-	/// that cannot hold a light, or a ward's shell would close on a
-	/// player or over ground not loaded.
+	/// A conjuring with no place to land: no cell for the light, or a ward closing on a player.
 	CastBadTarget,
 
 	// ---- progression ----
@@ -103,38 +87,28 @@ pub(crate) enum Msg {
 	Teleported,
 	ReturnedToSpawn,
 
-	// ---- text that arrives as text ----
-	/// A free-form server line. What remains here after admin replies
-	/// were typed: text a server operator authored, which nothing on
-	/// this side can translate because nothing on this side knows what
-	/// it says.
+	// ---- text that arrives as text: nothing on this side knows what it says ----
 	ServerNotice {
 		text: String,
 	},
-	/// An admin command's answer. Typed all the way across the wire, so
-	/// the words are chosen here like every other line a player reads.
+	/// An admin command's answer, typed all the way across the wire so the words are chosen here.
 	Admin(digblock_net::messages::AdminReply),
-	/// Another player's chat. The NAME and the TEXT are theirs; only the
-	/// punctuation between them is ours.
+	/// Another player's chat: the NAME and the TEXT are theirs, only the punctuation is ours.
 	Chat {
 		name: String,
 		text: String,
 	},
-	/// Tab completion's echo of a server-advertised command. Both halves
-	/// arrive from the server; the join is ours.
+	/// Tab completion's echo of a server-advertised command — both halves theirs, the join ours.
 	CommandHint {
 		usage: String,
 		desc: String,
 	},
 }
 
-/// The line to draw for `msg`, in the player's language.
-///
-/// One locale today. Adding another is a `fn line(&Msg) -> Option<String>`
-/// beside [`en`] and an arm here that falls back to English — a partial
-/// translation is the normal state of a shipped one. English itself may
-/// never be partial: `en::line` matches exhaustively, so a new variant
-/// fails the BUILD until it has words.
+/// The line to draw for `msg`, in the player's language. One locale today; adding another is a
+/// `fn line(&Msg) -> Option<String>` beside [`en`] and an arm here that falls back to English, a
+/// partial translation being the normal state of a shipped one. English itself may never be
+/// partial: `en::line` matches exhaustively, so a new variant fails the BUILD until it has words.
 pub(crate) fn render(msg: &Msg) -> String {
 	en::line(msg)
 }

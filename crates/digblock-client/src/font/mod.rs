@@ -25,22 +25,14 @@ pub enum FaceId {
 	/// Proportional. Everything the player reads.
 	#[default]
 	Ui,
-	/// Monospace. The debug overlay and spike log only — they align
-	/// columns with printf padding, which needs a fixed advance.
+	/// Monospace. The debug overlay and spike log only, which align columns with printf padding.
 	Mono,
 }
 
-// Layout box height → em size. The UI face maps 1:1 — a box of a given height
-// is that many pixels of Inter, the ordinary reading of a UI type size. Note
-// this IS visibly smaller than the bitmap face it replaces, whose capitals
-// filled nearly the whole box; that is the intended look, and the
-// interface-scale slider is there for anyone who wants the old heft back.
-//
-// The mono face is trimmed slightly so its taller line box still fits the debug
-// panel's row pitch.
-//
-// These are THE tuning knobs for a font swap — nothing else depends on their
-// values.
+// Layout box height → em size. The UI face maps 1:1 — a box of a given height is that many pixels
+// of Inter, the ordinary reading of a UI type size. The mono face is trimmed slightly so its
+// taller line box still fits the debug panel's row pitch. These are THE tuning knobs for a font
+// swap — nothing else depends on their values.
 const UI_EM_RATIO: f32 = 1.0;
 const MONO_EM_RATIO: f32 = 0.95;
 

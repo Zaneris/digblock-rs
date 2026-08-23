@@ -1,11 +1,9 @@
 use super::*;
 
-/// The trap this gate's split exists to close. The adaptive budget is
-/// ONE deadline over jobs, drain, eviction and uploads, and only the
-/// jobs can move to a worker pool — so gating it on the executor sent
-/// the drain and the uploads back to the fixed floor the moment web
-/// workers were switched on. Jobs faster, absorption slower, on
-/// exactly the machines that had headroom to spend.
+/// The trap this gate's split exists to close. The adaptive budget is ONE deadline over jobs,
+/// drain, eviction and uploads, and only the jobs can move to a worker pool — so gating it on
+/// the executor sent the drain and the uploads back to the fixed floor the moment web workers
+/// were switched on. Jobs faster, absorption slower, on exactly the machines with headroom.
 #[test]
 fn a_worker_backed_web_client_keeps_its_adaptive_budget() {
 	let mut web = EngineConfig::web();

@@ -39,20 +39,11 @@ pub fn node_yields(node: BlockType, level: u32) -> Vec<(Essence, u32)> {
 	})
 }
 
-/// What one FIELD draw pays into a player's stocks — a NODE drawn out where it
-/// stands, vein or heartwood or spring alike, with no item in between. The ONE
-/// answer the server's dig credit and the engine's offline arm both take.
-///
-/// Deliberately the ordinary [`node_yields`] and not a second table: the
-/// Alchemy level scales a draw the same way everywhere. Mining's capstone
-/// ([`crate::unlock::ore_mastery`]) MULTIPLIES the whole split rather than
-/// adding a line, which keeps "one extra vein's worth" true of a two-essence
-/// kind as well as a one-essence one.
-///
-/// The one thing a table cannot say is the TRACE, which is why this takes a
-/// cell at all: [`crate::worldgen::ore::traces_aether`] is a chance per draw,
-/// and being DERIVED from the cell rather than rolled is what lets it live here
-/// — a random line would make this two different answers on two machines.
+/// What one FIELD draw pays into a player's stocks — a NODE drawn out where it stands, vein or
+/// heartwood or spring alike, with no item in between. The ONE answer the server's dig credit and
+/// the engine's offline arm both take. Deliberately the ordinary [`node_yields`] and not a second
+/// table, with Mining's capstone MULTIPLYING the whole split. The TRACE is why this takes a cell:
+/// [`crate::worldgen::ore::traces_aether`] is DERIVED from it, a rolled line differing per machine.
 pub fn field_yield(
 	node: BlockType,
 	alchemy: u32,
@@ -107,23 +98,11 @@ pub fn craft_cost(ideal: u32, level: u32) -> u32 {
 	(ideal * waste_permille(level)).div_ceil(1000)
 }
 
-/// A waystone passage's price, hand-tabled in [`functional_ideal`]'s
-/// spirit: the fare rises with the port's remoteness WITHIN an essence,
-/// and the essence climbs the ladder with the port — the lowland ports
-/// in the day-one Vitae, then Terra, the cold and the shore in Unda, the
-/// mountain in Ferrum and the far cold in Aether, so the spine spends
-/// every faucet the other ladders open rather than one. The far cold's
-/// fare is the smallest figure in the table, because Aether is the
-/// essence nothing can transmute into — and `skills::cast_xp` weighs a
-/// unit of it accordingly, so the scarcest fare still pays the most
-/// Arcana of any passage rather than the least. Each essence's
-/// node reveals before the first port priced in it opens (the
-/// payability pin, `the_port_tables_are_twins_and_the_fare_is_payable`). `None`
-/// is a kind with no port, exactly [`crate::unlock::waystone`]'s set —
-/// the two are pinned twins, a fare without a port being as wrong as a
-/// port without a fare. Return Home deliberately has no row here AT THE
-/// TYPE: it is not a destination kind, so the recovery spell costs no
-/// essence structurally, ever.
+/// A waystone passage's price, hand-tabled: the fare rises with the port's remoteness WITHIN an
+/// essence, and the essence climbs the ladder with the port, so the spine spends every faucet the
+/// other ladders open. `None` is a kind with no port, exactly [`crate::unlock::waystone`]'s set —
+/// pinned twins, a fare without a port being as wrong as a port without a fare, and payable at its
+/// own level. Return Home has no row AT THE TYPE, so the recovery spell costs no essence, ever.
 pub fn cast_price(kind: crate::worldgen::SurfaceKind) -> Option<(Essence, u32)> {
 	use crate::worldgen::SurfaceKind as K;
 	Some(match kind {
@@ -182,12 +161,10 @@ pub fn ward_price(level: u32) -> (Essence, u32) {
 	(Essence::Unda, BASE << rank)
 }
 
-/// The Causeway's fare: Unda, because it is the Ward's own glass — one
-/// substance, one price line, and the springstone faucet feeds both
-/// spells that write it. Climbs faster than
-/// [`crate::unlock::causeway_secs`] lengthens the road, which is what
-/// makes a rung sell uninterrupted distance rather than a discount on
-/// it; the top rung is the heaviest repeatable spend in the book.
+/// The Causeway's fare: Unda, because it is the Ward's own glass — one substance, one price line,
+/// and the springstone faucet feeds both spells that write it. Climbs faster than
+/// [`crate::unlock::causeway_secs`] lengthens the road, which is what makes a rung sell
+/// uninterrupted distance rather than a discount on it.
 pub fn causeway_price(level: u32) -> (Essence, u32) {
 	const BASE: u32 = 12;
 	let fare = match level {
@@ -198,16 +175,11 @@ pub fn causeway_price(level: u32) -> (Essence, u32) {
 	(Essence::Unda, fare)
 }
 
-/// Functional items' craft costs — priced BY HAND (§7.3), never by
-/// volume, because a torch's cost is a decision rather than a
-/// measurement. Cross-family costs live here on purpose: they are what
-/// make the essences feel like an economy instead of parallel currencies.
-///
-/// The LEVELS these open at are not here — every threshold in the game
-/// lives in [`crate::unlock`], and `unlock::functional` is this list's
-/// twin (pinned to it, so an item cannot have a price without a level or
-/// the other way round). An item may ALSO cost feedstock blocks
-/// ([`functional_feedstock`]); the two vessels cost ONLY that.
+/// Functional items' craft costs — priced BY HAND (§7.3), never by volume, because a torch's cost
+/// is a decision rather than a measurement. Cross-family costs live here on purpose: they are what
+/// make the essences feel like an economy instead of parallel currencies. The LEVELS these open at
+/// are not here — every threshold lives in [`crate::unlock`], and `unlock::functional` is this
+/// list's pinned twin. An item may ALSO cost feedstock blocks ([`functional_feedstock`]).
 pub fn functional_ideal(b: BlockType) -> Option<&'static [(Essence, u32)]> {
 	use BlockType as B;
 	use Essence as E;
@@ -238,18 +210,11 @@ pub fn functional_ideal(b: BlockType) -> Option<&'static [(Essence, u32)]> {
 	})
 }
 
-/// The BLOCKS a functional item consumes beside its essence lines — matter in,
-/// not currency in. Today it carries the two vessels, whose whole price it is:
-///
-/// - **The siphon may never cost essence.** Every essence in the game is a
-///   siphon draw, so an essence-priced siphon deadlocks the whole currency
-///   (`the_essence_tool_costs_no_essence`).
-/// - **The bucket's RUNG is its whole gate.** It opens past the siphon
-///   ([`crate::unlock::functional`]), so the deadlock does not carry it;
-///   an essence price would toll the same door twice.
-///
-/// Wood for both — "dig your way to the trees, fell a few, make your tools" IS
-/// the opening loop.
+/// The BLOCKS a functional item consumes beside its essence lines — matter in, not currency in.
+/// Today it carries the two vessels, whose whole price it is. The siphon may never cost essence:
+/// every essence in the game is a siphon draw, so an essence-priced siphon deadlocks the currency
+/// (`the_essence_tool_costs_no_essence`). The bucket's RUNG is its whole gate, opening past the
+/// siphon. Wood for both — "dig your way to the trees, fell a few, make your tools" IS the loop.
 pub fn functional_feedstock(b: BlockType) -> &'static [(BlockType, u32)] {
 	match b {
 		BlockType::Bucket => &[(BlockType::Wood, 6)],
@@ -288,14 +253,11 @@ pub fn craft_feedstock(b: BlockType) -> Vec<(BlockType, u32)> {
 		.unwrap_or_default()
 }
 
-/// Ideal (pre-waste) craft cost lines for anything craftable. `None` = not
-/// craftable. May be EMPTY for a craftable item whose whole price is feedstock
-/// ([`craft_feedstock`]) — `Some(vec![])` and `None` mean different things,
-/// which is why callers gate on this and not on the lines.
-///
-/// Gated on [`BlockType::is_bench_only`] first, the twin of the same gate in
-/// [`crate::unlock::craft`]. Derived for every structural block: the material's
-/// whole-cube split prorated UP to the shape's volume.
+/// Ideal (pre-waste) craft cost lines for anything craftable. `None` = not craftable, while EMPTY
+/// is a craftable item whose whole price is feedstock ([`craft_feedstock`]) — `Some(vec![])` and
+/// `None` mean different things, which is why callers gate on this and not on the lines. Gated on
+/// [`BlockType::is_bench_only`] first, the twin of the same gate in [`crate::unlock::craft`], and
+/// derived for every structural block: the material's whole-cube split prorated UP to the shape.
 pub fn craft_ideal(b: BlockType) -> Option<Vec<(Essence, u32)>> {
 	if !b.is_bench_only() {
 		return None;
@@ -365,13 +327,10 @@ const FEEDSTOCK_WORTH: u32 = 9;
 /// times a second, which is a stream of wire ops rather than a bench.
 const MIN_PACE_TICKS: u32 = 6;
 
-/// What ONE craft of `item` is worth at the bench — a fixed fraction of
-/// its ideal (pre-waste) cost, essence and feedstock together. Zero for
-/// anything with no recipe.
-///
-/// Pre-waste on purpose, which is what makes it a property of the ITEM
-/// rather than of the player: two masons at different levels pay
-/// different prices for the same stair and spend the same time making it.
+/// What ONE craft of `item` is worth at the bench — a fixed fraction of its ideal (pre-waste)
+/// cost, essence and feedstock together. Zero for anything with no recipe. Pre-waste on purpose,
+/// which is what makes it a property of the ITEM rather than of the player: two masons at
+/// different levels pay different prices for the same stair and spend the same time making it.
 pub fn craft_worth(item: BlockType) -> u32 {
 	let Some(lines) = craft_ideal(item) else {
 		return 0;
@@ -384,14 +343,10 @@ pub fn craft_worth(item: BlockType) -> u32 {
 	(essence + matter).div_ceil(3)
 }
 
-/// Bench TRANSMUTATION pace in sim ticks for ONE `item` at `level`.
-///
-/// A craft used to be instant, and it was the last place in the economy
-/// where XP arrived in a click: the transmute tab's CTRL multiplier paid a
-/// hundred crafts' worth in one frame. Pacing it is not a nerf to the
-/// award — it is what makes the award take the time the work takes. The
-/// catalog's biggest price is also its longest hold, which is the reading
-/// a forge should have.
+/// Bench TRANSMUTATION pace in sim ticks for ONE `item` at `level`. An instant craft is the last
+/// place in the economy where XP could arrive in a click — the transmute tab's CTRL multiplier
+/// paying a hundred crafts' worth in one frame — so pacing is not a nerf to the award but what
+/// makes the award take the time the work takes. The catalog's biggest price is its longest hold.
 pub fn craft_pace_ticks(item: BlockType, level: u32) -> u32 {
 	pace_ticks(craft_worth(item), level)
 }
@@ -409,15 +364,11 @@ fn pace_ticks(worth: u32, level: u32) -> u32 {
 /// [`bench_burst_ticks`].
 pub const BENCH_BURST: f32 = 2.0;
 
-/// The most expensive SINGLE craft a player at `level` is allowed to ask
-/// for, in ticks.
-///
-/// Gated on what that level can actually do, not on the whole catalog: a
-/// fresh player banks what a fresh player's ops cost, and the Resonant
-/// Pick's long forge only widens the allowance from the level that can
-/// forge one. Memoized per level, because the server's refill asks for the
-/// bucket's capacity every tick for every connected client and the answer
-/// is a property of the tables rather than of the caller.
+/// The most expensive SINGLE craft a player at `level` is allowed to ask for, in ticks. Gated on
+/// what that level can actually do, not on the whole catalog: a fresh player banks what a fresh
+/// player's ops cost, and the Resonant Pick's long forge only widens the allowance from the level
+/// that can forge one. Memoized per level, because the server's refill asks for the bucket's
+/// capacity every tick for every connected client and the answer is a property of the tables.
 fn costliest_op_ticks(level: u32) -> u32 {
 	static MAX: std::sync::OnceLock<Vec<u32>> = std::sync::OnceLock::new();
 	let table = MAX.get_or_init(|| {
@@ -435,19 +386,11 @@ fn costliest_op_ticks(level: u32) -> u32 {
 	table[level.min(crate::skills::MAX_LEVEL) as usize]
 }
 
-/// The bench bucket's capacity in ticks at `level`: two reference ops' worth,
-/// or ONE costliest craft if that is more.
-///
-/// The second half is not a nicety. The bucket banks ticks and an op spends its
-/// own pace, which scales with what that op is WORTH — while the burst is sized
-/// off the reference alone. The pick's forge is worth an order of magnitude
-/// more, so its pace exceeded a FULL bucket and `process_alchemy` refused it
-/// forever: no debit, no yield, no XP, just the standing rebase — online only,
-/// since offline is unpaced, which is the worst way to find out.
-/// `the_bucket_can_always_afford_the_costliest_op` pins the guarantee.
-///
-/// Sustained throughput is untouched: the bucket still refills one tick per
-/// tick. Only the bunching allowance grows.
+/// The bench bucket's capacity in ticks at `level`: two reference ops' worth, or ONE costliest
+/// craft if that is more. The second half is not a nicety — the bucket banks ticks and an op
+/// spends its own pace, which scales with what that op is WORTH, while the burst is sized off the
+/// reference alone, so a pace exceeding a FULL bucket had `process_alchemy` refuse it forever,
+/// online only. `the_bucket_can_always_afford_the_costliest_op` pins it; refill is untouched.
 pub fn bench_burst_ticks(level: u32) -> f32 {
 	let reference = BENCH_BURST * base_pace_ticks(level) as f32;
 	reference.max(costliest_op_ticks(level) as f32)

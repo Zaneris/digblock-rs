@@ -1,17 +1,12 @@
-//! Desktop audio filler: rodio on a dedicated thread, fed by the engine's
-//! `AudioSink` seam over a channel. The engine never sees rodio; a dead or
-//! deviceless audio thread silently mutes the game instead of failing it.
+//! Desktop audio filler: rodio on a dedicated thread, fed by the engine's `AudioSink` seam over a
+//! channel. The engine never sees rodio; a dead or deviceless audio thread silently mutes the game
+//! instead of failing it.
 //!
-//! Spatialization: one rodio `SpatialPlayer` per positional voice. Rodio's
-//! two-ear model is `min(1/d², 1.0)` per ear with no rolloff knob, so every
-//! world coordinate is scaled by [`ATT`] to place that curve over a useful range
-//! of world distances.
-//!
-//! The clamp is the part that matters: everything closer than `1/ATT` blocks
-//! comes back at unity, with NO falloff at all inside that ball. At the original
-//! scale that plateau spanned most of a scene — a waterfall at your feet and one
-//! across the room were exactly as loud, and several could stack. Engine-side
-//! gains taper with distance for the same reason.
+//! Spatialization is one rodio `SpatialPlayer` per positional voice. Rodio's two-ear model is
+//! `min(1/d², 1.0)` per ear with no rolloff knob, so every world coordinate is scaled by [`ATT`]
+//! to place that curve over a useful range. The clamp is what bites: everything inside `1/ATT`
+//! blocks comes back at unity with no falloff at all, and such voices stack — which is why
+//! engine-side gains taper with distance too.
 //!
 //! Music: fetched from the master server (never embedded) by a helper thread.
 
@@ -419,15 +414,10 @@ fn play_voice(
 mod tests {
 	use super::*;
 
-	/// Every embedded SFX decodes through the decoder this filler actually
-	/// uses, and yields real samples.
-	///
-	/// The prewarm above answers a decode failure with `log::warn!` and
-	/// carries on — which is right at runtime (one dud sound must not take
-	/// the audio thread down) and is exactly why the failure needs catching
-	/// here instead. A file that Vorbis accepts structurally but rodio
-	/// cannot decode is silent in the game and green in every other gate —
-	/// nothing else touches the bytes at all.
+	/// Every embedded SFX decodes through the decoder this filler actually uses, and yields real
+	/// samples. The prewarm answers a decode failure with a warning and carries on, so a file that
+	/// is structurally valid Vorbis but undecodable by rodio is silent in the game and green in
+	/// every other gate — nothing else touches the bytes at all.
 	#[test]
 	fn every_sfx_decodes_through_rodio() {
 		for s in digblock_client::audio::ALL_SFX {

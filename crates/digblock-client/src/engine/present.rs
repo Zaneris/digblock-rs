@@ -4,16 +4,11 @@
 use super::*;
 
 impl Engine {
-	/// Crosshair target for the highlight overlay: the cell, the box the
-	/// outline wraps (the shape's own, so a slab or a door is boxed at
-	/// its own size), and dig progress — `None` = idle outline.
-	///
-	/// The water tool never reports progress, in either state, so the
-	/// outline stays but the crack never appears. Empty, it marks the
-	/// source the scoop will take — chipping a block apart is not what is
-	/// happening, and the swinging hand is the feedback instead. Charged,
-	/// it marks the ordinary block the pour will land against, which is
-	/// why the outline survives `diggable` saying no.
+	/// Crosshair target for the highlight overlay: the cell, the box the outline wraps (the
+	/// shape's own, so a slab or a door is boxed at its own size), and dig progress — `None` =
+	/// idle outline. The water tool never reports progress in either state, so the outline stays
+	/// and the crack never appears: empty it marks the source the scoop will take, charged the
+	/// block the pour will land against, which is why the outline survives `diggable` saying no.
 	pub(crate) fn dig_progress(&self) -> Option<crate::highlight::HighlightTarget> {
 		let hit = self.target.as_ref()?;
 		let boxed =
@@ -46,16 +41,11 @@ impl Engine {
 		Some(boxed(progress))
 	}
 
-	/// The vein the siphon is drawing from this frame: the hit, the tier,
-	/// and how far through the hold it is.
-	///
-	/// Deliberately narrower than `dig_progress`'s extraction branch,
-	/// which answers on AIM: merely looking at a seam with the siphon out
-	/// draws nothing, because the stream is the tool working rather than
-	/// the tool being held. So it wants the button down and the hold live
-	/// — a released hold is decaying, and the draw fades out with it,
-	/// which is the same statement the retreating crack makes about a
-	/// released dig.
+	/// The vein the siphon is drawing from this frame: the hit, the tier, and how far through the
+	/// hold it is. Deliberately narrower than `dig_progress`'s extraction branch, which answers on
+	/// AIM: merely looking at a seam with the siphon out draws nothing, because the stream is the
+	/// tool working rather than the tool being held. So it wants the button down and the hold live
+	/// — a released hold decays and the draw fades with it, as a retreating crack does for a dig.
 	pub(super) fn siphon_target(&self) -> Option<(RayHit, BlockType, f32)> {
 		let hit = self.target?;
 		if !self.diggable(&hit) {
@@ -81,14 +71,11 @@ impl Engine {
 		Some((hit, ore, progress.clamp(0.0, 1.0)))
 	}
 
-	/// Age the essence draw: in while the siphon is working a vein, out
-	/// once it stops.
+	/// Age the essence draw: in while the siphon is working a vein, out once it stops.
 	///
-	/// Runs after the dig stepping, because what it reads is that step's
-	/// result. The geometry is rewritten every live frame rather than
-	/// latched, so following a seam from one cell to the next is one
-	/// continuous stream — the envelope carries over — instead of a
-	/// stutter of fades.
+	/// Runs after the dig stepping, because what it reads is that step's result. The geometry is
+	/// rewritten every live frame rather than latched, so following a seam from one cell to the
+	/// next is one continuous stream — the envelope carries over — instead of a stutter of fades.
 	pub(super) fn step_siphon(&mut self, dt: f32) {
 		let Some((hit, ore, progress)) = self.siphon_target() else {
 			// Nothing to draw from: run whatever was running out, and drop
@@ -123,19 +110,11 @@ impl Engine {
 		});
 	}
 
-	/// Advance WHICH item is in the hand, and the swap dip between two.
-	///
-	/// Its own method because it has to run on three paths: at the tail of the
-	/// interactive update, where it must follow `reconcile_layout`, and before
-	/// each scripted-flight return, because the hand is part of the frame a
-	/// capture photographs. The viewmodel draws `Swap::shown()` and a carried
-	/// light hangs off it, so a harness that never advances this can neither
-	/// draw a held item nor measure one — the first attempt at R28's cost
-	/// bracket read both `ginee` and `emitters` as empty and looked correct.
-	///
-	/// Costs the old baselines nothing: they fly with an empty bar. The bob and
-	/// the swing stay interactive-only, being driven by motion the scripted
-	/// camera does not have.
+	/// Advance WHICH item is in the hand, and the swap dip between two. Runs on three paths: the
+	/// interactive update's tail, where it must follow `reconcile_layout`, and before each
+	/// scripted-flight return, since the viewmodel draws `Swap::shown()` and a carried light hangs
+	/// off it — a harness that skips this can neither draw a held item nor measure one. The bob
+	/// and the swing stay interactive-only, driven by motion the scripted camera does not have.
 	pub(super) fn advance_hand(&mut self, dt: f32) {
 		let full = self.inventory.bucket_full();
 		self.input.tool_swap.advance(dt, self.hotbar.active_tool());
@@ -192,16 +171,11 @@ impl Engine {
 		})
 	}
 
-	/// Camera eye below the VISIBLE water surface? (None = unloaded =
-	/// dry.) The cell test alone flips at the lattice boundary, but the
-	/// rendered surface of a resting source sits `WATER_SURFACE_DROP`
-	/// below the cell top (water.wgsl sinks a corner by `d/9`) — without
-	/// the offset the underwater atmosphere pops in while the camera is
-	/// still visibly above water.
-	/// The flip happens FLIP_EARLY above the visible surface: the near
-	/// plane clips the surface pane before the eye reaches it, and
-	/// without the margin there are a few frames of neither-above-nor-
-	/// below shading while crossing.
+	/// Camera eye below the VISIBLE water surface? (None = unloaded = dry.) The cell test alone
+	/// flips at the lattice boundary, but the rendered surface of a resting source sits
+	/// `WATER_SURFACE_DROP` below the cell top, so without the offset the underwater atmosphere
+	/// pops in while the camera is still visibly above water. `FLIP_EARLY` adds a crossing margin:
+	/// the near plane clips the surface pane first, and without it a crossing shades as neither.
 	pub(super) fn eye_in_water(&self) -> bool {
 		const SURFACE_DROP: f32 = digblock_core::player::WATER_SURFACE_DROP;
 		const FLIP_EARLY: f32 = 0.1;
@@ -250,12 +224,10 @@ impl Engine {
 		let sun = -self.sun.sun_dir();
 		let moon = -self.sun.moon_dir();
 		let cam = self.camera.pos;
-		// The sky is the sky, submerged or not. The old model substituted
-		// a hand-tuned deep-water palette for the atmosphere whenever the
-		// eye went under, which meant the GI rays were told the sky was
-		// green — the attenuation belongs on the PATH through the water
-		// (the sun DDA's transmittance today, M2's participating medium
-		// for the view ray), never in the radiance of the source.
+		// The sky is the sky, submerged or not. Substituting a hand-tuned deep-water palette
+		// for the atmosphere told the GI rays the sky was green — the attenuation belongs on
+		// the PATH through the water (the sun DDA's transmittance today, M2's participating
+		// medium for the view ray), never in the radiance of the source.
 		let submerged = self.eye_in_water();
 		let (horizon, zenith) = (atmos.horizon, atmos.zenith);
 		FrameUniforms {

@@ -58,8 +58,9 @@ pin earns its place by naming a bug a derived test would miss.
 **Comments carry invariants, not history.** Say what breaks if the reader changes this, and what alternative was
 rejected — in a sentence, not a story. `crates/digblock-core/src/stream_budget.rs` is the house style. Do not write: the
 bug's biography ("this shipped twice", "it used to be X"), a version changelog, a tombstone for deleted code, or the
-same argument twice in a `//!` header and the item below it. Git carries all of that. Cap `//!` headers at ~10 lines and
-`///` items at ~6; anything longer belongs in a design doc, and nothing here builds rustdoc anyway.
+same argument twice in a `//!` header and the item below it. Git carries all of that. **Three hard caps, enforced by eye
+rather than by lint**: 15 comment lines at the top of a code file, 5 above any item, 1 above any enum variant — a bare
+`///` separator line counts. Anything longer belongs in a design doc, and nothing here builds rustdoc anyway.
 
 ## Commands
 

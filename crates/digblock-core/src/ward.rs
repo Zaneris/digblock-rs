@@ -31,12 +31,11 @@ const FACES: [Cell; 6] = [
 	(0, 0, -1),
 ];
 
-/// The widest sphere anything may ask for, ladder or debug knob. Every
-/// castable rank ([`crate::unlock::ward_radius`]) sits well inside it —
-/// held by `the_cap_clears_every_castable_rank` — and the cap is what
-/// keeps an arbitrary caller honest: [`inside`] SQUARES the radius, so a
-/// large enough one overflows, and the scan is cubic in it, so a merely
-/// big one hangs the frame that asked.
+/// The widest sphere anything may ask for, ladder or debug knob. Every castable rank
+/// ([`crate::unlock::ward_radius`]) sits well inside it — held by
+/// `the_cap_clears_every_castable_rank` — and the cap is what keeps an arbitrary caller honest:
+/// [`inside`] SQUARES the radius, so a large enough one overflows, and the scan is cubic in it,
+/// so a merely big one hangs the frame that asked.
 pub const MAX_RADIUS: i32 = 24;
 
 fn inside(head: Cell, r: i32, c: Cell) -> bool {
@@ -59,15 +58,11 @@ fn in_world(c: Cell) -> bool {
 	crate::chunk::split_world(c.0, c.1, c.2).is_some()
 }
 
-/// The sphere's two sets: the SHELL — every cell within the radius that
-/// shares a face with one beyond it — and the INTERIOR, everything
-/// within the radius the shell does not claim. Defining the shell as the
-/// interior's face-boundary is what makes it both sealed (no face path
-/// leaves the interior without crossing it) and as thin as a sealed
-/// shell can be (every shell cell touches the outside, so none of it
-/// lies deeper than the surface's own rind). Both are emitted in scan order, so the two ends agree on
-/// sequence as well as membership. The radius is clamped to
-/// [`MAX_RADIUS`] here, the one gate every caller comes through.
+/// The sphere's two sets: the SHELL — every cell within the radius that shares a face with one
+/// beyond it — and the INTERIOR, everything within the radius the shell does not claim. Defining
+/// the shell as the interior's face-boundary is what makes it both sealed and as thin as a sealed
+/// shell can be. Both are emitted in scan order, so the two ends agree on sequence as well as
+/// membership. The radius is clamped to [`MAX_RADIUS`] here — the one gate every caller uses.
 pub fn sets(head: Cell, r: i32) -> (Vec<Cell>, Vec<Cell>) {
 	let r = r.clamp(0, MAX_RADIUS);
 	let (mut shell, mut interior) = (Vec::new(), Vec::new());
@@ -98,26 +93,11 @@ pub enum Refusal {
 	Unloaded,
 }
 
-/// The writes one cast performs, in the order they land: shell cells of
-/// air or water become wardglass, interior water becomes air, everything
-/// else stands. Water in the shell must be claimed too — a wave left
-/// standing is a hole — and terrain in the shell is left alone, so a
-/// sphere cast on the ground is a dome fused to it. `read` answers with
-/// the cell's CURRENT value, `None` for one not loaded.
-///
-/// A cell beyond the world's own vertical bounds is SKIPPED rather than
-/// refused, which is what lets the spell be cast where it is wanted most
-/// — the whole deep band within a radius of the floor, which otherwise
-/// refuses every rank whose sphere reaches under bedrock. Safe where
-/// skipping an unloaded cell is not: the floor is [`BEDROCK_Y`], which
-/// the shell already spares as terrain, so a sphere the world clips is
-/// still sealed.
-///
-/// Order: by height from the floor up, and within a layer by angle about
-/// the caster, so the closing is a spiral climbing the sphere and the
-/// last cell to land is at the crown.
-///
-/// [`BEDROCK_Y`]: crate::block::BEDROCK_Y
+/// The writes one cast performs, in the order they land: shell cells of air or water become
+/// wardglass, interior water becomes air, everything else stands. Water in the shell must be
+/// claimed too — a wave left standing is a hole. `read` answers the cell's CURRENT value, `None`
+/// for one not loaded; a cell past the world's vertical bounds is SKIPPED rather than refused,
+/// safe because the floor is bedrock, which the shell spares as terrain. Order: see `closing_key`.
 pub fn plan(
 	head: Cell,
 	r: i32,
@@ -152,16 +132,11 @@ pub fn plan(
 	Ok(out)
 }
 
-/// Where a cell falls in the closing: its layer, then its bearing from
-/// the caster, then its distance out along that bearing.
-///
-/// TOTAL over distinct cells, and the third term is what makes it so: a
-/// layer's ring is several cells thick once interior drains join the
-/// shell, and a bearing alone ties every cell standing along one — so
-/// the order would fall back on whatever sequence the scan happened to
-/// enumerate. Angle and radius together name an integer offset uniquely,
-/// so the sort is a pure function of the SET and both ends land the same
-/// sequence however they built it.
+/// Where a cell falls in the closing: its layer, then its bearing from the caster, then its
+/// distance out along that bearing. TOTAL over distinct cells, and the third term is what makes
+/// it so: a layer's ring is several cells thick once interior drains join the shell, so a bearing
+/// alone ties every cell along one. Angle and radius together name an integer offset uniquely, so
+/// the sort is a pure function of the SET and both ends land the same sequence.
 fn closing_key(head: Cell, c: Cell) -> (i32, f32, i32) {
 	let (dx, dz) = (c.0 - head.0, c.2 - head.2);
 	(c.1, (dz as f32).atan2(dx as f32), dx * dx + dz * dz)
@@ -299,13 +274,10 @@ mod tests {
 		}
 	}
 
-	/// Whether water starting at the head could ever reach beyond the
-	/// radius, crossing faces and stopping at `blocked`.
-	///
-	/// This is the definition of sealed that owes nothing to [`sets`]:
-	/// it asks the sphere the question fluid asks, instead of re-running
-	/// the predicate that built it. A cell one step outside the radius
-	/// is still inside the cube, so the fill can never leave it.
+	/// Whether water starting at the head could ever reach beyond the radius, crossing faces and
+	/// stopping at `blocked`. The definition of sealed that owes nothing to [`sets`]: it asks the
+	/// sphere the question fluid asks, instead of re-running the predicate that built it. A cell
+	/// one step outside the radius is still inside the cube, so the fill can never leave it.
 	fn escapes(head: Cell, r: i32, blocked: &Cube) -> bool {
 		let mut seen = Cube::new(head, r);
 		let mut stack = vec![head];
@@ -333,21 +305,11 @@ mod tests {
 		cube
 	}
 
-	/// The shell is a SEALED surface confined to ONE rind, and every pane
-	/// that faces the inside is load-bearing. Three statements, none of
-	/// which re-runs the predicate `sets` classified by — which is the
-	/// only way a shell with a hole in it could pass:
-	///
-	/// - Sealed, as fluid asks it: a face fill from the head, blocked
-	///   only by the shell, never reaches past the radius.
-	/// - Thin, as geometry asks it: every shell cell lies in the
-	///   outermost rind, so nothing an interior cell could have been is
-	///   in there. (A shell built on the 18-neighbourhood, say, reaches
-	///   deeper and fails here.)
-	/// - Minimal: knock out a pane the interior touches and the fill gets
-	///   through. Only those — a shell cell walled off from the interior
-	///   by other shell cells holds nothing in, it only keeps the sphere
-	///   whole to look at.
+	/// The shell is a SEALED surface confined to ONE rind, and every pane facing the inside is
+	/// load-bearing. Three statements, none of which re-runs the predicate `sets` classified by —
+	/// the only way a shell with a hole could pass: sealed, as fluid asks it (a face fill from the
+	/// head never reaches past the radius); thin, as geometry asks it (every shell cell lies in the
+	/// outermost rind); and minimal (knock out a pane the interior touches and the fill leaks).
 	#[test]
 	fn the_shell_seals_one_rind_and_every_facing_pane_holds() {
 		for r in radii() {
@@ -478,13 +440,11 @@ mod tests {
 		}
 	}
 
-	/// A flooded sphere is where the closing key's ties lived: every
-	/// interior cell drains, so a layer carries several cells on one
-	/// bearing and a key of layer-and-bearing alone could not tell them
-	/// apart. No two consecutive entries share a key, so the SET decides
-	/// the sequence and both ends land the same one however their scan
-	/// enumerated it. Counted, since a plan of shell cells alone would
-	/// prove nothing.
+	/// A flooded sphere is where the closing key's ties lived: every interior cell drains, so a
+	/// layer carries several cells on one bearing and a key of layer-and-bearing alone could not
+	/// tell them apart. No two consecutive entries share a key, so the SET decides the sequence
+	/// and both ends land the same one however their scan enumerated it. Counted, since a plan of
+	/// shell cells alone would prove nothing.
 	#[test]
 	fn a_flooded_sphere_orders_by_a_key_that_never_ties() {
 		for r in radii() {
@@ -507,12 +467,10 @@ mod tests {
 		}
 	}
 
-	/// The spell where it is wanted most: a caster within a radius of
-	/// bedrock. Cells under the floor are not there to write, so the
-	/// plan skips them and the cast succeeds — and the sphere is still
-	/// sealed, because the floor the world clipped it against is the
-	/// undiggable one. Refusing instead shut the widest rank out of the
-	/// whole deep band.
+	/// The spell where it is wanted most: a caster within a radius of bedrock. Cells under the
+	/// floor are not there to write, so the plan skips them and the cast succeeds — and the sphere
+	/// is still sealed, because the floor the world clipped it against is the undiggable one.
+	/// Refusing instead shut the widest rank out of the whole deep band.
 	#[test]
 	fn a_sphere_clipped_by_the_world_floor_still_casts() {
 		use crate::block::BEDROCK_Y;

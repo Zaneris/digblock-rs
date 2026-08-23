@@ -66,12 +66,10 @@ fn at(eye: Vec3) -> [i32; 3] {
 	]
 }
 
-/// The lock's own description, as the cell it stands on and the bounds
-/// it protects — the region's enclosing box, since the wire field is a
-/// flat box and membership questions never ride this reply. `already`
-/// distinguishes reporting a standing lock from announcing a new one —
-/// the two differ only in wording, which is exactly why the server must
-/// not be the one choosing between them.
+/// The lock's own description, as the cell it stands on and the bounds it protects — the region's
+/// enclosing box, since the wire field is a flat box and membership questions never ride this
+/// reply. `already` distinguishes reporting a standing lock from announcing a new one — the two
+/// differ only in wording, which is exactly why the server must not be the one choosing.
 fn describe_lock(eye: Vec3, already: bool) -> AdminReply {
 	AdminReply::SpawnLocked {
 		cell: at(eye),
@@ -123,11 +121,9 @@ fn clock_of_tod(tod: f32) -> (u32, u32) {
 
 /// An essence by name, case-insensitively.
 ///
-/// Matched against [`Essence::ident`] — the untranslated operator's word
-/// — rather than a second list of spellings, so the command and the
-/// usage line cannot come to disagree, and a new essence is takeable the
-/// day its row exists. Not the screens' LABEL: an admin types the same
-/// word whatever language the client is showing.
+/// Matched against [`Essence::ident`] — the untranslated operator's word — rather than a second
+/// list of spellings, so the command and the usage line cannot come to disagree. Not the screens'
+/// LABEL: an admin types the same word whatever language the client is showing.
 fn parse_essence(arg: &str) -> Option<Essence> {
 	Essence::ALL
 		.into_iter()
@@ -136,11 +132,9 @@ fn parse_essence(arg: &str) -> Option<Essence> {
 
 /// Absolute integer, or `~`/`~±d` relative to `cur`. Clamped.
 ///
-/// The relative add SATURATES: `off` is an unbounded `i64` straight off the
-/// wire, so `cur + off` overflows for any offset near `i64::MAX`, and the
-/// clamp below runs too late to help. Debug builds — which is what `just
-/// server` and `just play` produce — take `overflow-checks` and panic the
-/// sim thread outright, stopping ticks while the process stays up.
+/// The relative add SATURATES: `off` is an unbounded `i64` straight off the wire, so `cur + off`
+/// overflows for any offset near `i64::MAX`, and the clamp below runs too late to help. Debug
+/// builds take `overflow-checks` and panic the sim thread outright, stopping ticks.
 fn parse_coord(arg: &str, cur: f32) -> Option<i64> {
 	let v = if let Some(rest) = arg.strip_prefix('~') {
 		let off: i64 = if rest.is_empty() {
@@ -236,17 +230,11 @@ impl Sim {
 		self.reply(conn_id, AdminReply::Teleported { x, z });
 	}
 
-	/// Hand-pick the spawn: the block under the admin's crosshair becomes the
-	/// ground players stand on.
-	///
-	/// The TOP face specifically, not any face. The cell the ray hits is the
-	/// floor, so a side or bottom hit would quietly mean a spawn hanging in the
-	/// air beside a wall or buried in a ceiling.
-	///
-	/// Validated by [`digblock_core::spawn::stands_clear`], which reads the world
-	/// as it actually is rather than pristine worldgen: the whole point of
-	/// setting spawn by hand is to put it somewhere terrain alone would never
-	/// have chosen.
+	/// Hand-pick the spawn: the block under the admin's crosshair becomes the ground players
+	/// stand on. The TOP face specifically — the cell the ray hits is the floor, so a side or
+	/// bottom hit would mean a spawn hanging beside a wall or buried in a ceiling. Validated by
+	/// [`digblock_core::spawn::stands_clear`], which reads the world as it IS rather than
+	/// pristine worldgen: setting spawn by hand means somewhere terrain would never choose.
 	fn cmd_set_spawn(&mut self, conn_id: u64, args: &[&str]) {
 		if !args.is_empty() {
 			return self.reply(conn_id, AdminReply::Usage(AdminUsage::SetSpawn));
@@ -293,13 +281,10 @@ impl Sim {
 		self.reply(conn_id, describe_lock(eye, false));
 	}
 
-	/// Set which way players face when they spawn — the point stays
-	/// wherever it is. A cardinal argument, or by default the admin's own
-	/// facing, which is the point of doing this in-world: stand at spawn,
-	/// look at the view you want new players to open on, run the command.
-	///
-	/// Flattened to horizontal and re-normalized: a spawn facing is a yaw.
-	/// The client levels the pitch on arrival either way, so storing one
+	/// Set which way players face when they spawn — the point stays wherever it is. A cardinal
+	/// argument, or by default the admin's own facing: stand at spawn, look at the view you want
+	/// new players to open on, run the command. Flattened to horizontal and re-normalized, since a
+	/// spawn facing is a yaw — the client levels the pitch on arrival either way, so storing one
 	/// would only be a value that never comes back out.
 	fn cmd_set_spawn_dir(&mut self, conn_id: u64, args: &[&str]) {
 		let usage = AdminReply::Usage(AdminUsage::SetSpawnDir);
@@ -410,26 +395,14 @@ impl Sim {
 		self.reply(conn_id, AdminReply::Brought { name: target_name });
 	}
 
-	/// `/give` — the one admin command that writes a player's stocks.
-	///
-	/// ESSENCE and not blocks, deliberately. A block handed out is an item
-	/// that can be placed, so the command would be a world edit with no
-	/// journal entry behind it and a slot assignment to reconcile; essence
-	/// is a pure economy value the standing `InventoryFull` rebase already
-	/// carries, so no screen and no wire needs to know a gift happened.
-	/// What it is FOR is the reach the economy makes expensive on purpose
-	/// — putting a late recipe in front of a tester, or repaying a player
-	/// what a server bug cost them.
+	/// `/give` — the one admin command that writes a player's stocks, and ESSENCE rather than
+	/// blocks deliberately: a block handed out would be a world edit with no journal entry
+	/// behind it and a slot to reconcile, while essence is a pure economy value the standing
+	/// `InventoryFull` rebase already carries. It is FOR the reach the economy makes
+	/// expensive on purpose — a late recipe in front of a tester, or repaying a server bug.
 	fn cmd_give(&mut self, conn_id: u64, args: &[&str]) {
-		// Spelled from `Essence::ident` like `parse_essence` is, rather
-		// than typed out again: the usage line and the parser were two
-		// copies of one vocabulary, and the rename that gave the essences
-		// their reagent names moved only the parser — leaving `/help` and
-		// this line advertising four words the command now refuses, in a
-		// refusal that repeated the word it had just rejected.
-		// The usage line names the essences at the point it is RENDERED,
-		// out of `Essence::ALL` — so the advertisement and `parse_essence`
-		// read one vocabulary and cannot drift apart.
+		// The usage line names the essences at the point it is RENDERED, out of `Essence::ALL`, so
+		// the advertisement and `parse_essence` read one vocabulary and cannot drift apart.
 		let usage = AdminReply::Usage(AdminUsage::Give);
 		if !(args.len() == 2 || args.len() == 3) {
 			return self.reply(conn_id, usage.clone());
@@ -534,16 +507,11 @@ impl Sim {
 		self.reply(conn_id, AdminReply::TimeSet { hour: h, minute: m });
 	}
 
-	/// `/reset` — the testing lever: a named player back to minute one. Zeroes
-	/// both skills and empties the inventory, tools included, so the
-	/// fresh-player opening can be walked on a live server without minting a new
-	/// account.
-	///
-	/// The wire needs only the standing machinery: a full `Skills` sync, which
-	/// the client adopts wholesale and re-syncs the node reveal from (a level
-	/// DROP un-reveals veins exactly as joining at that level would), and the
-	/// `InventoryFull` rebase — both ends run the same `reconcile_layout` over
-	/// the zeroed counts, so every slot sweeps with no Layout frame needed.
+	/// `/reset` — the testing lever: a named player back to minute one. Zeroes both skills and
+	/// empties the inventory, tools included. The wire needs only standing machinery: a full
+	/// `Skills` sync, which the client adopts wholesale and re-syncs the node reveal from (a level
+	/// DROP un-reveals veins exactly as joining at that level would), and the `InventoryFull`
+	/// rebase — both ends then run `reconcile_layout`, so every slot sweeps with no Layout frame.
 	fn cmd_reset(&mut self, conn_id: u64, args: &[&str]) {
 		let usage = AdminReply::Usage(AdminUsage::Reset);
 		let [name] = args else {

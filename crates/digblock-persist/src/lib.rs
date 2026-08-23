@@ -38,17 +38,11 @@ pub struct PlayerPersist {
 	pub pitch: f32,
 }
 
-/// The player-record revision — CONTENT migrations, not format ones (the
-/// journal's `VERSION` stays the format/worldgen contract, and bumping it
-/// refuses a client save outright, which is far too blunt for handing
-/// someone a bucket). A store stamps the current revision on every write
-/// and reports a FRESH world (no state written yet) as current, so the
-/// only saves below it are ones actually written by an older build.
-///
-/// rev 1: the bucket joined the catalog (SKILLS-DESIGN §13.5). A rev-0
-/// save was written when every player owned one, so the engine grants it
-/// on load — a migration, never a windfall, because a fresh world starts
-/// at the current rev and gets nothing.
+/// The player-record revision — CONTENT migrations, not format ones: the journal's `VERSION` stays
+/// the format/worldgen contract, and bumping it refuses a client save outright. A store stamps the
+/// current revision on every write and reports a FRESH world as current, so the only saves below it
+/// were written by an older build. rev 1: the bucket joined the catalog (SKILLS-DESIGN §13.5), and
+/// the engine grants one on load — a migration, never a windfall, since a fresh world starts here.
 pub const REV_CRAFTED_BUCKET: u32 = 1;
 
 /// rev 2: the essence redesign (SKILLS-DESIGN §14). A save below this
@@ -87,15 +81,11 @@ pub struct WorldSave {
 	pub player: Option<PlayerPersist>,
 }
 
-/// The engine's injected persistence backend for named local worlds.
-/// All methods are synchronous and must degrade (log, keep running)
-/// rather than fail the game; `open_world`/`create_world` return errors
-/// for the menu's status line.
-///
-/// `maintain`/`flush` receive the live edit overlay by reference so a
-/// snapshot-based backend (web) can re-serialize the authoritative
-/// state without mirroring every append; the file backend appends
-/// per-edit and ignores it.
+/// The engine's injected persistence backend for named local worlds. All methods are synchronous
+/// and must degrade (log, keep running) rather than fail the game; `open_world`/`create_world`
+/// return errors for the menu's status line. `maintain`/`flush` receive the live edit overlay by
+/// reference so a snapshot-based backend (web) can re-serialize the authoritative state without
+/// mirroring every append; the file backend appends per-edit and ignores it.
 pub trait WorldStore {
 	fn list_worlds(&mut self) -> Vec<WorldMeta>;
 	fn create_world(&mut self, name: &str, seed: f64) -> Result<WorldMeta, String>;

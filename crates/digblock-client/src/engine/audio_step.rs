@@ -20,13 +20,10 @@ impl Engine {
 		(below, below.is_some_and(|b| b.props().collides))
 	}
 
-	/// Per-frame audio upkeep, after the camera settles: listener pose,
-	/// footsteps, waterfall voices, ambient bed. One early-out branch
-	/// when no sink is attached.
-	///
-	/// `prev_player_pos` is deliberately NOT advanced here — `update`
-	/// owns it, because the viewmodel's bob reads the same delta and
-	/// this function returns early on a silent run.
+	/// Per-frame audio upkeep, after the camera settles: listener pose, footsteps, waterfall
+	/// voices, ambient bed, with one early-out branch when no sink is attached. `prev_player_pos`
+	/// is deliberately NOT advanced here — `update` owns it, because the viewmodel's bob reads the
+	/// same delta and this function returns early on a silent run.
 	pub(super) fn step_audio(&mut self, dt: f32) {
 		use crate::audio::{AmbientZone, AudioCmd, LOOP_AMBIENT, ambient_sfx, step_sfx};
 		/// Splash gain: a step into the shallows, plus this much per block
@@ -140,15 +137,11 @@ impl Engine {
 				gain: crate::audio::AMBIENT_GAIN,
 			});
 		}
-		// The prospector's sense (SKILLS-DESIGN §5.5): a faint shimmer near
-		// a deposit whose tier you cannot yet see, reaching further at the
-		// sense's second rank. Audio only — an overlay would make every
-		// reveal level meaningless.
-		//
-		// It borrows the cave bed's voice as a POSITIONAL one-shot, which
-		// is a stand-in: the design asks for its own sourced shimmer, and
-		// swapping this to a new `Sfx` variant is the whole change when
-		// one exists.
+		// The prospector's sense (SKILLS-DESIGN §5.5): a faint shimmer near a deposit whose tier
+		// you cannot yet see, reaching further at the sense's second rank. Audio only — an overlay
+		// would make every reveal level meaningless. It borrows the cave bed's voice as a
+		// POSITIONAL one-shot, a stand-in; swapping this to a new `Sfx` variant is the whole change
+		// when the design's own sourced shimmer exists.
 		let mining = self.skills.level(digblock_core::skills::Skill::Mining);
 		let near = digblock_core::unlock::prospector(mining)
 			.then(|| {
@@ -173,12 +166,9 @@ impl Engine {
 			});
 		}
 
-		// Music pool follows the world clock. `tod` is the sun's angle
-		// from straight down (0 = noon, ±90 = the horizons, 180 =
-		// midnight), so hour = 12 - tod/15 and the night window is
-		// exactly "sun below the horizon". No hysteresis needed: tod is
-		// monotonic, and the filler only acts on this at the next track
-		// boundary anyway.
+		// Music pool follows the world clock. `tod` is the sun's angle from straight down, so the
+		// night window is exactly "sun below the horizon". No hysteresis needed: tod is monotonic,
+		// and the filler only acts on this at the next track boundary anyway.
 		let night = self.sun.tod.abs() >= 90.0;
 		if self.audio.music_night != Some(night) {
 			self.audio.music_night = Some(night);

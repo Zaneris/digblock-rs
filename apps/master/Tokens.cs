@@ -8,14 +8,11 @@ namespace DigBlock.Master;
 /// server does not need a second round trip to render a roster.</summary>
 public sealed record TokenEntry(Guid ServerId, Guid AccountId, string DisplayName, DateTimeOffset ExpiresAt);
 
-/// <summary>One-time join tokens: 16 random bytes as 32 lowercase hex chars
-/// (sized to fit the game protocol's Hello token field). Consumption is an
-/// atomic TryRemove — a token verifies successfully at most once, ever.
-///
-/// This is the ONE channel by which a game server learns who a player is.
-/// The client never asserts its own identity: it presents 16 opaque bytes,
-/// and the server asks us what they mean. That is what makes the account id
-/// trustworthy on the far side.</summary>
+/// <summary>One-time join tokens: 16 random bytes as 32 lowercase hex chars, sized to fit the game
+/// protocol's Hello token field. Consumption is an atomic TryRemove — a token verifies at most
+/// once, ever. This is the ONE channel by which a game server learns who a player is: the client
+/// never asserts its own identity, it presents opaque bytes and the server asks us what they mean,
+/// which is what makes the account id trustworthy on the far side.</summary>
 public sealed class TokenStore
 {
     private readonly ConcurrentDictionary<string, TokenEntry> _tokens = new();

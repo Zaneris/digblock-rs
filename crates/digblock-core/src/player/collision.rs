@@ -11,13 +11,10 @@ pub(super) fn span(lo: f32, hi: f32) -> std::ops::RangeInclusive<i32> {
 	((lo + CELL_EPS).floor() as i32)..=((hi - CELL_EPS).floor() as i32)
 }
 
-/// Closest points between the (vertical) capsule axis at eye `pos` and
-/// the AABB [lo, hi]: (point on axis, point on box). Closed form — the
-/// box clamps the axis xz horizontally; vertically, overlapping
-/// intervals meet at the overlap (the normal comes out horizontal),
-/// otherwise the nearer segment end pairs with the nearer face. Unit
-/// cells pass `lo = c as f32, hi = lo + 1.0` — bit-identical to the old
-/// cell-only form.
+/// Closest points between the (vertical) capsule axis at eye `pos` and the AABB [lo, hi]: (point
+/// on axis, point on box). Closed form — the box clamps the axis xz horizontally; vertically,
+/// overlapping intervals meet at the overlap (the normal comes out horizontal), otherwise the
+/// nearer segment end pairs with the nearer face. Unit cells pass `lo = c as f32, hi = lo + 1.0`.
 pub(super) fn closest_axis_box(pos: Vec3, lo: Vec3, hi: Vec3) -> (Vec3, Vec3) {
 	let qx = pos.x.clamp(lo.x, hi.x);
 	let qz = pos.z.clamp(lo.z, hi.z);
@@ -130,20 +127,11 @@ pub(super) fn cell_shape(cell: Option<u16>) -> CellShape {
 	}
 }
 
-/// The stair ramp's support height under the capsule AXIS: the diagonal
-/// h(u) = u from the low front edge to the high back edge of cell `c` ascending
-/// toward `f` — the one C0-continuous surface joining both neighbours, so
-/// walking a flight never steps or pops.
-///
-/// `None` BELOW the low front edge: the diagonal hasn't begun, so the cell
-/// supports nothing there, and the axis alone decides. Clamping u up to 0
-/// instead reported the cell FLOOR as support the moment the footprint merely
-/// brushed the cell — on a contiguous flight that is the next step's floor, so
-/// the feet popped up a step early and the downhill glue yanked them back.
-///
-/// ABOVE the high back edge u stays clamped: that top back edge is a real
-/// horizontal surface flush with the next cell's floor, and holding it is what
-/// carries a mount onto a flush landing without a step.
+/// The stair ramp's support height under the capsule AXIS: the diagonal h(u) = u from the low
+/// front edge to the high back edge of cell `c` ascending toward `f` — the one C0-continuous
+/// surface joining both neighbours, so walking a flight never steps or pops. `None` BELOW the low
+/// front edge, or the cell FLOOR reads as support and the feet pop a step early; ABOVE the high
+/// back edge u stays clamped, that edge being flush with the next cell's floor.
 pub(super) fn ramp_top(pos: Vec3, c: (i32, i32, i32), f: crate::shapes::Facing) -> Option<f32> {
 	use crate::shapes::Facing;
 	let u = match f {
@@ -189,19 +177,11 @@ pub(super) fn ramp_support(
 	best.map(|(_, f)| f)
 }
 
-/// Ramp run-out: while a stair's diagonal supports the capsule (`support`),
-/// the cube the ramp tops out against must not block — without this the cube's
-/// top corner catches the capsule's bottom sphere and mounting a flush landing
-/// degrades into a seconds-long grind. Exempt when the cube's top is within the
-/// snap band above the feet, the cube sits ahead along the ascent (side walls
-/// still block), and there is capsule headroom above its top. Cubes only;
-/// shaped neighbours negotiate through their own branches. Shared by the
-/// resolver and `overlaps_solid`, so mid-mount claims stay adoptable.
-///
-/// The next step of the same flight resting ON the cube is not a ceiling: on a
-/// filled-in staircase every riser is a cube carrying the next stair. Only a
-/// same-facing ramp seated directly on the cube's top qualifies — a stair
-/// facing back down the flight really is a wall in the way.
+/// Ramp run-out: while a stair's diagonal supports the capsule (`support`), the cube the ramp tops
+/// out against must not block, or its top corner catches the capsule's bottom sphere and mounting
+/// a flush landing degrades into a grind. Cubes only, and shared by the resolver and
+/// `overlaps_solid` so mid-mount claims stay adoptable. Only a same-facing ramp seated on the
+/// cube's top is the next tread; one facing back down the flight really is a wall in the way.
 pub(super) fn runout_exempt(
 	pos: Vec3,
 	support: Option<crate::shapes::Facing>,
@@ -234,18 +214,11 @@ pub(super) fn runout_exempt(
 		})
 }
 
-/// Is the capsule mid-mount onto the box [lo, hi] in `cell` — a rise the
-/// auto-step carries rather than a wall it blocks against? Position-only, so
-/// the resolver, `grounded` and `overlaps_solid` all read the same answer.
-///
-/// Three gates. The rise must be within [`AUTO_STEP_MAX`]. There must be
-/// capsule headroom above the landing (the ramp `pinched` probe) — doors stay
-/// step-proof through this alone, so if a future single-cell shape carries a
-/// cell-top box, reconsider deliberately. And the capsule AXIS must still be
-/// outside the box's footprint: a mount is an approach from the side, and once
-/// the axis is over the box, feet below its top is being buried in it rather
-/// than climbing it — which is also what keeps a claim sunk into the floor from
-/// passing `overlaps_solid`.
+/// Is the capsule mid-mount onto the box [lo, hi] in `cell` — a rise the auto-step carries rather
+/// than a wall it blocks against? Position-only, so the resolver, `grounded` and `overlaps_solid`
+/// all read the same answer. Three gates: the rise is within [`AUTO_STEP_MAX`]; there is capsule
+/// headroom above the landing (doors stay step-proof through this alone); and the capsule AXIS is
+/// still outside the box's footprint, which keeps a claim sunk into the floor from passing.
 pub(super) fn step_mount(
 	pos: Vec3,
 	cell: (i32, i32, i32),
@@ -268,26 +241,11 @@ pub(super) fn xz_outside(pos: Vec3, lo: Vec3, hi: Vec3) -> bool {
 	pos.x < lo.x || pos.x > hi.x || pos.z < lo.z || pos.z > hi.z
 }
 
-/// Auto-step: convert a would-be wall contact into a mount — the same pure
-/// vertical ground contact the stair ramp emits, so the walk keeps its full
-/// horizontal speed and the feet ride up. Cube/Boxes cells only; the Ramp arm
-/// negotiates its own lift.
-///
-/// The lift is capped at the tick's remaining `budget` ([`MOUNT_RATE`]), which
-/// turns a step from a one-tick teleport into the same glide a stair gives. The
-/// capsule is briefly inside the box's side, which is why `step_mount` is
-/// mirrored in `overlaps_solid`; a spent budget yields a zero-depth contact
-/// rather than the wall. It always terminates — the feet only ever rise.
-///
-/// **The vertical-velocity window is what separates a step from a landing.**
-/// Rising is never a mount, and neither is arriving downward faster than a
-/// mount climbs — that is a fall onto the box's edge, and it keeps the
-/// flat-bottomed snap so a landing never sinks into what it lands on.
-///
-/// This must claim CORNER contacts that already read as ground: partway up the
-/// normal on the box's top edge rounds past `GROUND_NORMAL_Y`, and the generic
-/// ground branch would snap the rest of the rise in one tick — the pop the
-/// budget exists to spread.
+/// Auto-step: convert a would-be wall contact into a mount — the same pure vertical ground contact
+/// the stair ramp emits, so the walk keeps its full horizontal speed. Cube/Boxes cells only, lift
+/// capped at the tick's remaining `budget` ([`MOUNT_RATE`]), which is why `step_mount` is mirrored
+/// in `overlaps_solid`. **The vertical-velocity window separates a step from a landing.** It must
+/// also claim CORNER contacts already reading as ground, or the generic branch snaps the rise.
 pub(super) fn step_contact(
 	pos: Vec3,
 	out_y: f32,
@@ -319,13 +277,11 @@ pub(super) fn xz_rect_dist2(pos: Vec3, x: i32, z: i32) -> f32 {
 	dx * dx + dz * dz
 }
 
-/// Every cell the player capsule at eye `pos` overlaps (an exact
-/// capsule-vs-box test over the bounding cells).
-/// Placement rejection (client), the server's InsidePlayer scan, and
-/// claim probing must all agree on exactly these — the geometry lives
-/// here and nowhere else. The CELL_EPS shrink means resting contact
-/// (feet on a floor, shoulder flush to a wall) does not occupy the
-/// touching cell.
+/// Every cell the player capsule at eye `pos` overlaps (an exact capsule-vs-box test over the
+/// bounding cells). Placement rejection (client), the server's InsidePlayer scan, and claim
+/// probing must all agree on exactly these — the geometry lives here and nowhere else. The
+/// CELL_EPS shrink means resting contact (feet on a floor, shoulder flush to a wall) does not
+/// occupy the touching cell.
 pub fn occupied_cells(pos: Vec3) -> impl Iterator<Item = (i32, i32, i32)> {
 	let r2 = (RADIUS - CELL_EPS) * (RADIUS - CELL_EPS);
 	span(pos.x - RADIUS, pos.x + RADIUS).flat_map(move |x| {
@@ -353,14 +309,11 @@ pub(super) fn solid(cell: Option<u16>) -> bool {
 	matches!(cell, Some(c) if block_of(c).props().collides)
 }
 
-/// Raise `pos` one block at a time until the capsule overlaps no
-/// colliding cell — the landing for spawn teleports and joins when
-/// players have built at the spawn point (the spawn walk rejects columns
-/// whose capsule cells hold terrain or decoration, so only placed blocks
-/// can occupy it).
-/// Unloaded (None) cells count as clear, matching the physics. A column
-/// solid to the world ceiling (not honestly buildable) returns `pos`
-/// unchanged.
+/// Raise `pos` one block at a time until the capsule overlaps no colliding cell — the landing for
+/// spawn teleports and joins when players have built at the spawn point (the spawn walk rejects
+/// columns whose capsule cells hold terrain or decoration, so only placed blocks can occupy it).
+/// Unloaded (None) cells count as clear, matching the physics. A column solid to the world ceiling
+/// (not honestly buildable) returns `pos` unchanged.
 pub fn ascend_clear(pos: Vec3, cell_at: &dyn Fn(i32, i32, i32) -> Option<u16>) -> Vec3 {
 	let mut p = pos;
 	while p.y < crate::chunk::WORLD_VBLOCK as f32 {
@@ -372,18 +325,11 @@ pub fn ascend_clear(pos: Vec3, cell_at: &dyn Fn(i32, i32, i32) -> Option<u16>) -
 	pos
 }
 
-/// Shape-aware "is this position inside solid geometry" — the claim probe
-/// (server adoption envelope), spawn ascent, and any future teleport check.
-/// Mirrors the resolver's classification so a player the resolver is happy
-/// with is NEVER "inside solid": standing on a stair tread puts the feet
-/// inside the stair's unit CELL, but not inside its geometry.
-///
-/// Two mount windows are deliberately not solid, both mirrored from the
-/// resolver: the ramp run-out, and an auto-step in progress ([`step_mount`]),
-/// which spends a few ticks with the capsule inside the side of the box it is
-/// climbing. Both are bounded by the same gates the resolver uses, so the
-/// allowance a dishonest claim buys is clipping into the top third of
-/// something it could legally be standing on a few ticks later.
+/// Shape-aware "is this position inside solid geometry" — the claim probe (server adoption
+/// envelope), spawn ascent, and any future teleport check. Mirrors the resolver's classification
+/// so a player the resolver is happy with is NEVER "inside solid": standing on a stair tread puts
+/// the feet inside the stair's unit CELL, but not inside its geometry. The ramp run-out and an
+/// auto-step in progress ([`step_mount`]) are deliberately not solid, on the resolver's own gates.
 pub fn overlaps_solid(pos: Vec3, cell_at: &dyn Fn(i32, i32, i32) -> Option<u16>) -> bool {
 	let r2 = (RADIUS - CELL_EPS) * (RADIUS - CELL_EPS);
 	let feet = pos.y - EYE_TO_FEET;

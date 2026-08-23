@@ -8,16 +8,11 @@ use digblock_core::inventory::Inventory;
 
 const SIZE: (u32, u32) = (1280, 720);
 
-/// `icon_block` is a HAND-WRITTEN inverse, and the compiler only checks that
-/// an arm exists. `IconKind` is closed, so a new variant cannot be
-/// forgotten — but naming the wrong block in one compiles perfectly, and the
-/// two questions this answers are the ones nobody would notice being wrong:
-/// an item would wear another item's fullbright ink, and carry another
-/// item's light.
-///
-/// So walk the real catalog both ways rather than restating the match. Tools
-/// go through `tool_icon` because that is the function keyed by BLOCK;
-/// `item_icon(WaterTool, _)` is keyed by the SLOT.
+/// `icon_block` is a HAND-WRITTEN inverse, and the compiler only checks that an arm exists.
+/// `IconKind` is closed, so a new variant cannot be forgotten — but naming the wrong block in one
+/// compiles perfectly, and the two questions it answers are the ones nobody would notice being
+/// wrong: an item would wear another item's fullbright ink, and carry another item's light. So
+/// walk the real catalog both ways; tools go through `tool_icon`, the function keyed by BLOCK.
 #[test]
 fn icon_block_names_the_block_its_icon_was_built_from() {
 	for b in BlockType::ALL {
@@ -76,17 +71,11 @@ fn emit(scale: f32) -> (DrawList, HitMap<usize>) {
 	emit_at(SIZE, scale)
 }
 
-/// The DRAWN row is centered — and the drawn row is the block-slot lattice
-/// PLUS the split the tool slot steps out by, which is a real
-/// [`TOOL_SPLIT`] wider than anything that measures the lattice.
-///
-/// `right` has to come off the LAST DRAWN SLOT. Taking it from
-/// `grid.origin.0 + grid.extent(HOTBAR_SLOTS).0` reduces algebraically to
-/// `left`, so the assertion becomes `left - left == 0` and cannot fail —
-/// which is exactly how the split shipped folded into the drawing but not
-/// into the centring, leaving the row half a split right of centre with its
-/// right edge off the window first. Swept over sizes and scales because the
-/// bar takes more of the window as the interface scale grows.
+/// The DRAWN row is centered — and the drawn row is the block-slot lattice PLUS the split the
+/// tool slot steps out by. `right` has to come off the LAST DRAWN SLOT: taking it from
+/// `grid.origin.0 + grid.extent(HOTBAR_SLOTS).0` reduces algebraically to `left`, so the
+/// assertion becomes `left - left == 0` and cannot fail. Swept over sizes and scales, because
+/// the bar takes more of the window as the interface scale grows.
 #[test]
 fn row_is_bottom_centered_and_scales() {
 	for size in [

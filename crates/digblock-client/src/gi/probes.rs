@@ -73,17 +73,11 @@ impl GiDraw {
 				self.sky_y,
 			]));
 			data.extend_from_slice(bytemuck::cast_slice(&frame.horizon));
-			// The sweep is PERMUTED, not contiguous. `cursor` walks the
-			// sweep index; the probe it selects is `(k * stride) % count`
-			// with stride coprime to count, so a full cycle still touches
-			// every probe exactly once while consecutive dispatches land
-			// far apart. A contiguous cursor made convergence sweep the
-			// volume as a visible band — dark regions appearing and
-			// clearing at random-looking moments while flying.
-			//
-			// The base is reduced here because `cursor * stride` would
-			// overflow u32 in the shader; `wg.x * stride` cannot, since
-			// the stride is clamped against PROBES_PER_DISPATCH.
+			// The sweep is PERMUTED, not contiguous: `cursor` walks the sweep index and the probe
+			// it selects is `(k * stride) % count` with stride coprime to count, so a full cycle
+			// touches every probe once while consecutive dispatches land far apart. A contiguous
+			// cursor made convergence sweep the volume as a visible band. The base is reduced
+			// here because `cursor * stride` would overflow u32 in the shader.
 			let base = ((u64::from(c.cursor) * u64::from(c.stride)) % u64::from(c.probes())) as u32;
 			data.extend_from_slice(bytemuck::cast_slice(&[
 				base,

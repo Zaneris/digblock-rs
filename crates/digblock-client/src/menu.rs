@@ -24,14 +24,11 @@ pub struct ServerEntry {
 	pub max_players: u32,
 }
 
-/// Who the player is signed in as, as far as anything drawable is
-/// concerned.
+/// Who the player is signed in as, as far as anything drawable is concerned.
 ///
-/// Deliberately not the session token. The token lives in the launcher's
-/// services thread — the only place that talks to the master — so this
-/// module stays what its header says it is: a state machine with no I/O and
-/// no secrets. A leak of everything the menu holds leaks a public name and
-/// a public id.
+/// Deliberately not the session token: that lives in the launcher's services thread, the only place
+/// that talks to the master, so this module stays a state machine with no I/O and no secrets. A
+/// leak of everything the menu holds leaks a public name and a public id.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct AccountView {
 	pub id: String,
@@ -53,14 +50,11 @@ pub(crate) enum TestPage {
 #[derive(Debug)]
 pub enum MenuCommand {
 	RefreshServers,
-	/// Mint a one-time token for `server_id` (the master supplies the name
-	/// from the signed-in account), connect, and send back
-	/// `MenuResponse::Connect`.
+	/// Mint a one-time token for `server_id`, connect, and answer `MenuResponse::Connect`.
 	Join {
 		server_id: String,
 	},
-	/// Open the browser at the master's sign-in page and wait for the
-	/// answer. Long-running: the filler must not block its other work on it.
+	/// Open the browser at the master's sign-in page and wait — long-running, so never block on it.
 	SignIn,
 	/// Abandon a sign-in in progress.
 	CancelSignIn,
@@ -91,15 +85,12 @@ pub enum MenuResponse {
 	JoinFailed {
 		reason: String,
 	},
-	/// A sign-in finished, a stored session was restored, or a sign-out
-	/// happened — `None` means signed out.
+	/// A sign-in finished, a session was restored, or a sign-out happened; `None` means signed out.
 	Account(Option<AccountView>),
 	SignInFailed {
 		reason: String,
 	},
-	/// Answer to `CheckName`. Carries the name it answers about, because
-	/// the player keeps typing while it is in flight and a stale answer
-	/// must not label the current text.
+	/// Answer to `CheckName`. Carries its own name: a stale answer must not label the current text.
 	NameAvailable {
 		name: String,
 		available: bool,
@@ -229,12 +220,9 @@ enum Screen {
 	},
 	/// Waiting on the browser. Reached from Multiplayer while signed out.
 	SignIn(SignInState),
-	/// First sign-in, or a rename: claim a display name. Held here rather
-	/// than on the browser screen because a name is now an account-level
-	/// thing you own, not something re-typed per join.
+	/// First sign-in, or a rename: claim a display name — account-level, not re-typed per join.
 	ChooseName(NameState),
-	/// Signed-in account: the id to hand an operator, and the two things
-	/// you can do to the account from in-game.
+	/// Signed-in account: the id to hand an operator, and what you can do to the account in-game.
 	Account {
 		sel: usize,
 	},
@@ -250,37 +238,26 @@ enum Setting {
 	MusicVol,
 	SfxVol,
 	Ssr,
-	/// Touch jump verb (double-tap vs on-screen button). The one row that
-	/// exists only on touch-HUD builds — `acts()` and `view()` both skip
-	/// it off-touch, in lockstep, so the positional indices stay aligned.
+	/// Touch jump verb. Touch-HUD-only row: `acts()` and `view()` skip it in lockstep off-touch.
 	TouchJump,
 }
 
 #[derive(Clone, Copy)]
 enum Act {
 	CloseMenu,
-	/// Ask the shell to toggle browser fullscreen. Only offered when the
-	/// launcher declared the API available; the shell must make the call
-	/// inside the activating gesture's own event dispatch, which is why
-	/// the engine drains it from `input`, clipboard-style.
+	/// Toggle browser fullscreen — the shell must call inside the activating gesture's dispatch.
 	ToggleFullscreen,
 	OpenMultiplayer,
 	LeaveServer,
-	/// The local-world counterpart of [`Act::LeaveServer`]: flush the
-	/// save and go back to the locked title menu (engine drains
-	/// [`Menu::take_leave_world`]).
+	/// The local-world counterpart of [`Act::LeaveServer`]: flush the save, back to the title menu.
 	LeaveWorld,
-	/// Close the menu and open the spellbook screen (engine drains
-	/// [`Menu::take_spellbook`]).
+	/// Close the menu and open the spellbook screen (engine drains [`Menu::take_spellbook`]).
 	OpenSpellbook,
-	/// Close the menu and open the inventory screen (engine drains
-	/// [`Menu::take_inventory`]).
+	/// Close the menu and open the inventory screen (engine drains [`Menu::take_inventory`]).
 	OpenInventory,
-	/// Close the menu and open the alchemy screen (engine drains
-	/// [`Menu::take_alchemy`]).
+	/// Close the menu and open the alchemy screen (engine drains [`Menu::take_alchemy`]).
 	OpenAlchemy,
-	/// Close the menu and open the character screen (engine drains
-	/// [`Menu::take_character`]).
+	/// Close the menu and open the character screen (engine drains [`Menu::take_character`]).
 	OpenCharacter,
 	JoinRow(usize),
 	Refresh,
@@ -295,9 +272,7 @@ enum Act {
 	DeleteWorld,
 	ConfirmDeleteWorld,
 	BackToWorlds,
-	/// Start the browser sign-in. `then_multiplayer` distinguishes "I
-	/// pressed Multiplayer while signed out" from "I pressed Sign In again
-	/// on the Account screen".
+	/// Start the browser sign-in; `then_multiplayer` says whether Multiplayer was the way in.
 	StartSignIn {
 		then_multiplayer: bool,
 	},
@@ -305,9 +280,7 @@ enum Act {
 	/// Claim the typed name.
 	ConfirmName,
 	OpenAccount,
-	/// Put the account id on the clipboard (engine drains
-	/// [`Menu::take_clipboard`] — see why it drains from `input`, not
-	/// `update`).
+	/// Put the account id on the clipboard (engine drains [`Menu::take_clipboard`] from `input`).
 	CopyAccountId,
 	OpenRename,
 	SignOut,
@@ -322,8 +295,7 @@ pub(crate) enum RowId {
 	RootItem(u8),
 	Server(usize),
 	Refresh,
-	/// `0..SETTINGS_ROWS.len()` are the settings in screen order;
-	/// [`SETTINGS_BACK`] is the Back row.
+	/// `0..SETTINGS_ROWS.len()` are the settings in screen order; [`SETTINGS_BACK`] is Back.
 	SettingsRow(u8),
 	/// One saved world in the Singleplayer list.
 	World(usize),
@@ -518,13 +490,11 @@ impl Menu {
 		self.screen.is_some()
 	}
 
-	/// Would Escape do anything here? The touch HUD asks before drawing
-	/// its back button, so the one place that can't go back — the locked
-	/// startup menu, which has no world behind it to return to — doesn't
-	/// offer one.
+	/// Would Escape do anything here? The touch HUD asks before drawing its back button, so the one
+	/// place that can't go back — the locked startup menu, with no world behind it — offers none.
 	///
-	/// Derived from the same match `handle_key` runs rather than a list
-	/// of screens: a page that gains a way out gains the button with it.
+	/// Derived from the same match `handle_key` runs rather than a list of screens: a page that
+	/// gains a way out gains the button with it.
 	pub(crate) fn can_go_back(&self) -> bool {
 		match &self.screen {
 			None => false,
@@ -588,11 +558,9 @@ impl Menu {
 
 	/// Text the player asked to put on the clipboard.
 	///
-	/// The engine drains this from `Engine::input`, immediately after
-	/// routing the event here — NOT from `update`. On web the clipboard
-	/// write has to happen inside the same task as the click that asked
-	/// for it, or the browser treats it as unprompted and refuses;
-	/// `update` runs in a later animation frame, which loses the gesture.
+	/// The engine drains this from `Engine::input`, immediately after routing the event here — NOT
+	/// from `update`. On web the clipboard write must happen in the same task as the click that
+	/// asked for it, or the browser refuses it as unprompted; `update` runs a frame later.
 	pub(crate) fn take_clipboard(&mut self) -> Option<String> {
 		self.wants_copy.take()
 	}
@@ -601,14 +569,11 @@ impl Menu {
 		self.account.as_ref()
 	}
 
-	/// Open one of the account-flow pages directly, for the cross-screen
-	/// theme conformance tests in `ui::screens`.
-	///
-	/// They exist because these three pages are otherwise unreachable from
-	/// a test: each needs a signed-in account and a live services thread to
-	/// arrive at. A screen the theme tests cannot reach is exactly the kind
-	/// that has regressed unnoticed before — see the notes on
-	/// `every_screen_draws_text_at_one_size`.
+	/// Open one of the account-flow pages directly, for the cross-screen theme conformance tests in
+	/// `ui::screens`. These three pages are otherwise unreachable from a test — each needs a
+	/// signed-in account and a live services thread to arrive at — and a screen the theme tests
+	/// cannot reach is exactly the kind that has regressed unnoticed (see
+	/// `every_screen_draws_text_at_one_size`).
 	#[cfg(test)]
 	pub(crate) fn test_open(&mut self, page: TestPage) {
 		self.account = Some(AccountView {
@@ -1097,21 +1062,11 @@ impl Menu {
 		}
 	}
 
-	/// Ask the master whether the typed name is free.
-	///
-	/// Considered per keystroke, but AT MOST ONE is ever out at a time: a
-	/// keystroke landing while a check is in flight sets nothing going, and the
-	/// reply re-fires for whatever the text says by then (see `name_answered`).
-	/// That is a debounce without a clock — which the menu does not have and
-	/// deliberately does not want.
-	///
-	/// It has to be here rather than in a filler. Both fillers serve commands in
-	/// order, and the desktop one does so on a single blocking thread, so N
-	/// queued checks put N sequential HTTP calls ahead of the Join the player
-	/// presses next.
-	///
-	/// Short prefixes are skipped outright: every name passes through "a", "ab"
-	/// on the way to "abc".
+	/// Ask the master whether the typed name is free. Considered per keystroke, but AT MOST ONE is
+	/// ever out at a time: a keystroke landing mid-flight starts nothing, and the reply re-fires
+	/// for whatever the text says by then (`name_answered`) — a debounce without a clock, which
+	/// the menu does not have. It has to be here rather than in a filler: both fillers serve
+	/// commands in order, so N queued checks put N HTTP calls ahead of the Join pressed next.
 	fn check_typed_name(&mut self) {
 		let Some(Screen::ChooseName(n)) = &mut self.screen else {
 			return;

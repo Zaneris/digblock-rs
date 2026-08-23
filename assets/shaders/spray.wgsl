@@ -11,12 +11,11 @@
 // The Frame struct + group(0) binding come from frame_common.wgsl
 // (prepended by digblock-assets).
 
-// RTGI camera light (gi_probe.wgsl's cam_light entry): [0] = omni probe
-// ambient at the camera, [1].rgb = sun transmittance there (rgb, not a
-// grey lane — water absorbs red an order of magnitude harder, so a
-// submerged camera's sun is tinted). Billboards have no meaningful
-// surface to gather at, and spray lives close to the eye (spray.rs
-// SPRAY_RADIUS) — the camera's light is theirs.
+// RTGI camera light (gi_probe.wgsl's cam_light entry): [0] = omni probe ambient at the camera,
+// [1].rgb = sun transmittance there — rgb, not a grey lane, because water absorbs red an order of
+// magnitude harder and a submerged camera's sun is tinted. Billboards have no meaningful surface
+// to gather at, and spray lives close to the eye (spray.rs SPRAY_RADIUS) — the camera's light is
+// theirs.
 struct CamLight {
 	ambient: vec4f,
 	sun: vec4f,
@@ -63,13 +62,10 @@ fn vs(@builtin(vertex_index) vi: u32, @location(0) inst: vec4f) -> VsOut {
 	var size = vec2f(0.0);
 	var alpha = 0.0;
 	if pi < MIST_N {
-		// Mist: soft slabs jittered around the splash. Their alpha
-		// varies per slab but NOT over time — they used to breathe on
-		// offset clocks, which was part of the impact reading as a
-		// pulse. The droplets carry the motion now.
-		// Stacked to span the droplets' apex range rather than
-		// hugging the surface, so the mist reads as a plume rising
-		// out of the impact instead of a flat bank lying on the pool.
+		// Mist: soft slabs jittered around the splash. Alpha varies per slab but NOT over time —
+		// breathing on offset clocks made the impact read as a pulse, and the droplets carry the
+		// motion now. Stacked to span the droplets' apex range rather than hugging the surface, so
+		// the mist reads as a plume rising out of the impact instead of a flat bank on the pool.
 		let stack = f32(pi);
 		center = inst.xyz
 			+ vec3f(

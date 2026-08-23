@@ -20,9 +20,7 @@ pub enum Layer {
 pub enum Cmd {
 	/// Solid quad, 0xAABBGGRR.
 	Quad { rect: Rect, color: u32 },
-	/// Text in a `px`-tall layout box whose top edge is at `y` (the
-	/// renderer derives the baseline); `range` indexes the shared text
-	/// arena.
+	/// Text in a `px`-tall box topped at `y` (baseline derived); `range` indexes the text arena.
 	Text {
 		face: crate::font::FaceId,
 		x: f32,
@@ -37,9 +35,7 @@ pub enum Cmd {
 		tex_layer: u16,
 		tint: u32,
 	},
-	/// One projected face of a 3D item icon: four screen-px corners
-	/// (TL,TR,BL,BR — `ShapeQuad` slot order) with per-corner UVs into
-	/// the texture layer. Emitted far-to-near by `ui::shaped_icon`.
+	/// One face of a 3D item icon: `ShapeQuad` corner order, far-to-near from `ui::shaped_icon`.
 	IconQuad {
 		corners: [[f32; 2]; 4],
 		uvs: [[f32; 2]; 4],

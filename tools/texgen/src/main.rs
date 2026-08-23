@@ -61,42 +61,22 @@ fn main() {
 	// silhouette and not of detail; see the recipe.
 	save("Rubble.png", rubble(&stone, &mut rng));
 
-	// Torch: the side texture maps the post's timber to the LOWER rows and
-	// the flame glow to the top rows (a box face's v runs top-down from
-	// the cell's top, so the shape's flame head samples the texture's TOP
-	// rows); the flame top face gets its own radial-glow layer. Planed
-	// lumber and not the log's bark, because a torch is a whittled stick —
-	// and the DARK timber, because this texture is drawn fullbright.
+	// Torch: the side texture maps the post's timber to the LOWER rows and the flame glow to the
+	// top rows (a box face's v runs top-down from the cell's top, so the shape's flame head samples
+	// the texture's TOP rows); the flame top face gets its own radial-glow layer. Planed lumber
+	// rather than the log's bark, because a torch is a whittled stick — and the DARK timber,
+	// because this texture is drawn fullbright.
 	save(
 		"TorchSide.png",
 		torch_side(&load("LumberDark.png"), &mut rng),
 	);
 	save("TorchFlame.png", torch_flame(&mut rng));
 
-	// The four ore faces and the generic tapped one. APPENDED at the end
-	// deliberately: the noisy recipes share one rng, so an insertion anywhere
-	// above rerolls every output after it and the diff of a regeneration would
-	// be the whole texture directory.
-	//
-	// Each is stone with tier-coloured flecks — the gravel recipe's blob walk,
-	// but coloured rather than shaded, with a light rim so a fleck reads as a
-	// crystal set into rock instead of a stain on it.
-	//
-	// The colours are not written here. `BlockType::node_flecks` holds them,
-	// because the GI material LUT casts a vein's light in its core colour and
-	// the spent rocks below paint their dead flecks from the same pair: three
-	// consumers, one table.
-	//
-	// Cores are picked BRIGHT as well as saturated — chunk.wgsl gains the ink by
-	// luminance, and a near-white fleck would glow at the cost of having no
-	// colour left to glow IN.
-	//
-	// Every tier also darkens its stone BODY hard (the `body` scale), and that
-	// is the load-bearing half. Emissive is a per-BLOCK flag, not a per-texel
-	// one: a glowing block renders its whole face at full albedo, so with the
-	// body left undarkened a vein in a black cave reads as a glowing white rock
-	// rather than as rock with glowing crystals in it. The contrast has to live
-	// in the texture, because the shader has no way to express it.
+	// The four ore faces and the generic tapped one, APPENDED deliberately: the noisy recipes share
+	// one rng, so an insertion above rerolls every output after it. The colours live in
+	// `BlockType::node_flecks`, not here — the GI LUT and the spent rocks read the same pair. Cores
+	// are BRIGHT as well as saturated (chunk.wgsl gains ink by luminance), and every tier darkens
+	// its stone BODY, since emissive is a per-BLOCK flag and the contrast must live in the texture.
 	for (name, block, body) in [
 		("Emberore.png", B::Emberore, 0.34),
 		("Duskstone.png", B::Duskstone, 0.32),
@@ -139,15 +119,11 @@ fn main() {
 		"Aetherlamp.png",
 		lamp([186, 226, 255], [70, 74, 96], &mut rng),
 	);
-	// The two tool glows (SKILLS-DESIGN §7.3): what the siphon collects
-	// and what the pick resonates with, each drawn as one orb and used
-	// TWICE — as the emissive face of its tool's geometry, and as the
-	// tool row's texture, which is where the GI material LUT reads the
-	// colour of the light it casts. One artifact decides how the tool
-	// looks and what its light looks like, so the two cannot drift.
-	//
-	// Appended after the lamps for the reason the ores were: everything
-	// above keeps the bytes it had.
+	// The two tool glows (SKILLS-DESIGN §7.3): what the siphon collects and what the pick resonates
+	// with, each drawn as one orb and used TWICE — as the emissive face of its tool's geometry, and
+	// as the tool row's texture, where the GI material LUT reads the colour of the light it casts.
+	// One artifact decides how the tool looks and what its light looks like, so the two cannot
+	// drift. Appended after the lamps so everything above keeps the bytes it had.
 	save(
 		"SiphonGlow.png",
 		radial_glow([48, 190, 96], [12, 84, 48], &mut rng),
@@ -156,18 +132,11 @@ fn main() {
 		"PickGlow.png",
 		radial_glow([60, 140, 235], [16, 40, 120], &mut rng),
 	);
-	// The four SPENT vein faces — what a siphon leaves standing, one per
-	// tier. Appended last for the reason everything else was.
-	//
-	// Deliberately NOT the generic tapped stone above, and not empty
-	// sockets either: this is the same rock with the same flecks in the
-	// same places, drained. A worked seam should still read as the seam you
-	// worked — you can tell an emberore face you have been at from a
-	// duskstone one — and the block you break out of it is the only thing a
-	// vein ever puts in your hands, so it had better be a trophy of that
-	// tier. Telling spent from live is then a question of LIGHT rather than
-	// of shape, which is exactly what a siphon takes: the live rows glow
-	// and cast, and these do neither.
+	// The four SPENT vein faces — what a siphon leaves standing, one per tier. Appended last for
+	// the reason everything else was. Deliberately NOT the generic tapped stone above, and not
+	// empty sockets: this is the same rock with the same flecks in the same places, drained, so a
+	// worked seam still reads as the seam you worked. Telling spent from live is then a question of
+	// LIGHT — the live rows glow and cast, and these do neither.
 	for (name, block) in [
 		("DepletedEmberore.png", B::Emberore),
 		("DepletedDuskstone.png", B::Duskstone),
@@ -178,13 +147,11 @@ fn main() {
 		save(name, spent(&stone, core, rim, &mut rng));
 	}
 
-	// The three SURFACE nodes (the essence redesign) and their spent
-	// faces — the ore recipe pointed at the hosts' own bodies, so a node
-	// reads as its host WITH something in it: living green in bark,
-	// earthen amber in stone, spring blue in wet sand. Live faces darken
-	// their bodies because they glow (the ore contrast rule); spent faces
-	// stay at ordinary brightness because they are lit like any block.
-	// Appended last for the reason everything above was.
+	// The three SURFACE nodes (the essence redesign) and their spent faces — the ore recipe
+	// pointed at the hosts' own bodies, so a node reads as its host WITH something in it: living
+	// green in bark, earthen amber in stone, spring blue in wet sand. Live faces darken their
+	// bodies because they glow (the ore contrast rule); spent faces stay at ordinary brightness,
+	// being lit like any block. Appended last for the reason everything above was.
 	let log = load("Log.png");
 	{
 		let (core, rim) = B::Heartwood.node_flecks().expect("a node");
@@ -335,13 +302,11 @@ fn wardglass() -> RgbaImage {
 	out
 }
 
-/// An essence flake: a disc in the core colour, lit from the upper left
-/// — a rim-coloured crescent and a small highlight there, the far edge
-/// darkened — over a transparent field. The field's RGB is the core
-/// colour rather than black: the loader mips the array, and a chip drawn
-/// at glyph size samples a mip where transparent black would bleed a
-/// dark fringe into the disc's edge. Rng-free, so it never rerolls a
-/// neighbour.
+/// An essence flake: a disc in the core colour, lit from the upper left — a rim-coloured crescent
+/// and a small highlight there, the far edge darkened — over a transparent field. The field's RGB
+/// is the core colour rather than black: the loader mips the array, and a chip drawn at glyph size
+/// samples a mip where transparent black would bleed a dark fringe into the disc's edge. Rng-free,
+/// so it never rerolls a neighbour.
 fn essence_flake(core: [u8; 3], rim: [u8; 3]) -> RgbaImage {
 	let mut out = RgbaImage::new(SIZE, SIZE);
 	let c = SIZE as f32 / 2.0;
@@ -476,13 +441,11 @@ fn lamp(lit: [u8; 3], frame: [u8; 3], rng: &mut Rng) -> RgbImage {
 	out
 }
 
-/// Stone with mineral flecks: a coloured core, a lighter catch rim, and a
-/// dark socket around it so each fleck sits IN the rock rather than on it.
-///
-/// Far fewer flecks than the gravel recipe scatters pebbles: a vein has
-/// to read as rock that HAS ore in it. At the gravel count the stone
-/// disappeared and the face became a solid colour, which is the same
-/// mistake as a fleck with no socket, one scale up.
+/// Stone with mineral flecks: a coloured core, a lighter catch rim, and a dark socket around it so
+/// each fleck sits IN the rock rather than on it. Far fewer flecks than the gravel recipe scatters
+/// pebbles — a vein has to read as rock that HAS ore in it; at the gravel count the stone
+/// disappears and the face becomes a solid colour, the same mistake as a fleck with no socket, one
+/// scale up.
 fn ore(stone: &RgbImage, core: [u8; 3], rim: [u8; 3], body: f32, rng: &mut Rng) -> RgbImage {
 	let mut out = stone.clone();
 	for p in out.pixels_mut() {
@@ -556,16 +519,11 @@ fn depleted(stone: &RgbImage, rng: &mut Rng) -> RgbImage {
 	out
 }
 
-/// A tier's vein face with the light drawn out of it: the same rock, the
-/// same flecks in the same places, drained to dark inclusions.
-///
-/// The body is left at ordinary stone brightness, and that is the one way
-/// this differs structurally from [`ore`] rather than merely in palette.
-/// A live vein darkens its body because it is drawn FULLBRIGHT and needs
-/// the contrast to read as rock-with-crystals; a spent face is lit like
-/// any other block, so the same darkening would just make it a black rock.
-/// Which is the whole rule in one line: an ink texture is authored for
-/// fullbright, an ordinary one is not.
+/// A tier's vein face with the light drawn out of it: the same rock, the same flecks in the same
+/// places, drained to dark inclusions. The body is left at ordinary stone brightness, the one way
+/// this differs structurally from [`ore`] rather than merely in palette — a live vein darkens its
+/// body because it is drawn FULLBRIGHT, while a spent face is lit like any block and the same
+/// darkening would make it a black rock. An ink texture is authored for fullbright; this is not.
 fn spent(stone: &RgbImage, core: [u8; 3], rim: [u8; 3], rng: &mut Rng) -> RgbImage {
 	// How much of the tier's colour survives the draw. The rim keeps more
 	// than the core so a drained fleck still reads as something set INTO
@@ -589,18 +547,11 @@ fn spent(stone: &RgbImage, core: [u8; 3], rim: [u8; 3], rng: &mut Rng) -> RgbIma
 	)
 }
 
-/// Wood post darkened, with the top band of rows turned to flame glow
-/// (white-hot core rows fading through yellow to orange where the flame
-/// head's side faces sample).
-///
-/// The post is cut from the DARK timber, and that is not a style choice:
-/// this texture is never lit. The block `glows`, so every pixel of it
-/// goes through `emissive_ink`, whose gain rides the ink's own luminance
-/// — and a pale timber has no headroom left to take that gain. It clips
-/// on all three channels and the post reads as a white bar brighter than
-/// the fire on top of it, inverting the one relationship the gain exists
-/// to hold. Authored dark, the same weighting puts the gain where the
-/// fire is, which is what its comment always claimed it did.
+/// Wood post darkened, with the top band of rows turned to flame glow (white-hot core rows fading
+/// through yellow to orange where the flame head's side faces sample). The post is cut from the
+/// DARK timber, and that is not a style choice: this texture is never lit, so every pixel goes
+/// through `emissive_ink`, whose gain rides the ink's own luminance — a pale timber clips on all
+/// three channels and reads as a white bar brighter than the fire on top of it.
 fn torch_side(wood: &RgbImage, rng: &mut Rng) -> RgbImage {
 	let mut out = wood.clone();
 	let flame_rows = SIZE * 5 / 12; // the flame band, in the shape's twelfths
@@ -624,14 +575,11 @@ fn torch_side(wood: &RgbImage, rng: &mut Rng) -> RgbImage {
 	out
 }
 
-/// An orb: `core` at the centre falling to `rim` at the edge, jittered.
-/// [`torch_flame`]'s shape with the hue taken as an argument.
-///
-/// Both callers are drawn FULLBRIGHT, so both colours are authored with
-/// headroom (R29): a channel painted near white has none left to take
-/// `emissive_ink`'s gain, and an orb that clips on all three is a white
-/// blob rather than a coloured light. Only the dominant channel is meant
-/// to reach the ceiling — which is what leaves the glow a hue at all.
+/// An orb: `core` at the centre falling to `rim` at the edge, jittered — [`torch_flame`]'s shape
+/// with the hue taken as an argument. Both callers are drawn FULLBRIGHT, so both colours are
+/// authored with headroom (R29): a channel painted near white has none left to take
+/// `emissive_ink`'s gain, and an orb clipping on all three is a white blob, not a coloured light.
+/// Only the dominant channel is meant to reach the ceiling — which is what leaves the glow a hue.
 fn radial_glow(core: [u8; 3], rim: [u8; 3], rng: &mut Rng) -> RgbImage {
 	let mut out = RgbImage::new(SIZE, SIZE);
 	let c = SIZE as f32 / 2.0;
@@ -661,21 +609,11 @@ fn torch_flame(rng: &mut Rng) -> RgbImage {
 	out
 }
 
-/// Broken rock: MANY stones, not one cracked face.
-///
-/// The distinction is the whole job. Rubble is the only thing a natural quarry
-/// hands a player now — clean rock is bench work — so the two faces are a
-/// decision the player reads off a wall. Stone's own body with hairline fracture
-/// walks over it cannot carry that: at any distance it is smooth stone with
-/// scratches on it, the same value and the same grain.
-///
-/// So the SILHOUETTE changes rather than the detail. A wrapping Worley partition
-/// cuts the tile into a dozen-odd cobbles, each taking its own value offset — a
-/// face of stones at visibly different tones is the cue that survives being
-/// shrunk to an inventory icon, where every crack disappears — and the band
-/// where two sites run close darkens into the gap between them, with the body
-/// noise folded into the threshold so the gap chips rather than curving cleanly.
-/// Everything wraps modularly, so the tile still tiles.
+/// Broken rock: MANY stones, not one cracked face. Rubble is the only thing a natural quarry hands
+/// a player now — clean rock is bench work — so the two faces are a decision read off a wall,
+/// which stone's body with fracture walks over it cannot carry: at any distance that is smooth
+/// stone with scratches. So the SILHOUETTE changes, not the detail: a wrapping Worley partition
+/// cuts the tile into cobbles at their own tones, the one cue that survives an inventory icon.
 fn rubble(stone: &RgbImage, rng: &mut Rng) -> RgbImage {
 	let s = SIZE as i32;
 	// Sites on a jittered lattice: chunky stones rather than a fine

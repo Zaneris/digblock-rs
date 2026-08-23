@@ -2,17 +2,11 @@ using Microsoft.EntityFrameworkCore;
 
 namespace DigBlock.Master.Data;
 
-/// <summary>The master's durable state: accounts, their provider logins,
-/// their sessions, and the host:port claims game servers hold.
-///
-/// Everything ephemeral stays out of here on purpose — join tokens, pending
-/// auth codes, registration temp-bans and per-server liveness all live in
-/// memory, because losing them on a restart is already the accepted
-/// behaviour and they churn far faster than anything worth an fsync.
-///
-/// SQLite is the current provider, not an assumption: no raw SQL, no
-/// SQLite-only types, so <c>UseSqlite</c> in Program.cs is the single line
-/// that has to change to move to Postgres.</summary>
+/// <summary>The master's durable state: accounts, their provider logins, their sessions, and the
+/// host:port claims game servers hold. Everything ephemeral stays out on purpose — join tokens,
+/// pending auth codes, registration temp-bans and per-server liveness live in memory, because
+/// losing them on a restart is already accepted. SQLite is the current provider, not an assumption:
+/// no raw SQL and no SQLite-only types, so <c>UseSqlite</c> is the one line to change.</summary>
 public sealed class MasterDb(DbContextOptions<MasterDb> options) : DbContext(options)
 {
     public DbSet<Account> Accounts => Set<Account>();

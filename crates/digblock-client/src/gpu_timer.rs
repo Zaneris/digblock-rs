@@ -11,12 +11,8 @@ use digblock_platform::Gpu;
 
 /// Query pairs (begin, end) per pass.
 ///
-/// Every GI pass gets its own bracket. The GI system shipped with only
-/// `Q_GI` written and nothing harvesting it, and the resolve — the most
-/// expensive pass in the frame — bracketed by nothing at all, so the
-/// gap between measured GPU time and the actual frame was invisible.
-/// A pass that is not in this list does not exist as far as tuning is
-/// concerned.
+/// Every GI pass gets its own bracket: an unbracketed pass does not exist as far as tuning is
+/// concerned, and hides the gap between measured GPU time and the actual frame.
 pub(crate) const Q_PREPASS: u32 = 0;
 pub(crate) const Q_MAIN: u32 = 2;
 pub(crate) const Q_OVERLAY: u32 = 4;
@@ -28,11 +24,8 @@ pub(crate) const Q_GI: u32 = 8;
 pub(crate) const Q_GI_TRACE: u32 = 10;
 /// À-trous iteration 1 (the stride-1 pass).
 ///
-/// The two iterations need SEPARATE pairs. They used to share this one,
-/// and `encode_atrous` writes it unconditionally, so the stride-2 pass
-/// overwrote the stride-1 pass and the reported "denoise" number was one
-/// iteration masquerading as both — the same class of blind spot the
-/// header warns about, one level down from a pass.
+/// The two iterations need SEPARATE pairs: `encode_atrous` writes its pair unconditionally, so a
+/// shared one has the stride-2 pass overwrite the stride-1 pass and report one iteration as both.
 pub(crate) const Q_GI_DENOISE: u32 = 12;
 /// À-trous iteration 2 (the stride-2 pass).
 pub(crate) const Q_GI_DENOISE2: u32 = 14;

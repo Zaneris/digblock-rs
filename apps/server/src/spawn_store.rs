@@ -1,20 +1,18 @@
 //! Persistent spawn overrides (`spawn.json` in the data dir): the hand-picked
 //! spawn point, the facing that comes with it, and the spawn lock.
 //!
-//! JSON for the same reason as the ban list: tiny, operator-facing, worth
-//! reading or clearing by hand. Same durability policy — whole-file snapshot via
-//! tmp + fsync + rename, an unparseable file is archived rather than crashing,
-//! and mutations write through immediately.
+//! JSON for the same reason as the ban list: tiny, operator-facing, worth reading
+//! or clearing by hand. Same durability policy as the ban list — tmp + fsync +
+//! rename, an unparseable file archived rather than fatal, mutations written through.
 //!
 //! The point and the lock both store an eye POSITION, not a flag. Spawn is
 //! otherwise a pure function of `(seed, edits)` recomputed on demand, but each
-//! override must pin one specific spot: a lock's whole purpose is that its region
-//! cannot change, and a hand-picked point is by definition not something the
-//! search could rediscover.
+//! override must pin one spot: a lock's whole purpose is that its region cannot
+//! change, and a hand-picked point is not something the search could rediscover.
 //!
-//! Point and lock are separate fields because they unset separately, and when
-//! both are present they hold the SAME eye — `/set-spawn` under an active lock
-//! moves the lock with it. The facing is orthogonal to both.
+//! They are separate fields because they unset separately, and when both are
+//! present they hold the SAME eye — `/set-spawn` under a lock moves the lock with
+//! it. The facing is orthogonal to both.
 
 use serde::{Deserialize, Serialize};
 use std::io;

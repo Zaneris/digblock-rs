@@ -34,16 +34,7 @@ pub struct MeshOutput {
 }
 
 pub enum Job {
-	/// Generate the whole vertical chunk stack of column (x, z) — one
-	/// heightmap evaluation serves every chunk in the stack.
-	///
-	/// Deliberately NOT sliced into resumable continuations. Measured in
-	/// Chrome on Apple Silicon at draw 20, a gen job fits inside a frame
-	/// with room to spare, so slicing would refactor worldgen's column path
-	/// for a possibly unmeasurable win. Revisit only if gen shows up as the
-	/// tall pole on weaker hardware — `?spikelog` attributes it and
-	/// `maintain_ms` bounds it. Do not do this refactor without that
-	/// evidence first.
+	/// Generate column (x, z)'s whole chunk stack. Not sliced; BENCH.md 2026-08-14 says why not.
 	Generate { x: i32, z: i32, seed: f64 },
 	Mesh {
 		pos: ChunkPos,
@@ -70,13 +61,9 @@ pub enum JobResult {
 
 /// Enough of a [`Job`] to put it back on the heap it came off.
 ///
-/// A pool that loses a job — a worker that trapped, was killed, or answered
-/// with a refusal — hands these back through [`JobDispatch::lost`]. A popped
-/// job is remembered NOWHERE else, so without the requeue its column sits
-/// `Generating` forever (a hole in the world) or never meshes again (invisible
-/// terrain). The payload is deliberately not retained: a `Mesh` job's
-/// `MeshInput` is a whole padded snapshot, dozens may be outstanding, and the
-/// pipeline rebuilds it from the store at redispatch anyway.
+/// A pool that loses a job hands these back through [`JobDispatch::lost`]; a popped job is
+/// remembered NOWHERE else, so without the requeue its column sits `Generating` forever or never
+/// meshes again. The payload is deliberately not retained — the pipeline rebuilds it at redispatch.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum JobKey {
 	Generate { x: i32, z: i32 },
@@ -232,11 +219,9 @@ fn gi_in_window(pos: ChunkPos, center: (i32, i32), w: i32) -> bool {
 	pos.x >= lo.0 && pos.x < lo.0 + w && pos.z >= lo.1 && pos.z < lo.1 + w
 }
 
-/// A job pool this crate cannot build for itself — the browser's Web
-/// Workers, injected by the launcher exactly as `NetTransport` is, so
-/// `digblock-core` stays free of platform deps and the whole path is
-/// testable in-process (see `ImmediateDispatch` in this file's tests, the
-/// twin of `digblock-net`'s loopback transport).
+/// A job pool this crate cannot build for itself — the browser's Web Workers, injected by the
+/// launcher exactly as `NetTransport` is, so `digblock-core` stays free of platform deps and the
+/// whole path is testable in-process (`ImmediateDispatch` in this file's tests).
 ///
 /// Everything here is non-blocking: it is called from inside the frame.
 pub trait JobDispatch {
@@ -256,36 +241,23 @@ pub trait JobDispatch {
 	/// frame), so the pipeline pulls them into its own queue each
 	/// `maintain` and drains that under the frame budget.
 	fn poll(&mut self) -> Option<JobResult>;
-	/// Drain one job the pool accepted and can no longer answer for: a
-	/// worker that trapped, was killed, or refused the work. The pipeline
-	/// requeues each one (see [`JobKey`]).
+	/// Drain one job the pool accepted and can no longer answer for: a worker that trapped, was
+	/// killed, or refused the work. The pipeline requeues each one (see [`JobKey`]).
 	///
-	/// This is not an optional nicety — it is the other half of `submit`.
-	/// A job handed to a pool is remembered nowhere else, so a pool that
-	/// silently drops one leaves a permanent hole in the world. A pool
-	/// that structurally cannot lose a job returns `None` forever.
+	/// The other half of `submit`, not a nicety: a job is remembered nowhere else, so a pool that
+	/// drops one silently leaves a permanent hole. One that cannot lose a job returns `None`.
 	fn lost(&mut self) -> Option<JobKey>;
-	/// Workers attached and answering right now — what the debug overlay
-	/// and the bench summary report.
+	/// Workers attached and answering right now — what the debug overlay and the bench summary
+	/// report.
 	///
-	/// This must be the TRUTH rather than what was asked for. Every path
-	/// that yields no usable pool (the platform refused to spawn workers,
-	/// the module failed to load, every worker died) falls back to running
-	/// jobs on this thread, and a run that streamed inline must not be
-	/// recorded in BENCH.md as a pooled arm.
+	/// This must be the TRUTH rather than what was asked for: every path that yields no usable pool
+	/// falls back to running jobs on this thread, and an inline run must not be recorded as pooled.
 	fn worker_count(&self) -> usize;
-	/// Abandon everything in flight: after this returns, a result for any job
-	/// submitted before it must NEVER be delivered.
-	///
-	/// A pool outlives the pipeline that fed it (see `take_dispatch`), and a
-	/// `Generated` result carries only a column coordinate — so one in flight
-	/// from the old world would land as authoritative terrain in the new one,
-	/// same (x, z), different seed. A pool that cannot recall a dispatched job
-	/// must discard its reply instead. Abandoned jobs are NOT reported through
-	/// `lost` (the new store has never heard of those chunks), and any
-	/// per-worker depth accounting must be released here, or the pool refuses
-	/// the new world's jobs while `ready` stays true — the one state where
-	/// nothing streams and nothing runs inline.
+	/// Abandon everything in flight: after this returns, a result for any job submitted before it
+	/// must NEVER be delivered — a pool outlives the pipeline that fed it (`take_dispatch`), and a
+	/// `Generated` result carries only a column coordinate, so one from the old world would land as
+	/// authoritative terrain in the new. Abandoned jobs are NOT reported through `lost`, and any
+	/// per-worker depth accounting must be released here, or the pool refuses jobs while `ready`.
 	fn reset(&mut self);
 }
 
@@ -355,25 +327,21 @@ impl Executor {
 	}
 }
 
-/// Per-`maintain` floor for the inline executor: one `Generate` ends the
-/// batch immediately (a column is a whole stack of chunks of
-/// uninterruptible work); otherwise up to this many mesh jobs run. A
-/// count, not a wall-clock deadline, because job granularity is what
-/// actually bounds the stall. With an `inline_allowance`, more jobs may
-/// follow (see `run_inline_jobs`); this floor always runs regardless.
+/// Per-`maintain` floor for the inline executor: one `Generate` ends the batch immediately (a
+/// column is a whole stack of chunks of uninterruptible work); otherwise up to this many mesh jobs
+/// run. A count, not a wall-clock deadline, because job granularity is what actually bounds the
+/// stall. With an `inline_allowance` more jobs may follow (`run_inline_jobs`); this floor always
+/// runs regardless.
 const INLINE_MESH_CAP: usize = 4;
 
 /// Worst-of-recent window for inline job-cost prediction.
 const COST_N: usize = 8;
 
-/// Fraction of the lifetime worst that survives as a floor under the
-/// recent window. Admission control needs a PESSIMISTIC bound, not a
-/// recent average: gen cost is bimodal (a flat ocean column is far cheaper
-/// than a mountain one), so `COST_N` cheap samples in a row would otherwise
-/// collapse the prediction and admit a job an order of magnitude bigger
-/// than the remaining budget. Half, not all, so a genuinely one-off
-/// outlier (a scheduler preemption, a resize stall) decays out instead of
-/// suppressing streaming for the rest of the run.
+/// Fraction of the lifetime worst that survives as a floor under the recent window. Admission
+/// control needs a PESSIMISTIC bound, not a recent average: gen cost is bimodal (a flat ocean
+/// column is far cheaper than a mountain one), so `COST_N` cheap samples in a row would collapse
+/// the prediction and admit a job an order of magnitude bigger than the budget. Not the whole
+/// worst, so a one-off outlier decays out instead of suppressing streaming for the rest of the run.
 const LIFETIME_FLOOR_FRAC: f32 = 0.5;
 
 /// Predicts an inline job's cost as the worst of its kind's last
@@ -459,12 +427,9 @@ type DeferredCells = FxHashMap<(i32, i32, i32), u16>;
 
 /// Chunks stay resident this far past the draw distance before eviction.
 ///
-/// Crossing one chunk boundary shifts the whole disc by one, so without a
-/// margin a player pacing back and forth over a single line evicts a
-/// crescent and immediately regenerates it, forever. One chunk of slack
-/// removes that churn for the price of the rim band's memory (a few
-/// percent more resident columns). Adds still use the exact draw distance —
-/// only eviction is lazy.
+/// Crossing one chunk boundary shifts the whole disc by one, so without a margin a player pacing
+/// back and forth over a single line evicts a crescent and regenerates it forever. Adds still use
+/// the exact draw distance — only eviction is lazy.
 const KEEP_MARGIN: i32 = 1;
 
 /// Greatest |dx| with `dx² + dz² < r²`, or None if the row misses the disc.
@@ -500,14 +465,11 @@ fn interval_diff(a: i32, b: i32, other: Option<(i32, i32)>) -> [(i32, i32); 2] {
 	}
 }
 
-/// For each diagonal chunk offset, whether this chunk's cells visible in
-/// that neighbor's padded shell (a shared edge line or corner cell)
-/// contain anything non-air. All-air shared cells read identically to the
-/// zero-filled shell of a missing chunk, so such neighbors' existing
-/// meshes cannot be affected by this chunk's arrival. Face offsets are
-/// left false — face re-dirties are unconditional and never consult this.
-/// Indexed [((oy+1)*3 + (oz+1))*3 + (ox+1)]; the whole scan is a couple of
-/// border planes' worth of byte reads.
+/// For each diagonal chunk offset, whether this chunk's cells visible in that neighbor's padded
+/// shell (a shared edge line or corner cell) contain anything non-air. All-air shared cells read
+/// identically to the zero-filled shell of a missing chunk, so such neighbors' meshes cannot be
+/// affected by this chunk's arrival. Face offsets are left false — face re-dirties are
+/// unconditional and never consult this. Indexed [((oy+1)*3 + (oz+1))*3 + (ox+1)].
 fn shell_affects(data: &ChunkData) -> [bool; 27] {
 	// The local cell range this chunk contributes to a neighbor at axis
 	// offset o (the neighbor sees us at -o): our high border row for +1,
@@ -560,12 +522,11 @@ impl Pipeline {
 		self.record_local.then_some(&self.edits)
 	}
 
-	/// Set the skill levels the node reveal stamps at, returning true when
-	/// that crosses some node's reveal threshold — on either axis — and
-	/// every resident chunk therefore has to re-mesh. The caller decides
-	/// what to do about it (the engine sweeps and says so in the feed) —
-	/// this only reports the crossing, so a run of level-ups does not
-	/// re-mesh once per level.
+	/// Set the skill levels the node reveal stamps at, returning true when that crosses some node's
+	/// reveal threshold — on either axis — and every resident chunk therefore has to re-mesh.
+	///
+	/// Only the crossing is reported, so a run of level-ups does not re-mesh once per level; the
+	/// caller decides what to do about it.
 	pub fn set_levels(&mut self, levels: crate::worldgen::nodes::Levels) -> bool {
 		let was = std::mem::replace(&mut self.levels, levels);
 		crate::worldgen::nodes::NODES.iter().any(|&n| {
@@ -590,12 +551,11 @@ impl Pipeline {
 			.is_some_and(|c| c.contains_key(&(x, y, z)))
 	}
 
-	/// Attach a platform job pool, upgrading the inline executor in place.
-	/// The pool need not be ready yet — jobs keep running inline until it
-	/// is, so nothing has to wait on a worker handshake.
+	/// Attach a platform job pool, upgrading the inline executor in place. The pool need not be
+	/// ready yet — jobs keep running inline until it is, so nothing waits on a worker handshake.
 	///
-	/// Ignored when a worker-thread pool is already running: native has
-	/// one, and two pools would race for the same jobs.
+	/// Ignored when a worker-thread pool is already running: native has one, and two pools would
+	/// race for the same jobs.
 	pub fn set_dispatch(&mut self, dispatch: Box<dyn JobDispatch>) {
 		let results = match &mut self.exec {
 			Executor::Inline { results } | Executor::External { results, .. } => {
@@ -606,12 +566,11 @@ impl Pipeline {
 		self.exec = Executor::External { dispatch, results };
 	}
 
-	/// Detach the pool so it can outlive this pipeline — a world switch or
-	/// server join rebuilds the pipeline, and workers are expensive to
-	/// start and hold no world state of their own.
+	/// Detach the pool so it can outlive this pipeline — a world switch or server join rebuilds the
+	/// pipeline, and workers are expensive to start and hold no world state of their own.
 	///
-	/// Resets the pool on the way out: in-flight jobs belong to the world
-	/// being torn down (see [`JobDispatch::reset`]).
+	/// Resets the pool on the way out: in-flight jobs belong to the world being torn down (see
+	/// [`JobDispatch::reset`]).
 	pub fn take_dispatch(&mut self) -> Option<Box<dyn JobDispatch>> {
 		if !matches!(self.exec, Executor::External { .. }) {
 			return None;
@@ -637,16 +596,11 @@ impl Pipeline {
 		// world that never finishes is not a state to leave reachable.)
 		self.store
 			.retain(|_, s| matches!(s.state, ChunkState::Ready(_)));
-		// A SURVIVING chunk strands the same way and more quietly:
-		// `next_mesh_job` refuses while `mesh_gen <= submitted_gen`, and
-		// the abandoned mesh job was the only thing that would ever roll
-		// that marker back (`requeue` does it; a dropped pool cannot). We
-		// can't tell which markers were in flight — a completed job leaves
-		// the same `submitted_gen == mesh_gen` — so roll every one back and
-		// re-queue, which is what `add_column`'s vacant-only rule
-		// structurally cannot do for a slot that is not vacant. Costs a
-		// re-mesh of the resident set, which is the cheap half of the
-		// regeneration the retain above already implies.
+		// A SURVIVING chunk strands the same way and more quietly: `next_mesh_job` refuses while
+		// `mesh_gen <= submitted_gen`, and the abandoned mesh job was the only thing that would
+		// ever roll that marker back. We cannot tell which markers were in flight, so roll every
+		// one back and re-queue — what `add_column`'s vacant-only rule cannot do for a filled slot.
+		// Costs a re-mesh of the resident set, the cheap half of the regeneration above.
 		let center = self.center;
 		self.gen_heap.clear();
 		self.mesh_heap.clear();
@@ -670,16 +624,11 @@ impl Pipeline {
 		self.draw_dist = draw_dist;
 	}
 
-	/// Ceiling scale for the adaptive stream budget
-	/// (`stream_budget::urgency` of the nearest pending job): 1 = work at the
-	/// player, 0 = rim churn or nothing pending. Both heaps are keyed by flat
-	/// d² from center so this is a peek; a stale entry can only overestimate.
-	///
-	/// **In-flight work counts.** `top_up_workers` drains both heaps into the
-	/// pool, so the frame the backlog is handed over would read as idle and
-	/// collapse the shared deadline to its floor — precisely as those results
-	/// start landing here to be absorbed. `in_flight_min_d2` keeps "how near
-	/// is the work" independent of WHERE it is running.
+	/// Ceiling scale for the adaptive stream budget (`stream_budget::urgency` of the nearest
+	/// pending job): 1 = work at the player, 0 = rim churn or nothing pending. Both heaps are keyed
+	/// by flat d² from center, so this is a peek and a stale entry can only overestimate.
+	/// **In-flight work counts**: `in_flight_min_d2` keeps "how near is the work" independent of
+	/// WHERE it runs, or the frame handing the backlog over reads as idle and drops the deadline.
 	pub fn stream_urgency(&self) -> f32 {
 		let generation = self.gen_heap.peek().map(|(Reverse(d), _)| *d);
 		let mesh = self.mesh_heap.peek().map(|(Reverse(d), _)| *d);

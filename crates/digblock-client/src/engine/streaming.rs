@@ -5,12 +5,10 @@
 use super::*;
 
 impl Engine {
-	/// The ONLY way Engine builds a Renderer — anything uploaded to the
-	/// renderer outside `upload_chunk` must be re-sent here. Shared by
-	/// first init and device-loss rebuild so the two paths can't drift:
-	/// meshes stream back in via the pipeline re-mesh, and spray/player
-	/// state rides the same uploads (spray via mesh impacts, players
-	/// re-uploaded every frame).
+	/// The ONLY way Engine builds a Renderer — anything uploaded to the renderer outside
+	/// `upload_chunk` must be re-sent here. Shared by first init and device-loss rebuild so the two
+	/// paths can't drift: meshes stream back in via the pipeline re-mesh, and spray/player state
+	/// rides the same uploads.
 	pub(super) fn build_renderer(&mut self, gpu: &Gpu, surface_format: wgpu::TextureFormat) {
 		self.renderer = Some(Renderer::new(
 			gpu,
@@ -46,12 +44,10 @@ impl Engine {
 	/// spread over frames (`--fly`) or taken at once (`--warp`).
 	pub(super) fn fly_step(&mut self) {
 		const BENCH_YAW: f32 = 12.0; // degrees per path-second
-		// The walk: forward and back about a fixed origin, at eye
-		// height with the ground just ahead — the repro as reported.
-		// An oscillation rather than a line keeps the column under the feet
-		// constant, so the eye cannot step a whole block mid-path and
-		// invalidate the history for a reason that is not the one under
-		// test.
+		// The walk: forward and back about a fixed origin, at eye height with the ground just
+		// ahead — the repro as reported. An oscillation rather than a line keeps the column
+		// under the feet constant, so the eye cannot step a whole block mid-path and
+		// invalidate the history for a reason that is not the one under test.
 		const WALK_AMP: f32 = 1.0; // blocks either side of the origin
 		const WALK_PERIOD: f32 = 1.5; // seconds — its peak speed is a walk
 		const WALK_PITCH: f32 = -25.0; // puts the ground just ahead of the eye
@@ -121,24 +117,17 @@ impl Engine {
 			.pipeline
 			.maintain(center, usize::MAX, Some(deadline), allowance);
 		self.bench.pending.maintain_ms = ms_since(t_maintain);
-		// RTGI: scroll the window to the camera (re-dirtying whatever just
-		// entered coverage), pull freshly-dirty chunks into the re-upload
-		// queue, then feed the voxel window under a byte budget AND the shared
-		// streaming deadline (GI-DESIGN.md).
-		//
-		// The clock matters as much as the bytes: `classify_gi` walks every
-		// cell of a chunk, and the byte cap alone permits many chunks' worth of
-		// that in one frame. This was the only streaming stage that ignored
-		// `deadline`, and the only one charged to no phase, so a classify burst
-		// landed in `busy_ms` with nothing to attribute it to. `GI_UPLOAD_MIN`
-		// is the same minimum-progress floor the mesh loop uses.
+		// RTGI: scroll the window to the camera (re-dirtying whatever entered coverage), pull
+		// freshly-dirty chunks into the re-upload queue, then feed the voxel window under a
+		// byte budget AND the shared streaming deadline (GI-DESIGN.md). The clock matters as
+		// much as the bytes: `classify_gi` walks every cell of a chunk, and the byte cap alone
+		// permits many chunks in one frame; `GI_UPLOAD_MIN` floors progress.
 		let t_gi = web_time::Instant::now();
-		// The window AS BUILT, never the live draw distance. Raising draw
-		// distance from the settings screen mutates `config.draw_dist`
-		// while the GI window texture keeps its construction size, and
-		// approving a chunk beyond that makes `upload_chunk`'s
-		// `rem_euclid` wrap it onto a different cell than the gather
-		// reads — one part of the world written into another's slot.
+		// The window AS BUILT, never the live draw distance. Raising draw distance from the
+		// settings screen mutates `config.draw_dist` while the GI window texture keeps its
+		// construction size, and approving a chunk beyond that makes `upload_chunk`'s
+		// `rem_euclid` wrap it onto a different cell than the gather reads — one part of the
+		// world written into another's slot.
 		let gi_window = renderer.gi_window_chunks().min(self.config.draw_dist);
 		self.pipeline.gi_recenter(center, gi_window);
 		for pos in self.pipeline.take_gi_dirty() {

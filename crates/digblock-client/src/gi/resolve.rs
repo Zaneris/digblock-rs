@@ -3,15 +3,11 @@
 
 use super::*;
 
-/// The resolve's shipped ray budgets — how many DDA iterations the
-/// per-pixel final gather and the sun march spend. The shaders' own loop
-/// bounds are CAPACITIES and stay literals in WGSL (an over-budget value
-/// self-clamps there); `budgets_fit_the_shaders_capacities` holds the two
-/// sides together. These are the frame's two largest ray budgets
-/// (BENCH.md), which is why they are the tier knob
-/// (`EngineConfig::gi_gather_iters`/`gi_sun_iters`) — and why a retune is
-/// a measured call against the release-note bars in GI-DESIGN.md, never a
-/// hunch: a shorter march silently un-shadows what lies past the cut.
+/// The resolve's shipped ray budgets — DDA iterations for the per-pixel final gather and the sun
+/// march, the frame's two largest (BENCH.md) and so the tier knob
+/// (`EngineConfig::gi_gather_iters`/`gi_sun_iters`). The shaders' loop bounds are CAPACITIES and
+/// stay WGSL literals, held to these by `budgets_fit_the_shaders_capacities`; a retune is measured
+/// against GI-DESIGN.md's bars, since a shorter march silently un-shadows what lies past the cut.
 pub(crate) const GI_GATHER_ITERS: u32 = 96;
 pub(crate) const GI_SUN_ITERS: u32 = 320;
 
@@ -85,12 +81,10 @@ impl GiDraw {
 		})
 	}
 
-	/// Encode one a-trous iteration: read one lighting pair, write the
-	/// other. Both are full-screen half-res passes with no depth.
-	///
-	/// `query` is the caller's, one pair per ITERATION. Both used to write
-	/// `Q_GI_DENOISE`, so the second silently overwrote the first and the
-	/// denoise column reported the stride-2 pass alone.
+	/// Encode one a-trous iteration: read one lighting pair, write the other. Both are full-screen
+	/// half-res passes with no depth. `query` is the caller's and must be one pair per ITERATION —
+	/// sharing `Q_GI_DENOISE` across both lets the second overwrite the first, and the denoise
+	/// column then reports the stride-2 pass alone.
 	pub(crate) fn encode_atrous(
 		&self,
 		encoder: &mut wgpu::CommandEncoder,

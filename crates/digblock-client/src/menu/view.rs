@@ -35,14 +35,11 @@ impl Menu {
 			specs.push((spec, *y));
 			*y += row_h;
 		};
-		// The keyboard hint under a page — "arrows + enter", "esc: back".
-		// Dropped entirely on a touch device, which has none of those keys
-		// and gets the corner button instead: instructions for hardware
-		// that is not there read as a dead end rather than as help.
-		//
-		// One helper rather than a condition per site, because there are a
-		// dozen of these lines and the next page's author will write the
-		// thirteenth without thinking about phones.
+		// The keyboard hint under a page. Dropped entirely on a touch device, which has none of
+		// those keys and gets the corner button instead: instructions for hardware that is not
+		// there read as a dead end rather than as help. One helper rather than a condition per
+		// site, because the next page's author will write another of these without thinking
+		// about phones.
 		let touch = self.touch;
 		let hint = |specs: &mut Vec<(RowSpec, f32)>, y: &mut f32, text: &str| {
 			if !touch {
@@ -491,13 +488,10 @@ impl Menu {
 					RowSpec::dim(if n.claiming {
 						"claiming...".to_string()
 					} else {
-						// The rule, from the function that enforces it, and
-						// then the key — separately, because only the second
-						// half is a keyboard hint and this page is reachable
-						// on a device with no keys to name. Written as a
-						// `dim` rather than through `hint` for exactly that
-						// reason, which is the thirteenth line the helper
-						// above predicted.
+						// The rule, from the function that enforces it, and then the
+						// key — separately, because only the second half is a keyboard
+						// hint and this page is reachable on a device with no keys to
+						// name. A `dim` rather than `hint` for exactly that reason.
 						use digblock_net::protocol::{MAX_DISPLAY_NAME, MIN_DISPLAY_NAME};
 						let rule =
 							format!("{MIN_DISPLAY_NAME}-{MAX_DISPLAY_NAME} chars: a-z A-Z 0-9 - _");
@@ -600,11 +594,9 @@ impl Menu {
 			}
 		}
 
-		// Width to content: the widest row (text plus any right-aligned
-		// column or slider bar) fits with the overlay's own padding,
-		// clamped to the window; min_panel_w keeps short screens from
-		// looking cramped.
-		// Must match what widgets::row actually draws — see
+		// Width to content: the widest row (text plus any right-aligned column or slider bar)
+		// fits with the overlay's own padding, clamped to the window; min_panel_w keeps short
+		// screens from looking cramped. Must match what widgets::row actually draws — see
 		// `panel_fits_every_row`, which re-derives this independently.
 		let text_w = |s: &str| crate::font::ui().measure(s, glyph);
 		let content_w = specs

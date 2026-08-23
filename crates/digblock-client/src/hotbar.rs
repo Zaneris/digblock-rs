@@ -9,14 +9,7 @@ use digblock_core::inventory::Inventory;
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum SlotView {
 	Empty,
-	/// The tool slot: WHICH tool to draw — `None` for a fresh player's
-	/// bare slot, drawn as the slot frame with nothing in it — whether
-	/// the bucket is charged (the bucket's own count, so the bar shows
-	/// the charge where a stack would show its number), and how present
-	/// the icon is mid-handover. The slot always holds
-	/// `HotbarItem::WaterTool` on the wire — `active_tool` is the second
-	/// axis — so the icon has to come from the tool, not from the slot,
-	/// or every tool in the game draws as a bucket.
+	/// The tool slot: the icon comes from the TOOL, not the slot, which always holds `WaterTool`.
 	Tool {
 		tool: Option<BlockType>,
 		full: bool,
@@ -40,17 +33,11 @@ impl SlotView {
 	}
 }
 
-/// The tool slot's handover animation.
-///
-/// Cycling tools shouldn't hard-cut any more than the transmute tab's
-/// family tiles do: the outgoing tool shrinks away, the incoming one
-/// grows in, and everything else about the exchange — including which
-/// tools the faded rail lists — happens at the invisible midpoint, so
-/// no tool is ever shown in two places at once.
-///
-/// It watches the active tool rather than being told about the keypress,
-/// so every path that can change it animates: the digit tap, a server
-/// `Layout` rebase, a rejoin restoring a saved bar.
+/// The tool slot's handover animation: the outgoing tool shrinks away, the incoming one grows in,
+/// and everything else about the exchange — including which tools the faded rail lists — happens
+/// at the invisible midpoint, so no tool is ever shown in two places at once. It watches the
+/// active tool rather than being told about the keypress, so every path that can change it
+/// animates: the digit tap, a server `Layout` rebase, a rejoin restoring a saved bar.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub struct ToolSwap {
 	shown: Option<BlockType>,

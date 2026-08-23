@@ -16,13 +16,11 @@
 // The Frame struct + group(0) binding come from frame_common.wgsl
 // (prepended by digblock-assets).
 
-// Drawn in the WATER pass (after the water surfaces), so the box on a
-// targeted water source — or on a submerged block — blends over the
-// water instead of vanishing under its depth tint. The pass's live
-// depth buffer contains water-surface depth by then, so the pipeline's
-// depth test is Always and occlusion is done here by hand against the
-// pre-water SOLID depth copy: terrain still hides the box, water never
-// does. (R32Float resolve, textureLoad only — see water.wgsl.)
+// Drawn in the WATER pass, after the water surfaces, so the box on a targeted water source — or
+// on a submerged block — blends over the water instead of vanishing under its depth tint. The
+// live depth buffer holds water-surface depth by then, so the pipeline's depth test is Always
+// and occlusion is done here by hand against the pre-water SOLID depth copy: terrain still hides
+// the box, water never does. (R32Float resolve, textureLoad only — see water.wgsl.)
 @group(0) @binding(1) var scene_depth: texture_2d<f32>;
 
 const QUAD = array<vec2f, 6>(

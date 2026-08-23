@@ -231,12 +231,11 @@ struct Corner {
 	gzz: f64,
 }
 
-/// A vertical walk of [`noise3`] at fixed x/z. The simplex skew is
-/// `(x+y+z)/3`, so stepping y by a small increment leaves the lattice
-/// cell unchanged for a long run — and inside one cell the corner
-/// gradients and every x/z term of the corner sum are constant. `at(y)`
-/// hoists exactly those, one operation at a time, so it is bit-identical
-/// to `noise3(x, y, z)` (`column_walk_matches_noise3` pins that).
+/// A vertical walk of [`noise3`] at fixed x/z. The simplex skew is `(x+y+z)/3`, so stepping y by
+/// a small increment leaves the lattice cell unchanged for a long run, and inside one cell the
+/// corner gradients and every x/z term of the corner sum are constant. `at(y)` hoists exactly
+/// those, one operation at a time, so it stays bit-identical to `noise3(x, y, z)`
+/// (`column_walk_matches_noise3` pins that).
 pub struct Noise3Column {
 	x: f64,
 	z: f64,

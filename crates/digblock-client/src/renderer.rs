@@ -45,13 +45,10 @@ const MAX_QUADS: usize = 4096 * digblock_core::shapes::MAX_SHAPE_QUADS;
 /// than to the data — back when each draw rebound a slice of a UBO.
 pub(crate) const ORIGIN_STRIDE: u64 = 16;
 
-/// Chunk vertex-buffer size class. A remesh (an edit dirties every
-/// neighbour whose shell it falls in; walking churns the rim continuously)
-/// nearly always lands inside the class of the mesh it replaces, so it is
-/// written over the live allocation; what does change class is recycled
-/// through the free list below. Both matter most on Chrome, where every
-/// buffer create and destroy is a GPU-process allocation plus a deferred
-/// free that wgpu batches into periodic cleanup spikes.
+/// Chunk vertex-buffer size class. A remesh nearly always lands inside the class of the mesh it
+/// replaces, so it is written over the live allocation; what does change class is recycled through
+/// the free list below. Both matter most on Chrome, where every buffer create and destroy is a
+/// GPU-process allocation plus a deferred free that wgpu batches into periodic cleanup spikes.
 const SIZE_CLASS: u64 = 16 * 1024;
 /// Ceiling on retired bytes held for reuse. Rim churn at walking speed is
 /// well under a MiB a frame, so this covers seconds of travel; past it
@@ -66,16 +63,11 @@ const POOL_BYTES_MAX: u64 = 16 * 1024 * 1024;
 /// overdraw. Anything past the last bucket still draws, just unordered.
 const DIST_BUCKETS: usize = 48;
 
-/// `DeviceExt::create_buffer_init` replacement, mandatory on wasm and
-/// used everywhere for uniformity. The util helper copies through a JS
-/// `Uint8Array` view of wasm linear memory with wgpu-internal
-/// allocations between creating the view and consuming it; if one of
-/// them grows wasm memory, every live view detaches and the copy throws
-/// "Cannot perform %TypedArray%.prototype.set on a detached
-/// ArrayBuffer" (seen in the field from `upload_chunk` while streaming
-/// grew the heap). `Queue::write_buffer` is immune: its FFI glue builds
-/// the view and hands it to the synchronous GPU copy in one step, with
-/// no wasm allocation in between.
+/// `DeviceExt::create_buffer_init` replacement, mandatory on wasm and used everywhere for
+/// uniformity. The util helper copies through a JS `Uint8Array` view of wasm linear memory with
+/// wgpu-internal allocations in between; if one of them grows wasm memory, every live view
+/// detaches and the copy throws. `Queue::write_buffer` is immune: its FFI glue builds the view and
+/// hands it to the synchronous GPU copy in one step, with no wasm allocation in between.
 fn buffer_init(gpu: &Gpu, label: &str, usage: wgpu::BufferUsages, contents: &[u8]) -> wgpu::Buffer {
 	// write_buffer requires u32-aligned sizes; all callers upload
 	// u32-packed data.
@@ -95,13 +87,10 @@ fn size_class(bytes: u64) -> u64 {
 	bytes.next_multiple_of(SIZE_CLASS).max(SIZE_CLASS)
 }
 
-/// Chunk-origin slot capacity for a draw distance. Sky chunks never
-/// upload, but caves can make any buried chunk non-empty, so budget the
-/// full stack of every in-range column — a slot is one `vec4f`, so even
-/// the whole stack is a rounding error against the meshes. A starting
-/// estimate, not a ceiling: `grow_chunk_buf` takes over before the buffer
-/// fills, which is what a future runtime draw-distance change will lean
-/// on.
+/// Chunk-origin slot capacity for a draw distance. Sky chunks never upload, but caves can make any
+/// buried chunk non-empty, so budget the full stack of every in-range column — a slot is one
+/// `vec4f`, so even the whole stack is a rounding error against the meshes. A starting estimate,
+/// not a ceiling: `grow_chunk_buf` takes over before the buffer fills.
 fn chunk_slots(draw_dist: i32) -> u32 {
 	let r = f64::from(draw_dist) + 1.0;
 	let columns = (std::f64::consts::PI * r * r).ceil() as u32;
@@ -110,12 +99,9 @@ fn chunk_slots(draw_dist: i32) -> u32 {
 		.max(4096)
 }
 
-/// New capacity when `needed` exceeds the current slot count: round up
-/// to the allocation granularity, but never less than double (amortized
-/// growth — a handful of reallocations over a whole session).
-/// Slot granularity for a regrown instance buffer. Rounding up to a
-/// step rather than to `needed` keeps a run of one-slot growths from
-/// reallocating on every frame.
+/// Slot granularity for a regrown instance buffer. Rounding up to a step rather than to `needed`
+/// keeps a run of one-slot growths from reallocating on every frame; `grown_slots` also never
+/// returns less than double, so a whole session costs a handful of reallocations.
 const SLOT_GRANULARITY: u32 = 256;
 
 fn grown_slots(current: u32, needed: u32) -> u32 {
@@ -148,12 +134,11 @@ pub(crate) fn geometry_vertex_layout() -> wgpu::VertexBufferLayout<'static> {
 	}
 }
 
-/// Slot-indexed chunk origins as an instance-step vertex stream, bound
-/// once per pass. Every chunk draws one instance at `first_instance =
-/// slot`, so the vertex stage picks its own origin out and the per-chunk
-/// loop is `set_vertex_buffer` + `draw_indexed` — no bind group, no
-/// dynamic offset. chunk.wgsl's `vs`/`vs_depth` and water.wgsl all read
-/// it at `@location(1)` and must be changed together.
+/// Slot-indexed chunk origins as an instance-step vertex stream, bound once per pass. Every chunk
+/// draws one instance at `first_instance = slot`, so the vertex stage picks its own origin out and
+/// the per-chunk loop is `set_vertex_buffer` + `draw_indexed` — no bind group, no dynamic offset.
+/// chunk.wgsl's `vs`/`vs_depth` and water.wgsl all read it at `@location(1)` and must be changed
+/// together.
 pub(crate) fn origin_vertex_layout() -> wgpu::VertexBufferLayout<'static> {
 	wgpu::VertexBufferLayout {
 		array_stride: ORIGIN_STRIDE,
@@ -357,18 +342,11 @@ pub(crate) struct Renderer {
 	surface_format: wgpu::TextureFormat,
 }
 
-/// Renderer-owned per-frame render targets. The platform hands over only
-/// the swapchain view; depth and the offscreen scene color live here so
-/// the water pass can sample both.
-/// The two resolutions the world renders at, as one value so they cannot
-/// drift apart.
+/// The two resolutions the world renders at, as one value so they cannot drift apart.
 ///
-/// `render` is a fraction of the surface and `gi` is a whole-integer
-/// fraction of THAT. Anchoring the GI to the surface instead would give a
-/// fractional ratio the moment render scale left native, and `chunk.wgsl`'s
-/// 4-tap bilateral gather walks a footprint that assumes an exact integer
-/// ratio — the upsample would read texels that no longer line up with the
-/// pixels it is weighting. `gi_ratio` is the number the shader is handed.
+/// `render` is a fraction of the surface and `gi` a whole-integer fraction of THAT: anchoring the
+/// GI to the surface would give a fractional ratio the moment render scale left native, and
+/// `chunk.wgsl`'s bilateral gather assumes an exact integer ratio. `gi_ratio` is what it reads.
 #[derive(Clone, Copy, PartialEq)]
 pub(crate) struct RenderScale {
 	pub render: f32,
@@ -563,13 +541,11 @@ impl ChunkDraw<'_> {
 	}
 }
 
-/// One chunk draw: bind its vertex stream, then one instance at
-/// `first_instance = slot` — which is how the vertex stage picks its
-/// origin out of the instance-step origin buffer bound once per pass.
-/// Two encoder calls where the dynamic-offset bind group cost three; on
-/// wasm each is a JS hop with validation, and the depth prepass, the
-/// scene, and both water subpasses each walk thousands of chunks.
-/// Returns the index count drawn.
+/// One chunk draw: bind its vertex stream, then one instance at `first_instance = slot` — which is
+/// how the vertex stage picks its origin out of the instance-step origin buffer bound once per
+/// pass. Two encoder calls where the dynamic-offset bind group cost three; on wasm each is a JS
+/// hop with validation, and the prepass, the scene and both water subpasses each walk thousands of
+/// chunks. Returns the index count drawn.
 pub(crate) fn draw_chunk(pass: &mut wgpu::RenderPass<'_>, mesh: &ChunkMesh, slot: u32) -> u32 {
 	pass.set_vertex_buffer(0, mesh.buf.slice(..));
 	pass.draw_indexed(0..mesh.index_count, 0, slot..slot + 1);
@@ -610,12 +586,9 @@ pub(crate) fn side_planes(m: glam::Mat4) -> [glam::Vec4; 4] {
 
 #[cfg(test)]
 mod tests {
-	/// The WGSL `Frame` struct (frame_common.wgsl) and the Rust-side
-	/// `FrameUniforms` are hand-mirrored — field order and packing are
-	/// load-bearing. This turns that comment into CI enforcement: naga's
-	/// Layouter computes the shader-side uniform layout, and a size
-	/// mismatch (reordered/added/removed field, packing drift) fails the
-	/// test without needing a GPU.
+	/// The WGSL `Frame` struct (frame_common.wgsl) and the Rust-side `FrameUniforms` are
+	/// hand-mirrored — field order and packing are load-bearing. naga's Layouter computes the
+	/// shader-side uniform layout, so a size mismatch fails the test without needing a GPU.
 	#[test]
 	fn frame_layout_matches_wgsl() {
 		let module = naga::front::wgsl::parse_str(digblock_assets::shader::CHUNK)
@@ -636,23 +609,11 @@ mod tests {
 		);
 	}
 
-	/// Every pipeline this renderer builds, validated with no GPU present.
-	///
-	/// The shader test in `digblock-assets` parses each WGSL file ALONE, so it
-	/// can only see that a shader is well-formed. It cannot see the seam that
-	/// actually breaks: a shader's bindings against the `BindGroupLayout` the
-	/// Rust side hand-wrote for it, a vertex buffer's formats against the
-	/// attributes the vertex stage declares, a fragment's outputs against the
-	/// target formats. All three are checked at `create_render_pipeline` and
-	/// nowhere earlier.
-	///
-	/// wgpu's noop backend stubs the HAL, but `wgpu-core` runs its full
-	/// validation first, backend-independent — so this constructs the real
-	/// `Renderer` on a device that does not exist and gets the real errors.
-	///
-	/// What it does NOT cover: naga is the permissive front end and the
-	/// browser's is Tint, so a shader that passes here can still invalidate a
-	/// pipeline in Chrome.
+	/// Every pipeline this renderer builds, validated with no GPU present — wgpu-core runs its
+	/// full validation before the noop backend's stubbed HAL. The assets shader test parses each
+	/// WGSL file ALONE and misses the seams that break: bindings against the hand-written
+	/// `BindGroupLayout`, vertex formats against the declared attributes, fragment outputs against
+	/// the target formats. naga is permissive where Chrome's Tint is not.
 	#[cfg(not(target_arch = "wasm32"))]
 	#[test]
 	fn every_pipeline_builds_without_a_gpu() {

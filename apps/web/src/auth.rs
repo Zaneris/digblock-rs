@@ -1,25 +1,18 @@
 //! Browser sign-in, and the session it produces.
 //!
-//! Same master endpoints as desktop, different browser hop. A page cannot listen
-//! on a loopback port, so the redirect target is the game page itself: navigate
-//! away to the master, come back with `?code=&state=` in the query, exchange it,
-//! and scrub the URL.
+//! Same master endpoints as desktop, different browser hop. A page cannot listen on a loopback
+//! port, so the redirect target is the game page itself: navigate away to the master, come back
+//! with the code and state in the query, exchange it, and scrub the URL.
 //!
-//! A top-level navigation rather than a popup, deliberately. A popup opened from
-//! the engine's command drain is one task removed from the click that asked for
-//! it, which is exactly what a popup blocker exists to stop — and a sign-in that
-//! silently fails to open anything reads as a hang.
+//! A top-level navigation rather than a popup, deliberately: a popup opened from the engine's
+//! command drain is one task removed from the click that asked for it, which is exactly what a
+//! popup blocker exists to stop.
 //!
-//! The PKCE verifier and the state outlive that reload in `sessionStorage`:
-//! per-tab, cleared when the tab closes, unreadable from another origin, and
-//! consumed on return.
-//!
-//! The page's own query rides along with them. The master refuses a redirect
-//! target that carries a query, so `?master=` and its neighbours cannot survive
-//! the trip in the URL — losing them silently repointed a dev-stack session at
-//! the production master the moment sign-in succeeded. They are parked here and
-//! put back by `take_callback`, minus the one-shot actions (`?join`,
-//! `?devsignin`) that must not re-fire on return.
+//! The PKCE verifier and the state outlive that reload in `sessionStorage` — per-tab, unreadable
+//! from another origin, consumed on return. The page's own query rides along with them, because
+//! the master refuses a redirect target that carries a query and losing `?master=` silently
+//! repointed a dev-stack session at the production master. `take_callback` puts them back, minus
+//! the one-shot actions (`?join`, `?devsignin`) that must not re-fire on return.
 
 use digblock_net::pkce::{b64url, s256, urlencode};
 use wasm_bindgen::JsValue;
@@ -362,15 +355,11 @@ pub(crate) async fn dev_sign_in(master_url: &str, subject: &str) -> Result<Sessi
 // platforms with different randomness sources; the RFC test vector in each
 // is what actually keeps them in step.
 
-/// Fails rather than returning anything it had to invent.
-///
-/// A weak PKCE verifier is worse than useless — it looks like protection —
-/// so there is deliberately no fallback to `Math.random`. Note that saying
-/// so and returning the untouched buffer anyway is not a refusal either:
-/// that ships an ALL-ZERO verifier and state, which is weaker still. Zero
-/// is a value an attacker can guess on the first try, so a leaked code
-/// would be redeemable by anyone and the `state` check would pass for any
-/// callback. The only safe answer here is no answer.
+/// Fails rather than returning anything it had to invent. A weak PKCE verifier is worse than
+/// useless — it looks like protection — so there is deliberately no fallback to `Math.random`,
+/// and saying so while returning the untouched buffer is not a refusal either: an all-zero
+/// verifier and state is guessable on the first try, so a leaked code would be redeemable by
+/// anyone and the `state` check would pass for any callback. The only safe answer is no answer.
 fn random_b64(bytes: usize) -> Result<String, String> {
 	let mut buf = vec![0u8; bytes];
 	web_sys::window()

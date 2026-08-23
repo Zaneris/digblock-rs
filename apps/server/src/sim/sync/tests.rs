@@ -289,14 +289,11 @@ fn fresh_column_edit_reaches_stationary_peer_via_broadcast_only() {
 	);
 }
 
-/// The retry loop: a client that stays put is handed its own edited
-/// columns again, so a column it somehow lacks heals without anyone
-/// having to notice — the push sync has no acknowledgement and can
+/// The retry loop: a client that stays put is handed its own edited columns again, so a column it
+/// somehow lacks heals without anyone noticing — the push sync has no acknowledgement and can
 /// notice nothing.
 ///
-/// The walking half is pinned by
-/// `evict_and_reenter_resyncs_column_exactly_once` below, which counts
-/// JournalColumns across a long walk and would see these as extras.
+/// The walking half is pinned by `evict_and_reenter_resyncs_column_exactly_once` below.
 #[test]
 fn a_settled_client_is_handed_its_columns_again() {
 	let mut sim = flat_sim("resync");
@@ -340,14 +337,11 @@ fn a_settled_client_is_handed_its_columns_again() {
 	);
 }
 
-/// Trigger A: leaving prunes the synced set; re-entering re-syncs the
-/// edited column exactly once via JournalColumn.
+/// Trigger A: leaving prunes the synced set; re-entering re-syncs the edited column exactly once
+/// via JournalColumn.
 ///
-/// The background rotation cannot contribute to that count: the walk
-/// crosses a column boundary — which restarts its wait — far more
-/// often than `RESYNC_SETTLE_TICKS`, and the settle at the end is a
-/// fraction of it. A stall long enough to change that would fail
-/// loudly here rather than quietly, which is why the count is exact.
+/// The background rotation cannot contribute to that count: the walk crosses a column boundary —
+/// which restarts its wait — far more often than `RESYNC_SETTLE_TICKS`, so the count is exact.
 #[test]
 fn evict_and_reenter_resyncs_column_exactly_once() {
 	// A generous residency radius: columns generate well ahead of a
@@ -522,18 +516,11 @@ fn far_player_excluded_from_snapshots_until_near_again() {
 		"near remote present"
 	);
 
-	// B walks away, out past A's draw distance rather than onto its edge.
-	// Server-authoritative movement: forward inputs, never-adopted claims,
-	// so the sim's own physics carries B.
-	//
-	// A DISTANCE goal, never a tick budget. The two clocks are unrelated —
-	// this loop advances world time as fast as the host will run it, while
-	// the ground ahead of B is laid down by a worker on the wall clock — so
-	// a fixed tick count measures the GENERATOR, and on a loaded host B is
-	// left standing at the frontier still inside A's radius. Hold with a
-	// stop input while the ground ahead is missing, and yield the core while
-	// holding. Both clients drain every tick, or an undrained snapshot queue
-	// reaches `OUT_CAP` and trips the stall drop.
+	// B walks away, out past A's draw distance, carried by the sim's own physics. A DISTANCE goal,
+	// never a tick budget: world time here runs as fast as the host will, while the ground ahead is
+	// laid by a worker on the wall clock, so a tick count measures the GENERATOR and leaves B at
+	// the frontier. Hold with a stop input while the ground ahead is missing, yielding the core.
+	// Both clients drain every tick, or an undrained snapshot queue reaches `OUT_CAP` and drops.
 	let ahead_ready = |sim: &Sim| {
 		let (cx, cz) = column_of(sim.test_player(2).expect("B still connected").pos);
 		let mid = CHUNK_SIZE as i32 / 2;
@@ -608,15 +595,11 @@ fn far_player_excluded_from_snapshots_until_near_again() {
 	);
 }
 
-/// A client whose transport has no datagram channel (iOS Safari ships
-/// `WebTransport.datagrams` with no writable side) is served over the
-/// reliable stream in BOTH directions — protocol v26.
+/// A client whose transport has no datagram channel (iOS Safari ships `WebTransport.datagrams`
+/// with no writable side) is served over the reliable stream in BOTH directions — protocol v26.
 ///
-/// Both halves matter and they are separate mechanisms: the server has
-/// to stop aiming snapshots at a channel that is not there, and it has
-/// to accept inputs that arrive wrapped. Either one alone leaves a
-/// player who can see the world but not move, or move but never see
-/// anyone.
+/// Two separate mechanisms: the server must stop aiming snapshots at a channel that is not there,
+/// and must accept inputs that arrive wrapped. Either alone leaves a player half-served.
 #[test]
 fn a_client_without_datagrams_is_served_over_the_reliable_stream() {
 	let mut sim = flat_sim("no-datagrams");
@@ -656,19 +639,11 @@ fn a_client_without_datagrams_is_served_over_the_reliable_stream() {
 	);
 }
 
-/// The stream fallback must not put a LOSSY message class in a position to
-/// fill the queue a lossless one dies on.
-///
-/// A snapshot travelling as a datagram leaves the outbound queue the moment
-/// the pump reaches it; wrapped in a frame it leaves at the speed of one
-/// stream's flow control, and a peer reading slowly parks it there. Without a
-/// reserve the queue fills with snapshots and the next edit, chat line or
-/// teleport is refused — and `client_send_frame` drops a client whose queue
-/// refuses a frame, so the session ends over the one message class that was
-/// always allowed to be dropped instead.
-///
-/// The twin of `stalled_datagram_queue_escalates_to_drop`, which pins the
-/// other half: a peer that has genuinely stopped reading still goes.
+/// The stream fallback must not put a LOSSY message class in a position to fill the queue a
+/// lossless one dies on: a wrapped snapshot leaves at one stream's flow control, so without a
+/// reserve the queue fills with snapshots, the next edit or chat line is refused, and
+/// `client_send_frame` drops the client over the one class that was always droppable. Twin of
+/// `stalled_datagram_queue_escalates_to_drop`, which pins that a genuinely stalled peer still goes.
 #[test]
 fn wrapped_snapshots_leave_the_queue_reliable_frames_die_on() {
 	let mut sim = flat_sim("no-datagrams-reserve");

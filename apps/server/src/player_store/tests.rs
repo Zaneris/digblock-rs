@@ -22,12 +22,10 @@ fn device(n: u8) -> [u8; 16] {
 	[0x80 | n; 16]
 }
 
-/// A hand-built v1 file — inventory-only records under device hashes,
-/// which is what a server that ran before accounts has on disk.
-///
-/// Hand-built rather than round-tripped through the writer on purpose:
-/// the writer only emits the current version, so a fixture derived from
-/// it could never stand in for the format this migration exists to read.
+/// A hand-built v1 file — inventory-only records under device hashes, which is what a server that
+/// ran before accounts has on disk. Hand-built rather than round-tripped through the writer on
+/// purpose: the writer only emits the current version, so a fixture derived from it could never
+/// stand in for the format this migration exists to read.
 fn legacy_v1_file(players: &[([u8; 16], u32)]) -> Vec<u8> {
 	let mut buf = Vec::new();
 	buf.extend_from_slice(&MAGIC);
@@ -68,14 +66,11 @@ fn layout() -> PlayerLayout {
 	PlayerLayout { hotbar, grid }
 }
 
-/// A sized layout blob written at explicit widths, so a fixture can
-/// stand for a file some OTHER build wrote — narrower or wider than
-/// today's grid.
-///
-/// The widths are arguments rather than read from the current
-/// constants on purpose: a fixture built from the live constants moves
-/// with them, so it can never fail on the resize it exists to guard
-/// against. Words past the caller's own layout are `WIRE_EMPTY`.
+/// A sized layout blob written at explicit widths, so a fixture can stand for a file some OTHER
+/// build wrote — narrower or wider than today's grid. The widths are arguments rather than the
+/// current constants on purpose: a fixture built from the live constants moves with them, so it
+/// could never fail on the resize it exists to guard against. Words past the caller's own layout
+/// are `WIRE_EMPTY`.
 fn push_sized_layout(buf: &mut Vec<u8>, l: &PlayerLayout, hotbar_len: usize, grid_len: usize) {
 	buf.push(LAYOUT_SIZED);
 	buf.push(hotbar_len as u8);
@@ -226,15 +221,11 @@ fn round_trips_across_reopen() {
 	assert!(s.get(&key(3)).layout.is_none());
 }
 
-/// A pre-account file loads into QUARANTINE, not into the account map
-/// and not into the archive.
-///
-/// Both halves matter. Reading those keys as account ids would hand a
-/// stranger's inventory to whichever account id happened to share the
-/// bytes; archiving them — which is what v5 did — deletes every
-/// pre-account character on the server. The quarantine is the third
-/// option: the records are there, owned by nobody, waiting for the one
-/// player who can still prove they owned that device.
+/// A pre-account file loads into QUARANTINE, not into the account map and not into the archive.
+/// Both halves matter: reading those keys as account ids would hand a stranger's inventory to
+/// whichever account id shared the bytes, and archiving them deletes every pre-account character
+/// on the server. Quarantine is the third option — the records are there, owned by nobody, until
+/// the one player who can still prove they owned that device claims them.
 #[test]
 fn a_pre_account_file_lands_in_quarantine() {
 	let dir = temp_dir("v4upgrade");
@@ -540,18 +531,11 @@ fn absent_position_stays_absent() {
 	assert_eq!(s.get(&id).last_teleport_tick, None);
 }
 
-/// THE grid-growth test: a complete file written when the grid was
-/// narrower still reads, with every player's items, arrangement,
-/// position and XP intact — no version bump, no archive path.
-///
-/// Growing `GRID_SLOTS` broke exactly this once. The layout blob was a
-/// fixed, length-free run, so a wider reader over-read into the pos
-/// flag, the return tick and the skills blob, desynced into the next
-/// record's key, and `open` took the resulting parse error for
-/// corruption — archiving the file and wiping every player on the first
-/// restart after deploy. Nothing caught it because the other round-trip
-/// fixtures are all built from the CURRENT constants, which move
-/// together. This one declares its widths and does not.
+/// THE grid-growth test: a complete file written when the grid was narrower still reads, with
+/// every player's items, arrangement, position and XP intact — no version bump, no archive path.
+/// Growing `GRID_SLOTS` broke exactly this once: a fixed, length-free layout blob let a wider
+/// reader over-read the rest of the record, and `open` took the parse error for corruption. The
+/// other round-trip fixtures are built from the CURRENT constants; this one declares its widths.
 #[test]
 fn a_file_written_at_the_old_grid_width_still_reads() {
 	use digblock_core::skills::Skill;

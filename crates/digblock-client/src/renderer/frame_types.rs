@@ -36,16 +36,11 @@ pub(crate) struct RenderConfig {
 	pub gi_sun_iters: u32,
 }
 
-/// Cost-stub bits (`DIG_STUB=<name>[,<name>…]`). Each removes one term
-/// so a single build can attribute a frame, which is the machinery two
-/// water perf rounds went without: R17 and R19 were both reasoned from
-/// code and measured on a pose that could not show the term they moved.
-///
-/// The shader-side bits are read in water.wgsl (through `frame.misc.z`)
-/// and gi_resolve.wgsl (through its own `jitter.w`, since the resolve does
-/// not bind the frame UBO) as a UNIFORM branch, so an un-stubbed run pays
-/// nothing and a stubbed one never diverges within a wave. The pass-level
-/// bits are honoured in `Renderer::render`.
+/// Cost-stub bits (`DIG_STUB=<name>[,<name>…]`). Each removes one term so a single build can
+/// attribute a frame. The shader-side bits are read in water.wgsl (through `frame.misc.z`) and
+/// gi_resolve.wgsl (through its own `jitter.w`, since the resolve does not bind the frame UBO)
+/// as a UNIFORM branch, so an un-stubbed run pays nothing and a stubbed one never diverges
+/// within a wave. The pass-level bits are honoured in `Renderer::render`.
 pub mod stub {
 	/// Water's per-VERTEX `gi_indirect` → a constant. The gather is a long
 	/// chain of dependent texture loads per water vertex inside C1, which
@@ -71,13 +66,9 @@ pub mod stub {
 	/// Bounds everything else: whatever this saves is the whole budget.
 	pub const NOWATER: u32 = 1 << 7;
 
-	// The GI half. Water had stubs and the GI did not, which is why two
-	// rounds of water tuning have measured numbers behind them and the
-	// resolve — the frame's most expensive pass — has never had one term
-	// attributed. These ride the resolve's own uniform (`jitter.w`), not
-	// `frame.misc.z`: the resolve does not bind the frame UBO.
-	/// The resolve's per-pixel sun ray → lit. The single largest ray budget
-	/// in the frame.
+	// The GI half: these ride the resolve's own uniform (`jitter.w`), not `frame.misc.z`, since
+	// the resolve does not bind the frame UBO.
+	/// The resolve's per-pixel sun ray → lit. The single largest ray budget in the frame.
 	pub const GISUN: u32 = 1 << 8;
 	/// The resolve's cosine-hemisphere final gather → the cheap
 	/// `gi_cache_at` lookup, i.e. the cascade-blend answer the final gather
@@ -97,14 +88,11 @@ pub mod stub {
 	/// so depth and face codes are intact and the GI is untouched — this is
 	/// the one clean raster stub.
 	pub const NOSCENE: u32 = 1 << 13;
-	/// Skip the chunk draws in BOTH the prepass and the scene pass.
-	///
-	/// Read this as an UPPER BOUND on chunk-geometry cost, never as an
-	/// estimate, and never subtract it from `noscene` to "get" the prepass.
-	/// With no prepass geometry the depth buffer stays cleared, so every
-	/// resolve pixel takes the sky early-out and the frame's most expensive
-	/// pass goes trivially cheap too. A prepass-only stub would carry the
-	/// same confound with none of the honesty, which is why there isn't one.
+	/// Skip the chunk draws in BOTH the prepass and the scene pass. Read it as an UPPER BOUND on
+	/// chunk-geometry cost, never as an estimate, and never subtract it from `noscene` to "get"
+	/// the prepass: with no prepass geometry the depth buffer stays cleared, so every resolve
+	/// pixel takes the sky early-out and the frame's most expensive pass goes trivially cheap
+	/// too. A prepass-only stub would carry the same confound with none of the honesty.
 	pub const NORASTER: u32 = 1 << 14;
 	/// Drop the blended-glass draw (the whole Translucent-bucket cost —
 	/// a pass-level CPU gate like `NOWATER`, not a shader branch).
@@ -172,11 +160,9 @@ pub(crate) struct FrameScene<'a> {
 	/// `[eye.xyz, yaw, emissive, height in twelfths, spare, spare]`.
 	pub held: &'a [(crate::ui::hud::IconKind, [f32; 8])],
 	/// Lights players are CARRYING this frame — yours and every remote's
-	/// (`digblock_core::gi::carried_origin`). They join the ordinary GI
-	/// light list, so a torch in a hand lights a room exactly as one on
-	/// the floor does. Passed with the frame rather than set ahead of it,
-	/// because `flush_lights` runs inside `GiDraw::encode` and an
-	/// out-of-order setter would be a hazard for nothing.
+	/// (`digblock_core::gi::carried_origin`). They join the ordinary GI light list, so a torch in
+	/// a hand lights a room exactly as one on the floor does. Passed with the frame because
+	/// `flush_lights` runs inside `GiDraw::encode`.
 	pub carried: &'a [crate::gi::Emitter],
 	/// The camera's look direction (unit), leading the light-selection
 	/// anchor — see `gi::SELECT_AHEAD`.

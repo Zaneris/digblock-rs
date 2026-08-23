@@ -46,11 +46,9 @@ struct ListServer {
 
 /// A player count, clamped rather than rejected.
 ///
-/// The master types these as `int` and (until recently) range-checked
-/// neither, so a server could register `players: -1`. Decoding straight
-/// into `u32` fails the WHOLE `ListResponse`, which means one bad row —
-/// hostile or merely buggy — hides every server on the master from every
-/// client. A count is display text next to a name; it is not worth that.
+/// The master types these as `int`, so a server can register `players: -1`. Decoding straight into
+/// `u32` fails the WHOLE `ListResponse`, so one bad row — hostile or merely buggy — hides every
+/// server from every client, and a count is display text next to a name.
 fn lenient_count<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
 	let n = i64::deserialize(d)?;
 	Ok(n.clamp(0, u32::MAX as i64) as u32)
@@ -232,17 +230,10 @@ fn run(
 	}
 }
 
-/// The pin the master published for a server. A malformed hash is a hard
-/// error, never a downgrade.
-///
-/// This used to fall back to [`CertPolicy::Insecure`] with a `log::warn!`,
-/// which turned one bad string — from a hostile master, or from anyone
-/// MITM-ing a plain-HTTP `--master-url` — into a session with certificate
-/// validation switched off, carrying `Hello.identity` with it. The web
-/// filler has always failed closed here (`apps/web/src/services.rs`); the
-/// two now agree.
-///
-/// [`CertPolicy::Insecure`]: digblock_net_native::CertPolicy::Insecure
+/// The pin the master published for a server. A malformed hash is a hard error, never a downgrade:
+/// falling back to an insecure policy turns one bad string — from a hostile master, or from anyone
+/// MITM-ing a plain-HTTP `--master-url` — into a session with certificate validation switched off,
+/// carrying `Hello.identity` with it. `apps/web/src/services.rs` fails closed the same way.
 fn pin_policy(cert_hash: &str) -> Result<digblock_net_native::CertPolicy, String> {
 	digblock_net_native::CertPolicy::pinned_from_hex(cert_hash)
 		.map_err(|e| format!("bad certHash from master: {e}"))
@@ -314,13 +305,9 @@ fn join(
 
 /// Decode the master's hex join token.
 ///
-/// The ASCII-hex check is load-bearing, not belt-and-braces: `hex.len()` is
-/// BYTES, so a string of the right BYTE length carrying a multi-byte
-/// character passes the length gate and then panics on
-/// `&hex[i * 2..i * 2 + 2]`, which splits it mid-codepoint. On web that is
-/// reachable with no compromise at all — `?master=` rides in a shared link
-/// — and the panic aborts the wasm module. `parse_sha256_hex` next door has
-/// always filtered first; this now matches it.
+/// The ASCII-hex check is load-bearing: `hex.len()` is BYTES, so a string of the right byte length
+/// carrying a multi-byte character clears the length gate and then panics splitting a codepoint in
+/// the slice below. Reachable with no compromise at all — `?master=` rides in a shared link.
 fn parse_token(hex: &str) -> Result<[u8; 16], String> {
 	if hex.len() != 32 {
 		return Err(format!("bad token length {}", hex.len()));

@@ -22,17 +22,11 @@ fn isolated(d: &ChunkData) -> MeshInput {
 	MeshInput::build(d, |_, _, _| Src::Missing)
 }
 
-/// The reveal stamp and the DIG path must answer identically for every cell
-/// — one is a worker rewriting block ids, the other is `nodes::revealed`
-/// asked once at a dig, and a disagreement is either a node you can see and
-/// cannot extract or one you cannot see and accidentally do.
-///
-/// Swept over a whole padded box rather than spot-checked, because the two
-/// failure modes that matter — an unrevealed deposit shadowing a revealed
-/// one at a shared cell, and a claim on the shell the dig path would refuse
-/// — both live in cells nobody would think to pick. Swept over every HOST
-/// too: filling the box with Stone alone left the Wood and Sand passes, two
-/// thirds of the node layer, unexecuted by the one test that pins this.
+/// The reveal stamp and the DIG path must answer identically for every cell — one is a worker
+/// rewriting block ids, the other `nodes::revealed` asked once at a dig, and a disagreement is a
+/// node you can see and cannot extract, or one you cannot see and accidentally do. Swept over a
+/// whole padded box rather than spot-checked, since both failure modes live in cells nobody would
+/// think to pick, and over every HOST, or the Wood and Sand passes go unexecuted.
 #[test]
 fn the_reveal_stamp_and_the_dig_path_agree() {
 	use crate::worldgen::nodes::{self, Levels};
@@ -41,14 +35,10 @@ fn the_reveal_stamp_and_the_dig_path_agree() {
 	let max = crate::skills::MAX_LEVEL;
 	// Every host a node can manifest in, each filling a whole box.
 	let hosts = [B::Stone, B::Wood, B::Sand];
-	// Which hosts the sweep actually STAMPED something in. An
-	// agreement test over boxes that hold none is green for the wrong
-	// reason, which is what let a Sand-pass divergence live here.
-	//
-	// Per host, and that is the whole point: it was one bool OR-ed
-	// across all three, so the springstone box satisfied it alone and
-	// the Wood pass — which stamped nothing anywhere in the sweep —
-	// was covered by a guard written to prove it was covered.
+	// Which hosts the sweep actually STAMPED something in. An agreement test over boxes that
+	// hold none is green for the wrong reason. Per host, and that is the whole point: one bool
+	// OR-ed across all three lets the springstone box satisfy it alone while the Wood pass
+	// stamps nothing anywhere in the sweep.
 	let mut stamped_host = std::collections::HashSet::new();
 	// Boxes straddling the bands' edges, both reveal axes stepped —
 	// mixed tiers, edited cells, and the leystone band's seam with the
@@ -128,17 +118,11 @@ fn the_reveal_stamp_and_the_dig_path_agree() {
 	}
 }
 
-/// The stamp only ever touches PRISTINE stone: air stays air, a spent rock
-/// somebody has built with stays exactly what it is, and a shaped stone
-/// cell is not stone.
-///
-/// **Swept across Mining levels**, which is the half that matters: at the
-/// cap the second pass reverts nothing whatever it does, so a run there
-/// cannot tell "only claimed cells are reverted" from "everything is". The
-/// case is somebody wandering into a friend's hall of tapped Aetherock at
-/// Mining 1 — ordinary chunk data with no reveal gate, which a stamp
-/// sweeping the array instead of its own claims would turn to stone for
-/// every visitor below the tier.
+/// The stamp only ever touches PRISTINE stone: air stays air, a spent rock somebody has built
+/// with stays exactly what it is, and a shaped stone cell is not stone. **Swept across Mining
+/// levels**, the half that matters: at the cap the second pass reverts nothing, so a run there
+/// cannot tell "only claimed cells are reverted" from "everything is". The case is a visitor at
+/// Mining 1 in a friend's hall of tapped Aetherock, which a sweeping stamp would turn to stone.
 #[test]
 fn the_reveal_stamp_leaves_everything_else_alone() {
 	use crate::worldgen::{nodes::Levels, ore};
@@ -510,12 +494,10 @@ fn packed_vertex_roundtrip() {
 	assert_eq!((down >> 19) & 1, 1, "tint-from-below bit set");
 }
 
-/// The mesh is where a door's two halves agree to wear one tint: the
-/// upper half's every vertex carries word 1's tint-from-below flag, so
-/// chunk.wgsl
-/// hashes the cell below it and both halves land on the same tint.
-/// The lower half must NOT carry it, or the leaf tints off the block
-/// under the door.
+/// The mesh is where a door's two halves agree to wear one tint: the upper half's every vertex
+/// carries word 1's tint-from-below flag, so chunk.wgsl hashes the cell below it and both halves
+/// land on the same tint. The lower half must NOT carry it, or the leaf tints off the block under
+/// the door.
 #[test]
 fn a_doors_upper_half_tints_from_the_cell_below() {
 	use crate::shapes::{Facing, door_state};
@@ -651,12 +633,10 @@ fn water_under_ceiling_renders_full_cube() {
 
 #[test]
 fn covered_inflow_cell_never_vanishes() {
-	// The flooded-cave regression: water under an opaque ceiling
-	// beside an air column with water directly below it (water
-	// pouring through a dug hole into a cave). The corner plunge (the
-	// whole-block drop) collapsed every side face to zero area while the
-	// ceiling occluded the top — the cell rendered NOTHING and you
-	// saw straight through it into the water behind.
+	// The flooded-cave regression: water under an opaque ceiling beside an air column with
+	// water directly below it, as when water pours through a dug hole into a cave. The corner
+	// plunge collapses every side face to zero area while the ceiling occludes the top, so the
+	// cell renders NOTHING and you see straight through into the water behind.
 	let mut d = ChunkData::default();
 	d.set(8, 8, 8, B::WaterFall);
 	d.set(8, 9, 8, B::Stone);
@@ -711,12 +691,10 @@ fn waterfall_top_drops_like_a_surface_cell() {
 
 #[test]
 fn cascade_steps_ramp_into_each_other() {
-	// The fluid sim's staircase shape: flow on the upper step, flow
-	// one down and one across on the lower step. The upper surface's
-	// downhill corners plunge the whole block (air with water below)
-	// and the lower cell's uphill corners pin full (water
-	// hangs over the stone step), so the two surfaces meet exactly
-	// at the lattice — a connected ramp, no cliff sliver between.
+	// The fluid sim's staircase shape: flow on the upper step, flow one down and one across
+	// on the lower step. The upper surface's downhill corners plunge the whole block and the
+	// lower cell's uphill corners pin full, so the two surfaces meet exactly at the lattice —
+	// a connected ramp, no cliff sliver between.
 	let mut d = ChunkData::default();
 	d.set(8, 9, 8, B::WaterFlow7);
 	d.set(8, 8, 8, B::Stone);
@@ -741,13 +719,11 @@ fn cascade_steps_ramp_into_each_other() {
 
 #[test]
 fn waterfall_lip_knits_with_the_feeding_pool() {
-	// Top fall block beside the upper pool's surface source — the
-	// worldgen lip arrangement. The interface face is culled, so the
-	// two top surfaces must agree on their shared corners or the rim
-	// is a see-through crack. The fall surfaces one level below its
-	// feeder, so the shared corners hold the pool's own height while
-	// the lip's outer edge dips one code below it — the surface tips
-	// over the edge instead of popping back up to full height.
+	// Top fall block beside the upper pool's surface source — the worldgen lip arrangement.
+	// The interface face is culled, so the two top surfaces must agree on their shared corners
+	// or the rim is a see-through crack. The fall surfaces one level below its feeder, so the
+	// shared corners hold the pool's own height while the lip's outer edge dips one code below
+	// it — the surface tips over the edge instead of popping back up to full height.
 	let mut d = ChunkData::default();
 	d.set(8, 8, 8, B::WaterFall);
 	d.set(7, 8, 8, B::Water);
@@ -763,14 +739,11 @@ fn waterfall_lip_knits_with_the_feeding_pool() {
 	}
 }
 
-/// A source poured against a wall face, with nothing solid under it:
-/// the sim sends it straight down and only the landing spreads, so
-/// the placed cell is ringed by air at its own level with the pool
-/// it just poured one below — the plunge trigger, on all four
-/// corners at once. The source must still render as a full block. It
-/// didn't: the plunge outranked the source pin, so the top face went
-/// to zero height and every side face was then skipped as zero-area,
-/// and the block you had just placed rendered nothing at all.
+/// A source poured against a wall face, with nothing solid under it: the sim sends it straight
+/// down and only the landing spreads, so the placed cell is ringed by air at its own level with
+/// the pool one below — the plunge trigger, on all four corners at once. The source must still
+/// render as a full block; a plunge outranking the source pin zeroes the top face, skips every
+/// side face as zero-area, and the block you just placed renders nothing at all.
 #[test]
 fn a_spilling_source_keeps_its_full_height() {
 	let mut d = ChunkData::default();
@@ -883,13 +856,11 @@ fn impact_cells_ride_mesh_data() {
 
 #[test]
 fn a_fall_landing_in_its_own_pool_is_still_an_emitter() {
-	// The shape a player-built waterfall actually makes: the fall
-	// punches to the floor and the pool it spreads closes around it,
-	// so the impact cell is capped by the fall above and ringed by
-	// water — EVERY face culled. Recording the impact used to hang
-	// off emitting a face, so this produced no spray and no
-	// waterfall audio, while worldgen falls (which land in open air
-	// one cell above a pool) worked and hid it.
+	// The shape a player-built waterfall actually makes: the fall punches to the floor and the
+	// pool it spreads closes around it, so the impact cell is capped by the fall above and
+	// ringed by water — EVERY face culled. Recording the impact must not hang off emitting a
+	// face, or there is no spray and no waterfall audio, while worldgen falls (landing in open
+	// air one cell above a pool) still work and hide it.
 	let mut d = ChunkData::default();
 	d.set(8, 8, 8, B::WaterFall);
 	d.set(8, 9, 8, B::WaterFall);
@@ -1016,14 +987,11 @@ fn digest(m: &MeshData) -> (usize, usize, usize, u64) {
 	(m.solid.len(), m.water.len(), m.impacts.len(), h)
 }
 
-/// The splash ring scan's fast path (skipping the neighborhood walk when no
-/// layer in reach holds falling water) must leave every stream
-/// byte-identical — the impacts list drives spray emitters AND waterfall
-/// audio, so a miss is silent in the mesh and audible in the world.
-///
-/// Quad COUNTS are the part that matters: a count that moves means a
-/// culling or emission change and must not be re-pinned without finding
-/// out why.
+/// The splash ring scan's fast path (skipping the neighborhood walk when no layer in reach holds
+/// falling water) must leave every stream byte-identical — the impacts list drives spray emitters
+/// AND waterfall audio, so a miss is silent in the mesh and audible in the world. Quad COUNTS are
+/// the part that matters: a count that moves means a culling or emission change and must not be
+/// re-pinned without finding out why.
 #[test]
 fn water_heavy_chunk_mesh_is_pinned() {
 	let m = water_heavy();
@@ -1221,16 +1189,11 @@ fn quad_of(m: &[u32], bx: i32, by: i32, bz: i32, dir: Dir) -> [u32; 4] {
 	panic!("face of ({bx},{by},{bz}) toward {dir:?} not found");
 }
 
-/// Every quad emits its corners in `face_corners` order, TL TR BL BR,
-/// with no exceptions.
-///
-/// This replaces the old `quad_flips_toward_dark_tr_bl_diagonal`. The
-/// emit order used to flip to the other diagonal so the triangulation
-/// crossed the darker AO corner pair; with baked AO gone there is no
-/// per-corner signal left to steer it and the winding is simply fixed.
-/// It still has to be pinned: `quad_indices` assumes this order, and a
-/// quad wound the other way is deleted by `cull: Back` — invisible in
-/// a unit test that only counts faces, obvious as holes on screen.
+/// Every quad emits its corners in `face_corners` order, TL TR BL BR, with no exceptions. With
+/// baked AO gone there is no per-corner signal left to steer the winding, so it is simply fixed —
+/// and still has to be pinned: `quad_indices` assumes this order, and a quad wound the other way
+/// is deleted by `cull: Back`, invisible in a unit test that only counts faces and obvious as
+/// holes on screen.
 #[test]
 fn every_quad_winds_in_face_corner_order() {
 	let mut d = ChunkData::default();
@@ -1333,12 +1296,11 @@ fn glass_culls_same_type_and_meets_water_face_to_face() {
 	water_quad(&m.water, 7, 8, 8, Dir::West);
 }
 
-/// The see-through predicate is the BUCKET, swept over every block and
-/// every valid state. A translucent cell covers NOTHING, so no face rule
-/// anywhere can cull the face you look through it at — and the sweep is
-/// what generalizes it: three separate sites keyed on the render CLASS
-/// instead, and each grew its own hole (a water void behind a crystal
-/// slab, a brimming flow under a pane, doubled interior quads).
+/// The see-through predicate is the BUCKET, swept over every block and every valid state. A
+/// translucent cell covers NOTHING, so no face rule anywhere can cull the face you look through
+/// it at — and the sweep is what generalizes it: three separate sites keyed on the render CLASS
+/// instead, and each grew its own hole (a water void behind a crystal slab, a brimming flow
+/// under a pane, doubled interior quads).
 #[test]
 fn a_translucent_cell_never_covers_whatever_its_shape() {
 	use crate::block::MeshBucket;

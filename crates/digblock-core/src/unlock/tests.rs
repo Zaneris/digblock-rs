@@ -64,15 +64,11 @@ fn craft_levels_are_pinned() {
 	}
 }
 
-/// Every ore is dug at exactly the level that lets you SEE it.
-///
-/// The two numbers have to move together or they contradict each
-/// other: `reveal` decides when a vein appears, and `mine` decides
-/// when the block may be broken. `mine_material` reads `reveal`
-/// rather than repeating it, and this is the pin on that — it fails
-/// if an arm is dropped and the material falls back to the table's
-/// ungated `_`, which is exactly how every ore came to be minable at
-/// Mining 1.
+/// Every ore is dug at exactly the level that lets you SEE it. The two numbers have to move
+/// together or they contradict each other: `reveal` decides when a vein appears, `mine` decides
+/// when the block may be broken. `mine_material` reads `reveal` rather than repeating it, and this
+/// is the pin on that — it fails if an arm is dropped and the material falls back to the table's
+/// ungated `_`, which is exactly how every ore came to be minable at the first Mining level.
 #[test]
 fn every_ore_is_gated_at_its_own_reveal() {
 	for &ore in &crate::worldgen::ore::ORES {
@@ -91,16 +87,11 @@ fn every_ore_is_gated_at_its_own_reveal() {
 	}
 }
 
-/// The other half of the strength wall: no material may reach the
-/// EARNED table's ungated fallback by accident.
-///
-/// `mine_material`'s `_ => 1` means "this substance is only as hard as
-/// its family", which is right for soil, foliage, timber and plain
-/// rock and wrong for anything that has to be paid for — but the two
-/// are indistinguishable at the match arm, so a new substance nobody
-/// remembers to gate simply inherits its family's wall and no more.
-/// Spelling the set out makes joining it a decision, the way
-/// `material_roster_is_pinned` makes having a material at all one.
+/// The other half of the strength wall: no material may reach the EARNED table's ungated fallback
+/// by accident. `mine_material`'s fallback means "this substance is only as hard as its family",
+/// right for soil, foliage, timber and plain rock and wrong for anything that has to be paid for —
+/// and the two are indistinguishable at the match arm, so a new substance nobody remembers to gate
+/// inherits its family's wall. Spelling the set out makes joining it a decision.
 #[test]
 fn the_materials_with_no_gate_beyond_their_family_are_spelled_out() {
 	use Material as M;
@@ -328,16 +319,11 @@ fn craft_only_blocks_are_gated_until_they_can_be_made() {
 	assert!(nodes > 0, "the surface-node arm never fired");
 }
 
-/// A node standing in a cell OUTRIGHT — one the regrowth sweep wrote
-/// back, or one somebody placed — is ordinary chunk data every visitor's
-/// mesh shows at any level, because `nodes::revealed` answers a stored
-/// face ahead of both reveal ladders. The dig gates are therefore the
-/// only thing between an arrival and a levelled player's finds:
-/// `dig_blocked` must refuse a node to anyone one level short on the
-/// ladder that reveals it, and must not refuse it at that level.
-///
-/// Swept over the whole roster on whichever ladder owns each kind, so a
-/// node added with no gate fails here instead of becoming a faucet.
+/// A node standing in a cell OUTRIGHT — one the regrowth sweep wrote back, or one somebody placed
+/// — is ordinary chunk data every visitor's mesh shows at any level, because `nodes::revealed`
+/// answers a stored face ahead of both reveal ladders. The dig gates are therefore all that stands
+/// between an arrival and a levelled player's finds: `dig_blocked` must refuse a node one level
+/// short of the ladder that reveals it and not at it. Swept over the roster, so a new one fails.
 #[test]
 fn no_node_opens_before_the_level_that_reveals_it() {
 	let at = |skill: Skill, level: u32| {
@@ -637,15 +623,11 @@ fn essence_findable_at(e: crate::block::Essence) -> Option<u32> {
 		.min()
 }
 
-/// The two port tables are twins over ONE set of kinds — a fare without
-/// a port is as wrong as a port without a fare — and remoteness orders
-/// the fares WITHIN an essence: a farther port in the same essence costs
-/// more, with no inversion to game, and the essences themselves never
-/// step back down the ladder as the ports climb. Every fare is also
-/// PAYABLE when its port opens: drawn in an essence whose node reveals
-/// no later on its own ladder (the payability pin's question, asked
-/// cross-skill the way the siphon handshake is). Counted, so a table
-/// that happened to price everything in one essence would be noticed.
+/// The two port tables are twins over ONE set of kinds — a fare without a port is as wrong as a
+/// port without a fare — and remoteness orders the fares WITHIN an essence: a farther port in the
+/// same essence costs more, with no inversion to game, and the essences never step back down the
+/// ladder as the ports climb. Every fare is also PAYABLE when its port opens, drawn in an essence
+/// whose node reveals no later on its own ladder. Counted, so one-essence pricing is noticed.
 #[test]
 fn the_port_tables_are_twins_and_the_fare_is_payable() {
 	use crate::block::Essence;

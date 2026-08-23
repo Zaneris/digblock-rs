@@ -6,63 +6,32 @@ use super::*;
 /// A UI screen [`EngineConfig::debug_screen`] can open at startup.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum DebugScreen {
-	/// The startup menu. Needs `menu: true` as well, which the launcher
-	/// forces — captures otherwise run menu-less on purpose.
+	/// The startup menu; needs `menu: true` too, which the launcher forces on captures.
 	Menu,
 	Inventory,
 	Alchemy,
-	/// The same two pages with the cursor parked on something that HAS a
-	/// name: the inventory's first BAR slot — the page names the bar it is
-	/// drawn over as well as its own grid, and the bar is the branch a
-	/// capture could not otherwise reach — and the alchemy page's first
-	/// family tile. A tooltip is invisible to every capture and every
-	/// sweep without one of these.
+	/// The same two pages, cursor parked on a NAMED thing: a tooltip is otherwise uncapturable.
 	InventoryHover,
 	AlchemyHover,
-	/// Not a screen: stock the inventory and open NOTHING, so the
-	/// first-person viewmodel is on screen for `--screenshot`. It is
-	/// here for the same reason the screens are — an empty starting
-	/// inventory means an empty hand, which made the held item just as
-	/// invisible to a headless capture as the pages were.
+	/// Not a screen: stock the inventory and open NOTHING, so the viewmodel is on screen.
 	Hand,
-	/// Also not a screen: select the water tool, empty (`bucket`) or
-	/// charged (`bucket-full`). The charge is the one item state in the
-	/// game, it decides what both mouse buttons do, and it shows in two
-	/// places at once — so both states need to be photographable.
+	/// Also not a screen: the water tool, empty or charged — the game's one item state.
 	Bucket {
 		full: bool,
 	},
-	/// One of the CRAFTED tools, owned and selected. Each carries
-	/// authored geometry — a tool has no texture layers of its own, so
-	/// the cube fallback draws it as a block of whatever sits at layer 0
-	/// — and that geometry shows up in three places at once (the hand,
-	/// the tool slot, the faded rail), none of which a capture can reach
-	/// without being told which tool to hold: the bucket is the only one
-	/// a fresh player owns.
+	/// A CRAFTED tool, owned and selected: authored geometry showing in hand, slot and rail.
 	Tool(BlockType),
-	/// Also not a screen: stock and SELECT a torch, so the one held item
-	/// that is also a LIGHT is photographable. `Hand` cannot serve —
-	/// `reconcile_layout` files by block id, so its first slot is Dirt —
-	/// and a torch in hand differs from every other item in three places
-	/// at once: the viewmodel draws it fullbright, a remote's hand draws
-	/// its real post, and the GI light list carries it.
+	/// Stock and SELECT a torch — the one held item that is also a LIGHT; `Hand` gets Dirt.
 	Torch,
-	/// The character screen, with mid-curve XP stocked so the bars and
-	/// detail lines photograph as they play, not empty.
+	/// The character screen, with mid-curve XP stocked so the bars photograph as they play.
 	Skills,
 	/// The alchemy screen's second tab (craft rows, locked rows, costs).
 	Transmute,
-	/// The same tab with a BATCH on the bench: the progress row under the
-	/// button, part-way through a cycle. A paced craft is over in seconds
-	/// and needs a press to start, so this is the only way it reaches a
-	/// capture at all.
+	/// The same tab mid-cycle: a paced craft is over in seconds and needs a press to start.
 	Transmuting,
-	/// The spellbook, with Arcana XP stocked past the first rung so a
-	/// passed threshold and the next teaser both photograph.
+	/// The spellbook, with Arcana XP past the first rung so a threshold and a teaser both show.
 	Spellbook,
-	/// The same page with the cursor on its first FARE chip — the only
-	/// thing on it that carries a name, the essence a cast is priced in.
-	/// Same reason as [`Self::InventoryHover`].
+	/// The same page with the cursor on its first FARE chip — the only named thing on it.
 	SpellbookHover,
 }
 
@@ -95,14 +64,11 @@ impl DebugScreen {
 	}
 }
 
-/// Parse `DIG_PLAYERBOX`'s value: what the fake remote holds, in HOTBAR
-/// WIRE terms.
+/// Parse `DIG_PLAYERBOX`'s value: what the fake remote holds, in HOTBAR WIRE terms.
 ///
-/// Lives here rather than in the launcher for the same reason
-/// [`DebugScreen::parse`] does — the launcher owns the environment, the
-/// engine owns what the names mean. A wire id rather than a block so the
-/// scene walks the real `held_icon` decode, tool sentinels included.
-/// `None` is an unknown name, which the launcher makes fatal.
+/// Lives here rather than in the launcher for the same reason [`DebugScreen::parse`] does — the
+/// launcher owns the environment, the engine owns what the names mean. A wire id rather than a
+/// block so the scene walks the real `held_icon` decode; an unknown name the launcher makes fatal.
 pub fn parse_held_item(s: &str) -> Option<u16> {
 	use digblock_core::hotbar::{WIRE_EMPTY, WIRE_TOOL};
 	Some(match s.trim().to_ascii_lowercase().as_str() {
@@ -137,13 +103,11 @@ pub struct EngineConfig {
 	/// Draw distance in chunks; the mobile config ships a shorter one
 	/// (Java Config).
 	pub draw_dist: i32,
-	/// The lowest draw distance this platform's slider offers —
-	/// `settings::DRAW_MIN` everywhere a GPU has proven it never needs
-	/// less, `settings::DRAW_FLOOR` where one hasn't (mobile web). A
-	/// platform bound on the UI, not on the value: `Settings::clamped`
-	/// accepts down to the floor on every platform, so a save written
-	/// under the lower bound survives the same browser flipping to a
-	/// desktop profile.
+	/// The lowest draw distance this platform's slider offers — `settings::DRAW_MIN` everywhere a
+	/// GPU has proven it never needs less, `settings::DRAW_FLOOR` where one hasn't (mobile web).
+	/// A platform bound on the UI, not on the value: `Settings::clamped` accepts down to the floor
+	/// on every platform, so a save written under the lower bound survives the same browser
+	/// flipping to a desktop profile.
 	pub draw_min: i32,
 	/// Runtime cap on the GI light list (`Settings::max_lights`), at most
 	/// `gi::MAX_LIGHTS`. The per-pixel NEE scan is O(list length), so this
@@ -169,16 +133,11 @@ pub struct EngineConfig {
 	/// downward tilt).
 	pub yaw: Option<f32>,
 	pub pitch: Option<f32>,
-	/// Start the player here instead of at the seed's spawn point
-	/// (`--pos x y z`). The scenes this engine is actually slow in are
-	/// NATURAL water — terraced beds, stepped descents, cascades — and no
-	/// synthetic plan builds those: `debug_river_plan` digs a
-	/// flat-bottomed box with vertical walls, where only the rim is bank
-	/// and nothing ever falls, so it has no impact cells and its gather
-	/// early-outs almost everywhere. Two water perf fixes were measured on
-	/// it and both played badly. A pose flag is what lets a capture stand
-	/// in a real river instead. The debug plans key off the spawn too, so
-	/// they follow this point.
+	/// Start the player here instead of at the seed's spawn point (`--pos x y z`). The scenes this
+	/// engine is slow in are NATURAL water — terraced beds, stepped descents, cascades — and no
+	/// synthetic plan builds those: `debug_river_plan` digs a flat-bottomed box, so it has no
+	/// impact cells and its gather early-outs almost everywhere. The debug plans key off the spawn
+	/// too, so they follow this point.
 	pub start_pos: Option<[f32; 3]>,
 	pub metrics_csv: Option<std::path::PathBuf>,
 	/// Start with the debug overlay visible (` toggles at runtime).
@@ -186,30 +145,16 @@ pub struct EngineConfig {
 	/// Benchmark mode: inputs ignored, deterministic scripted camera
 	/// flight, run summary logged on exit.
 	pub bench: bool,
-	/// Is a PERSON at this keyboard? False for every capture path — bench,
-	/// `--screenshot`, `--drill` — and it governs two things that have to move
-	/// together: whether [`Engine::input`] listens at all, and whether the shell
-	/// is allowed to take the mouse pointer.
-	///
-	/// The pointer half is the one that bit. A capture sets `menu: false`, so no
-	/// UI surface is open, so `wants_cursor_grab` answered true on the first
-	/// frame and the desktop shell locked and hid the cursor for the whole run —
-	/// on a window the operator never asked to play, with every keystroke going
-	/// into the world. `bench` alone did not cover it, because
-	/// `--screenshot`/`--frames`/`--exit` runs are captures that never set it,
-	/// and those are exactly the runs a person sits and watches.
-	///
-	/// The launcher already computes this predicate to decide the menu, audio,
-	/// the master URL and whether saved settings load; this field is that same
-	/// answer reaching the engine, not a second opinion.
+	/// Is a PERSON at this keyboard? False for every capture path — bench, `--screenshot`,
+	/// `--drill` — governing two things that must move together: whether [`Engine::input`] listens
+	/// at all, and whether the shell may take the mouse pointer. `bench` alone does not cover it:
+	/// a capture sets `menu: false`, so `wants_cursor_grab` answers true and the shell locks the
+	/// pointer on a window nobody asked to play. The launcher's own predicate, not a second view.
 	pub interactive: bool,
-	/// Capture harness: run the bench flight for this many frames, then
-	/// FREEZE the camera there. Every capture in this engine is a still,
-	/// which is exactly the case where a temporal artifact has already
-	/// converged away — so a report about motion could not be measured at
-	/// all. Freezing at a pose the flight is a pure function of gives two
-	/// runs the identical camera by construction, with only their history
-	/// differing.
+	/// Capture harness: run the bench flight for this many frames, then FREEZE the camera there.
+	/// Every capture in this engine is a still, which is exactly the case where a temporal artifact
+	/// has already converged away. Freezing at a pose the flight is a pure function of gives two
+	/// runs the identical camera by construction, with only their history differing.
 	pub fly: Option<u32>,
 	/// Take all of `fly`'s steps on frame 0 instead of one per frame: the
 	/// same pose with no motion behind it. `--fly N` vs `--warp N` is the
@@ -223,32 +168,21 @@ pub struct EngineConfig {
 	/// (`--gi-scale` / `?giscale=`). Must be one of
 	/// `settings::GI_SCALE_DIVISORS` — see `RenderScale`.
 	pub gi_scale_div: u32,
-	/// No explicit lighting-detail preference (no flag, nothing saved), so
-	/// derive `gi_scale_div` from display density at the first
-	/// `set_scale_factor` — the first moment anything knows the
-	/// backing scale, since the launcher resolves settings before a window
-	/// exists. FALSE on every capture path, which is what keeps bench,
-	/// screenshot and drill runs on the shipped values.
+	/// No explicit lighting-detail preference (no flag, nothing saved), so derive `gi_scale_div`
+	/// from display density at the first `set_scale_factor` — the first moment anything knows the
+	/// backing scale, since the launcher resolves settings before a window exists. FALSE on every
+	/// capture path, which is what keeps bench, screenshot and drill runs on the shipped values.
 	pub gfx_defaults_auto: bool,
-	/// Swap the path `fly`/`warp` follow for a ground walk. The bench
-	/// flight is a fast flyover well above the ground, which photographs the
-	/// fast, shallow-parallax end of screen motion; a player reports
-	/// temporal artifacts from the other end — eye height, walking pace,
-	/// ground a few blocks ahead, where one half-res texel covers far more
-	/// world per pixel. Same harness, second regime.
+	/// Swap the path `fly`/`warp` follow for a ground walk. The bench flight is a fast flyover well
+	/// above the ground — the fast, shallow-parallax end of screen motion; a player reports
+	/// temporal artifacts from the other end, at eye height and walking pace, where one half-res
+	/// texel covers far more world per pixel. Same harness, second regime.
 	pub walk: bool,
-	/// Flyover speed in blocks/s (`--bench-speed`). Every BENCH.md baseline
-	/// was taken at the default — changing it silently invalidates all of
-	/// them, so don't.
-	///
-	/// The default is several times `WALK_SPEED`, and that is a different
-	/// STREAMING REGIME, not just a faster one: at flyover speed the GI
-	/// upload budget cannot keep up and the classify drain drops entries, so
-	/// a cost that only appears there may be budget starvation rather than a
-	/// real leak. Drop this to walking pace for a soak that matches how the
-	/// game is actually played. (`--walk` is not the same thing — it
-	/// oscillates about a fixed origin, so it never brings new terrain in at
-	/// all.)
+	/// Flyover speed in blocks/s (`--bench-speed`). Every BENCH.md baseline was taken at the
+	/// default — changing it silently invalidates all of them, so don't. The default is several
+	/// times `WALK_SPEED`, a different STREAMING REGIME rather than merely a faster one: the GI
+	/// upload budget cannot keep up and the classify drain drops entries, so a cost that appears
+	/// only there may be starvation rather than a leak. (`--walk` brings no new terrain in at all.)
 	pub bench_speed: f32,
 	/// Fire the F7 GI drill at this frame (`--gi-drill-at`), so the ratchet
 	/// is measurable with no human at the keyboard. See `update`.
@@ -264,12 +198,10 @@ pub struct EngineConfig {
 	/// Multiplayer display name; the LAUNCHER fills this (e.g. from
 	/// $USER) — the engine itself must stay env-free for wasm.
 	pub player_name: Option<String>,
-	/// Debug: park a fake remote player a few blocks ahead, holding this item
-	/// (GPU-path check without a second client). A held-item WIRE id, not
-	/// a block, so the scene walks `held_icon` end to end and is a real
-	/// check of that decode rather than a second code path — which is
-	/// also how it can photograph a remote's lit torch. Set by the
-	/// desktop launcher from DIG_PLAYERBOX.
+	/// Debug: park a fake remote player a few blocks ahead, holding this item (GPU-path check
+	/// without a second client). A held-item WIRE id, not a block, so the scene walks `held_icon`
+	/// end to end rather than a second code path — which is also how it photographs a remote's lit
+	/// torch. Set by the desktop launcher from DIG_PLAYERBOX.
 	pub debug_playerbox: Option<u16>,
 	/// Debug: throw a level-up confetti burst every couple of seconds, a
 	/// few blocks ahead. A burst is a rare, transient event, so it is
@@ -277,24 +209,17 @@ pub struct EngineConfig {
 	/// `debug_screen` makes for the input-only screens. Set by the
 	/// desktop launcher from DIG_CONFETTI.
 	pub debug_confetti: bool,
-	/// Debug: pin the crack decal at this progress (0..1) on whatever the
-	/// crosshair is holding, and stand a wall of blocks two cells ahead
-	/// for it to hold. Digging is INPUT-driven and a hold lasts a second
-	/// or two, so the crack is otherwise unphotographable — the same
-	/// argument `debug_confetti` makes, and the reason two look-and-feel
-	/// regressions shipped in the screens before `debug_screen` existed.
-	/// A sweep of runs over 0..1 is what shows the break spreading. Set
-	/// by the desktop launcher from DIG_CRACK.
+	/// Debug: pin the crack decal at this progress (0..1) on whatever the crosshair is holding, and
+	/// stand a wall of blocks two cells ahead for it to hold. Digging is INPUT-driven and a hold
+	/// lasts a second or two, so the crack is otherwise unphotographable — `debug_confetti`'s
+	/// argument. A sweep of runs over 0..1 is what shows the break spreading. Set by the desktop
+	/// launcher from DIG_CRACK.
 	pub debug_crack: Option<f32>,
-	/// Debug: pin the essence draw at this progress (0..1) on whatever
-	/// vein the crosshair is holding. `DIG_CRACK`'s argument exactly — a
-	/// draw is input-driven and over in a second or two — with one
-	/// difference that shapes the flag: this one cannot stand its own
-	/// scene, because a vein is derived worldgen and there is no placing
-	/// one. It rides `DIG_ORE`, which already hollows a chamber around a
-	/// deposit of a tier and grants the level that reveals it, and the
-	/// launcher refuses the pair unset rather than capturing an empty
-	/// wall. Set by the desktop launcher from DIG_SIPHON.
+	/// Debug: pin the essence draw at this progress (0..1) on whatever vein the crosshair is
+	/// holding. `DIG_CRACK`'s argument exactly, with one difference that shapes the flag: it cannot
+	/// stand its own scene, because a vein is derived worldgen and there is no placing one. It
+	/// rides `DIG_ORE`, which hollows a chamber around a deposit and grants the level that reveals
+	/// it, and the launcher refuses the pair unset rather than capturing an empty wall.
 	pub debug_siphon: Option<f32>,
 	/// Debug: hold the cast channel's aura at a fixed progress with no
 	/// hold behind it — standing in a channel is the one thing a headless
@@ -340,34 +265,27 @@ pub struct EngineConfig {
 	/// it. Ore is derived and invisible below its level, so there is no
 	/// pose that photographs it — see [`debug_ore_plan`].
 	pub debug_ore: usize,
-	/// DIG_MINING=<level>: start at that Mining level, 0 = leave it
-	/// alone. A level is not a pose and not a scene, and everything it
-	/// gates is invisible without it: the strength wall's refusals, dig
-	/// speed, and the Resonant Pick's two ranks — the second of which
-	/// brightens the tool's own glow, so a capture at level 1 photographs
-	/// the wrong light. Applied AFTER `debug_ore`'s own grant, so asking
-	/// for a level explicitly wins.
+	/// DIG_MINING=<level>: start at that Mining level, 0 = leave it alone. A level is not a pose,
+	/// nor a scene, and everything it gates is invisible without it: the strength wall's refusals,
+	/// dig speed, and the Resonant Pick's two ranks — the second brightens the tool's own glow, so
+	/// a capture at the lower rank photographs the wrong light. Applied AFTER `debug_ore`'s own
+	/// grant, so asking for a level explicitly wins.
 	pub debug_mining: u32,
-	/// Debug: build DIG_VAULT's room with NO torch on its floor, so the
-	/// only source in it is the one the player is CARRYING. Set by the
-	/// desktop launcher from DIG_VAULT_DARK. A modifier rather than a
-	/// re-spelling of DIG_VAULT, because `DIG_VAULT=0` already means
-	/// "vault on" and silently inverting a value someone may have typed
-	/// costs an afternoon.
+	/// Debug: build DIG_VAULT's room with NO torch on its floor, so the only source in it is the
+	/// one the player is CARRYING. Set by the desktop launcher from DIG_VAULT_DARK. A modifier
+	/// rather than a re-spelling of DIG_VAULT, because `DIG_VAULT=0` already means "vault on" and
+	/// silently inverting a value someone may have typed costs an afternoon.
 	pub debug_vault_dark: bool,
 	/// Debug: hang a wide stone roof with NO walls over the ground ahead
 	/// of spawn — the beam-veto capture (a slanting morning sun must
 	/// reach under it exactly as the shadow map says; only the ambient
 	/// dome dims). Set by the desktop launcher from DIG_ROOF.
 	pub debug_roof: bool,
-	/// Debug: seal a long stone tunnel ahead of the spawn camera, no
-	/// torch — the unproven-daylight capture (GI-DESIGN.md R32). Its far
-	/// end sits past the probe cascades' reach and past the gather ray's
-	/// length, which is exactly where every "answer sky on no data"
-	/// fallback fires; a vault is too small to reach any of them. Pair
-	/// with `--pos` at a low y — the fade the scene photographs is
-	/// depth-gated, and the plan keys off wherever the spawn is. Set by
-	/// the desktop launcher from DIG_TUNNEL.
+	/// Debug: seal a long stone tunnel ahead of the spawn camera, no torch — the unproven-daylight
+	/// capture (GI-DESIGN.md R32). Its far end sits past the probe cascades' reach and past the
+	/// gather ray's length, which is exactly where every "answer sky on no data" fallback fires; a
+	/// vault is too small to reach any of them. Pair with `--pos` at a low y — the fade is
+	/// depth-gated and the plan keys off the spawn. Set by the desktop launcher from DIG_TUNNEL.
 	pub debug_tunnel: bool,
 	/// Debug: flood an open-topped stone tank around the spawn camera so
 	/// the eye starts SUBMERGED — the underwater capture (GI-DESIGN.md
@@ -375,14 +293,11 @@ pub struct EngineConfig {
 	/// the surface reads as a plane from below). Set by the desktop
 	/// launcher from DIG_DIVE.
 	pub debug_dive: bool,
-	/// Debug: excavate a wide, deep basin AHEAD of the spawn camera and
-	/// flood it — the "standing at a river's edge looking into it" scene
-	/// (R17). Near water fills most of the frame from above, inside C0
-	/// beside bank geometry, with a submerged floor behind it for the
-	/// resolve's rays to cross — none of the other water captures put a
-	/// SHADED surface on screen at all (DIG_DIVE is submerged; the sea
-	/// at spawn is far out of frame). Set by the desktop launcher from
-	/// DIG_RIVER.
+	/// Debug: excavate a wide, deep basin AHEAD of the spawn camera and flood it — the "standing at
+	/// a river's edge looking into it" scene (R17). Near water fills most of the frame from above,
+	/// inside C0 beside bank geometry, with a submerged floor behind it for the resolve's rays to
+	/// cross; no other water capture puts a SHADED surface on screen at all. Set by the desktop
+	/// launcher from DIG_RIVER.
 	pub debug_river: bool,
 	/// Debug: how many torches `debug_torches_plan` lights its courtyard
 	/// with, 0 = scene off. The local-light capture DIG_VAULT cannot be:
@@ -400,13 +315,11 @@ pub struct EngineConfig {
 	/// residual, which is entirely a visibility term. Set from
 	/// DIG_TORCHES_WALL.
 	pub debug_torches_wall: bool,
-	/// Debug: shading terms to REMOVE this run (`DIG_STUB`, names in
-	/// `stub::parse`). One build then attributes a whole frame across a
-	/// handful of runs, instead of a rebuild per bisect — and, more to the
-	/// point, instead of a guess. The mask rides `frame.misc.z` and the
-	/// resolve's own uniform as a UNIFORM branch: zero cost at 0, and it
-	/// can never diverge inside a wave, so a stubbed run measures the term
-	/// it removed and nothing else.
+	/// Debug: shading terms to REMOVE this run (`DIG_STUB`, names in `stub::parse`), so one build
+	/// attributes a whole frame across a handful of runs instead of a rebuild per bisect. The mask
+	/// rides `frame.misc.z` and the resolve's own uniform as a UNIFORM branch: zero cost at 0, and
+	/// it can never diverge inside a wave, so a stubbed run measures the term it removed and
+	/// nothing else.
 	pub stub: u32,
 	/// Spray droplets per waterfall-impact instance; the mobile config
 	/// ships fewer (it used to be inferred in the renderer from the draw
@@ -416,12 +329,10 @@ pub struct EngineConfig {
 	/// Per-frame wall-clock budget for main-thread streaming (see the
 	/// STREAM_BUDGET_MS doc below, which is the default).
 	pub stream_budget_ms: f32,
-	/// Grow the streaming budget from measured frame headroom, scaled
-	/// by how near the closest pending job is (the web build; see
-	/// `stream_budget`) — rim-only churn while walking stays at the
-	/// fixed floor. Effective outside bench only: captures must stay
-	/// deterministic. It is NOT conditioned on the executor — see
-	/// `adaptive_effective`.
+	/// Grow the streaming budget from measured frame headroom, scaled by how near the closest
+	/// pending job is (the web build; see `stream_budget`) — rim-only churn while walking stays at
+	/// the fixed floor. Effective outside bench only: captures must stay deterministic. It is NOT
+	/// conditioned on the executor — see `adaptive_effective`.
 	pub adaptive_stream: bool,
 	/// Force the initial chunk-origin UBO capacity in slots. The LAUNCHER
 	/// fills this from DIG_CHUNK_SLOTS (engine stays env-free for wasm);
@@ -459,29 +370,20 @@ pub struct EngineConfig {
 	/// the master. This is display state: who to say you are on the
 	/// account screen, and whether the menu offers Multiplayer or Sign In.
 	pub account: Option<crate::menu::AccountView>,
-	/// The key this machine's pre-account character was filed under, if an
-	/// old identity file is still on disk — see
-	/// `NetClientConfig::legacy_identity`. The LAUNCHER fills this, reading
-	/// the file and hashing it, so the secret itself never enters the
-	/// engine and there is nothing here to leak.
-	///
-	/// Read-only, and never created: a machine that has no old identity has
-	/// nothing to migrate, and minting one would invent a character out of
-	/// thin air.
+	/// The key this machine's pre-account character was filed under, if an old identity file is
+	/// still on disk — see `NetClientConfig::legacy_identity`. The LAUNCHER reads the file and
+	/// hashes it, so the secret itself never enters the engine and there is nothing here to leak.
+	/// Read-only, and never created: a machine with no old identity has nothing to migrate, and
+	/// minting one would invent a character out of thin air.
 	pub legacy_identity: Option<[u8; 16]>,
 	/// Log a per-phase breakdown of every over-budget frame. The LAUNCHER
 	/// fills this (desktop: `DIG_SPIKELOG`; web: `?spikelog`) — reading the
 	/// environment inside core answers None forever on wasm, which is
 	/// exactly the platform whose spikes most need attributing.
 	pub spike_log: bool,
-	/// Chunk draws encoded per wide-shadow refresh slice. Lower on the web,
-	/// where the same slice costs more to encode and the refresh sawtooth
-	/// is a bigger share of the frame; the refresh just spans more frames,
-	/// and the sun moves imperceptibly over the difference.
-	/// Mesh bytes handed to the queue per frame. Wall-clock alone cannot
-	/// bound this on the web: `write_buffer` merely RECORDS the copy and
-	/// Chrome's GPU process performs the staging transfer at submit, so the
-	/// cost lands after everything this engine can measure.
+	/// Mesh bytes handed to the queue per frame. Wall-clock alone cannot bound this on the web:
+	/// `write_buffer` merely RECORDS the copy and Chrome's GPU process performs the staging
+	/// transfer at submit, so the cost lands after everything this engine can measure.
 	pub upload_bytes_max: usize,
 	/// Debug: paint the voxel-window raymarch over the scene — the GI
 	/// window's visual proof (`DIG_GI=window`).
@@ -632,15 +534,9 @@ impl EngineConfig {
 
 	/// The adaptive budget's effective enable (see `adaptive_stream`).
 	///
-	/// Deliberately NOT gated on the executor. What this enables is ONE
-	/// deadline covering jobs, drain, eviction and uploads together — and
-	/// moving jobs to a pool moves only the jobs. A `workers == 0`
-	/// condition here therefore snapped the drain and the uploads back to
-	/// the fixed floor the instant web workers were switched on: jobs got
-	/// faster, absorption got slower, and the machines with headroom to
-	/// spend lost it. The JOB half is gated where it belongs instead —
-	/// `Pipeline::maintain` spends the allowance only when jobs are
-	/// actually running on this thread.
+	/// Deliberately NOT gated on the executor: what this enables is ONE deadline covering jobs,
+	/// drain, eviction and uploads together, and a `workers == 0` condition would snap the drain
+	/// and the uploads back to the fixed floor. The JOB half is gated in `Pipeline::maintain`.
 	pub(super) fn adaptive_effective(&self) -> bool {
 		self.adaptive_stream && !self.bench
 	}

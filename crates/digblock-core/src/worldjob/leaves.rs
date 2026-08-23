@@ -30,13 +30,10 @@ const SWEEPS_PER_DAY: u32 = 48;
 /// choice, for the same reason: within typical residency.
 const RADIUS_CHUNKS: i32 = 3;
 
-/// The longest walk through connected foliage that still counts as
-/// attached, in leaf cells including the starting one. One past the
-/// farthest leaf worldgen ever hangs on a trunk — the landmark's wide
-/// layers' near-corner rim, whose inward path crosses both of the
-/// layer's spans — with the spare step absorbing terrain that juts into
-/// a canopy. `every_pristine_structure_leaf_survives` walks real
-/// worldgen to keep this ahead of the structures.
+/// The longest walk through connected foliage that still counts as attached, in leaf cells
+/// including the starting one. One past the farthest leaf worldgen ever hangs on a trunk, with the
+/// spare step absorbing terrain that juts into a canopy. `every_pristine_structure_leaf_survives`
+/// walks real worldgen to keep this ahead of the structures.
 const MAX_STEPS: usize = 8;
 
 /// Chance a judged orphan rots this run, per mille. Under one on

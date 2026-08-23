@@ -92,16 +92,11 @@ impl ChunkStore {
 		self.seed
 	}
 
-	/// Request residency for all columns within `radius` (in columns) of any
-	/// center; evict columns beyond `radius + EVICT_SLACK` of every center.
-	///
-	/// Both halves are O(centers × r²) — the keep set is materialized ONCE and
-	/// then tested by lookup. Asking a closure that re-scans every center makes
-	/// the whole call O(n²·r²), fired whenever any player crosses a column
-	/// boundary, i.e. on exactly the ticks everyone is moving. Deriving the
-	/// cells from each center also keeps every delta inside the radius by
-	/// construction, rather than computing `cx - px` against an unbounded
-	/// separation.
+	/// Request residency for all columns within `radius` (in columns) of any center; evict columns
+	/// beyond `radius + EVICT_SLACK` of every center. Both halves are O(centers × r²) because the
+	/// keep set is materialized ONCE and then tested by lookup; a closure re-scanning every center
+	/// makes the call O(n²·r²) on exactly the ticks everyone is moving. Deriving cells from each
+	/// center also bounds every delta by construction, rather than an unbounded separation.
 	pub fn set_residency(&mut self, centers: &[(i32, i32)], radius: i32) {
 		let evict_r = radius + EVICT_SLACK;
 		// Union of the evict-radius discs: what survives this pass.

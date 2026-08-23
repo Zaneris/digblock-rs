@@ -307,14 +307,11 @@ fn conifer_and_acacia_shapes() {
 	}
 }
 
-/// The landmark fallback may only ADD trees. Every anchor the original
-/// single-roll placement produced (captured 2026-08-19 over the block
-/// range ±768, eight seeds) must still hold a landmark at its exact
-/// spot — existing worlds keep every tree they had, which is the whole
-/// argument for shipping this on a protocol bump with saves kept. If a
-/// placement edit moves one of these, that edit is a save-staling
-/// worldgen retune and needs the journal `VERSION` bump this change
-/// deliberately avoided.
+/// The landmark fallback may only ADD trees. Every anchor the original single-roll placement
+/// produced must still hold a landmark at its exact spot — existing worlds keep every tree they
+/// had, which is the whole argument for shipping this on a protocol bump with saves kept. A
+/// placement edit that moves one of these is a save-staling worldgen retune and needs the journal
+/// `VERSION` bump this change deliberately avoided.
 #[test]
 fn landmark_fallback_only_adds() {
 	const KEPT: &[(f64, i32, i32)] = &[

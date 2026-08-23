@@ -126,22 +126,11 @@ var app = builder.Build();
     app.Logger.LogInformation("accounts database ready at {Path}", Path.GetFullPath(dbPath));
 }
 
-// Registration's observed-address default needs the REAL client address, and
-// in production this app sits behind Azure Container Apps ingress, where
-// RemoteIpAddress is the envoy proxy.
-//
-// The observed address is no longer cosmetic: it is what the registration
-// probe dials first, the partition rate limits are cut by, and the subject of
-// a registration temp-ban. TWO settings are needed and ForwardLimit alone is
-// only one. ForwardLimit = 1 bounds how many hops are walked, so a client
-// cannot prepend a fake origin behind a real ingress; KnownIPNetworks is what
-// says there WAS an ingress, without which the header is believed from any
-// peer. See TrustedProxies for the rule and why the framework's loopback-only
-// default does not cover Container Apps.
-//
-// XForwardedProto joins it because the External auth cookie's
-// SecurePolicy.SameAsRequest reads Request.Scheme: without the real scheme the
-// sign-in cookie would ship without Secure in production.
+// The observed client address is load-bearing (probe target, rate-limit partition, ban
+// subject) and behind Container Apps ingress RemoteIpAddress is the envoy proxy. TWO
+// settings: ForwardLimit bounds the hops walked so a client cannot prepend a fake origin;
+// KnownIPNetworks (see TrustedProxies) says there WAS an ingress, else the header is
+// believed from any peer. XForwardedProto rides along, or sign-in cookies lose Secure.
 var forwarded = new ForwardedHeadersOptions
 {
     ForwardedHeaders = Microsoft.AspNetCore.HttpOverrides.ForwardedHeaders.XForwardedFor
@@ -239,21 +228,11 @@ app.MapPost("/api/servers/register", async (
     var presented = Bearer.From(http);
     var keyOk = claim is not null && ServerClaims.KeyMatches(claim, presented);
 
-    // Someone is claiming an address another key holds and that still looks
-    // live. Two very different callers land here — the takeover attempt, and
-    // an operator who lost ./data and restarted — and the ONLY thing that
-    // separates them is the source probe, so the refusal has to WAIT for it
-    // rather than fire on `live` alone.
-    //
-    // `live` is the in-memory registry, which outlives the process it
-    // describes by up to Registry:IdleTimeoutSeconds, so firing early
-    // refused AND temp-banned a restarting operator by their own stale
-    // entry — on the very address their server registers from, taking every
-    // other server behind that address with it.
-    //
-    // The cost is that a takeover attempt now spends a probe before it is
-    // refused. Same probe every unclaimed registration spends, capped by
-    // RateLimits.Register, and the ban still lands on the attempt.
+    // Someone is claiming an address another key holds that still looks live: a takeover,
+    // or an operator who lost ./data and restarted. Only the source probe separates them,
+    // so the refusal WAITS for it rather than firing on `live` alone — that in-memory
+    // registry outlives its process, and firing early temp-banned a restarting operator
+    // by their own stale entry. The cost is one probe, capped by RateLimits.Register.
     var contested = claim is not null && !keyOk && live is not null;
 
     // Master-side probe redirection for the containerized dev stack. This
@@ -262,13 +241,11 @@ app.MapPost("/api/servers/register", async (
     var probeHost = string.IsNullOrWhiteSpace(probeOverride) ? advertised : probeOverride!;
     var probeSourceHost = string.IsNullOrWhiteSpace(probeOverride) ? observed : probeOverride!;
 
-    // ...which means that under the override the source probe is NOT
-    // evidence of origin: it dials the configured host rather than the
-    // registrant, so it answers the same question as the advertised probe
-    // and a takeover attempt would pass it by dialing the victim. The
-    // recovery path is therefore production-only, and under the override
-    // the refusal goes back to firing on `live` alone — the behaviour a
-    // dev stack has always had, and the one its e2e test pins.
+    // Under the override the source probe is NOT evidence of origin: it dials the
+    // configured host rather than the registrant, so a takeover attempt would pass it by
+    // dialing the victim. The recovery path is therefore production-only, and under the
+    // override the refusal goes back to firing on `live` alone — the dev stack's old
+    // behaviour, and the one its e2e test pins.
     if (contested && !string.IsNullOrWhiteSpace(probeOverride))
     {
         var devBan = bans.Ban(source);

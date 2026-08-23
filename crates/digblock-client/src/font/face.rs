@@ -116,14 +116,11 @@ impl Face {
 		self.line_em * self.em_px(px)
 	}
 
-	/// Top of a `px`-tall layout box → baseline, so callers keep passing a
-	/// box top and get vertically centered text.
-	///
-	/// This centers the ascent..descent band in the box rather than
-	/// hanging it from the top. Using bare `ascent` instead pushes
-	/// descenders `|descent|` below the box, and several surfaces size
-	/// their backdrop off the box height — a name tag's `g` would poke out
-	/// the bottom of its own backdrop.
+	/// Top of a `px`-tall layout box → baseline, so callers keep passing a box top and get
+	/// vertically centered text: the ascent..descent band is centered in the box, not hung from
+	/// the top. Bare `ascent` instead pushes descenders below the box, and several surfaces size
+	/// their backdrop off the box height — a name tag's `g` would poke out the bottom of its own
+	/// backdrop.
 	pub(crate) fn baseline(&self, px: f32) -> f32 {
 		0.5 * (px + self.ascent(px) + self.descent(px))
 	}

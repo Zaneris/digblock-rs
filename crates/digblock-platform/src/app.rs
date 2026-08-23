@@ -72,9 +72,7 @@ struct Suspended {
 #[allow(clippy::large_enum_variant)]
 enum AppState {
 	Uninitialized,
-	/// Window exists, async adapter/device request in flight (wasm only —
-	/// the browser main thread cannot block on GPU init). Completed by
-	/// `user_event`.
+	/// Window exists, async GPU init in flight (wasm only); completed by `user_event`.
 	#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 	WaitingForGpu {
 		window: Arc<Window>,
@@ -94,12 +92,9 @@ pub(crate) struct GpuReady {
 	reinit: bool,
 }
 
-/// Events posted back into the winit loop from async/browser contexts
-/// (wasm only; native never constructs one).
-///
-/// One `GpuReady` is posted per GPU init — twice in a long session, if a
-/// device is lost — so the variant size spread costs nothing, the same
-/// reason [`AppState`] carries the allow.
+/// Events posted back into the winit loop from async/browser contexts (wasm only; native never
+/// constructs one). One `GpuReady` is posted per GPU init — twice in a long session, if a device is
+/// lost — so the variant size spread costs nothing, the same reason [`AppState`] carries the allow.
 #[allow(clippy::large_enum_variant)]
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub(crate) enum UserEvent {
@@ -107,12 +102,10 @@ pub(crate) enum UserEvent {
 	GpuReady(GpuReady),
 	/// Browser pointer-lock truth from the pointerlockchange listener.
 	PointerLock { locked: bool },
-	/// The soft-keyboard bridge's whole DOM value after an edit
-	/// (webtext.rs) — a restatement, not a delta.
+	/// The soft-keyboard bridge's whole DOM value after an edit — a restatement, not a delta.
 	#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 	TextValue(String),
-	/// A named key (Enter, Tab, arrows) from the soft-keyboard bridge,
-	/// delivered as a press+release pair.
+	/// A named key from the soft-keyboard bridge, delivered as a press+release pair.
 	#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 	TextKey(crate::input::Key),
 }
@@ -173,14 +166,11 @@ const DRILL_WATCHDOG: Duration = Duration::from_secs(60);
 #[cfg(not(target_arch = "wasm32"))]
 const OCCLUDED_RETRY: Duration = Duration::from_millis(16);
 
-/// The one place an `Arc<Gpu>` is minted.
-///
-/// On the web wgpu's handles are JS objects and carry neither `Send` nor
-/// `Sync`, which clippy reads as an `Rc` spelled wrong. It isn't: the same
-/// `Arc<Gpu>` type serves every platform — the engine borrows it, and
-/// `Running`/`Suspended` share it across a suspend — and forking it per
-/// target would fork both states with it. Nothing sends one anywhere; the
-/// browser's chunk workers take bytes.
+/// The one place an `Arc<Gpu>` is minted. On the web wgpu's handles are JS objects carrying neither
+/// `Send` nor `Sync`, which clippy reads as an `Rc` spelled wrong. It isn't: the same `Arc<Gpu>`
+/// type serves every platform — the engine borrows it, and `Running`/`Suspended` share it across a
+/// suspend — and forking it per target would fork both states with it. Nothing sends one anywhere;
+/// the browser's chunk workers take bytes.
 #[allow(clippy::arc_with_non_send_sync)]
 fn share_gpu(gpu: Gpu) -> Arc<Gpu> {
 	Arc::new(gpu)
@@ -257,18 +247,11 @@ fn window_attrs(
 		Some((w, h)) => attrs.with_inner_size(winit::dpi::LogicalSize::new(w, h)),
 		None => attrs,
 	};
-	// Pin the window to one monitor. Without it the window opens wherever
-	// the desktop last had focus, so a capture run silently changes
-	// BACKING SCALE (the physical framebuffer, and with it the GI
-	// resolve's cost) and REFRESH RATE (a display-paced frame lets the GPU
-	// downclock, inflating every timestamp in the metrics CSV) between one
-	// run and the next. An interleaved before/after bracket taken across
-	// two screens of different refresh measures the screens.
-	//
-	// Positioned at the monitor's own origin rather than centred, because
-	// the point is repeatability, not looks; winit's coordinates are
-	// global desktop physical pixels, so a monitor's `position()` is
-	// exactly the corner of that screen.
+	// Pin the window to one monitor. Without it the window opens wherever the desktop last had
+	// focus, so a capture run silently changes BACKING SCALE and REFRESH RATE between runs, and an
+	// interleaved before/after bracket taken across two screens measures the screens. Positioned
+	// at the monitor's own origin rather than centred, because the point is repeatability: winit's
+	// coordinates are global desktop physical pixels, so `position()` is that screen's corner.
 	#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
 	let attrs = match display {
 		None => attrs,
@@ -331,13 +314,10 @@ fn window_attrs(
 	attrs
 }
 
-/// Adapter + device + configured surface. Async because the browser main
-/// thread cannot block; native callers wrap it in `pollster::block_on`
-/// (macOS requires window/surface creation on the main thread anyway).
-///
-/// Fallible because on the web "no adapter" is an ordinary runtime
-/// condition (a browser without WebGPU) that must reach the page's error
-/// UI; native callers still treat any Err as fatal.
+/// Adapter + device + configured surface. Async because the browser main thread cannot block;
+/// native callers wrap it in `pollster::block_on` (macOS requires window/surface creation on the
+/// main thread anyway). Fallible because on the web "no adapter" is an ordinary runtime condition
+/// that must reach the page's error UI; native callers still treat any Err as fatal.
 async fn init_gpu(
 	window: Arc<Window>,
 	no_vsync: bool,
@@ -520,9 +500,8 @@ impl<G: Game> App<G> {
 					// Sleeping in the event loop is normally wrong, and is
 					// right here: an occluded window acquires nothing, so
 					// the redraw chain has no `present` left to pace it and
-					// would spin a core asking a question whose answer only
-					// a person can change. The wait is one frame's worth, so
-					// the window coming back is still felt as immediate.
+					// would spin a core. The wait is one frame's worth, so
+					// the window returning is still felt as immediate.
 					#[cfg(not(target_arch = "wasm32"))]
 					std::thread::sleep(OCCLUDED_RETRY);
 					r.window.request_redraw();
@@ -632,17 +611,11 @@ impl<G: Game> App<G> {
 		self.state = AppState::WaitingForGpu { window };
 	}
 
-	/// Re-read the window and reconfigure if it has resized since [`init_gpu`]
-	/// measured it. Runs at every hand-off from an async GPU init, which is the
-	/// whole window in which that can happen.
-	///
-	/// On the web the two routinely disagree. A freshly created canvas reports
-	/// 0×0 — winit fills its size in from a `ResizeObserver`, which first fires
-	/// at the browser's next rendering step — so an async init that beats that
-	/// callback configures the surface at the `max(1)` floor. The `Resized` that
-	/// follows arrives while the app is still `WaitingForGpu` and is dropped
-	/// there, and winit only sends one when the size CHANGES. That is a phone
-	/// rendering into one stretched pixel until it is turned sideways.
+	/// Re-read the window and reconfigure if it has resized since [`init_gpu`] measured it. Runs at
+	/// every hand-off from an async GPU init, the whole window in which that can happen. On the web
+	/// the two routinely disagree: a freshly created canvas reports 0×0 until its `ResizeObserver`
+	/// fires, so an async init that beats the callback configures at the `max(1)` floor, and the
+	/// `Resized` that follows is dropped in `WaitingForGpu` — winit only sends one on a CHANGE.
 	fn adopt_window_size(
 		window: &Window,
 		gpu: &Gpu,
@@ -739,18 +712,11 @@ impl<G: Game> App<G> {
 				self.clock.pause();
 				self.game.input(InputEvent::FocusLost);
 				self.game.on_suspend();
-				// On the web this arm is reached from `pagehide` with
-				// `persisted` set — the page went into the back/forward
-				// cache. It may be restored, but the connection will not be:
-				// a frozen page stops pumping and the socket dies with it.
-				// So say goodbye rather than leave the server holding a
-				// session nobody is behind.
-				//
-				// The OTHER pagehide — an actual close or navigation — does
-				// not come through here at all; winit turns that into
-				// `LoopExiting`, which is where the web's real departure is
-				// handled. Native keeps suspend and exit apart, because a
-				// backgrounded phone may well come back.
+				// On the web this arm is reached from `pagehide` with `persisted` set — the page
+				// went into the back/forward cache. It may be restored, but the connection will
+				// not be, so say goodbye rather than leave the server holding a dead session. The
+				// OTHER pagehide reaches winit as `LoopExiting`. Native keeps suspend and exit
+				// apart, because a backgrounded phone may well come back.
 				#[cfg(target_arch = "wasm32")]
 				self.exit_once();
 				// r.surface and r.depth drop here; gpu + window retained.
@@ -828,13 +794,11 @@ impl<G: Game> App<G> {
 		// phases that happen to be timed individually.
 		self.game.frame_started();
 
-		// Cursor-grab reconcile (edge-triggered, one frame behind update —
-		// imperceptible): menu opening releases the cursor; menu closing
-		// re-grabs it. Level-holding at `true` never grabs on its own —
-		// that stays with the click-to-grab path. On the web the rising
-		// edge is suppressed: a lock request from rAF context carries no
-		// user gesture and Chrome rejects it — re-grabs happen only from
-		// the gesture paths (clicks, keydowns).
+		// Cursor-grab reconcile, edge-triggered: menu opening releases the cursor, menu closing
+		// re-grabs it. Level-holding at `true` never grabs on its own — that stays with the
+		// click-to-grab path. On the web the rising edge is suppressed: a lock request from rAF
+		// context carries no user gesture and Chrome rejects it, so re-grabs happen only from the
+		// gesture paths.
 		let wants = self.game.wants_cursor_grab();
 		if self.cursor_grabbed && !wants {
 			self.grab_cursor(false);
@@ -870,16 +834,11 @@ impl<G: Game> App<G> {
 						Acquired::Timeout => LcEvent::SurfaceTimeout,
 						Acquired::Occluded => LcEvent::SurfaceOccluded,
 						_ => {
-							// wgpu never fires the lost callback from the loss
-							// itself: it fires from device maintenance once the
-							// queue is EMPTY. A dead device lands here as a
-							// generic acquire error first, usually with the last
-							// frame's work still in flight — pump maintenance,
-							// give the queue a bounded moment to drain (error
-							// path; a stall is already certain), and re-check
-							// the flag before declaring the error fatal.
-							// A waiting poll is deliberately avoided: on a
-							// wedged queue it blocks for its whole timeout.
+							// wgpu fires the lost callback from device
+							// maintenance once the queue is EMPTY, never from
+							// the loss itself, so a dead device lands here as a
+							// generic acquire error with work still in flight.
+							// A waiting poll would block its whole timeout.
 							#[cfg(not(target_arch = "wasm32"))]
 							let lost = {
 								let mut lost = false;
@@ -993,18 +952,15 @@ impl<G: Game> App<G> {
 			el.exit();
 			return;
 		}
-		// Redraw-chained loop: pacing comes from present (Fifo blocks at
-		// vsync; no-vsync chains back-to-back), and this pattern avoids
-		// winit's iOS busy-spin issue with poll loops.
+		// Redraw-chained loop: pacing comes from present, and this pattern
+		// avoids winit's iOS busy-spin issue with poll loops.
 		r.window.request_redraw();
 	}
 
-	/// Automated lifecycle drill (`--drill`). Exercises byte-for-byte the
-	/// same transitions the OS lifecycle events use. Steps advance on a
-	/// counter, never on exact frame equality: failed frames don't
-	/// increment `frames_rendered`, so an equality match on the step's
-	/// frame would re-destroy the freshly recovered device every retry
-	/// frame.
+	/// Automated lifecycle drill (`--drill`), exercising byte-for-byte the same transitions the OS
+	/// lifecycle events use. Steps advance on a counter, never on exact frame equality: failed
+	/// frames don't increment `frames_rendered`, so an equality match on the step's frame would
+	/// re-destroy the freshly recovered device every retry frame.
 	fn auto_drill(&mut self, el: &ActiveEventLoop) {
 		match (self.drill_step, self.frames_rendered) {
 			(0, 20..) => {
@@ -1186,13 +1142,10 @@ fn dispatch_page_failure(reason: &str) {
 	}
 }
 
-/// Resume only after the browser has actually presented a frame.
-///
-/// Awaiting a rAF alone is not enough: the await's continuation runs as a
-/// microtask INSIDE the rendering task, before its paint, so heavy
-/// synchronous work scheduled there still starves the very update the
-/// caller wanted shown. The zero timer queues the continuation behind the
-/// rendering steps that follow the rAF callbacks.
+/// Resume only after the browser has actually presented a frame. Awaiting a rAF alone is not
+/// enough: the await's continuation runs as a microtask INSIDE the rendering task, before its
+/// paint, so heavy synchronous work scheduled there still starves the very update the caller wanted
+/// shown. The zero timer queues the continuation behind the rendering steps after the callbacks.
 #[cfg(target_arch = "wasm32")]
 pub async fn yield_to_browser() {
 	let Some(w) = web_sys::window() else { return };
@@ -1227,18 +1180,11 @@ fn call_method(target: &wasm_bindgen::JsValue, name: &str) -> bool {
 		.is_some_and(|f| f.call0(target).is_ok())
 }
 
-/// Can this browser put the page fullscreen at all?
-///
-/// The unprefixed Fullscreen API first, then WebKit's prefixed one, which
-/// is the only one Safari exposed before it went unprefixed and is still
-/// what answers on some iPadOS versions. iPhone Safari has neither for
-/// most of its history — there the honest answer is `false` and the menu
-/// simply does not offer the row (an "Add to Home Screen" web app is that
-/// platform's fullscreen, and index.html declares itself capable of one).
-///
-/// The launcher asks this to decide whether to offer the row, and
-/// [`toggle_browser_fullscreen`] uses whichever half answered — so the
-/// question and the action cannot disagree about what exists.
+/// Can this browser put the page fullscreen at all? The unprefixed Fullscreen API first, then
+/// WebKit's prefixed one, still what answers on some iPadOS versions. iPhone Safari has neither for
+/// most of its history — there the honest answer is `false` and the menu does not offer the row.
+/// The launcher asks this to decide whether to offer it, and [`toggle_browser_fullscreen`] uses
+/// whichever half answered, so the question and the action cannot disagree about what exists.
 #[cfg(target_arch = "wasm32")]
 pub fn fullscreen_available() -> bool {
 	let Some(doc) = web_sys::window().and_then(|w| w.document()) else {
@@ -1250,14 +1196,11 @@ pub fn fullscreen_available() -> bool {
 	prop(&doc, "webkitFullscreenEnabled").is_some_and(|v| v.as_bool().unwrap_or(false))
 }
 
-/// Toggle browser fullscreen on the whole page. Must be called inside a
-/// user gesture's own event dispatch (see `after_game_input`).
-///
-/// Entering also tries a landscape orientation lock — honoured by Android
-/// Chrome once fullscreen, rejected everywhere else, and the rejection IS
-/// the answer, so both calls are fire-and-forget. The lock waits a frame,
-/// since a lock requested before the fullscreen transition applies is
-/// refused even where it is supported.
+/// Toggle browser fullscreen on the whole page. Must be called inside a user gesture's own event
+/// dispatch (see `after_game_input`). Entering also tries a landscape orientation lock — honoured
+/// by Android Chrome once fullscreen, rejected everywhere else, and the rejection IS the answer, so
+/// both calls are fire-and-forget. The lock waits a frame, since one requested before the
+/// fullscreen transition applies is refused even where it is supported.
 #[cfg(target_arch = "wasm32")]
 fn toggle_browser_fullscreen() {
 	let Some(window) = web_sys::window() else {
@@ -1387,15 +1330,11 @@ impl<G: Game> ApplicationHandler<UserEvent> for App<G> {
 		self.dispatch(LcEvent::OsSuspended, el);
 	}
 
-	/// The loop is ending. On desktop this follows the close button's own
-	/// `el.exit()`, so the goodbye has already run and this is a no-op.
-	///
-	/// On the WEB it is the only notice we get: winit splits `pagehide`
-	/// by `persisted`, sending the back/forward-cache case to `suspended`
-	/// and a real close or navigation HERE, as `LoopExiting`. Without
-	/// this hook, closing a tab would say nothing to the server at all —
-	/// which is the case that matters most, since it is also the most
-	/// common way a browser player leaves.
+	/// The loop is ending. On desktop this follows the close button's own `el.exit()`, so the
+	/// goodbye has already run and this is a no-op. On the WEB it is the only notice we get: winit
+	/// splits `pagehide` by `persisted`, sending the back/forward-cache case to `suspended` and a
+	/// real close or navigation HERE. Without this hook, closing a tab — the most common way a
+	/// browser player leaves — would say nothing to the server at all.
 	fn exiting(&mut self, _el: &ActiveEventLoop) {
 		self.exit_once();
 	}
@@ -1534,14 +1473,11 @@ impl<G: Game> ApplicationHandler<UserEvent> for App<G> {
 								self.game.input(InputEvent::Text { ch });
 							}
 						}
-						// A key that just closed the menu (Enter, hotkeys)
-						// re-locks from inside its own gesture — except
-						// Escape: Chrome excludes it from user activation,
-						// so the lock request fails (or is granted and
-						// instantly revoked), and the resulting unlock
-						// event would bounce the player straight into the
-						// pause menu. Leave the cursor free instead; the
-						// first click re-grabs and is swallowed.
+						// A key that just closed the menu re-locks from
+						// inside its own gesture — except Escape: Chrome
+						// excludes it from user activation, so the lock
+						// fails and the unlock event would bounce the
+						// player straight back into the pause menu.
 						#[cfg(target_arch = "wasm32")]
 						if code != KeyCode::Escape {
 							self.gesture_regrab(wants_before);

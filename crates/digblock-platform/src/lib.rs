@@ -54,16 +54,11 @@ pub trait Game: 'static {
 	/// Reports how long the swapchain acquire (vsync wait) took, just
 	/// before `update()`. Metrics facility; default ignores it.
 	fn frame_acquired(&mut self, _acquire_wait: std::time::Duration) {}
-	/// Called at redraw-handler entry, before the swapchain acquire, so the
-	/// game can time its own main-thread occupancy for this frame: the span
-	/// from here to the end of `render()`, minus the acquire wait.
-	///
-	/// That span is the only honest occupancy signal across both platforms.
-	/// Natively the vsync wait blocks inside the acquire, so subtracting it
-	/// yields real work; on the web the acquire cannot block at all and the
-	/// idle sits BETWEEN frames, outside the span entirely. Deriving busy
-	/// time from the frame-to-frame delta instead reads as "always full" on
-	/// the web and silently disables anything that feeds on it.
+	/// Called at redraw-handler entry, before the swapchain acquire, so the game can time its own
+	/// main-thread occupancy: the span from here to the end of `render()`, minus the acquire wait.
+	/// That is the only honest occupancy signal across both platforms — natively the vsync wait
+	/// blocks inside the acquire, while on the web the idle sits BETWEEN frames. Deriving busy time
+	/// from the frame-to-frame delta instead reads as "always full" on the web.
 	fn frame_started(&mut self) {}
 	/// Never called while suspended.
 	fn update(&mut self, dt: std::time::Duration);
@@ -73,24 +68,11 @@ pub trait Game: 'static {
 	/// Save state NOW — on iOS/Android the process may be killed with no
 	/// further callbacks. Must be cheap and synchronous.
 	fn on_suspend(&mut self) {}
-	/// We are going away for good: the window was closed, the page is unloading,
-	/// or a capture ran out its frames. On a real departure it follows
-	/// [`Game::on_suspend`], so state is already saved — this is for the
-	/// goodbyes state-saving cannot do, like telling a server the player has
-	/// left, or emitting a bench summary.
-	///
-	/// Exists because a `Drop` impl is not a portable exit hook: on wasm, winit's
-	/// exit unwinds through JS and destructors do not reliably run, so anything a
-	/// capture is FOR would be emitted on native and silently lost on the web.
-	///
-	/// Kept apart from `on_suspend` because they mean different things. A
-	/// backgrounded phone is suspended and may well come back; hanging up on it
-	/// would end a session the player still wants. This fires only when there is
-	/// nothing to come back to.
-	///
-	/// May BLOCK, briefly, and is the only callback here allowed to: a network
-	/// flush queued and not waited for loses the race with the process exiting.
-	/// Keep it to a fraction of a second.
+	/// We are going away for good: the window closed, the page unloading, a capture out of frames.
+	/// Follows [`Game::on_suspend`], so this is for the goodbyes state-saving cannot do — telling a
+	/// server the player has left, emitting a bench summary. Not a `Drop` impl, which is no
+	/// portable exit hook: on wasm, destructors do not reliably run. Kept apart from `on_suspend`,
+	/// which a backgrounded phone may come back from. The only callback here allowed to BLOCK.
 	fn on_exit(&mut self) {}
 	/// Polled once per frame. `false` (menu open) releases the cursor and
 	/// routes clicks/positions to the game as UI input; the shell re-grabs
@@ -112,12 +94,10 @@ pub trait Game: 'static {
 	fn take_fullscreen_request(&mut self) -> bool {
 		false
 	}
-	/// Polled after input dispatches on touch devices: some text field
-	/// currently accepts produced text (the menu's name entry, chat). The
-	/// web shell focuses its hidden input on the rising edge — inside the
-	/// tap's own dispatch, which is what raises the soft keyboard — and
-	/// blurs it on the falling edge. A native shell may drive its own
-	/// keyboard bridge from the same signal.
+	/// Polled after input dispatches on touch devices: some text field currently accepts produced
+	/// text (the menu's name entry, chat). The web shell focuses its hidden input on the rising
+	/// edge — inside the tap's own dispatch, which is what raises the soft keyboard — and blurs it
+	/// on the falling edge. A native shell may drive its own keyboard bridge from the same signal.
 	fn text_entry_active(&self) -> bool {
 		false
 	}
@@ -149,33 +129,22 @@ pub struct RunOptions {
 	pub screenshot: Option<PathBuf>,
 	pub screenshot_after_frames: u32,
 	pub exit_after_screenshot: bool,
-	/// Automated lifecycle drill, a step every few frames: suspend+resume
-	/// (surface dropped and recreated through the production transitions),
-	/// then a simulated device loss (renderer rebuild), then a real device
-	/// destroy (full ReinitDevice recovery), then complete and exit once
-	/// frames are landing again on the recovered device. An incomplete
-	/// drill makes `run` return an error.
-	/// Manual equivalents: F9 (hold suspended) and F10.
+	/// Automated lifecycle drill, a step every few frames: suspend+resume (surface dropped and
+	/// recreated through the production transitions), a simulated device loss (renderer rebuild), a
+	/// real device destroy (full ReinitDevice recovery), then exit once frames are landing again on
+	/// the recovered device. An incomplete drill makes `run` return an error. Manual equivalents:
+	/// F9 (hold suspended) and F10.
 	pub auto_drill: bool,
 	/// Exit after this many presented frames (benchmark runs).
 	pub exit_after_frames: Option<u64>,
 	/// Present with `AutoNoVsync` instead of `Fifo` — frames run uncapped
 	/// so benchmarks measure real frame cost, not vsync residue.
 	pub no_vsync: bool,
-	/// Draw into a texture of our own instead of the swapchain, and never acquire
-	/// or present.
-	///
-	/// The flag that makes a capture independent of the DESKTOP: a window that is
-	/// minimized, covered, or behind a screensaver is handed no surface texture
-	/// at all on macOS, so an unattended run through the swapchain simply stops
-	/// producing frames when the screen locks.
-	///
-	/// Deliberately NOT implied by `--screenshot`: dropping the swapchain also
-	/// drops the present wait, so a frame-time run means something different
-	/// here, and every BENCH.md baseline was taken through the surface.
-	///
-	/// Composes with [`Self::auto_drill`], though the drill then covers one
-	/// transition less, since nothing acquires.
+	/// Draw into a texture of our own instead of the swapchain, never acquiring or presenting: what
+	/// makes a capture independent of the DESKTOP, since macOS hands a covered window no surface
+	/// texture at all and an unattended run simply stops when the screen locks. Deliberately NOT
+	/// implied by `--screenshot`, because dropping the swapchain drops the present wait and every
+	/// BENCH.md baseline was taken through the surface. Composes with [`Self::auto_drill`].
 	pub offscreen: bool,
 	/// Logical window size, when a run needs a SPECIFIC one rather than
 	/// winit's default. The GI resolve is a fraction of the surface, so
@@ -183,38 +152,28 @@ pub struct RunOptions {
 	/// desktop-vs-web comparison has to hold equal before any of its
 	/// numbers mean anything.
 	pub window_size: Option<(u32, u32)>,
-	/// Open the window on this monitor (index into winit's enumeration) instead
-	/// of wherever the desktop last had focus.
-	///
-	/// A MEASUREMENT knob, not a convenience. A window that opens on whichever
-	/// screen the user most recently clicked lands on a different refresh rate
-	/// and a different backing scale run to run, and both are load-bearing: the
-	/// physical framebuffer follows the scale, so the GI resolve's cost changes
-	/// with it, and a display-paced frame lets the GPU downclock, which inflates
-	/// every timestamp in the CSV. A bracket taken across two screens is
-	/// measuring the screens.
+	/// Open the window on this monitor (index into winit's enumeration) instead of wherever the
+	/// desktop last had focus. A MEASUREMENT knob, not a convenience: a window landing wherever the
+	/// user last clicked picks up a different refresh rate and backing scale run to run, and both
+	/// are load-bearing — the framebuffer follows the scale, so the GI resolve's cost moves with
+	/// it, and a display-paced frame lets the GPU downclock. A bracket across screens measures it.
 	pub display: Option<usize>,
-	/// Step the world by exactly this much per frame instead of by
-	/// measured wall time (`--fixed-dt`). Everything animated rides dt —
-	/// water ripple phase, the fluid sim, the spawn settle — so without
-	/// it two builds of DIFFERENT SPEED reach `--frames N` in different
-	/// world states and a parity capture measures the speed difference
-	/// instead of the change. See `GameClock`.
+	/// Step the world by exactly this much per frame instead of by measured wall time
+	/// (`--fixed-dt`). Everything animated rides dt — water ripple phase, the fluid sim, the spawn
+	/// settle — so without it two builds of DIFFERENT SPEED reach `--frames N` in different world
+	/// states and a parity capture measures the speed difference instead of the change.
 	pub fixed_dt: Option<std::time::Duration>,
-	/// The primary pointer is a finger. The shell then never requests
-	/// pointer lock (iOS Safari lacks the API; elsewhere every tap's
-	/// re-grab would be refused without a real pointer) and, on the web,
-	/// raises the soft keyboard while the game reports a text field open.
-	/// Set by the launcher from its own device detection — the shell has
-	/// no view of that.
+	/// The primary pointer is a finger. The shell then never requests pointer lock (iOS Safari
+	/// lacks the API; elsewhere every tap's re-grab would be refused without a real pointer) and,
+	/// on the web, raises the soft keyboard while the game reports a text field open. Set by the
+	/// launcher from its own device detection — the shell has no view of that.
 	pub touch: bool,
 }
 
 /// Why `run` came back with a failure the process should report.
 #[derive(Debug)]
 pub enum RunError {
-	/// `--drill` exited before completing every step (the destroy-step
-	/// recovery must go on rendering on the recovered device).
+	/// `--drill` exited before completing every step, the destroy-step recovery included.
 	DrillIncomplete { frames_rendered: u64 },
 }
 

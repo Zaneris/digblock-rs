@@ -2,17 +2,14 @@
 // collapse, and the arrival bloom. Deliberately NOT confetti — nothing here
 // falls or flutters; everything is made of light and moves along a helix.
 //
-// One instance per effect. Three modes share one parametrization: a mote
-// orbits the caster's axis at a radius and height driven by its phase, and
-// the mode decides which way the phase drives them — departure tightens the
-// helix and lifts it into a column, arrival is the same flight reversed
-// (a ring blooming outward as the light settles down into the player), and
-// the channel winds in place at a rate the cast's progress sets. The fourth
-// mode is the kindled orb: a standing ball of light in a cell, particle 0
-// the orb itself and a few sparks drifting about it. The CPU owns an
-// age/progress and an envelope; every mote's position is a pure function
-// of the instance and the shared animation clock — spray.wgsl's
-// arrangement, siphon.wgsl's additive light.
+// One instance per effect. Three modes share one parametrization: a mote orbits
+// the caster's axis at a radius and height driven by its phase, and the mode
+// decides which way — departure tightens the helix into a column, arrival is
+// that flight reversed, and the channel winds in place at a rate the cast's
+// progress sets. The fourth mode is the kindled orb: a standing ball of light
+// in a cell with a few sparks about it. The CPU owns an age/progress and an
+// envelope; every mote's position is a pure function of the instance and the
+// shared animation clock — spray.wgsl's arrangement, siphon.wgsl's additive light.
 //
 // vertex_index picks the particle (vi / 6) and the quad corner (vi % 6);
 // particle 0 is the column of light (the orb, kindled), the rest are motes.

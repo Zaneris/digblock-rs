@@ -213,13 +213,11 @@ fn every_node_has_a_spent_face_and_nothing_else_does() {
 	}
 }
 
-/// A landmark never rolls for its heart — the rare giant is always
-/// worth the detour — while ordinary trees roll, and most decline.
-///
-/// The heart is the same SIZE either way, and that half is asserted
-/// too: a landmark's four trunk columns each carry [`HEART_CELLS`] and
-/// nothing above them. It used to be the whole trunk, which paid more
-/// Alchemy XP off one tree than the first dozen levels cost.
+/// A landmark never rolls for its heart — the rare giant is always worth the detour — while
+/// ordinary trees roll, and most decline. The heart is the same SIZE either way, and that half is
+/// asserted too: a landmark's four trunk columns each carry [`HEART_CELLS`] and nothing above
+/// them, not the whole trunk, which paid more Alchemy XP off one tree than the first dozen levels
+/// cost.
 #[test]
 fn landmarks_always_carry_a_heart_and_most_trees_do_not() {
 	let mut landmark_checked = false;
@@ -379,17 +377,11 @@ fn a_stored_live_face_is_revealed_to_anyone() {
 	}
 }
 
-/// `node_at` routes on the HOST, and the host is whatever the world
-/// really holds.
-///
-/// Walked over real [`crate::worldgen::build_column`] output rather than
-/// cells the test plants itself, because planting the host the test
-/// already chose is exactly what cannot see this: the three streams
-/// overlap the terrain, so a trunk column's heart span answers
-/// "heartwood" at coordinates the tree grew LEAVES in, and a host-blind
-/// query would let a spent face carried there and placed become a node
-/// site. Both counts are asserted, so neither half can pass by finding
-/// nothing.
+/// `node_at` routes on the HOST, and the host is whatever the world really holds. Walked over real
+/// [`crate::worldgen::build_column`] output rather than planted cells, because planting the host
+/// the test already chose cannot see this: the streams overlap the terrain, so a trunk column's
+/// heart span answers "heartwood" where the tree grew LEAVES, and a host-blind query would let a
+/// spent face placed there become a node site. Both counts are asserted, so neither passes empty.
 #[test]
 fn node_at_routes_on_the_host_the_world_really_holds() {
 	use crate::chunk::{CHUNK_SIZE, WORLD_VCHUNK, cell_id};

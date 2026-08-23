@@ -1,30 +1,18 @@
-//! The alchemy screen: ONE page under a header that always shows the Alchemy
-//! level, its XP bar and the essence holdings. Matter never becomes essence at
-//! a bench — the siphon draws nodes in the field, and this screen is where the
-//! essence is SPENT.
+//! The alchemy screen: ONE page under a header showing the Alchemy level, its XP bar and the
+//! essence holdings — a row of FAMILY tiles whose icons rotate through their members, the
+//! selected family's members wrapped into the inventory grid's columns beneath, a detail strip,
+//! and the page's ONE `TRANSMUTE` button. Matter never becomes essence at a bench: the siphon
+//! draws nodes in the field, and this screen is where the essence is SPENT.
 //!
-//! The page is a row of FAMILY tiles whose icons slowly rotate through their
-//! members, the selected family's members wrapped into the inventory grid's
-//! columns beneath, a detail strip, and the page's ONE `TRANSMUTE` button,
-//! clamped to what the holdings afford.
+//! **The page shows what you have and one tier of what is coming, and nothing else**
+//! ([`member_visible`]): a member draws only if its recipe is unlocked or sits at the catalog's
+//! NEXT unlock level, and a family with nothing on the page hides entirely. Families are DERIVED
+//! from §7.2's shape axis, and `every_craftable_appears_in_exactly_one_family` holds that
+//! derivation to the core catalog, so a new craftable cannot silently miss the screen.
 //!
-//! **The page shows what you have and one tier of what is coming, and nothing
-//! else** ([`member_visible`]): a member is drawn only if its recipe is unlocked
-//! or sits at the catalog's NEXT unlock level — every item sharing that level
-//! shows together — and a family with nothing on the page hides entirely. The
-//! families are DERIVED from §7.2's shape axis rather than mirrored by hand, and
-//! `every_craftable_appears_in_exactly_one_family` holds the derivation to the
-//! core catalog, so a new craftable cannot silently miss the screen.
-//!
-//! The button QUEUES that count rather than buying it: crafting drips at
-//! `craft_pace_ticks`, and the button itself stands as the batch's CANCEL.
-//! Answering instantly made the bench's one immediate action also its fastest
-//! XP — a hundred crafts paid in a frame. The bench keeps working with the
-//! screen closed; only leaving the world abandons.
-//!
-//! The screen never mutates game state: `handle_input`/`tick` return actions,
-//! and the engine applies them locally offline or sends them to the server
-//! online (the `InventoryFull` echo is the rebase).
+//! The button QUEUES a count rather than buying it — answering instantly made the bench's one
+//! immediate action also its fastest XP — and stands as the batch's CANCEL; the bench keeps
+//! working with the screen closed. The screen never mutates state: it returns actions.
 
 use digblock_core::alchemy;
 use digblock_core::block::{BlockType, Essence, ShapeFamily};
@@ -102,18 +90,13 @@ pub enum ShortOf {
 	Essence(Essence),
 }
 
-/// Why the transmute strip says what it says.
-///
-/// Extracted from the words so a test can ask which case a tile is in
-/// without quoting the line: the wording is this screen's own label and
-/// may be reworded freely, but WHICH case applies is a rule — and the
-/// one that matters most, a full cap reading as a shortfall, sent the
-/// player off to gather something that could not help.
+/// Why the transmute strip says what it says. Extracted from the words so a test can ask which
+/// case a tile is in without quoting the line: the wording is this screen's own label and may be
+/// reworded freely, but WHICH case applies is a rule — and the one that matters most, a full cap
+/// reading as a shortfall, sent the player off to gather something that could not help.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum StripReason {
-	/// Nothing can be added: a tool already made, or a vessel already
-	/// charged. `apply_alchemy` refuses on exactly this, so the offer
-	/// has to close here too or it is a lie the player pays for.
+	/// Nothing can be added; `apply_alchemy` refuses on this, so the offer must close here too.
 	AtCap { tool: bool },
 	/// The first shortfall, and how much more of it is wanted.
 	Short { of: ShortOf, more: u32 },
@@ -309,17 +292,11 @@ impl Default for AlchScreen {
 	}
 }
 
-/// One transmute family: a tile that previews its members in slow
-/// rotation; selecting it lays the members out under the page's single
-/// TRANSMUTE button.
-///
-/// The grouping is no longer the UI's own — it IS SKILLS-DESIGN §7.2's
-/// shape axis (`block::ShapeFamily`), with members in material (i.e.
-/// unlock) order. A new material × shape pair therefore joins its family
-/// on its own, which is what lets the catalog grow without the screen
-/// growing. Only the FUNCTIONAL families are authored here, because §7.3's
-/// hand-priced items are not a substance in a form and have no axis to
-/// derive from.
+/// One transmute family: a tile that previews its members in slow rotation; selecting it lays the
+/// members out under the page's single TRANSMUTE button. The grouping IS SKILLS-DESIGN §7.2's
+/// shape axis (`block::ShapeFamily`), members in material (i.e. unlock) order, so a new material ×
+/// shape pair joins its family on its own and the catalog grows without the screen growing. Only
+/// the FUNCTIONAL families are authored here — §7.3's hand-priced items have no axis to derive on.
 pub struct Family {
 	pub name: &'static str,
 	pub members: Vec<BlockType>,
@@ -389,12 +366,10 @@ fn next_unlock_level(level: u32) -> Option<u32> {
 		.min()
 }
 
-/// Is this member on the page at all? Already unlocked, or part of the
-/// NEXT unlock — everything past that stays hidden, so a fresh player
-/// reads a short page of what they can do and one tier of what is coming
-/// instead of the whole catalog as a wall of locks. Several items sharing
-/// the next level all show together, since the tier is a LEVEL and not an
-/// item.
+/// Is this member on the page at all? Already unlocked, or part of the NEXT unlock — everything
+/// past that stays hidden, so a fresh player reads a short page of what they can do and one tier
+/// of what is coming instead of the whole catalog as a wall of locks. Several items sharing the
+/// next level all show together, since the tier is a LEVEL and not an item.
 fn member_visible(b: BlockType, level: u32, next: Option<u32>) -> bool {
 	unlock::craft(b).is_some_and(|l| l <= level || Some(l) == next)
 }
@@ -407,16 +382,11 @@ const FAMILY_CYCLE_SECS: f32 = 1.8;
 /// each member longer, not perform the handover in slow motion.
 const FAMILY_SWAP_SECS: f32 = 0.30;
 
-/// Which member a family tile shows at `clock`, and how PRESENT it is
-/// (0..=1, scaling both the icon and its alpha).
-///
-/// The rotation used to hard-cut, which read as a glitch rather than as
-/// a tile cycling its contents. The handover itself is
-/// [`super::super::handover`] — the same shrink-away/grow-in the hotbar's
-/// tool slot plays when you cycle tools, and for the same reason.
-///
-/// A one-member family never transitions: there is nothing to trade it
-/// for, and a tile pulsing on its own is just noise.
+/// Which member a family tile shows at `clock`, and how PRESENT it is (0..=1, scaling both the
+/// icon and its alpha). A hard cut read as a glitch rather than as a tile cycling its contents, so
+/// the handover is [`super::super::handover`] — the same shrink-away/grow-in the hotbar's tool slot
+/// plays. A one-member family never transitions: there is nothing to trade it for, and a tile
+/// pulsing on its own is just noise.
 fn family_preview(clock: f32, members: usize) -> (usize, f32) {
 	if members <= 1 {
 		return (0, 1.0);
@@ -488,14 +458,11 @@ impl AlchScreen {
 			.map(|(item, left)| BenchJob::Craft(item, left))
 	}
 
-	/// Capture hook (`DIG_SCREEN=transmuting`): select `item` in its own
-	/// family and put a batch of `count` on the bench, part-way through
-	/// its first cycle.
-	///
-	/// A running batch is a TRANSIENT state — it needs a press, and it is
-	/// over in seconds — so it is exactly the kind of thing headless
-	/// capture cannot otherwise reach, which is how two look-and-feel
-	/// regressions shipped on screens that were only ever driven by hand.
+	/// Capture hook (`DIG_SCREEN=transmuting`): select `item` in its own family and put a batch
+	/// of `count` on the bench, part-way through its first cycle. A running batch is a TRANSIENT
+	/// state — it needs a press, and it is over in seconds — so it is exactly the kind of thing
+	/// headless capture cannot otherwise reach, which is how two look-and-feel regressions
+	/// shipped on screens only ever driven by hand.
 	pub fn debug_batch(&mut self, item: BlockType, count: u32, into_cycle: f32) {
 		let Some((f, m)) = families().iter().enumerate().find_map(|(f, fam)| {
 			let m = fam.members.iter().position(|&b| b == item)?;
@@ -686,16 +653,11 @@ impl AlchScreen {
 		2.0 * scale::text_pad_x(s) + ROW_ICON * s + 2.0 * ICON_TEXT_GAP * s + BTN_W * s
 	}
 
-	/// The strip's height: the shared action row, or as many
-	/// [`theme::ROW_H`] rows as the WIDEST price the page can show wraps
-	/// onto in a `row_w`-wide panel, plus one for the tail once a price
-	/// wraps at all — a panel that narrow has no room left beside the
-	/// last chip, and the tail is how the strip says ALREADY OWNED.
-	///
-	/// The widest rather than the selected member, and a reserve keyed on
-	/// the WIDEST price rather than on the tail actually being drawn, so
-	/// neither picking a costlier member nor crafting one moves the page
-	/// — the same argument `member_rows_h` makes for the member grid.
+	/// The strip's height: the shared action row, or as many [`theme::ROW_H`] rows as the WIDEST
+	/// price the page can show wraps onto in a `row_w`-wide panel, plus one for the tail once a
+	/// price wraps at all — a panel that narrow has no room beside the last chip, and the tail is
+	/// how the strip says ALREADY OWNED. The widest rather than the selected member, and the
+	/// reserve keyed on it too, so neither a costlier member nor crafting one moves the page.
 	fn strip_h(style: &Style, view: &AlchView, row_w: f32) -> f32 {
 		let s = style.scale;
 		let (price_h, tight) = Self::price_block(style, view, row_w);
@@ -725,24 +687,20 @@ impl AlchScreen {
 		// screen measures against — the page keeps its column.
 		let spec = Self::grid_spec_at(style, (0.0, 0.0));
 		let grid = spec.extent(GRID_SLOTS).0;
-		// The panel measures every row it draws, the strip included: its
-		// price is TEXT between two fixed-width things, so asking for the
-		// unwrapped run keeps it on one row wherever the window allows.
-		// The grid is the wider ask for today's catalog, which is exactly
-		// why this term has to be here rather than assumed — a costlier
-		// price or a wider button must widen the panel, not wrap under the
-		// button. Where the window forbids it, `strip_h` gives the wrapped
-		// run its rows.
+		// The panel measures every row it draws, the strip included: its price is TEXT between
+		// two fixed-width things, so asking for the unwrapped run keeps it on one row wherever
+		// the window allows. The grid is today's wider ask, which is exactly why this term must
+		// be here rather than assumed — a costlier price or a wider button must widen the panel,
+		// not wrap under it. Where the window forbids that, `strip_h` gives the wrapped run rows.
 		let price = Self::visible_prices(view)
 			.map(|chips| widgets::chips_w(style, &chips))
 			.fold(0.0, f32::max);
 		let strip = Self::strip_furniture_w(style) + price;
-		// ...but the readout's numbers are TEXT, and text does not shrink
-		// with the panel: `glyph_px` floors, so the bottom rungs of the
-		// fit ladder take a quarter off every box while the digits stay
-		// the size they were. Asking for the unwrapped run keeps the
-		// readout on one row wherever the window allows it; where it does
-		// not, `holdings_rows` wraps it rather than letting it spill.
+		// ...but the readout's numbers are TEXT, and text does not shrink with the panel:
+		// `glyph_px` floors, so the bottom rungs of the fit ladder take a quarter off every box
+		// while the digits stay the size they were. Asking for the unwrapped run keeps the
+		// readout on one row wherever the window allows it; where it does not, `holdings_rows`
+		// wraps it rather than letting it spill.
 		let holdings = Self::holdings_chips(view);
 		grid.max(2.0 * scale::text_pad_x(style.scale) + widgets::chips_w(style, &holdings))
 			.max(strip)
@@ -799,12 +757,10 @@ impl AlchScreen {
 			},
 		);
 		*y += row_h;
-		// Essence readout, always visible — the run `content_w` sizes the
-		// panel against, through the same function. Wrapped at the width
-		// it is actually drawn at, because the panel cannot always be as
-		// wide as the readout wants: `row_w` is clamped to the window, so
-		// a player holding near the cap on a phone asks for more width
-		// than exists, and nothing clips.
+		// Essence readout, always visible — the run `content_w` sizes the panel against, through
+		// the same function. Wrapped at the width it is actually drawn at, because the panel
+		// cannot always be as wide as the readout wants: `row_w` is clamped to the window, so a
+		// player near the cap on a phone asks for more width than exists, and nothing clips.
 		let text_pad = scale::text_pad_x(s);
 		let holdings = Self::holdings_chips(view);
 		let rects = widgets::chips(
@@ -846,16 +802,11 @@ impl AlchScreen {
 		let icon_px = hud::ICON_PX * s;
 		let (cx, cy) = self.cursor;
 
-		// Family tiles, previews rotating on the shared clock. The
-		// selected family wears the WEAK ring — it's context; the chosen
-		// member below is what the button acts on and gets the strong
-		// one.
-		//
-		// Only families with something ON the page draw at all — packed
-		// left, but keeping their TRUE index in `InvId::Family`, so hiding
-		// never shifts selection state or hit identity. A family whose
-		// only visible members are next-unlock teasers dims like a locked
-		// tile and badges that level.
+		// Family tiles, previews rotating on the shared clock. The selected family wears the WEAK
+		// ring — it's context; the chosen member below gets the strong one. Only families with
+		// something ON the page draw at all — packed left, but keeping their TRUE index in
+		// `InvId::Family`, so hiding never shifts selection state or hit identity. A family whose
+		// only visible members are teasers dims like a locked tile and badges that level.
 		let next = next_unlock_level(view.level);
 		let fam_spec = Self::grid_spec_at(&ui.style, (row_x + text_pad, y));
 		let mut col = 0usize;
@@ -909,13 +860,11 @@ impl AlchScreen {
 		}
 		y += slot_px + theme::ROW_GAP * s;
 
-		// The selected family's members, wrapped at the grid's own columns
-		// so a growing catalog wraps instead of overflowing the panel.
-		// Locked ones dim with their unlock badge but stay selectable —
-		// the strip explains; affordable ones carry their batch count.
-		// Nothing selected yet draws none of it: the row's height is
-		// reserved either way (`member_rows_h` is the max over every
-		// family), so picking one fills a gap instead of moving the page.
+		// The selected family's members, wrapped at the grid's own columns so a growing catalog
+		// wraps instead of overflowing the panel. Locked ones dim with their unlock badge but
+		// stay selectable — the strip explains; affordable ones carry their batch count. Nothing
+		// selected draws none of it, but the row's height is reserved either way
+		// (`member_rows_h` is the max over every family), so picking one never moves the page.
 		let picked = self.family.map(|f| f.min(families().len() - 1));
 		if let Some(f) = picked {
 			let family = &families()[f];
@@ -965,13 +914,11 @@ impl AlchScreen {
 		}
 		y += Self::member_rows_h(&ui.style) + theme::SECTION_GAP * s;
 
-		// The detail strip (the shared action-row height): the selected
-		// member's icon, its price at YOUR level as chips (post-waste —
-		// what it will actually charge, feedstock lines included, a line
-		// the holdings cannot cover in the short ink), a tail for the one
-		// case a chip cannot say, and the page's one TRANSMUTE button.
-		// Locked reads dim with its level. Its NAME is on hover like every
-		// other tile's, so the strip has room for every line of the price.
+		// The detail strip (the shared action-row height): the selected member's icon, its price
+		// at YOUR level as chips (post-waste — what it will actually charge, feedstock lines
+		// included, a line the holdings cannot cover in the short ink), a tail for the one case a
+		// chip cannot say, and the page's one TRANSMUTE button. Locked reads dim with its level;
+		// its NAME is on hover like every other tile's, so the strip has room for every line.
 		let strip_h = Self::strip_h(&ui.style, view, row_w);
 		let strip = Rect::new(row_x, y, row_w, strip_h);
 		// With nothing picked there is no item to price and nothing for
@@ -1021,12 +968,11 @@ impl AlchScreen {
 		let text_x = strip.x + text_pad + ROW_ICON * s + ICON_TEXT_GAP * s;
 		let costs = cost_chips(view, item, locked);
 		let tail = strip_tail(view, item);
-		// The price is BOUNDED by what is left between the icon and the
-		// button — drawn to infinity it ran chips and digits under the
-		// button — and the tail goes wherever is left after it: beside the
-		// last chip where that fits, else on the row `strip_h` reserved
-		// under a wrapped price. Laid out before anything is emitted,
-		// because the block's height decides where the block starts.
+		// The price is BOUNDED by what is left between the icon and the button — drawn to
+		// infinity it ran chips and digits under the button — and the tail goes wherever is left
+		// after it: beside the last chip where that fits, else on the row `strip_h` reserved
+		// under a wrapped price. Laid out before anything is emitted, because the block's height
+		// decides where the block starts.
 		let span = Self::price_span(&ui.style, row_w);
 		let row_h = theme::ROW_H * s;
 		let placed = widgets::chip_layout(&ui.style, text_x, 0.0, span, &costs);
@@ -1083,12 +1029,10 @@ impl AlchScreen {
 			btn.contains(cx, cy),
 		);
 		y += strip_h + theme::ROW_GAP * s;
-		// The row under the button is the modifier legend when the bench
-		// is idle and the batch's own progress when it is not: a craft is
-		// paced, so it needs somewhere to say how far along it is and
-		// how many are still owed. It names its own item rather than
-		// borrowing the strip's, which follows the SELECTION and may have
-		// moved on while the batch runs.
+		// The row under the button is the modifier legend when the bench is idle and the batch's
+		// own progress when it is not: a craft is paced, so it needs somewhere to say how far
+		// along it is and how many are still owed. It names its own item rather than borrowing
+		// the strip's, which follows the SELECTION and may have moved on while the batch runs.
 		let queued =
 			running.map(|(item, left)| format!("{}   ·   {left} LEFT", item.name().to_uppercase()));
 		widgets::row(
@@ -1181,12 +1125,10 @@ impl AlchScreen {
 						} else {
 							BULK_PLAIN
 						};
-						// QUEUED, not sent: `tick` drips one `Craft` per
-						// interval out of this, so a bulk batch is that many
-						// paced crafts rather than a frame's worth of XP.
-						// The clamp is unchanged — the offer
-						// is still what the holdings afford right now, and
-						// the queue re-asks as it goes.
+						// QUEUED, not sent: `tick` drips one `Craft` per interval out
+						// of this, so a bulk batch is that many paced crafts rather
+						// than a frame's worth of XP. The clamp is unchanged: the offer
+						// is what the holdings afford now, and the queue re-asks as it goes.
 						let count = want.min(view.affordable(item));
 						if count > 0 {
 							self.crafting = Some((item, count));

@@ -81,12 +81,10 @@ pub struct TerrainParams {
 }
 
 impl TerrainParams {
-	// Region wavelengths are tuned so distinct terrain archetypes sit
-	// farther apart than one draw distance: mountain belts, eroded
-	// provinces and continental masses each span more world than fits on
-	// screen, so you walk between regions instead of seeing them all in
-	// one frame. Local character (detail, ridge forms, channel width)
-	// keeps its original scale.
+	// Region wavelengths are tuned so distinct terrain archetypes sit farther apart than one draw
+	// distance: mountain belts, eroded provinces and continental masses each span more world than
+	// fits on screen, so you walk between regions instead of seeing them all in one frame. Local
+	// character (detail, ridge forms, channel width) keeps its original scale.
 	pub const DEFAULT: TerrainParams = TerrainParams {
 		continent_freq: 0.00075,
 		rough_freq: 0.00135,

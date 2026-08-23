@@ -34,15 +34,11 @@ fn settle(e: &mut Engine) {
 	}
 }
 
-/// Walk a standing causeway for `frames` frames of `per_frame` ticks
-/// each, sampling the standing trail each frame — which is every plank
-/// laid, since a road lays them slower than `TRAIL` per sample at any of
-/// the rates here.
-///
-/// The caster starts well above the terrain so the road is the only
-/// thing under them: the first plank catches the drop, and from there
-/// every step is the cliff walk — off the edge of the plank they stand
-/// on, into air.
+/// Walk a standing causeway for `frames` frames of `per_frame` ticks each, sampling the standing
+/// trail each frame — every plank laid, since a road lays them slower than `TRAIL` per sample at
+/// any of these rates. The caster starts well above the terrain so the road is the only thing
+/// under them: the first plank catches the drop, and every step after is the cliff walk, off the
+/// edge of the plank they stand on into air.
 fn walk(per_frame: u32, frames: usize) -> (Vec<(i32, i32, i32)>, f32) {
 	let mut e = fresh();
 	settle(&mut e);

@@ -96,12 +96,11 @@ impl Engine {
 		}
 	}
 
-	/// Adopt the server's authoritative essence counts and toast every
-	/// one that grew since the last base. Only a draw (or an operator's
-	/// `/give`) can grow one — no craft creates essence — so a rise IS a
-	/// find, and the client never has to be told the split it was not
-	/// allowed to predict. The first base after a join is adopted
-	/// silently: that is state arriving, not an award.
+	/// Adopt the server's authoritative essence counts and toast every one that grew since the
+	/// last base. Only a draw (or an operator's `/give`) can grow one — no craft creates essence —
+	/// so a rise IS a find, and the client never has to be told the split it was not allowed to
+	/// predict. The first base after a join is adopted silently: that is state arriving, not an
+	/// award.
 	pub(super) fn adopt_auth_essence(&mut self, base: &digblock_core::inventory::Inventory) {
 		use digblock_core::block::Essence;
 		let now: [u32; Essence::COUNT] = Essence::ALL.map(|e| base.sub_count(e));
@@ -116,12 +115,10 @@ impl Engine {
 		self.auth_essence = Some(now);
 	}
 
-	/// Adopt a new authoritative XP total for one skill: coalesce the
-	/// delta into a toast, and word + sound a level-up. Totals only
-	/// grow, so a replayed or reordered frame is a no-op. Both award
-	/// paths land here — the server's `XpGain` online, and
-	/// [`Self::award_xp_offline`] offline — so the presentation can't
-	/// drift between the two.
+	/// Adopt a new authoritative XP total for one skill: coalesce the delta into a toast, then
+	/// word and sound a level-up. Totals only grow, so a replayed or reordered frame is a no-op.
+	/// Both award paths land here — the server's `XpGain` online, and [`Self::award_xp_offline`]
+	/// offline — so the presentation can't drift between the two.
 	pub(super) fn apply_xp_total(&mut self, skill: digblock_core::skills::Skill, total: u64) {
 		let old = self.skills.xp(skill);
 		if total <= old {
@@ -159,15 +156,11 @@ impl Engine {
 		}
 	}
 
-	/// Hand the pipeline the skill levels its node stamp reveals at, and
-	/// sweep every resident chunk when that crosses a threshold on either
-	/// axis (§5.3 — Mining for the ore tiers, Alchemy for the surface
-	/// nodes).
-	///
-	/// The sweep is `remesh_all`, which only ENQUEUES — the mesh heap
-	/// drains under the ordinary `STREAM_BUDGET_MS`, so the veins fade in
-	/// around you over a second or two instead of hitching the frame that
-	/// levelled you up.
+	/// Hand the pipeline the skill levels its node stamp reveals at, and sweep every resident
+	/// chunk when that crosses a threshold on either axis (§5.3 — Mining for the ore tiers,
+	/// Alchemy for the surface nodes). The sweep is `remesh_all`, which only ENQUEUES — the mesh
+	/// heap drains under the ordinary `STREAM_BUDGET_MS`, so the veins fade in around you instead
+	/// of hitching the frame that levelled you up.
 	pub(super) fn sync_node_reveal(&mut self, announce: bool) {
 		let levels = digblock_core::worldgen::nodes::Levels::of(&self.skills);
 		if !self.pipeline.set_levels(levels) {
@@ -183,14 +176,11 @@ impl Engine {
 		}
 	}
 
-	/// Throw a confetti burst from a player's head. `eye` is the eye
-	/// position (the authoritative `Player::pos` locally, the
-	/// interpolated sample for a remote), and the burst sits just above
-	/// it so it erupts over the head rather than out of the face.
-	///
-	/// Over [`crate::confetti::MAX_BURSTS`] the oldest is dropped: a
-	/// celebration that can't be drawn is better lost than the newest
-	/// one, which is the one somebody is watching.
+	/// Throw a confetti burst from a player's head. `eye` is the eye position (the authoritative
+	/// `Player::pos` locally, the interpolated sample for a remote), and the burst sits just above
+	/// it so it erupts over the head rather than out of the face. Over
+	/// [`crate::confetti::MAX_BURSTS`] the oldest is dropped: a celebration that can't be drawn is
+	/// better lost than the newest one, which is the one somebody is watching.
 	pub(super) fn throw_confetti(&mut self, eye: Vec3) {
 		const HEAD_CLEARANCE: f32 = 0.55;
 		self.vfx.confetti_seq = self.vfx.confetti_seq.wrapping_add(1);

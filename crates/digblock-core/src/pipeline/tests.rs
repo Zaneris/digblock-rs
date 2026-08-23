@@ -99,17 +99,11 @@ impl JobDispatch for ImmediateDispatch {
 	}
 }
 
-/// A pool that behaves like a real one: a job is ACCEPTED now and
-/// answered whenever the test says so, or never.
-///
-/// `ImmediateDispatch` cannot model the contracts that actually bite,
-/// because it finishes every job inside `submit` — there is no such
-/// thing as a dispatched-but-unanswered job in it, so `reset`'s
-/// load-bearing rule (a reply for a pre-reset job must NEVER be
-/// delivered) and the lost-job path are both invisible to it. The
-/// state is shared with the test, which drives the two events a real
-/// pool suffers and a synchronous double cannot: a late reply and a
-/// dead worker.
+/// A pool that behaves like a real one: a job is ACCEPTED now and answered whenever the test says
+/// so, or never. `ImmediateDispatch` finishes every job inside `submit`, so a
+/// dispatched-but-unanswered job does not exist in it, and `reset`'s load-bearing rule — a reply
+/// for a pre-reset job must NEVER be delivered — and the lost-job path are both invisible to it.
+/// The state is shared with the test, which drives a late reply and a dead worker.
 #[derive(Default)]
 struct HoldBackState {
 	/// Accepted, unanswered: the job, whether its worker is still
@@ -210,13 +204,10 @@ impl JobDispatch for HoldBackDispatch {
 	}
 }
 
-/// Per-chunk air flag plus a content hash — enough to catch a dropped
-/// cell, a transposed copy, or an air chunk that decoded into a
-/// look-alike instead of the shared sentinel.
-///
-/// The hash is POSITION-WEIGHTED on purpose. A plain sum over the
-/// cells is permutation-invariant, so a codec that shuffled a chunk's
-/// contents — the exact class of mistake a bytes-crossing job pool
+/// Per-chunk air flag plus a content hash — enough to catch a dropped cell, a transposed copy, or
+/// an air chunk that decoded into a look-alike instead of the shared sentinel. The hash is
+/// POSITION-WEIGHTED on purpose: a plain sum over the cells is permutation-invariant, so a codec
+/// that shuffled a chunk's contents — the exact class of mistake a bytes-crossing job pool
 /// introduces — would pass it unchanged.
 fn world_census(p: &Pipeline) -> Vec<(ChunkPos, bool, u64)> {
 	let mut v: Vec<_> = p
@@ -366,12 +357,10 @@ fn taking_the_pool_back_resets_it() {
 	assert_eq!(world_census(&p), world_census(&control));
 }
 
-/// `reset`'s actual contract, which `ImmediateDispatch` cannot state:
-/// a job dispatched before a world change must never land after it.
-/// A `Generated` result carries only (x, z) — no seed — so one that
-/// leaked would stamp the OLD world's terrain into the new one at the
-/// same coordinates, and the census would show it as a world neither
-/// seed generates.
+/// `reset`'s actual contract, which `ImmediateDispatch` cannot state: a job dispatched before a
+/// world change must never land after it. A `Generated` result carries only (x, z) — no seed — so
+/// one that leaked would stamp the OLD world's terrain into the new one at the same coordinates,
+/// and the census would show a world neither seed generates.
 #[test]
 fn a_pre_reset_reply_never_reaches_the_next_world() {
 	let center = ChunkPos::new(0, 0, 0);
@@ -603,17 +592,11 @@ fn overlay_survives_evict_and_regen() {
 	assert!(p.take_recorded_edits().is_empty());
 }
 
-/// The multiplayer half of the same guarantee, and the reason it is
-/// its own test: a client with NO overlay installed still keeps a
-/// mirror of everything the server told it, and still re-applies it.
-///
-/// This is the bug behind "I walked back and the chunk was pristine
-/// again". Nothing else can put those cells back — `apply_authoritative`
-/// drops a cell from `deferred_edits` the moment it lands, and the
-/// server prunes its own record of what a client has synced on a
-/// radius WIDER than the client's residency, so re-entry gets no
-/// resend. A local write is still not recorded here, which is what
-/// keeps a rejected prediction from marking a cell edited forever.
+/// The multiplayer half of the same guarantee, and the reason it is its own test: a client with NO
+/// overlay installed still keeps a mirror of everything the server told it, and still re-applies
+/// it. Nothing else can put those cells back — `apply_authoritative` drops a cell from
+/// `deferred_edits` the moment it lands, and the server prunes its record on a radius WIDER than
+/// the client's residency. A local write is still not recorded, so a rejection marks nothing.
 #[test]
 fn authoritative_edits_survive_evict_and_regen_without_an_overlay() {
 	let mut p = Pipeline::new(0.0, 4, 2);
@@ -747,18 +730,11 @@ fn no_overlay_records_nothing() {
 	assert!(p.overlay().is_none());
 }
 
-/// In multiplayer the "has this cell been touched?" map mirrors the
-/// SERVER's journal, so a local write only marks a cell edited once
-/// authority confirms it — and a prediction that gets thrown out
-/// leaves nothing behind.
-///
-/// The rollback is what forced this. It reverts through `set_cell`
-/// like any other write, and `EditOverlay::record` is insert-only, so
-/// a recorded prediction survived its own rejection: the cell stayed
-/// edited on the client and pristine on the server, and from then on
-/// the two ends answered `ore::dig_mode` differently about it — the
-/// client digging it as stone and the server refusing the hold. Once
-/// the client remembers that refusal the cell is dead for the session.
+/// In multiplayer the "has this cell been touched?" map mirrors the SERVER's journal, so a local
+/// write only marks a cell edited once authority confirms it. The rollback is what forces this: it
+/// reverts through `set_cell` like any other write and `EditOverlay::record` is insert-only, so a
+/// recorded prediction survives its own rejection — the cell stays edited on the client and
+/// pristine on the server, and the two ends answer `ore::dig_mode` differently about it forever.
 #[test]
 fn a_rejected_prediction_leaves_the_cell_untouched() {
 	let mut p = Pipeline::new(0.0, 4, 2);
@@ -784,16 +760,11 @@ fn a_rejected_prediction_leaves_the_cell_untouched() {
 	assert!(p.cell_edited(8, 8, 8));
 }
 
-/// An authoritative write whose value already matches is still a
-/// RECORD, and the first record on a cell changes what its chunk
-/// draws: `ore::revealed` keys on "edited", not on the cell value. So
-/// the chunk has to re-mesh even though nothing was written.
-///
-/// Journal replay does exactly this — an LWW re-application, a
-/// re-streamed column — and `set_cell` early-returns on an unchanged
-/// value without touching `mesh_gen`. The seam went on glittering in a
-/// chunk whose dig path had already started calling it spent stone,
-/// and holding on it destroyed the deposit.
+/// An authoritative write whose value already matches is still a RECORD, and the first record on a
+/// cell changes what its chunk draws: `ore::revealed` keys on "edited", not on the cell value, so
+/// the chunk has to re-mesh even though nothing was written. Journal replay does exactly this, and
+/// `set_cell` early-returns on an unchanged value without touching `mesh_gen` — leaving a seam
+/// glittering in a chunk whose dig path already calls it spent stone.
 #[test]
 fn a_no_op_authoritative_write_still_remeshes_once() {
 	let mut p = Pipeline::new(0.0, 4, 2);
@@ -1175,17 +1146,11 @@ fn inline_executor_matches_worker_pool() {
 	assert_eq!(inline.block_at(8, 8, 8), Some(b));
 }
 
-/// Inline drains make progress even when every frame is over budget:
-/// with an already-expired deadline each maintain, the center column
-/// (nearest-first, the first job popped) still reaches the store
-/// within the first frames. Regression for the web spawn fall-through:
-/// the inline gen job overran the drain deadline every frame, so
-/// generated columns piled up undrained while the player fell through
-/// a world that existed but never landed.
-///
-/// Walked for both allowances, because a zero allowance is the FLOOR
-/// and not a stall — the unconditional first batch still runs — and
-/// the two used to be separate tests differing only in this argument.
+/// Inline drains make progress even when every frame is over budget: with an already-expired
+/// deadline each maintain, the center column (nearest-first, the first job popped) still reaches
+/// the store within the first frames. Regression for the web spawn fall-through, where generated
+/// columns piled up undrained while the player fell through a world that never landed. Walked for
+/// both allowances, because a zero allowance is the FLOOR and not a stall.
 #[test]
 fn inline_drain_progresses_past_expired_deadline() {
 	for allowance in [None, Some(std::time::Duration::ZERO)] {
@@ -1264,12 +1229,10 @@ fn stream_urgency_tracks_nearest_pending() {
 	assert_eq!(p.stream_urgency(), 0.0, "quiescent again once filled");
 }
 
-/// Work in a pool is still work. `top_up_workers` drains BOTH heaps
-/// into the pool, so a heaps-only urgency reads the busiest frame of
-/// the fill as idle and collapses the shared streaming deadline to its
-/// floor — exactly as those results start landing on this thread to be
-/// absorbed. With the inline executor this was unreachable: a job left
-/// the heap and finished inside the same call.
+/// Work in a pool is still work. `top_up_workers` drains BOTH heaps into the pool, so a heaps-only
+/// urgency reads the busiest frame of the fill as idle and collapses the shared streaming deadline
+/// to its floor — exactly as those results start landing on this thread to be absorbed. With the
+/// inline executor this was unreachable: a job left the heap and finished inside the same call.
 #[test]
 fn urgency_counts_work_that_is_in_the_pool() {
 	let center = ChunkPos::new(0, 0, 0);

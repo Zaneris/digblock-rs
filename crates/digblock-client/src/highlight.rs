@@ -1,37 +1,28 @@
-//! Target-block highlight: the idle outline + hold-to-dig crack decal,
-//! one instanced box (players.rs shape) drawn in the WATER pass after
-//! the water surfaces — a box on a targeted source or a submerged block
-//! must blend over the water, not vanish under its depth tint. The live
-//! depth buffer holds water-surface depth there, so the hardware test is
-//! Always and the shader occludes by hand against the pre-water solid
-//! depth copy (bound through the water frame group). Never depth-writes.
+//! Target-block highlight: the idle outline + hold-to-dig crack decal, one instanced box
+//! (players.rs shape) drawn in the WATER pass after the water surfaces — a box on a targeted source
+//! or a submerged block must blend over the water, not vanish under its depth tint. The live depth
+//! buffer holds water-surface depth there, so the hardware test is Always and the shader occludes
+//! by hand against the pre-water solid depth copy (bound through the water frame group). Never
+//! depth-writes.
 //!
-//! The box is the target's own bounds, not the unit cell, and for a door
-//! it is the whole two-cell leaf — see [`HighlightTarget`].
+//! The box is the target's own bounds, not the unit cell, and for a door it is the whole two-cell
+//! leaf — see [`HighlightTarget`].
 //!
-//! TWO pipelines over one shared vertex stage, both guarded: the crack
-//! module's branch loop is the engine's likeliest driver-compile
-//! casualty, and this decal is drawn on every diggable block a fresh
-//! player aims at — so a refused pipeline must cost the decal (or just
-//! the fracture), never the frame it would otherwise invalidate.
+//! TWO pipelines over one shared vertex stage, both guarded: the crack module's branch loop is the
+//! engine's likeliest driver-compile casualty, and this decal is drawn on every diggable block a
+//! fresh player aims at — so a refused pipeline must cost the decal (or just the fracture), never
+//! the frame it would otherwise invalidate.
 
 use digblock_platform::Gpu;
 
 /// One instance: cell + progress, box lo + seed, box hi + spare.
 const INSTANCE_BYTES: wgpu::BufferAddress = 48;
 
-/// The crosshair target the decal wraps: the anchor cell, the box around the
-/// whole object relative to it, and the dig progress (`None` = idle outline, no
-/// crack).
-///
-/// The box is what makes a shaped block outline at its own size. It comes from
-/// `shapes::object_bounds`, i.e. from the geometry the mesher actually drew — a
-/// full cube's is the whole cell.
-///
-/// A door is the one thing here bigger than its cell: `cell` is its LOWER half
-/// whichever half the ray hit, and the box runs 0..2 in y. Both halves therefore
-/// produce an identical target — same outline, same fracture — which is what
-/// makes it read as one object, and matches the click.
+/// The crosshair target the decal wraps: the anchor cell, the box around the whole object relative
+/// to it, and the dig progress (`None` = idle outline, no crack). The box comes from
+/// `shapes::object_bounds` — the geometry the mesher actually drew — so a shaped block outlines at
+/// its own size. A door is the one thing bigger than its cell: `cell` is its LOWER half whichever
+/// half the ray hit, so both halves produce an identical target, which is what the click acts on.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) struct HighlightTarget {
 	/// The cell the box is anchored to — the targeted cell for everything
@@ -65,18 +56,11 @@ impl HighlightTarget {
 	}
 }
 
-/// Which crack a cell wears. Rides the instance in the `w` of the vec4
-/// that carries the box's low corner — the shader's box is `i1.xyz` and
-/// the seed is `i1.w`, and the two are one attribute because the instance
-/// is already a whole number of vec4s and adding another for a lone scalar
-/// is wasteful.
-///
-/// That packing is the whole reason for [`the_seed_is_the_cell_not_the_box`]:
-/// the shader read `i1.x` — the box's own minimum x, which is 0.0 on
-/// every full cube — from the day it was written until R28, so the
-/// per-cell pattern this function computes was thrown away and every
-/// block in the world cracked identically. Nothing crashed and nothing
-/// looked broken; it just silently wasn't varying.
+/// Which crack a cell wears. Rides the instance in the `w` of the vec4 that carries the box's low
+/// corner — the shader's box is `i1.xyz` and the seed is `i1.w`, one attribute because the instance
+/// is already a whole number of vec4s. That packing is the whole reason for
+/// [`the_seed_is_the_cell_not_the_box`]: `i1.x` is the box's own minimum, 0.0 on every full cube,
+/// so reading it there cracks every block in the world identically, and nothing looks broken.
 fn cell_seed(cell: (i32, i32, i32)) -> u32 {
 	(cell.0 as u32)
 		.wrapping_mul(73_856_093)
@@ -294,12 +278,10 @@ mod tests {
 		assert_eq!(([lo[1], lo[2]], [hi[2]]), ([0.0, 0.0], [1.0]));
 	}
 
-	/// A door is one object across two cells, so aiming at either half
-	/// must produce the SAME target: the same anchor (hence the same crack
-	/// seed, since the seed is the cell), and one box around both leaves.
-	/// Boxing the half under the crosshair framed whichever panel you
-	/// happened to aim at, which is not what the click acts on — digging
-	/// either half takes the pair.
+	/// A door is one object across two cells, so aiming at either half must produce the SAME
+	/// target: the same anchor (hence the same crack seed, since the seed is the cell), and one box
+	/// around both leaves. Boxing the half under the crosshair framed whichever panel you aimed at,
+	/// which is not what the click acts on — digging either half takes the pair.
 	#[test]
 	fn a_door_boxes_as_one_object() {
 		let lower = (3, 40, 7);

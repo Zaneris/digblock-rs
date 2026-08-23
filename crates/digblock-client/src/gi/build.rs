@@ -389,12 +389,10 @@ impl GiDraw {
 			},
 		);
 
-		// The half-res resolve (gi_resolve.wgsl): its own uniform + a
-		// depth tap at group 0, the shared gather group at 2 (group 1
-		// deliberately empty — gi_common.wgsl pins the world data to
-		// group(2) because water/players have materials at 1); two MRT
-		// outputs, no depth attachment, so it's built directly rather
-		// than through the single-target pipeline funnel.
+		// The half-res resolve (gi_resolve.wgsl): its own uniform + a depth tap at group 0, the
+		// shared gather group at 2 (group 1 deliberately empty — gi_common.wgsl pins the world
+		// data to group(2) because water/players have materials at 1); two MRT outputs, no depth
+		// attachment, so it's built directly rather than through the single-target funnel.
 		let f_entry = |binding, ty| wgpu::BindGroupLayoutEntry {
 			binding,
 			visibility: wgpu::ShaderStages::FRAGMENT,
@@ -449,18 +447,11 @@ impl GiDraw {
 				// so players can run the same NEE the resolve does.
 			],
 		});
-		// gi_common.wgsl's group(2): the GI world data plus the emitter
-		// list, everything a direct gatherer binds (the resolve here,
-		// water, players and the confetti through their pipeline layouts).
-		// One per atlas ping. VERTEX visibility is for water's per-vertex
-		// probe gather (R17), which the confetti's per-flake direct term
-		// (R34) now rides too — WebGPU baseline allows read-only storage
-		// and textures in the vertex stage, and the extra visibility costs
-		// the fragment-only users nothing. The lights buffer lives HERE
-		// rather than in the resolve's own group since R33, because every
-		// consumer that answers for direct light reads it — the resolve's
-		// reservoir and the unfiltered passes' `sum_lights` alike — and
-		// they must read one declaration.
+		// gi_common.wgsl's group(2): the GI world data plus the emitter list, everything a direct
+		// gatherer binds (the resolve here, water, players and the confetti). One per atlas ping.
+		// VERTEX visibility serves water's per-vertex gather (R17) and the confetti's per-flake
+		// direct term (R34), and costs the fragment-only users nothing. The lights buffer lives
+		// HERE rather than in the resolve's own group, so every consumer reads one declaration.
 		let g_entry = |binding, ty| wgpu::BindGroupLayoutEntry {
 			binding,
 			visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,

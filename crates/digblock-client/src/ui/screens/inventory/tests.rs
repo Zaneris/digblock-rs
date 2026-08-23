@@ -122,18 +122,11 @@ fn glyph_of(dl: &DrawList) -> f32 {
 		.expect("the screen draws its title")
 }
 
-/// The slot rows under a title band make a page whose height rides the
-/// scale, and this screen positioned itself by pure subtraction from
-/// the bar without ever checking that the result was still on the
-/// window. When the grid gained its extra rows it simply ran off the
-/// TOP: the panel's top edge crossed the top of the window, further up
-/// the scale the first row of slots went with it and could not be
-/// clicked at all, and on the smallest window at the largest scale
-/// most of the page was gone.
-///
-/// Nothing it draws may leave the window, and the page must still
-/// stand ABOVE the bar rather than under it, at every window and
-/// scale the game can produce.
+/// The slot rows under a title band make a page whose height rides the scale, and this screen
+/// positioned itself by pure subtraction from the bar without ever checking the result was still on
+/// the window: when the grid gained its extra rows it ran off the TOP, and the first row of slots
+/// could not be clicked at all. Nothing it draws may leave the window, and the page must still
+/// stand ABOVE the bar, at every window and scale the game can produce.
 #[test]
 fn the_panel_always_fits_between_the_bar_and_the_top_of_the_window() {
 	for size in WINDOWS {
@@ -172,12 +165,11 @@ fn the_panel_always_fits_between_the_bar_and_the_top_of_the_window() {
 	}
 }
 
-/// The fit pass is a LADDER: the page draws either at the frame's own
-/// scale or a whole rung down from it, glyph and boxes moving
-/// together. The obvious implementation — multiply the style by
-/// `budget / needed` — is what `ui::theme` exists to prevent, because
-/// it lands the text on some fraction of the size the menu beside it
-/// draws at. And a page with the room to spare must not step at all.
+/// The fit pass is a LADDER: the page draws either at the frame's own scale or a whole rung down
+/// from it, glyph and boxes moving together. The obvious implementation — multiply the style by
+/// `budget / needed` — is what `ui::theme` exists to prevent, because it lands the text on some
+/// fraction of the size the menu beside it draws at. And a page with the room to spare must not
+/// step at all.
 #[test]
 fn the_page_steps_in_whole_rungs_and_only_when_it_has_to() {
 	// Room to spare, from a small window at a small scale up to a
@@ -216,24 +208,11 @@ fn the_page_steps_in_whole_rungs_and_only_when_it_has_to() {
 	}
 }
 
-/// This panel takes the BAR's geometry instead of centring like every other
-/// screen, and the alignment is the whole reason: its columns have to sit
-/// over the slots they drop into. The tool slot is not one of them — §6
-/// stands it apart off the right-hand end. Both sides read the one
-/// `hud::row_grid`, which is what makes the bar's re-centring move the grid
-/// with it rather than away from it.
-///
-/// Alignment holds exactly when the page draws at the frame's own scale AND
-/// in the bar's own columns; the two escape hatches for a page with no room
-/// — stepping the style, and `reflow`ing to longer rows — each abandon it
-/// deliberately, and a fitted page centres because there is nothing left to
-/// align to.
-///
-/// So the sweep is EVERY window and scale and the expectation is DERIVED. A
-/// hand-kept list of the configurations that happen to have room is the
-/// fragile part: the seventh grid row pushed one entry over and the entry
-/// was removed, which reads as the rule still holding everywhere it is
-/// checked while the place it stopped holding is no longer checked.
+/// This panel takes the BAR's geometry instead of centring: its columns have to sit over the slots
+/// they drop into, and both sides read the one `hud::row_grid`. Alignment holds exactly when the
+/// page draws at the frame's own scale AND in the bar's columns — stepping the style and
+/// `reflow`ing to longer rows each abandon it deliberately. So the sweep is EVERY window and scale
+/// with a DERIVED expectation: a hand-kept list stops checking the place the rule stopped holding.
 #[test]
 fn the_grid_columns_sit_over_the_bar_slots_they_drop_into() {
 	let mut aligned = 0usize;
@@ -293,14 +272,11 @@ fn the_grid_columns_sit_over_the_bar_slots_they_drop_into() {
 	);
 }
 
-/// The grid re-shapes only as a LAST resort, and when it does the page
-/// still holds every slot on screen.
-///
-/// Two halves, and the first is the one that guards the ordinary
-/// window: at the reference size the grid must be the bar's own nine
-/// columns, because `reflow` is expressed as a `max` against them and
-/// an off-by-one in the row arithmetic would silently widen every
-/// page rather than only the cramped ones.
+/// The grid re-shapes only as a LAST resort, and when it does the page still holds every slot on
+/// screen. Two halves, and the first guards the ordinary window: at the reference size the grid
+/// must be the bar's own columns, because `reflow` is expressed as a `max` against them and an
+/// off-by-one in the row arithmetic would silently widen every page rather than only the cramped
+/// ones.
 #[test]
 fn the_grid_only_reshapes_when_the_ladder_has_run_out() {
 	let full_rows = GRID_SLOTS.div_ceil(HOTBAR_SLOTS);

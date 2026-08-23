@@ -11,12 +11,10 @@ use crate::simplex::{Noise3Column, noise3};
 
 const CAVE_FREQ: f64 = 0.02;
 const CAVE_THRESHOLD: f64 = 0.15;
-/// Karst anisotropy: the gallery band's y-frequency is compressed against
-/// its horizontal one, so its zero surfaces extend in x/z and stack in
-/// y — galleries prefer near-horizontal levels connected where the worm
-/// band wanders, like real cave systems following bedding planes. Its
-/// threshold is raised to give the vertically-thinner galleries back
-/// their headroom.
+/// Karst anisotropy: the gallery band's y-frequency is compressed against its horizontal one, so
+/// its zero surfaces extend in x/z and stack in y — galleries prefer near-horizontal levels
+/// connected where the worm band wanders, like real cave systems following bedding planes. Its
+/// threshold is raised to give the vertically-thinner galleries back their headroom.
 const CAVE_FREQ_Y: f64 = 0.045;
 const CAVE_THRESHOLD_1: f64 = 0.18;
 const CAVE_SEED_OFF: f64 = 16193.0;
@@ -63,14 +61,11 @@ impl CaveColumn {
 		}
 	}
 
-	/// Carve bits of the inclusive run `lo..=hi` (no longer than the
-	/// returned bitmask), bit `n` = `lo + n`. The anisotropic gallery band
-	/// goes first (cheapest reject) and the isotropic one only where it
-	/// passed, so most cells still cost one noise evaluation — but
-	/// sweeping the gallery across
-	/// the whole run first leaves those evaluations independent, where the
-	/// per-cell short-circuit puts a coin-flip branch between them that
-	/// the predictor cannot learn.
+	/// Carve bits of the inclusive run `lo..=hi` (no longer than the returned bitmask), bit `n` =
+	/// `lo + n`. The anisotropic gallery band goes first (cheapest reject) and the isotropic one
+	/// only where it passed, so most cells still cost one noise evaluation — but sweeping the
+	/// gallery across the whole run first leaves those evaluations independent, where a per-cell
+	/// short-circuit puts a coin-flip branch between them that the predictor cannot learn.
 	pub(super) fn carve_run(&mut self, lo: i32, hi: i32) -> u32 {
 		debug_assert!(hi - lo < 32, "run fits the mask");
 		let mut gallery = 0u32;

@@ -22,16 +22,11 @@ pub const MAX_STACK: u32 = 1_000_000;
 /// of every slot — so there is nowhere for a second unit to live.
 pub const BUCKET_CHARGE: u32 = 1;
 
-/// The ceiling for one type. Applied at BOTH ends of every write —
-/// [`Inventory::add`] and [`Inventory::from_wire`] — so a save or a
-/// server record written back when water was an ordinary stack decodes
-/// as a full bucket rather than a windfall of free sources.
-///
-/// Tools cap at ONE (SKILLS-DESIGN §7.3): owning a tool is a yes/no, so a
-/// second craft has nowhere to go and is refused before any debit by the
-/// standing `InventoryFull` rebase. That also makes ownership itself a
-/// count, which is what lets the tool rail, prediction and both
-/// persistence formats carry a new tool with no machinery at all.
+/// The ceiling for one type. Applied at BOTH ends of every write — [`Inventory::add`] and
+/// [`Inventory::from_wire`] — so a save written back when water was an ordinary stack decodes as a
+/// full bucket rather than a windfall of free sources. Tools cap at ONE (SKILLS-DESIGN §7.3), so a
+/// second craft has nowhere to go and is refused before any debit by the standing `InventoryFull`
+/// rebase — which also makes ownership a count prediction and both save formats already carry.
 #[inline]
 fn cap(b: BlockType) -> u32 {
 	if b == BlockType::Water {
@@ -87,39 +82,30 @@ impl Inventory {
 		self.count(BlockType::Water) >= BUCKET_CHARGE
 	}
 
-	/// How many more of `b` this inventory can accept — its [`cap`] less
-	/// what it holds. Zero for a tool already owned and for a charged
-	/// bucket; effectively unbounded for everything else.
-	///
-	/// [`apply_alchemy`] refuses a craft on exactly this number and the
-	/// transmute screen greys its button on it, so the offer and the rule
-	/// cannot drift: [`Self::add`] SATURATES, so a craft into a full cap
-	/// would otherwise debit the essence and hand back nothing.
+	/// How many more of `b` this inventory can accept — its [`cap`] less what it holds. Zero for a
+	/// tool already owned and for a charged bucket; effectively unbounded for everything else.
+	/// [`apply_alchemy`] refuses a craft on exactly this number and the transmute screen greys its
+	/// button on it, so the offer and the rule cannot drift: [`Self::add`] SATURATES, so a craft
+	/// into a full cap would otherwise debit the essence and hand back nothing.
 	#[inline]
 	pub fn headroom(&self, b: BlockType) -> u32 {
 		cap(b).saturating_sub(self.count(b))
 	}
 
-	/// Does the player have this tool? Tools cap at one, so ownership IS
-	/// the count — the bucket included, since it joined the catalog
-	/// (SKILLS-DESIGN §13.5; records written while it was owned by
-	/// everyone are granted one on load, so nothing loses a bucket it
-	/// had). Non-tools are never owned in this sense, whatever their
-	/// stack says.
+	/// Does the player have this tool? Tools cap at one, so ownership IS the count — the bucket
+	/// included, since it joined the catalog (SKILLS-DESIGN §13.5; records written while it was
+	/// owned by everyone are granted one on load, so nothing loses a bucket it had). Non-tools
+	/// are never owned in this sense, whatever their stack says.
 	#[inline]
 	pub fn owns_tool(&self, b: BlockType) -> bool {
 		b.is_tool() && self.count(b) > 0
 	}
 
-	/// The owned tool roster, in block-id order: what tapping 9 cycles
-	/// through, what the rail lists, and — via
-	/// [`crate::inv_grid::reconcile_layout`] — the only tools a client may
-	/// claim to be holding. One definition, because the client's roster
-	/// and the server's gate disagreeing is exactly how a tool gets used
-	/// without being owned.
-	///
-	/// EMPTY for a fresh player: the first vessel is crafted, and until it
-	/// is, the tool slot stands empty and every tool gate refuses.
+	/// The owned tool roster, in block-id order: what tapping 9 cycles through, what the rail
+	/// lists, and — via [`crate::inv_grid::reconcile_layout`] — the only tools a client may claim
+	/// to be holding. One definition, because the client's roster and the server's gate
+	/// disagreeing is exactly how a tool gets used without being owned. EMPTY for a fresh player,
+	/// whose tool slot stands bare until the first vessel is crafted.
 	pub fn owned_tools(&self) -> impl Iterator<Item = BlockType> + '_ {
 		BlockType::ALL
 			.iter()
@@ -147,18 +133,11 @@ impl Inventory {
 			.filter(|&(_, n)| n > 0)
 	}
 
-	/// Fold `other` into this one, every line saturating at its own cap.
-	///
-	/// Written for the legacy-character migration, which is the only place
-	/// two inventories one player owns are ever combined. It goes through
-	/// [`Self::add`] and [`Self::add_sub`] rather than touching the arrays,
-	/// so the caps that make a tool unique and a bucket single-charge apply
-	/// to a merge exactly as they apply to a pickup — a player who owned the
-	/// same tool on both sides ends with one, not two.
-	///
-	/// Saturation means a merge can LOSE units at a full cap. That is the
-	/// honest outcome and the same one `add` gives everywhere else; the
-	/// alternative is a cap that is not a cap.
+	/// Fold `other` into this one, every line saturating at its own cap. Written for the
+	/// legacy-character migration, the only place two inventories one player owns are combined.
+	/// It goes through [`Self::add`] and [`Self::add_sub`] rather than touching the arrays, so the
+	/// caps that make a tool unique and a bucket single-charge apply to a merge as to a pickup.
+	/// Saturation can LOSE units at a full cap; the alternative is a cap that is not a cap.
 	pub fn merge_from(&mut self, other: &Self) {
 		for (b, n) in other.iter_nonzero() {
 			self.add(b, n);
@@ -173,19 +152,11 @@ impl Inventory {
 		self.subs[m as usize]
 	}
 
-	/// The essence redesign's one-time balance reset (SKILLS-DESIGN §14): clear
-	/// every essence EXCEPT Aether.
-	///
-	/// Pre-redesign balances were earned against an unbounded bench, and
-	/// carrying them into an economy where essence is FOUND would hand the
-	/// players who ground the old faucet hardest a head start over everyone
-	/// playing the new game. Aether stays: it was always the scarce one, and
-	/// wiping what the sigil and the pick are saved up in would punish the
-	/// earning the redesign wants more of.
-	///
-	/// Called from the two persistence migrations only, never from live play —
-	/// the trigger is the VERSION, so a balance is cleared at most once and a
-	/// fresh world never sees it.
+	/// The essence redesign's one-time balance reset (SKILLS-DESIGN §14): clear every essence
+	/// EXCEPT Aether, always the scarce one and what the sigil and the pick are saved up in.
+	/// Pre-redesign balances were earned against an unbounded bench, and carrying them into an
+	/// economy where essence is FOUND would hand the hardest grinders a head start. Called from
+	/// the two persistence migrations only, never live play — the VERSION triggers it once.
 	pub fn clear_pre_redesign_essence(&mut self) {
 		for e in Essence::ALL {
 			if e != Essence::Aether {
@@ -254,12 +225,9 @@ impl Inventory {
 	}
 }
 
-/// One validated alchemy operation, in core vocabulary (the wire enum in
-/// digblock-net decodes u16 ids into this strictly).
-///
-/// One variant now: bench EXTRACTION left with the essence redesign — the
-/// wire's legacy `Convert` still decodes as a frame and the server refuses
-/// it with the standing rebase, but no core rule exists for it any more.
+/// One validated alchemy operation, in core vocabulary (the wire enum in digblock-net decodes u16
+/// ids into this strictly). One variant: the wire's legacy `Convert` still decodes as a frame and
+/// the server refuses it with the standing rebase, but no core rule exists for it any more.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum AlchemyOp {
 	/// Craft `count` batches of a shaped item from essence and feedstock.
@@ -284,12 +252,11 @@ fn totals<K: Copy + PartialEq>(lines: impl IntoIterator<Item = (K, u32)>) -> Vec
 	out
 }
 
-/// THE alchemy rule, shared verbatim by the server's validation and the
-/// offline engine (single-player must match multiplayer bit-for-bit).
-/// `level` is the actor's Alchemy level — costs key on it
-/// ([`crate::alchemy`]), and so does whether the op is open at all
-/// ([`crate::unlock`]). Returns false — with the inventory untouched —
-/// on any invalid, locked, or unaffordable op.
+/// THE alchemy rule, shared verbatim by the server's validation and the offline engine
+/// (single-player must match multiplayer bit-for-bit). `level` is the actor's Alchemy level —
+/// costs key on it ([`crate::alchemy`]), and so does whether the op is open at all
+/// ([`crate::unlock`]). Returns false — inventory untouched — on any invalid, locked or
+/// unaffordable op.
 #[must_use]
 pub fn apply_alchemy(inv: &mut Inventory, op: AlchemyOp, level: u32) -> bool {
 	use crate::{alchemy, unlock};
@@ -313,23 +280,11 @@ pub fn apply_alchemy(inv: &mut Inventory, op: AlchemyOp, level: u32) -> bool {
 			if inv.headroom(item) < per_batch.saturating_mul(count) {
 				return false;
 			}
-			// All-or-nothing across every cost line, essence and feedstock
-			// alike: check everything, then debit. Waste applies to the
-			// essence half only; matter is matter.
-			//
-			// Summed per key BEFORE either half runs, so the amount checked
-			// and the amount debited are the same number rather than two
-			// walks that agree only while every line names a different
-			// currency. Compared one line at a time against the whole
-			// balance, a price naming one essence twice passed a check it
-			// could not pay, and the debit's own guard was a `debug_assert!`
-			// — so a release build credited the item and took part of the
-			// price. Nothing forbids a duplicate line; `field_yield` merges
-			// them on the way in.
-			//
-			// Costed first and summed second, never the reverse: waste
-			// rounds per line, so folding raw units together would quietly
-			// re-price the craft.
+			// All-or-nothing across every cost line, essence and feedstock alike: check
+			// everything, then debit. Waste applies to the essence half only; matter is matter.
+			// Summed per key BEFORE either half runs, so the amount checked and the amount
+			// debited are one number — a price naming one essence twice would pass a check it
+			// cannot pay. Costed before summed, since waste rounds per line and folding re-prices.
 			let ideal = totals(
 				ideal
 					.iter()

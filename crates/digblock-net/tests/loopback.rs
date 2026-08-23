@@ -153,15 +153,11 @@ fn the_configured_token_reaches_the_wire() {
 	);
 }
 
-/// A client holding an old identity offers it on every join, unprompted
-/// and right behind the Hello.
-///
-/// Both halves are load-bearing. Unprompted, because the client cannot
-/// know which servers it has already migrated on — there is no per-server
-/// state on this side, deliberately, and a server that has nothing for it
-/// simply says nothing back. Right behind the Hello, because the two then
-/// land in the same server tick, so the corrected inventory rides out with
-/// the join sync instead of a round trip later.
+/// A client holding an old identity offers it on every join, unprompted and right behind the
+/// Hello. Both halves are load-bearing: unprompted, because the client cannot know which servers
+/// it has already migrated on — there is deliberately no per-server state on this side, and a
+/// server with nothing for it says nothing back — and right behind the Hello, so the two land in
+/// the same server tick and the corrected inventory rides out with the join sync.
 #[test]
 fn an_old_identity_is_offered_immediately_after_hello() {
 	let (a, b) = loopback_pair();
@@ -205,16 +201,11 @@ fn a_client_with_no_old_identity_claims_nothing() {
 	assert_matches!(server.client_msgs.as_slice(), [ClientMsg::Hello { .. }]);
 }
 
-/// Leaving on purpose says so on the wire, and says it once.
-///
-/// The server drops the session the moment it reads this, which is what
-/// lets a player who quits come straight back — one account holds one live
-/// connection, so a goodbye that never arrives locks them out of their own
-/// seat until QUIC times it out.
-///
-/// The other half of `disconnect` — flushing before the socket closes — is
-/// not observable here: a loopback has nothing to flush. That half is
-/// pinned over real QUIC by the e2e `a_goodbye_frees_the_account_at_once`.
+/// Leaving on purpose says so on the wire, and says it once. The server drops the session the
+/// moment it reads this, which is what lets a player who quits come straight back — one account
+/// holds one live connection, so a goodbye that never arrives locks them out of their own seat
+/// until QUIC times it out. The other half of `disconnect`, flushing before the socket closes,
+/// is not observable on a loopback; the e2e `a_goodbye_frees_the_account_at_once` pins it.
 #[test]
 fn leaving_says_goodbye_on_the_wire() {
 	let (a, b) = loopback_pair();
@@ -595,15 +586,11 @@ fn inventory_full_maps_to_event() {
 	}
 }
 
-/// The rebase has to sum the deltas that were in flight when the COUNTS
-/// were decoded, not whatever is pending when the engine gets around to
-/// dispatching the event. Those are different moments: `confirm` runs
-/// inside the same `poll`, before any event is handed out, and the
-/// engine's backlog can park an `Inventory` behind hundreds of edits.
-///
-/// Here one `InventoryFull` and the confirmation of a pending place arrive
-/// in the SAME poll. Reading the live set afterwards would find the entry
-/// already dropped by `confirm` and rebase to a stale count.
+/// The rebase has to sum the deltas that were in flight when the COUNTS were decoded, not
+/// whatever is pending when the engine gets around to dispatching the event. Those are different
+/// moments: `confirm` runs inside the same `poll`, before any event is handed out, and the
+/// engine's backlog can park an `Inventory` behind hundreds of edits. Reading the live set
+/// afterwards would find the entry already dropped by `confirm` and rebase to a stale count.
 #[test]
 fn inventory_rebase_uses_the_deltas_in_flight_at_decode_time() {
 	let (a, b) = loopback_pair();
@@ -1013,13 +1000,10 @@ fn a_large_journal_sync_is_spread_across_polls() {
 	);
 }
 
-/// Welcome, then the server drops the connection. Everything queued must
-/// still be delivered, and the disconnect must surface exactly once.
-///
-/// Until the loopback transport learned to close, NO in-process test could
-/// reach this path at all — `status` was hardcoded to `Connected` and
-/// `poll` never emitted `Disconnected`, so coverage stopped at the
-/// pre-Welcome handshake timeout.
+/// Welcome, then the server drops the connection. Everything queued must still be delivered, and
+/// the disconnect must surface exactly once. Until the loopback transport learned to close, no
+/// in-process test could reach this path at all — `status` was hardcoded to `Connected` and
+/// `poll` never emitted `Disconnected`, so coverage stopped at the pre-Welcome handshake timeout.
 #[test]
 fn a_post_welcome_disconnect_surfaces_once_after_queued_bytes() {
 	let (a, b) = loopback_pair();
@@ -1257,14 +1241,11 @@ fn rtt_is_measured_on_the_input_ack_loop() {
 		"an unsent tick's ack left the estimate alone"
 	);
 
-	// A STALE ack is not a round trip either, and this one is the subtle
-	// case: `reconcile` returns before it assigns `last_rtt`, so the value
-	// left over describes the ack BEFORE it. Sampling it re-blends a
-	// measurement already in the average — which barely moves `rtt_ms`, but
-	// collapses `jitter_ms`, because deviation is taken from the running
-	// mean and a duplicate deviates from it by nothing. On a high-latency
-	// link a large share of acks are stale, so this was most wrong exactly
-	// where the overlay is most read.
+	// A STALE ack is not a round trip either, and this one is the subtle case: `reconcile`
+	// returns before it assigns `last_rtt`, so the value left over describes the ack BEFORE it.
+	// Sampling it re-blends a measurement already in the average — which barely moves `rtt_ms`
+	// but collapses `jitter_ms`, since deviation is taken from the running mean and a duplicate
+	// deviates by nothing. On a high-latency link a large share of acks are stale.
 	let tick3 = client
 		.predictor
 		.predict(&mut player, intent, Vec3::Z, &flat_world);

@@ -29,13 +29,10 @@ pub type Write = ((i32, i32, i32), u16);
 /// hundred cells a tick, never a stall.
 pub const CELLS_PER_TICK: usize = 512;
 
-/// When a job comes due, in the GAME's day — the same clock the sky runs
-/// on, [`DAY_SECS`] long. Never wall time: a server's local 09:00 means
-/// nothing to a player in another timezone, and the game clock is already
-/// dictated to every client.
-///
-/// The clock is fixed by this type rather than chosen per job, so two
-/// jobs can never disagree about what "twice a day" means.
+/// When a job comes due, in the GAME's day — the same clock the sky runs on, [`DAY_SECS`] long.
+/// Never wall time: a server's local 09:00 means nothing to a player in another timezone, and the
+/// game clock is already dictated to every client. The clock is fixed by this type rather than
+/// chosen per job, so two jobs can never disagree about what "twice a day" means.
 #[derive(Clone, Copy, Debug)]
 pub struct Schedule {
 	/// Slots per day, spread evenly.
@@ -57,15 +54,11 @@ impl Schedule {
 		}
 	}
 
-	/// The slot standing at `secs`, as an index that strictly increases
-	/// with time. Comparing two of these is the whole of "is it due yet".
-	///
-	/// `secs` must be the WORLD's age, not the session's: the index is
-	/// also what a rolled job salts its draw with ([`Run::slot`]), so a
-	/// host whose clock restarts at zero re-offers the same slot — and
-	/// therefore the same draw — every time it loads. Neither host does
-	/// this yet; [`WorldJob::rolled`] is what keeps that from being a
-	/// faucet in the meantime.
+	/// The slot standing at `secs`, as an index that strictly increases with time. Comparing two of
+	/// these is the whole of "is it due yet". `secs` must be the WORLD's age, not the session's:
+	/// the index is also what a rolled job salts its draw with ([`Run::slot`]), so a host whose
+	/// clock restarts at zero re-offers the same slot — and the same draw — every load. Neither
+	/// host does this yet; [`WorldJob::rolled`] keeps that from being a faucet in the meantime.
 	pub fn slot(&self, secs: f64) -> u64 {
 		let days = secs / f64::from(DAY_SECS) - f64::from(self.offset);
 		(days * f64::from(self.per_day)).floor().max(0.0) as u64
@@ -75,18 +68,9 @@ impl Schedule {
 /// Where a sweep's candidate cells come from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Candidates {
-	/// Every cell of the y band in every column near players — the full
-	/// scan. Writes are handed to the host slice by slice, as they are
-	/// judged.
+	/// Every cell of the y band in every column near players — the full scan.
 	Band,
-	/// Cells a player has touched and their 27-neighborhoods, read from
-	/// the host's edit record ([`CellSource::edited_cells`]) — the set
-	/// that can have changed since worldgen. Two-phase: every candidate
-	/// is judged against the PRE-sweep world, and the writes emit
-	/// afterwards in bounded slices. Per-slice application would let an
-	/// early write flip a later candidate's neighbor checks in the same
-	/// run — how far that chains depends on edit-map iteration order,
-	/// which the server and the offline engine do not share.
+	/// Edits and their 27-neighborhoods ([`CellSource::edited_cells`]), every one judged PRE-sweep.
 	Frontier {
 		/// Also offer each block column's [`crate::worldgen::subsoil_span`]
 		/// — the only place pristine terrain can hold what a frontier
@@ -99,14 +83,11 @@ pub enum Candidates {
 /// Which cells a job is allowed to see.
 #[derive(Clone, Copy, Debug)]
 pub struct Scope {
-	/// Only cells currently holding one of these are offered to the job.
-	///
-	/// **None of them may host a node** ([`node_host`]) **or be a live
-	/// face** (a regrown node, stored): a journal write
-	/// sets the cell's monotone edited bit, and `nodes::revealed` reads
-	/// that bit as spent — so a sweep over a host type would silently and
-	/// irreversibly destroy every reveal in a wide band around every
-	/// player. [`Scheduler::register`] refuses such a scope outright.
+	/// Only cells currently holding one of these are offered to the job. **None may host a node**
+	/// ([`node_host`]) **or be a live face** (a regrown node, stored): a journal write sets the
+	/// cell's monotone edited bit and `nodes::revealed` reads it as spent, so such a sweep would
+	/// irreversibly destroy every reveal in a band around every player. [`Scheduler::register`]
+	/// refuses such a scope outright.
 	pub blocks: &'static [BlockType],
 	/// Chunk radius around each active player.
 	pub radius_chunks: i32,
@@ -164,17 +145,11 @@ pub trait WorldJob: Send {
 	fn schedule(&self) -> Schedule;
 	fn scope(&self) -> Scope;
 
-	/// Does [`Self::apply`] seed a random DRAW from [`Run::slot`]?
-	///
-	/// The hosts' clocks restart at zero on every world entry and every
-	/// server boot, so the slot standing at load is one an earlier
-	/// session may already have swept. Replaying it is free for a settled
-	/// rule — the dirt it would turn to grass is already grass — and a
-	/// faucet for a rolled one, because the same slot re-rolls the same
-	/// cells: draw, quit, reopen, and the same finds are handed back.
-	/// A rolled job is ANCHORED to the slot it first sees and waits for
-	/// the next boundary instead, which costs one slot of latency after a
-	/// load and is the only defence until a host's clock survives one.
+	/// Does [`Self::apply`] seed a random DRAW from [`Run::slot`]? The hosts' clocks restart at
+	/// zero on every world entry and every server boot, so the slot standing at load is one an
+	/// earlier session may already have swept — free for a settled rule, a faucet for a rolled one,
+	/// since the same slot re-rolls the same cells. A rolled job is ANCHORED to the slot it first
+	/// sees and waits for the next boundary, the only defence until a host's clock survives a load.
 	fn rolled(&self) -> bool {
 		false
 	}
@@ -265,15 +240,11 @@ impl Scheduler {
 		self.active.as_ref().map(|s| self.jobs[s.job].job.name())
 	}
 
-	/// Advance by one tick: start a sweep if one is due and none is in
-	/// flight, then run a slice of it. Returns the writes this slice
-	/// earned, for the caller to apply through its own authoritative path
-	/// — journal, protection and broadcast all stay where they are.
-	///
-	/// `eyes` are the active players' positions. In a local world that is
-	/// the one player, which is what keeps offline and multiplayer on the
-	/// same rule. `players` is the day's peak head-count ([`Run::players`]),
-	/// read once when a sweep starts.
+	/// Advance by one tick: start a sweep if one is due and none is in flight, then run a slice of
+	/// it. Returns the writes this slice earned, for the caller to apply through its own
+	/// authoritative path — journal, protection and broadcast all stay where they are. `eyes` are
+	/// the active players' positions; in a local world that is the one player, keeping offline and
+	/// multiplayer on one rule. `players` is the day's peak head-count, read once at sweep start.
 	pub fn tick(
 		&mut self,
 		secs: f64,
@@ -435,12 +406,10 @@ fn offer(
 	}
 }
 
-/// Judge one chunk column of a frontier sweep: the edits it holds and
-/// their 27-neighborhoods, plus the subsoil shell when asked. Returns how
-/// many candidates were offered, for the slice budget. Deduplication is
-/// per column only — a cell adjacent to edits in two columns is offered
-/// twice and produces the same write twice, which the second apply of a
-/// LWW edit turns into a no-op.
+/// Judge one chunk column of a frontier sweep: the edits it holds and their 27-neighborhoods, plus
+/// the subsoil shell when asked. Returns how many candidates were offered, for the slice budget.
+/// Deduplication is per column only — a cell adjacent to edits in two columns is offered twice
+/// and produces the same write twice, which the second apply of a LWW edit turns into a no-op.
 #[allow(clippy::too_many_arguments)]
 fn judge_frontier_column(
 	job: &dyn WorldJob,

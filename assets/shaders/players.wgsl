@@ -1,23 +1,17 @@
-// Remote players: two draws sharing one pipeline layout.
+// Remote players: two draws sharing one pipeline layout. The BODY is one instanced box per
+// player, generated entirely from vertex_index (the spray.wgsl trick). Instance = two vec4s:
+// (eye xyz, yaw) + (color rgb, spare), the box taking the capsule collider's width and height,
+// anchored to the eye so it stands where the collider does.
 //
-// The BODY is one instanced box per player, generated entirely from
-// vertex_index (the spray.wgsl trick). Instance = two vec4s: (eye xyz, yaw) +
-// (color rgb, spare). The box takes the capsule collider's own width and
-// height, anchored to the eye so it stands where the collider does.
+// The HELD ITEM is `vs_held` into the SAME `fs`: real item geometry from item_geom by way of
+// viewmodel::build, the same authority the inventory icons and your own hand use, so a remote's
+// bucket shows its charge. It cannot share the body's vertex-index generator and wants the
+// opposite `cull`, so it is a second pipeline over the same three bind groups.
 //
-// The HELD ITEM is `vs_held` into the SAME `fs`: real item geometry from
-// item_geom by way of viewmodel::build — the same authority the inventory icons
-// and your own hand use, so a remote's bucket shows its charge. It cannot share
-// the body's vertex-index generator and it wants the opposite `cull`, so it is a
-// second pipeline over the same three bind groups.
-//
-// Lighting is RTGI for both: a per-fragment probe gather, a short sun DDA, and
-// the shared `sum_lights` NEE over the emitter list (R33, R34) — players never
-// read the half-res resolve buffers, whose depth prepass does not know them, so
-// a body beside a torch would read black — then the same participating medium
-// the terrain goes through, so they sit in the scene rather than in front of it.
-// A held item that GLOWS skips all of that for ink_common's `emissive_ink`,
-// exactly as chunk.wgsl does for the same block standing in the world.
+// Lighting is RTGI for both — a probe gather, a short sun DDA, and the shared `sum_lights` NEE
+// (R33, R34), because players never read the half-res resolve buffers, whose depth prepass does
+// not know them, so a body beside a torch would read black — then the terrain's participating
+// medium. A held item that GLOWS skips it for ink_common's `emissive_ink`, as chunk.wgsl does.
 
 // The Frame struct + group(0) binding come from frame_common.wgsl, and
 // the group(2) GI world bindings + gather core from gi_common.wgsl
@@ -30,12 +24,10 @@
 // accuracy within this many blocks, probes carry the rest.
 const SUN_STEPS = 12;
 
-// Cost-stub mirror (DIG_STUB; renderer.rs's `stub` module owns the names
-// and the bit numbers — water.wgsl, gi_resolve.wgsl and confetti.wgsl
-// are the others).
-// One bit, because players compute exactly one term the resolve also
-// stubs: the NEE below must vanish with the resolve's under the same
-// knob, or an attribution run measures half of it.
+// Cost-stub mirror (DIG_STUB; renderer.rs's `stub` module owns the names and the bit numbers
+// — water.wgsl, gi_resolve.wgsl and confetti.wgsl are the others). One bit, because players
+// compute exactly one term the resolve also stubs: the NEE below must vanish with the
+// resolve's under the same knob, or an attribution run measures half of it.
 const STUB_GINEE = 1024u;
 
 fn stubbed(bit: u32) -> bool {
@@ -69,12 +61,9 @@ const TANGENTS = array<vec3f, 6>(
 	vec3f(1.0, 0.0, 0.0),
 );
 
-// item_geom's face order, indexed by digblock_core::dir::Dir's
-// discriminants — the SAME table viewmodel.wgsl uses, and deliberately
-// NOT the same order as `NORMALS` above, which is the cube generator's
-// own axis order. Two six-entry tables pinned by one Rust enum is
-// proportionate; a third consumer would justify folding it into a
-// prelude.
+// item_geom's face order, indexed by digblock_core::dir::Dir's discriminants — the SAME table
+// viewmodel.wgsl uses, and deliberately NOT the order of `NORMALS` above, which is the cube
+// generator's own axis order. A third consumer would justify folding it into a prelude.
 const DIR_NORMALS = array<vec3f, 6>(
 	vec3f(1.0, 0.0, 0.0),
 	vec3f(0.0, 0.0, 1.0),
@@ -91,28 +80,18 @@ const DIR_NORMALS = array<vec3f, 6>(
 // change fixed on purpose.
 const HELD_SCALE = 0.35 / 12.0;
 
-// The hand. −x is the carrier's RIGHT: yaw is atan2(look.x, look.z), so
-// forward is +z, and right = forward × up = −x. The cube this replaced
-// sat at the mirrored offset — the carrier's LEFT — under a comment that
-// said "right of the body". With a cube nobody could tell; with a torch
-// you can, and your own viewmodel rests on the right (REST_X_FRAC).
-//
-// The y is a CARRY and not a rest: high enough on the body to read as
-// held out in front rather than hanging at the hip, which is also most
-// of the gap to where a carried light radiates from closed. The two
-// stay separate numbers on purpose — `gi::CARRY_DROP` is anchored on
-// the capsule axis so mouse-look cannot move the light, while the hand
-// is off to the side of the body, so they can never coincide anyway.
+// The hand. −x is the carrier's RIGHT: yaw is atan2(look.x, look.z), so forward is +z and
+// right = forward × up = −x, matching your own viewmodel's REST_X_FRAC. The y is a CARRY, not
+// a rest: high enough to read as held out in front rather than hanging at the hip, closing
+// most of the gap to where a carried light radiates from. It stays separate from
+// `gi::CARRY_DROP`, anchored on the capsule axis so mouse-look cannot move the light.
 const HAND = vec3f(-0.44, -0.5, 0.34);
 
-// Turn the item about its own axis so a cube presents a corner rather
-// than a flat card — the same idea as viewmodel.wgsl's REST_YAW, but a
-// separate constant on purpose: that one is expressed in VIEW space
-// (−z forward) and this one in world space (+z forward), so
-// one shared symbol would mean two different rotations under one name.
-// The viewmodel's REST_PITCH is deliberately not copied — it is a
-// screen-space affordance for something a metre from your eye, and out
-// in the world it would just lean the torch over.
+// Turn the item about its own axis so a cube presents a corner rather than a flat card — the
+// same idea as viewmodel.wgsl's REST_YAW, kept separate because that one is in VIEW space (−z
+// forward) and this one in world space (+z forward), so one shared symbol would mean two
+// different rotations under one name. REST_PITCH is deliberately not copied: it is a
+// screen-space affordance for something a metre from your eye and would lean the torch over.
 const ITEM_YAW = -0.785398163;
 
 // The per-FACE ink bit above the texture layer in the item vertex word
@@ -236,19 +215,11 @@ fn fs(in: VsOut) -> @location(0) vec4f {
 		// Strength fades the LIGHT, never the shadow — see chunk.wgsl.
 		// `thru` is the glass filter the ray crossed (op 4).
 		let sh = sv.vis * medium_water_tr(sv.water) * sv.thru * frame.light_dir.w;
-		// The direct term for local lights (R33): the shared NEE over the
-		// same list the resolve reads — a probe carries a torch only as its
-		// bounce off the room, and the resolve's half-res NEE can never cover
-		// a player, who is not in the depth prepass.
-		//
-		// `sum_lights` and not the resolve's `resample_light` (R34), because
-		// nothing filters this: one drawn light carrying the whole pool needs
-		// an accumulator behind it to average its visibility out, and a body
-		// has none — it dithered into world-anchored blocks of full pool and
-		// pure black that swam across a walking player.
-		//
-		// The `far` gate is the resolve's own rule: past the window's reach a
-		// shadow ray has no data to march.
+		// The direct term for local lights (R33): the shared NEE over the same list the
+		// resolve reads, since a half-res NEE can never cover a player who is not in the
+		// depth prepass. `sum_lights` and not `resample_light` (R34) because nothing filters
+		// this — one drawn light carrying the whole pool needs an accumulator to average its
+		// visibility out, and a body has none. The `far` gate is the resolve's own rule.
 		var nee = vec3f(0.0);
 		let lat = gp.xz - frame.cam_pos.xz;
 		let gmax = gi_lateral_max(frame.gi_misc.x);

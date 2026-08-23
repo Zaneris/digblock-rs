@@ -1,30 +1,18 @@
-// The GI resolve's spatial half (SVGF, Schied et al. 2017): an edge-stopping
-// a-trous wavelet filter over the half-res lighting targets, run twice with a
-// doubling tap stride.
+// The GI resolve's spatial half (SVGF, Schied et al. 2017): an edge-stopping a-trous wavelet filter
+// over the half-res lighting targets, run twice with a doubling tap stride. Without it all variance
+// reduction here is temporal, which forces N_MAX deep — and a deep SCREEN-SPACE history cannot
+// survive a moving camera, because the reprojection fetch lands between texels and resampling a
+// half-res buffer for that long drags the image along the direction of travel. There is no N that
+// is both sharp under motion and clean at rest.
 //
-// **Why it exists.** Without it every bit of variance reduction here is
-// temporal, which forces N_MAX deep — and a deep SCREEN-SPACE history cannot
-// survive a moving camera: reprojection is exact for static geometry, but the
-// fetch still lands between texels, and resampling a half-res buffer for the
-// whole length of that history drags the image along the direction of travel.
-// There is no N that is both sharp under motion and clean at rest.
-//
-// Two signals, two gates. INDIRECT is a genuinely stochastic 1-spp gather, so it
-// takes the original SVGF trade: filter while the history is short, shut off
-// once the temporal estimate has converged. SUN is deterministic with a static
-// dither, and its filter is RECONSTRUCTION rather than denoising — gi_resolve
-// stores the physical penumbra width in sun.a and this pass blurs the hard 0/1
-// answer across exactly that many texels. So it must run AT REST TOO, since a
-// deterministic ray never builds a penumbra in time; it must NOT edge-stop on
-// the sun value inside the penumbra, because that boundary is the thing to blur
-// (pen -> 0 collapses the kernel to identity, so contact stays hard); and it
-// spreads the width itself, so the LIT side of an edge blurs symmetrically.
-//
-// **No moment buffer.** Both estimators have an ANALYTIC variance from data
-// already stored — sun visibility is a mean of n Bernoulli trials, so its
-// standard error is exactly sqrt(p(1-p)/n) with p and n both in the target.
-// Deriving sigma instead of measuring it saves a whole ping-ponged rgba32f and
-// cannot drift out of step with the accumulator the way a separate buffer can.
+// Two signals, two gates. INDIRECT is a genuinely stochastic 1-spp gather, so it takes the original
+// SVGF trade: filter while the history is short, shut off once the temporal estimate converges. SUN
+// is deterministic, so its filter is RECONSTRUCTION rather than denoising — it blurs the hard 0/1
+// answer across the penumbra width gi_resolve stored in sun.a. It must therefore run AT REST TOO,
+// must NOT edge-stop on the sun value inside the penumbra (pen -> 0 collapses the kernel to
+// identity, so contact stays hard), and spreads that width itself so the LIT side of an edge blurs
+// symmetrically. No moment buffer: both estimators have an ANALYTIC variance from data already
+// stored, which saves a ping-ponged rgba32f and cannot drift out of step with the accumulator.
 
 struct Atrous {
 	// x tap stride in texels (doubling between the two iterations),
@@ -36,24 +24,18 @@ struct Atrous {
 @group(0) @binding(1) var src_indirect: texture_2d<f32>;
 @group(0) @binding(2) var src_sun: texture_2d<f32>;
 
-// The a-trous kernel, separable, and the reason the stride doubles
-// instead of the kernel growing: two narrow passes at doubling strides
-// cover the same footprint a single wide kernel would, for a fraction of
-// the taps. SVGF specifies the B3 spline, which reaches further for
-// several times the taps; it was built and measured here, and it buys a
-// slightly smaller walk-regime residual for twice the cost, at a point
-// where the artifact it exists to remove is already gone from the picture
-// in both. The wider kernel is the one to reach for if the history floor
-// ever drops.
+// The a-trous kernel, separable, and the reason the stride doubles instead of the kernel growing:
+// two narrow passes at doubling strides cover the footprint a single wide kernel would, for a
+// fraction of the taps. SVGF's B3 spline reaches further for several times the taps; it was built
+// and measured here, and buys a slightly smaller walk-regime residual for twice the cost at a point
+// where the artifact is already gone from the picture in both. Reach for it if the floor drops.
 const H = array<f32, 3>(0.25, 0.5, 0.25);
 const R = 1;
 
-// Above this the temporal estimate has already converged and the INDIRECT
-// filter is measurably a no-op — the near ground, where n sits at N_MAX,
-// showed no visible change with it running. Skipping it there is
-// free at rest, which is most of the time a player spends looking at
-// anything. The sun reconstruction deliberately does NOT share this gate —
-// see the header.
+// Above this the temporal estimate has already converged and the INDIRECT filter is measurably a
+// no-op — the near ground, where n sits at N_MAX, showed no visible change with it running.
+// Skipping it there is free at rest, which is most of the time a player spends looking at anything.
+// The sun reconstruction deliberately does NOT share this gate — see the header.
 const N_CONVERGED = 256.0;
 
 // How many sigmas of disagreement it takes to stop the filter. Lower is a
@@ -122,15 +104,11 @@ fn fs(i: VsOut) -> FsOut {
 	let n = max(f32(cg >> 8u), 1.0);
 	let step = i32(at.step.x);
 
-	// ---- One ring at the base stride serves three customers from the
-	// same tap loads: the indirect gather (SVGF's original trade), the
-	// Bernoulli sun gather (used only if this pixel stays sub-texel), and
-	// the penumbra-width spread — a lit pixel cannot know it borders a
-	// shadow without looking, so the spread runs for every surface pixel;
-	// max over same-surface taps, written back to sun.a, is what lets the
-	// LIT half of an edge blur by iteration 2. Splitting these into three
-	// loops was built first and measured a clear cost over the old shader;
-	// sharing the loads brought it back.
+	// ---- One ring at the base stride serves three customers from the same tap loads: the indirect
+	// gather, the Bernoulli sun gather (used only if this pixel stays sub-texel), and the
+	// penumbra-width spread — a lit pixel cannot know it borders a shadow without looking, so the
+	// spread runs for every surface pixel; max over same-surface taps, written back to sun.a, is
+	// what lets the LIT half of an edge blur by iteration 2. Three separate loops measured worse.
 	let filter_ind = n < N_CONVERGED;
 	let cl = lum(ci.rgb);
 	let ind_sigma = max(cl / sqrt(n), IND_SIGMA_MIN);

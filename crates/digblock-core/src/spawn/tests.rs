@@ -150,16 +150,11 @@ fn lock_region_covers_what_the_test_reads() {
 	assert!(moved > 0, "no probed edit moved the spawn");
 }
 
-/// The property the whole module exists to provide, asserted against
-/// worldgen directly rather than by trusting the predicate that chose
-/// the spot: the disc really is level solid ground, and the cylinder
-/// above it really is empty.
-///
-/// The predicate used to permit neighbours at `h + 1` and ignore
-/// neighbours below `h`, so spawns could be boxed in by rock at head
-/// height or perched on the lip of a drop. Every earlier test asked
-/// only whether spawn *moved*, never whether where it landed was any
-/// good — which is exactly why that survived.
+/// The property the whole module exists to provide, asserted against worldgen directly rather than
+/// by trusting the predicate that chose the spot: the disc really is level solid ground, and the
+/// cylinder above it really is empty. A predicate permitting neighbours at `h + 1` and ignoring
+/// neighbours below `h` boxes a spawn in at head height or perches it on the lip of a drop, and a
+/// test that asks only whether spawn *moved* never notices where it landed.
 #[test]
 fn every_anchor_stands_on_level_ground_under_open_sky() {
 	for seed in [

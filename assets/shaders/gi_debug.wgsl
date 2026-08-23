@@ -26,16 +26,11 @@ struct GiDebug {
 // gi_common's parameterised gather, so it has to be told.
 const C0_SPACING = 2.0;
 
-// Nearest-probe 3-axis gather of the C0 field at a world position.
-//
-// This is a THIRD copy of the axis gather, and it has already misled
-// once: it bypasses gi_common's `gi_cascade_gather` entirely, so a fix
-// made there (the dead-in-solid flag, which every gather blended in as
-// real radiance) did not show up in `DIG_GI=probes` and the capture read
-// as though the fix had not worked. It cannot share the real one until
-// this module can take the gi_common prelude — its bindings are its own
-// — but it can at least stop lying about the two things that matter: the
-// alive flag, and where C0's probes actually are.
+// Nearest-probe 3-axis gather of the C0 field. A THIRD copy of the axis
+// gather: it bypasses gi_common's `gi_cascade_gather`, so a fix made there
+// does not reach `DIG_GI=probes`, and the capture reads as though it never
+// landed. It cannot share the real one while its bindings are its own, but
+// it must track the alive flag and where C0's probes are.
 fn probe_light(p: vec3f, n: vec3f) -> vec3f {
 	let dims = vec3i(vec3f(dbg.misc.y, dbg.misc.z, dbg.misc.w));
 	let g = vec3i(round(p / C0_SPACING));

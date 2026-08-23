@@ -3,17 +3,11 @@ using Microsoft.AspNetCore.RateLimiting;
 
 namespace DigBlock.Master;
 
-/// <summary>Per-endpoint rate limits.
-///
-/// Deliberately no global limiter. Every caller here sits behind something
-/// that aggregates addresses — a NAT'd household, a container host running
-/// several game servers, the ingress itself — so one bucket for everything
-/// would throttle honest traffic long before it inconvenienced anyone. The
-/// limits are per endpoint and partitioned by whatever identifies the actual
-/// abuser of THAT endpoint.
-///
-/// No package: AddRateLimiter ships in the ASP.NET Core shared
-/// framework.</summary>
+/// <summary>Per-endpoint rate limits, each partitioned by whatever identifies
+/// the actual abuser of THAT endpoint. Deliberately no global limiter: every
+/// caller sits behind something that aggregates addresses — a NAT'd household,
+/// a container host running several game servers, the ingress itself — so one
+/// bucket would throttle honest traffic first. AddRateLimiter needs no package.</summary>
 public static class RateLimits
 {
     /// <summary>Starting a sign-in. Per source address; a human does this

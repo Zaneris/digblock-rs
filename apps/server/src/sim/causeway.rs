@@ -1,20 +1,15 @@
-//! The Causeway's server half: the cast, each plank the caster claims,
-//! and the road coming up — at expiry, on an early end, or when the
-//! caster leaves.
+//! The Causeway's server half: the cast, each plank the caster claims, and the road coming up — at
+//! expiry, on an early end, or when the caster leaves.
 //!
-//! Planks are ordinary journaled edits, so a joiner, the resync rotation
-//! and an evicted column read them like any other glass. What is
-//! session-local is the TRAIL, which is why a departure takes the road
-//! up: a trail nobody holds could never retire itself, and the planks
-//! would stand forever.
+//! Planks are ordinary journaled edits, so a joiner, the resync rotation and an evicted column read
+//! them like any other glass. What is session-local is the TRAIL, which is why a departure takes
+//! the road up: a trail nobody holds could never retire itself, and the planks would stand forever.
 //!
-//! That makes retirement the one write here that has to LAND rather than
-//! be skipped the way fluid's and the sweeps' are, and it can only be
-//! written to a RESIDENT column. Two things answer for it: a teleport
-//! retires the road on the spot, before the interest centre moves; and a
-//! removal that still finds nowhere to go is OWED
-//! (`Sim::owed_planks`) and retried, rather than dropped with the trail
-//! that knew about it.
+//! That makes retirement the one write here that has to LAND rather than be skipped the way
+//! fluid's and the sweeps' are, and it can only be written to a RESIDENT column. Two things answer
+//! for it: a teleport retires the road on the spot, before the interest centre moves; and a
+//! removal that still finds nowhere to go is OWED (`Sim::owed_planks`) and retried, rather than
+//! dropped with the trail that knew about it.
 
 use super::{Client, NO_CLIENT_SEQ, SERVER_ID, Sim, TICK_RATE, client_send};
 use digblock_core::causeway::{self, Cell};
@@ -70,12 +65,10 @@ impl Sim {
 		self.process_cast(conn_id, digblock_core::skills::cast_xp(essence, fare));
 	}
 
-	/// One claimed plank. The whole geometric check is
-	/// [`causeway::claim_ok`] against the server's own copy of the
-	/// caster's feet — the tick that produced the claim is gone, so
-	/// there is nothing to re-derive. Everything else is the ordinary
-	/// place contract: the cell must be claimable, unprotected, and
-	/// nobody may be standing in it.
+	/// One claimed plank. The whole geometric check is [`causeway::claim_ok`] against the server's
+	/// own copy of the caster's feet — the tick that produced the claim is gone, so nothing is left
+	/// to re-derive. Everything else is the ordinary place contract: the cell must be claimable,
+	/// unprotected, and nobody may be standing in it.
 	pub(super) fn causeway_step(
 		&mut self,
 		conn_id: u64,

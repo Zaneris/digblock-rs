@@ -145,13 +145,11 @@ impl Confetti {
 		n as u32
 	}
 
-	/// Draw alongside the spray billboards (same pass, frame bind group
-	/// already bound at 0). Returns triangles.
+	/// Draw alongside the spray billboards (same pass, frame bind group already bound at 0).
+	/// Returns triangles.
 	///
-	/// `gi_gather_bg` is bound here rather than left to whatever the pass
-	/// happened to bind at 2: the water draw ahead of this one leaves the
-	/// same group there, and a pipeline whose layout matches would keep
-	/// reading it silently if that draw ever moved.
+	/// `gi_gather_bg` is bound here rather than left to whatever the pass happened to bind at 2:
+	/// the water draw ahead leaves the same group there, and a matching layout would hide a move.
 	pub(crate) fn draw(
 		&self,
 		pass: &mut wgpu::RenderPass<'_>,

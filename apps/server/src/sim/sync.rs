@@ -28,39 +28,18 @@ const JOIN_SYNC_PER_TICK: usize = 16;
 /// nor trip the queue-refused drop that `send_frame` reports.
 const JOIN_SYNC_RESERVE: usize = 64;
 
-/// Outbound slots a WRAPPED snapshot may not take, for the same reason
-/// [`JOIN_SYNC_RESERVE`] exists and with more force.
-///
-/// A snapshot travelling as a datagram leaves the queue as fast as the pump can
-/// hand it to the socket, so it can never durably occupy a slot. Wrapped in a
-/// reliable frame it leaves at the speed of ONE stream's flow control, and a peer
-/// that reads slowly parks it there — which puts a lossy message class in a
-/// position to fill the queue whose refusal kills the client. Half the queue is
-/// left to the traffic that dies without a slot; snapshots take the rest and are
-/// skipped above it.
+/// Outbound slots a WRAPPED snapshot may not take, for the same reason [`JOIN_SYNC_RESERVE`]
+/// exists and with more force. A datagram leaves as fast as the pump hands it to the socket and
+/// can never durably occupy a slot; wrapped, it leaves at ONE stream's flow control and a slow
+/// peer parks it there — putting a LOSSY class where it can fill the queue whose refusal kills
+/// the client. Half the queue is left to the traffic that dies without a slot.
 const WRAPPED_SNAPSHOT_RESERVE: usize = OUT_CAP / 2;
 
-/// The background re-sync: one already-synced column handed back to one settled
-/// client at a time, nearest first, going round for as long as they stay put.
-///
-/// The push sync has no acknowledgement — the server marks a column synced when
-/// it hands the frame to the outbound queue and never hears another word — so
-/// nothing in the protocol can NOTICE a client whose copy of a column went
-/// astray, and the symptom is a chunk that renders as pristine worldgen forever.
-/// Rather than pay an ack per column for the life of the session, the loop comes
-/// round again: journal replay is last-write-wins, so a repeat costs nothing but
-/// its bytes.
-///
-/// [`RESYNC_SETTLE_TICKS`] is what keeps the cost off the common case: a MOVING
-/// client is already being handed the columns it is entering, and repeating them
-/// behind it would be a permanent bandwidth floor on every built-up world. The
-/// case this exists for is somebody standing in front of a chunk that came back
-/// wrong, and standing still is what a player does while noticing that.
-///
-/// Deliberately unhurried even then, because it is the SECOND line: the client's
-/// own mirror of the journal is re-applied whenever a column regenerates
-/// (`Pipeline`'s overlay, multiplayer included), so eviction — the one cause
-/// anybody has reproduced — no longer needs the network at all.
+/// The background re-sync: one already-synced column handed back to one settled client at a time,
+/// nearest first, for as long as they stay put. The push sync has no acknowledgement, so nothing
+/// can NOTICE a client whose copy went astray; replay is last-write-wins, so a repeat costs only
+/// bytes. Settling keeps the cost off a MOVING client, already handed the columns it enters. It
+/// is the SECOND line — `Pipeline`'s overlay re-applies the journal whenever a column regrows.
 const RESYNC_SETTLE_TICKS: u32 = TICK_RATE * 10;
 /// Ticks between two columns of one rotation. See [`RESYNC_SETTLE_TICKS`].
 const RESYNC_INTERVAL_TICKS: u32 = TICK_RATE;
@@ -254,19 +233,11 @@ impl Sim {
 		}
 	}
 
-	/// Hand each client a few queued journal columns — then a few of the
-	/// standing lights it is owed — per tick, never more than its
-	/// outbound queue can take.
+	/// Hand each client a few queued journal columns — then a few of the standing lights it is
+	/// owed — per tick, never more than its outbound queue can take.
 	///
-	/// Join sync used to run entirely inside `handle_hello`: every in-range
-	/// edited column encoded and pushed in ONE tick. On a mature world that
-	/// is thousands of frames and megabytes inside one tick's budget — a
-	/// hitch for every other player on the server, on every join — and past
-	/// `OUT_CAP` it was a race the joiner lost outright, dropped for
-	/// "overflowing the outbound queue" through no fault of its own.
-	///
-	/// Reserving capacity is what makes the cliff structurally impossible:
-	/// sync only ever uses slots live traffic is not going to need.
+	/// Encoding every in-range column in one tick is thousands of frames inside one tick's budget
+	/// and overruns `OUT_CAP`; reserving capacity keeps sync to slots live traffic will not need.
 	fn pump_join_sync(&mut self) {
 		let journal = &self.journal;
 		let tick = self.tick;
@@ -340,17 +311,11 @@ impl Sim {
 	}
 
 	pub(super) fn send_snapshots(&mut self) {
-		// Shared roster built once; per client only nearby players are selected,
-		// so snapshots can never outgrow one datagram (the cliff that used to
-		// silently kill all snapshots on a busy server).
-		//
-		// Every buffer here is reused across ticks: allocating per client per
-		// snapshot was tens of thousands of allocations and megabytes a second
-		// of churn at a full server, on the sim thread. The selection is a
-		// `select_nth_unstable` rather than a full sort, since only the nearest
-		// `MAX_SNAPSHOT_PLAYERS - 1` matter. The roster carries each player BOTH
-		// ways: as the remote everyone else sees (quantized once here, not per
-		// recipient) and as the full-precision self state its owner needs back.
+		// Shared roster built once; per client only nearby players are selected, so a snapshot can
+		// never outgrow one datagram. Every buffer is reused across ticks — allocating per client
+		// per snapshot churns megabytes a second on the sim thread at a full server — and the
+		// selection is a `select_nth_unstable`, since only the nearest matter. The roster carries
+		// each player BOTH ways: quantized once for remotes, full precision for its own owner.
 		let mut roster = std::mem::take(&mut self.snap_roster);
 		roster.clear();
 		roster.extend(self.clients.values().filter(|c| c.live).map(|c| {
@@ -448,13 +413,11 @@ impl Sim {
 				players = s.others;
 			}
 			match encoded {
-				// A client with no datagram channel gets the same payload
-				// wrapped in a reliable frame — and keeps every bit of the
-				// handling below it, drop-on-full included. That is the
-				// load-bearing part: `send_frame` kills a client whose
-				// queue refuses a frame, which is right for an edit and
-				// catastrophic for a snapshot, since snapshots are the one
-				// message class that has always been allowed to stall.
+				// A client with no datagram channel gets the same payload wrapped in a
+				// reliable frame, and keeps every bit of the handling below it, drop-on-full
+				// included: `send_frame` kills a client whose queue refuses a frame, which is
+				// right for an edit and catastrophic for a snapshot — the one message class
+				// always allowed to stall.
 				Ok(bytes) => match queue_snapshot(client, bytes) {
 					Some(Ok(())) => client.dgram_full_since.set(None),
 					// Above the reserve the snapshot is skipped rather than
@@ -506,14 +469,11 @@ impl Sim {
 	}
 }
 
-/// Hand one snapshot to the client's outbound queue, or `None` when it may
-/// not have a slot at all.
+/// Hand one snapshot to the client's outbound queue, or `None` when it may not have a slot at all.
 ///
-/// A datagram may always try: the pump hands those to the socket without
-/// ever awaiting, so one cannot sit in the queue. A WRAPPED one is held to
-/// what [`WRAPPED_SNAPSHOT_RESERVE`] leaves it, and above that is skipped
-/// rather than refused — a refusal is what the stall reaper counts, and
-/// this is a policy, not a peer that stopped reading.
+/// A datagram may always try: the pump hands those to the socket without awaiting, so one cannot
+/// sit in the queue. A WRAPPED one is held to what [`WRAPPED_SNAPSHOT_RESERVE`] leaves it, and
+/// above that is skipped rather than refused — a refusal is what the stall reaper counts.
 fn queue_snapshot(
 	client: &super::Client,
 	bytes: Vec<u8>,
@@ -523,14 +483,11 @@ fn queue_snapshot(
 	(!wrapped || client.out.capacity() > WRAPPED_SNAPSHOT_RESERVE).then(|| client.out.try_send(out))
 }
 
-/// How one snapshot travels to one client: as a datagram, or — for a
-/// client that announced `NoDatagrams` — as the same bytes wrapped in a
-/// reliable frame.
+/// How one snapshot travels to one client: as a datagram, or — for a client that announced
+/// `NoDatagrams` — as the same bytes wrapped in a reliable frame.
 ///
-/// An encode failure here falls back to the datagram, which that client
-/// cannot receive; that is deliberate. The wrap is a `Vec<u8>` inside an
-/// enum variant and cannot fail for any reason a retry would fix, and the
-/// alternative is dropping a client over a condition that does not exist.
+/// An encode failure falls back to the datagram that client cannot receive, deliberately: the
+/// wrap cannot fail for any reason a retry would fix, and the alternative drops a client for it.
 fn snapshot_out(client: &super::Client, bytes: Vec<u8>) -> OutMsg {
 	if !client.no_datagrams.get() {
 		return OutMsg::Datagram(bytes);

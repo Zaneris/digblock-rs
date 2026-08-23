@@ -262,12 +262,10 @@ fn floating_source_pair_grows_no_hanging_shelf() {
 	);
 }
 
-/// Nothing standing over air spreads outward — a SOURCE included.
-/// Poured against a wall face, the block runs straight down the wall
-/// and only its landing spreads; the placed cell's own level stays
-/// dry on every side. Its own top face still renders full height all round
-/// (`mesher::tests::a_spilling_source_keeps_its_full_height`), which
-/// is the half of this arrangement that WAS broken.
+/// Nothing standing over air spreads outward — a SOURCE included. Poured against a wall face,
+/// the block runs straight down the wall and only its landing spreads; the placed cell's own
+/// level stays dry on every side. Its own top face still renders full height all round
+/// (`mesher::tests::a_spilling_source_keeps_its_full_height`).
 #[test]
 fn an_unsupported_source_pours_straight_down() {
 	let mut w = MapWorld::new();

@@ -215,15 +215,11 @@ impl Renderer {
 					sun_view: &targets.gi_sun_view[0],
 				},
 			);
-			// The spatial half. Two edge-stopped a-trous iterations,
-			// [0] -> [1] -> [0], which leaves the scene reading [0] and the
-			// once-filtered image parked in [1] as next frame's history.
-			// Without this the resolve's only estimator is time, which forces
-			// a history so deep it smears under motion — see gi_atrous.wgsl.
-			// DIG_STUB=giatrous drops both iterations, which leaves the
-			// scene reading the RAW resolve out of [0] and next frame's
-			// history stale. That is the honest price of measuring the
-			// filter: the number is the filter's cost, not a picture.
+			// The spatial half. Two edge-stopped a-trous iterations, [0] -> [1] -> [0],
+			// leaving the scene reading [0] and the once-filtered image parked in [1] as next
+			// frame's history. Without this the resolve's only estimator is time, which forces
+			// a history deep enough to smear under motion — see gi_atrous.wgsl.
+			// DIG_STUB=giatrous drops both: the scene reads the RAW resolve out of [0].
 			for (i, bind) in targets.gi_atrous_bg.iter().enumerate() {
 				if self.stub & stub::GIATROUS != 0 {
 					break;

@@ -27,15 +27,11 @@ pub enum Key {
 	J,
 	/// Chat open (multiplayer).
 	T,
-	/// Number row digit 0..=9 (hotbar slot selection; numpad excluded —
-	/// NumLock ambiguity isn't worth it).
+	/// Number row digit 0..=9 (hotbar slot; numpad excluded — NumLock ambiguity isn't worth it).
 	Digit(u8),
 	/// Grave/backtick: debug overlay toggle.
 	Backquote,
-	/// F7: rebuild the GI window's derived state from what is actually
-	/// resident. A debug drill routed to the ENGINE, unlike F8/F9/F10,
-	/// which the platform shell handles itself — this one needs GI state
-	/// the platform crate cannot see.
+	/// F7: rebuild the GI window's derived state — a drill routed to the ENGINE, not the shell.
 	F7,
 	Escape,
 	Enter,
@@ -66,34 +62,26 @@ pub enum InputEvent {
 		key: Key,
 		pressed: bool,
 	},
-	/// Raw, unaccelerated mouse deltas (DeviceEvent), only while the cursor
-	/// is captured.
+	/// Raw, unaccelerated mouse deltas (DeviceEvent), only while the cursor is captured.
 	MouseDelta {
 		dx: f64,
 		dy: f64,
 	},
-	/// Vertical scroll in "wheel notches" (+1 = one notch away from the
-	/// user). Line deltas pass through; pixel deltas (trackpads, web) are
-	/// scaled down. Only sent while the cursor is captured.
+	/// Scroll in wheel notches, pixel deltas scaled down; only while the cursor is captured.
 	Scroll {
 		dy: f32,
 	},
-	/// Mouse buttons. While the cursor is captured these are gameplay
-	/// clicks; while free (menu open, i.e. the game doesn't want the grab)
-	/// they are UI clicks paired with the last `CursorMoved`. The click
-	/// that re-grabs the cursor is swallowed by the shell.
+	/// Gameplay clicks while captured; UI clicks paired with the last `CursorMoved` while free.
 	MouseButton {
 		button: MouseButton,
 		pressed: bool,
 	},
-	/// Window-space cursor position in physical pixels (the overlay's
-	/// coordinate space); only while the cursor is NOT captured.
+	/// Window-space cursor position in physical pixels; only while the cursor is NOT captured.
 	CursorMoved {
 		x: f32,
 		y: f32,
 	},
-	/// Produced text (layout- and shift-aware), for menu text fields.
-	/// Control characters never arrive here — Backspace/Enter are `Key`s.
+	/// Produced text (layout- and shift-aware); Backspace/Enter arrive as `Key`s, never here.
 	Text {
 		ch: char,
 	},
@@ -106,9 +94,7 @@ pub enum InputEvent {
 	},
 	/// Engine must clear all held keys/touches.
 	FocusLost,
-	/// Web only: the browser revoked pointer lock (user pressed Escape,
-	/// switched tabs) while the game still wanted it. Engine must clear
-	/// held state and should surface its pause UI. Never sent natively.
+	/// Web only: the browser revoked pointer lock while the game still wanted it; clear held state.
 	PointerLockLost,
 }
 

@@ -1,20 +1,17 @@
 //! Client-side movement prediction and server reconciliation.
 //!
-//! Each predicted tick runs the real `Player::tick` and records (input,
-//! post-state); the post-state rides the wire as the adoption envelope claim,
-//! frozen at first send. On a snapshot ack, the claim we actually SENT for the
-//! acked tick is compared against the server's state — a match costs nothing, a
-//! mismatch rewinds and replays the still-unacked inputs.
+//! Each predicted tick runs the real `Player::tick` and records (input, post-state); the post-state
+//! rides the wire as the adoption envelope claim, frozen at first send. On a snapshot ack, the
+//! claim we actually SENT for the acked tick is compared against the server's state — a match costs
+//! nothing, a mismatch rewinds and replays the still-unacked inputs.
 //!
-//! Comparing against the SENT claim rather than the live post-state matters at
-//! high ping: a replay rewrites the buffered post-states, but the server
-//! (first-wins input dedup) adopted the ORIGINAL in-flight claims, and judging
-//! its echo of those against the rewritten values re-replays every snapshot —
-//! at rest that ping-pong never decays, vibrating the camera at RTT period.
+//! Comparing against the SENT claim rather than the live post-state matters at high ping: a replay
+//! rewrites the buffered post-states, but the server (first-wins input dedup) adopted the ORIGINAL
+//! in-flight claims, and judging its echo of those against the rewritten values re-replays every
+//! snapshot — at rest that ping-pong never decays, vibrating the camera at RTT period.
 //!
-//! Chosen simplification: replay runs against the LIVE world, not the world as
-//! it was at those past ticks. Any error is bounded by one snapshot interval,
-//! and the epsilon absorbs cross-platform f32 last-ulp drift.
+//! Chosen simplification: replay runs against the LIVE world, not the world as it was at those past
+//! ticks. Any error is bounded by one snapshot interval, and the epsilon absorbs f32 drift.
 
 use crate::messages::{InputBatch, InputTick};
 use crate::protocol::INPUT_REDUNDANCY;
@@ -72,8 +69,7 @@ pub struct Predictor {
 pub enum Reconciled {
 	/// Server agrees with our prediction at the acked tick.
 	InSync,
-	/// Diverged: rewound to server state and replayed. `error` is the
-	/// position shift (pre-reconcile − post-reconcile) for smoothing.
+	/// Diverged: rewound and replayed; `error` is the position shift for smoothing.
 	Replayed { error: Vec3 },
 	/// Ack older than one already processed; ignored.
 	StaleAck,
@@ -171,12 +167,10 @@ impl Predictor {
 		self.spare = batch.inputs;
 	}
 
-	/// The server teleported us (return to spawn): every buffered
-	/// prediction and any in-flight ack describes the pre-teleport
-	/// position — replaying them from the target would yank the player
-	/// back. Drop the buffer and refuse acks for ticks predicted before
-	/// now; the next predicted inputs (sent from the teleport target)
-	/// re-anchor reconciliation within one snapshot interval.
+	/// The server teleported us: every buffered prediction and any in-flight ack describes the
+	/// pre-teleport position, so replaying them from the target would yank the player back. Drop
+	/// the buffer and refuse acks for ticks predicted before now; the next predicted inputs, sent
+	/// from the teleport target, re-anchor reconciliation within one snapshot interval.
 	pub fn on_teleport(&mut self) {
 		self.buf.clear();
 		self.last_acked = self.next_tick.saturating_sub(1);
@@ -199,12 +193,10 @@ impl Predictor {
 		}
 		self.last_acked = acked_tick;
 
-		// Judge the server against the claim we SENT for that tick (falling
-		// back to `post` if it never hit the wire): a server state matching
-		// what we told it means it adopted our view, and any difference from
-		// our current state is our own later replay — which the server
-		// converges to by adopting the newer in-flight claims. Re-replaying
-		// here instead is the standing-still RTT-period vibration.
+		// Judge the server against the claim we SENT for that tick, falling back to `post` if it
+		// never hit the wire: a server state matching what we told it means it adopted our view,
+		// and any difference from our current state is our own later replay, which the server
+		// converges to by adopting newer claims. Re-replaying here is the RTT-period vibration.
 		let acked = self.buf.iter().find(|e| e.tick == acked_tick);
 		let predicted = acked.map(|e| e.sent.unwrap_or(e.post));
 		// Only a tick that actually went on the wire has a send time; one

@@ -87,13 +87,11 @@ const _: () = assert!(BREATH_Y * 3.0 < BOB_Y);
 const SWING_Y: f32 = 0.42;
 const SWING_Z: f32 = 0.30;
 const SWING_PITCH: f32 = 0.9;
-/// Seconds per swing arc — deliberately the length of a scoop, so one
-/// bucketful is one stroke: the hand dips as the hold opens and the
-/// water appears in it as the hand comes back up. Any shorter and the
-/// arc ran out mid-hold and started a second one, which read as two
-/// grabs for a single bucket. Pinned against the block table by
-/// `the_swing_is_exactly_one_scoop_long` — it is a duration shared with
-/// core, not a free tunable.
+/// Seconds per swing arc — deliberately the length of a scoop, so one bucketful is one stroke:
+/// the hand dips as the hold opens and the water appears in it as the hand comes back up. Any
+/// shorter and the arc ran out mid-hold and started a second one, reading as two grabs for a
+/// single bucket. Pinned against the block table by `the_swing_is_exactly_one_scoop_long` — a
+/// duration shared with core, not a free tunable.
 const SWING_SECS: f32 = 20.0 / 60.0;
 
 /// Seconds for a whole slot swap, down and back up. Short: this sits
@@ -119,12 +117,10 @@ pub(crate) struct Pose {
 	pub roll: f32,
 }
 
-/// Idle breathing crossfaded with the walk bob. The bob is a
-/// distance-driven phase with a speed-driven amplitude, so the hand
-/// keeps time with the feet rather than with the clock — the same
-/// reason [`crate::audio::Footsteps`] paces by distance. The breath is
-/// the opposite by necessity, and takes over whatever amplitude the bob
-/// gives up.
+/// Idle breathing crossfaded with the walk bob. The bob is a distance-driven phase with a
+/// speed-driven amplitude, so the hand keeps time with the feet rather than with the clock —
+/// the same reason [`crate::audio::Footsteps`] paces by distance. The breath is the opposite
+/// by necessity, and takes over whatever amplitude the bob gives up.
 #[derive(Default)]
 pub(crate) struct Bob {
 	phase: f32,
@@ -136,18 +132,11 @@ pub(crate) struct Bob {
 }
 
 impl Bob {
-	/// Advance by one frame. `moved` = horizontal distance travelled,
-	/// `dt` = its duration, `grounded` = the feet are on something.
-	/// Airborne or standing still, the amplitude eases back to zero and
-	/// the item settles into its breathing; the phase keeps its place so
-	/// resuming a walk doesn't jump.
-	///
-	/// `grounded` is the same gate [`crate::audio::Footsteps`] uses, for
-	/// the same reason: the bob is the hand keeping time with the feet,
-	/// and feet that aren't touching anything take no steps. Sailing
-	/// through the air — or swimming, which is also off the ground — is
-	/// distance travelled that the walk did not do, and letting it feed
-	/// the stride swung the hand at a full walking pace through a jump.
+	/// Advance by one frame. `moved` = horizontal distance travelled, `dt` = its duration,
+	/// `grounded` = the feet are on something. Airborne or standing still the amplitude eases to
+	/// zero and the phase keeps its place, so resuming a walk doesn't jump. `grounded` is the
+	/// same gate [`crate::audio::Footsteps`] uses: feet touching nothing take no steps, and
+	/// letting airborne or swimming distance feed the stride swings the hand through a jump.
 	pub(crate) fn advance(&mut self, moved: f32, dt: f32, grounded: bool) {
 		if dt <= 0.0 {
 			return;
@@ -241,16 +230,11 @@ impl Cast {
 	}
 }
 
-/// The collect swing: exactly one arc per scoop, started when the hold
-/// opens. Collecting water is a scoop, not a mining hold — it
-/// deliberately does NOT draw the block-breaking crack decal, so this is
-/// the only feedback that the tool is doing something.
-///
-/// Nothing here chains arcs off the button being down. It used to, and
-/// with an arc shorter than the hold that always produced a second
-/// stroke: the first ran out a few ticks before the scoop landed, a new
-/// one began, and the bucket filled during it. The arc IS the scoop
-/// ([`SWING_SECS`]), so the hold has room for one and only one.
+/// The collect swing: exactly one arc per scoop, started when the hold opens. Collecting water
+/// is a scoop, not a mining hold — it deliberately does NOT draw the block-breaking crack
+/// decal, so this is the only feedback that the tool is doing something. Nothing chains arcs
+/// off the button being down: the arc IS the scoop ([`SWING_SECS`]), so a hold has room for one
+/// and only one, where a shorter arc always ran out and began a second stroke mid-scoop.
 #[derive(Default)]
 pub(crate) struct Swing {
 	/// Seconds into the current arc; `None` between arcs.
@@ -425,12 +409,9 @@ pub(crate) fn light_in_item_space(light_dir_view: Vec3, pose: Pose) -> Vec3 {
 
 // ---- geometry ---------------------------------------------------------
 
-/// One vertex, in order: position in twelfths, uv, texture layer, face
-/// index into the shader's normal table.
-///
-/// Shared with `players.rs`, which draws the SAME geometry in a remote
-/// player's hand — so your hand and theirs are one build rather than two
-/// that happen to match.
+/// One vertex, in order: position in twelfths, uv, texture layer, face index into the shader's
+/// normal table. Shared with `players.rs`, which draws the SAME geometry in a remote player's
+/// hand — so your hand and theirs are one build rather than two that happen to match.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct Vert {
@@ -499,13 +480,10 @@ struct Uniforms {
 	light_color: [f32; 4],
 }
 
-/// The frame's uniform block.
-///
-/// Pure, and separate from `prepare`, for two reasons: a test can ask
-/// what actually reaches the GPU without a device, and the emissive flag
-/// is DERIVED here from the drawn item rather than plumbed through
-/// `ViewmodelFrame` — so it is structurally impossible to draw a torch
-/// and forget to light it.
+/// The frame's uniform block. Pure, and separate from `prepare`, for two reasons: a test can
+/// ask what actually reaches the GPU without a device, and the emissive flag is DERIVED here
+/// from the drawn item rather than plumbed through `ViewmodelFrame` — so it is structurally
+/// impossible to draw a torch and forget to light it.
 fn uniforms(aspect: f32, f: &ViewmodelFrame) -> Uniforms {
 	let light = light_in_item_space(f.light_dir_view, f.pose);
 	let emissive = crate::ui::hud::icon_block(f.kind).is_some_and(|b| b.props().emissive);

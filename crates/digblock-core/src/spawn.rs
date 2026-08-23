@@ -23,26 +23,18 @@ pub const CLEAR: i32 = 2;
 /// capsule stands on `h + 1`, so cells `h+1 ..= h+CAPSULE` must be clear.
 pub const CAPSULE: i32 = 3;
 
-/// Radius of the protected sphere around an arrival pad — the spawn
-/// lock, and a waystone pad. Two containments size it, both pinned
-/// rather than restated: the validated core (the [`CLEAR`] disc plus its
-/// [`CAPSULE`], farthest at its top corners —
-/// `the_lock_contains_what_stands_clear_reads`), and every cell a
-/// waystone stamp writes (the const assert in `waystones.rs`). It
-/// carries margin over both, and the lower hemisphere is the
-/// anti-undermining depth the box never had. Shrinking it until either
-/// containment fails breaks the "locked ⇒ permanently valid" fast path.
+/// Radius of the protected sphere around an arrival pad — the spawn lock, and a waystone pad. Two
+/// containments size it, both pinned rather than restated: the validated core (the [`CLEAR`] disc
+/// plus its [`CAPSULE`], farthest at its top corners) and every cell a waystone stamp writes (the
+/// const assert in `waystones.rs`). Margin over both, and the lower hemisphere is the
+/// anti-undermining depth; shrinking past either containment breaks "locked ⇒ permanently valid".
 pub const LOCK_RADIUS: i32 = 6;
 
-/// Spawn never sits below sea level — a beach at the water's edge is
-/// fine, an excavated pit is not.
-///
-/// Currently implied rather than enforced: the floor is always a
-/// *pristine* surface height, and [`anchor`]'s altitude pre-gate already
-/// rejects columns at or below `SEA_LEVEL + 1`. It is stated and checked
-/// anyway because it is a design rule, not a coincidence of the pre-gate —
-/// if the search ever learns to follow a built-up surface, this is the
-/// line that stops it following a dug-out one.
+/// Spawn never sits below sea level — a beach at the water's edge is fine, an excavated pit is
+/// not. Currently implied rather than enforced: the floor is always a *pristine* surface height,
+/// and [`anchor`]'s altitude pre-gate already rejects columns at or below `SEA_LEVEL + 1`. Stated
+/// and checked anyway because it is a design rule — if the search ever learns to follow a built-up
+/// surface, this is the line that stops it following a dug-out one.
 pub const SPAWN_FLOOR: i32 = SEA_LEVEL;
 
 /// Stride of the pristine walk. Wide on purpose: it is scanning a
@@ -64,15 +56,11 @@ const FINE_RADIUS: i32 = 16;
 /// How far the coarse phase looks before giving up, in blocks.
 const COARSE_RADIUS: i32 = 512;
 
-/// A read-only view of player edits: the final value of a cell that has
-/// been edited, or `None` for a cell no player has ever touched.
-///
-/// This is edits ONLY — never a chunk-store lookup. A store answers
-/// `None` for anything non-resident, and the support test reads `None` as
-/// "never edited, trust worldgen"; wiring a store in would make every
-/// unloaded column read as pristine-intact in one direction and as void
-/// in the other. The server's journal is the correct source and a
-/// complete one: every landed write, including fluid, is journalled.
+/// A read-only view of player edits: the final value of a cell that has been edited, or `None` for
+/// a cell no player has ever touched. This is edits ONLY — never a chunk-store lookup. A store
+/// answers `None` for anything non-resident and the support test reads `None` as "never edited,
+/// trust worldgen", so wiring a store in would make every unloaded column read as void. The
+/// server's journal is the correct source and a complete one: every landed write is journalled.
 pub type Edits<'a> = &'a dyn Fn(i32, i32, i32) -> Option<u16>;
 
 /// No edits — pristine worldgen answers everything.
@@ -95,16 +83,11 @@ fn column(eye: Vec3) -> (i32, i32, i32) {
 	)
 }
 
-/// The cells an arrival lock protects: a [`LOCK_RADIUS`] sphere centred
-/// on the pad's floor cell.
-///
-/// The sphere CONTAINS every cell [`accepts`] inspects — that
-/// containment, pinned by `lock_region_covers_what_the_test_reads`, is
-/// what makes a locked spawn *permanently* valid: no edit the lock
-/// permits can change the search's answer, so callers holding a lock can
-/// skip [`resolve`] outright. The cells beyond the validated core are
-/// protected without being validated — whatever terrain they are,
-/// frozen, the lower half against undermining the pad.
+/// The cells an arrival lock protects: a [`LOCK_RADIUS`] sphere centred on the pad's floor cell.
+/// The sphere CONTAINS every cell [`accepts`] inspects — that containment, pinned by
+/// `lock_region_covers_what_the_test_reads`, is what makes a locked spawn *permanently* valid: no
+/// edit the lock permits can change the search's answer, so a caller holding a lock can skip
+/// [`resolve`]. Cells beyond the validated core are frozen without being validated.
 pub fn lock_region(eye: Vec3) -> Region {
 	let (x, h, z) = column(eye);
 	Region::Sphere(Sphere {
@@ -115,18 +98,11 @@ pub fn lock_region(eye: Vec3) -> Region {
 	})
 }
 
-/// The pristine half of the test: `Some(h)` when worldgen alone would be
-/// happy to spawn a player on column `(x, z)`.
-///
-/// The disc is **level**: every column within [`CLEAR`] has its surface at
-/// exactly `h`, so the player stands on solid ground `CLEAR` blocks in
-/// every direction with a genuinely empty cylinder above it.
-///
-/// This used to permit neighbours at `h + 1` and say nothing at all about
-/// neighbours *below* `h`, which is not the stated rule and produced the
-/// two failures it was supposed to prevent: spawning walled in by rock at
-/// head height, and spawning on the lip of a drop. "Nothing reaches eye
-/// level" is a much weaker claim than "the disc is ground".
+/// The pristine half of the test: `Some(h)` when worldgen alone would be happy to spawn a player
+/// on column `(x, z)`. The disc is **level**: every column within [`CLEAR`] has its surface at
+/// exactly `h`, so the player stands on solid ground `CLEAR` blocks in every direction with a
+/// genuinely empty cylinder above it. Permitting neighbours at `h + 1`, or saying nothing about
+/// neighbours below `h`, spawns a player walled in at head height or on the lip of a drop.
 fn pristine_floor(x: i32, z: i32, seed: f64) -> Option<i32> {
 	// The dry-land gate goes first, as the presieve it can be: an
 	// ocean-heavy seed walks thousands of candidates and essentially all
@@ -174,16 +150,11 @@ fn pristine_floor(x: i32, z: i32, seed: f64) -> Option<i32> {
 	(!blocked).then_some(h)
 }
 
-/// The edit half of the test: has anyone ruined this floor?
-///
-/// [`pristine_floor`] guarantees a level disc — solid at `h`, air at
-/// `h+1 ..= h+CAPSULE` — across the whole footprint, so the rules here are
-/// absolute rather than relative to what terrain happens to do: a floor
-/// cell turned non-solid is a dig under the standing disc, and a capsule
-/// cell turned solid is something built into the standing space. An
-/// unedited cell is pristine and therefore already correct, which is what
-/// keeps this exactly equivalent to [`pristine_floor`] on an empty
-/// overlay.
+/// The edit half of the test: has anyone ruined this floor? [`pristine_floor`] guarantees a level
+/// disc — solid at `h`, air at `h+1 ..= h+CAPSULE` — across the whole footprint, so the rules here
+/// are absolute rather than relative to what terrain happens to do: a floor cell turned non-solid
+/// is a dig under the standing disc, a capsule cell turned solid is something built into the
+/// standing space. An unedited cell is pristine, which keeps this equivalent on an empty overlay.
 fn edits_clear(x: i32, z: i32, h: i32, edits: Edits) -> bool {
 	for cz in z - CLEAR..=z + CLEAR {
 		for cx in x - CLEAR..=x + CLEAR {
@@ -226,21 +197,11 @@ fn watery(cell: u16) -> bool {
 	BlockType::try_from_id(crate::chunk::cell_id(cell)).is_some_and(|b| b.is_water())
 }
 
-/// Whether a player dropped at `eye` would stand on clear, level ground —
-/// judged from the world as it ACTUALLY is (terrain plus every landed edit),
-/// not from pristine worldgen.
-///
-/// The operator's half of the spawn rules. [`accepts`] can only judge a column
-/// whose *pristine* terrain is already level, which is right for an automatic
-/// search and useless for an admin who levelled a hillside. The cells read here
-/// are exactly [`lock_region`]'s, so "valid to set" and "protected by the lock"
-/// describe the same box — which is what makes locking a hand-picked spawn as
-/// permanent as locking a searched one.
-///
-/// Level ground falls out of the two rules rather than needing its own. `None`
-/// from `cell` means not resident, and is a rejection. [`SPAWN_FLOOR`] is
-/// deliberately NOT applied: that rule stops the *search* descending into a
-/// pit, and an operator aiming at a block has made a choice.
+/// Whether a player dropped at `eye` would stand on clear, level ground — judged from the world as
+/// it ACTUALLY is, not from pristine worldgen: the operator's half of the spawn rules, since
+/// [`accepts`] can only judge a column whose pristine terrain is already level. The cells read here
+/// are exactly [`lock_region`]'s, so "valid to set" and "protected by the lock" are one box. `None`
+/// from `cell` is a rejection; [`SPAWN_FLOOR`] is NOT applied — an operator has made a choice.
 pub fn stands_clear(eye: Vec3, cell: &dyn Fn(i32, i32, i32) -> Option<u16>) -> bool {
 	let (x, h, z) = column(eye);
 	for cz in z - CLEAR..=z + CLEAR {
@@ -287,12 +248,10 @@ fn ring(d: i32, step: i32) -> impl Iterator<Item = (i32, i32)> {
 	})
 }
 
-/// Eye spawn position from the seed alone: the nearest open land to the
-/// origin, ignoring everything players have built or dug.
-///
-/// Walks expanding square rings until a column clears the beach line, so
-/// spawning tracks the terrain instead of hardcoding a height — and never
-/// drops the player into the ocean.
+/// Eye spawn position from the seed alone: the nearest open land to the origin, ignoring
+/// everything players have built or dug. Walks expanding square rings until a column clears the
+/// beach line, so spawning tracks the terrain instead of hardcoding a height — and never drops the
+/// player into the ocean.
 pub fn anchor(seed: f64) -> Vec3 {
 	anchor_walk(&|x, z| pristine_floor(x, z, seed))
 		// Pathological seed: no clear land anywhere the walk reaches —
@@ -322,18 +281,11 @@ pub(crate) fn pristine_pad(x: i32, z: i32, seed: f64) -> Option<i32> {
 	pristine_floor(x, z, seed)
 }
 
-/// The spawn point to actually use: the anchor if players have left it
-/// alone, else the nearest column that still passes.
-///
-/// `a` is the world's [`anchor`], passed in rather than recomputed — the
-/// ring walk crosses a continent and callers resolve on every join, so it
-/// belongs in a field, not in this function.
-///
-/// Cheap in the common case — validating the anchor is one presieve plus
-/// an overlay probe of the lock region — and the outward search only runs
-/// once the anchor is genuinely broken. Callers holding a protected spawn
-/// region can skip this entirely: an unmodifiable region cannot have
-/// stopped being valid.
+/// The spawn point to actually use: the anchor if players have left it alone, else the nearest
+/// column that still passes. `a` is the world's [`anchor`], passed in rather than recomputed — the
+/// ring walk crosses a continent and callers resolve on every join. Cheap in the common case, with
+/// the outward search running only once the anchor is genuinely broken; a caller holding a
+/// protected spawn region can skip this entirely, since an unmodifiable region stays valid.
 pub fn resolve(a: Vec3, seed: f64, edits: Edits) -> Vec3 {
 	let (ax, az) = (a.x.floor() as i32, a.z.floor() as i32);
 	if let Some(h) = accepts(ax, az, seed, edits) {

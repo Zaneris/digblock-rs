@@ -1,14 +1,10 @@
 use super::*;
 
-/// §3.2's yield curve and §4.2's waste curve: the relationships a
-/// player feels — mastery keeps everything, a novice keeps less,
-/// neither curve ever moves the wrong way, a craft never returns MORE
-/// than its ideal — plus derived-output goldens along both curves.
-///
-/// The goldens are the deliberate-pin exemption at work: monotone
-/// bounds cannot notice a curve changing SLOPE, and these two ARE the
-/// player-facing economy. A retune moves these rows knowingly; an
-/// accidental reshape fails them.
+/// §3.2's yield curve and §4.2's waste curve: the relationships a player feels — mastery keeps
+/// everything, a novice keeps less, neither curve moves the wrong way, a craft never returns MORE
+/// than its ideal — plus derived-output goldens along both. The goldens are the deliberate-pin
+/// exemption at work: monotone bounds cannot notice a curve changing SLOPE, and these two ARE the
+/// player-facing economy, so a retune moves these rows knowingly and a reshape fails them.
 #[test]
 fn efficiency_and_waste_hit_their_pinned_endpoints() {
 	use crate::skills::MAX_LEVEL;
@@ -78,13 +74,10 @@ fn efficiency_and_waste_hit_their_pinned_endpoints() {
 	}
 }
 
-/// **No craft creates essence** — the redesign's master invariant, and
-/// it is structural: the essence pool has exactly one faucet
-/// ([`field_yield`], reachable only through a siphon draw on a live
-/// node) and the bench only ever debits it. This test states the
-/// structure rather than trusting it: nothing craftable pays a node
-/// yield, so no recipe's output can be turned back into the currency
-/// that bought it.
+/// **No craft creates essence** — structural, not a policy: the pool has exactly one faucet
+/// ([`field_yield`], reachable only through a siphon draw on a live node) and the bench only ever
+/// debits it. Stated rather than trusted here — nothing craftable pays a node yield, so no
+/// recipe's output can be turned back into the currency that bought it.
 #[test]
 fn no_craft_creates_essence() {
 	for &b in &BlockType::ALL {
@@ -105,19 +98,11 @@ fn no_craft_creates_essence() {
 	}
 }
 
-/// **Nothing the world hands you may be transmuted.** For every block the
-/// world places, whatever a dig on one puts in a player's hands has no
-/// recipe at any price — a recipe for dirt is the bench competing with a
-/// shovel.
-///
-/// Checked against the hand-priced TABLE as well as against `craft_ideal`,
-/// and that is the half with teeth: `craft_ideal` gates on `is_bench_only`
-/// before it reads anything, so a stale `functional_ideal` row for
-/// something the world gives would be silently unreachable rather than
-/// wrong — which is exactly how a retired price sits in a table for a year.
-///
-/// Clean rock passes and is meant to: the world places Stone and Sandstone
-/// but hands out Rubble.
+/// **Nothing the world hands you may be transmuted**: whatever a dig on a world-placed block puts
+/// in a player's hands has no recipe at any price. Checked against the hand-priced TABLE as well
+/// as `craft_ideal`, and that half has the teeth — `craft_ideal` gates on `is_bench_only` before
+/// it reads anything, so a stale `functional_ideal` row would be silently unreachable rather than
+/// wrong. Clean rock passes and is meant to: the world places Stone but hands out Rubble.
 #[test]
 fn nothing_the_world_hands_you_can_be_transmuted() {
 	for &n in &BlockType::ALL {
@@ -143,13 +128,11 @@ fn nothing_the_world_hands_you_can_be_transmuted() {
 	}
 }
 
-/// **The essence tool costs no essence, ever** — and neither does the
-/// vessel that follows it. Every essence in the game is a siphon
-/// draw, so an essence-priced siphon is a currency that cannot be
-/// bootstrapped; the bucket opens a few rungs later and keeps the
-/// feedstock-only price anyway, because its rung is meant to be its
-/// whole gate. Both are priced in FEEDSTOCK a fresh player can chop,
-/// and their essence splits are pinned EMPTY.
+/// **The essence tool costs no essence, ever** — and neither does the vessel that follows it.
+/// Every essence in the game is a siphon draw, so an essence-priced siphon is a currency that
+/// cannot be bootstrapped; the bucket keeps the feedstock-only price anyway, because its rung is
+/// meant to be its whole gate. Both are priced in FEEDSTOCK a fresh player can chop, and their
+/// essence splits are pinned EMPTY.
 #[test]
 fn the_essence_tool_costs_no_essence() {
 	for b in [BlockType::EssenceSiphon, BlockType::Bucket] {
@@ -353,12 +336,10 @@ fn pace_tracks_what_a_craft_is_worth() {
 	}
 }
 
-/// A full bucket must be able to pay for the costliest single craft a
-/// player at that level may ask for, or that craft cannot be done AT
-/// ALL online: the server refuses on `bench_tokens < cost` and the
-/// tokens never reach it — no debit, no yield, no XP, just the
-/// standing rebase. Offline is unpaced, so single-player looks perfect
-/// while the dedicated server is a wall.
+/// A full bucket must pay for the costliest single craft a player at that level may ask for, or
+/// that craft cannot be done AT ALL online: the server refuses on `bench_tokens < cost` and the
+/// tokens never reach it — no debit, no yield, no XP, just the standing rebase. Offline is
+/// unpaced, so single-player looks perfect while the dedicated server is a wall.
 #[test]
 fn the_bucket_can_always_afford_the_costliest_op() {
 	for &b in &BlockType::ALL {
@@ -427,12 +408,9 @@ fn a_field_draw_pays_the_node_and_the_capstone_multiplies_all_of_it() {
 /// every seed has both kinds of cell in it.
 const TEST_SEED: f64 = 42.0;
 
-/// A vein cell with no Aether trace and one with, in that order.
-///
-/// WALKED rather than named, so a retune of the rate moves the test
-/// with it — a hardcoded pair of coordinates would silently land on
-/// the wrong side of the hash and start asserting the opposite of what
-/// it says.
+/// A vein cell with no Aether trace and one with, in that order. WALKED rather than named, so a
+/// retune of the rate moves the test with it — a hardcoded pair of coordinates would silently
+/// land on the wrong side of the hash and start asserting the opposite of what it says.
 fn trace_cells(seed: f64) -> ((i32, i32, i32), (i32, i32, i32)) {
 	let (mut plain, mut rich) = (None, None);
 	for y in 0..4096 {
@@ -501,23 +479,11 @@ fn a_traced_seam_pays_one_more_aether_than_the_same_seam_without_one() {
 	}
 }
 
-/// **Every priced item is buildable by a player who has just earned it.**
-/// For each essence its recipe names, some NODE that player can already see
-/// and draw pays it; for each feedstock line, the block is one the world
-/// hands out below the item's own level. A node is the only faucet, so an
-/// essence with no reachable node is a price nobody can pay.
-///
-/// Three rules, each load-bearing: the node's reveal is checked on its OWN
-/// axis, since a Mining wall on the host is a different skill and the sweep
-/// would have to invent a relationship the game does not promise (what that
-/// coupling costs is pinned by [`essence_faucets_open_where_they_always_did`]);
-/// only what a kind pays RELIABLY counts, so `node_yields` excludes the
-/// Duskstone trace; and feedstock must be world-handed and ungated by
-/// Alchemy, or the same deadlock nests one table deeper.
-///
-/// Swept over everything with a RECIPE, not just the hand-priced roster —
-/// the grid's structural blocks each carry an essence catalyst only a draw
-/// can pay.
+/// **Every priced item is buildable by a player who has just earned it**: each essence its recipe
+/// names is paid by a NODE that player can see and draw, each feedstock line by a block the world
+/// hands out below the item's own level. Three rules carry it — the reveal is checked on the
+/// node's OWN axis, since a Mining wall on the host is another skill; `node_yields` excludes the
+/// unreliable Duskstone trace; and feedstock must be world-handed and ungated by Alchemy.
 #[test]
 fn every_price_has_a_source_at_its_own_level() {
 	for &item in &BlockType::ALL {
@@ -551,19 +517,11 @@ fn every_price_has_a_source_at_its_own_level() {
 	}
 }
 
-/// **Where each essence's faucet actually opens** — the first level at which
-/// a player can both SEE a node paying it and legally swing at the node's
-/// host.
-///
-/// This is the cross-skill coupling `every_price_has_a_source_at_its_own_level`
-/// deliberately does not assert, held as a golden instead of a rule because
-/// it is a CONSEQUENCE of three tables answering to two different skills:
-/// the reveal, the host's strength wall and the yield split. None of them
-/// knows about the others, so nothing stops a retune of one pushing an
-/// essence out of reach of the recipes priced in it — and the symptom is
-/// not a failure anywhere, just a catalog whose early rows quietly cannot
-/// be bought. Terra is the one to watch: its only source manifests in
-/// STONE, so it is gated by the ROCK wall however low its own reveal goes.
+/// **Where each essence's faucet actually opens** — the first level at which a player can both SEE
+/// a node paying it and legally swing at its host. The cross-skill coupling
+/// `every_price_has_a_source_at_its_own_level` will not assert, held as a golden because it is a
+/// CONSEQUENCE of three tables — reveal, strength wall, yield split — answering to two skills and
+/// knowing nothing of each other; a bad retune fails nowhere, leaving early rows nobody can buy.
 #[test]
 fn essence_faucets_open_where_they_always_did() {
 	let mut opens: Vec<(Essence, u32)> = Vec::new();

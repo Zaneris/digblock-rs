@@ -449,15 +449,11 @@ impl Engine {
 			self.tick_accum = (self.tick_accum + dt).min(0.25);
 			let pipeline = &self.pipeline;
 			let cell_at = |x: i32, y: i32, z: i32| pipeline.cell_at(x, y, z);
-			// Never simulate through ungenerated terrain: unloaded cells
-			// are non-solid (the Java null-block), so ticking before the
-			// player's column has generated free-falls through the world
-			// — seconds of fall on web, where a fresh world streams in
-			// on the inline executor. Hold the sim, dropping the
-			// accumulated time, until the column lands (gen jobs land
-			// whole column stacks, so one feet-cell probe is enough).
-			// Outside the world's vertical range no chunk ever loads;
-			// let the void keep its historical fall.
+			// Never simulate through ungenerated terrain: unloaded cells are non-solid, so
+			// ticking before the player's column has generated free-falls through the world —
+			// seconds of fall on web. Hold the sim, dropping the accumulated time, until the
+			// column lands (gen jobs land whole column stacks, so one feet-cell probe is
+			// enough). Outside the world's vertical range no chunk ever loads; let the void fall.
 			let feet_y = (self.player.pos.y - digblock_core::player::EYE_TO_FEET).floor() as i32;
 			let column_loaded = !(0..=digblock_core::chunk::WORLD_VBLOCK).contains(&feet_y)
 				|| cell_at(
@@ -466,13 +462,11 @@ impl Engine {
 					self.player.pos.z.floor() as i32,
 				)
 				.is_some();
-			// The arrival hold suspends the sim on exactly the terms an
-			// unloaded feet column does, and for the same reason: the
-			// geometry under the player is not the geometry the server is
-			// simulating against. Predicting through it is what produced
-			// the correction that reads as being *moved* after joining —
-			// you stand on worldgen, the server stands on the journal, and
-			// the first snapshot settles it visibly.
+			// The arrival hold suspends the sim on the same terms an unloaded feet column
+			// does, and for the same reason: the geometry under the player is not the
+			// geometry the server simulates against. Predicting through it reads as being
+			// *moved* after joining — you stand on worldgen, the server stands on the
+			// journal, and the first snapshot settles it visibly.
 			let world_ready = column_loaded && self.save.arrival_hold.is_none();
 			if !world_ready {
 				self.tick_accum = 0.0;
@@ -582,17 +576,11 @@ impl Engine {
 		self.bench.pending.update_ms = ms_since(t_update);
 	}
 
-	/// One fixed tick of player simulation, and the road that answers it.
-	///
-	/// The plank is asked HERE, per tick, and never once per frame: the
-	/// resolver leaves the feet exactly on the top of the block they walk
-	/// off, so the tick support is lost is the ONE tick whose
-	/// `causeway::step_cell` names a cell level with the ground they left.
-	/// One more tick of gravity puts the feet a hair under that top and
-	/// the plank drops a whole cell instead — so a frame spanning two
-	/// ticks lays a staircase DOWN, at whatever rate the display happens
-	/// to run. Laying a plank in a cell the feet have already crossed
-	/// costs nothing: the head retires the tail either way.
+	/// One fixed tick of player simulation, and the road that answers it. The plank is asked HERE,
+	/// per tick, never once per frame: the resolver leaves the feet exactly on top of the block
+	/// they walk off, so the tick support is lost is the ONE tick whose `causeway::step_cell`
+	/// names a cell level with the ground they left. One more tick of gravity drops the plank a
+	/// whole cell, so a frame spanning two ticks lays a staircase DOWN at the display's own rate.
 	fn tick_player(&mut self, intent: PlayerIntent, dir: Vec3) {
 		self.session.tick_lerp.before_tick(self.player.pos);
 		{

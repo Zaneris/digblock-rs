@@ -13,9 +13,7 @@ use wtransport::{ClientConfig, Endpoint};
 enum Outgoing {
 	Datagram(Vec<u8>),
 	Reliable(Vec<u8>),
-	/// Stop, but finish the reliable stream first. Distinct from the
-	/// channel simply closing (which also finishes) because the caller
-	/// wants to KNOW when the flush is done — see `NetTransport::close`.
+	/// Stop, but finish the reliable stream first; the caller wants to KNOW when the flush is done.
 	Close,
 }
 
@@ -29,11 +27,9 @@ const CLOSE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250)
 /// How the client validates the server's TLS certificate.
 #[derive(Clone, Copy, Debug)]
 pub enum CertPolicy {
-	/// Trust anything — dev/LAN posture for self-signed servers. Loudly
-	/// logged; pass `--cert-hash` for real deployments.
+	/// Trust anything — dev/LAN posture for self-signed servers; pass `--cert-hash` for real ones.
 	Insecure,
-	/// Trust exactly this SHA-256 certificate hash (the server logs its
-	/// own hash at startup).
+	/// Trust exactly this SHA-256 certificate hash (the server logs its own hash at startup).
 	PinnedSha256([u8; 32]),
 }
 
@@ -132,13 +128,10 @@ impl NetTransport for ChannelTransport {
 					out.push(ev);
 				}
 				Err(crossbeam_channel::TryRecvError::Empty) => break,
-				// The background thread is GONE without having said so —
-				// it panicked, or unwound past its `disconnect` call. This
-				// used to be indistinguishable from "idle": `try_iter`
-				// yields nothing either way and `status` is a cached field,
-				// so the engine sat in a session with no snapshots, no
-				// error and no way back. Synthesize the disconnect the
-				// thread never got to send.
+				// The background thread is GONE without having said so — it panicked, or
+				// unwound past its `disconnect` call. Indistinguishable from "idle" otherwise
+				// (`try_iter` yields nothing either way and `status` is a cached field), so
+				// synthesize the disconnect the thread never got to send.
 				Err(crossbeam_channel::TryRecvError::Disconnected) => {
 					if self.status != ConnStatus::Closed {
 						self.status = ConnStatus::Closed;
@@ -152,14 +145,11 @@ impl NetTransport for ChannelTransport {
 		}
 	}
 
-	/// Ask the background thread to flush and stop, then WAIT for it —
-	/// briefly, and only here.
+	/// Ask the background thread to flush and stop, then WAIT for it — briefly, and only here.
 	///
-	/// Blocking is the point. The network thread is detached, so on a
-	/// process exit it is racing `main` returning and usually loses:
-	/// without this, closing the window would queue a goodbye that never
-	/// reached the wire, which is the whole reason a crashed client used
-	/// to sit in the server's player list until QUIC timed it out.
+	/// Blocking is the point: the network thread is detached, so on a process exit it races `main`
+	/// returning and usually loses. Without this, closing the window queues a goodbye that never
+	/// reaches the wire and the client sits in the server's player list until QUIC times it out.
 	fn close(&mut self) {
 		if self.status == ConnStatus::Closed {
 			return;
@@ -282,15 +272,11 @@ async fn run(
 			},
 		}
 	};
-	// `write_all` only buffers into the QUIC stream; dropping `conn` on
-	// the way out of this function closes the connection and takes
-	// anything unsent with it. That is fine for the error paths — there
-	// is nothing left to say to a dead peer — and NOT fine for the one
-	// that matters: a `Bye` written a line ago, so the server frees the
-	// session now instead of waiting out an idle timeout.
-	//
-	// Bounded, because `finish` waits on the peer and the peer may be
-	// gone. A timeout here costs the goodbye, not the shutdown.
+	// `write_all` only buffers into the QUIC stream; dropping `conn` closes the connection and
+	// takes anything unsent with it. Fine for the error paths, NOT fine for a `Bye` written a line
+	// ago — the server should free the session now instead of waiting out an idle timeout. Bounded,
+	// because `finish` waits on the peer and the peer may be gone: a timeout costs the goodbye,
+	// not the shutdown.
 	let _ = tokio::time::timeout(CLOSE_TIMEOUT, send.finish()).await;
 	disconnect(reason);
 }

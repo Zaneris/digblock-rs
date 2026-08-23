@@ -444,12 +444,10 @@ impl Engine {
 				fx.seed,
 			));
 		}
-		// The kindled orbs. Culled far like the markers (an additive
-		// speck at range costs a draw and shows nothing) and ramped down
-		// NEAR, or the one standing in your own cell fills the screen.
-		// Their age drives the fade-in; the last seconds of the countdown
-		// are the envelope, so a light dims out rather than blinks. Only
-		// the nearest `MAX_KINDLED_FX` are uploaded — see there.
+		// The kindled orbs. Culled far like the markers (an additive speck at range costs a draw
+		// and shows nothing) and ramped down NEAR, or the one standing in your own cell fills the
+		// screen. Their age drives the fade-in; the last seconds of the countdown are the envelope,
+		// so a light dims out rather than blinks. Only the nearest `MAX_KINDLED_FX` are uploaded.
 		let cam = self.camera.pos;
 		// One answer per orb, asked twice — to rank the share and to fill
 		// it — so a light cannot be ranked on one rule and drawn by

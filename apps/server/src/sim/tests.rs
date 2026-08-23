@@ -71,12 +71,10 @@ fn set_draw_dist_updates_and_clamps() {
 	}]);
 }
 
-/// Growing the radius must request a sync scan. The edited-column walk
-/// is event-driven off `needs_sync_scan`, which otherwise only rises
-/// when the center column moves — so a player who widened their draw
-/// distance standing still got no `JournalColumn` for the ring that
-/// just became visible, and (because `broadcast_edit` gates on
-/// `synced_columns`) no live edits there either.
+/// Growing the radius must request a sync scan. The edited-column walk is event-driven off
+/// `needs_sync_scan`, which otherwise only rises when the center column moves — so a player who
+/// widened their draw distance standing still gets no `JournalColumn` for the ring that just
+/// became visible, and (because `broadcast_edit` gates on `synced_columns`) no live edits there.
 #[test]
 fn growing_draw_dist_syncs_the_newly_visible_ring() {
 	// A pre-journaled edit in a column outside the harness Hello's
@@ -363,15 +361,11 @@ fn hostile_names_are_sanitized() {
 	assert!(roster_name.chars().all(|c| !c.is_control()));
 }
 
-/// The migration, end to end through the sim: a player joins a server
-/// they used to play on before accounts, offers the key their old
-/// character is filed under, and gets it — once.
-///
-/// The second join is the half worth having. A client that still has
-/// its old identity file sends this claim on EVERY join forever,
-/// because it cannot know which servers it has already migrated on, so
-/// "claimed already" has to be as quiet and as harmless as "never
-/// played here" — and above all must not pay out twice.
+/// The migration, end to end through the sim: a player joins a server they used to play on before
+/// accounts, offers the key their old character is filed under, and gets it — once. The second
+/// join is the half worth having: a client that still has its old identity file sends this claim
+/// on EVERY join forever, so "claimed already" has to be as quiet and harmless as "never played
+/// here" — and above all must not pay out twice.
 #[test]
 fn a_legacy_character_transfers_to_the_account_once() {
 	use digblock_core::block::BlockType;
@@ -650,16 +644,11 @@ fn gated_rock_refuses_the_dig_start() {
 	assert_eq!(sim.test_digging(1), Some(hit.cell), "gate cleared at 5");
 }
 
-/// SKILLS-DESIGN §5.3, server half — the whole ore loop in one test, because
-/// the three halves only mean anything together:
-///
-/// 1. Below the reveal, a vein is stone: the hold opens, the dig completes,
-///    and the player gets rubble and never knows.
-/// 2. At the reveal WITHOUT the siphon, `DigStart` refuses with `NeedsTool`
-///    and opens no hold — if you can see the seam, the game will not let you
-///    spend it by accident.
-/// 3. With the siphon, the completing dig writes the tier's SPENT ROCK rather
-///    than air, credits ESSENCE, and pays BOTH skills.
+/// SKILLS-DESIGN §5.3, server half — the whole ore loop in one test, because the parts only mean
+/// anything together: (1) below the reveal a vein is stone and pays rubble; (2) at the reveal
+/// without the siphon `DigStart` refuses with `NeedsTool` and opens no hold; (3) with the siphon
+/// the completing dig writes the tier's SPENT ROCK rather than air, credits ESSENCE, and pays
+/// BOTH skills.
 #[test]
 fn a_revealed_vein_needs_the_siphon_and_pays_two_skills() {
 	use digblock_core::block::BlockType;
@@ -773,13 +762,10 @@ fn a_revealed_vein_needs_the_siphon_and_pays_two_skills() {
 		"and the Alchemy cut — neither skill levels alone"
 	);
 
-	// 4. And it is timed as the ore on THIS end too. Case 3 alone
-	//    cannot show that: it holds for the ore's own length, which
-	//    satisfies a server timing the draw by either number. An ore is
-	//    several times Stone's hardness, so a server reading the cell's
-	//    hardness would hand out an Aetherock for a fraction of the
-	//    intended hold — a gap `dig_grace` comes nowhere near, and one
-	//    a modified client can simply take.
+	// 4. And it is timed as the ore on THIS end too. Case 3 alone cannot show that: it holds for
+	//    the ore's own length, which satisfies a server timing the draw by either number. An ore
+	//    is several times Stone's hardness, so a server reading the cell's hardness would hand
+	//    out an Aetherock for a fraction of the intended hold — far outside `dig_grace`.
 	let mut sim = super::harness::flat_sim_at("ore-short", eye);
 	let mut c = connect(&mut sim, 1);
 	wait_live(&mut sim, 1);
@@ -801,12 +787,10 @@ fn a_revealed_vein_needs_the_siphon_and_pays_two_skills() {
 	);
 	assert_eq!(sim.test_inventory_count(1, ore), 0, "and credits nothing");
 
-	// 5. Owning the siphon is not holding it (SIM v20). With the bar
-	//    on a block slot the tool axis still names the siphon — that
-	//    is what it is FOR, it survives a block selection — and the
-	//    server must answer exactly as it does for the bare hand
-	//    above, or a player carrying a siphon draws every seam they
-	//    look at while holding dirt.
+	// 5. Owning the siphon is not holding it (SIM v20). With the bar on a block slot the tool
+	//    axis still names the siphon — that is what it is FOR — and the server must answer
+	//    exactly as it does for the bare hand above, or a player carrying a siphon draws every
+	//    seam they look at while holding dirt.
 	let mut sim = super::harness::flat_sim_at("ore-stowed", eye);
 	let mut c = connect(&mut sim, 1);
 	wait_live(&mut sim, 1);
@@ -848,15 +832,11 @@ fn a_revealed_vein_needs_the_siphon_and_pays_two_skills() {
 	);
 }
 
-/// SKILLS-DESIGN §5.6, server half: the Resonant Pick breaks the
-/// PLANE of the face it hits, derived from the server's own raycast
-/// and its own world — the client names one cell and this end decides
-/// what the swing touched.
-///
-/// The three properties that matter, in one test because they are one
-/// mechanism: the width follows the level, every extra cell holds the
-/// same id, and the credit is one per BLOCK broken — which is what
-/// `begin_multi`'s single `inv_delta` describes.
+/// SKILLS-DESIGN §5.6, server half: the Resonant Pick breaks the PLANE of the face it hits,
+/// derived from the server's own raycast and its own world — the client names one cell and this
+/// end decides what the swing touched. The three properties, in one test because they are one
+/// mechanism: the width follows the level, every extra cell holds the same id, and the credit is
+/// one per BLOCK broken — which is what `begin_multi`'s single `inv_delta` describes.
 #[test]
 fn the_resonant_pick_breaks_the_plane_the_server_derives() {
 	use digblock_core::block::BlockType;
@@ -904,12 +884,10 @@ fn the_resonant_pick_breaks_the_plane_the_server_derives() {
 	}
 }
 
-/// A protected cell ANYWHERE in the pick's plane refuses the whole
-/// swing — proved rather than cited, because "the check already runs
-/// over the assembled `writes`" is exactly the kind of claim that
-/// stops being true the moment somebody assembles the writes
-/// differently. Nothing partially breaks: a refused action leaves the
-/// aimed cell standing too.
+/// A protected cell ANYWHERE in the pick's plane refuses the whole swing — proved rather than
+/// cited, because "the check already runs over the assembled `writes`" stops being true the moment
+/// somebody assembles the writes differently. Nothing partially breaks: a refused action leaves
+/// the aimed cell standing too.
 #[test]
 fn a_protected_cell_refuses_the_whole_pick_swing() {
 	use digblock_core::block::BlockType;
@@ -1047,12 +1025,10 @@ fn craft_only_blocks_refuse_the_dig_start() {
 	);
 }
 
-/// XP is server-computed at the two chokepoints and lands as new
-/// TOTALS: a stone dig pays the block's `dig_xp` on top of the
-/// harness's gate grant, crafting pays its `craft_xp` in Alchemy, and
-/// the totals survive reconnect and a full server reboot via the
-/// account's stored record (join sync always carries a `Skills`
-/// frame, empty for a fresh account).
+/// XP is server-computed at the two chokepoints and lands as new TOTALS: a stone dig pays the
+/// block's `dig_xp` on top of the harness's gate grant, crafting pays its `craft_xp` in Alchemy,
+/// and the totals survive reconnect and a full server reboot via the account's stored record (join
+/// sync always carries a `Skills` frame, empty for a fresh account).
 #[test]
 fn xp_awards_on_dig_and_alchemy_and_persists() {
 	use digblock_core::block::BlockType;
@@ -1196,12 +1172,10 @@ fn a_legacy_convert_is_refused_with_the_standing_rebase() {
 	);
 }
 
-/// §8.1's anti-cheat half over the bench's one remaining verb: a Craft
-/// costs the item's own `craft_pace_ticks` out of the per-player bench
-/// bucket, charged per item, so a bulk `count` cannot buy a batch's XP
-/// in one frame and a flood of single ops beyond the burst refuses
-/// with no debit — sustained throughput can never beat one craft per
-/// pace interval.
+/// §8.1's anti-cheat half over the bench's one remaining verb: a Craft costs the item's own
+/// `craft_pace_ticks` out of the per-player bench bucket, charged per item, so a bulk `count`
+/// cannot buy a batch's XP in one frame and a flood of single ops beyond the burst refuses with no
+/// debit — sustained throughput can never beat one craft per pace interval.
 #[test]
 fn crafting_pace_is_server_enforced() {
 	use digblock_core::block::{BlockType, Essence};
@@ -1551,17 +1525,11 @@ fn ward_ranks() -> Vec<(u32, i32)> {
 	out
 }
 
-/// The Ward lands whole or not at all, from the server's own view of
-/// the caster: below its rung it is refused before any debit; at it,
-/// every shell cell that was air stands as wardglass — except inside a
-/// locked region, which the sphere leaves exactly as it found it, the
-/// way a fluid write is refused at the cell — the caster's interior is
-/// untouched, the fare is gone and its XP paid at the seal.
-///
-/// The CELLS never travel. One frame says a sphere is winding, one says
-/// how it ended, and both ends derive the same plan from the head and
-/// the radius — so what a client is told about a ward is the same
-/// whether it glassed a dozen cells or a thousand.
+/// The Ward lands whole or not at all, from the server's own view of the caster: below its rung it
+/// is refused before any debit; at it, every shell cell that was air stands as wardglass — except
+/// inside a locked region, which the sphere leaves exactly as it found it — the interior untouched,
+/// the fare gone and its XP paid at the seal. The CELLS never travel: both ends derive the same
+/// plan from the head and the radius, so a dozen cells and a thousand cost the same wire.
 #[test]
 fn a_ward_closes_about_the_caster_as_a_derived_sphere() {
 	use digblock_core::block::BlockType;
@@ -1771,14 +1739,11 @@ fn a_ward_closes_about_the_caster_as_a_derived_sphere() {
 	);
 }
 
-/// What a ward costs on the wire does not scale with the sphere. Every
-/// rank — the narrowest and the widest the ladder can cast — spends the
-/// same frames to climb and the same to come apart, because both ends
-/// derive the cells from the head and the radius. That is the whole
-/// point: a per-cell broadcast at the widest rank is thousands of
-/// frames against an outbound queue whose refusal DROPS the peer, so a
-/// caster could disconnect the server's population by breaking a
-/// channel.
+/// What a ward costs on the wire does not scale with the sphere. Every rank — the narrowest and
+/// the widest the ladder can cast — spends the same frames to climb and the same to come apart,
+/// because both ends derive the cells from the head and the radius. A per-cell broadcast at the
+/// widest rank would be thousands of frames against an outbound queue whose refusal DROPS the
+/// peer, so a caster could disconnect the server's population by breaking a channel.
 #[test]
 fn a_ward_costs_the_same_frames_at_every_rank() {
 	let mut sim = flat_sim("wardframes");
@@ -1999,12 +1964,10 @@ fn a_second_ward_is_refused_and_a_second_break_refunds_nothing() {
 	);
 }
 
-/// An unwind puts back what the climb WROTE, and only where its glass
-/// still stands: a cell somebody has since changed — dug out, built
-/// over — is left exactly as they left it. The unwind is driven by the
-/// climb's own record rather than by re-deriving the sphere, which is
-/// what makes that possible: a plan drawn against a standing sphere
-/// names precisely the cells missing from it.
+/// An unwind puts back what the climb WROTE, and only where its glass still stands: a cell someone
+/// has since changed is left exactly as they left it. It is driven by the climb's own record rather
+/// than by re-deriving the sphere, which is what makes that possible — a plan drawn against a
+/// standing sphere names precisely the cells missing from it.
 #[test]
 fn an_unwind_leaves_a_cell_that_no_longer_holds_its_glass() {
 	use digblock_core::block::BlockType;
@@ -2388,12 +2351,10 @@ fn a_claimed_plank_is_bounded_three_ways() {
 		msg: ClientMsg::Cast(digblock_net::messages::CastKind::Causeway),
 	}]);
 
-	// Out of reach: one cell past the slack measured from BASE, which is
-	// what the bound compares against — at a height and depth already
-	// known claimable, so nothing but the bound can refuse it. The
-	// premise is asserted first: a cell the server has not loaded refuses
-	// with `NotLoaded`, and that would pass a weaker test for the wrong
-	// reason.
+	// Out of reach: one cell past the slack measured from BASE, which is what the bound compares
+	// against — at a height and depth already known claimable, so nothing but the bound can refuse
+	// it. The premise is asserted first: a cell the server has not loaded refuses with `NotLoaded`,
+	// which would pass a weaker test for the wrong reason.
 	let far = out_of_bound_cell(&sim, 1);
 	assert!(
 		!digblock_core::causeway::claim_ok(far, pos),
@@ -2566,12 +2527,10 @@ fn is_plank(sim: &super::Sim, c: (i32, i32, i32)) -> bool {
 	})
 }
 
-/// A plank whose column has gone is OWED, never forgotten. Only the trail
-/// can retire a plank and only a resident column can be written, so a lift
-/// that found nowhere to write would drop the trail AND leave the glass —
-/// standing for good, journaled, with nothing left that could ever take it
-/// up. Driven by carrying the caster out of residency, taking the road up
-/// while its column is gone, and bringing them back.
+/// A plank whose column has gone is OWED, never forgotten. Only the trail can retire a plank and
+/// only a resident column can be written, so a lift that found nowhere to write would drop the
+/// trail AND leave the glass standing for good, journaled, with nothing left that could take it up.
+/// Driven by carrying the caster out of residency, taking the road up, and bringing them back.
 #[test]
 fn a_plank_owed_to_an_unloaded_column_comes_up_when_it_returns() {
 	let mut sim = flat_sim("causeway_owed");
@@ -3097,14 +3056,11 @@ fn chat_flood_is_bounded_by_the_token_bucket() {
 	);
 }
 
-/// A slash line prefixed with an invisible character is a COMMAND, not
-/// chat. `is_command` used to be decided on the raw text while the
-/// handler ran on the sanitized one, and `U+200B` splits them: it is
-/// not `White_Space` (so `trim_start` leaves it) and not inside
-/// `TEXT_RANGES` (so the sanitizer removes it). The line therefore read
-/// as ordinary chat and was BROADCAST to every player as
-/// "/ban griefer" — a non-admin publishing a command, or an admin
-/// leaking one they meant to run.
+/// A slash line prefixed with an invisible character is a COMMAND, not chat. Deciding `is_command`
+/// on the raw text while the handler runs on the sanitized one splits on `U+200B`: it is not
+/// `White_Space` (so `trim_start` leaves it) and not inside `TEXT_RANGES` (so the sanitizer removes
+/// it), and the line is then BROADCAST as ordinary chat — a non-admin publishing a command, or an
+/// admin leaking one they meant to run.
 #[test]
 fn an_invisibly_prefixed_command_is_not_broadcast_as_chat() {
 	let mut sim = flat_sim("zwsp");
@@ -3363,14 +3319,11 @@ fn a_port_and_a_return_share_one_cooldown() {
 	}
 }
 
-/// Conjured light is bounded in both directions a caster could push it.
-/// A second kindle in an occupied cell REFRESHES that light rather than
-/// standing another, so the list counts lit PLACES; past
-/// `MAX_KINDLED` places a fresh one is refused before any debit. Both
-/// matter for the same reason: the list is a backlog every joiner is
-/// handed, and an unbounded one is a server nobody new can enter — so
-/// the joiner at the end of this walks in with the world at its ceiling
-/// and gets every light.
+/// Conjured light is bounded in both directions a caster could push it. A second kindle in an
+/// occupied cell REFRESHES that light rather than standing another, so the list counts lit PLACES;
+/// past `MAX_KINDLED` places a fresh one is refused before any debit. Both matter for the same
+/// reason: the list is a backlog every joiner is handed, and an unbounded one is a server nobody
+/// new can enter — so the joiner at the end of this walks in with the world at its ceiling.
 #[test]
 fn kindled_lights_are_capped_and_one_to_a_cell() {
 	use digblock_net::messages::{CastKind, CastRefusal};

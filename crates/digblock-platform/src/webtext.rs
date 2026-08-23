@@ -133,16 +133,11 @@ impl TextBridge {
 		})
 	}
 
-	/// Follow the game's text-field state. The rising edge must run
-	/// inside the activating gesture's dispatch — focusing is what raises
-	/// the keyboard, and a mobile browser only honours it there. Also the
-	/// recovery path: while the field stays active, any tap whose dispatch
-	/// reaches here re-takes the focus winit's canvas grab just stole.
-	/// The falling edge also returns focus to `canvas`: a blur alone leaves
-	/// it on the body, where winit delivers neither mouse motion nor keys
-	/// until the next click — the dead-mouse-after-chat symptom on desktop
-	/// browsers. A canvas is not editable, so a phone's keyboard still goes
-	/// down.
+	/// Follow the game's text-field state. The rising edge must run inside the activating
+	/// gesture's dispatch — focusing raises the keyboard, and a mobile browser only honours it
+	/// there; any later tap reaching here re-takes the focus winit's canvas grab just stole. The
+	/// falling edge returns focus to `canvas`, since a blur alone leaves it on the body where
+	/// winit delivers neither motion nor keys; a canvas is not editable, so the keyboard drops.
 	pub(crate) fn sync(
 		&mut self,
 		active: bool,
