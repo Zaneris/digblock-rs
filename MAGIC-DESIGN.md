@@ -130,18 +130,21 @@ The book (J) is one screen in the alchemy-page mold: a pure `SpellView::build`, 
 actions returned rather than applied. Five spell families shipped; the rest are §10's tail.
 
 - **Wisp** — a timed raise of the caster's own carried light: an ordinary entry in the GI light list wearing the
-  Wisplight row's class, level and whitening answering to the caster's Arcana (`unlock::wisp_light`, brightening and
-  whitening at `WISP_BRIGHT_AT` — R30's "level alone reads as more blue" lesson). Server debits and tracks expiry
+  `ConjuredLight` row's class, level and whitening answering to the caster's Arcana (`unlock::wisp_light`, brightening
+  and whitening at `WISP_BRIGHT_AT` — R30's "level alone reads as more blue" lesson). Server debits and tracks expiry
   session-local (`wisp_until`); the buff deliberately drops on disconnect. Remotes see it through the snapshot fx byte
   (§8).
 - **Kindle** — a standing orb of conjured light left in the cell the caster's HEAD occupies, never where they aim: the
   server validates the rung and that the cell hosts (`kindle::hosts` — anything a head fits in, water included), debits,
-  and stands the light on the sim's own clock for `kindle::SECS`, telling everyone with `ServerMsg::Kindled`. **Not a
-  block and not journaled**: it is a `gi::Emitter` under the `Wisplight` LUT row plus a `teleport.wgsl` orb, so it
-  leaves no edit behind, and its clock is its own — the caster can port away or leave the server and it burns out on
-  schedule regardless (the sim's list is what a joiner is handed). Nothing is predicted: the caster learns of their own
-  light from the same broadcast as everyone else. The earlier block-plus-sweep form tied the lifetime to the world's day
-  and the caster's vicinity; `CastKind::Kindle { cell, face }` is that form's retired verb, decodable and refused.
+  and stands the light on the sim's own clock for `kindle::SECS`, telling everyone with `ServerMsg::Kindled`. The
+  standing list is capped (`MAX_KINDLED`) at one light to a CELL — a recast refreshes rather than stacks — because only
+  expiry takes an entry off a list every joiner is handed, and keying it to lit places is what makes the ceiling
+  generous rather than a rationing of casts. **Not a block and not journaled**: it is one more entry in the client's GI
+  light list wearing the `ConjuredLight` LUT row's class, plus a `teleport.wgsl` orb, so it leaves no edit behind, and
+  its clock is its own — the caster can port away or leave the server and it burns out on schedule regardless (the sim's
+  list is what a joiner is handed). Nothing is predicted: the caster learns of their own light from the same broadcast
+  as everyone else. The earlier block-plus-sweep form tied the lifetime to the world's day and the caster's vicinity;
+  `CastKind::Kindle { cell, face }` is that form's retired verb, decodable and refused.
 - **The Ward** — a one-cell-thick sphere of glass closed about the caster's head, and the first spell that WRITES cells.
   Every cell is derived on both ends from the head and the rank's radius (`ward::sets`: the shell is the interior's
   face-boundary, which makes it sealed against fluid and as thin as a sealed shell can be), so `CastKind::Ward` carries
@@ -150,18 +153,30 @@ actions returned rather than applied. Five spell families shipped; the rest are 
   the shell or an unresident cell refuses the whole cast before any debit; a protected cell is simply not written, the
   way a fluid write is refused at the cell, so the sphere closes around a locked pad exactly as water would. The glass
   is `Wardglass`, a `conjured` row: diggable by anyone, so nobody is walled in, but a dig credits nothing and pays no XP
-  and no slot holds one — a sphere would otherwise be a faucet of panes. Nothing is predicted: the cells land through
-  `apply_write` under `NO_CLIENT_SEQ` and the caster sees them as everyone does. Three ranks (`unlock::ward_radius`),
-  each a wider sphere at a doubled fare. The closing is the GLASS, and it happens DURING the channel: `Cast(Ward)` goes
-  out as the channel begins, the plan's order is floor to crown with each ring swept around, and the cells land in that
-  order across `unlock::channel_ticks` — the server through `apply_write`, the offline engine through the same
-  `ward::Closing` — so on every client the sphere rises about the caster while they stand still and seals overhead the
-  tick the channel completes, with nothing animated but the world. An interrupted channel UNWINDS: the client sends
-  `CastBreak` (and the server breaks it on its own if the caster moves or leaves), every pane still standing comes back
-  down crown-first through the same write path, and the fare — taken as the channel began — returns. `ServerMsg::Warded`
-  is the SEAL, sent after the crown cell: the one recording (`ward_close.ogg`) and the caster's wash; a conjured cell
-  landing makes no sound of its own. A cell somebody steps into mid-climb is left unwritten — a hole where a player
-  stood, the protected cells' honesty — and a pane somebody digs out mid-climb stays dug through an unwind.
+  and no slot holds one — a sphere would otherwise be a faucet of panes. Three ranks (`unlock::ward_radius`), each a
+  wider sphere at a doubled fare. **The cells never travel.** `ward::plan` IS the shared rule — one head and one radius
+  give the same writes in the same order on both ends — so the wire carries only what identifies the sphere and how far
+  it got: `ServerMsg::WardWinding` as the channel begins and `ServerMsg::WardEnded` at the seal or the break, two frames
+  for a cast of any rank. The per-cell broadcast this replaced sent one `EditApplied` per pane, hundreds inside a single
+  tick against an outbound queue whose refusal DROPS the peer — which made a deliberately broken channel a free,
+  repeatable mass disconnect. The server still journals every cell it writes, and that is what a joiner, the resync
+  rotation and an evicted column all read, so nothing about arriving late changed. `landed` is a PLAN-PREFIX length
+  (`ward::landed_by`) and deliberately NOT a count of cells written: the two differ wherever a landing was declined, and
+  a client cannot derive which ones the server skipped, so the prefix is the one currency both ends share — and it is
+  what makes a break mid-climb exact. The closing is the GLASS, and it happens DURING the channel: the plan's order is
+  floor to crown with each ring swept around, and the cells land in that order across `unlock::channel_ticks` — the
+  caster's client and the offline engine through the same `ward::Closing`, the server through its own write path — so
+  the sphere rises about the caster while they stand still and seals overhead the tick the channel completes, with
+  nothing animated but the world. EVERY watcher runs that same climb, not just the caster: `WardWinding` names the head,
+  the radius and the span, which is the whole of what `ward::plan` needs, so a remote's sphere rises in place rather
+  than appearing whole — and `WardEnded`'s prefix reconciles whichever clock ran ahead. An interrupted channel UNWINDS:
+  the client sends `CastBreak` (and the server breaks it on its own if the caster moves or leaves), every pane still
+  standing comes back down crown-first through the same write path, and the fare — taken as the channel began — returns.
+  An unwind reads the climb's OWN record rather than re-deriving, since a plan drawn against a standing sphere names
+  precisely the cells missing from it. `WardEnded` is the SEAL as well: the one recording (`ward_close.ogg`) and the
+  caster's wash; a conjured cell landing makes no sound of its own. A cell somebody steps into mid-climb is left
+  unwritten — a hole where a player stood, the protected cells' honesty — and a pane somebody digs out mid-climb stays
+  dug through an unwind.
 - **The Mason's Arc** — Arcana's answer to the Resonant Pick: the pick widens *breaking*, the Arc widens *placing*. A
   toggle in the book; while on, a plain placement extends along the verified normal to `unlock::arc_cells` cells under
   one seq (`EditKind::PlaceArc`), debiting one block per cell. The server re-derives the line from its own raycast (the
@@ -173,19 +188,31 @@ actions returned rather than applied. Five spell families shipped; the rest are 
 ## 6. Costs & XP — Arcana is the standing essence sink
 
 - **One governor per spell.** Home is cooldown-governed and free forever; everything else is price-governed with no
-  cooldown — the channel is feel and interruption surface, not a governor.
-- Waystone fares are a hand table (`alchemy::cast_price`) that climbs the ESSENCES with the ladder as well as the
-  amounts: the lowland ports in Vitae, then Terra, the cold and the shore in Unda, the mountain in Ferrum and the far
-  cold in Aether — so Arcana's spine spends every faucet the other two ladders open rather than one, and the payability
-  pin asks each essence's own faucet. The wisp prices in Vitae (`wisp_price` — what a fresh player's first heartwood
-  draws pay, the day-one bootstrap, doubling with the burn at `WISP_BRIGHT_AT`); kindle in Terra (`kindle_price`,
-  cheapening at `KINDLE_CHEAP_AT`); the ward in Unda (`ward_price`, doubling with each radius), the water essence for
-  the spell that drives water out and the one real sink that essence has. The fares and `CAST_XP_PER_ESSENCE` are ONE
-  decision, never two: raising a fare alone would pay more XP for costing more, which is the opposite of a sink. The
-  payability pin asks the standing question: **a cast must be payable at the level that unlocks it.**
-- **XP per priced cast derives from the price** (`skills::cast_xp` = `CAST_XP_PER_ESSENCE` × the fare), so a price
-  retune moves its XP with it and no spell pays out of proportion to what it drains. Home derives from distance instead
-  (§2), and the Arc pays zero — the three shapes are pinned together.
+  cooldown — the channel is feel and interruption surface, not a governor. Underneath all of them the server keeps a
+  per-client token bucket (`CAST_BURST`/`CAST_RATE_PER_SEC`) spent by every `Cast` ATTEMPT, refused ones included: a
+  ward's validation derives a whole sphere and scans every player against it BEFORE anything can be refused, so a bucket
+  that charged only for success would leave that work unbounded. It is an abuse ceiling, not a pacing knob — a channel
+  outlasts the whole burst, so no honest client reaches it, and running dry is silent.
+- Waystone fares are a hand table (`alchemy::cast_price`) that climbs the ESSENCES with the ladder: the lowland ports in
+  Vitae, then Terra, the cold and the shore in Unda, the mountain in Ferrum and the far cold in Aether — so Arcana's
+  spine spends every faucet the other two ladders open rather than one, and the payability pin asks each essence's own
+  faucet. The AMOUNT rises with remoteness only WITHIN an essence; across them it cannot, and the far cold's is the
+  smallest figure in the table. The wisp prices in Vitae (`wisp_price` — what a fresh player's first heartwood draws
+  pay, the day-one bootstrap, doubling with the burn at `WISP_BRIGHT_AT`); kindle in Terra (`kindle_price`, cheapening
+  at `KINDLE_CHEAP_AT`); the ward in Unda (`ward_price`, doubling with each radius), the water essence for the spell
+  that drives water out — shared with the cold and shore ports, so the one springstone faucet feeds both halves of the
+  ladder. The fares and the cast-XP rates are ONE decision, never two: raising a fare alone would pay more XP for
+  costing more, which is the opposite of a sink. The payability pin asks the standing question: **a cast must be payable
+  at the level that unlocks it.**
+- **XP per priced cast derives from the price, weighted by the essence it drains.** `skills::cast_xp` takes the fare's
+  essence as well as its amount and multiplies by `cast_xp_per_unit`, which answers `CAST_XP_PER_ESSENCE` for four of
+  the five and `AETHER_CAST_WORTH` times that for Aether. A unit is not one worth across the ladder — Aether is the one
+  essence nothing can transmute INTO, so what a single unit of it buys is a whole passage priced in anything else — and
+  the unit-blind rate this replaced was a real regression the moment the fares started climbing: it paid the endgame far
+  cold port the LEAST Arcana of any port in the roster. A price retune still moves its XP with it, and
+  `the_port_tables_are_twins_and_the_fare_is_payable` sweeps the level-sorted roster to keep the award STRICTLY rising
+  with remoteness, which is the property the amounts alone can no longer carry. Home derives from distance instead (§2),
+  and the Arc pays zero — the three shapes are pinned together.
 - **The fares ARE Arcana's XP spine** — there is no other Arcana faucet but repeatable play: ports, returns, kindles and
   wisps, each paying what it drains (§3 records why the first-arrival milestone was withdrawn). Records written while
   milestones existed carry Arcana totals this ladder cannot produce, so the player store winds Arcana — and only Arcana
@@ -206,15 +233,18 @@ and therefore serves Arcana for free.
 - **The spawn spell needed no wire at all**: the channel is client pacing in front of `ClientMsg::ReturnToSpawn`.
 - **`ClientMsg::Cast(CastKind)`** — shaped for the whole roster from day one (`Waystone(kind)`, `Wisp`,
   `Kindle { cell, face }`, v33's `KindleHere`, which carries nothing because the server already holds the head, and
-  v34's `Ward`, which carries nothing for the same reason) so it never needs a v2. The ward's cells ride the standing
-  `EditApplied` broadcast; **`ServerMsg::Warded { by, head, radius }`** (v34) is the seal, and
-  **`ClientMsg::CastBreak`** (v34) the caster's word that the channel broke — the reason `MIN_PROTOCOL` is v34: everyone
-  receives the seal, and a v33 client would also walk through a `Wardglass` it decodes as air.
-  **`ServerMsg::Kindled { cell, secs_left }`** (v33) is every standing light, to everyone on the cast and to a joiner as
-  backlog — and the reason `MIN_PROTOCOL` is v33, since an older client would be disconnected by anybody's cast.
-  **`ServerMsg::Waystones`** carries the world's resolved sites in join sync (server state the client cannot derive —
-  each eye was resolved against the journal once and stored). **`ServerMsg::CastRefused(CastRefusal)`** is a reason,
-  never a sentence — `voice` chooses the words.
+  v34's `Ward`, which carries nothing for the same reason) so it never needs a v2. A ward's cells do not ride the wire
+  at all: **`ServerMsg::WardWinding { by, head, radius, span }`** and
+  **`ServerMsg::WardEnded { by, head, radius, landed, sealed }`** (both v35) are the whole of it, two frames per cast
+  with both ends deriving the sphere from `ward::plan`, and **`ClientMsg::CastBreak`** (v34) is the caster's word that
+  the channel broke. The pair is why `MIN_PROTOCOL` is v35, and for both of the reasons a floor ever rises: a client
+  that cannot decode them stands inside a sphere it never sees, and the retired `Warded` it replaced means an older one
+  would decode `WardWinding` as the seal whose tag it took. **`ServerMsg::Kindled { cell, secs_left }`** (v33) is every
+  standing light, to everyone on the cast and to a joiner through the reserved join-sync pump BEHIND its journal columns
+  — bursting the backlog inline could fail the join outright once enough lights stood. **`ServerMsg::Waystones`**
+  carries the world's resolved sites in join sync (server state the client cannot derive — each eye was resolved against
+  the journal once and stored). **`ServerMsg::CastRefused(CastRefusal)`** is a reason, never a sentence — `voice`
+  chooses the words.
 - **`EditKind::PlaceArc`** rides the standing edit request so craft-then-place ordering and slot declaration hold.
 - **Remote-visible casting** is one appended snapshot byte: `RemoteState.fx` (`pack_fx`/`unpack_fx` — kind, whitened,
   level), today carrying **the wisp only**, because a wisp is the one effect whose look depends on state not in the

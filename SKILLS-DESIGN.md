@@ -1034,9 +1034,10 @@ golden hashes untouched.
   transmutation proper is what they are for. Bulk building therefore costs mostly the rock you quarried, and essence
   taxes lightly but universally — the purpose it lacked. Waste still applies, to the catalyst alone.
 - **The deadlock rule generalized: the essence tool costs no essence, ever.** Every essence is a siphon draw now, so the
-  siphon — and the bucket, which shares its day-one footing — is priced in feedstock alone (felled timber), pinned by
-  `the_essence_tool_costs_no_essence`. "Dig your way to the trees, fell a few, make your vessels" is the opening loop;
-  the heartwood you can already see is the first draw, and leystone at its early reveal supplies the torch.
+  siphon — and the bucket a few rungs past it, whose own rung is meant to be its whole gate — is priced in feedstock
+  alone (felled timber), pinned by `the_essence_tool_costs_no_essence`. "Dig your way to the trees, fell a few, make
+  your vessels" is the opening loop; the heartwood you can already see is the first draw, and leystone at its early
+  reveal supplies the torch.
 - **XP follows the finds, and each award carries more.** Alchemy XP is field draws (`skills::field_xp`, now covering
   every node kind — the surface kinds pay Alchemy-primary with a Mining cut, inverting the ore tiers' split, because the
   headline follows the skill that revealed the find) plus craft XP, and nothing repeatable against an unbounded supply.

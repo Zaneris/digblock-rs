@@ -66,11 +66,14 @@ same argument twice in a `//!` header and the item below it. Git carries all of 
 ```sh
 just run                  # desktop app
 just run --drill          # lifecycle drill (suspend/resume + device-loss)
+just run --knobs          # print the scene roster from `knobs::ALL` and exit; the web
+                          # harness's --help runs this on any built binary, never a copy
 just bench                # deterministic perf run: release, scripted flight, CSV + summary
                           # --no-vsync for uncapped raw-cost percentiles; findings in BENCH.md
 just test [FILTER]        # the whole suite, --no-fail-fast: one run lists every golden a
                           # change moved, instead of one per run
-just gate                 # check + check-ios + check-web, the three-command habit in one word
+just gate                 # check + check-ios + check-web + web-e2e, the four-command habit
+                          # in one word — the browser suite goes last and goes IN
 just check                # the gate: fmt --check, clippy -D warnings, `just test`
                           # (needs Docker: server e2e boots the apps/master container)
 just check-ios            # cargo check for aarch64-apple-ios (no Xcode needed)
@@ -82,7 +85,10 @@ just check-shaders        # every shader through real Chrome's WGSL front end �
                           # cannot be (DIG_CHROME=<path> if Chrome lives somewhere unusual)
 just web-shot <flags>     # `just run` for the browser: the desktop flags, driving the real
                           # bundle in headless Chrome via Playwright; --help lists them
-just web-e2e [FILTER]     # the browser smoke suite (tools/web-e2e/tests)
+just web-e2e [FILTER]     # the browser smoke suite (tools/web-e2e/tests); FILTER is a
+                          # regex over the test TITLE, and `just web-unit` runs first
+just web-unit             # the harness's own PNG decoder under `node --test` — no Chrome,
+                          # no bundle; a decode bug makes every browser assertion PASS
 just play                 # master container + native server + client at the menu
 just play-web             # same but serving the web bundle
 just play-docker wifi     # desktop client vs containerized stack (clean | wifi | cellular netem)
@@ -129,21 +135,26 @@ For `just run`:
   A/B levers only, GI-DESIGN.md R36 owns the rules.
 - **Scenes** — every one is a row of `digblock_client::knobs::ALL`, which BOTH launchers parse through one function: the
   desktop reads `DIG_VAULT` from the environment, the web page reads `?vault` from its URL, and a knob cannot exist on
-  one platform and not the other. A malformed value, an unknown `?key`, and a flag spelled `=0` are all handled there
-  (fatal, fatal, ON — `DIG_VAULT=0` builds the vault). `DIG_VAULT` (sealed stone vault + torch; `DIG_VAULT_DARK=1` drops
-  the torch and implies it), `DIG_ROOF`, `DIG_TUNNEL` (sealed bore past the cascades' coverage — the unproven-daylight
-  capture; pair with a low `--pos`, and the same run above `SEA_LEVEL` is the geometry-identical control), `DIG_DIVE`,
-  `DIG_SHAPES`, `DIG_RIVER` (flooded basin + `--pitch -35`, the only pose with a SHADED water surface on screen),
-  `DIG_WARD=<radius>` (a ward closing about spawn with no cast behind it, at the cast's own climb; `DIG_WARD_AGE=<secs>`
-  holds the climb that far in), `DIG_PLAYERBOX=<item>` (a fake remote holding a HELD-ITEM WIRE id, so the scene walks
-  the real `held_icon` decode), `DIG_MINING=<level>`, `DIG_TORCHES=<n>` / `DIG_TORCHES_FAR=<n>` / `DIG_TORCHES_WALL=1`,
+  one platform and not the other. A malformed value and a flag spelled `=0` are settled there (fatal, ON — `DIG_VAULT=0`
+  builds the vault); an unknown NAME is fatal on BOTH sides, one level up and against the same table: the page checks
+  each `?key` against `PAGE_PARAMS` ∪ `knobs::ALL`, and the desktop SWEEPS the environment for a `DIG_*` outside
+  `knobs::ALL` plus its own short list. Reading the table can only MISS a misspelled variable, so the sweep is the only
+  direction that catches one. `DIG_VAULT` (sealed stone vault + torch; `DIG_VAULT_DARK=1` drops the torch and implies
+  it), `DIG_ROOF`, `DIG_TUNNEL` (sealed bore past the cascades' coverage — the unproven-daylight capture; pair with a
+  low `--pos`, and the same run above `SEA_LEVEL` is the geometry-identical control), `DIG_DIVE`, `DIG_SHAPES`,
+  `DIG_RIVER` (flooded basin + `--pitch -35`, the only pose with a SHADED water surface on screen), `DIG_WARD=<radius>`
+  (a ward closing about spawn with no cast behind it, at the cast's own climb; `DIG_WARD_AGE=<secs>` holds the climb
+  that far in), `DIG_PLAYERBOX=<item>` (a fake remote holding a HELD-ITEM WIRE id, so the scene walks the real
+  `held_icon` decode), `DIG_MINING=<level>`, `DIG_TORCHES=<n>` / `DIG_TORCHES_FAR=<n>` / `DIG_TORCHES_WALL=1`,
   `DIG_CONFETTI=1`, `DIG_CRACK=<percent>`, `DIG_SIPHON=<percent>` (rides `DIG_ORE`, fatal without it), `DIG_DOORS=1`,
   `DIG_CAST=<percent>` (poses the cast channel's aura at that progress with no hold behind it), `DIG_ORE=<tier 1..=4>`
   (hollows a chamber around the nearest deposit and grants its level — the carve must not touch the vein, or the
   anti-dupe deletes what is being photographed), `DIG_NODE=<heartwood|leystone|springstone>`,
-  `DIG_SCREEN=menu|inventory|alchemy|transmute|transmuting|skills|spellbook|hand|bucket|bucket-full|torch|siphon|pick|sigil`
+  `DIG_SCREEN=menu|inventory|inventory-hover|alchemy|alchemy-hover|transmute|transmuting|skills|spellbook|spellbook-hover|hand|bucket|bucket-full|torch|siphon|pick|sigil`
   (the pages are input-only and otherwise invisible to headless capture; the tool names cycle the roster, and screen
-  stocking grants every tool since a fresh player owns none).
+  stocking grants every tool since a fresh player owns none). The table's remaining rows are levers rather than scenes —
+  `DIG_STUB` and `DIG_GI_ITERS` above, `DIG_SPIKELOG` below, plus `DIG_GI=<window|probes>` (paint the voxel window or
+  the probe field) and `DIG_CHUNK_SLOTS=<n>`.
 - **Gotchas**: `--size` sets logical size; the physical framebuffer follows the display's backing scale. **`--display N`
   is mandatory for any frame-time bracket** — refresh rate rides the screen, and a display-paced frame lets the GPU
   downclock (two different `refresh_ms` across a bracket is the tell). Physics ticks ride the wall clock, so cross-build
@@ -284,9 +295,9 @@ Block behaviour is data-driven via the `blocks!` macro — one row produces the 
 `PROPS` table together. Adding a block = one row + PNG + `LAYERS` entry. Per-shape geometry, the slab rules and the
 physics contracts are documented at the code in `shapes.rs` and `player.rs`; these are the cross-file ones:
 
-- A row states what a dig hands back in exactly one of two ways, never both (`table_sanity`): `drops(x)` is
-  unconditional, `crumbles(x)` applies to the WORLD'S copy alone. `dig_drop()` is the pristine answer;
-  `dig_credit(edited, alchemy)` is what an actual dig pays.
+- A row states what a dig hands back in exactly one of three ways, never two (`dig_table_sanity`): `drops(x)` is
+  unconditional, `crumbles(x)` applies to the WORLD'S copy alone, and `conjured` answers NOTHING on a row that stays
+  diggable. `dig_drop()` is the pristine answer; `dig_credit(edited, alchemy)` is what an actual dig pays.
 - The texture layer index is RUNTIME ONLY (mesh vertex bits, never the wire or a save), so the list may be reordered —
   what it may not do is drift from `digblock_core::block::tex`, which mirrors it position for position; a `const` assert
   in `digblock-client/src/texture.rs` fails the BUILD on a skew. **`LOG`/`LOG_TOP` is the tree; the `LUMBER_*` set is
@@ -315,7 +326,9 @@ physics contracts are documented at the code in `shapes.rs` and `player.rs`; the
 Three skills (Mining, Alchemy, Arcana), designed in `SKILLS-DESIGN.md` and — for Arcana — `MAGIC-DESIGN.md`. Everything
 shared lives in `digblock-core/src/skills.rs`. **A `conjured` block row (`Wardglass`) is the one diggable thing that
 credits nothing, pays no XP and claims no slot** — the Ward writes hundreds of them for one fare, so any of the three
-would make a spell a faucet; `ward::plan` derives every cell on both ends and lands all or nothing, the Arc's rule:
+would make a spell a faucet; every clause of that sentence, diggability included, is swept by
+`a_conjured_row_pays_nothing_and_is_still_diggable`, and `ward::plan` derives every cell on both ends and lands all or
+nothing, the Arc's rule:
 
 - The `Skill` enum is `repr(u8)` and **append-only** — the index is a wire/persistence format. Storage is XP-only `u64`
   totals; level is always derived. The XP curve is a **pinned integer table**, never `powf`.
@@ -323,7 +336,8 @@ would make a spell a faucet; `ward::plan` derives every cell on both ends and la
   decides how the journey between them is spent, so the SHAPE is authored once and no family can drift. The taper's
   increments **strictly decrease**. `hardness_ticks` is the BASE the curve scales, **not** the duration at any reference
   level: don't assert that `dig_required` at some level returns the raw hardness, and don't hardcode a hold length in a
-  test — derive it.
+  test — derive it. Both ends time a dig against these tables INDEPENDENTLY, so retuning `hardness_ticks` or the node
+  layer over it bumps `SIM_VERSION`, exactly as a physics or worldgen change does.
 - **Letting go of a hold decays it, it does not reset it.** Client prediction, the server's `DigState`, the completion
   gate and offline play all call ONE function, `dig_decayed`; both ends store the banked PEAK plus an idle count and
   never decrement in place, which is what stops two rounding chains drifting apart. Every seam errs in the server's
@@ -336,13 +350,15 @@ deliberate pins fire — `unlock/tests.rs`, and the faucet golden in `alchemy/te
 `just test` names all of them at once. That claim is checkable, and worth re-checking after any change here: bump a
 threshold, run the suite, and every test that fails should be a pin. One that is not is a copy somebody wrote down.
 Nothing else should move: the character screen's teasers READ their levels. `craft` and `pickup` are DERIVED, never
-tabled. Two dig gates, one pattern: `mine` is the strength wall keyed on the `DigFamily`, so every block of a family
-opens together; `mine_material` is a SECOND gate, and `mine` takes the later of the two, so a material can only push a
-block later, never earlier. `pickup` refuses a **craft-only** block below its own craft level, keying on the DROP and on
-craft-*only*, never craftability — `Wood` has a recipe and grows on trees. Everything asks `dig_blocked`, which returns
-the first unmet `Requirement` — the block, the skill and the level. No wording lives in core: the client's `voice` turns
-one into the ONE sentence that gate speaks, naming the block and the level that opens it, which is why the wire sends a
-reason and never a sentence.
+tabled. **Two gates, one pattern, on each ladder**: `mine` is `mine_family`'s strength wall keyed on the `DigFamily`, so
+every block of a family opens together, MAX'd with `mine_material`; `pickup` is the craft-only recipe level MAX'd with
+`draw_material`, `mine_material`'s Alchemy twin over the surface nodes. The second term keys on the SUBSTANCE and can
+only push a block later, never earlier, and both exist for the same reason — a face standing in a cell OUTRIGHT, placed
+or regrown, is ordinary chunk data every visitor's mesh shows, which neither strength nor a recipe covers. `pickup`'s
+recipe half keys on the DROP and on craft-*only*, never craftability — `Wood` has a recipe and grows on trees.
+Everything asks `dig_blocked`, which returns the first unmet `Requirement` — the block, the skill and the level. No
+wording lives in core: the client's `voice` turns one into the ONE sentence that gate speaks, naming the block and the
+level that opens it, which is why the wire sends a reason and never a sentence.
 
 **XP is server-computed at exactly three chokepoints** — the dig-credit block in `sim/edits.rs`, `process_alchemy` and
 `process_cast` — and reaches the client as `ServerMsg::XpGain` carrying the new **TOTAL** (idempotent, reorder-safe).
@@ -477,11 +493,16 @@ corners are chosen must be checked against the mapping and not just the codes.
 
 `digblock-core/src/worldjob.rs` is the seam and carries three rules: `grass` (creep onto sunlit dirt, smother under
 covers), `leaves` (foliage rots once nothing anchors it) and `regrow` (a spent node may come back, at odds that climb
-with the day's peak head-count). Conjured light is deliberately NOT one: a kindled light is a timed `gi::Emitter`
-(`digblock-core/src/kindle.rs`), never a cell, so no sweep can touch it and no journal carries it. A `WorldJob` runs on
-a clock over blocks of a given type near active players, and every `apply` gets a `Run` — the slot AND the day's peak
-players — snapshotted when the sweep starts. **This is not fluid and must not be built on it** — fluid is a continuous
-per-tick sim over cells in flight, this is a rare batch sweep. They share only their write path.
+with the day's peak head-count). Conjured light is deliberately NOT one: a kindled light is a timed emitter on a clock
+of its own (`digblock-core/src/kindle.rs`), never a cell, so no sweep can touch it and no journal carries it.
+`conjured_light` is the fourth REGISTERED job and the exception that proves that rule — a MIGRATION, not a rule of the
+world: nothing played today can write a `ConjuredLight` cell, but worlds journaled before the change replay theirs — the
+row is named for what the KINDLE spell used to place, not for the wisp, which has never been a cell — and an orphan has
+no dig time and is not `is_replaceable`, so the sweep is the only thing that can clear one. It matches nothing in a
+world holding none, and can be deleted once no world can. A `WorldJob` runs on a clock over blocks of a given type near
+active players, and every `apply` gets a `Run` — the slot AND the day's peak players — snapshotted when the sweep
+starts. **This is not fluid and must not be built on it** — fluid is a continuous per-tick sim over cells in flight,
+this is a rare batch sweep. They share only their write path.
 
 - **The clock is the GAME's day** (`sun::DAY_SECS`), fixed by `Schedule` rather than chosen per job — a server's local
   09:00 means nothing to a player elsewhere, and the game clock is already dictated to every client.
@@ -492,7 +513,8 @@ per-tick sim over cells in flight, this is a rare batch sweep. They share only t
   **Watch it when a new block becomes a node host.**
 - Core is IO-free: `tick` reads through `CellSource` and RETURNS writes, so each side applies them through its own
   authoritative path — the server's `apply_write` (journal, protection, LWW, broadcast) and the engine's
-  `Pipeline::set_cell` offline. Both arms run the same scheduler, or a rule forks.
+  `Pipeline::set_cell` offline. Both arms register from ONE roster, `worldjob::production()`
+  (`the_production_roster_is_pinned`), so a job cannot reach one host and miss the other.
 - Catch-up is capped at one run (`last_run` advances when a sweep STARTS); one sweep at a time; the column set is
   snapshotted at the start, because players move and a shifting set gives uneven coverage.
 - **Leaf decay's frontier candidates are its propagation engine**: a felled trunk's edits expose only the adjacent ring
@@ -596,20 +618,25 @@ multiplayer would be recording a guess.
 ## Browser client
 
 Chrome via wasm32-unknown-unknown + WebGPU. Query params mirror desktop flags (`PAGE_PARAMS` in `apps/web/src/lib.rs` is
-the page's own vocabulary, `knobs::ALL` the shared scenes; the page REFUSES a key outside the two, so a typo cannot
-photograph the wrong scene). `?frames=N` is the web's `--exit`, `?capture` its `--screenshot` (hermetic, menu-less,
-input-deaf), `?play` skips the menu on an otherwise interactive run — the scripted-input path; defaults are full desktop
-quality, and a coarse-pointer device boots `EngineConfig::web_mobile` instead — shorter draw distance with the slider's
-lower rungs open (`settings::DRAW_FLOOR`) — with saved settings and URL params still winning.
+the page's own vocabulary, `knobs::ALL` the shared scenes; the page REFUSES anything else, and the desktop refuses an
+unknown `DIG_*` the same way, so a typo cannot photograph the wrong scene on either — the ONE tolerated extra being
+`auth::CALLBACK_PARAMS`, because `take_callback` scrubs the sign-in residue from the URL only AFTER it matches a pending
+request, so a callback arriving without one (another tab, cleared storage, a pasted link) hard-failed boot as a typo.
+Naming the two keys is narrower than exempting the check). `?frames=N` is the web's `--exit`, `?capture` its
+`--screenshot` (hermetic, menu-less, input-deaf), `?play` skips the menu on an otherwise interactive run — the
+scripted-input path; defaults are full desktop quality, and a coarse-pointer device boots `EngineConfig::web_mobile`
+instead — shorter draw distance with the slider's lower rungs open (`settings::DRAW_FLOOR`) — with saved settings and
+URL params still winning.
 
 - **Drive it from `tools/web-e2e`, never by hand.** `just web-shot` is `just run` for the browser — same flags, same
-  spellings, translated to the query — and `just web-e2e` is the Playwright smoke suite; `lib/digblock.mjs` is the
-  driver both share (`boot` → first frame, `exit` → `digblock-exit`, `shot` → a decoded PNG with luminance/colour stats,
-  `keys`, `metrics`, `trouble`). It runs the INSTALLED Chrome headless with WebGPU on, so no browser downloads and the
-  GI path that renders is the one players get. A test asserts what a pixel shows, never a DOM: the page is one canvas.
-  `--dpr N` is Playwright's emulation, which Chromium only half honours — the driver corrects the `ResizeObserver` box
-  winit sizes the canvas from, and `--native` drops emulation for the real display when a size question needs a second
-  opinion.
+  spellings, translated to the query, and its `--help` runs `--knobs` on whatever desktop binary is already built rather
+  than keeping a second roster — and `just web-e2e` is the Playwright smoke suite, `just web-unit` its decoder half;
+  `lib/digblock.mjs` is the driver both share (`boot` → first frame, `exit` → `digblock-exit`, `shot` → a decoded PNG
+  with luminance/colour stats, `keys`, `metrics`, `trouble`). It runs the INSTALLED Chrome headless with WebGPU on, so
+  no browser downloads and the GI path that renders is the one players get. A test asserts what a pixel shows, never a
+  DOM: the page is one canvas. `--dpr N` is Playwright's emulation, which Chromium only half honours — the driver
+  corrects the `ResizeObserver` box winit sizes the canvas from, and `--native` drops emulation for the real display
+  when a size question needs a second opinion.
 - The loading overlay is a fixed contract with the platform layer (`digblock-gpu-ready`, `digblock-first-frame`,
   `digblock-exit`, `digblock-fatal`), and **it must be PAINTED before wasm instantiation begins** — the double-rAF in
   index.html is what guarantees that on a cold mobile load. Every stage behind it can HANG rather than fail, so a

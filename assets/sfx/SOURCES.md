@@ -24,9 +24,9 @@ Commons Zero).
 ## Synthesized (CC0 by construction)
 
 Generated in-repo with ffmpeg `anoisesrc` noise + filters, tail crossfaded into the head for a silent loop seam (the
-build recipe lives in the commit that added these files). The two `siphon_*` recipes pin their noise seeds and the Ogg
-serial, so re-running one reproduces the committed file byte for byte and a recipe that has drifted from its output says
-so; the older entries pin neither, and reproduce the sound rather than the bytes.
+build recipe lives in the commit that added these files). The two `siphon_*` recipes and `ward_close.ogg` pin their
+noise seeds and the Ogg serial, so re-running one reproduces the committed file byte for byte and a recipe that has
+drifted from its output says so; the older entries pin neither, and reproduce the sound rather than the bytes.
 
 - `waterfall.ogg` — brown noise bandpassed 120–2400 Hz + a white-noise hiss layer, 7 s loop
 - `ambient_wind.ogg` — pink noise lowpassed at 900 Hz with a 0.13 Hz swell, 14 s loop
@@ -162,13 +162,10 @@ so; the older entries pin neither, and reproduce the sound rather than the bytes
   oggenc -q 3 -o splash.ogg splash.wav
   ```
 
-## Wanted (placeholders in use)
-
 - `ward_close.ogg` — the Ward SEALING, 2.0 s one-shot, heard flat by the caster and placed at the head for everyone
   else. The climb itself has no recording: the glass rises through the cast channel, under the channel's own loop, and
   this is the crown cell landing — a C-major bell chord (C6 G6 C7 E7) with two inharmonic partials for the glass, a
-  short high-passed noise "tss", and a soft 55 Hz thump underneath for weight, all decaying into silence. Noise seed and
-  Ogg serial pinned, the siphon recipes' rule.
+  short high-passed noise "tss", and a soft 55 Hz thump underneath for weight, all decaying into silence.
 
   ```sh
   ffmpeg -f lavfi -i "aevalsrc=exprs='\
@@ -186,6 +183,8 @@ so; the older entries pin neither, and reproduce the sound rather than the bytes
   alimiter=level_in=1:level_out=0.72,afade=t=out:st=1.8:d=0.2" -fflags +bitexact -ar 44100 -ac 1 ward_close.wav
   oggenc -q 3 -s 2718 -o ward_close.ogg ward_close.wav
   ```
+
+## Wanted (placeholders in use)
 
 The Arcana cast set currently reuses existing recordings (see `digblock-client/src/audio.rs::bytes`): `CastLoop` plays
 `siphon_draw.ogg`, `TeleportOut` plays `siphon_take.ogg`, `TeleportIn` plays `level_unlock.ogg`. Wanted, CC0: a soft
