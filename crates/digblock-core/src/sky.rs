@@ -35,7 +35,7 @@ pub const SUN_GAIN: f32 = 1.0;
 /// survives a retune. The caster lane fades it again by
 /// [`crate::sun::MOON_STRENGTH`] before it reaches a face; this is the
 /// colour half, which the probe field and the sun-DDA gates read alone.
-pub const MOON_GAIN: f32 = 0.294;
+pub const MOON_GAIN: f32 = 0.397;
 
 const SUN_PEAK: f32 = LIGHT_CEILING * SUN_GAIN;
 const MOON_PEAK: f32 = SUN_PEAK * MOON_GAIN;
