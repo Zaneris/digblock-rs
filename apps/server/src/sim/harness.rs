@@ -17,7 +17,15 @@ use tokio::sync::mpsc::{Receiver, channel};
 pub(crate) const SEED: f64 = 42.0;
 
 pub(crate) fn temp_dir(tag: &str) -> PathBuf {
-	let dir = std::env::temp_dir().join(format!("dbsim-{tag}-{}", std::process::id()));
+	// Unique per CALL, not per tag. Two tests sharing a tag land on one directory — the pid
+	// cannot separate them, they are the same process — and the harness wipes the directory
+	// before handing it over, so one test's `remove_dir_all` runs while the other is opening its
+	// journal in it. That fails a construction under load and nowhere else, which is the worst
+	// kind of flake to chase. The counter makes the collision impossible, rather than asking
+	// every new test to check the words the others already took; the tag stays for readability.
+	static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+	let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+	let dir = std::env::temp_dir().join(format!("dbsim-{tag}-{}-{n}", std::process::id()));
 	let _ = std::fs::remove_dir_all(&dir);
 	dir
 }
