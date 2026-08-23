@@ -518,6 +518,13 @@ pub struct Sim {
 	/// plan fixed as the channel began; the climb lasts the channel and
 	/// UNWINDS if the caster breaks it, moves, or leaves.
 	closings: Vec<WardClosing>,
+	/// Causeway planks whose removal could not land — an unloaded column
+	/// or an unhealthy journal. Held by the SIM because the trail that
+	/// knew about them is already gone with its caster, and this is the
+	/// one write here that must eventually LAND rather than be skipped
+	/// the way fluid's and the sweeps' are: skipped, the glass stands for
+	/// good. Retried each tick (`causeway::OWED_CAP` bounds the leak).
+	owed_planks: std::collections::VecDeque<digblock_core::causeway::Cell>,
 }
 
 /// One ward climbing about a channelling caster: the cells still to
@@ -636,6 +643,7 @@ impl Sim {
 			presence: digblock_core::presence::RollingPeak::day(),
 			kindled: Vec::new(),
 			closings: Vec::new(),
+			owed_planks: std::collections::VecDeque::new(),
 		})
 	}
 
@@ -688,7 +696,7 @@ impl Sim {
 		// with the list a joiner is handed.
 		let tick = self.tick;
 		self.kindled.retain(|k| k.until > tick);
-		self.expire_causeways();
+		self.pump_causeways();
 		self.tick += 1;
 		if self.tick.is_multiple_of(SNAPSHOT_DIVISOR) {
 			self.send_snapshots();

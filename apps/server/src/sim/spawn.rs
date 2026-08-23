@@ -125,6 +125,12 @@ impl Sim {
 	/// tell the client, and re-derive residency. `look` zero = keep the
 	/// current view.
 	pub(super) fn teleport_client(&mut self, conn_id: u64, pos: Vec3, look: Vec3) {
+		// Before the interest centre moves: a causeway is retired by the
+		// trail that laid it and only a resident column can be written, so
+		// a road left standing a world away is a road nothing can ever
+		// take up. The SPAN survives — the caster keeps the seconds they
+		// paid for, and the road resumes under them where they land.
+		self.retire_road(conn_id);
 		let Some(client) = self.clients.get_mut(&conn_id) else {
 			return;
 		};

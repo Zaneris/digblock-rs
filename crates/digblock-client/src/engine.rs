@@ -1204,3 +1204,6 @@ mod cast_tests;
 
 #[cfg(test)]
 mod ore_capture_tests;
+
+#[cfg(test)]
+mod causeway_tests;

@@ -7,11 +7,25 @@
 //! session-local is the TRAIL, which is why a departure takes the road
 //! up: a trail nobody holds could never retire itself, and the planks
 //! would stand forever.
+//!
+//! That makes retirement the one write here that has to LAND rather than
+//! be skipped the way fluid's and the sweeps' are, and it can only be
+//! written to a RESIDENT column. Two things answer for it: a teleport
+//! retires the road on the spot, before the interest centre moves; and a
+//! removal that still finds nowhere to go is OWED
+//! (`Sim::owed_planks`) and retried, rather than dropped with the trail
+//! that knew about it.
 
-use super::{Client, NO_CLIENT_SEQ, Sim, TICK_RATE, client_send};
+use super::{Client, NO_CLIENT_SEQ, SERVER_ID, Sim, TICK_RATE, client_send};
 use digblock_core::causeway::{self, Cell};
 use digblock_core::skills::Skill;
 use digblock_net::messages::{CastRefusal, RejectReason, ServerMsg};
+
+/// How many unreturned planks the sim carries before the oldest gives
+/// way. A road owes at most `causeway::TRAIL`, so this is several roads'
+/// worth — a bound on a leak that only opens when a column unloads (or
+/// the journal fails) between a road being laid and coming up.
+const OWED_CAP: usize = 64;
 
 impl Sim {
 	/// Begin the road, or — recast while one stands — take it up. The
@@ -130,9 +144,19 @@ impl Sim {
 		Ok(())
 	}
 
-	/// Every road whose span has run out comes up. A comparison rather
-	/// than a countdown, so a client's own clock and the server's agree.
-	pub(super) fn expire_causeways(&mut self) {
+	/// The road's per-tick half: planks the world is still owed go back
+	/// up, then every road whose span has run out comes up. Expiry is a
+	/// comparison rather than a countdown, so a client's own clock and
+	/// the server's agree.
+	pub(super) fn pump_causeways(&mut self) {
+		// A retry costs a lookup per owed plank, and the list is empty in
+		// every world where nothing went wrong. `take_plank` re-owes what
+		// still cannot land, so this converges rather than spinning.
+		if !self.owed_planks.is_empty() {
+			for c in std::mem::take(&mut self.owed_planks) {
+				self.take_plank(c, SERVER_ID);
+			}
+		}
 		let tick = self.tick;
 		let done: Vec<u64> = self
 			.clients
@@ -148,10 +172,21 @@ impl Sim {
 	/// Take one caster's road up and forget it. Idempotent, so the
 	/// expiry sweep, an early end and a departure can all call it.
 	pub(super) fn lift_causeway(&mut self, conn_id: u64) {
+		if let Some(client) = self.clients.get_mut(&conn_id) {
+			client.causeway_until = None;
+		}
+		self.retire_road(conn_id);
+	}
+
+	/// Take the planks up but leave the span running: the road follows
+	/// the caster, and a teleport is the caster leaving it behind. It has
+	/// to come up HERE rather than at expiry, because only a resident
+	/// column can be written and the destination is a world away — by the
+	/// time the span runs out the columns under the old road are gone.
+	pub(super) fn retire_road(&mut self, conn_id: u64) {
 		let Some(client) = self.clients.get_mut(&conn_id) else {
 			return;
 		};
-		client.causeway_until = None;
 		let (by, road) = (client.id, client.causeway.take());
 		for c in road {
 			self.take_plank(c, by);
@@ -162,16 +197,38 @@ impl Sim {
 	/// laid. A pane somebody dug out stays dug, and one something else
 	/// has since replaced is not ours to remove.
 	fn take_plank(&mut self, c: Cell, by: digblock_net::protocol::PlayerId) {
+		// Removing a plank is a journaled edit exactly like laying one, so
+		// an unhealthy journal stops it where it stops fluid and the
+		// sweeps — but OWED rather than skipped, because the trail that
+		// held it is already gone and nothing else would ever take it up.
+		if !self.journal.healthy() {
+			return self.owe_plank(c);
+		}
 		let Some(standing) = self.store.cell_at(c.0, c.1, c.2) else {
-			return;
+			// The column unloaded. It comes back holding this plank (the
+			// journal has it), so the debt outlives the residency.
+			return self.owe_plank(c);
 		};
 		use digblock_core::block::BlockType;
 		if BlockType::from_id(digblock_core::chunk::cell_id(standing)) != BlockType::Wardglass {
 			return;
 		}
 		let air = digblock_core::chunk::make_cell(BlockType::Air, 0);
-		if let Some(prev) = self.store.set_cell(c.0, c.1, c.2, air) {
-			self.apply_write(c, air, prev, by, NO_CLIENT_SEQ, false);
+		let Some(prev) = self.store.set_cell(c.0, c.1, c.2, air) else {
+			return self.owe_plank(c);
+		};
+		self.apply_write(c, air, prev, by, NO_CLIENT_SEQ, false);
+	}
+
+	/// Remember a plank the world is still owed. The cap bounds the leak
+	/// rather than scheduling anything: reaching it means many roads'
+	/// worth of columns unloaded before their spans ran out, and a cell
+	/// in a column nobody loads is one nobody can see either.
+	fn owe_plank(&mut self, c: Cell) {
+		if self.owed_planks.len() >= OWED_CAP {
+			log::warn!("causeway: {OWED_CAP} planks owed, dropping the oldest");
+			self.owed_planks.pop_front();
 		}
+		self.owed_planks.push_back(c);
 	}
 }

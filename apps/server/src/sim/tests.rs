@@ -2132,10 +2132,6 @@ fn a_caster_who_leaves_mid_channel_forfeits_the_fare() {
 	);
 }
 
-/// A kindled light is the SIM's, not the caster's: it reaches a joiner
-/// as a backlog entry counting down from the cast, after the caster has
-/// left, and is gone from the backlog once its span has run — on the
-/// sim's clock, with nobody there to watch it.
 /// Claim a causeway plank for this connection, as its client would.
 fn claim_plank(sim: &mut super::Sim, conn_id: u64, seq: u32, cell: (i32, i32, i32)) {
 	let origin = sim
@@ -2550,6 +2546,137 @@ fn recasting_takes_the_road_up_and_charges_nothing() {
 	);
 }
 
+/// Tick until `done`, or fail saying what never happened. Streaming runs
+/// on real worker threads, so this waits on the wall clock the way
+/// [`stand_clear_of_spawn`] does rather than on a tick count.
+fn tick_until(sim: &mut super::Sim, what: &str, done: impl Fn(&super::Sim) -> bool) {
+	let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+	while !done(sim) {
+		sim.tick_once(vec![]);
+		assert!(std::time::Instant::now() < deadline, "{what}");
+		std::thread::sleep(std::time::Duration::from_millis(1));
+	}
+}
+
+/// Is this cell the road's own glass?
+fn is_plank(sim: &super::Sim, c: (i32, i32, i32)) -> bool {
+	sim.test_cell_at(c.0, c.1, c.2).is_some_and(|v| {
+		digblock_core::block::BlockType::from_id(digblock_core::chunk::cell_id(v))
+			== digblock_core::block::BlockType::Wardglass
+	})
+}
+
+/// A plank whose column has gone is OWED, never forgotten. Only the trail
+/// can retire a plank and only a resident column can be written, so a lift
+/// that found nowhere to write would drop the trail AND leave the glass —
+/// standing for good, journaled, with nothing left that could ever take it
+/// up. Driven by carrying the caster out of residency, taking the road up
+/// while its column is gone, and bringing them back.
+#[test]
+fn a_plank_owed_to_an_unloaded_column_comes_up_when_it_returns() {
+	let mut sim = flat_sim("causeway_owed");
+	let mut c = connect(&mut sim, 1);
+	wait_live(&mut sim, 1);
+	stand_clear_of_spawn(&mut sim, 1);
+	let level = digblock_core::unlock::CAUSEWAY_AT;
+	sim.bench_set_arcana_level(1, level);
+	let (essence, fare) = digblock_core::alchemy::causeway_price(level);
+	sim.test_grant_essence(1, essence, fare);
+	c.msgs.clear();
+	sim.tick_once(vec![SimEvent::Msg {
+		conn_id: 1,
+		msg: ClientMsg::Cast(digblock_net::messages::CastKind::Causeway),
+	}]);
+	let home = sim.test_player(1).expect("live").pos;
+	let cell = *claimable_near(&sim, 1)
+		.first()
+		.expect("somewhere to lay one");
+	claim_plank(&mut sim, 1, 1, cell);
+	assert!(is_plank(&sim, cell), "no plank to owe");
+
+	// Out of residency entirely — the road's column is nobody's now.
+	sim.test_teleport(1, home + glam::Vec3::new(2048.0, 0.0, 0.0));
+	tick_until(&mut sim, "the road's column never unloaded", |s| {
+		s.test_cell_at(cell.0, cell.1, cell.2).is_none()
+	});
+	// The road comes up with nowhere to write it.
+	sim.tick_once(vec![SimEvent::Msg {
+		conn_id: 1,
+		msg: ClientMsg::CausewayEnd,
+	}]);
+
+	// And back. The column returns holding its journaled plank — which
+	// is what makes this a real test and not a test of eviction.
+	sim.test_teleport(1, home);
+	tick_until(&mut sim, "the road's column never came back", |s| {
+		s.test_cell_at(cell.0, cell.1, cell.2).is_some()
+	});
+	sim.tick_once(vec![]);
+	assert!(
+		!is_plank(&sim, cell),
+		"a plank outlived the road that laid it"
+	);
+}
+
+/// A teleport takes the road up — a road a world away is one nothing can
+/// write — and keeps the SPAN, because the fare bought seconds and the
+/// caster still has them: the road resumes under them where they land.
+#[test]
+fn a_teleport_takes_the_road_up_and_keeps_the_span() {
+	let mut sim = flat_sim("causeway_teleport");
+	let mut c = connect(&mut sim, 1);
+	wait_live(&mut sim, 1);
+	stand_clear_of_spawn(&mut sim, 1);
+	let level = digblock_core::unlock::CAUSEWAY_AT;
+	sim.bench_set_arcana_level(1, level);
+	let (essence, fare) = digblock_core::alchemy::causeway_price(level);
+	sim.test_grant_essence(1, essence, fare);
+	c.msgs.clear();
+	sim.tick_once(vec![SimEvent::Msg {
+		conn_id: 1,
+		msg: ClientMsg::Cast(digblock_net::messages::CastKind::Causeway),
+	}]);
+	let stood = sim.test_player(1).expect("live").pos;
+	let cell = *claimable_near(&sim, 1)
+		.first()
+		.expect("somewhere to lay one");
+	claim_plank(&mut sim, 1, 1, cell);
+	assert!(is_plank(&sim, cell), "no road to leave behind");
+
+	// Home, by the spell that does it — `test_teleport` moves the player
+	// without going through the arrival the server runs.
+	sim.tick_once(vec![SimEvent::Msg {
+		conn_id: 1,
+		msg: ClientMsg::ReturnToSpawn,
+	}]);
+	assert!(
+		sim.test_player(1).expect("live").pos.distance(stood)
+			> digblock_core::spawn::LOCK_RADIUS as f32,
+		"the caster is still standing where the road is, so nothing was left behind"
+	);
+	assert!(
+		!is_plank(&sim, cell),
+		"a road stood on where the caster used to be"
+	);
+
+	// The span survived the trip: a plank still lands at the far end.
+	// (Refused if `causeway_until` had been cleared — `BadBlock`.)
+	stand_clear_of_spawn(&mut sim, 1);
+	let landed = *claimable_near(&sim, 1)
+		.first()
+		.expect("somewhere to lay one");
+	assert_eq!(
+		claim_reason(&mut sim, &mut c, 2, landed),
+		None,
+		"the teleport ended the spell instead of taking the road up"
+	);
+	assert!(is_plank(&sim, landed), "the road did not resume");
+}
+
+/// A kindled light is the SIM's, not the caster's: it reaches a joiner
+/// as a backlog entry counting down from the cast, after the caster has
+/// left, and is gone from the backlog once its span has run — on the
+/// sim's clock, with nobody there to watch it.
 #[test]
 fn a_kindled_light_outlives_its_caster_and_not_its_span() {
 	use digblock_net::messages::CastKind;

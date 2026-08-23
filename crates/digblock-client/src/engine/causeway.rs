@@ -14,10 +14,10 @@ use digblock_core::causeway::Cell;
 use digblock_core::chunk::make_cell;
 
 impl Engine {
-	/// One frame's worth of road. Asked of the post-tick position, so
-	/// the plank lands under wherever the feet actually are — a frame
-	/// that spanned several ticks skipped cells the player is no longer
-	/// standing in, and support is only owed where they are now.
+	/// One tick's worth of road, laid from `tick_player` and nowhere
+	/// else — the plank a tick asks for is only level with the ground
+	/// while the feet are still on the top they walked off, which is
+	/// true for that tick alone.
 	pub(super) fn step_causeway(&mut self, plank: Option<Cell>) {
 		let Some(c) = plank else {
 			return;

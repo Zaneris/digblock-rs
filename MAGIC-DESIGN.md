@@ -185,12 +185,16 @@ actions returned rather than applied. Six spell families shipped; the rest are �
   and never accumulates. `Trail::wants` is the whole rule and its only input is `Player::grounded` — a supported player
   spends nothing, which is why standing still costs no planks and why no velocity or facing enters an answer the two
   ends would have to share. `step_cell` puts the plank in the highest cell whose TOP lies at or below the feet, so it
-  meets them rather than closing over them; a plank claims air and standing water exactly as a Ward's shell does
-  (`a_plank_claims_exactly_what_a_ward_pane_claims`), which is what lets a road cross a lake. **A held jump climbs it**,
-  and that is intended rather than tolerated (`a_held_jump_climbs_the_road`): the rule is "the feet have no support, so
-  give them some", and a jump is the feet having no support. The only way to stop it would be a predicate telling a fall
-  from a jump — per-tick movement state the two ends would have to agree about, which is the surface §1 exists to avoid
-  — so the Causeway is priced as the access spell it is rather than as a safety net.
+  meets them rather than closing over them — which is also why the road is laid **per TICK and never per frame**
+  (`a_road_is_level_at_every_frame_rate`): the resolver leaves the feet exactly on the top they walk off, so the tick
+  support is lost is the one tick whose answer is level with the ground, and a tick later the feet have sagged and the
+  answer is a whole cell lower. Asked once a frame, the road descends a block per plank at every rate but one tick per
+  frame, which is precisely the rate every capture path runs at. A plank claims air and standing water exactly as a
+  Ward's shell does (`a_plank_claims_exactly_what_a_ward_pane_claims`), which is what lets a road cross a lake. **A held
+  jump climbs it**, and that is intended rather than tolerated (`a_held_jump_climbs_the_road`): the rule is "the feet
+  have no support, so give them some", and a jump is the feet having no support. The only way to stop it would be a
+  predicate telling a fall from a jump — per-tick movement state the two ends would have to agree about, which is the
+  surface §1 exists to avoid — so the Causeway is priced as the access spell it is rather than as a safety net.
 
   **This is the one spell whose cells the caster's client NAMES.** The Ward derives both ends from one head and one
   radius; a road cannot, because a plank is owed the tick the feet leave support and a round trip is several ticks —
@@ -207,7 +211,11 @@ actions returned rather than applied. Six spell families shipped; the rest are �
   plank comes up only if it is still the glass the road laid — the Ward unwind's rule, so a pane somebody dug stays dug
   — and only a plank actually WRITTEN joins the trail, which is what stops a road crossing a Ward's shell and taking one
   of its panes with it. A departure takes the road up (`drop_client`), because a trail nobody holds can never retire
-  itself.
+  itself — and so does a teleport (`retire_road`, the span left running), because a removal can only be written to a
+  RESIDENT column and a road a world away is one nothing will ever be able to take up. A removal that still finds
+  nowhere to go is the sim's debt rather than the trail's, held in `owed_planks` and retried until the column comes
+  back: it is the one write here that has to LAND eventually rather than be skipped the way fluid's and the sweeps' are,
+  since skipping it leaves permanent journaled glass with nothing left that could remove it.
 
   The row is a TOGGLE, not a channel to wait out: recasting takes the road up at once, since a caster who wants to
   descend cannot spend a minute being caught. No refund — the fare bought the span, not the seconds spent. Three rungs

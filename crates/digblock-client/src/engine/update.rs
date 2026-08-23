@@ -480,57 +480,40 @@ impl Engine {
 				// would draw a whole tick BACKWARDS; hold in place instead.
 				self.session.tick_lerp.reset(self.player.pos);
 			}
-			match self.session.client.as_mut() {
-				_ if !world_ready => {}
-				Some(net) if net.ready() => {
-					// Reconcile against the latest snapshot before predicting
-					// this frame's ticks; corrections land as a decaying
-					// visual offset, not a camera snap.
-					if let Some((tick, state)) = self.session.pending_ack.take() {
-						use digblock_net::predict::Reconciled;
-						let outcome =
-							net.predictor
-								.reconcile(&mut self.player, tick, state, &cell_at);
-						if let Reconciled::Replayed { error } = outcome {
-							self.session.correction_offset += error;
-							// The rewind moved the player by -error; the lerp
-							// anchor has to travel with it or the next frame
-							// interpolates from the pre-rewind position and
-							// re-injects the jump the offset exists to hide.
-							self.session.tick_lerp.rewind(error);
-							self.session.net_corrections += 1;
-							self.session.net_error_accum += error.length();
-						}
-						// The ack that drove this reconcile is also the RTT
-						// sample — the overlay's ping comes from here.
-						net.note_reconciled(outcome);
-					}
-					while self.tick_accum >= TICK {
-						self.tick_accum -= TICK;
-						self.session.tick_lerp.before_tick(self.player.pos);
-						net.predictor
-							.predict(&mut self.player, intent, dir, &cell_at);
-					}
+			// Reconcile against the latest snapshot before predicting this
+			// frame's ticks; corrections land as a decaying visual offset,
+			// not a camera snap.
+			if let Some(net) = self.session.client.as_mut().filter(|n| n.ready())
+				&& world_ready
+				&& let Some((tick, state)) = self.session.pending_ack.take()
+			{
+				use digblock_net::predict::Reconciled;
+				let outcome = net
+					.predictor
+					.reconcile(&mut self.player, tick, state, &cell_at);
+				if let Reconciled::Replayed { error } = outcome {
+					self.session.correction_offset += error;
+					// The rewind moved the player by -error; the lerp
+					// anchor has to travel with it or the next frame
+					// interpolates from the pre-rewind position and
+					// re-injects the jump the offset exists to hide.
+					self.session.tick_lerp.rewind(error);
+					self.session.net_corrections += 1;
+					self.session.net_error_accum += error.length();
+				}
+				// The ack that drove this reconcile is also the RTT
+				// sample — the overlay's ping comes from here.
+				net.note_reconciled(outcome);
+			}
+			if world_ready {
+				while self.tick_accum >= TICK {
+					self.tick_accum -= TICK;
+					self.tick_player(intent, dir);
+				}
+				if let Some(net) = self.session.client.as_mut().filter(|n| n.ready()) {
 					net.send_inputs();
 				}
-				_ => {
-					while self.tick_accum >= TICK {
-						self.tick_accum -= TICK;
-						self.session.tick_lerp.before_tick(self.player.pos);
-						self.player.tick(TICK, dir, intent, &cell_at);
-					}
-				}
 			}
-			// The road, asked of the settled position: `wants` is grounded
-			// and nothing else, so a standing player spends no planks and
-			// no velocity enters an answer the two ends must share.
-			let plank = (self.causeway_left > 0.0 && world_ready)
-				.then(|| {
-					let grounded = self.player.grounded(&cell_at);
-					self.causeway.wants(self.player.pos, grounded, &cell_at)
-				})
-				.flatten();
-			self.step_causeway(plank);
 			// Sub-second exponential decay; snapped off once imperceptible.
 			self.session.correction_offset *= (-dt / 0.2).exp();
 			if self.session.correction_offset.length_squared() < 1e-6 {
@@ -597,5 +580,44 @@ impl Engine {
 		self.step_audio(dt);
 		self.audio.prev_player_pos = self.player.pos;
 		self.bench.pending.update_ms = ms_since(t_update);
+	}
+
+	/// One fixed tick of player simulation, and the road that answers it.
+	///
+	/// The plank is asked HERE, per tick, and never once per frame: the
+	/// resolver leaves the feet exactly on the top of the block they walk
+	/// off, so the tick support is lost is the ONE tick whose
+	/// `causeway::step_cell` names a cell level with the ground they left.
+	/// One more tick of gravity puts the feet a hair under that top and
+	/// the plank drops a whole cell instead — so a frame spanning two
+	/// ticks lays a staircase DOWN, at whatever rate the display happens
+	/// to run. Laying a plank in a cell the feet have already crossed
+	/// costs nothing: the head retires the tail either way.
+	fn tick_player(&mut self, intent: PlayerIntent, dir: Vec3) {
+		self.session.tick_lerp.before_tick(self.player.pos);
+		{
+			let pipeline = &self.pipeline;
+			let cell_at = |x: i32, y: i32, z: i32| pipeline.cell_at(x, y, z);
+			match self.session.client.as_mut() {
+				Some(net) if net.ready() => {
+					net.predictor
+						.predict(&mut self.player, intent, dir, &cell_at);
+				}
+				_ => self.player.tick(TICK, dir, intent, &cell_at),
+			}
+		}
+		if self.causeway_left <= 0.0 {
+			return;
+		}
+		// `wants` is grounded and nothing else, so a supported player
+		// spends no planks and no velocity enters an answer the two ends
+		// must share.
+		let plank = {
+			let pipeline = &self.pipeline;
+			let cell_at = |x: i32, y: i32, z: i32| pipeline.cell_at(x, y, z);
+			let grounded = self.player.grounded(&cell_at);
+			self.causeway.wants(self.player.pos, grounded, &cell_at)
+		};
+		self.step_causeway(plank);
 	}
 }

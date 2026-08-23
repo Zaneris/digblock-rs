@@ -14,6 +14,11 @@ impl Sim {
 
 	/// Put a client somewhere, bypassing the admin command — for staging a
 	/// spatial arrangement a test needs, without walking there.
+	///
+	/// The interest centre moves with them, dirty flag and all: setting
+	/// the centre alone leaves `update_residency`'s own check with nothing
+	/// to notice, so the store would keep serving the columns around
+	/// wherever the client USED to be until something else moved.
 	#[cfg(test)]
 	pub(super) fn test_teleport(&mut self, conn_id: u64, pos: Vec3) {
 		if let Some(c) = self.clients.get_mut(&conn_id) {
@@ -22,6 +27,7 @@ impl Sim {
 				vel: Vec3::ZERO,
 			});
 			c.residency.center = column_of(pos);
+			self.residency_dirty = true;
 		}
 	}
 
