@@ -247,6 +247,19 @@ Two bugs found by taking this measurement at all, both worth remembering:
   correctness — but "capture paths must not sit on a menu screen" is a documented rule and the web bench was breaking
   it.
 
+### Do not slice the gen job without measuring first
+
+`Job::Generate` builds a column's whole vertical chunk stack in one shot — one heightmap evaluation serving every chunk
+in the stack — and is deliberately NOT sliced into resumable continuations. The gen-job row above is why: on the shipped
+arm a gen job averages well under the frame this display gives, so it fits with room to spare, and slicing would
+refactor worldgen's column path for a win that may not be measurable at all. The inline arm's average is higher and
+still inside the budget.
+
+Revisit only on evidence that gen is the tall pole on weaker hardware than an M2 Max, and gather it before touching the
+code: `?spikelog` attributes an over-budget frame per phase, and `maintain_ms` bounds what streaming may spend. Note
+that column cost is bimodal — cave noise makes a backdrop-world pose read several times a spawn pose, which is the trap
+the second web pass fell into — so a slicing case has to name its pose.
+
 ## 2026-08-14 — what the web's inline executor actually costs
 
 Groundwork for the browser's Web Worker chunk pool. `--workers 0` IS the web's executor (`Pipeline::build` forces it on

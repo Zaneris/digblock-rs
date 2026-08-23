@@ -34,7 +34,7 @@ pub struct MeshOutput {
 }
 
 pub enum Job {
-	/// Generate column (x, z)'s whole chunk stack. Not sliced — a gen job fits inside a frame.
+	/// Generate column (x, z)'s whole chunk stack. Not sliced; BENCH.md 2026-08-14 says why not.
 	Generate { x: i32, z: i32, seed: f64 },
 	Mesh {
 		pos: ChunkPos,
