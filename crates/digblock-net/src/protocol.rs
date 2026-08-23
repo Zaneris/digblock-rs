@@ -29,7 +29,7 @@ pub const DEFAULT_MASTER_URL: &str = "https://master.digblock.net";
 /// discriminants by declaration order, so variants and fields are
 /// APPEND-ONLY — never reorder, never remove. `git log -S PROTOCOL_VERSION`
 /// is the history of what each bump carried.
-pub const PROTOCOL_VERSION: u16 = 35;
+pub const PROTOCOL_VERSION: u16 = 36;
 
 /// Chunk-column radius around an arrival — a join or a teleport — whose
 /// journaled columns must reach the client before it may render or
@@ -66,12 +66,15 @@ pub const AREA_SYNC_TIMEOUT_SECS: f32 = 5.0;
 /// honest answer to both: a range that admits a peer whose UI lies is worse
 /// than a narrow one.
 ///
-/// The current floor is the second kind: the Ward's cells no longer
-/// travel as edits at all — both ends derive them from the sphere in
-/// `WardWinding`/`WardEnded` — so an older client would stand in a
+/// The current floor is the second kind, twice over. The Ward's cells no
+/// longer travel as edits at all — both ends derive them from the sphere
+/// in `WardWinding`/`WardEnded` — so an older client would stand in a
 /// sphere it cannot see, and would decode the first of those two as the
-/// seal announcement whose tag they took.
-pub const MIN_PROTOCOL: u16 = 35;
+/// seal announcement whose tag they took. The Causeway then added a cast
+/// tag and an edit kind: its PLANKS are ordinary edits every version
+/// draws, but an older SERVER cannot decode the cast, so a newer client
+/// would offer a spellbook row that kills the session rather than casting.
+pub const MIN_PROTOCOL: u16 = 36;
 
 // ---- handshake preamble ----------------------------------------------
 //
@@ -512,6 +515,18 @@ pub const DRIFT_TOLERANCE: f32 = 0.02;
 /// Edit token bucket: sustained rate (burst [`EDIT_BURST`]).
 pub const EDIT_RATE_PER_SEC: u32 = 10;
 pub const EDIT_BURST: f32 = 5.0;
+
+/// The Causeway's own edit bucket, kept apart from [`EDIT_BURST`] for a
+/// reason the shared one cannot serve: a rate-limited plank is a FALL,
+/// so a player who runs while placing blocks would drop through their
+/// own road. Sized well clear of the cell boundaries an honest walk
+/// crosses (`player::WALK_SPEED` a second, plus a jump's own), because
+/// what a crafted client can do with it is bounded elsewhere and
+/// structurally — the trail retires its own tail, so the standing
+/// footprint is `causeway::TRAIL` planks whatever is claimed, and this
+/// bucket bounds only journal and broadcast cost.
+pub const CAUSEWAY_RATE_PER_SEC: u32 = 16;
+pub const CAUSEWAY_BURST: f32 = 8.0;
 
 /// Catch-up threshold for the server's per-client input drain, ticks.
 ///

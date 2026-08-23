@@ -286,6 +286,7 @@ impl Engine {
 						&ports,
 						&self.inventory,
 						self.arc_on,
+						self.causeway_left.ceil() as u32,
 					);
 					match self
 						.ui
@@ -311,6 +312,20 @@ impl Engine {
 						Some(SpellAction::CastWard) => {
 							self.ui.spellbook.close();
 							self.start_cast(CastTarget::Ward);
+						}
+						Some(SpellAction::ToggleCauseway) => {
+							self.ui.spellbook.close();
+							// Taking a road up is not a cast and channels
+							// like nothing: the caster wanting to descend
+							// wants it gone now.
+							if self.causeway_left > 0.0 {
+								self.end_causeway();
+								if let Some(net) = self.session.client.as_mut() {
+									net.send_causeway_end();
+								}
+							} else {
+								self.start_cast(CastTarget::Causeway);
+							}
 						}
 						// A stance flip, not a cast: the page stays open,
 						// showing the new state.

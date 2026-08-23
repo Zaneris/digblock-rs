@@ -227,6 +227,7 @@ impl Engine {
 					&ports,
 					&self.inventory,
 					self.arc_on,
+					self.causeway_left.ceil() as u32,
 				);
 				self.ui.spellbook.handle_input(&ev, &self.ui.ui_hits, &view);
 			} else if self.ui.char_screen.is_open() {
@@ -307,6 +308,7 @@ impl Engine {
 					ports.as_deref().unwrap_or(&[]),
 					&self.inventory,
 					self.arc_on,
+					self.causeway_left.ceil() as u32,
 				);
 				self.ui
 					.spellbook

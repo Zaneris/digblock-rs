@@ -372,6 +372,16 @@ pub enum EditKind {
 	PlaceArc {
 		block: u16,
 	},
+	/// One plank of a Causeway: `cell` is the claimed cell, and nothing
+	/// else in the request is read — no ray, no reach, no slot. The
+	/// caster's client NAMES it because a plank is needed the tick the
+	/// feet leave support and a round trip is several ticks; the server
+	/// bounds the claim against its OWN copy of the player
+	/// (`digblock_core::causeway::claim_ok`) rather than re-deriving a
+	/// tick that is gone. Safe to trust that far because the trail
+	/// retires its own tail: a crafted client's standing footprint is
+	/// `causeway::TRAIL` cells whatever it claims. Appended in v36.
+	CausewayStep,
 }
 
 /// One alchemy request (wire form; ids are validated server-side against
@@ -564,6 +574,11 @@ pub enum ClientMsg {
 	/// its own when the caster moves or leaves; this is the honest
 	/// client's prompt word. Appended in v34.
 	CastBreak,
+	/// Take the road up now, before its span runs out — the spellbook
+	/// row is a toggle, since a caster who wants to descend cannot wait
+	/// out a causeway that keeps catching them. No refund: the fare
+	/// bought the span, not the seconds spent. Appended in v36.
+	CausewayEnd,
 }
 
 /// What a [`ClientMsg::Cast`] winds up toward — shaped for the whole
@@ -588,6 +603,11 @@ pub enum CastKind {
 	/// derived on the server (`digblock_core::ward`) — so, like
 	/// `KindleHere`, it carries nothing to trust. Appended in v34.
 	Ward,
+	/// The Causeway: begins the road. Carries nothing — the rung decides
+	/// how long it stands, and each plank comes later as its own
+	/// [`EditKind::CausewayStep`]. Recasting while one stands ends it
+	/// instead ([`ClientMsg::CausewayEnd`]). Appended in v36.
+	Causeway,
 }
 
 /// Why a cast was refused — a reason, never a sentence; `voice` chooses

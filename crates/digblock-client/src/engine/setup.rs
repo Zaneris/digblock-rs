@@ -263,6 +263,9 @@ impl Engine {
 			cast: None,
 			arc_on: false,
 			wisp_left: 0.0,
+			causeway_left: 0.0,
+			causeway: Default::default(),
+			last_cast: None,
 			dig_accum: 0.0,
 			target: None,
 			inventory: Inventory::default(),
@@ -490,15 +493,14 @@ impl Engine {
 					engine.ui.char_screen.open();
 				}
 				DebugScreen::Spellbook | DebugScreen::SpellbookHover => {
-					// Past the first rung, so a passed threshold and the
-					// next teaser both photograph. XP derived from the
-					// rung it must pass, never a magic total.
+					// Past the LAST spell rung the ladder opens below the
+					// ports' tail, so every castable row and the next
+					// teaser all photograph. XP derived from the rung it
+					// must pass, never a magic total.
 					use digblock_core::skills::Skill;
 					engine.skills.add_xp(
 						Skill::Arcana,
-						digblock_core::skills::total_xp_for(
-							digblock_core::unlock::TELEPORT_SWIFT_AT + 1,
-						),
+						digblock_core::skills::total_xp_for(digblock_core::unlock::CAUSEWAY_AT + 1),
 					);
 					// Funded, so the fares read as offers rather than as a
 					// page of shortfalls — the short ink is a state worth
@@ -519,6 +521,7 @@ impl Engine {
 							&engine.known_ports(),
 							&engine.inventory,
 							engine.arc_on,
+							engine.causeway_left.ceil() as u32,
 						);
 						if let Some(&(slot, _)) = view.fares().first() {
 							engine.ui.debug_hover = Some(crate::ui::InvId::SpellFare(slot));

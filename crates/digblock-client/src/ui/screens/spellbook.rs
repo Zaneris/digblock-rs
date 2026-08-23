@@ -27,6 +27,10 @@ pub enum SpellAction {
 	CastKindle,
 	/// Begin the Ward's channel (the sphere closes about the head at completion).
 	CastWard,
+	/// Begin the Causeway's channel, or — with a road already standing —
+	/// take it up. One row for both, because a caster who wants to
+	/// descend cannot wait out a road that keeps catching them.
+	ToggleCauseway,
 	/// Flip the Mason's Arc stance.
 	ToggleArc,
 }
@@ -37,6 +41,7 @@ const SLOT_WISP: u8 = 100;
 const SLOT_KINDLE: u8 = 101;
 const SLOT_ARC: u8 = 102;
 const SLOT_WARD: u8 = 103;
+const SLOT_CAUSEWAY: u8 = 104;
 
 /// One port as the page lists it — everything derived from the core
 /// tables by [`all_ports`], so the roster and the rules cannot drift.
@@ -98,6 +103,7 @@ pub struct SpellView {
 	kindle_ready: bool,
 	ward_ready: bool,
 	arc_shown: bool,
+	causeway_ready: bool,
 	/// The ports a click may cast right now, by `InvId::Spell` slot.
 	castable: Vec<(u8, u8)>,
 }
@@ -135,6 +141,7 @@ impl SpellView {
 		ports: &[Port],
 		inventory: &Inventory,
 		arc_on: bool,
+		causeway_secs_left: u32,
 	) -> Self {
 		let level = skills.level(Skill::Arcana);
 		let teleport_ready = cooldown_secs == 0;
@@ -183,6 +190,25 @@ impl SpellView {
 				text: "WARD".to_string(),
 				state: State::fare(w_essence, w_fare, ward_ready),
 				ready: ward_ready,
+			});
+		}
+		// The second glass spell. A road already standing shows what is
+		// left of it and clicks to take it up; otherwise the row is an
+		// ordinary fare.
+		let mut causeway_ready = false;
+		if unlock::causeway_secs(level) > 0 {
+			let (c_essence, c_fare) = digblock_core::alchemy::causeway_price(level);
+			let standing = causeway_secs_left > 0;
+			causeway_ready = standing || inventory.sub_count(c_essence) >= c_fare;
+			rows.push(Row::Spell {
+				id: InvId::Spell(SLOT_CAUSEWAY),
+				text: "CAUSEWAY".to_string(),
+				state: if standing {
+					State::Text(format!("{causeway_secs_left}s"))
+				} else {
+					State::fare(c_essence, c_fare, causeway_ready)
+				},
+				ready: causeway_ready,
 			});
 		}
 		// The arc is a STANCE, not a channel: the row flips it, and the
@@ -247,6 +273,7 @@ impl SpellView {
 			kindle_ready,
 			ward_ready,
 			arc_shown,
+			causeway_ready,
 			castable,
 		}
 	}
@@ -261,10 +288,13 @@ pub(super) fn next_rung(level: u32) -> Option<(u32, &'static str)> {
 	[
 		(unlock::WARD_AT, "a ward of glass closes about you"),
 		(unlock::TELEPORT_SWIFT_AT, "home comes back sooner"),
+		(unlock::CAUSEWAY_AT, "glass takes your step over nothing"),
 		(unlock::CHANNEL_QUICK_AT, "every channel quickens"),
 		(unlock::WARD_WIDE_AT, "the ward widens"),
+		(unlock::CAUSEWAY_LONG_AT, "the road runs longer"),
 		(unlock::WARD_VAST_AT, "the ward widens again"),
 		(unlock::TELEPORT_SWIFTER_AT, "home comes back sooner still"),
+		(unlock::CAUSEWAY_VAST_AT, "the road runs longer still"),
 	]
 	.into_iter()
 	.find(|&(lvl, _)| lvl > level)
@@ -422,6 +452,7 @@ impl SpellScreen {
 					SLOT_WISP if view.wisp_ready => Some(SpellAction::CastWisp),
 					SLOT_KINDLE if view.kindle_ready => Some(SpellAction::CastKindle),
 					SLOT_WARD if view.ward_ready => Some(SpellAction::CastWard),
+					SLOT_CAUSEWAY if view.causeway_ready => Some(SpellAction::ToggleCauseway),
 					SLOT_ARC if view.arc_shown => Some(SpellAction::ToggleArc),
 					slot => view
 						.castable

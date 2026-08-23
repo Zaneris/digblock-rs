@@ -491,6 +491,9 @@ impl Engine {
 	/// arrival, via `spawn_return_pending`.
 	fn complete_cast(&mut self, target: CastTarget) {
 		use digblock_core::skills::Skill;
+		// Which prediction a `CastRefused` is answering: the wire carries
+		// a reason and never a spell.
+		self.last_cast = Some(target);
 		match target {
 			CastTarget::Home => {
 				self.start_teleport_cooldown();
@@ -546,6 +549,31 @@ impl Engine {
 							return;
 						}
 						self.wisp_left = digblock_core::unlock::wisp_secs(level) as f32;
+						self.award_xp_offline(
+							Skill::Arcana,
+							digblock_core::skills::cast_xp(essence, fare),
+						);
+					}
+				}
+			}
+			CastTarget::Causeway => {
+				let level = self.skills.level(Skill::Arcana);
+				let (essence, fare) = digblock_core::alchemy::causeway_price(level);
+				let secs = digblock_core::unlock::causeway_secs(level) as f32;
+				match self.session.client.as_mut() {
+					Some(net) if net.ready() => {
+						// Predicted like the wisp: the road starts laying
+						// now, the debit rides the rebase, and a
+						// CastRefused takes it up again.
+						net.send_cast(digblock_net::messages::CastKind::Causeway);
+						self.causeway_left = secs;
+					}
+					_ => {
+						if !self.inventory.try_take_sub(essence, fare) {
+							self.push_feed(Msg::SpellFareShort(Spell::Causeway));
+							return;
+						}
+						self.causeway_left = secs;
 						self.award_xp_offline(
 							Skill::Arcana,
 							digblock_core::skills::cast_xp(essence, fare),

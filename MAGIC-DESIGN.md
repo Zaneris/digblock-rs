@@ -27,7 +27,10 @@ blocks — the player, and light.** The constitution binds as everywhere else:
 - **No spell touches per-tick movement.** Levitation, speed, water-walking — each would run through `Player::tick` and
   the adoption envelope, making every such spell its own anti-cheat surface. Teleports dodge the problem entirely: a
   teleport is a server-side position SET (`Sim::teleport_client`), corrected by nothing because the server said so
-  first.
+  first. **A spell may READ the tick and never rewrite it** — the Causeway is the line's one near miss and stays the
+  right side of it: the caster's physics are untouched, only the world under them changes, through the ordinary edit
+  path. What is new is that its TRIGGER reads per-tick movement state (`Player::grounded`, and nothing else), which is
+  why the distinction is written here rather than left to be re-derived.
 - **Essence is the mana.** No mana bar, no new currency: casts are priced in essence, which makes Arcana the standing
   essence *sink* the economy explicitly wants. No cast creates matter — the light spells write nothing to the world at
   all (§5), and the one that writes real blocks (the Mason's Arc) spends the player's own inventory.
@@ -127,7 +130,7 @@ more of itself.
 ## 5. The spellbook — what casts today
 
 The book (J) is one screen in the alchemy-page mold: a pure `SpellView::build`, unlocked tiles plus one teaser tier,
-actions returned rather than applied. Five spell families shipped; the rest are §10's tail.
+actions returned rather than applied. Six spell families shipped; the rest are §10's tail.
 
 - **Wisp** — a timed raise of the caster's own carried light: an ordinary entry in the GI light list wearing the
   `ConjuredLight` row's class, level and whitening answering to the caster's Arcana (`unlock::wisp_light`, brightening
@@ -177,6 +180,43 @@ actions returned rather than applied. Five spell families shipped; the rest are 
   caster's wash; a conjured cell landing makes no sound of its own. A cell somebody steps into mid-climb is left
   unwritten — a hole where a player stood, the protected cells' honesty — and a pane somebody digs out mid-climb stays
   dug through an unwind.
+- **The Causeway** — the Ward's glass again, laid one plank at a time under the feet the tick they leave support and
+  taken up behind: `causeway::TRAIL` planks stand at once and the head retires the tail, so the road follows the caster
+  and never accumulates. `Trail::wants` is the whole rule and its only input is `Player::grounded` — a supported player
+  spends nothing, which is why standing still costs no planks and why no velocity or facing enters an answer the two
+  ends would have to share. `step_cell` puts the plank in the highest cell whose TOP lies at or below the feet, so it
+  meets them rather than closing over them; a plank claims air and standing water exactly as a Ward's shell does
+  (`a_plank_claims_exactly_what_a_ward_pane_claims`), which is what lets a road cross a lake. **A held jump climbs it**,
+  and that is intended rather than tolerated (`a_held_jump_climbs_the_road`): the rule is "the feet have no support, so
+  give them some", and a jump is the feet having no support. The only way to stop it would be a predicate telling a fall
+  from a jump — per-tick movement state the two ends would have to agree about, which is the surface §1 exists to avoid
+  — so the Causeway is priced as the access spell it is rather than as a safety net.
+
+  **This is the one spell whose cells the caster's client NAMES.** The Ward derives both ends from one head and one
+  radius; a road cannot, because a plank is owed the tick the feet leave support and a round trip is several ticks —
+  server-authoritative planks arrive after the fall. So a plank rides the standing edit machinery as
+  `EditKind::CausewayStep`: predicted locally under a seq, BOUNDED server-side by `causeway::claim_ok` against the
+  server's own copy of the caster's feet rather than re-derived, and reverted by the same rollback as a refused place.
+  What makes that assertion safe is not the check but the trail — every plank laid retires another, so a crafted
+  client's standing footprint is `TRAIL` cells of creditless, unslottable glass beside its own body whatever it claims,
+  a smaller blast radius than a player with a stack of stone. Its token bucket (`CAUSEWAY_RATE_PER_SEC`) is its own and
+  deliberately not the edit one, because a rate-limited plank is a FALL.
+
+  **Retirement is deliberately NOT predicted.** The server owns the tail and its removals arrive as ordinary
+  `EditApplied`, so the two ends can never hold different roads; the client's trail is a dedup list, not a schedule. A
+  plank comes up only if it is still the glass the road laid — the Ward unwind's rule, so a pane somebody dug stays dug
+  — and only a plank actually WRITTEN joins the trail, which is what stops a road crossing a Ward's shell and taking one
+  of its panes with it. A departure takes the road up (`drop_client`), because a trail nobody holds can never retire
+  itself.
+
+  The row is a TOGGLE, not a channel to wait out: recasting takes the road up at once, since a caster who wants to
+  descend cannot spend a minute being caught. No refund — the fare bought the span, not the seconds spent. Three rungs
+  (`unlock::causeway_secs`), each lengthening the road against a fare that climbs by MORE
+  (`a_longer_road_is_never_a_cheaper_second_of_one`). Three things can still drop you, each the server refusing a plank
+  the client predicted: a protected cell — arrival regions reach the client only offline (§4), so this is the one it
+  cannot predict and you fall out of the sky over a waystone — a column the server has not got resident, and a cell
+  another player is standing in.
+
 - **The Mason's Arc** — Arcana's answer to the Resonant Pick: the pick widens *breaking*, the Arc widens *placing*. A
   toggle in the book; while on, a plain placement extends along the verified normal to `unlock::arc_cells` cells under
   one seq (`EditKind::PlaceArc`), debiting one block per cell. The server re-derives the line from its own raycast (the
@@ -201,9 +241,10 @@ actions returned rather than applied. Five spell families shipped; the rest are 
   pay, the day-one bootstrap, doubling with the burn at `WISP_BRIGHT_AT`); kindle in Terra (`kindle_price`, cheapening
   at `KINDLE_CHEAP_AT`); the ward in Unda (`ward_price`, doubling with each radius), the water essence for the spell
   that drives water out — shared with the cold and shore ports, so the one springstone faucet feeds both halves of the
-  ladder. The fares and the cast-XP rates are ONE decision, never two: raising a fare alone would pay more XP for
-  costing more, which is the opposite of a sink. The payability pin asks the standing question: **a cast must be payable
-  at the level that unlocks it.**
+  ladder. The causeway prices in Unda too (`causeway_price`) for a different reason: it is the Ward's own glass, and one
+  substance takes one price line. The fares and the cast-XP rates are ONE decision, never two: raising a fare alone
+  would pay more XP for costing more, which is the opposite of a sink. The payability pin asks the standing question:
+  **a cast must be payable at the level that unlocks it.**
 - **XP per priced cast derives from the price, weighted by the essence it drains.** `skills::cast_xp` takes the fare's
   essence as well as its amount and multiplies by `cast_xp_per_unit`, which answers `CAST_XP_PER_ESSENCE` for four of
   the five and `AETHER_CAST_WORTH` times that for Aether. A unit is not one worth across the ladder — Aether is the one
@@ -228,7 +269,7 @@ Storage is XP-only totals, level always derived, the pinned integer curve untouc
 shared teleport tick, so a rejoin cannot reset the clock. The character screen's teaser machinery reads unlock tables
 and therefore serves Arcana for free.
 
-## 8. Wire inventory (v32)
+## 8. Wire inventory (v36)
 
 - **The spawn spell needed no wire at all**: the channel is client pacing in front of `ClientMsg::ReturnToSpawn`.
 - **`ClientMsg::Cast(CastKind)`** — shaped for the whole roster from day one (`Waystone(kind)`, `Wisp`,
@@ -246,6 +287,11 @@ and therefore serves Arcana for free.
   the journal once and stored). **`ServerMsg::CastRefused(CastRefusal)`** is a reason, never a sentence — `voice`
   chooses the words.
 - **`EditKind::PlaceArc`** rides the standing edit request so craft-then-place ordering and slot declaration hold.
+- **The Causeway's planks are ordinary edits.** `EditKind::CausewayStep` rides the standing `EditRequest`, so seq, ack,
+  rollback and `pending_at` carry a plank with no new machinery and nothing else in the request is read;
+  `CastKind::Causeway` begins the road and `ClientMsg::CausewayEnd` takes it up early, both carrying nothing to trust.
+  All three are v36, and `MIN_PROTOCOL` moved with them for the FIRST of the two reasons a floor rises: a v35 server
+  cannot decode the cast, so a newer client would offer a spellbook row that kills the session rather than casting.
 - **Remote-visible casting** is one appended snapshot byte: `RemoteState.fx` (`pack_fx`/`unpack_fx` — kind, whitened,
   level), today carrying **the wisp only**, because a wisp is the one effect whose look depends on state not in the
   snapshot. A kind is reserved for the ore-draw's remote half (it needs the drawn cell, so it waits on its own design).
@@ -273,10 +319,11 @@ and therefore serves Arcana for free.
 
 ## 10. What is NOT built
 
-- **Conjured passage** — temporary bridge cells on a reversion clock. Waits on DELVE-DESIGN D2's scheduled-cell-write
-  substrate; kindle deliberately did NOT build it (a kindled light is an emitter on a timer, never a cell), and the ward
-  sidesteps it by being PERMANENT: its glass is ordinary journaled matter that digs to nothing, so no clock has to take
-  it back.
+- **Conjured passage** — BUILT, as the Causeway (§5), and in the one shape that did not have to wait. What this
+  described was bridge cells on a reversion clock, which needs DELVE-DESIGN D2's scheduled-cell-write substrate and
+  still does. Both shipped spells sidestep the clock instead, from opposite sides: the Ward's glass is PERMANENT
+  journaled matter that digs to nothing, and the Causeway's is retired by the plank that replaces it, so in neither case
+  does a cell need a timer of its own. Kindle sidestepped it a third way by never being a cell at all.
 - **Prospect pulse** — the passive audio senses recast as an on-demand ping. Audio only; the no-ESP stance holds.
 - **Mending** — waits on D3 health.
 - **Teleport-to-friend** — consent required, addressed by account id and never by name (the `--admin` lesson).

@@ -3,6 +3,7 @@
 
 pub mod alchemy;
 pub mod block;
+pub mod causeway;
 pub mod chunk;
 pub mod compass;
 pub mod decoration;

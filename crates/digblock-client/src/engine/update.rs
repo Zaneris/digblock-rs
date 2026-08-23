@@ -162,6 +162,12 @@ impl Engine {
 		// The wisp burns down on the same clock, and so does every kindled
 		// light — each on its own countdown, consulting nobody.
 		self.wisp_left = (self.wisp_left - dt).max(0.0);
+		if self.causeway_left > 0.0 {
+			self.causeway_left -= dt;
+			if self.causeway_left <= 0.0 {
+				self.end_causeway();
+			}
+		}
 		for k in &mut self.vfx.kindled {
 			k.left -= dt;
 			k.age += dt;
@@ -515,6 +521,16 @@ impl Engine {
 					}
 				}
 			}
+			// The road, asked of the settled position: `wants` is grounded
+			// and nothing else, so a standing player spends no planks and
+			// no velocity enters an answer the two ends must share.
+			let plank = (self.causeway_left > 0.0 && world_ready)
+				.then(|| {
+					let grounded = self.player.grounded(&cell_at);
+					self.causeway.wants(self.player.pos, grounded, &cell_at)
+				})
+				.flatten();
+			self.step_causeway(plank);
 			// Sub-second exponential decay; snapped off once imperceptible.
 			self.session.correction_offset *= (-dt / 0.2).exp();
 			if self.session.correction_offset.length_squared() < 1e-6 {

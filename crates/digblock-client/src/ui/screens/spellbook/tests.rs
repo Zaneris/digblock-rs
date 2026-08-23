@@ -33,9 +33,14 @@ fn skills_at(level: u32) -> SkillSet {
 /// A page at `level` with `stock` in the purse, drawn once so the hit
 /// map is the frame's own.
 fn rig_at(level: u32, stock: impl Fn(&mut Inventory)) -> Rig {
+	rig_with_road(level, 0, stock)
+}
+
+/// The same page with a causeway already standing for `road_secs`.
+fn rig_with_road(level: u32, road_secs: u32, stock: impl Fn(&mut Inventory)) -> Rig {
 	let mut inv = Inventory::default();
 	stock(&mut inv);
-	let view = SpellView::build(&skills_at(level), 0, &all_ports(), &inv, false);
+	let view = SpellView::build(&skills_at(level), 0, &all_ports(), &inv, false, road_secs);
 	let mut r = Rig {
 		screen: SpellScreen::default(),
 		hits: HitMap::default(),
@@ -281,5 +286,77 @@ fn clicking_a_fare_casts_its_row() {
 	assert!(
 		matches!(on_chip, Some(SpellAction::CastWisp)),
 		"the fare is not a hole in its own row"
+	);
+}
+
+/// Press this slot's row and report what it asked for.
+fn press_slot(r: &mut Rig, slot: u8) -> Option<SpellAction> {
+	let row = r.hits.rect_of(InvId::Spell(slot))?;
+	r.screen.handle_input(
+		&InputEvent::CursorMoved {
+			x: row.x + row.w * 0.1,
+			y: row.y + row.h / 2.0,
+		},
+		&r.hits,
+		&r.view,
+	);
+	r.screen.handle_input(
+		&InputEvent::MouseButton {
+			button: MouseButton::Left,
+			pressed: true,
+		},
+		&r.hits,
+		&r.view,
+	)
+}
+
+/// The causeway's row: absent below its rung, priced at it, and — the
+/// property most likely to regress — clickable with a road standing and
+/// an EMPTY purse, because taking one up costs nothing. Fare and rung
+/// both read off the tables.
+#[test]
+fn the_causeway_row_prices_a_cast_and_never_the_taking_up() {
+	let rung = digblock_core::unlock::CAUSEWAY_AT;
+	let (essence, fare) = digblock_core::alchemy::causeway_price(rung);
+
+	let mut below = rig_at(rung - 1, |inv| inv.add_sub(essence, fare));
+	assert!(
+		press_slot(&mut below, SLOT_CAUSEWAY).is_none(),
+		"the row stands below its rung"
+	);
+
+	let mut broke = rig_at(rung, |_| {});
+	assert!(
+		press_slot(&mut broke, SLOT_CAUSEWAY).is_none(),
+		"an unpayable road casts"
+	);
+
+	let mut funded = rig_at(rung, |inv| inv.add_sub(essence, fare));
+	assert!(
+		matches!(
+			press_slot(&mut funded, SLOT_CAUSEWAY),
+			Some(SpellAction::ToggleCauseway)
+		),
+		"a payable road refuses to cast"
+	);
+
+	// Standing, and nothing in the purse: the row is the way OUT of a
+	// causeway, so it cannot be priced.
+	let mut standing = rig_with_road(rung, 1, |_| {});
+	assert!(
+		matches!(
+			press_slot(&mut standing, SLOT_CAUSEWAY),
+			Some(SpellAction::ToggleCauseway)
+		),
+		"a caster cannot take their own road up while broke"
+	);
+	// And it shows what is left rather than a fare.
+	assert!(
+		!standing
+			.view
+			.fares()
+			.iter()
+			.any(|&(slot, _)| slot == SLOT_CAUSEWAY),
+		"a standing road still advertises a price"
 	);
 }

@@ -610,6 +610,14 @@ impl Engine {
 					// it, so it stops here rather than completing into
 					// nothing.
 					self.wisp_left = 0.0;
+					// And a predicted road — but only if THIS refusal is
+					// the one answering it. Its planks were predicted
+					// edits, so the standing rollback takes each one back
+					// as its own rejection arrives; ending here stops more
+					// being laid against a debit that never happened.
+					if self.last_cast == Some(CastTarget::Causeway) {
+						self.end_causeway();
+					}
 					if self.cast.as_ref().map(|c| c.target) == Some(CastTarget::Ward) {
 						self.cast = None;
 						self.emit(crate::audio::AudioCmd::LoopStop {

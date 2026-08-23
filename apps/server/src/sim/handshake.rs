@@ -375,6 +375,9 @@ impl Sim {
 				last_teleport_tick: record.last_teleport_tick,
 				skills: record.skills,
 				wisp_until: None,
+				causeway_until: None,
+				causeway: Default::default(),
+				causeway_tokens: digblock_net::protocol::CAUSEWAY_BURST,
 			},
 		);
 		self.residency_dirty = true;

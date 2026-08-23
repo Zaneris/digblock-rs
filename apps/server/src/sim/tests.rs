@@ -2136,6 +2136,420 @@ fn a_caster_who_leaves_mid_channel_forfeits_the_fare() {
 /// as a backlog entry counting down from the cast, after the caster has
 /// left, and is gone from the backlog once its span has run — on the
 /// sim's clock, with nobody there to watch it.
+/// Claim a causeway plank for this connection, as its client would.
+fn claim_plank(sim: &mut super::Sim, conn_id: u64, seq: u32, cell: (i32, i32, i32)) {
+	let origin = sim
+		.test_player(conn_id)
+		.expect("a live client has a player")
+		.pos;
+	sim.tick_once(vec![SimEvent::Msg {
+		conn_id,
+		msg: ClientMsg::EditRequest {
+			seq,
+			tick: 0,
+			origin: origin.to_array(),
+			dir: [0.0, -1.0, 0.0],
+			kind: digblock_net::messages::EditKind::CausewayStep,
+			cell: [cell.0, cell.1, cell.2],
+			normal: [0, 1, 0],
+			slot: 0,
+		},
+	}]);
+	// An edit rides the action queue, so it is applied on the tick after
+	// the one that carried its message.
+	sim.tick_once(vec![]);
+}
+
+/// Claim a plank and report the reason it was refused, or `None` if it
+/// landed. Asserting the REASON is the point: "no glass appeared" passes
+/// for every refusal there is, including ones the fixture caused, so a
+/// bound could be deleted outright and a test that only looked at the
+/// world would not notice.
+fn claim_reason(
+	sim: &mut super::Sim,
+	c: &mut TestClient,
+	seq: u32,
+	cell: (i32, i32, i32),
+) -> Option<RejectReason> {
+	c.msgs.clear();
+	claim_plank(sim, 1, seq, cell);
+	c.drain();
+	c.msgs.iter().find_map(|m| match m {
+		ServerMsg::EditRejected { client_seq, reason } if *client_seq == seq => Some(*reason),
+		_ => None,
+	})
+}
+
+/// A cell only the claim BOUND can refuse: claimable, unoccupied and
+/// loaded, but outside `CLAIM_SLACK` of the cell under the caster's
+/// feet. Searched rather than assumed — the previous fixture computed one
+/// by hand and got a cell the server had not loaded, so the refusal it
+/// asserted was `NotLoaded` and the bound was never exercised at all.
+fn out_of_bound_cell(sim: &super::Sim, conn_id: u64) -> (i32, i32, i32) {
+	use digblock_core::causeway::{CLAIM_SLACK, claim_ok, claims, step_cell};
+	let pos = sim
+		.test_player(conn_id)
+		.expect("a live client has a player")
+		.pos;
+	let base = step_cell(pos);
+	let glass = digblock_core::chunk::make_cell(digblock_core::block::BlockType::Wardglass, 0);
+	let reach = CLAIM_SLACK + 3;
+	for dy in -reach..=reach {
+		for dx in -reach..=reach {
+			for dz in -reach..=reach {
+				let c = (base.0 + dx, base.1 + dy, base.2 + dz);
+				if claim_ok(c, pos) {
+					continue;
+				}
+				let Some(v) = sim.test_cell_at(c.0, c.1, c.2) else {
+					continue;
+				};
+				if claims(v) && !digblock_core::player::placement_blocked(pos, c, glass) {
+					return c;
+				}
+			}
+		}
+	}
+	panic!("no loaded, claimable cell sits outside the claim bound");
+}
+
+/// Stand this caster well clear of spawn's own lock sphere, and wait for
+/// the ground under them to become resident. Every cell beside the pad is
+/// protected, so a plank claimed there is refused for a reason that has
+/// nothing to do with the Causeway.
+fn stand_clear_of_spawn(sim: &mut super::Sim, conn_id: u64) {
+	let pad = sim.test_player(conn_id).expect("live").pos;
+	let away = pad + glam::Vec3::new(digblock_core::spawn::LOCK_RADIUS as f32 * 2.0, 0.0, 0.0);
+	sim.test_teleport(conn_id, away);
+	let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+	loop {
+		sim.tick_once(vec![]);
+		// The cell the caster's own feet name has to be RESIDENT, not
+		// merely some cell near it: an unloaded one refuses a claim with
+		// `NotLoaded`, which reads as any other refusal to a test that
+		// only looks at the world.
+		let pos = sim.test_player(conn_id).expect("live").pos;
+		let base = digblock_core::causeway::step_cell(pos);
+		if sim.test_cell_at(base.0, base.1, base.2).is_some()
+			&& !claimable_near(sim, conn_id).is_empty()
+		{
+			return;
+		}
+		assert!(
+			std::time::Instant::now() < deadline,
+			"the ground under the caster never became resident"
+		);
+		std::thread::sleep(std::time::Duration::from_millis(1));
+	}
+}
+
+/// A loaded, in-bound cell a plank may NOT claim — searched, for the same
+/// reason [`out_of_bound_cell`] is.
+fn occupied_in_bound_cell(sim: &super::Sim, conn_id: u64) -> (i32, i32, i32) {
+	use digblock_core::causeway::{CLAIM_SLACK, claim_ok, claims, step_cell};
+	let pos = sim.test_player(conn_id).expect("live").pos;
+	let base = step_cell(pos);
+	for dy in -CLAIM_SLACK..=CLAIM_SLACK {
+		for dx in -CLAIM_SLACK..=CLAIM_SLACK {
+			for dz in -CLAIM_SLACK..=CLAIM_SLACK {
+				let c = (base.0 + dx, base.1 + dy, base.2 + dz);
+				if !claim_ok(c, pos) {
+					continue;
+				}
+				if sim.test_cell_at(c.0, c.1, c.2).is_some_and(|v| !claims(v)) {
+					return c;
+				}
+			}
+		}
+	}
+	panic!("every loaded cell in reach is claimable, so nothing tests the claim gate");
+}
+
+/// Cells this caster could honestly claim a plank in: within the claim
+/// bound of the cell under their feet, holding something a plank may
+/// claim, and not blocked by anybody standing there. Derived from the
+/// same three predicates the server checks, so the fixture cannot drift
+/// from the rule.
+fn claimable_near(sim: &super::Sim, conn_id: u64) -> Vec<(i32, i32, i32)> {
+	use digblock_core::causeway::{CLAIM_SLACK, claims, step_cell};
+	let pos = sim
+		.test_player(conn_id)
+		.expect("a live client has a player")
+		.pos;
+	let base = step_cell(pos);
+	let mut out = Vec::new();
+	for dy in -CLAIM_SLACK..=CLAIM_SLACK {
+		for dx in -CLAIM_SLACK..=CLAIM_SLACK {
+			for dz in -CLAIM_SLACK..=CLAIM_SLACK {
+				let c = (base.0 + dx, base.1 + dy, base.2 + dz);
+				let Some(v) = sim.test_cell_at(c.0, c.1, c.2) else {
+					continue;
+				};
+				let glass =
+					digblock_core::chunk::make_cell(digblock_core::block::BlockType::Wardglass, 0);
+				if claims(v) && !digblock_core::player::placement_blocked(pos, c, glass) {
+					out.push(c);
+				}
+			}
+		}
+	}
+	out
+}
+
+/// Every wardglass cell standing in a box around the caster — the road,
+/// counted from the world rather than from the server's bookkeeping.
+fn glass_around(sim: &super::Sim, at: (i32, i32, i32), r: i32) -> Vec<(i32, i32, i32)> {
+	use digblock_core::block::BlockType;
+	let mut out = Vec::new();
+	for x in at.0 - r..=at.0 + r {
+		for y in at.1 - r..=at.1 + r {
+			for z in at.2 - r..=at.2 + r {
+				let held = sim
+					.test_cell_at(x, y, z)
+					.map(|v| BlockType::from_id(digblock_core::chunk::cell_id(v)));
+				if held == Some(BlockType::Wardglass) {
+					out.push((x, y, z));
+				}
+			}
+		}
+	}
+	out
+}
+
+/// The road stands at most `causeway::TRAIL` planks however many are
+/// claimed, and the plank retired is the oldest — the property the
+/// client's own assertion rests on, checked against the WORLD rather
+/// than against the trail that decides it.
+#[test]
+fn a_road_never_stands_longer_than_its_trail() {
+	use digblock_core::causeway::TRAIL;
+	let mut sim = flat_sim("causeway_trail");
+	let mut c = connect(&mut sim, 1);
+	wait_live(&mut sim, 1);
+	stand_clear_of_spawn(&mut sim, 1);
+	let level = digblock_core::unlock::CAUSEWAY_AT;
+	sim.bench_set_arcana_level(1, level);
+	let (essence, fare) = digblock_core::alchemy::causeway_price(level);
+	sim.test_grant_essence(1, essence, fare);
+	c.msgs.clear();
+	sim.tick_once(vec![SimEvent::Msg {
+		conn_id: 1,
+		msg: ClientMsg::Cast(digblock_net::messages::CastKind::Causeway),
+	}]);
+	assert_eq!(sim.test_essence(1, essence), Some(0), "the fare left");
+
+	let base = digblock_core::causeway::step_cell(sim.test_player(1).expect("live").pos);
+	let claims = claimable_near(&sim, 1);
+	assert!(
+		claims.len() > TRAIL,
+		"the fixture offers no more than a full road to claim"
+	);
+	for (i, &cell) in claims.iter().enumerate() {
+		claim_plank(&mut sim, 1, i as u32 + 1, cell);
+		let standing = glass_around(&sim, base, digblock_core::causeway::CLAIM_SLACK + 2);
+		assert_eq!(
+			standing.len(),
+			(i + 1).min(TRAIL),
+			"claim {i} left {} planks standing",
+			standing.len()
+		);
+	}
+}
+
+/// A plank is a claim, and the server bounds it three ways: no road
+/// standing at all, a cell out of reach of the SERVER's own copy of the
+/// feet, and a cell that is not the caster's to claim. Each refusal
+/// leaves the world exactly as it was.
+#[test]
+fn a_claimed_plank_is_bounded_three_ways() {
+	use digblock_core::causeway::CLAIM_SLACK;
+	let mut sim = flat_sim("causeway_bounds");
+	let mut c = connect(&mut sim, 1);
+	wait_live(&mut sim, 1);
+	stand_clear_of_spawn(&mut sim, 1);
+	let level = digblock_core::unlock::CAUSEWAY_AT;
+	sim.bench_set_arcana_level(1, level);
+	let pos = sim.test_player(1).expect("live").pos;
+	let base = digblock_core::causeway::step_cell(pos);
+	let honest = *claimable_near(&sim, 1)
+		.first()
+		.expect("somewhere to lay one");
+	let r = CLAIM_SLACK + 2;
+
+	// No road: an assertion into a spell that is not being cast.
+	assert_eq!(
+		claim_reason(&mut sim, &mut c, 1, honest),
+		Some(RejectReason::BadBlock),
+		"a plank was taken with no causeway behind it"
+	);
+	assert!(glass_around(&sim, base, r).is_empty());
+
+	let (essence, fare) = digblock_core::alchemy::causeway_price(level);
+	sim.test_grant_essence(1, essence, fare);
+	c.msgs.clear();
+	sim.tick_once(vec![SimEvent::Msg {
+		conn_id: 1,
+		msg: ClientMsg::Cast(digblock_net::messages::CastKind::Causeway),
+	}]);
+
+	// Out of reach: one cell past the slack measured from BASE, which is
+	// what the bound compares against — at a height and depth already
+	// known claimable, so nothing but the bound can refuse it. The
+	// premise is asserted first: a cell the server has not loaded refuses
+	// with `NotLoaded`, and that would pass a weaker test for the wrong
+	// reason.
+	let far = out_of_bound_cell(&sim, 1);
+	assert!(
+		!digblock_core::causeway::claim_ok(far, pos),
+		"the far cell is inside the bound"
+	);
+	assert_eq!(
+		claim_reason(&mut sim, &mut c, 2, far),
+		Some(RejectReason::OutOfReach),
+		"a plank was taken past the claim bound"
+	);
+	assert!(!glass_around(&sim, base, r + 4).contains(&far));
+
+	// Not claimable: a loaded cell in reach that already holds something.
+	let solid = occupied_in_bound_cell(&sim, 1);
+	let before = sim.test_cell_at(solid.0, solid.1, solid.2);
+	assert_eq!(
+		claim_reason(&mut sim, &mut c, 3, solid),
+		Some(RejectReason::Occluded),
+		"a plank overwrote a cell that was not air"
+	);
+	assert_eq!(
+		sim.test_cell_at(solid.0, solid.1, solid.2),
+		before,
+		"and left it as it found it"
+	);
+
+	// And the honest one lands, refused for nothing.
+	assert_eq!(claim_reason(&mut sim, &mut c, 4, honest), None);
+	assert!(
+		glass_around(&sim, base, r).contains(&honest),
+		"an honest plank was refused"
+	);
+}
+
+/// The road comes up on its own clock, and on a departure — a trail
+/// nobody holds could never retire itself. Both spans read off the
+/// unlock table, never a written-down number.
+#[test]
+fn a_road_is_taken_up_by_its_span_and_by_leaving() {
+	let mut sim = flat_sim("causeway_lifecycle");
+	let mut c = connect(&mut sim, 1);
+	wait_live(&mut sim, 1);
+	stand_clear_of_spawn(&mut sim, 1);
+	let level = digblock_core::unlock::CAUSEWAY_AT;
+	sim.bench_set_arcana_level(1, level);
+	let (essence, fare) = digblock_core::alchemy::causeway_price(level);
+	let secs = digblock_core::unlock::causeway_secs(level);
+
+	let lay = |sim: &mut super::Sim, c: &mut TestClient| {
+		sim.test_grant_essence(1, essence, fare);
+		c.msgs.clear();
+		sim.tick_once(vec![SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::Cast(digblock_net::messages::CastKind::Causeway),
+		}]);
+		let base = digblock_core::causeway::step_cell(sim.test_player(1).expect("live").pos);
+		let cell = *claimable_near(sim, 1)
+			.first()
+			.expect("somewhere to lay one");
+		claim_plank(sim, 1, 1, cell);
+		assert!(!glass_around(sim, base, 4).is_empty(), "no road to take up");
+		base
+	};
+
+	// The span: one tick past it, nothing stands.
+	let base = lay(&mut sim, &mut c);
+	for _ in 0..secs * digblock_net::protocol::TICK_RATE + 2 {
+		sim.tick_once(vec![]);
+	}
+	assert!(
+		glass_around(&sim, base, 4).is_empty(),
+		"the road outlived its span"
+	);
+
+	// The departure. A SECOND client stands nearby and stays: with
+	// nobody left the columns unload and `test_cell_at` answers None for
+	// every cell, which would make this pass whatever the road did.
+	let mut _c2 = connect(&mut sim, 2);
+	wait_live(&mut sim, 2);
+	let watcher = sim.test_player(1).expect("live").pos + glam::Vec3::new(6.0, 0.0, 0.0);
+	sim.test_teleport(2, watcher);
+	for _ in 0..8 {
+		sim.tick_once(vec![]);
+	}
+	let base = lay(&mut sim, &mut c);
+	assert!(
+		!glass_around(&sim, base, 4).is_empty(),
+		"the fixture lost its road before the departure"
+	);
+	sim.tick_once(vec![SimEvent::Disconnected { conn_id: 1 }]);
+	assert!(
+		sim.test_is_live(2),
+		"the watcher left too, so the columns are gone and this proves nothing"
+	);
+	assert!(
+		glass_around(&sim, base, 4).is_empty(),
+		"a road outlived the caster who held it"
+	);
+}
+
+/// Recasting takes the road up rather than paying twice — the row is a
+/// toggle, because a caster who wants to descend cannot wait one out.
+#[test]
+fn recasting_takes_the_road_up_and_charges_nothing() {
+	let mut sim = flat_sim("causeway_toggle");
+	let mut c = connect(&mut sim, 1);
+	wait_live(&mut sim, 1);
+	stand_clear_of_spawn(&mut sim, 1);
+	let level = digblock_core::unlock::CAUSEWAY_AT;
+	sim.bench_set_arcana_level(1, level);
+	let (essence, fare) = digblock_core::alchemy::causeway_price(level);
+	// Two fares in the purse, so a second debit would be payable and is
+	// therefore a real thing to assert did not happen.
+	sim.test_grant_essence(1, essence, fare * 2);
+	let cast = |sim: &mut super::Sim| {
+		sim.tick_once(vec![SimEvent::Msg {
+			conn_id: 1,
+			msg: ClientMsg::Cast(digblock_net::messages::CastKind::Causeway),
+		}]);
+	};
+	// The level was set by seeding a total, so the award is a DELTA.
+	let arcana = digblock_core::skills::Skill::Arcana;
+	let before = sim.test_skill_xp(1, arcana);
+	c.msgs.clear();
+	cast(&mut sim);
+	let paid = digblock_core::skills::cast_xp(essence, fare);
+	assert_eq!(sim.test_essence(1, essence), Some(fare));
+	assert_eq!(sim.test_skill_xp(1, arcana), before + paid);
+	let base = digblock_core::causeway::step_cell(sim.test_player(1).expect("live").pos);
+	let cell = *claimable_near(&sim, 1)
+		.first()
+		.expect("somewhere to lay one");
+	claim_plank(&mut sim, 1, 1, cell);
+	assert!(!glass_around(&sim, base, 4).is_empty());
+
+	cast(&mut sim);
+	assert!(
+		glass_around(&sim, base, 4).is_empty(),
+		"a recast stood a second road instead of taking the first up"
+	);
+	assert_eq!(
+		sim.test_essence(1, essence),
+		Some(fare),
+		"taking a road up charged a second fare"
+	);
+	assert_eq!(
+		sim.test_skill_xp(1, arcana),
+		before + paid,
+		"taking a road up paid a second time"
+	);
+}
+
 #[test]
 fn a_kindled_light_outlives_its_caster_and_not_its_span() {
 	use digblock_net::messages::CastKind;

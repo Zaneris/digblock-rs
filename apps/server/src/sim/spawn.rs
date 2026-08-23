@@ -337,6 +337,7 @@ impl Sim {
 			CastKind::Wisp => return self.cast_wisp(conn_id),
 			CastKind::KindleHere => return self.cast_kindle(conn_id),
 			CastKind::Ward => return self.cast_ward(conn_id),
+			CastKind::Causeway => return self.cast_causeway(conn_id),
 			// The retired aimed form: a cell the client named is exactly
 			// what the spell no longer trusts.
 			CastKind::Kindle { .. } => return refuse(client, CastRefusal::BadTarget),

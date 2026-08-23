@@ -76,6 +76,7 @@ fn spell(s: Spell) -> &'static str {
 		Spell::Wisp => "the wisp",
 		Spell::Kindle => "conjured light",
 		Spell::Ward => "the ward",
+		Spell::Causeway => "the causeway",
 	}
 }
 
