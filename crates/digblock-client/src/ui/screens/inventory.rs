@@ -137,6 +137,7 @@ impl InvScreen {
 		size: (u32, u32),
 		grid: &InvGrid,
 		inv: &Inventory,
+		bar_view: &HotbarView,
 		daylight: f32,
 	) {
 		let window_scale = ui.style.scale;
@@ -238,11 +239,11 @@ impl InvScreen {
 			}
 		}
 		// The held item rides the cursor, above everything.
+		let (cx, cy) = self.drag.cursor;
 		if let Some(&item) = self.drag.ghost() {
 			// Dragging the tool carries its charge: the ghost is the same
 			// item, so it has to be the same picture.
 			let (kind, tint) = hud::item_icon(item, inv.bucket_full());
-			let (cx, cy) = self.drag.cursor;
 			hud::draw_icon(
 				ui.dl,
 				Layer::Ghost,
@@ -250,6 +251,18 @@ impl InvScreen {
 				kind,
 				tint,
 			);
+		} else {
+			// The name of the slot under the cursor — grid or bar — at
+			// THIS frame's glyph, which is why the bar's slots are named
+			// here rather than by the bar, drawn later at the window's.
+			let over_grid = (0..GRID_SLOTS)
+				.map(|i| (spec.rect(i), grid.get(i)))
+				.find(|(r, _)| r.contains(cx, cy))
+				.and_then(|(r, b)| b.map(|b| (r, b.name())));
+			let over_bar = || hud::hovered_bar_slot(size, window_scale, bar_view, (cx, cy));
+			if let Some((anchor, name)) = over_grid.or_else(over_bar) {
+				widgets::tooltip(ui.dl, &ui.style, size, anchor, &name);
+			}
 		}
 		// The frame's own style back: the hotbar draws after us, at the
 		// scale the window asked for and not the one we had to fit into.
@@ -288,7 +301,11 @@ impl InvScreen {
 					},
 					// Alchemy and spellbook ids never appear while this
 					// screen is open.
-					InvId::Craft(_) | InvId::Family(_) | InvId::CraftGo | InvId::Spell(_) => {
+					InvId::Craft(_)
+					| InvId::Family(_)
+					| InvId::CraftGo
+					| InvId::Spell(_)
+					| InvId::SpellFare(_) => {
 						return None;
 					}
 				};

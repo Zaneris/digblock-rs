@@ -735,8 +735,17 @@ column.
 
 Family tiles rotate through their members on a shared clock; selecting a family lays its member tiles out beneath
 (locked members visible but dim, affordable ones badged with their batch count); a detail strip shows the selected
-member's name and post-waste cost at your level; and the page has exactly ONE `TRANSMUTE` button, disabled for a locked
-or unaffordable pick. `CLICK 1 · SHIFT 10 · CTRL 100` multipliers on that button.
+member's icon and its post-waste price at your level; and the page has exactly ONE `TRANSMUTE` button, disabled for a
+locked or unaffordable pick, with a legend naming the plain, `SHIFT` (`BULK_SHIFT`) and `CTRL` (`BULK_CTRL`) batch
+sizes.
+
+**An amount of essence or feedstock is never text.** A price, a holding and a fare are *chips* — the thing's icon and a
+number (`widgets::Chip`), a line the holdings cannot cover drawn in `theme::SHORT_INK` — and the readout wraps rather
+than eliding. The essence icons are flat sprites in the materials array, painted by texgen from `Essence::palette`, the
+one colour authority (the surface nodes' flecks derive from it). **A name is a tooltip**: nothing on the page is
+labelled; every tile, chip and bar slot names itself on hover, and the screen that owns the page emits that name last,
+so it covers what it names. This replaced a strip line that carried the name and the price together and dropped the
+price whenever the line did not fit — which, at the grid's width, was half the catalog.
 
 That button **queues** its count rather than buying it. A batch drips one paced craft at a time, the row beneath carries
 its progress, and the button stands as its CANCEL. This is also the §7.2 grid's natural UI: a new material × shape pair
@@ -765,7 +774,8 @@ expand the full unlock list; v1 is the summary.
 ### 8.3 Feedback
 
 - **XP toasts**: a small accumulating `+N MINING` above the hotbar, HUD-layer text over a `FILL_BG` backdrop (sized from
-  `line_h`), coalescing rapid awards and fading out on their own.
+  `line_h`), coalescing rapid awards and fading out on their own. An essence toast is `+N` and the essence's chip — the
+  §8.1 rule holds on the HUD too.
 - **Level-up**: chat-feed line ("Mining is now level 48"), a one-shot sfx, and on reveal thresholds the remesh sweep
   plus a distinct line ("new veins shimmer into view").
 - Both new screens get `DIG_SCREEN` stocking (essences + ores + XP included) so `--screenshot` can photograph them — the
@@ -962,12 +972,13 @@ proposal in the header's sense (the level is final only when it lands in `unlock
   last material, the repeatable prestige building block, and the reason Aetherock mining is standing income), a
   Chandelier ~54 (the showpiece light, the biggest repeatable Aether sink).
 - **The second extraction queue slot ~42** (QoL-as-unlock; §12's answer, scheduled).
-- **The craftable bucket — BUILT** (protocol v25): the bucket lost `always_owned` and is the catalog's first tool, gated
-  by its price alone (Flora and Earth, at the level everyone starts at, so the opening dig-and-extract loop pays for it
-  — "make your first vessel" is the game's first craft beat). Its price carries **no Aqua** (water is how a player first
-  GETS Aqua — the siphon's no-Metal deadlock rule, applied again). The Water extract gate dropped to the first level
-  with it, and the `extract` axis — a one-entry table by then — was deleted outright; if a substance ever genuinely
-  needs its own extraction level, the axis returns with more than one row in it. A fresh player's tool slot stands BARE
+- **The craftable bucket — BUILT** (protocol v25): the bucket lost `always_owned` and became a craft priced in timber
+  alone. It first sat at the level everyone starts at, which put it on the catalog's opening line beside the siphon and
+  distracted from the one craft beat that line exists for — "make your siphon" — so it now opens a few rungs later, at
+  `unlock::functional`'s rung for it. Its price carries **no Aqua** (water is how a player first GETS Aqua — the
+  siphon's no-Metal deadlock rule, applied again). The Water extract gate dropped to the first level with it, and the
+  `extract` axis — a one-entry table by then — was deleted outright; if a substance ever genuinely needs its own
+  extraction level, the axis returns with more than one row in it. A fresh player's tool slot stands BARE
   (`Hotbar::active_tool` is an `Option`; `tool_in_hand` spells the empty hand as `Air` for the shared dig questions;
   reconciling auto-equips the first crafted vessel). Every record written while the bucket was owned by everyone keeps
   it via a migration grant — `inventories.bin` v7 server-side, `SAVE_REV` for local saves, with a fresh world opening AT
@@ -1023,9 +1034,10 @@ golden hashes untouched.
   transmutation proper is what they are for. Bulk building therefore costs mostly the rock you quarried, and essence
   taxes lightly but universally — the purpose it lacked. Waste still applies, to the catalyst alone.
 - **The deadlock rule generalized: the essence tool costs no essence, ever.** Every essence is a siphon draw now, so the
-  siphon — and the bucket, which shares its day-one footing — is priced in feedstock alone (felled timber), pinned by
-  `the_essence_tool_costs_no_essence`. "Dig your way to the trees, fell a few, make your vessels" is the opening loop;
-  the heartwood you can already see is the first draw, and leystone at its early reveal supplies the torch.
+  siphon — and the bucket a few rungs past it, whose own rung is meant to be its whole gate — is priced in feedstock
+  alone (felled timber), pinned by `the_essence_tool_costs_no_essence`. "Dig your way to the trees, fell a few, make
+  your vessels" is the opening loop; the heartwood you can already see is the first draw, and leystone at its early
+  reveal supplies the torch.
 - **XP follows the finds, and each award carries more.** Alchemy XP is field draws (`skills::field_xp`, now covering
   every node kind — the surface kinds pay Alchemy-primary with a Mining cut, inverting the ore tiers' split, because the
   headline follows the skill that revealed the find) plus craft XP, and nothing repeatable against an unbounded supply.
@@ -1072,6 +1084,11 @@ anti-dupe's edited-bit, and the background bench (which now paces only crafts).
 - **Node tiers.** The surface kinds ship one tier each. Richer variants at later Alchemy reveals (the pattern the ore
   ladder proves out), an Alchemy prospector's sense, and a proper DELVE-DESIGN handshake — its governed Aether faucet is
   the underground twin of the surface nodes and should speak this vocabulary — are the obvious next waves.
+- **Regrowth (2026-08-22).** A spent face left standing where its find was may come back: `worldjob::regrow` rolls each
+  one once a game day, in the evening, and the odds climb with the world's peak head-count over the trailing day
+  (`presence::RollingPeak`) — a solo world sits at the base rate, a busy server at a multiple of it, capped. The return
+  is the live face written into the cell, the one stored node, visible and drawable by anyone since it is already in
+  everyone's mesh. Unmeasured like the rest of this section: the constants live in `regrow.rs`.
 - **The inventory grid gained its seventh row** for the spent-face trophies, and `theme::FIT_FLOOR` stepped once to hold
   the smallest windows; the scrolling grid remains the real fix on record.
 - **The essence exchange** (§4.3's any → any, never into Aether) reads differently now that essence is scarce — it may

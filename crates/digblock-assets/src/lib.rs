@@ -92,6 +92,14 @@ pub mod tex {
 	pub const GLASS_GREEN: &[u8] = include_bytes!("../../../assets/textures/GlassGreen.png");
 	pub const GLASS_BLUE: &[u8] = include_bytes!("../../../assets/textures/GlassBlue.png");
 	pub const GLASS_AMBER: &[u8] = include_bytes!("../../../assets/textures/GlassAmber.png");
+	// The essence chips: UI sprites that ride the materials array because
+	// the icon pipeline samples nothing else. No block wears one.
+	pub const ESSENCE_VITAE: &[u8] = include_bytes!("../../../assets/textures/EssenceVitae.png");
+	pub const ESSENCE_TERRA: &[u8] = include_bytes!("../../../assets/textures/EssenceTerra.png");
+	pub const ESSENCE_UNDA: &[u8] = include_bytes!("../../../assets/textures/EssenceUnda.png");
+	pub const ESSENCE_FERRUM: &[u8] = include_bytes!("../../../assets/textures/EssenceFerrum.png");
+	pub const ESSENCE_AETHER: &[u8] = include_bytes!("../../../assets/textures/EssenceAether.png");
+	pub const WARDGLASS: &[u8] = include_bytes!("../../../assets/textures/Wardglass.png");
 
 	/// Texture-array layer order — the layer index is what block PROPS
 	/// reference, and `digblock_core::block::tex` mirrors this list
@@ -104,7 +112,7 @@ pub mod tex {
 	/// assert in digblock-client (`texture.rs`, the only file that can see
 	/// both crates) fails the BUILD on a length skew, so move them
 	/// together.
-	pub const LAYERS: [&[u8]; 52] = [
+	pub const LAYERS: [&[u8]; 58] = [
 		WATER,
 		DIRT,
 		GRASS_SIDE,
@@ -156,8 +164,14 @@ pub mod tex {
 		GLASS_GREEN,
 		GLASS_BLUE,
 		GLASS_AMBER,
-		// Conjured light (Wisplight) wears the aetherlamp's face.
+		// The conjured-light row wears the aetherlamp's face.
 		AETHERLAMP,
+		ESSENCE_VITAE,
+		ESSENCE_TERRA,
+		ESSENCE_UNDA,
+		ESSENCE_FERRUM,
+		ESSENCE_AETHER,
+		WARDGLASS,
 	];
 }
 
@@ -195,8 +209,12 @@ pub mod sfx {
 	/// The level-up that OPENS something: a four-note fanfare on top of
 	/// the same tonic, so the two read as the same event, escalated.
 	pub const LEVEL_UNLOCK: &[u8] = include_bytes!("../../../assets/sfx/level_unlock.ogg");
+	/// The Ward sealing: a crystalline chord over a soft low thump, the
+	/// crown cell landing. The climb under it has no recording of its
+	/// own — it rides the cast channel's loop.
+	pub const WARD_CLOSE: &[u8] = include_bytes!("../../../assets/sfx/ward_close.ogg");
 
-	pub const ALL: [(&str, &[u8]); 20] = [
+	pub const ALL: [(&str, &[u8]); 21] = [
 		("dig_stone.ogg", DIG_STONE),
 		("dig_earth.ogg", DIG_EARTH),
 		("dig_wood.ogg", DIG_WOOD),
@@ -217,6 +235,7 @@ pub mod sfx {
 		("siphon_take.ogg", SIPHON_TAKE),
 		("level_up.ogg", LEVEL_UP),
 		("level_unlock.ogg", LEVEL_UNLOCK),
+		("ward_close.ogg", WARD_CLOSE),
 	];
 }
 

@@ -1,4 +1,5 @@
 use super::*;
+use crate::ui::Rect;
 use crate::ui::draw::{Cmd, DrawList};
 use crate::ui::hit::HitMap;
 use crate::ui::widgets::Style;
@@ -364,4 +365,94 @@ fn icons_and_selection_ride_the_right_layers() {
 		})
 		.collect();
 	assert!(dirt.contains(&FULL_TINT), "top face is untinted: {dirt:?}");
+}
+
+/// An essence is the one flat icon: a single sprite quad in its own
+/// layer, filling the rect it was given, with no block behind it.
+#[test]
+fn an_essence_icon_is_one_flat_sprite() {
+	use digblock_core::block::Essence;
+	let rect = Rect::new(10.0, 20.0, 24.0, 24.0);
+	let mut seen = 0;
+	for e in Essence::ALL {
+		let mut dl = DrawList::default();
+		draw_icon(
+			&mut dl,
+			Layer::Icons,
+			rect,
+			IconKind::Essence(e),
+			0xFFFF_FFFF,
+		);
+		let (cmds, _) = dl.cmds(Layer::Icons);
+		let flats: Vec<(Rect, u16)> = cmds
+			.iter()
+			.filter_map(|c| match c {
+				Cmd::Icon {
+					rect, tex_layer, ..
+				} => Some((*rect, *tex_layer)),
+				_ => None,
+			})
+			.collect();
+		assert_eq!(flats, vec![(rect, e.icon_tex())], "{e:?}");
+		assert_eq!(cmds.len(), 1, "{e:?} emitted geometry too");
+		assert_eq!(icon_block(IconKind::Essence(e)), None);
+		seen += 1;
+	}
+	assert_eq!(seen, Essence::COUNT);
+}
+
+/// An essence toast carries its chip and never its name; an XP toast
+/// has no icon, because a skill has none.
+#[test]
+fn an_essence_toast_carries_its_icon_not_its_name() {
+	use digblock_core::block::Essence;
+	use digblock_core::skills::Skill;
+	let style = Style::new(1.0);
+	let mut seen = 0;
+	for e in Essence::ALL {
+		let mut dl = DrawList::default();
+		let toast = Toast {
+			label: ToastLabel::Essence(e),
+			amount: 37,
+			ttl: TOAST_TTL,
+		};
+		toasts(&mut dl, &style, SIZE, std::slice::from_ref(&toast));
+		let icons: Vec<u16> = dl
+			.cmds(Layer::Icons)
+			.0
+			.iter()
+			.filter_map(|c| match c {
+				Cmd::Icon { tex_layer, .. } => Some(*tex_layer),
+				_ => None,
+			})
+			.collect();
+		assert_eq!(icons, vec![e.icon_tex()], "{e:?}");
+		let (cmds, arena) = dl.cmds(Layer::Content);
+		let texts: Vec<&str> = cmds
+			.iter()
+			.filter_map(|c| match c {
+				Cmd::Text { range, .. } => Some(&arena[range.0 as usize..range.1 as usize]),
+				_ => None,
+			})
+			.collect();
+		assert!(texts.iter().any(|t| t.contains(&toast.amount.to_string())));
+		assert!(
+			!texts.iter().any(|t| t.contains(&e.name().to_uppercase())),
+			"{e:?} is named in words"
+		);
+		seen += 1;
+	}
+	assert_eq!(seen, Essence::COUNT);
+	let mut dl = DrawList::default();
+	toasts(
+		&mut dl,
+		&style,
+		SIZE,
+		&[Toast {
+			label: ToastLabel::Xp(Skill::Mining),
+			amount: 5,
+			ttl: TOAST_TTL,
+		}],
+	);
+	assert!(dl.cmds(Layer::Icons).0.is_empty(), "a skill has no chip");
 }

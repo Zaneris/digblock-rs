@@ -144,11 +144,12 @@ fn nothing_the_world_hands_you_can_be_transmuted() {
 }
 
 /// **The essence tool costs no essence, ever** — and neither does the
-/// vessel that precedes it. Every essence in the game is a siphon
+/// vessel that follows it. Every essence in the game is a siphon
 /// draw, so an essence-priced siphon is a currency that cannot be
-/// bootstrapped; the bucket sits at the level everyone starts at, on
-/// the same footing. Both are priced in FEEDSTOCK a fresh player can
-/// chop, and their essence splits are pinned EMPTY.
+/// bootstrapped; the bucket opens a few rungs later and keeps the
+/// feedstock-only price anyway, because its rung is meant to be its
+/// whole gate. Both are priced in FEEDSTOCK a fresh player can chop,
+/// and their essence splits are pinned EMPTY.
 #[test]
 fn the_essence_tool_costs_no_essence() {
 	for b in [BlockType::EssenceSiphon, BlockType::Bucket] {
@@ -597,4 +598,24 @@ fn essence_faucets_open_where_they_always_did() {
 		"an essence's faucet moved — check every recipe priced in it \
 			 still has a level a player can reach it at"
 	);
+}
+
+/// `MAX_COST_LINES` is a budget the client derives icon space from, so it
+/// must dominate every craft in the catalog — and not by so much that it
+/// is meaningless: some craft has to reach it.
+#[test]
+fn no_craft_has_more_cost_lines_than_the_budget() {
+	let mut widest = 0;
+	let mut checked = 0;
+	for &b in &BlockType::ALL {
+		let Some(ideal) = craft_ideal(b) else {
+			continue;
+		};
+		let lines = craft_feedstock(b).len() + ideal.len();
+		assert!(lines <= MAX_COST_LINES, "{b:?} has {lines} cost lines");
+		widest = widest.max(lines);
+		checked += 1;
+	}
+	assert!(checked > 0, "nothing craftable");
+	assert_eq!(widest, MAX_COST_LINES, "the budget has slack to give back");
 }

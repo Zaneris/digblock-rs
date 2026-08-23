@@ -23,3 +23,6 @@ apps/master/*.db-journal
 # the justfile).
 .env
 __pycache__/
+# The web harness's install and its captures (tools/web-e2e).
+tools/web-e2e/node_modules/
+tools/web-e2e/test-results/

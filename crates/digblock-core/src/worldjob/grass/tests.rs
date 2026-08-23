@@ -1,4 +1,5 @@
 use super::*;
+use crate::worldjob::Run;
 use rustc_hash::FxHashMap;
 
 const SEED: f64 = 7.0;
@@ -54,7 +55,15 @@ fn noon() -> GrassSpread {
 #[test]
 fn spreads_beside_exposed_grass() {
 	assert_eq!(
-		noon().apply(AT, &seeded(), SEED, 0),
+		noon().apply(
+			AT,
+			&seeded(),
+			SEED,
+			Run {
+				slot: 0,
+				players: 1
+			}
+		),
 		Some(BlockType::Grass as u16)
 	);
 }
@@ -63,7 +72,18 @@ fn spreads_beside_exposed_grass() {
 fn no_grass_neighbor_no_spread() {
 	let mut w = Pocket::airy();
 	w.set(AT, BlockType::Dirt);
-	assert_eq!(noon().apply(AT, &w, SEED, 0), None);
+	assert_eq!(
+		noon().apply(
+			AT,
+			&w,
+			SEED,
+			Run {
+				slot: 0,
+				players: 1
+			}
+		),
+		None
+	);
 }
 
 #[test]
@@ -71,7 +91,19 @@ fn a_covered_target_never_grasses() {
 	for lid in [BlockType::Stone, BlockType::Water] {
 		let mut w = seeded();
 		w.set((AT.0, AT.1 + 1, AT.2), lid);
-		assert_eq!(noon().apply(AT, &w, SEED, 0), None, "{lid:?} lid");
+		assert_eq!(
+			noon().apply(
+				AT,
+				&w,
+				SEED,
+				Run {
+					slot: 0,
+					players: 1
+				}
+			),
+			None,
+			"{lid:?} lid"
+		);
 	}
 }
 
@@ -79,7 +111,18 @@ fn a_covered_target_never_grasses() {
 fn a_buried_neighbor_does_not_count() {
 	let mut w = seeded();
 	w.set((1, 65, 0), BlockType::Stone);
-	assert_eq!(noon().apply(AT, &w, SEED, 0), None);
+	assert_eq!(
+		noon().apply(
+			AT,
+			&w,
+			SEED,
+			Run {
+				slot: 0,
+				players: 1
+			}
+		),
+		None
+	);
 }
 
 /// Exactly the threshold spreads; one fewer does not — for both kinds,
@@ -107,7 +150,19 @@ fn thresholds_bind_exactly() {
 				w.set(*s, kind);
 			}
 			let want = (n >= min).then_some(kind as u16);
-			assert_eq!(noon().apply(AT, &w, SEED, 0), want, "{kind:?} × {n}");
+			assert_eq!(
+				noon().apply(
+					AT,
+					&w,
+					SEED,
+					Run {
+						slot: 0,
+						players: 1
+					}
+				),
+				want,
+				"{kind:?} × {n}"
+			);
 		}
 	}
 }
@@ -132,7 +187,18 @@ fn green_wins_when_both_thresholds_are_met() {
 	for s in &dry_slots[..DRY_MIN_NEIGHBORS as usize] {
 		w.set(*s, BlockType::DryGrass);
 	}
-	assert_eq!(noon().apply(AT, &w, SEED, 0), Some(BlockType::Grass as u16));
+	assert_eq!(
+		noon().apply(
+			AT,
+			&w,
+			SEED,
+			Run {
+				slot: 0,
+				players: 1
+			}
+		),
+		Some(BlockType::Grass as u16)
+	);
 }
 
 #[test]
@@ -143,7 +209,18 @@ fn a_roof_blocks_noon() {
 			w.set((AT.0 + dx, 70, AT.2 + dz), BlockType::Stone);
 		}
 	}
-	assert_eq!(noon().apply(AT, &w, SEED, 0), None);
+	assert_eq!(
+		noon().apply(
+			AT,
+			&w,
+			SEED,
+			Run {
+				slot: 0,
+				players: 1
+			}
+		),
+		None
+	);
 }
 
 /// A wall on the sun's side of the sky blocks the morning ray; the same
@@ -168,12 +245,28 @@ fn morning_light_comes_from_the_sunrise_side() {
 		w
 	};
 	assert_eq!(
-		job.apply(AT, &wall(toward_sun.x), SEED, 0),
+		job.apply(
+			AT,
+			&wall(toward_sun.x),
+			SEED,
+			Run {
+				slot: 0,
+				players: 1
+			}
+		),
 		None,
 		"sun-side wall must shade"
 	);
 	assert_eq!(
-		job.apply(AT, &wall(-toward_sun.x), SEED, 0),
+		job.apply(
+			AT,
+			&wall(-toward_sun.x),
+			SEED,
+			Run {
+				slot: 0,
+				players: 1
+			}
+		),
 		Some(BlockType::Grass as u16),
 		"far-side wall must not"
 	);
@@ -191,7 +284,19 @@ fn leaves_block_sun_and_water_passes_it() {
 				w.set((AT.0 + dx, 70, AT.2 + dz), canopy);
 			}
 		}
-		assert_eq!(noon().apply(AT, &w, SEED, 0), want, "{canopy:?} canopy");
+		assert_eq!(
+			noon().apply(
+				AT,
+				&w,
+				SEED,
+				Run {
+					slot: 0,
+					players: 1
+				}
+			),
+			want,
+			"{canopy:?} canopy"
+		);
 	}
 }
 
@@ -209,7 +314,15 @@ fn unloaded_columns_judge_by_worldgen() {
 		w.set((1, y, 0), BlockType::Grass);
 		w.set((1, y + 1, 0), BlockType::Air);
 		assert_eq!(
-			noon().apply((0, y, 0), &w, SEED, 0),
+			noon().apply(
+				(0, y, 0),
+				&w,
+				SEED,
+				Run {
+					slot: 0,
+					players: 1
+				}
+			),
 			want,
 			"y = h{:+}",
 			y - h
@@ -222,8 +335,24 @@ fn the_answer_is_a_pure_function_of_seed_cell_run() {
 	let w = seeded();
 	let [morning, _, _] = SPREAD_HOURS;
 	for run in 0..20 {
-		let a = GrassSpread::at_hour(morning, "t-a").apply(AT, &w, SEED, run);
-		let b = GrassSpread::at_hour(morning, "t-b").apply(AT, &w, SEED, run);
+		let a = GrassSpread::at_hour(morning, "t-a").apply(
+			AT,
+			&w,
+			SEED,
+			Run {
+				slot: run,
+				players: 1,
+			},
+		);
+		let b = GrassSpread::at_hour(morning, "t-b").apply(
+			AT,
+			&w,
+			SEED,
+			Run {
+				slot: run,
+				players: 1,
+			},
+		);
 		assert_eq!(a, b, "run {run}");
 	}
 }
@@ -310,7 +439,17 @@ fn a_smothered_spread_returns_to_the_candidate_set() {
 		for s in &slots[..min as usize] {
 			w.set(*s, kind);
 		}
-		let win = job.apply(AT, &w, SEED, 0).expect("a lit spread");
+		let win = job
+			.apply(
+				AT,
+				&w,
+				SEED,
+				Run {
+					slot: 0,
+					players: 1,
+				},
+			)
+			.expect("a lit spread");
 		let dirt = smothered_by(BlockType::Stone as u16, win).expect("stone seals");
 		assert!(
 			job.scope()

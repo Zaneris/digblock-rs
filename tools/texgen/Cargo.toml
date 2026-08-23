@@ -5,10 +5,11 @@ edition.workspace = true
 publish = false
 
 [dependencies]
-# For the ore palettes. `BlockType::ore_flecks` is the one table that says
-# what a tier's crystals are coloured, and the GI material LUT casts a
-# vein's light from the same entry — so the flecks this tool paints and
-# the light the engine throws cannot drift apart.
+# For the palettes. `BlockType::node_flecks` and `Essence::palette` are
+# the tables that say what a vein's crystals and an essence's chip are
+# coloured, and the GI material LUT casts a vein's light from the same
+# entry — so what this tool paints and the light the engine throws cannot
+# drift apart.
 digblock-core.workspace = true
 image.workspace = true
 

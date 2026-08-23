@@ -169,6 +169,12 @@ impl Sim {
 				(client.edit_tokens + EDIT_RATE_PER_SEC as f32 / TICK_RATE as f32).min(EDIT_BURST);
 			client.chat_tokens =
 				(client.chat_tokens + CHAT_RATE_PER_SEC as f32 / TICK_RATE as f32).min(CHAT_BURST);
+			// The spellbook's bucket. Refilled here with the others; spent
+			// in `handle_cast`, which is where a cast's real cost — the
+			// Ward's sphere derivation — is about to be paid.
+			client.cast_tokens = (client.cast_tokens
+				+ super::spawn::CAST_RATE_PER_SEC as f32 / TICK_RATE as f32)
+				.min(super::spawn::CAST_BURST);
 			// The bench bucket banks TICKS — one per tick — and an op
 			// spends its own pace out of it, so the ceiling tracks the
 			// honest client's drip whatever it is working on. Capacity is
@@ -870,6 +876,28 @@ impl Sim {
 		client_seq: u32,
 		_already_set: bool,
 	) {
+		let (seq, edit) = self.journal_write(cell, val, by);
+		self.broadcast_edit(seq, by, client_seq, edit, prev_cell);
+	}
+
+	/// The durable half of [`Self::apply_write`], for cells every client
+	/// DERIVES rather than being told: journal, enroll, schedule fluid —
+	/// no `EditApplied`.
+	///
+	/// The Ward owns this. Both ends draw the same sphere from the same
+	/// head and radius (`ward::plan`), so a per-cell broadcast would be
+	/// redundant with a derivation the client already runs — and it is a
+	/// fan-out of hundreds of frames per cast, against an outbound queue
+	/// whose refusal DROPS the peer. The journal still takes every cell,
+	/// which is what a joiner, the resync rotation and an evicted column
+	/// all read; the enrollment is honest for the same reason the
+	/// broadcast's was, since the client holds the cells either way.
+	pub(super) fn journal_write(
+		&mut self,
+		cell: (i32, i32, i32),
+		val: u16,
+		by: PlayerId,
+	) -> (u64, BlockEdit) {
 		let edit = BlockEdit {
 			x: cell.0,
 			y: cell.1,
@@ -881,7 +909,7 @@ impl Sim {
 			self.enroll_new_column(edit);
 		}
 		self.fluid.schedule_around(cell.0, cell.1, cell.2);
-		self.broadcast_edit(seq, by, client_seq, edit, prev_cell);
+		(seq, edit)
 	}
 
 	/// A use/interact click: re-raycast and toggle the hit door pair.

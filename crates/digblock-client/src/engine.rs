@@ -17,10 +17,11 @@ use glam::{Vec2, Vec3};
 use crate::camera::FlyCamera;
 use crate::renderer::{FrameScene, FrameUniforms, RenderConfig, Renderer};
 use crate::ui::screens::inventory::InvAction;
-use crate::voice::Msg;
+use crate::voice::{Msg, Spell};
 
 mod config;
 pub use config::{DebugScreen, EngineConfig, parse_held_item};
+pub mod knobs;
 
 mod actions;
 mod audio_step;
@@ -222,6 +223,9 @@ pub struct Engine {
 	/// Clock-scheduled sweeps, run here only OFFLINE — connected, the
 	/// server owns them and their results arrive as ordinary edits.
 	world_jobs: digblock_core::worldjob::Scheduler,
+	/// The day's head-count for the jobs that scale by it — one here,
+	/// kept on the server's tracker so the rule does not fork.
+	presence: digblock_core::presence::RollingPeak,
 	flow_accum: f32,
 	/// Shader animation clock, wrapped on a long period (carried in the
 	/// otherwise unused light_color.w — no uniform layout change).
@@ -265,6 +269,43 @@ pub struct Engine {
 	/// asynchronously; each update retries what's left). Empty = done
 	/// or disabled.
 	debug_shapes_pending: Vec<(i32, i32, i32, u16)>,
+	/// DIG_WARD=<r>: a sphere still waiting for every cell it would touch
+	/// to be resident. `None` = landed or disabled.
+	debug_ward_pending: Option<i32>,
+	/// Every ward climbing in this world — ours and each remote's, one
+	/// per caster — stepped with the sim ticks, so every sphere's glass
+	/// climbs at its own caster's pace and unwinds on their own break.
+	ward_climbs: Vec<WardClimb>,
+}
+
+/// One ward mid-climb: whose it is, the plan it is walking, how far
+/// through that plan this end has got, and what an unwind hands back.
+struct WardClimb {
+	/// The caster. `None` where no player ids exist at all — offline,
+	/// where a climb can only be ours — so one comparison against
+	/// `NetSession::my_player_id` answers "is this mine" on both sides
+	/// of the wire.
+	by: Option<digblock_net::protocol::PlayerId>,
+	closing: digblock_core::ward::Closing,
+	head: (i32, i32, i32),
+	/// How much of the plan this end has handed to the world: a PREFIX
+	/// length in the plan's own order, which is the currency
+	/// `ServerMsg::WardEnded` quotes its own count in — neither end can
+	/// derive which cells the other declined.
+	prefix: usize,
+	/// What an unwind refunds. Only an offline cast carries one: online
+	/// the refund is the server's `InventoryFull`, and DIG_WARD paid
+	/// nothing — so a refund can never answer for somebody else's
+	/// sphere.
+	fare: Option<(digblock_core::block::Essence, u32)>,
+}
+
+impl WardClimb {
+	/// Ours? See [`WardClimb::by`] for why one comparison covers both
+	/// offline play and a connected world.
+	fn own(&self, me: Option<digblock_net::protocol::PlayerId>) -> bool {
+		self.by == me
+	}
 }
 
 /// Client-side hold-to-dig progress (mirrors the server's `DigState`;
@@ -366,6 +407,18 @@ struct Vfx {
 
 	/// Burst counter — the per-effect seed, confetti's arrangement.
 	cast_seq: u32,
+
+	/// Every kindled light still burning, each on its own countdown —
+	/// yours and anyone's, a join's backlog included. World state like
+	/// confetti; and the LIGHT half rides the carried list under its own
+	/// key bank, so a light going out re-places the probes exactly as a
+	/// torch put away does.
+	kindled: Vec<KindledLight>,
+
+	/// Key counter for [`Self::kindled`] — a STABLE carrier key per
+	/// light, since an index would shift under every expiry and make
+	/// `Carried` re-place lights that never moved.
+	kindle_seq: u16,
 
 	/// The channel aura's fade envelope: opens while a cast channels,
 	/// dissolves when one ends or breaks — an interrupted channel fades
@@ -645,6 +698,10 @@ struct UiState {
 	/// The drag-and-drop overflow inventory screen (I toggles).
 	inv_screen: crate::ui::screens::inventory::InvScreen,
 
+	/// A capture's standing hover: the tile the cursor is parked on once
+	/// a frame has laid it out (`DebugScreen::*Hover`). Cleared when fed.
+	debug_hover: Option<crate::ui::InvId>,
+
 	/// The alchemy screen (K toggles): block → sub-material conversion
 	/// and shaped-item crafting.
 	alch_screen: crate::ui::screens::alchemy::AlchScreen,
@@ -672,9 +729,12 @@ enum CastTarget {
 	Waystone(u8),
 	/// The timed self-light.
 	Wisp,
-	/// Conjured light at whatever the crosshair rests on when the
-	/// channel COMPLETES — aiming is allowed mid-channel, moving is not.
+	/// Conjured light standing in the cell the head is in when the
+	/// channel COMPLETES, on its own clock (`digblock_core::kindle`).
 	Kindle,
+	/// The glass sphere about the head at completion
+	/// (`digblock_core::ward`).
+	Ward,
 }
 
 impl CastTarget {
@@ -684,7 +744,7 @@ impl CastTarget {
 	fn teleports(self) -> bool {
 		match self {
 			CastTarget::Home | CastTarget::Waystone(_) => true,
-			CastTarget::Wisp | CastTarget::Kindle => false,
+			CastTarget::Wisp | CastTarget::Kindle | CastTarget::Ward => false,
 		}
 	}
 }
@@ -720,6 +780,18 @@ impl DigProgress {
 			u32::from(self.idle),
 		) as u16
 	}
+}
+
+/// One standing kindled light: its host cell, the seconds it has left,
+/// and the carrier key its GI entry wears. Its clock is its own — the
+/// server said how long, and nothing after that is consulted, which is
+/// what lets the caster port away or leave.
+struct KindledLight {
+	cell: (i32, i32, i32),
+	left: f32,
+	/// Seconds since it was lit here, for the orb's fade-in alone.
+	age: f32,
+	key: u16,
 }
 
 /// One live teleport burst: where, which half of the jump, and how old.

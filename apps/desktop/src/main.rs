@@ -69,6 +69,8 @@ fn main() {
 	//   --fixed-dt S (step the world by exactly S per frame — what makes
 	//            a capture comparable ACROSS BUILDS at all)
 	//   DIG_STUB=<terms> (remove shading terms to attribute a frame)
+	//   --knobs (list every DIG_* scene and lever and exit; a DIG_* the
+	//            list does not name is fatal, as a bad value is)
 	//   --no-vsync --workers N --draw-dist N (workload knobs / profiling)
 	let mut frames: Option<u32> = None;
 	// Multiplayer goes through the master server exclusively: it lists
@@ -97,6 +99,21 @@ fn main() {
 	let mut args = std::env::args().skip(1);
 	while let Some(arg) = args.next() {
 		match arg.as_str() {
+			// The scene roster, printed from the table that defines it.
+			// The web harness shows THIS listing in its own `--help`
+			// (tools/web-e2e/dig.mjs) instead of keeping a copy, which is
+			// what stops the two drifting; `Kind` is what spells a value
+			// knob with its placeholder and a flag without one.
+			"--knobs" => {
+				for k in digblock_client::knobs::ALL {
+					let spelling = match k.kind {
+						digblock_client::knobs::Kind::Flag => format!("--{}", k.name),
+						digblock_client::knobs::Kind::Value => format!("--{} <value>", k.name),
+					};
+					println!("{spelling:<22} {:<18} {}", k.env, k.help);
+				}
+				return;
+			}
 			"--master-url" => {
 				master_url = Some(parse_or_die::<String>("--master-url", args.next()));
 			}
@@ -313,212 +330,48 @@ fn main() {
 		options.exit_after_frames = Some(u64::from(n));
 	}
 
-	// Env-derived knobs live in the launcher; the engine stays env-free
-	// (std::env is a stub on the wasm target).
-	// DIG_PLAYERBOX=<item>: the fake remote's held item, in WIRE terms —
-	// which is what makes the scene a real check of `held_icon` rather
-	// than a second code path, and what lets it photograph a remote's lit
-	// torch. Historically any value meant "on", and on meant a dirt cube,
-	// so those spellings still do exactly that. An unknown one is fatal,
-	// per DIG_CRACK: a typo must never silently capture the wrong scene.
-	if let Some(v) = std::env::var_os("DIG_PLAYERBOX") {
+	// Every DIG_* scene and lever is read through ONE table the web page
+	// reads too (`knobs::ALL`), so neither launcher can grow a knob the
+	// other lacks; the engine itself stays env-free (std::env is a stub on
+	// the wasm target). A malformed value is exit 2, never a silent default.
+	if let Err(e) = digblock_client::knobs::apply(&mut config, &|k| {
 		// var_os, not var: a value that is not UTF-8 is a typo like any
 		// other and must be fatal, not silently drop the scene.
-		match v.to_str().and_then(digblock_client::parse_held_item) {
-			Some(id) => config.debug_playerbox = Some(id),
-			None => {
-				eprintln!(
-					"DIG_PLAYERBOX: unknown item {v:?} — known: dirt, torch, \
-					 stairs, slab, door, bucket, bucket-full, empty"
-				);
-				std::process::exit(2);
-			}
-		}
+		std::env::var_os(k.env).map(|v| v.to_string_lossy().into_owned())
+	}) {
+		eprintln!("{e}");
+		std::process::exit(2);
 	}
-	config.debug_confetti = std::env::var_os("DIG_CONFETTI").is_some();
-	config.debug_shapes = std::env::var_os("DIG_SHAPES").is_some();
-	config.debug_doors = std::env::var_os("DIG_DOORS").is_some();
-	// DIG_VAULT_DARK=1: the vault with no torch on its floor, so the only
-	// source in the room is the one being carried. It IMPLIES DIG_VAULT —
-	// every other DIG_* scene switches itself on, and a modifier that
-	// silently builds no room at all photographs open terrain and reads
-	// as "a carried torch barely lights anything".
-	config.debug_vault_dark = std::env::var_os("DIG_VAULT_DARK").is_some();
-	config.debug_vault = config.debug_vault_dark || std::env::var_os("DIG_VAULT").is_some();
-	config.debug_roof = std::env::var_os("DIG_ROOF").is_some();
-	config.debug_tunnel = std::env::var_os("DIG_TUNNEL").is_some();
-	config.debug_dive = std::env::var_os("DIG_DIVE").is_some();
-	config.debug_river = std::env::var_os("DIG_RIVER").is_some();
-	config.debug_torches_wall = std::env::var_os("DIG_TORCHES_WALL").is_some();
-	// DIG_ORE=<tier 1..=4>: a chamber hollowed around the nearest deposit
-	// of that tier, with the Mining level that reveals it. Ore is derived
-	// and invisible below its level, so no pose alone can photograph it.
-	config.debug_ore = std::env::var("DIG_ORE")
-		.ok()
-		.and_then(|v| v.parse().ok())
-		.unwrap_or(0);
-	// DIG_NODE=<heartwood|leystone|springstone>: the surface counterpart —
-	// pose at the nearest node of that kind, its Alchemy reveal granted.
-	// An unknown kind is FATAL rather than a silent open-terrain capture,
-	// like every other capture flag here.
-	config.debug_node = std::env::var("DIG_NODE").ok().map(|v| {
-		digblock_client::parse_node_kind(&v)
-			.unwrap_or_else(|| panic!("DIG_NODE: unknown node kind {v:?}"))
-	});
-	// DIG_MINING=<level>: start there. Everything a level gates is
-	// otherwise unphotographable — the strength wall's refusals, dig
-	// speed, and the Resonant Pick's ranks, the second of which brightens
-	// the tool's own glow.
-	config.debug_mining = std::env::var("DIG_MINING")
-		.ok()
-		.and_then(|v| v.parse().ok())
-		.unwrap_or(0);
-	// DIG_CRACK=<percent>: pin the crack decal at that progress, with a
-	// wall ahead to hold it. A PERCENT so a sweep is `for p in 0 20 40 60
-	// 80 100`, which is the only way to see the break spread — one still
-	// says nothing about whether it grows outward or just fades in.
-	if let Ok(v) = std::env::var("DIG_CRACK") {
-		match v.parse::<f32>() {
-			Ok(p) if (0.0..=100.0).contains(&p) => config.debug_crack = Some(p / 100.0),
-			_ => {
-				eprintln!("DIG_CRACK must be a percent in 0..=100, got {v:?}");
-				std::process::exit(2);
-			}
-		}
-	}
-	// DIG_TORCHES=<n>: the courtyard, lit by n torches. A COUNT rather than
-	// a flag, because the emitter count is the variable — the resolve's NEE
-	// covers one light per pixel, so a single torch against a cluster, with
-	// the geometry held fixed, is the whole experiment.
-	for (name, slot) in [
-		("DIG_TORCHES", &mut config.debug_torches),
-		("DIG_TORCHES_FAR", &mut config.debug_torches_far),
-	] {
-		if let Ok(v) = std::env::var(name) {
-			match v.parse::<i32>() {
-				Ok(n) => *slot = n,
-				Err(_) => {
-					eprintln!("{name} must be a torch count, got {v:?}");
-					std::process::exit(2);
-				}
-			}
-		}
-	}
-	// DIG_GI_ITERS=<gather>,<sun>: the resolve's ray budgets, for the
-	// tier A/B alone — the shipped values live in gi/resolve.rs and no
-	// slider moves them. Fatal on a malformed value, same rule as
-	// DIG_STUB: a sweep arm that silently ran the shipped budgets is the
-	// worst possible outcome of a typo.
-	if let Ok(v) = std::env::var("DIG_GI_ITERS") {
-		let parsed = v.split_once(',').and_then(|(g, s)| {
-			Some((g.trim().parse::<u32>().ok()?, s.trim().parse::<u32>().ok()?))
-		});
-		match parsed {
-			Some((gather, sun)) => {
-				config.gi_gather_iters = gather;
-				config.gi_sun_iters = sun;
-			}
-			None => {
-				eprintln!("DIG_GI_ITERS wants <gather>,<sun> iteration counts, got {v:?}");
-				std::process::exit(2);
-			}
-		}
-	}
-	// DIG_STUB=wsun,wssr,…: remove shading terms so ONE build can
-	// attribute a frame. A typo must be fatal — a run that silently
-	// measures the un-stubbed build is precisely the mistake this exists
-	// to stop.
-	if let Ok(v) = std::env::var("DIG_STUB") {
-		let (mask, bad) = digblock_client::stub::parse(&v);
-		if !bad.is_empty() {
-			eprintln!(
-				"unknown DIG_STUB term(s): {} — known: {}",
-				bad.join(", "),
-				digblock_client::stub::names()
-					.collect::<Vec<_>>()
-					.join(", ")
-			);
-			std::process::exit(2);
-		}
-		config.stub = mask;
-	}
-	// DIG_GI=window|probes: paint the voxel-window raymarch over the
-	// scene, shading with raw albedo (P1 gate) or the C0 probe field
-	// (P2 gate).
-	match std::env::var("DIG_GI").as_deref() {
-		Ok("window") => config.debug_gi = true,
-		Ok("probes") => {
-			config.debug_gi = true;
-			config.debug_gi_probes = true;
-		}
-		_ => {}
-	}
-	// DIG_SCREEN=inventory|alchemy: open that screen at startup with a
-	// stocked inventory, so `--screenshot` can capture a UI screen (they
-	// are otherwise reachable only through live input).
-	config.debug_screen = std::env::var("DIG_SCREEN")
-		.ok()
-		.and_then(|v| digblock_client::DebugScreen::parse(&v));
-	// DIG_SIPHON=<percent>: pin the essence draw at that progress on the vein
-	// under the crosshair. A PERCENT, and meant as a SWEEP, for DIG_CRACK's
-	// reason — one still cannot tell a stream that thickens from one that
-	// merely brightens.
-	//
-	// Unlike the crack it cannot stand its own scene: a vein is derived worldgen
-	// and there is no placing one, so it rides DIG_ORE, which already hollows a
-	// chamber around a deposit and grants the level that reveals it. Without
-	// that the crosshair lands on ordinary rock and the run photographs a bare
-	// wall — the silent-wrong-scene failure every other parse here is fatal
-	// about, so this one is too. And a draw needs the tool in hand: DIG_SCREEN's
-	// own `siphon` spelling is what puts it there, defaulted rather than
-	// re-implemented.
-	// DIG_CAST=<percent>: pose the cast channel's aura at that progress
-	// with no hold behind it — the DIG_SIPHON rule, minus the vein (a
-	// channel needs no target, so it stands its own scene).
-	if let Ok(v) = std::env::var("DIG_CAST") {
-		match v.parse::<f32>() {
-			Ok(p) if (0.0..=100.0).contains(&p) => config.debug_cast = Some(p / 100.0),
-			_ => {
-				eprintln!("DIG_CAST must be a percent in 0..=100, got {v:?}");
-				std::process::exit(2);
-			}
-		}
-	}
-	if let Ok(v) = std::env::var("DIG_SIPHON") {
-		match v.parse::<f32>() {
-			Ok(p) if (0.0..=100.0).contains(&p) => config.debug_siphon = Some(p / 100.0),
-			_ => {
-				eprintln!("DIG_SIPHON must be a percent in 0..=100, got {v:?}");
-				std::process::exit(2);
-			}
-		}
-		if config.debug_ore == 0 {
-			eprintln!("DIG_SIPHON needs a vein to draw from: set DIG_ORE=<tier 1..=4> too");
-			std::process::exit(2);
-		}
-		config.debug_screen.get_or_insert_with(|| {
-			digblock_client::DebugScreen::parse("siphon")
-				.expect("DIG_SCREEN knows the siphon by name")
-		});
-		// And it has to be AIMED at the vein, which the default camera is
-		// not: the fly camera starts pitched DOWN, so a DIG_ORE chamber
-		// photographs the floor plate in front of the seam and the draw —
-		// which exists only while the crosshair holds a vein — renders
-		// nothing at all. Level puts the ray through the deposit's middle
-		// row, since the plan already stands the eye there. An explicit
-		// `--pitch` still wins, so a shot from under the seam is one flag
-		// away.
-		config.pitch.get_or_insert(0.0);
-	}
-	// Read at the launcher edge: the engine stays env-free so wasm, which
-	// has no environment at all, can set the same flag from a query param.
-	config.spike_log = std::env::var_os("DIG_SPIKELOG").is_some();
-	config.chunk_slots_override = std::env::var("DIG_CHUNK_SLOTS").ok().map(|v| {
-		v.parse::<u32>().ok().filter(|&n| n > 0).unwrap_or_else(|| {
-			eprintln!("bad value for DIG_CHUNK_SLOTS: {v}");
-			std::process::exit(2);
+	// The other half of that rule, and the one the environment needs: the
+	// page refuses a `?key` it does not know, but reading the table out of
+	// the environment can only MISS a misspelled variable, so `DIG_VUALT=1`
+	// used to photograph open terrain and exit 0 — the silent wrong scene
+	// this module exists to prevent, arriving through the launcher that
+	// takes its scenes by name. Tolerated beside the table: this launcher's
+	// own three, and DIG_CHROME, which the shader gate and the web harness
+	// read and a developer therefore keeps exported.
+	const OWN_ENV: &[&str] = &[
+		"DIG_MASTER_URL",
+		"DIG_IDENTITY_FILE",
+		"DIG_SESSION_FILE",
+		"DIG_CHROME",
+	];
+	let unknown: Vec<String> = std::env::vars_os()
+		.map(|(k, _)| k.to_string_lossy().into_owned())
+		.filter(|k| {
+			k.starts_with("DIG_")
+				&& !OWN_ENV.contains(&k.as_str())
+				&& !digblock_client::knobs::ALL.iter().any(|n| n.env == k)
 		})
-	});
+		.collect();
+	if !unknown.is_empty() {
+		eprintln!(
+			"unknown DIG_* variable(s): {} — known: {}, and every scene `--knobs` lists",
+			unknown.join(", "),
+			OWN_ENV.join(", ")
+		);
+		std::process::exit(2);
+	}
 
 	// Deterministic capture paths (bench, screenshot, drill) get no menu,
 	// no audio, and no master traffic — hermetic and bit-identical.

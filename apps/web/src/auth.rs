@@ -28,6 +28,11 @@ use wasm_bindgen_futures::JsFuture;
 const SESSION_KEY: &str = "digblock.session";
 const PENDING_KEY: &str = "digblock.signin";
 
+/// The query keys a finished sign-in redirects back with. Named here
+/// because [`take_callback`] scrubs them only once it has matched a
+/// pending request, so the page's unknown-key check has to know them.
+pub(crate) const CALLBACK_PARAMS: [&str; 2] = ["code", "state"];
+
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Session {
 	pub account_id: String,

@@ -200,8 +200,9 @@ fn ore_never_manifests_in_an_edited_cell() {
 	let spent = BlockType::DepletedStone as u16;
 	assert_eq!(revealed(spent, (x, y, z), seed, max, false), None);
 	assert_eq!(revealed(spent, (x, y, z), seed, max, true), None);
-	// Nor does anything else standing in that coordinate.
-	for b in [BlockType::Air, BlockType::Rubble, BlockType::Emberore] {
+	// Nor does anything else standing in that coordinate (a live face
+	// stored outright is the regrown node, pinned in `nodes::tests`).
+	for b in [BlockType::Air, BlockType::Rubble] {
 		assert_eq!(
 			revealed(b as u16, (x, y, z), seed, max, false),
 			None,

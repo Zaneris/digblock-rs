@@ -74,6 +74,7 @@ async fn boot() -> Result<(), JsValue> {
 		.and_then(|w| w.location().search().ok())
 		.map(|s| web_sys::UrlSearchParams::new_with_str(&s).expect("parse query"))
 		.expect("window.location");
+	reject_unknown_params(&params);
 
 	// Query params mirror the desktop flags: ?seed=, ?tod=, ?draw=,
 	// ?ssr=0, ?overlay, ?name=, ?master= (menu multiplayer),
@@ -94,11 +95,33 @@ async fn boot() -> Result<(), JsValue> {
 		EngineConfig::web()
 	};
 	config.seed = param(&params, "seed");
-	// Dev builds only (like desktop --tod): in multiplayer the server
-	// dictates the world clock. `just web` builds release, so the served
-	// bundle ignores ?tod=.
-	if cfg!(debug_assertions) {
-		config.tod = param(&params, "tod");
+	// The pose knobs, spelled as the desktop flags are: `?pos=x,y,z`,
+	// `?yaw=`, `?pitch=`. Read BEFORE the scene knobs, whose siphon arm
+	// defaults the pitch only when none was asked for.
+	if let Some(v) = params.get("pos") {
+		let mut it = v.split(',').map(|c| c.trim().parse::<f32>());
+		match (it.next(), it.next(), it.next(), it.next()) {
+			(Some(Ok(x)), Some(Ok(y)), Some(Ok(z)), None) => config.start_pos = Some([x, y, z]),
+			_ => panic!("?pos={v:?} wants x,y,z"),
+		}
+	}
+	config.yaw = param(&params, "yaw");
+	config.pitch = param(&params, "pitch");
+	// `?frames=N` is this platform's `--exit`: the one way a run ends on
+	// its own, and what the harness waits for.
+	let frames: Option<u64> = param(&params, "frames");
+	// Dev builds, or a run that ends itself — the desktop `--tod` rule. In
+	// multiplayer the server dictates the world clock, and `just web`
+	// builds release, so an open-ended page cannot honour ?tod=. It
+	// REFUSES rather than dropping it, as the desktop does: a frozen sun
+	// silently ignored photographs the wrong hour and says nothing.
+	let tod: Option<f32> = param(&params, "tod");
+	if tod.is_some() {
+		assert!(
+			cfg!(debug_assertions) || frames.is_some(),
+			"?tod needs a dev build, or ?frames (a capture run that quits on its own)"
+		);
+		config.tod = tod;
 	}
 	// The capture harness, same fields the desktop CLI drives. This is the
 	// only way to compare the two platforms honestly: the scripted pose is
@@ -130,8 +153,16 @@ async fn boot() -> Result<(), JsValue> {
 	// screen's dim, and left every capture reading (and WRITING) whatever
 	// draw distance and lighting detail this browser happened to have
 	// saved. Two runs of the same arm have to measure the same thing.
-	let interactive = !config.bench && config.fly.is_none();
-	config.menu = interactive;
+	//
+	// `?capture` is the web's `--screenshot`: the page cannot take the
+	// picture itself, so the harness outside does, and this is how it asks
+	// for the hermetic, menu-less, input-deaf run the desktop capture
+	// gets. `?play` keeps everything interactive and merely skips the
+	// menu — the scripted-input path: a harness that presses K wants the
+	// alchemy screen, not the title screen's dim.
+	let capture = flag(&params, "capture");
+	let interactive = !config.bench && config.fly.is_none() && !capture;
+	config.menu = interactive && !flag(&params, "play");
 	// Also what the engine reads to decide whether to listen to input
 	// and whether to ask for pointer lock. On the web the lock request
 	// needs a user gesture and Chrome simply refuses one from rAF, so a
@@ -232,48 +263,18 @@ async fn boot() -> Result<(), JsValue> {
 	config.workers = param(&params, "workers").map_or_else(jobs::default_count, |n: usize| {
 		n.min(jobs::WORKERS_HARD_MAX)
 	});
-	// The web twin of desktop's DIG_SPIKELOG: wasm has no environment, and
-	// this is the platform whose main-thread spikes most need attributing.
-	config.spike_log = flag(&params, "spikelog");
-	// The web twin of DIG_STUB, and for the same reason the spike log is
-	// here: the browser is the platform whose frames most need attributing,
-	// and a term can only be priced on the GPU that will pay for it. A typo
-	// is fatal, never a silent un-stubbed run — the panic hook prints to
-	// the console, this platform's exit(2).
-	if let Some(v) = params.get("stub") {
-		let (mask, bad) = digblock_client::stub::parse(&v);
-		assert!(
-			bad.is_empty(),
-			"unknown ?stub= term(s): {} — known: {}",
-			bad.join(", "),
-			digblock_client::stub::names()
-				.collect::<Vec<_>>()
-				.join(", ")
-		);
-		config.stub = mask;
+	// Every DIG_* scene and lever the desktop reads from its environment,
+	// read here from the URL through the SAME table (`knobs::ALL`), so the
+	// browser — the platform whose frames most need attributing, on the
+	// GPUs the mobile defaults are chosen for — can pose every capture
+	// the desktop can. A typo is fatal, never a silent un-stubbed run:
+	// the panic hook prints to the console, this platform's exit(2).
+	if let Err(e) = digblock_client::knobs::apply(&mut config, &|k| params.get(k.name)) {
+		panic!("{e}");
 	}
-	// The web twins of DIG_TORCHES / DIG_TORCHES_FAR: the far pad pads the
-	// light list without lighting a pixel on screen, so the emitter-count
-	// cost curve can be walked on the phone GPUs the mobile defaults are
-	// chosen for. Both, because the far pad rides the courtyard plan —
-	// `?torchesfar=` without `?torches=` builds no scene at all.
-	if let Some(n) = param::<i32>(&params, "torches") {
-		config.debug_torches = n;
-	}
-	if let Some(n) = param::<i32>(&params, "torchesfar") {
-		config.debug_torches_far = n;
-	}
-	// The web twin of DIG_GI_ITERS: the resolve's ray budgets as
-	// "<gather>,<sun>", for the tier A/B on the hardware the tier is FOR.
-	// Fatal on a malformed value like every other bench param.
-	if let Some(v) = params.get("giiters") {
-		let (gather, sun) = v
-			.split_once(',')
-			.and_then(|(g, s)| Some((g.trim().parse().ok()?, s.trim().parse().ok()?)))
-			.unwrap_or_else(|| panic!("?giiters={v:?} wants <gather>,<sun> iteration counts"));
-		config.gi_gather_iters = gather;
-		config.gi_sun_iters = sun;
-	}
+	// A menu capture is the one screen a capture run would otherwise
+	// suppress — the desktop rule, applied after the knobs are known.
+	config.menu |= config.debug_screen == Some(digblock_client::DebugScreen::Menu);
 	// `?nodatagrams` makes this browser behave like the one that has no
 	// datagram channel (iOS Safari), so the reliable-stream fallback can be
 	// run on a machine with a console attached. Read here, beside the other
@@ -392,7 +393,11 @@ async fn boot() -> Result<(), JsValue> {
 			// bench summary reachable here (see `?bench`): winit's exit on
 			// wasm doesn't reliably run destructors, so the platform logs
 			// the summary at that boundary rather than from `Drop`.
-			exit_after_frames: param(&params, "frames"),
+			exit_after_frames: frames,
+			// `?fixeddt=S` — the desktop's `--fixed-dt`, for the same
+			// reason: a capture that is compared across builds has to
+			// reach frame N in the same world state.
+			fixed_dt: param::<f32>(&params, "fixeddt").map(std::time::Duration::from_secs_f32),
 			touch: mobile,
 			..Default::default()
 		},
@@ -526,4 +531,68 @@ fn copy_to_clipboard(text: &str) {
 		return;
 	};
 	let _ = window.navigator().clipboard().write_text(text);
+}
+
+/// The query keys this file reads itself; the scene and lever knobs are
+/// `knobs::ALL`. Together they are the page's whole vocabulary.
+const PAGE_PARAMS: &[&str] = &[
+	"seed",
+	"tod",
+	"pos",
+	"yaw",
+	"pitch",
+	"frames",
+	"fixeddt",
+	"bench",
+	"fly",
+	"warp",
+	"walk",
+	"capture",
+	"play",
+	"mobile",
+	"renderscale",
+	"giscale",
+	"draw",
+	"maxlights",
+	"ssr",
+	"uiscale",
+	"overlay",
+	"workers",
+	"nodatagrams",
+	"join",
+	"server",
+	"master",
+	"devsignin",
+	"mute",
+];
+
+/// A key the page does not know is FATAL, like a bad value is. `?vualt`
+/// would otherwise photograph open terrain as the vault, which is the
+/// silent-wrong-scene failure every other parse here refuses; and the
+/// harness that drives this page passes its flags through by name, so
+/// this is where its typos are caught. The sign-in residue (`code`,
+/// `state`) is tolerated rather than assumed gone: `take_callback`
+/// scrubs the URL only once it has matched a pending request, so a
+/// callback that lands without one — another tab, cleared storage, a
+/// pasted URL — must still boot instead of reading as a typo.
+fn reject_unknown_params(params: &web_sys::UrlSearchParams) {
+	let known = |k: &str| {
+		PAGE_PARAMS.contains(&k)
+			|| auth::CALLBACK_PARAMS.contains(&k)
+			|| digblock_client::knobs::ALL.iter().any(|n| n.name == k)
+	};
+	let unknown: Vec<String> = js_sys::try_iter(&params.keys())
+		.ok()
+		.flatten()
+		.into_iter()
+		.flatten()
+		.filter_map(|k| k.ok().and_then(|k| k.as_string()))
+		.filter(|k| !known(k))
+		.collect();
+	assert!(
+		unknown.is_empty(),
+		"unknown query param(s): {} — known: {}, and every knob in knobs::ALL",
+		unknown.join(", "),
+		PAGE_PARAMS.join(", ")
+	);
 }

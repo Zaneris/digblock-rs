@@ -39,6 +39,31 @@ impl Engine {
 			});
 			self.debug_shapes_pending = pending;
 		}
+		// DIG_WARD showcase: the plan refuses until every cell is resident,
+		// so ask each frame and start the climb the first time it answers
+		// — the same plan, at the channel's own pace, with no channel or
+		// fare behind it.
+		if let Some(r) = self.debug_ward_pending {
+			// `body_pos`: a capture flown into place leaves `player.pos`
+			// behind, and the sphere has to close about the camera it is
+			// being photographed from.
+			let head = digblock_core::kindle::host_cell(self.body_pos());
+			if let Ok(writes) =
+				digblock_core::ward::plan(head, r, |c| self.pipeline.cell_at(c.0, c.1, c.2))
+			{
+				let span = digblock_core::unlock::channel_ticks(
+					self.skills.level(digblock_core::skills::Skill::Arcana),
+				);
+				self.ward_climbs.push(WardClimb {
+					by: self.session.my_player_id,
+					closing: digblock_core::ward::Closing::new(writes, span),
+					head,
+					prefix: 0,
+					fare: None,
+				});
+				self.debug_ward_pending = None;
+			}
+		}
 		// A fixed --tod freezes the sun angle (dev builds only): advance
 		// the day cycle, then re-assert the override on top, so a capture
 		// run has a genuinely static sun for the GI to converge against.
@@ -134,8 +159,14 @@ impl Engine {
 		// it live. Connected, the server teleports us (Teleported lands
 		// in pump_net); local play resolves and lands immediately.
 		self.save.teleport_cooldown = (self.save.teleport_cooldown - dt).max(0.0);
-		// The wisp burns down on the same clock.
+		// The wisp burns down on the same clock, and so does every kindled
+		// light — each on its own countdown, consulting nobody.
 		self.wisp_left = (self.wisp_left - dt).max(0.0);
+		for k in &mut self.vfx.kindled {
+			k.left -= dt;
+			k.age += dt;
+		}
+		self.vfx.kindled.retain(|k| k.left > 0.0);
 		// The menu's Inventory/Alchemy rows: the menu closed itself; the
 		// screen takes over the free cursor seamlessly.
 		if self.ui.menu.take_inventory() {
@@ -296,6 +327,7 @@ impl Engine {
 			self.dig_accum -= TICK;
 			self.step_dig();
 			self.step_cast();
+			self.step_ward_climbs();
 		}
 		// The siphon's stream reads the state those ticks just left, so it
 		// ages after them and on the FRAME clock rather than the sim one:

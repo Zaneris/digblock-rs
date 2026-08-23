@@ -172,10 +172,10 @@ blocks! {
 	///
 	/// All four `seams`: a revealed vein lights the room it opens into, from
 	/// the faces that open into it and no others (GI-DESIGN.md R31).
-	Emberore = 48 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::EMBERORE, tex::EMBERORE, tex::EMBERORE), 120, DigFamily::Rock), 2)), Material::Emberore),
-	Duskstone = 49 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::DUSKSTONE, tex::DUSKSTONE, tex::DUSKSTONE), 150, DigFamily::Rock), 4)), Material::Duskstone),
-	Glowvein = 50 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::GLOWVEIN, tex::GLOWVEIN, tex::GLOWVEIN), 190, DigFamily::Rock), 4)), Material::Glowvein),
-	Aetherock = 51 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::AETHEROCK, tex::AETHEROCK, tex::AETHEROCK), 240, DigFamily::Rock), 6)), Material::Aetherock),
+	Emberore = 48 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::EMBERORE, tex::EMBERORE, tex::EMBERORE), 120 * NODE_HOLD_MULT, DigFamily::Rock), 2)), Material::Emberore),
+	Duskstone = 49 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::DUSKSTONE, tex::DUSKSTONE, tex::DUSKSTONE), 150 * NODE_HOLD_MULT, DigFamily::Rock), 4)), Material::Duskstone),
+	Glowvein = 50 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::GLOWVEIN, tex::GLOWVEIN, tex::GLOWVEIN), 190 * NODE_HOLD_MULT, DigFamily::Rock), 4)), Material::Glowvein),
+	Aetherock = 51 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::AETHEROCK, tex::AETHEROCK, tex::AETHEROCK), 240 * NODE_HOLD_MULT, DigFamily::Rock), 6)), Material::Aetherock),
 	/// The generic grey tapped face the per-tier rocks at the end of this
 	/// table replaced. Kept, and unreachable: nothing writes it any more,
 	/// but journals and saves made before those rocks existed carry cells
@@ -289,17 +289,17 @@ blocks! {
 	/// for all three, a draw credits essence, and what you carry home is the
 	/// spent face below, which drops itself. Heartwood is the day-one node,
 	/// because the economy has to be able to begin.
-	Heartwood = 79 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::HEARTWOOD, tex::HEARTWOOD, tex::HEARTWOOD), 80, DigFamily::Wood), 2)), Material::Heartwood),
+	Heartwood = 79 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::HEARTWOOD, tex::HEARTWOOD, tex::HEARTWOOD), 80 * NODE_HOLD_MULT, DigFamily::Wood), 2)), Material::Heartwood),
 	DrainedHeartwood = 80 => mat(dig(props(RenderClass::Opaque, true, tex::DRAINED_HEARTWOOD, tex::DRAINED_HEARTWOOD, tex::DRAINED_HEARTWOOD), 60, DigFamily::Wood), Material::DrainedHeartwood),
 	/// Leystone rides the ore deposit stream as its SURFACE tier — the
 	/// shallow band the deep tiers vacate — and manifests in pristine
 	/// Stone exactly as they do; only its reveal keys on Alchemy.
-	Leystone = 81 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::LEYSTONE, tex::LEYSTONE, tex::LEYSTONE), 110, DigFamily::Rock), 3)), Material::Leystone),
+	Leystone = 81 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::LEYSTONE, tex::LEYSTONE, tex::LEYSTONE), 110 * NODE_HOLD_MULT, DigFamily::Rock), 3)), Material::Leystone),
 	SpentLeystone = 82 => mat(dig(props(RenderClass::Opaque, true, tex::SPENT_LEYSTONE, tex::SPENT_LEYSTONE, tex::SPENT_LEYSTONE), 90, DigFamily::Rock), Material::SpentLeystone),
 	/// Springstone manifests in the pristine sand bed of a lake or river
 	/// — the one node you dig through water to reach, which is what makes
 	/// water features destinations.
-	Springstone = 83 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::SPRINGSTONE, tex::SPRINGSTONE, tex::SPRINGSTONE), 60, DigFamily::Soft), 3)), Material::Springstone),
+	Springstone = 83 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::SPRINGSTONE, tex::SPRINGSTONE, tex::SPRINGSTONE), 60 * NODE_HOLD_MULT, DigFamily::Soft), 3)), Material::Springstone),
 	SpentSpringstone = 84 => mat(dig(props(RenderClass::Opaque, true, tex::SPENT_SPRINGSTONE, tex::SPENT_SPRINGSTONE, tex::SPENT_SPRINGSTONE), 25, DigFamily::Soft), Material::SpentSpringstone),
 	/// The stained panes — clean glass in a colour, and the colour is
 	/// what the light through them becomes (the tinted-transmission op).
@@ -307,12 +307,19 @@ blocks! {
 	GreenGlass = 86 => mat(dig(translucent(crafted(props(RenderClass::Glass, true, tex::GLASS_GREEN, tex::GLASS_GREEN, tex::GLASS_GREEN))), 25, DigFamily::Soft), Material::GreenGlass),
 	BlueGlass = 87 => mat(dig(translucent(crafted(props(RenderClass::Glass, true, tex::GLASS_BLUE, tex::GLASS_BLUE, tex::GLASS_BLUE))), 25, DigFamily::Soft), Material::BlueGlass),
 	AmberGlass = 88 => mat(dig(translucent(crafted(props(RenderClass::Glass, true, tex::GLASS_AMBER, tex::GLASS_AMBER, tex::GLASS_AMBER))), 25, DigFamily::Soft), Material::AmberGlass),
-	// Conjured light — the Kindle spell's cube of standing arcane light.
-	// Never worldgen, never an item, never diggable: it EXPIRES (the
-	// wisplight sweep fades it back to Air), so nothing needs to police
-	// it. Walk-through on purpose — it is light, not matter. Lamp mold
+	// Conjured light — the LUT row the wisp and a kindled light cast
+	// under (`gi::Emitter` entries, never a cell: `kindle` keeps its own
+	// clock). Never worldgen, never an item, never written to the world.
+	// Walk-through on purpose — it is light, not matter. Lamp mold
 	// (`emits(glows(...))`), never `seams`, which is the node rows' alone.
-	Wisplight = 89 => emits(glows(props(RenderClass::Opaque, false, tex::WISPLIGHT, tex::WISPLIGHT, tex::WISPLIGHT)), 13),
+	ConjuredLight = 89 => emits(glows(props(RenderClass::Opaque, false, tex::CONJURED_LIGHT, tex::CONJURED_LIGHT, tex::CONJURED_LIGHT)), 13),
+	// The Ward's pane — the one block a spell writes (`ward`). Conjured:
+	// digs to nothing and claims no slot, or a sphere would be a faucet
+	// of panes; no material, so it sits in no grid and at no bench.
+	// Glass class on purpose: a ward is see-through in every sense the
+	// renderer and the GI have (R35's bucket predicate). Soft and
+	// diggable by anyone, so nobody is walled in by a spell.
+	Wardglass = 90 => conjured(dig(translucent(props(RenderClass::Glass, true, tex::WARDGLASS, tex::WARDGLASS, tex::WARDGLASS)), 25, DigFamily::Soft)),
 }
 
 /// The indestructible world floor: cells at this height can never be
@@ -564,6 +571,38 @@ impl Essence {
 			Essence::Aether => "aether",
 		}
 	}
+
+	/// What an essence LOOKS like — core and rim — the one authority for
+	/// its colour. `texgen` paints the chip sprite from it, the surface
+	/// nodes' [`BlockType::node_flecks`] read theirs from it, and a screen
+	/// tinting anything essence-coloured asks here, so a retint moves the
+	/// sprite, the host rock and the light together. The ore tiers keep
+	/// colours of their own: a tier's identity is the point of its flecks.
+	#[inline]
+	pub const fn palette(self) -> ([u8; 3], [u8; 3]) {
+		match self {
+			// Living green, earthen amber, spring blue, cool steel, pale gold.
+			Essence::Vitae => ([118, 196, 84], [204, 255, 164]),
+			Essence::Terra => ([198, 150, 70], [244, 208, 140]),
+			Essence::Unda => ([62, 158, 224], [172, 224, 255]),
+			Essence::Ferrum => ([150, 160, 176], [224, 232, 240]),
+			Essence::Aether => ([240, 214, 96], [255, 248, 200]),
+		}
+	}
+
+	/// The chip sprite's layer in the materials array — a UI-only image
+	/// no block wears. Named here so nothing indexes the array by
+	/// arithmetic over the variant.
+	#[inline]
+	pub const fn icon_tex(self) -> u16 {
+		match self {
+			Essence::Vitae => tex::ESSENCE_VITAE,
+			Essence::Terra => tex::ESSENCE_TERRA,
+			Essence::Unda => tex::ESSENCE_UNDA,
+			Essence::Ferrum => tex::ESSENCE_FERRUM,
+			Essence::Aether => tex::ESSENCE_AETHER,
+		}
+	}
 }
 
 /// Which vertex stream a block's faces land in.
@@ -650,6 +689,10 @@ pub struct BlockProps {
 	/// Mutually exclusive with [`Self::drops`] (pinned by `table_sanity`): a
 	/// row says either "always this" or "this, unless somebody made it".
 	pub crumbles: Option<BlockType>,
+	/// Written by a spell, never crafted or found: a dig yields nothing
+	/// and no slot holds one (`dig_drop`, `is_slottable`). See
+	/// [`conjured`].
+	pub conjured: bool,
 	/// Sub-block shape family; `Some` ⟺ `class == RenderClass::Shaped`
 	/// (pinned by `table_sanity`).
 	pub shape: Option<ShapeKind>,
@@ -743,7 +786,16 @@ const fn props(class: RenderClass, collides: bool, side: u16, top: u16, bottom: 
 		surface_light: false,
 		dig_family: DigFamily::Fixed,
 		material: None,
+		conjured: false,
 	}
+}
+
+/// Spell-written matter: diggable, so nobody is sealed in, but a dig
+/// hands back NOTHING and the block claims no slot — what a spell puts
+/// in the world for free must never come out of it as an item.
+const fn conjured(mut p: BlockProps) -> BlockProps {
+	p.conjured = true;
+	p
 }
 
 /// A sub-block shaped row: tags the shape family the `shapes` registry
@@ -825,6 +877,13 @@ const fn emits(mut p: BlockProps, level: u8) -> BlockProps {
 	p
 }
 
+/// How much longer a live node holds than the figure its row states —
+/// every essence source, on top of its per-kind base. A draw is the only
+/// way essence enters the world and it is never undone, so the hold is
+/// priced to make a player mean it; the XP a draw pays is
+/// `skills::field_xp`, tabled per kind, and does NOT rise with this.
+const NODE_HOLD_MULT: u16 = 3;
+
 /// This block casts light at `level` from its exposed FACES rather than
 /// from the middle of its cell — see [`BlockProps::surface_light`]. A
 /// seam, not a lamp.
@@ -859,6 +918,7 @@ const fn water_props(amount: u8, source: bool, falling: bool) -> BlockProps {
 		surface_light: false,
 		dig_family: DigFamily::Fixed,
 		material: None,
+		conjured: false,
 	}
 }
 
@@ -947,12 +1007,22 @@ pub mod tex {
 	/// Conjured light wears the aetherlamp's face — the LAYERS entry
 	/// references the same PNG, so the spell needs no texture of its own
 	/// until somebody authors one.
-	pub const WISPLIGHT: u16 = 51;
+	pub const CONJURED_LIGHT: u16 = 51;
+	/// The essence chips — UI sprites in the materials array, worn by no
+	/// block row. They ride this array because the icon pipeline samples
+	/// nothing else; [`super::Essence::icon_tex`] is the only reader.
+	pub const ESSENCE_VITAE: u16 = 52;
+	pub const ESSENCE_TERRA: u16 = 53;
+	pub const ESSENCE_UNDA: u16 = 54;
+	pub const ESSENCE_FERRUM: u16 = 55;
+	pub const ESSENCE_AETHER: u16 = 56;
+	/// The Ward's conjured pane.
+	pub const WARDGLASS: u16 = 57;
 
 	/// Layers in the array, i.e. `digblock_assets::tex::LAYERS.len()`.
 	/// Pinned against it by `every_block_texture_layer_is_uploaded` in
 	/// digblock-client, the one crate that can see both.
-	pub const COUNT: u16 = WISPLIGHT + 1;
+	pub const COUNT: u16 = WARDGLASS + 1;
 }
 
 impl BlockType {
@@ -1079,6 +1149,7 @@ impl BlockType {
 			BlockType::Lantern => "Lantern".into(),
 			BlockType::Aetherlamp => "Aetherlamp".into(),
 			BlockType::MastersSigil => "Master's Sigil".into(),
+			BlockType::Wardglass => "Wardglass".into(),
 			_ => "?".into(),
 		}
 	}
@@ -1192,6 +1263,9 @@ impl BlockType {
 	pub fn dig_drop(self) -> Option<BlockType> {
 		self.hardness_ticks()?;
 		let p = self.props();
+		if p.conjured {
+			return None;
+		}
 		Some(p.drops.or(p.crumbles).unwrap_or(self))
 	}
 
@@ -1214,6 +1288,9 @@ impl BlockType {
 	pub fn dig_credit(self, edited: bool, alchemy: u32) -> Option<BlockType> {
 		self.hardness_ticks()?;
 		let p = self.props();
+		if p.conjured {
+			return None;
+		}
 		if let Some(d) = p.drops {
 			return Some(d);
 		}
@@ -1270,7 +1347,14 @@ impl BlockType {
 	/// reconcile rather than needing a version.
 	#[inline]
 	pub fn is_slottable(self) -> bool {
-		self != BlockType::Water && !self.is_tool() && !self.is_node_block()
+		self != BlockType::Water && !self.is_tool() && !self.is_node_block() && !self.is_conjured()
+	}
+
+	/// Spell-written matter — see [`BlockProps::conjured`]. Never an item,
+	/// never XP: a ward is cast for a fare and must pay nothing back.
+	#[inline]
+	pub fn is_conjured(self) -> bool {
+		self.props().conjured
 	}
 
 	/// One of the LIVE node faces — an ore tier or a surface node, the
@@ -1305,12 +1389,12 @@ impl BlockType {
 			BlockType::Emberore => ([214, 96, 34], [255, 176, 84]),
 			BlockType::Duskstone => ([104, 78, 168], [172, 146, 236]),
 			BlockType::Glowvein => ([72, 226, 214], [198, 255, 248]),
-			BlockType::Aetherock => ([240, 214, 96], [255, 248, 200]),
-			// The surface nodes wear their essence's own colour: living
-			// green, earthen amber, spring blue.
-			BlockType::Heartwood => ([118, 196, 84], [204, 255, 164]),
-			BlockType::Leystone => ([198, 150, 70], [244, 208, 140]),
-			BlockType::Springstone => ([62, 158, 224], [172, 224, 255]),
+			// Aetherock and the surface nodes wear their essence's own
+			// colour, so the rock and the chip can never disagree.
+			BlockType::Aetherock => Essence::Aether.palette(),
+			BlockType::Heartwood => Essence::Vitae.palette(),
+			BlockType::Leystone => Essence::Terra.palette(),
+			BlockType::Springstone => Essence::Unda.palette(),
 			_ => return None,
 		})
 	}

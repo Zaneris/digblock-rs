@@ -17,9 +17,14 @@ impl Engine {
 		let p = self.player.pos;
 		let eye = (p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32);
 		let (secs, seed) = (self.world_secs, self.seed);
+		// The one player, on the same tracker the server feeds its
+		// roster into — so a rule reading the day's head-count is on one
+		// scale in both arms.
+		self.presence.observe(secs, 1);
+		let players = self.presence.peak(secs);
 		let writes = {
 			let world = PipelineWorld(&mut self.pipeline, &self.protected);
-			self.world_jobs.tick(secs, seed, &[eye], &world)
+			self.world_jobs.tick(secs, seed, &[eye], players, &world)
 		};
 		for (cell, val) in writes {
 			// The floor and the offline arrival regions, refused exactly

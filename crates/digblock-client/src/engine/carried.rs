@@ -54,6 +54,14 @@ pub(super) struct Remote {
 /// own re-placement slot — the body's key ORed into a range no
 /// `PlayerId` or special key reaches.
 pub(super) const REMOTE_WISP_BANK: u16 = 0x8000;
+/// Bank a kindled light's key lives in: a standing light is a carrier
+/// that never moves, so its key only ever fires on arrival and on going
+/// out. Disjoint from the wisp bank and the specials, held by
+/// `the_key_banks_never_meet`.
+pub(super) const KINDLED_BANK: u16 = 0x4000;
+/// Width of the kindled bank — `Engine::kindle_light` masks its counter
+/// to this.
+pub(super) const KINDLED_MASK: u16 = 0x3FFF;
 
 /// Everything one remote contributes to this frame: the body box, the
 /// item in its hand, and the light that item carries.
@@ -76,7 +84,12 @@ pub(super) fn push_remote(
 	if let digblock_net::messages::RemoteFx::Wisp { level, whitened } =
 		digblock_net::messages::unpack_fx(r.fx)
 	{
-		carried.push_wisp(REMOTE_WISP_BANK | r.key, pos, level, whitened);
+		carried.push_arcane(
+			REMOTE_WISP_BANK | r.key,
+			digblock_core::gi::carried_origin(pos),
+			level,
+			whitened,
+		);
 	}
 	let Some(kind) = held_icon(r.held) else {
 		return;
@@ -211,16 +224,17 @@ impl Carried {
 		self.keys.push(key);
 	}
 
-	/// The wisp's own entry: arcane light with no item behind it. It
-	/// wears the Wisplight row's class — the same LUT row a kindled cell
-	/// uses, so the self-light and the placed light are one colour — and
-	/// its level and whitening answer to the CASTER's Arcana
-	/// (`unlock::wisp_light`), the pick's carried-light rule.
-	pub(super) fn push_wisp(&mut self, key: u16, eye: Vec3, level: u8, whitened: bool) {
+	/// Arcane light with no item behind it — a wisp on a body, or a
+	/// kindled light standing in a cell — at an origin the caller
+	/// chose. Both wear the conjured-light row's class, so the self-light and
+	/// the standing light are one colour; a wisp's level and whitening
+	/// answer to the CASTER's Arcana (`unlock::wisp_light`), the pick's
+	/// carried-light rule, while a kindled light takes the row's own.
+	pub(super) fn push_arcane(&mut self, key: u16, origin: Vec3, level: u8, whitened: bool) {
 		self.lights.push(crate::gi::Emitter {
-			pos: digblock_core::gi::carried_origin(eye).to_array(),
+			pos: origin.to_array(),
 			class: digblock_core::gi::gi_class(digblock_core::chunk::make_cell(
-				BlockType::Wisplight,
+				BlockType::ConjuredLight,
 				0,
 			)),
 			level,
@@ -321,6 +335,53 @@ mod carried_tests {
 
 	fn torch_at(c: &mut Carried, key: u16, eye: Vec3) {
 		c.push(key, eye, Some(BlockType::Torch), 1);
+	}
+
+	/// Every kindled key is its own carrier: none collides with a body,
+	/// a remote's wisp, or the local specials, whatever the counter
+	/// reads — two carriers on one key would share a fired slot and
+	/// re-place each other forever (the `CARRIER_DEBUG` lesson).
+	///
+	/// The mask's own width is the sweep: past it the counter repeats,
+	/// so `0..=KINDLED_MASK` is every key this bank can ever hand out.
+	#[test]
+	fn the_key_banks_never_meet() {
+		let specials = [CARRIER_SELF, CARRIER_WISP, CARRIER_DEBUG];
+		let bodies = 0..=u16::from(u8::MAX);
+		for seq in 0..=KINDLED_MASK {
+			let k = KINDLED_BANK | (seq & KINDLED_MASK);
+			assert!(!specials.contains(&k), "{k:#x} is a special");
+			assert!(!bodies.contains(&k), "{k:#x} is a body");
+			assert!(
+				!bodies.clone().any(|b| REMOTE_WISP_BANK | b == k),
+				"{k:#x} is a remote's wisp"
+			);
+		}
+	}
+
+	/// The other half of "its own carrier", and the half the banks alone
+	/// cannot give: the counter is MASKED, so it wraps, and two lights
+	/// standing on one key share a `fired` slot and re-place each other
+	/// every frame from two different cells.
+	///
+	/// What makes that unreachable is a RELATIONSHIP, not the arithmetic:
+	/// a light stands for `kindle::SECS` and a cast takes a whole channel
+	/// to wind, so a full server can only have so many burning at once,
+	/// and the bank has to be wider than that. Quicken the channel,
+	/// lengthen the span or raise the player cap far enough and this is
+	/// the test that says the bank needs another bit.
+	/// `Engine::kindle_light` is the minter; `every_standing_kindled_light_keys_its_own_carrier`
+	/// drives it.
+	#[test]
+	fn the_bank_outlasts_every_light_that_can_burn_at_once() {
+		let quickest =
+			digblock_core::unlock::channel_ticks(u32::MAX) as f32 * digblock_core::player::TICK;
+		let per_caster = (digblock_core::kindle::SECS as f32 / quickest).ceil() as usize;
+		let alight = per_caster * digblock_net::protocol::MAX_SNAPSHOT_PLAYERS;
+		assert!(
+			alight < usize::from(KINDLED_MASK) + 1,
+			"a full server can outrun the bank ({alight} lights standing at once)"
+		);
 	}
 
 	/// One frame of one carrier holding a torch, in exactly the order
@@ -593,7 +654,7 @@ mod carried_tests {
 	}
 
 	/// A remote whose fx byte carries a wisp is a light — at exactly the
-	/// level and whitening the byte says, under the Wisplight row's class,
+	/// level and whitening the byte says, under the conjured-light row's class,
 	/// keyed into the wisp bank so it never shares a `fired` slot with the
 	/// same body's held item. The whole point of the fx byte: their skills
 	/// are not in the snapshot, so the light rides the wire instead.
@@ -620,8 +681,10 @@ mod carried_tests {
 			},
 		);
 		assert_eq!(c.lights.len(), 1, "an empty hand, but a burning wisp");
-		let want =
-			digblock_core::gi::gi_class(digblock_core::chunk::make_cell(BlockType::Wisplight, 0));
+		let want = digblock_core::gi::gi_class(digblock_core::chunk::make_cell(
+			BlockType::ConjuredLight,
+			0,
+		));
 		assert_eq!(c.lights[0].class, want);
 		assert_eq!(c.lights[0].level, level);
 		assert!(c.lights[0].whitened);

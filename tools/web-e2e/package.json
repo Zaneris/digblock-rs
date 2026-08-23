@@ -1,0 +1,13 @@
+{
+  "name": "digblock-web-e2e",
+  "private": true,
+  "type": "module",
+  "description": "Playwright harness for the web build: a CLI that mirrors the desktop capture flags, and a smoke suite.",
+  "scripts": {
+    "test": "playwright test",
+    "shot": "node dig.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1"
+  }
+}

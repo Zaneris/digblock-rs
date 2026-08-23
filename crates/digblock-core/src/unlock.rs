@@ -109,11 +109,12 @@ pub fn material(m: Material) -> Option<u32> {
 /// decision, pinned so neither can exist without the other.
 pub fn functional(b: BlockType) -> Option<u32> {
 	Some(match b {
-		// The first vessel (§13.5): the bucket sits at the level everyone
-		// starts at, so its PRICE is the gate — the opening dig-and-extract
-		// loop pays for it, and "make your first vessel" is the game's
-		// first craft beat rather than a level-up.
-		BlockType::Bucket => 1,
+		// The water vessel (§13.5) sits a few rungs past the start, beside
+		// the leystone reveal: at the first level it shared the catalog's
+		// opening line with the siphon and split the one beat the ladder
+		// must not split — "make your siphon". Still priced in timber
+		// alone, so the rung is the whole gate.
+		BlockType::Bucket => 5,
 		// First light, pre-ore on purpose (§7.3) — and past the leystone
 		// reveal, since its price names Terra and Terra is a leystone draw
 		// now.
@@ -407,6 +408,26 @@ pub fn arc_cells(level: u32) -> usize {
 pub const ARC_AT: u32 = 26;
 pub const ARC_WIDE_AT: u32 = 46;
 
+/// The Ward's radius in cells for a caster at this Arcana — the sphere
+/// `ward::sets` draws about the head. Zero below the first rank IS
+/// "cannot cast". Three ranks, each a wider sphere and (`ward_price`) a
+/// steeper fare.
+pub fn ward_radius(level: u32) -> i32 {
+	match level {
+		l if l >= WARD_VAST_AT => 10,
+		l if l >= WARD_WIDE_AT => 8,
+		l if l >= WARD_AT => 6,
+		_ => 0,
+	}
+}
+
+/// The Ward's three ranks: after the second port, the breather past the
+/// wisp's brightening, and the deep rung between the mountain port and
+/// kindle's easing.
+pub const WARD_AT: u32 = 16;
+pub const WARD_WIDE_AT: u32 = 36;
+pub const WARD_VAST_AT: u32 = 52;
+
 /// Wisp's second rank: brighter AND whitened — level alone reads as
 /// more of the same hue, never as brighter (the carried-light lesson).
 pub const WISP_BRIGHT_AT: u32 = 38;
@@ -426,12 +447,15 @@ pub fn wisp_secs(level: u32) -> u32 {
 	if level >= WISP_BRIGHT_AT { 360 } else { 180 }
 }
 
-// There is deliberately NO per-substance draw gate. The reveal IS the
+// There is deliberately no draw gate ABOVE the reveal. The reveal is the
 // gate: a node you cannot see draws as its host, and one you can needs
 // only the siphon — a second level axis on top of the reveal would be
 // two gates telling one story. (The extraction-level axis this note once
 // defended died twice over: first to a single-entry table, then with
-// bench extraction itself.)
+// bench extraction itself.) What `mine_material` and `draw_material` do
+// is the other half of that same story: they hold a node standing in a
+// cell OUTRIGHT — placed, or regrown — to the level that would have
+// revealed it, at exactly that level and no higher.
 
 /// §5.1's strength wall: the Mining level below which `b` refuses to be
 /// dug at all; the first level means ungated. Deliberately a wall — the doc's original "no
@@ -506,6 +530,32 @@ fn mine_material(m: Material) -> u32 {
 	}
 }
 
+/// [`mine_material`]'s twin on the other ladder: the substances whose
+/// reveal is an ALCHEMY level, which is the three SURFACE nodes.
+///
+/// Here for the same reason the ore arms are in [`mine_material`], and
+/// against the same failure: a live face standing in a cell OUTRIGHT is
+/// ordinary chunk data every visitor's mesh shows, because
+/// `nodes::revealed` answers a stored face ahead of both reveal gates.
+/// The regrowth sweep writes exactly that, so without these arms a
+/// brand-new arrival draws the springs a levelled player left behind —
+/// in the essence the Ward's fare is priced in. Neither wall covers it:
+/// Springstone is Soft, so on strength alone it opens at the first level.
+///
+/// Keyed to [`alchemy_reveal`] rather than hand-numbered, so a retune of
+/// the surface ladder cannot leave the two disagreeing
+/// (`no_node_opens_before_the_level_that_reveals_it`).
+fn draw_material(m: Material) -> u32 {
+	use Material as M;
+	match m {
+		M::Heartwood => alchemy_reveal_of(BlockType::Heartwood),
+		M::Leystone => alchemy_reveal_of(BlockType::Leystone),
+		M::Springstone => alchemy_reveal_of(BlockType::Springstone),
+		// Everything else answers only to the recipe half of `pickup`.
+		_ => 1,
+	}
+}
+
 /// [`reveal`] for a block known to be an ore, for use inside
 /// [`mine_material`]'s table. Panics on anything else, which is a
 /// compile-time-shaped mistake made loud at first call rather than
@@ -518,23 +568,38 @@ fn reveal_of(b: BlockType) -> u32 {
 	}
 }
 
+/// [`reveal_of`]'s twin for [`draw_material`]'s table.
+fn alchemy_reveal_of(b: BlockType) -> u32 {
+	match alchemy_reveal(b) {
+		Some(l) => l,
+		None => panic!("{b:?} is in the surface-node gate but has no reveal level"),
+	}
+}
+
 /// The strength wall's Alchemy counterpart: the level below which `b` refuses
-/// to be dug because picking it up would hand you an item you cannot make (the
-/// first level means ungated).
+/// to be dug on the other ladder (the first level means ungated).
 ///
-/// Derived from [`craft`] rather than tabled again. It keys on the DROP, not
-/// the block, because the gate is about the item that lands in the inventory —
-/// mined rock is Rubble whatever the cell was, so quarrying pristine Stone
-/// stays a Mining question. And it keys on `block::crafted` rather than on
-/// craftability alone: `Wood` and `Lumber` are both craftable, but only one
-/// grows on a tree. Craft-ONLY blocks are the ones a player can only have
-/// crafted, so requiring their own recipe level is what stops anyone mining
-/// around an unlock through someone else's build.
+/// TWO gates, [`mine`]'s shape on this axis, and a block waits for the later
+/// of them. The RECIPE half says picking it up would hand you an item you
+/// cannot make; the [`draw_material`] half says drawing it would hand you a
+/// find you could not have revealed.
+///
+/// The recipe half is derived from [`craft`] rather than tabled again. It keys
+/// on the DROP, not the block, because the gate is about the item that lands in
+/// the inventory — mined rock is Rubble whatever the cell was, so quarrying
+/// pristine Stone stays a Mining question. And it keys on `block::crafted`
+/// rather than on craftability alone: `Wood` and `Lumber` are both craftable,
+/// but only one grows on a tree. Craft-ONLY blocks are the ones a player can
+/// only have crafted, so requiring their own recipe level is what stops anyone
+/// mining around an unlock through someone else's build. It cannot express the
+/// node half at all: a node has no recipe, so it answers the first level for
+/// the richest find in the game.
 pub fn pickup(b: BlockType) -> u32 {
-	match b.dig_drop() {
+	let recipe = match b.dig_drop() {
 		Some(d) if d.is_crafted_only() => craft(d).unwrap_or(1),
 		_ => 1,
-	}
+	};
+	recipe.max(b.material().map_or(1, draw_material))
 }
 
 // ---- the questions ---------------------------------------------------
@@ -551,8 +616,10 @@ pub fn can_craft(b: BlockType, level: u32) -> bool {
 pub enum Kind {
 	/// The block is too hard for this Mining level (the strength wall).
 	Strength,
-	/// The block is craft-only and this Alchemy level cannot make one, so
-	/// picking it up would hand out an item the player can't own yet.
+	/// The Alchemy wall ([`pickup`]): the block is craft-only and this
+	/// level cannot make one, or it is a surface node this level could
+	/// not have revealed. Either way the dig would hand out something
+	/// the player has not reached.
 	Recipe,
 	/// A revealed ore vein and the wrong tool in hand (§5.3). Unlike the
 	/// other two this is not about a LEVEL at all — it is the one refusal
@@ -661,6 +728,7 @@ pub fn opens(skill: Skill, level: u32) -> bool {
 					.any(|&k| waystone(k) == Some(level))
 					|| level == KINDLE_AT
 					|| arc_cells(level) != arc_cells(level - 1)
+					|| ward_radius(level) != ward_radius(level - 1)
 					|| teleport_cooldown_secs(level) != teleport_cooldown_secs(level - 1)
 					|| channel_ticks(level) != channel_ticks(level - 1)
 					|| wisp_light(level) != wisp_light(level - 1)

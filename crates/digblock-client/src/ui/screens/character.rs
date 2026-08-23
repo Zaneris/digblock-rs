@@ -7,7 +7,9 @@ use digblock_core::block::{BlockType, ShapeFamily};
 use digblock_core::material::Material;
 use digblock_core::skills::{self, Skill, SkillSet};
 use digblock_core::unlock;
+use digblock_platform::InputEvent;
 
+use crate::hotbar::HotbarView;
 use crate::ui::draw::Layer;
 use crate::ui::widgets::{self, DIM, Style, Ui, WHITE};
 use crate::ui::{InvId, Rect, hud, theme};
@@ -69,7 +71,7 @@ impl CharView {
 ///
 /// Where several things land on one level, the row asks for the one its
 /// sentence leads with.
-fn teasers(skill: Skill) -> Vec<(u32, &'static str)> {
+pub(super) fn teasers(skill: Skill) -> Vec<(u32, &'static str)> {
 	match skill {
 		Skill::Mining => mining_teasers(),
 		Skill::Alchemy => alch_teasers(),
@@ -166,6 +168,10 @@ fn arcana_teasers() -> Vec<(u32, &'static str)> {
 		(unlock::KINDLE_AT, "kindle — conjured light in the world"),
 		(port_at(K::Forest), "the forest waystone"),
 		(
+			unlock::WARD_AT,
+			"the ward — a sphere of glass closes about you",
+		),
+		(
 			unlock::TELEPORT_SWIFT_AT,
 			"swift return — home comes back sooner",
 		),
@@ -174,8 +180,15 @@ fn arcana_teasers() -> Vec<(u32, &'static str)> {
 			unlock::ARC_AT,
 			"the mason's arc — one placement lays a line of three",
 		),
-		(unlock::CHANNEL_QUICK_AT, "every channel quickens"),
+		(
+			unlock::CHANNEL_QUICK_AT,
+			"quickened channels — every cast lands sooner",
+		),
 		(port_at(K::Taiga), "the taiga waystone"),
+		(
+			unlock::WARD_WIDE_AT,
+			"the wide ward — the glass stands further out",
+		),
 		(
 			unlock::WISP_BRIGHT_AT,
 			"the wisp burns brighter, and longer",
@@ -183,6 +196,7 @@ fn arcana_teasers() -> Vec<(u32, &'static str)> {
 		(port_at(K::Beach), "the shore waystone"),
 		(unlock::ARC_WIDE_AT, "the arc reaches five"),
 		(port_at(K::Mountain), "the mountain waystone"),
+		(unlock::WARD_VAST_AT, "the vast ward — further out again"),
 		(unlock::KINDLE_CHEAP_AT, "kindle costs less"),
 		(unlock::TELEPORT_SWIFTER_AT, "swifter return"),
 		(port_at(K::Snow), "the far cold waystone — the last port"),
@@ -298,6 +312,10 @@ fn measure_rows(rows: &[Row], style: &Style) -> (f32, f32) {
 #[derive(Default)]
 pub struct CharScreen {
 	open: bool,
+	/// Where the pointer is. The page has no controls of its own; it
+	/// tracks this only so it can name the hotbar slot underneath it,
+	/// which every screen drawn over the bar owes the player.
+	cursor: (f32, f32),
 }
 
 impl CharScreen {
@@ -313,12 +331,28 @@ impl CharScreen {
 		self.open = false;
 	}
 
+	/// Feed one input event. The page is read-only, so the only thing it
+	/// takes from one is where the pointer is; every key that means
+	/// anything here closes it, and that is the ENGINE's to consume.
+	pub fn handle_input(&mut self, event: &InputEvent) {
+		if let InputEvent::CursorMoved { x, y } = *event {
+			self.cursor = (x, y);
+		}
+	}
+
 	/// Emit the screen: the shared dim, the shared panel color, the
 	/// rows. Same two-pass shape as the alchemy screen (measure, then
 	/// emit over the same rows) minus the fit pass — a handful of rows
 	/// can't outgrow any window the game runs in, so the frame's one
 	/// glyph size is drawn unconditionally.
-	pub fn build(&self, ui: &mut Ui<'_, InvId>, size: (u32, u32), view: &CharView, daylight: f32) {
+	pub fn build(
+		&self,
+		ui: &mut Ui<'_, InvId>,
+		size: (u32, u32),
+		view: &CharView,
+		bar: &HotbarView,
+		daylight: f32,
+	) {
 		let s = ui.style.scale;
 		ui.dl.quad(
 			Layer::Backdrop,
@@ -383,6 +417,13 @@ impl CharScreen {
 				}
 			}
 		}
+		// The page owns nothing hoverable of its own, but it is drawn
+		// OVER the bar, and the bar is drawn after it at the window's
+		// scale — so naming its slots is this page's job, at this frame's
+		// glyph. No fit ladder here, so `s` IS the window's scale.
+		if let Some((anchor, name)) = hud::hovered_bar_slot(size, s, bar, self.cursor) {
+			widgets::tooltip(ui.dl, &ui.style, size, anchor, &name);
+		}
 	}
 }
 
@@ -393,6 +434,16 @@ mod tests {
 	use crate::ui::draw::{Cmd, DrawList};
 
 	const SIZE: (u32, u32) = (1280, 800);
+
+	/// A bar with nothing on it — these rigs are about the page, and the
+	/// cursor never reaches the bar in them anyway.
+	fn empty_bar() -> HotbarView {
+		HotbarView::build(
+			&digblock_core::hotbar::Hotbar::new(),
+			&digblock_core::inventory::Inventory::default(),
+			&crate::hotbar::ToolSwap::default(),
+		)
+	}
 
 	fn emit(skills: &SkillSet) -> DrawList {
 		emit_at(skills, skills::DEPTH_XP_FROM)
@@ -411,6 +462,7 @@ mod tests {
 			},
 			SIZE,
 			&CharView::build(skills, eye_y),
+			&empty_bar(),
 			1.0,
 		);
 		assert!(hits.hit(640.0, 400.0).is_none(), "read-only: no hit rects");

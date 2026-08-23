@@ -123,6 +123,11 @@ impl Engine {
 							button: MouseButton::Left,
 							pressed: false,
 						});
+						// A lifted finger is nowhere: the release lands at
+						// the finger so a drop resolves, then the cursor
+						// leaves, or every hover — and the name it shows —
+						// would stay pinned under the last tap.
+						self.input(InputEvent::CursorMoved { x: -1.0, y: -1.0 });
 					}
 					_ => {} // secondary touches park while a UI is up
 				}
@@ -240,7 +245,9 @@ impl Engine {
 		}
 		// Character screen open: read-only, so the only inputs it eats
 		// are the ones that close it (C/Escape, consumed like the
-		// others') and the held-state hygiene on focus loss.
+		// others'), the held-state hygiene on focus loss, and the cursor
+		// — the page is drawn over the hotbar and names the slot under
+		// the pointer, so it has to be told where the pointer is.
 		if self.ui.char_screen.is_open() {
 			match event {
 				InputEvent::FocusLost | InputEvent::PointerLockLost => {
@@ -252,7 +259,7 @@ impl Engine {
 					key: Key::C | Key::Escape,
 					pressed: true,
 				} => self.ui.char_screen.close(),
-				_ => {}
+				_ => self.ui.char_screen.handle_input(&event),
 			}
 			return;
 		}
@@ -300,6 +307,10 @@ impl Engine {
 						Some(SpellAction::CastKindle) => {
 							self.ui.spellbook.close();
 							self.start_cast(CastTarget::Kindle);
+						}
+						Some(SpellAction::CastWard) => {
+							self.ui.spellbook.close();
+							self.start_cast(CastTarget::Ward);
 						}
 						// A stance flip, not a cast: the page stays open,
 						// showing the new state.

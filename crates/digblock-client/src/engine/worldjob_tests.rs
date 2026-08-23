@@ -1,5 +1,5 @@
 use super::*;
-use digblock_core::worldjob::{Candidates, CellSource, Schedule, Scope, WorldJob};
+use digblock_core::worldjob::{Candidates, CellSource, Run, Schedule, Scope, WorldJob};
 
 /// Dirt to grass, once a day, in the player's own chunk — the same rule
 /// the server tests drive, so the two arms are compared on one job.
@@ -23,7 +23,7 @@ impl WorldJob for GrassSpread {
 			candidates: Candidates::Band,
 		}
 	}
-	fn apply(&self, _: (i32, i32, i32), _: &dyn CellSource, _: f64, _: u64) -> Option<u16> {
+	fn apply(&self, _: (i32, i32, i32), _: &dyn CellSource, _: f64, _: Run) -> Option<u16> {
 		Some(BlockType::Grass as u16)
 	}
 }
@@ -136,7 +136,7 @@ fn leaving_a_world_abandons_the_sweep_in_flight() {
 				candidates: Candidates::Band,
 			}
 		}
-		fn apply(&self, _: (i32, i32, i32), _: &dyn CellSource, _: f64, _: u64) -> Option<u16> {
+		fn apply(&self, _: (i32, i32, i32), _: &dyn CellSource, _: f64, _: Run) -> Option<u16> {
 			Some(BlockType::Grass as u16)
 		}
 	}
@@ -186,5 +186,90 @@ fn an_offline_place_smothers_the_grass_beneath() {
 		engine.pipeline.block_at(cell.0, cell.1, cell.2),
 		Some(BlockType::Dirt),
 		"the cover smothers"
+	);
+}
+
+/// The head-count a local world feeds the scheduler reaches the rule.
+///
+/// A solo world is deliberately ONE — `Run::players` is a peak, and the
+/// offline arm has exactly one player to peak at — but nothing said so:
+/// the constant could be swapped for anything, or the `observe` call
+/// dropped entirely, and the sweep would still run. This is the client
+/// host's half of the feed; core pins the scheduler's.
+#[test]
+fn a_local_world_sweeps_with_one_player() {
+	use std::sync::atomic::{AtomicU32, Ordering};
+	static SEEN: AtomicU32 = AtomicU32::new(u32::MAX);
+	struct CountsHeads(i32);
+	impl WorldJob for CountsHeads {
+		fn name(&self) -> &'static str {
+			"counts-heads"
+		}
+		fn schedule(&self) -> Schedule {
+			Schedule {
+				per_day: 1,
+				offset: 0.0,
+			}
+		}
+		fn scope(&self) -> Scope {
+			Scope {
+				blocks: &[BlockType::Dirt],
+				radius_chunks: 0,
+				y: (self.0, self.0),
+				candidates: Candidates::Band,
+			}
+		}
+		fn apply(&self, _: (i32, i32, i32), _: &dyn CellSource, _: f64, run: Run) -> Option<u16> {
+			SEEN.store(run.players, Ordering::Relaxed);
+			Some(BlockType::Grass as u16)
+		}
+	}
+	let (mut engine, cell) = local_world();
+	engine.register_world_job(Box::new(CountsHeads(cell.1)));
+	step_until(&mut engine, cell, BlockType::Grass);
+	assert_eq!(
+		SEEN.load(Ordering::Relaxed),
+		1,
+		"a solo world must sweep at a head-count of one"
+	);
+}
+
+/// The scheduler's clock is the WORLD's age, not the session's.
+///
+/// `worldjob::regrow` salts its roll with the run's slot, so a clock
+/// that restarted at zero on every entry would replay the same slot and
+/// draw the same answer: a spent node that lost its roll would lose it
+/// again for ever. Entering a save winds the clock to the age its own
+/// stamps describe — both already persisted, so nothing new is stored.
+#[test]
+fn entering_a_save_resumes_the_worlds_age() {
+	let (mut engine, _) = local_world();
+	let day = f64::from(digblock_core::sun::DAY_SECS);
+	let age_ms = (day * 3.5 * 1000.0) as u64;
+	let created = 1_700_000_000_000u64;
+	let save = digblock_persist::WorldSave {
+		meta: digblock_persist::WorldMeta {
+			id: "w".into(),
+			name: "w".into(),
+			seed: engine.seed,
+			created_ms: created,
+			last_played_ms: created + age_ms,
+			compatible: true,
+		},
+		rev: digblock_persist::SAVE_REV,
+		edits: Vec::new(),
+		inventory: Vec::new(),
+		hotbar: Vec::new(),
+		grid: Vec::new(),
+		skills: Vec::new(),
+		player: None,
+	};
+	engine.enter_local_world(save);
+	// The age its stamps describe, to the second — and past the first
+	// day boundary, which is the whole point: a slot nobody has run.
+	assert_eq!(engine.world_secs, age_ms as f64 / 1000.0);
+	assert!(
+		engine.world_secs > day,
+		"a save older than a day must not enter on day zero"
 	);
 }

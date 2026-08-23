@@ -359,7 +359,7 @@ pub fn dig_decayed(progress: u32, required: u32, idle: u32) -> u32 {
 /// [`dig_award`] is what puts the two together (its cap is what keeps a
 /// zero-worth block's swing cells at zero too).
 pub fn dig_xp(block: BlockType) -> u64 {
-	if block.is_foliage() || block == BlockType::Torch {
+	if block.is_foliage() || block == BlockType::Torch || block.is_conjured() {
 		return 0;
 	}
 	match block.hardness_ticks() {
@@ -561,13 +561,36 @@ pub const HOME_XP_CAP: u64 = 60;
 ///
 /// The rate and the fares are one decision, not two: raising the fares
 /// alone would pay MORE per cast for costing more, which is the opposite
-/// of a sink.
-pub fn cast_xp(essence_price: u32) -> u64 {
-	u64::from(essence_price) * CAST_XP_PER_ESSENCE
+/// of a sink. What the rate cannot be is UNIT-blind, now that the fares
+/// climb the essence ladder: a unit is not one worth across the five, so
+/// counting units alone would pay the far cold port — a single unit of
+/// the one essence nothing transmutes into — less than the lowland ones
+/// (`the_port_tables_are_twins_and_the_fare_is_payable` sweeps the
+/// level-sorted roster for exactly that ordering).
+pub fn cast_xp(essence: crate::block::Essence, essence_price: u32) -> u64 {
+	u64::from(essence_price) * cast_xp_per_unit(essence)
+}
+
+/// Points per unit of the essence a cast drains. Four of the five share
+/// the base rate — their fares are already denominated in comparable
+/// units, so a costlier passage pays more by costing more. Aether is the
+/// exception it is everywhere else: the one essence that cannot be
+/// transmuted INTO, so a unit of it is worth a whole passage priced in
+/// anything else, and a one-unit fare still crowns the ladder.
+pub fn cast_xp_per_unit(essence: crate::block::Essence) -> u64 {
+	match essence {
+		crate::block::Essence::Aether => CAST_XP_PER_ESSENCE * AETHER_CAST_WORTH,
+		_ => CAST_XP_PER_ESSENCE,
+	}
 }
 
 /// Points per essence unit a cast drains.
 pub const CAST_XP_PER_ESSENCE: u64 = 7;
+
+/// What one unit of Aether is worth against a unit of any other essence,
+/// as a cast's XP counts it. Large enough that the single-unit far cold
+/// fare outpays the priciest passage denominated in anything else.
+pub const AETHER_CAST_WORTH: u64 = 32;
 
 /// Total Alchemy XP for one validated alchemy op (call only after
 /// `apply_alchemy` succeeded — the op's counts are then known-valid).

@@ -1,5 +1,6 @@
 //! Residency, late journal sync, and snapshot broadcast.
 
+use super::spawn::kindled_msg_at;
 use super::{DGRAM_STALL_SECS, OUT_CAP, OutMsg, OutTx, Sim, column_of, in_radius, send_frame};
 use crate::journal::Journal;
 use digblock_net::codec;
@@ -16,8 +17,10 @@ use tokio::sync::mpsc::error::TrySendError;
 /// so re-entry re-syncs (clients evict remote chunks too).
 const SYNC_SLACK: i32 = 2;
 
-/// Journal columns handed to one client per tick. At the tick rate this
-/// drains even a wide join in under a second while costing a fraction of a
+/// Frames of owed join sync handed to one client per tick — journal
+/// columns and standing kindled lights together, since both are backlog
+/// and one budget is what bounds the pair. At the tick rate this drains
+/// even a wide join in under a second while costing a fraction of a
 /// millisecond per tick.
 const JOIN_SYNC_PER_TICK: usize = 16;
 /// Outbound slots kept free for live traffic while a sync drains, so a
@@ -251,8 +254,9 @@ impl Sim {
 		}
 	}
 
-	/// Hand each client a few queued journal columns per tick, never more
-	/// than its outbound queue can take.
+	/// Hand each client a few queued journal columns — then a few of the
+	/// standing lights it is owed — per tick, never more than its
+	/// outbound queue can take.
 	///
 	/// Join sync used to run entirely inside `handle_hello`: every in-range
 	/// edited column encoded and pushed in ONE tick. On a mature world that
@@ -265,30 +269,46 @@ impl Sim {
 	/// sync only ever uses slots live traffic is not going to need.
 	fn pump_join_sync(&mut self) {
 		let journal = &self.journal;
+		let tick = self.tick;
 		for client in self.clients.values_mut() {
 			if client.dead.get() {
 				continue;
 			}
-			if !client.residency.sync_queue.is_empty() {
-				let room = client
-					.out
-					.capacity()
-					.saturating_sub(JOIN_SYNC_RESERVE)
-					.min(JOIN_SYNC_PER_TICK);
-				for _ in 0..room {
-					let Some(col) = client.residency.sync_queue.pop_front() else {
-						break;
-					};
-					client.residency.sync_queue_set.remove(&col);
-					// It may have left range while it sat in the queue.
-					if !in_radius(col, client.residency.center, client.residency.draw_dist) {
-						continue;
-					}
-					if !send_journal_column_to(journal, &client.out, col.0, col.1) {
-						client.dead.set(true);
-						break;
-					}
-					client.residency.synced_columns.insert(col);
+			let mut room = client
+				.out
+				.capacity()
+				.saturating_sub(JOIN_SYNC_RESERVE)
+				.min(JOIN_SYNC_PER_TICK);
+			while room > 0 {
+				let Some(col) = client.residency.sync_queue.pop_front() else {
+					break;
+				};
+				room -= 1;
+				client.residency.sync_queue_set.remove(&col);
+				// It may have left range while it sat in the queue.
+				if !in_radius(col, client.residency.center, client.residency.draw_dist) {
+					continue;
+				}
+				if !send_journal_column_to(journal, &client.out, col.0, col.1) {
+					client.dead.set(true);
+					break;
+				}
+				client.residency.synced_columns.insert(col);
+			}
+			// The lights, behind the columns: terrain is what the arrival
+			// hold waits on, and a light that expired in the queue is
+			// simply dropped — its own clock has already answered.
+			while room > 0 && !client.dead.get() {
+				let Some(light) = client.residency.kindled_queue.pop_front() else {
+					break;
+				};
+				room -= 1;
+				if light.until <= tick {
+					continue;
+				}
+				if !send_frame(&client.out, &kindled_msg_at(tick, &light)) {
+					client.dead.set(true);
+					break;
 				}
 			}
 			// Release the arrival hold once nothing within `AREA_SYNC_RADIUS`

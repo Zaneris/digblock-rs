@@ -365,6 +365,52 @@ build-web:
 check-shaders:
 	cargo run -q -p shadercheck
 
+# `just run` for the browser: the same flags, spelled the same way, driving
+# the real bundle in a headless Chrome through Playwright (tools/web-e2e,
+# `--help` lists everything). Every DIG_* scene is a `--name` here, since
+# both launchers read one table (digblock_client::knobs::ALL).
+#
+#   just web-shot --seed 7 --screen alchemy --frames 60 --screenshot shots/k.png
+#   just web-shot --vault --tod 90 --frames 120 --dpr 2 --screenshot shots/vault.png
+#   just web-shot --play --seed 1 --keys k --screenshot shots/k.png --console
+#
+# Photograph or drive the web build with desktop-style flags.
+web-shot *ARGS:
+	just web-e2e-setup
+	just build-web
+	node tools/web-e2e/dig.mjs {{ARGS}}
+
+# The browser smoke suite: boots, renders, poses scenes, refuses typos,
+# opens a screen on a keypress. FILTER is a regex over the test TITLE, the
+# thing the run prints and a reader has in hand: Playwright's bare
+# positional matches the FILE PATH instead, so a title matched no file and
+# the run errored out. An empty one matches everything, which is the
+# no-argument default. The decoder test runs first: it costs a second, and
+# every assertion downstream reads its frames through it.
+#
+# The browser smoke suite; `just web-e2e <title>` for one test.
+web-e2e FILTER="":
+	just web-unit
+	just web-e2e-setup
+	just build-web
+	cd tools/web-e2e && npx playwright test -g "{{FILTER}}"
+
+# The harness's own unit test: the hand-written PNG decoder that every
+# browser assertion reads a frame through. A decode bug there makes the
+# suite MORE likely to pass, which is why it is pinned separately.
+#
+# The web harness's PNG decoder — plain node, no Chrome and no bundle.
+web-unit:
+	cd tools/web-e2e && node --test lib/png.test.mjs
+
+# `npm ci` once; the browser is the installed Chrome (no download), the
+# same one check-shaders needs. DIG_CHROME overrides, as there.
+web-e2e-setup:
+	#!/usr/bin/env bash
+	set -euo pipefail
+	cd tools/web-e2e
+	[ -d node_modules/@playwright/test ] || npm ci --no-audit --no-fund
+
 # Needs Chrome for the shader half, but still no wasm-bindgen-cli.
 #
 # Fast "is the web client still green" gate — wasm32 clippy plus check-shaders.
@@ -404,13 +450,17 @@ check:
 test *ARGS:
 	cargo test --workspace --no-fail-fast {{ARGS}}
 
-# The web half needs Chrome, the other two need Docker.
+# `check` needs Docker; both web halves need Chrome, and the suite a
+# wasm-bindgen bundle. The browser suite goes last because it is the
+# slowest and the only one that renders anything — but it goes IN, because
+# the web client is the priority platform and nothing else here runs it.
 #
-# Every gate in one word, so "am I done" is not three remembered commands.
+# Every gate in one word, so "am I done" is not four remembered commands.
 gate:
 	just check
 	just check-ios
 	just check-web
+	just web-e2e
 
 # Fast "is iOS still green" gate — no Xcode required.
 check-ios:

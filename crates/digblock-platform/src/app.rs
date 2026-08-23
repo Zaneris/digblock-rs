@@ -985,6 +985,11 @@ impl<G: Game> App<G> {
 			.is_some_and(|n| self.frames_rendered >= n)
 		{
 			self.exit_once();
+			// The last frame is presented and the run is over: the page
+			// contract's closing event, which is what a harness waits
+			// for before it photographs the canvas or reads the summary.
+			#[cfg(target_arch = "wasm32")]
+			dispatch_page_event("digblock-exit");
 			el.exit();
 			return;
 		}
@@ -1156,7 +1161,8 @@ impl<G: Game> App<G> {
 /// One side of the fixed contract with the apps/web page (like the canvas
 /// id): named events on the window are how the platform narrates startup
 /// to the page's loading overlay — `digblock-gpu-ready`, then
-/// `digblock-first-frame`; `digblock-fatal` when startup cannot continue.
+/// `digblock-first-frame`, and `digblock-exit` when a `?frames=` run ends;
+/// `digblock-fatal` when startup cannot continue.
 #[cfg(target_arch = "wasm32")]
 fn dispatch_page_event(name: &str) {
 	if let (Some(w), Ok(ev)) = (web_sys::window(), web_sys::Event::new(name)) {

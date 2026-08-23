@@ -51,6 +51,126 @@ impl Engine {
 		});
 	}
 
+	/// A ward SEALED, ours or a remote's: the glass itself was the
+	/// spectacle, climbing as ordinary cells through the channel with no
+	/// sound of their own (a conjured cell never thunks), so the seal is
+	/// the one instant with a voice — the chime, heard flat by the caster
+	/// because it closed about THEIR head, and their wash of the overlay.
+	pub(super) fn ward_sealed(&mut self, head: (i32, i32, i32), own: bool) {
+		if own {
+			self.vfx.flash = 0.6;
+		}
+		self.emit(crate::audio::AudioCmd::Sfx {
+			sound: crate::audio::Sfx::WardClose,
+			pos: (!own).then(|| cell_center(head)),
+			gain: 0.8,
+		});
+	}
+
+	/// A Ward's channel BEGAN. The sphere's cells never travel: this end
+	/// draws the same plan from the same head and radius, and climbs it
+	/// over the same span, so one frame stands for the hundreds of edits
+	/// a sphere is.
+	///
+	/// EVERY caster's sphere climbs here, ours and a stranger's alike:
+	/// the head, the radius and the span are all we need to walk the
+	/// same plan they are walking, so a remote's glass rises through
+	/// their channel instead of appearing whole at the seal. One climb
+	/// per caster. A plan this end cannot draw (a cell outside what we
+	/// hold) is left to the journal, which carries every cell the server
+	/// wrote and delivers them on the next sync of that column.
+	pub(super) fn ward_winding(
+		&mut self,
+		by: digblock_net::protocol::PlayerId,
+		head: (i32, i32, i32),
+		radius: u8,
+		span: u32,
+	) {
+		if self.ward_climbs.iter().any(|w| w.by == Some(by)) {
+			return;
+		}
+		let Some(writes) = self.ward_plan(head, radius) else {
+			return;
+		};
+		// No fare: online, the refund is the server's `InventoryFull`.
+		self.ward_climbs.push(WardClimb {
+			by: Some(by),
+			closing: digblock_core::ward::Closing::new(writes, span),
+			head,
+			prefix: 0,
+			fare: None,
+		});
+	}
+
+	/// A Ward's channel ENDED, sealed or unwound — THAT caster's, and no
+	/// other's: a second sphere climbing in this world is still climbing
+	/// after this.
+	///
+	/// The climb is first walked to `landed`, the server's own count of
+	/// what it handed the world, because this end's clock is a round
+	/// trip out of step with the server's in either direction. Then it
+	/// answers out of its OWN record — the cells it wrote and what each
+	/// replaced — so an unwind puts back exactly what went up and leaves
+	/// a pane somebody dug out of it alone. Re-deriving instead would be
+	/// the resurrection bug: a plan drawn against a standing sphere
+	/// names precisely the cells that are missing from it. A climb that
+	/// already sealed on this end has already chimed, which is why a
+	/// seal with nothing climbing is silent for the caster and the whole
+	/// spell for everyone else.
+	pub(super) fn ward_ended(
+		&mut self,
+		by: digblock_net::protocol::PlayerId,
+		head: (i32, i32, i32),
+		radius: u8,
+		landed: u32,
+		sealed: bool,
+	) {
+		let own = Some(by) == self.session.my_player_id;
+		if let Some(i) = self.ward_climbs.iter().position(|w| w.by == Some(by)) {
+			let mut climb = self.ward_climbs.remove(i);
+			self.land_ward_to(&mut climb, landed as usize);
+			if sealed {
+				self.ward_sealed(head, own);
+			} else {
+				self.unwind_climb(climb);
+			}
+			return;
+		}
+		// Nothing climbing here: ours already sealed itself, or this end
+		// could not draw the plan when the channel began — a sphere
+		// reaching past what we hold — and the sealed one stands up
+		// whole now that we can. A broken one left nothing to take down.
+		if own || !sealed {
+			return;
+		}
+		let Some(writes) = self.ward_plan(head, radius) else {
+			return;
+		};
+		let body = self.body_pos();
+		for (c, v) in writes.into_iter().take(landed as usize) {
+			if digblock_core::player::placement_blocked(body, c, v) {
+				continue;
+			}
+			self.write_ward_cell(c, v);
+		}
+		self.ward_sealed(head, own);
+	}
+
+	/// The sphere as this end draws it — `None` when the world here
+	/// cannot answer for every cell, since the plan is all or nothing
+	/// (`ward::plan`). The radius is a server's word, and `ward::sets`
+	/// caps it: the scan is cubic in it.
+	fn ward_plan(
+		&self,
+		head: digblock_core::ward::Cell,
+		radius: u8,
+	) -> Option<Vec<(digblock_core::ward::Cell, u16)>> {
+		digblock_core::ward::plan(head, i32::from(radius), |c| {
+			self.pipeline.cell_at(c.0, c.1, c.2)
+		})
+		.ok()
+	}
+
 	/// Land a teleport (return to spawn, admin /tp): hard-set the player
 	/// and camera — the reconciliation slide across half the map would
 	/// fight streaming — and drop everything that describes the
@@ -252,7 +372,10 @@ impl Engine {
 						let sound = if block == BlockType::Air {
 							prev.filter(|p| !p.is_water() && *p != BlockType::Air)
 								.map(|p| crate::audio::break_sfx(crate::audio::material_of(p)))
-						} else if !block.is_water() {
+						} else if !block.is_water() && !block.is_conjured() {
+							// A conjured cell makes no sound of its own:
+							// a sphere's worth of thunks would drown the
+							// spell that speaks for them.
 							Some(crate::audio::Sfx::Place)
 						} else {
 							None
@@ -463,11 +586,36 @@ impl Engine {
 					self.session.waystones = entries;
 					self.refresh_marker_sites();
 				}
+				NetEvent::Kindled { cell, secs_left } => {
+					self.kindle_light((cell[0], cell[1], cell[2]), f32::from(secs_left));
+				}
+				NetEvent::WardWinding {
+					by,
+					head,
+					radius,
+					span,
+				} => self.ward_winding(by, (head[0], head[1], head[2]), radius, span),
+				NetEvent::WardEnded {
+					by,
+					head,
+					radius,
+					landed,
+					sealed,
+				} => self.ward_ended(by, (head[0], head[1], head[2]), radius, landed, sealed),
 				NetEvent::CastRefused { reason } => {
 					use digblock_net::messages::CastRefusal;
 					// A predicted wisp goes out with the refusal — the
-					// debit it predicted against never happened.
+					// debit it predicted against never happened. A Ward
+					// channel still winding has nothing climbing under
+					// it, so it stops here rather than completing into
+					// nothing.
 					self.wisp_left = 0.0;
+					if self.cast.as_ref().map(|c| c.target) == Some(CastTarget::Ward) {
+						self.cast = None;
+						self.emit(crate::audio::AudioCmd::LoopStop {
+							id: crate::audio::LOOP_CAST,
+						});
+					}
 					self.push_feed(match reason {
 						CastRefusal::Locked => Msg::WaystoneLocked,
 						CastRefusal::CantPay => Msg::CastCantPay,

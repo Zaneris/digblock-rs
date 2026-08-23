@@ -49,10 +49,11 @@ fn craft_levels_are_pinned() {
 	] {
 		assert_eq!(craft(b), None, "{b:?} is the world's, not the bench's");
 	}
-	// The first vessel: available from the start, gated by its price
-	// alone — level 1 is where everyone begins, so `opens` never
-	// celebrates it and the fanfare list below is unmoved.
-	assert_eq!(craft(B::Bucket), Some(1));
+	// The siphon is the first craft beat and stands alone on the first
+	// level: the bucket opens strictly later, so nothing competes with
+	// it on the catalog's opening line.
+	assert_eq!(craft(B::EssenceSiphon), Some(1));
+	assert!(craft(B::Bucket) > craft(B::EssenceSiphon));
 	// A level and a recipe are one decision: neither exists alone.
 	for &b in &BlockType::ALL {
 		assert_eq!(
@@ -309,13 +310,72 @@ fn craft_only_blocks_are_gated_until_they_can_be_made() {
 	assert_eq!(pickup(B::Rubble), 1);
 	// Every gated block really is craft-only, and every craft-only block
 	// really is gated at its own recipe's level — the two tables cannot
-	// drift apart.
+	// drift apart. The surface nodes are the one thing `pickup` walls for
+	// another reason entirely, and
+	// `no_node_opens_before_the_level_that_reveals_it` owns those.
+	let mut nodes = 0;
 	for &b in &BlockType::ALL {
+		if alchemy_reveal(b).is_some() {
+			assert!(b.is_node_block(), "{b:?} has a reveal but is not a node");
+			nodes += 1;
+			continue;
+		}
 		match b.dig_drop().filter(|d| d.is_crafted_only()) {
 			Some(d) => assert_eq!(Some(pickup(b)), craft(d), "{b:?} drops craft-only {d:?}"),
 			None => assert_eq!(pickup(b), 1, "{b:?} is not craft-only"),
 		}
 	}
+	assert!(nodes > 0, "the surface-node arm never fired");
+}
+
+/// A node standing in a cell OUTRIGHT — one the regrowth sweep wrote
+/// back, or one somebody placed — is ordinary chunk data every visitor's
+/// mesh shows at any level, because `nodes::revealed` answers a stored
+/// face ahead of both reveal ladders. The dig gates are therefore the
+/// only thing between an arrival and a levelled player's finds:
+/// `dig_blocked` must refuse a node to anyone one level short on the
+/// ladder that reveals it, and must not refuse it at that level.
+///
+/// Swept over the whole roster on whichever ladder owns each kind, so a
+/// node added with no gate fails here instead of becoming a faucet.
+#[test]
+fn no_node_opens_before_the_level_that_reveals_it() {
+	let at = |skill: Skill, level: u32| {
+		let mut s = SkillSet::default();
+		for other in Skill::ALL {
+			let l = if other == skill { level } else { MAX_LEVEL };
+			s.set_total(other, total_xp_for(l));
+		}
+		s
+	};
+	let (mut visited, mut gated) = (0, 0);
+	for &n in &crate::worldgen::nodes::NODES {
+		let (skill, need) = match (reveal(n), alchemy_reveal(n)) {
+			(Some(l), None) => (Skill::Mining, l),
+			(None, Some(l)) => (Skill::Alchemy, l),
+			_ => panic!("{n:?} answers to both reveal tables, or to neither"),
+		};
+		visited += 1;
+		// At the reveal, with the other ladder no obstacle: a gate ABOVE
+		// the reveal would show a find nobody can take.
+		assert_eq!(
+			dig_blocked(n, &at(skill, need)),
+			None,
+			"{n:?} is refused at the level that reveals it"
+		);
+		if need == 1 {
+			continue;
+		}
+		let short = dig_blocked(n, &at(skill, need - 1))
+			.unwrap_or_else(|| panic!("{n:?} draws one level below its reveal"));
+		assert_eq!((short.skill, short.level), (skill, need), "{n:?}");
+		gated += 1;
+	}
+	assert_eq!(visited, crate::worldgen::nodes::NODES.len());
+	assert!(
+		gated > 1,
+		"no node was tested one level short of its reveal"
+	);
 }
 
 /// A craft-only block is one the bench alone produces, so it must have
@@ -529,22 +589,25 @@ fn unlock_levels_are_the_threshold_levels() {
 			6,
 			KINDLE_AT,
 			14,
+			WARD_AT,
 			TELEPORT_SWIFT_AT,
 			22,
 			ARC_AT,
 			CHANNEL_QUICK_AT,
 			34,
+			WARD_WIDE_AT,
 			WISP_BRIGHT_AT,
 			42,
 			ARC_WIDE_AT,
 			50,
+			WARD_VAST_AT,
 			KINDLE_CHEAP_AT,
 			TELEPORT_SWIFTER_AT,
 			60
 		],
-		"seven ports rising by remoteness, the two swift-return rungs and \
-			 the channel quickening between them — the far cold port crowns \
-			 the content top"
+		"seven ports rising by remoteness, the two swift-return rungs, the \
+			 ward's three spheres and the channel quickening between them — \
+			 the far cold port crowns the content top"
 	);
 	// The first level is where everyone starts — you never level up into
 	// it, and the slabs sitting at that unlock must not say otherwise.
@@ -555,40 +618,142 @@ fn unlock_levels_are_the_threshold_levels() {
 	}
 }
 
+/// The earliest level, on whichever ladder owns the node, at which a
+/// node paying `e` can be seen — so the essence can be DRAWN. Derived
+/// from the node tables, never listed: a new faucet moves every pin that
+/// asks this.
+fn essence_findable_at(e: crate::block::Essence) -> Option<u32> {
+	BlockType::ALL
+		.into_iter()
+		.filter(|b| {
+			b.material()
+				.is_some_and(|m| m.node_units().iter().any(|&(x, _)| x == e))
+		})
+		.filter_map(|b| reveal(b).or(alchemy_reveal(b)))
+		.min()
+}
+
 /// The two port tables are twins over ONE set of kinds — a fare without
 /// a port is as wrong as a port without a fare — and remoteness orders
-/// the fares: a farther port costs more, with no inversion to game. The
-/// fare is also PAYABLE when its first port opens: every fare is drawn
-/// in an essence whose node reveals earlier on its own ladder (the
-/// payability pin's question, asked cross-skill the way the siphon
-/// handshake is).
+/// the fares WITHIN an essence: a farther port in the same essence costs
+/// more, with no inversion to game, and the essences themselves never
+/// step back down the ladder as the ports climb. Every fare is also
+/// PAYABLE when its port opens: drawn in an essence whose node reveals
+/// no later on its own ladder (the payability pin's question, asked
+/// cross-skill the way the siphon handshake is). Counted, so a table
+/// that happened to price everything in one essence would be noticed.
 #[test]
 fn the_port_tables_are_twins_and_the_fare_is_payable() {
+	use crate::block::Essence;
 	use crate::worldgen::SurfaceKind;
-	use BlockType as B;
-	let mut ports: Vec<(u32, u32)> = Vec::new();
+	let mut ports: Vec<(u32, Essence, u32)> = Vec::new();
 	for k in SurfaceKind::ALL {
 		let port = waystone(k);
 		let fare = crate::alchemy::cast_price(k);
 		assert_eq!(port.is_some(), fare.is_some(), "{k:?} fare/port twins");
-		if let (Some(l), Some((_, amt))) = (port, fare) {
-			ports.push((l, amt));
+		if let (Some(l), Some((e, amt))) = (port, fare) {
+			ports.push((l, e, amt));
 		}
 	}
 	assert!(
 		!ports.is_empty(),
 		"no ports at all — the sweep proved nothing"
 	);
-	ports.sort_unstable();
+	ports.sort_unstable_by_key(|p| p.0);
 	for w in ports.windows(2) {
 		assert!(w[0].0 < w[1].0, "two ports on one level");
-		assert!(w[0].1 < w[1].1, "a farther port must cost more");
+		assert!(
+			(w[0].1 as u8) <= (w[1].1 as u8),
+			"the fare essence never steps back down the ladder"
+		);
+		if w[0].1 == w[1].1 {
+			assert!(w[0].2 < w[1].2, "a farther port must cost more");
+		}
 	}
-	let first_port = ports[0].0;
+	let essences: std::collections::HashSet<u8> = ports.iter().map(|p| p.1 as u8).collect();
+	assert!(essences.len() > 1, "the spine spends more than one faucet");
+	// Units are not comparable across the ladder, so the fare alone cannot
+	// order the ports once they climb it — the AWARD is what has to rise
+	// with remoteness, or the far cold port pays less Arcana than the
+	// lowland one it is fifty levels past.
+	for w in ports.windows(2) {
+		let (a, b) = (
+			crate::skills::cast_xp(w[0].1, w[0].2),
+			crate::skills::cast_xp(w[1].1, w[1].2),
+		);
+		assert!(
+			a < b,
+			"the {:?} port pays {a} and the farther {:?} one {b}",
+			w[0].1,
+			w[1].1
+		);
+	}
+	for &(level, e, _) in &ports {
+		let found = essence_findable_at(e).expect("every fare essence has a faucet");
+		assert!(
+			found <= level,
+			"{e:?} prices a port at {level} but is found at {found}"
+		);
+	}
+}
+
+/// The ward's fare and its radius are one rung: the price steps exactly
+/// where the sphere widens, in the same essence, doubling each time — a
+/// wider ward at the narrow fare would be a free upgrade. The first
+/// rank is payable when it opens, in the essence that names it.
+#[test]
+fn the_ward_fare_doubles_with_its_radius() {
+	use crate::alchemy::ward_price;
+	let mut steps = 0;
+	for l in 2..=MAX_LEVEL {
+		let (e0, f0) = ward_price(l - 1);
+		let (e1, f1) = ward_price(l);
+		assert_eq!(e0, e1, "one essence at every rung");
+		let widens = ward_radius(l) != ward_radius(l - 1);
+		assert_eq!(f0 != f1, widens && l != WARD_AT, "level {l}");
+		if widens && l != WARD_AT {
+			assert_eq!(f1, f0 * 2, "level {l}");
+			steps += 1;
+		}
+		if l == WARD_AT {
+			assert_eq!(ward_radius(l - 1), 0, "nothing below the first rank");
+		}
+	}
+	assert!(steps > 0, "no step at all — the sweep proved nothing");
+	let (e, _) = ward_price(WARD_AT);
 	assert!(
-		alchemy_reveal(B::Leystone).expect("leystone reveals") <= first_port,
-		"the travel essence must be findable before the first port opens"
+		essence_findable_at(e).expect("a faucet") <= WARD_AT,
+		"the ward must be payable when it opens"
 	);
+}
+
+/// The wisp's fare and its burn are one rung: the price steps exactly
+/// where the burn does, in the same essence, and in the same ratio — a
+/// brighter light that cost the bootstrap fare would be a free upgrade.
+/// A sweep that saw no step proved nothing.
+#[test]
+fn the_wisp_fare_doubles_with_its_burn() {
+	let mut steps = 0u32;
+	for l in 2..=MAX_LEVEL {
+		let (prev_ess, prev) = crate::alchemy::wisp_price(l - 1);
+		let (ess, fare) = crate::alchemy::wisp_price(l);
+		assert_eq!(prev_ess, ess, "the wisp changes essence at {l}");
+		assert_eq!(
+			fare != prev,
+			wisp_secs(l) != wisp_secs(l - 1),
+			"fare and burn must step together at {l}"
+		);
+		if fare != prev {
+			steps += 1;
+			assert_eq!(fare, prev * 2, "the fare doubles at {l}");
+			assert_eq!(
+				wisp_secs(l),
+				wisp_secs(l - 1) * 2,
+				"the burn doubles at {l}"
+			);
+		}
+	}
+	assert_eq!(steps, 1, "the wisp has exactly one rung");
 }
 
 /// The travel rungs only ever help: neither the cooldown nor the channel

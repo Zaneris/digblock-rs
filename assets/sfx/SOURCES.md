@@ -24,9 +24,9 @@ Commons Zero).
 ## Synthesized (CC0 by construction)
 
 Generated in-repo with ffmpeg `anoisesrc` noise + filters, tail crossfaded into the head for a silent loop seam (the
-build recipe lives in the commit that added these files). The two `siphon_*` recipes pin their noise seeds and the Ogg
-serial, so re-running one reproduces the committed file byte for byte and a recipe that has drifted from its output says
-so; the older entries pin neither, and reproduce the sound rather than the bytes.
+build recipe lives in the commit that added these files). The two `siphon_*` recipes and `ward_close.ogg` pin their
+noise seeds and the Ogg serial, so re-running one reproduces the committed file byte for byte and a recipe that has
+drifted from its output says so; the older entries pin neither, and reproduce the sound rather than the bytes.
 
 - `waterfall.ogg` — brown noise bandpassed 120–2400 Hz + a white-noise hiss layer, 7 s loop
 - `ambient_wind.ogg` — pink noise lowpassed at 900 Hz with a 0.13 Hz swell, 14 s loop
@@ -160,6 +160,28 @@ so; the older entries pin neither, and reproduce the sound rather than the bytes
   alimiter=level_in=1:level_out=0.95,dynaudnorm=f=100:g=3:p=0.9,alimiter=level_out=0.9,\
   afade=t=out:st=0.41:d=0.04" -ar 44100 -ac 1 splash.wav
   oggenc -q 3 -o splash.ogg splash.wav
+  ```
+
+- `ward_close.ogg` — the Ward SEALING, 2.0 s one-shot, heard flat by the caster and placed at the head for everyone
+  else. The climb itself has no recording: the glass rises through the cast channel, under the channel's own loop, and
+  this is the crown cell landing — a C-major bell chord (C6 G6 C7 E7) with two inharmonic partials for the glass, a
+  short high-passed noise "tss", and a soft 55 Hz thump underneath for weight, all decaying into silence.
+
+  ```sh
+  ffmpeg -f lavfi -i "aevalsrc=exprs='\
+   0.20*exp(-t*2.2)*sin(2*PI*1046.5*t)\
+  +0.16*exp(-t*2.6)*sin(2*PI*1568*t)\
+  +0.14*exp(-t*3.0)*sin(2*PI*2093*t)\
+  +0.11*exp(-t*3.6)*sin(2*PI*2637*t)\
+  +0.07*exp(-t*4.4)*sin(2*PI*2888*t)\
+  +0.05*exp(-t*6.0)*sin(2*PI*5651*t)\
+  +0.45*exp(-t*9.0)*sin(2*PI*55*t)':s=44100:d=2.0" \
+   -f lavfi -i "anoisesrc=d=2.0:c=white:a=0.8:r=44100:seed=2718" \
+   -filter_complex "[1:a]bandpass=f=5200:width_type=o:w=1.6,afade=t=in:st=0:d=0.01,\
+  afade=t=out:st=0.02:d=0.42:curve=exp,volume=0.35[ts];\
+  [0:a][ts]amix=inputs=2:normalize=0,aformat=sample_fmts=s16:channel_layouts=mono,\
+  alimiter=level_in=1:level_out=0.72,afade=t=out:st=1.8:d=0.2" -fflags +bitexact -ar 44100 -ac 1 ward_close.wav
+  oggenc -q 3 -s 2718 -o ward_close.ogg ward_close.wav
   ```
 
 ## Wanted (placeholders in use)

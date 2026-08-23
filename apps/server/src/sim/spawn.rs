@@ -4,6 +4,31 @@
 
 use super::*;
 
+/// How far a channelling caster may drift before the server reads it
+/// as a step: the client breaks its channel on any movement INTENT,
+/// and this is the wider, authoritative copy of the same contract —
+/// generous to a snapshot's jitter, far short of a stride.
+const WARD_STILL: f32 = 0.6;
+
+/// Cast attempts one client may make back to back, and the rate the
+/// bucket refills at. Sized for the spellbook rather than for the wire:
+/// a channel outlasts the whole burst, so no honest client can reach it,
+/// while the reliable stream's own frame budget admits casts far faster
+/// than a spellbook can offer them — and every one is a sphere derived
+/// and scanned against every player before it can be refused.
+pub(super) const CAST_BURST: f32 = 6.0;
+pub(super) const CAST_RATE_PER_SEC: u32 = 4;
+
+/// Standing kindled lights the world may hold at once.
+///
+/// The list is a server-wide backlog handed to every joiner, and only
+/// expiry takes an entry off it — so without a ceiling a few minutes of
+/// casting is an unbounded send at every join for as long as the lights
+/// burn. One light per cell (a recast REFRESHES) is what makes the
+/// ceiling generous: reaching it takes that many distinct lit cells
+/// alive at once.
+pub(super) const MAX_KINDLED: usize = 256;
+
 impl Sim {
 	/// The spawn point to use right now.
 	///
@@ -289,16 +314,32 @@ impl Sim {
 		let refuse = |client: &Client, reason: CastRefusal| {
 			client_send(client, &ServerMsg::CastRefused { reason });
 		};
+		{
+			// The bucket, spent HERE so no spell can be added outside it,
+			// and ahead of every spell's validation so a flood pays for
+			// nothing. Silent when it runs dry, like the teleport window
+			// and the bench drip: an honest client cannot reach it, and a
+			// refusal is a sentence about the caster, not about their
+			// client.
+			let Some(client) = self.clients.get_mut(&conn_id) else {
+				return;
+			};
+			if !client.live || client.cast_tokens < 1.0 {
+				return;
+			}
+			client.cast_tokens -= 1.0;
+		}
 		let Some(client) = self.clients.get(&conn_id) else {
 			return;
 		};
-		if !client.live {
-			return;
-		}
 		let idx = match kind {
 			CastKind::Waystone(idx) => idx,
 			CastKind::Wisp => return self.cast_wisp(conn_id),
-			CastKind::Kindle { cell, face: _ } => return self.cast_kindle(conn_id, cell),
+			CastKind::KindleHere => return self.cast_kindle(conn_id),
+			CastKind::Ward => return self.cast_ward(conn_id),
+			// The retired aimed form: a cell the client named is exactly
+			// what the spell no longer trusts.
+			CastKind::Kindle { .. } => return refuse(client, CastRefusal::BadTarget),
 		};
 		let Some(&skind) = digblock_core::worldgen::SurfaceKind::ALL.get(idx as usize) else {
 			return refuse(client, CastRefusal::Locked);
@@ -340,7 +381,7 @@ impl Sim {
 		let name = client.name.clone();
 		log::info!("player {id} ({name}) ported to the {skind:?} waystone");
 		self.teleport_client(conn_id, pos, Vec3::ZERO);
-		self.process_cast(conn_id, digblock_core::skills::cast_xp(fare));
+		self.process_cast(conn_id, digblock_core::skills::cast_xp(essence, fare));
 	}
 
 	/// The self-light. The server's whole share is the debit and the pay:
@@ -349,10 +390,11 @@ impl Sim {
 	/// own clock. A refusal answers so a predicted buff can cancel.
 	fn cast_wisp(&mut self, conn_id: u64) {
 		use digblock_net::messages::CastRefusal;
-		let (essence, fare) = digblock_core::alchemy::wisp_price();
 		let Some(client) = self.clients.get_mut(&conn_id) else {
 			return;
 		};
+		let level = client.skills.level(digblock_core::skills::Skill::Arcana);
+		let (essence, fare) = digblock_core::alchemy::wisp_price(level);
 		if !client.inventory.try_take_sub(essence, fare) {
 			client_send(
 				client,
@@ -362,24 +404,28 @@ impl Sim {
 			);
 			return;
 		}
-		let level = client.skills.level(digblock_core::skills::Skill::Arcana);
 		client.wisp_until = Some(self.tick + digblock_core::unlock::wisp_secs(level) * TICK_RATE);
 		let counts = client.inventory.to_wire();
 		client_send(client, &ServerMsg::InventoryFull { counts });
-		self.process_cast(conn_id, digblock_core::skills::cast_xp(fare));
+		self.process_cast(conn_id, digblock_core::skills::cast_xp(essence, fare));
 	}
 
-	/// Conjured light: validate the rung, the aim (an AIR cell within an
-	/// honest reach of the caster, unprotected, resident), then debit and
-	/// write the Wisplight as an ordinary journaled edit — the wisplight
-	/// sweep is its whole expiry.
-	fn cast_kindle(&mut self, conn_id: u64, cell: [i32; 3]) {
+	/// Conjured light: validate the rung, the host — the cell the
+	/// caster's head is in, as the SERVER holds it — and the world's
+	/// room for another light, then debit, stand the light on the sim's
+	/// clock and tell everyone. Not a cell write: a light is never
+	/// matter, and nothing about it reaches the journal.
+	///
+	/// One light per CELL. A recast where one already stands refreshes
+	/// that light's expiry instead of standing a second, which is what
+	/// keeps [`MAX_KINDLED`] a ceiling on lit PLACES rather than on
+	/// casts.
+	fn cast_kindle(&mut self, conn_id: u64) {
 		use digblock_core::skills::Skill;
 		use digblock_net::messages::CastRefusal;
 		let refuse = |client: &Client, reason: CastRefusal| {
 			client_send(client, &ServerMsg::CastRefused { reason });
 		};
-		let regions = self.requester_regions(conn_id);
 		let Some(client) = self.clients.get(&conn_id) else {
 			return;
 		};
@@ -390,14 +436,16 @@ impl Sim {
 		if level < digblock_core::unlock::KINDLE_AT {
 			return refuse(client, CastRefusal::Locked);
 		}
-		let at = (cell[0], cell[1], cell[2]);
-		let center = Vec3::new(at.0 as f32 + 0.5, at.1 as f32 + 0.5, at.2 as f32 + 0.5);
-		let reach = digblock_core::raycast::REACH + digblock_net::protocol::EDIT_POS_TOLERANCE;
-		if client.player.pos.distance(center) > reach
-			|| digblock_core::protect::immutable(at.0, at.1, at.2, &regions)
-			|| self.store.cell_at(at.0, at.1, at.2)
-				!= Some(digblock_core::block::BlockType::Air as u16)
-		{
+		let at = digblock_core::kindle::host_cell(client.player.pos);
+		if !digblock_core::kindle::hosts(self.store.cell_at(at.0, at.1, at.2)) {
+			return refuse(client, CastRefusal::BadTarget);
+		}
+		let cell = [at.0, at.1, at.2];
+		let standing = self.kindled.iter().position(|k| k.cell == cell);
+		// The ceiling, checked BEFORE the debit like every other refusal
+		// — and only for a light that would be a NEW place, since a
+		// refresh takes no room.
+		if standing.is_none() && self.kindled.len() >= MAX_KINDLED {
 			return refuse(client, CastRefusal::BadTarget);
 		}
 		let (essence, fare) = digblock_core::alchemy::kindle_price(level);
@@ -408,11 +456,234 @@ impl Sim {
 		}
 		let counts = client.inventory.to_wire();
 		client_send(client, &ServerMsg::InventoryFull { counts });
-		let v = digblock_core::block::BlockType::Wisplight as u16;
-		if let Some(prev) = self.store.set_cell(at.0, at.1, at.2, v) {
-			self.apply_write(at, v, prev, SERVER_ID, NO_CLIENT_SEQ, true);
+		let light = Kindled {
+			cell,
+			until: self.tick + digblock_core::kindle::SECS * TICK_RATE,
+		};
+		match standing {
+			Some(i) => self.kindled[i] = light,
+			None => self.kindled.push(light),
 		}
-		self.process_cast(conn_id, digblock_core::skills::cast_xp(fare));
+		self.broadcast(&self.kindled_msg(&light));
+		self.process_cast(conn_id, digblock_core::skills::cast_xp(essence, fare));
+	}
+
+	/// The Ward, on `Cast(Ward)` sent as the caster's channel BEGINS: the
+	/// sphere is derived from the caster's head as the SERVER holds it
+	/// (`ward::plan`), scanned whole for players and refused whole — the
+	/// Arc's rule. What is accepted is a CLIMB: the cells land over the
+	/// channel's own ticks, and the seal is the server's to declare.
+	///
+	/// The cheap gates come FIRST and the plan last. Everything above the
+	/// plan is a read or two; the plan is a cubic scan of the sphere plus
+	/// a pass over every player, and `Cast` arrives on a stream that
+	/// admits far more messages a second than a spellbook can — so an
+	/// affordability check after the plan is a core a broke client can
+	/// pin. The DEBIT still comes after the plan and the player scan, so
+	/// a refused cast costs nothing.
+	fn cast_ward(&mut self, conn_id: u64) {
+		use digblock_core::skills::Skill;
+		use digblock_net::messages::CastRefusal;
+		let refuse = |client: &Client, reason: CastRefusal| {
+			client_send(client, &ServerMsg::CastRefused { reason });
+		};
+		let Some(client) = self.clients.get(&conn_id) else {
+			return;
+		};
+		if !client.live {
+			return;
+		}
+		let level = client.skills.level(Skill::Arcana);
+		let r = digblock_core::unlock::ward_radius(level);
+		if r == 0 {
+			return refuse(client, CastRefusal::Locked);
+		}
+		if self.closings.iter().any(|w| w.conn_id == conn_id) {
+			return refuse(client, CastRefusal::BadTarget);
+		}
+		// A sphere is hundreds of journaled cells; an unhealthy journal
+		// stops it where it stops fluid and the sweeps. `BadTarget` is
+		// the nearest true answer the wire has — the caster's rung and
+		// purse are both fine, there is nowhere to put the glass.
+		if !self.journal.healthy() {
+			return refuse(client, CastRefusal::BadTarget);
+		}
+		let (essence, fare) = digblock_core::alchemy::ward_price(level);
+		if client.inventory.sub_count(essence) < fare {
+			return refuse(client, CastRefusal::CantPay);
+		}
+		let head = digblock_core::kindle::host_cell(client.player.pos);
+		let Ok(writes) = digblock_core::ward::plan(head, r, |c| self.store.cell_at(c.0, c.1, c.2))
+		else {
+			return refuse(client, CastRefusal::BadTarget);
+		};
+		// The shell closes on nobody — every live player, the caster
+		// included, who stands inside by construction.
+		let closes_on_someone = self.clients.values().filter(|c| c.live).any(|c| {
+			writes.iter().any(|&(cell, val)| {
+				digblock_core::player::placement_blocked(c.player.pos, cell, val)
+			})
+		});
+		if closes_on_someone {
+			return refuse(client, CastRefusal::BadTarget);
+		}
+		let span = digblock_core::unlock::channel_ticks(level);
+		let plan_len = writes.len();
+		let by = client.id;
+		let from = client.player.pos;
+		let client = self.clients.get_mut(&conn_id).expect("checked above");
+		if !client.inventory.try_take_sub(essence, fare) {
+			let client = self.clients.get(&conn_id).expect("checked above");
+			return refuse(client, CastRefusal::CantPay);
+		}
+		let counts = client.inventory.to_wire();
+		client_send(client, &ServerMsg::InventoryFull { counts });
+		self.closings.push(WardClosing {
+			conn_id,
+			by,
+			head,
+			radius: r,
+			from,
+			essence,
+			fare,
+			plan_len,
+			span,
+			closing: digblock_core::ward::Closing::new(writes, span),
+		});
+		// ONE frame for the whole climb. Every client derives the same
+		// plan from the same head and radius, so the cells themselves are
+		// redundant — and a sphere's worth of `EditApplied` is a fan-out
+		// that fills an outbound queue, whose refusal kills the peer it
+		// was sent to.
+		self.broadcast(&ServerMsg::WardWinding {
+			by,
+			head: [head.0, head.1, head.2],
+			radius: ward_radius_wire(r),
+			span,
+		});
+	}
+
+	/// One tick of every ward still climbing. A caster who has left,
+	/// or stepped further than [`WARD_STILL`] from where they began,
+	/// has broken the channel whatever their client said, and the climb
+	/// unwinds. Otherwise the tick's cells land; a cell somebody has
+	/// since stepped into, or one a region has come to protect since the
+	/// cast, is left unwritten rather than closed over — a hole where a
+	/// player stood, the protected cells' honesty. The tick the climb
+	/// completes, the sphere is SEALED: announced, and paid in XP.
+	///
+	/// Protection is re-asked here rather than filtered into the plan,
+	/// beside the player test and for the same reason: a region can
+	/// appear DURING a channel — an admin moving spawn, a waystone
+	/// resolving on someone's first port — and a plan filtered once at
+	/// the cast would glass a pad that became protected a tick later.
+	pub(super) fn step_closings(&mut self) {
+		// A ward's cells are journaled edits like any other: an unhealthy
+		// journal stops the climb where it stops fluid and the sweeps,
+		// rather than mutating a world nothing can persist.
+		if self.closings.is_empty() || !self.journal.healthy() {
+			return;
+		}
+		let mut closings = std::mem::take(&mut self.closings);
+		let mut i = 0;
+		while i < closings.len() {
+			let w = &closings[i];
+			let still = self
+				.clients
+				.get(&w.conn_id)
+				.filter(|c| c.live)
+				.is_some_and(|c| c.player.pos.distance(w.from) <= WARD_STILL);
+			if !still {
+				let w = closings.remove(i);
+				self.unwind_ward(w);
+				continue;
+			}
+			let regions = self.requester_regions(closings[i].conn_id);
+			let w = &mut closings[i];
+			let by = w.by;
+			for (cell, val) in w.closing.land() {
+				if digblock_core::protect::immutable(cell.0, cell.1, cell.2, &regions) {
+					continue;
+				}
+				let on_someone = self
+					.clients
+					.values()
+					.filter(|c| c.live)
+					.any(|c| digblock_core::player::placement_blocked(c.player.pos, cell, val));
+				if on_someone {
+					continue;
+				}
+				if let Some(prev) = self.store.set_cell(cell.0, cell.1, cell.2, val) {
+					w.closing.record(cell, val, prev);
+					self.journal_write(cell, val, by);
+				}
+			}
+			if w.closing.done() {
+				let w = closings.remove(i);
+				self.ward_ended(&w, true);
+				self.process_cast(w.conn_id, digblock_core::skills::cast_xp(w.essence, w.fare));
+				continue;
+			}
+			i += 1;
+		}
+		self.closings = closings;
+	}
+
+	/// `CastBreak`: the caster's own word that the channel broke.
+	pub(super) fn break_ward(&mut self, conn_id: u64) {
+		if let Some(i) = self.closings.iter().position(|w| w.conn_id == conn_id) {
+			let w = self.closings.remove(i);
+			self.unwind_ward(w);
+		}
+	}
+
+	/// Put back what a broken climb had landed, crown-first, through the
+	/// same write path — but only a cell that still holds our glass, so a
+	/// pane somebody dug out mid-climb stays dug.
+	///
+	/// The fare goes back to a caster still here, as one correction to
+	/// the balance their client is predicting. One who left mid-channel
+	/// forfeits it: crediting `player_store` instead was declined rather
+	/// than impossible — the record `drop_client` wrote on the way out is
+	/// right there, and a reconnect reads it.
+	fn unwind_ward(&mut self, w: WardClosing) {
+		let by = w.by;
+		self.ward_ended(&w, false);
+		if let Some(client) = self.clients.get_mut(&w.conn_id) {
+			client.inventory.add_sub(w.essence, w.fare);
+			let counts = client.inventory.to_wire();
+			client_send(client, &ServerMsg::InventoryFull { counts });
+		}
+		for (cell, written, prev) in w.closing.unwind() {
+			// Through the journal behind the store, and journalled even
+			// where the store cannot answer: a caster's departure evicts
+			// the very columns their sphere stands in before this runs,
+			// and a restore skipped there would leave half a sphere in
+			// the record forever — the one copy a rejoin reads.
+			if self.world_cell(cell.0, cell.1, cell.2) != Some(written) {
+				continue;
+			}
+			self.store.set_cell(cell.0, cell.1, cell.2, prev);
+			self.journal_write(cell, prev, by);
+		}
+	}
+
+	/// The one frame a ward's end costs, whichever way it ended: the
+	/// sphere, how far through its plan it got, and whether the glass
+	/// stayed. Everything else a client needs it derives.
+	fn ward_ended(&self, w: &WardClosing, sealed: bool) {
+		self.broadcast(&ServerMsg::WardEnded {
+			by: w.by,
+			head: [w.head.0, w.head.1, w.head.2],
+			radius: ward_radius_wire(w.radius),
+			landed: w.landed(),
+			sealed,
+		});
+	}
+
+	/// One light as the wire carries it, on the sim's clock right now.
+	pub(super) fn kindled_msg(&self, light: &Kindled) -> ServerMsg {
+		kindled_msg_at(self.tick, light)
 	}
 
 	/// The cast chokepoint — Arcana's twin of `process_alchemy`'s award
@@ -444,5 +715,24 @@ impl Sim {
 		if after > before {
 			self.announce_level_up(id, Skill::Arcana, after);
 		}
+	}
+}
+
+/// A sphere's radius as the wire carries it. `ward::MAX_RADIUS` is what
+/// makes the narrowing total — every castable rank sits inside it, and
+/// `sets` clamps anything that does not.
+fn ward_radius_wire(r: i32) -> u8 {
+	u8::try_from(r.clamp(0, digblock_core::ward::MAX_RADIUS)).expect("the cap fits a byte")
+}
+
+/// One light as the wire carries it, its remaining time read off the
+/// sim's clock at SEND time — so the cast and a join a minute later hand
+/// out the same expiry. Free-standing because a joiner's backlog goes out
+/// from inside the sync pump, which already holds the client roster.
+pub(super) fn kindled_msg_at(tick: u32, light: &Kindled) -> ServerMsg {
+	let ticks_left = light.until.saturating_sub(tick);
+	ServerMsg::Kindled {
+		cell: light.cell,
+		secs_left: u16::try_from(ticks_left.div_ceil(TICK_RATE)).unwrap_or(u16::MAX),
 	}
 }

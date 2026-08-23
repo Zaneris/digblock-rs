@@ -50,6 +50,12 @@ impl Engine {
 	pub(super) fn reset_world_transients(&mut self, pos: Vec3, world_replaced: bool) {
 		self.dig = None;
 		self.cast = None;
+		// The backstop only. A climb is UNWOUND — glass down, fare back —
+		// by `abandon_ward` at the sites that still have the ward's own
+		// world under them; by the time a swap gets here the pipeline may
+		// already be the next world's, and writing into that one would
+		// scatter the old sphere's cells through it.
+		self.ward_climbs.clear();
 		self.arc_on = false;
 		self.wisp_left = 0.0;
 		self.target = None;
@@ -60,8 +66,11 @@ impl Engine {
 		if world_replaced {
 			// A fresh world's day starts at zero; a retained last_run
 			// against the rewound clock would starve every job for a day.
+			// `enter_local_world` winds this forward to the SAVE's age
+			// afterwards — see there for why zero is wrong for one.
 			self.world_secs = 0.0;
 			self.world_jobs.reset();
+			self.presence.reset();
 		}
 		self.tick_accum = 0.0;
 		self.session.pending_ack = None;
@@ -91,6 +100,7 @@ impl Engine {
 		self.vfx.confetti.clear();
 		self.vfx.siphon = None;
 		self.vfx.casts.clear();
+		self.vfx.kindled.clear();
 		self.vfx.channel_env = 0.0;
 		self.vfx.flash = 0.0;
 		// The arrival marker follows the world's own spawn: the pad's
@@ -183,6 +193,11 @@ impl Engine {
 	/// snapshot-based store (web) serializes from that overlay, and this
 	/// is its last chance to see it before the pipeline is replaced.
 	pub(super) fn close_local_save(&mut self) {
+		// Before the edits are drained: a ward still climbing has to come
+		// back down INTO this save, or the file keeps half a sphere of
+		// glass and the caster keeps none of the fare. Every path that
+		// puts a local world down comes through here.
+		self.abandon_ward();
 		let recorded = self.pipeline.take_recorded_edits();
 		if let Some(store) = self.save.world_store.as_mut()
 			&& self.save.in_local_save
@@ -203,6 +218,11 @@ impl Engine {
 	/// The caller detaches whatever it was attached to first
 	/// ([`Self::close_local_save`] / dropping the transport).
 	pub(super) fn return_to_title(&mut self) {
+		// While the world under it is still this one: a climb in flight
+		// has glass standing in it and a fare spent on it. The local-save
+		// paths reach this through `close_local_save`; a server we just
+		// left has no save to flush, so it comes through here.
+		self.abandon_ward();
 		let nanos = web_time::SystemTime::now()
 			.duration_since(web_time::UNIX_EPOCH)
 			.map_or(0, |d| d.subsec_nanos());
@@ -317,6 +337,20 @@ impl Engine {
 			&mut self.inv_grid,
 		);
 		self.reset_world_transients(start, !reuse);
+		// The scheduler's clock is the world's AGE, never this session's.
+		// `worldjob::regrow` salts its roll with the run's SLOT, so a
+		// clock that restarted at zero on every entry replayed the same
+		// slot and rolled the same answer: a spent node that lost its
+		// roll lost it again, for ever. Both stamps are already saved and
+		// the store writes `last_played_ms` as it hands the save over, so
+		// their difference is how old this world is right now — monotone
+		// across entries with no new persisted field. Catch-up is capped
+		// at one run, so a world returned to after a week sweeps once.
+		self.world_secs = save
+			.meta
+			.last_played_ms
+			.saturating_sub(save.meta.created_ms) as f64
+			/ 1000.0;
 		// The marker stands on the RESOLVED pad — the eye the lock
 		// anchors on — not the pristine anchor a damaged save moved off.
 		let pad = self.local_spawn_resolved();

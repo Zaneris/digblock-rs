@@ -16,6 +16,20 @@ use digblock_core::skills::Skill;
 use digblock_core::unlock::Requirement;
 use digblock_net::protocol::PlayerId;
 
+/// Which spell a refusal answers.
+///
+/// A refusal that cannot name its spell says the wrong thing about two
+/// spells out of three — the ward's fare refused as a waystone's
+/// passage, kindle's rung refused as a locked port. So the spell is an
+/// ARGUMENT, and every caller that knows which one it cast passes it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Spell {
+	Waystone,
+	Wisp,
+	Kindle,
+	Ward,
+}
+
 /// One line the game speaks. Arguments stay TYPED and separate — never
 /// pre-formatted into the message — so a locale is free to reorder them,
 /// case them its own way, or leave one out.
@@ -41,13 +55,20 @@ pub(crate) enum Msg {
 	/// A cast channel broken by moving, digging or opening a surface —
 	/// the player did something else, so the spell let go.
 	CastInterrupted,
-	/// A port the server refused as beyond the caster's Arcana. Rare on
-	/// an honest client — the spellbook greys what it can predict.
+	/// A spell beyond the caster's Arcana, and the one they tried.
+	SpellLocked(Spell),
+	/// A spell refused for its fare, before any debit.
+	SpellFareShort(Spell),
+	/// The same two, as the SERVER refuses them. `CastRefusal` carries a
+	/// reason and no spell, and the client has cleared the channel by
+	/// the time the answer lands, so these two cannot name what was
+	/// refused and must not pretend to. They fold into the pair above
+	/// the moment the refusal can say which spell it answers.
 	WaystoneLocked,
-	/// A port refused for the fare, before any debit.
 	CastCantPay,
-	/// A kindle with nowhere to land — no aim, or a cell that cannot
-	/// hold conjured light.
+	/// A conjuring with no place to land: the caster's head is in a cell
+	/// that cannot hold a light, or a ward's shell would close on a
+	/// player or over ground not loaded.
 	CastBadTarget,
 
 	// ---- progression ----

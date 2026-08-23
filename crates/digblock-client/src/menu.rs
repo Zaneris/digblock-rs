@@ -1678,7 +1678,10 @@ impl MenuView {
 				row.rect.into(),
 				widgets::RowContent {
 					text: &row.text,
-					right: row.right.as_ref().map(|(s, c)| (s.as_str(), *c)),
+					right: row
+						.right
+						.as_ref()
+						.map(|(s, c)| widgets::RowRight::Text(s.as_str(), *c)),
 					bar: row.bar,
 					color: row.color,
 					highlight: row.highlight,

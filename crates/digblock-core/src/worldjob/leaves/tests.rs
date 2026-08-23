@@ -2,6 +2,7 @@ use super::*;
 use crate::chunk::CHUNK_SIZE;
 use crate::decoration::{Structure, structures_near};
 use crate::sun::DAY_SECS;
+use crate::worldjob::Run;
 use crate::worldjob::Scheduler;
 use rustc_hash::FxHashMap;
 
@@ -125,7 +126,19 @@ fn every_pristine_structure_leaf_survives() {
 		let (w, leaves, kinds) = grow(px, pz, SEED);
 		for at in leaves {
 			for run in 0..3 {
-				assert_eq!(job.apply(at, &w, SEED, run), None, "{at:?} run {run}");
+				assert_eq!(
+					job.apply(
+						at,
+						&w,
+						SEED,
+						Run {
+							slot: run,
+							players: 1
+						}
+					),
+					None,
+					"{at:?} run {run}"
+				);
 			}
 		}
 		for (s, k) in seen.iter_mut().zip(kinds) {
@@ -150,7 +163,15 @@ fn an_orphan_rots_raggedly_across_runs() {
 	w.set(AT, BlockType::Leaves);
 	let (mut rotted, mut spared) = (0u32, 0u32);
 	for run in 0..32 {
-		match LeafDecay.apply(AT, &w, SEED, run) {
+		match LeafDecay.apply(
+			AT,
+			&w,
+			SEED,
+			Run {
+				slot: run,
+				players: 1,
+			},
+		) {
 			Some(c) => {
 				assert_eq!(c, BlockType::Air as u16, "run {run}");
 				rotted += 1;
@@ -173,11 +194,33 @@ fn the_walk_reaches_exactly_the_cap() {
 	}
 	for x in 1..past {
 		for run in 0..8 {
-			assert_eq!(LeafDecay.apply((x, 64, 0), &w, SEED, run), None, "x {x}");
+			assert_eq!(
+				LeafDecay.apply(
+					(x, 64, 0),
+					&w,
+					SEED,
+					Run {
+						slot: run,
+						players: 1
+					}
+				),
+				None,
+				"x {x}"
+			);
 		}
 	}
 	assert!(
-		(0..32).any(|run| LeafDecay.apply((past, 64, 0), &w, SEED, run).is_some()),
+		(0..32).any(|run| LeafDecay
+			.apply(
+				(past, 64, 0),
+				&w,
+				SEED,
+				Run {
+					slot: run,
+					players: 1
+				}
+			)
+			.is_some()),
 		"the leaf past the cap must rot"
 	);
 }
@@ -193,13 +236,37 @@ fn ground_holds_a_bush_and_water_does_not() {
 	w.set((1, 64, 0), BlockType::Leaves);
 	for at in [(0, 64, 0), (1, 64, 0)] {
 		for run in 0..8 {
-			assert_eq!(LeafDecay.apply(at, &w, SEED, run), None, "{at:?}");
+			assert_eq!(
+				LeafDecay.apply(
+					at,
+					&w,
+					SEED,
+					Run {
+						slot: run,
+						players: 1
+					}
+				),
+				None,
+				"{at:?}"
+			);
 		}
 	}
 	let mut w = Pocket::airy();
 	w.set((0, 63, 0), BlockType::Water);
 	w.set((0, 64, 0), BlockType::PineLeaves);
-	assert!((0..32).any(|run| LeafDecay.apply((0, 64, 0), &w, SEED, run).is_some()));
+	assert!((0..32).any(|run| {
+		LeafDecay
+			.apply(
+				(0, 64, 0),
+				&w,
+				SEED,
+				Run {
+					slot: run,
+					players: 1,
+				},
+			)
+			.is_some()
+	}));
 }
 
 /// Siphoning a heartwood out of a trunk must not orphan the canopy: the
@@ -213,7 +280,15 @@ fn a_drained_find_still_reads_as_trunk() {
 	w.set((1, 64, 0), BlockType::Leaves);
 	for run in 0..8 {
 		assert_eq!(
-			LeafDecay.apply((1, 64, 0), &w, SEED, run),
+			LeafDecay.apply(
+				(1, 64, 0),
+				&w,
+				SEED,
+				Run {
+					slot: run,
+					players: 1
+				}
+			),
 			None,
 			"run {run}"
 		);
@@ -227,7 +302,19 @@ fn an_unloaded_read_defers_judgment() {
 	let mut w = Pocket::sealed();
 	w.set(AT, BlockType::Leaves);
 	for run in 0..32 {
-		assert_eq!(LeafDecay.apply(AT, &w, SEED, run), None, "run {run}");
+		assert_eq!(
+			LeafDecay.apply(
+				AT,
+				&w,
+				SEED,
+				Run {
+					slot: run,
+					players: 1
+				}
+			),
+			None,
+			"run {run}"
+		);
 	}
 }
 
@@ -328,7 +415,7 @@ fn decay_cascades_outward_from_the_cut() {
 	for slot in 1..=400u32 {
 		let secs = f64::from(DAY_SECS) * (f64::from(slot) + 0.5) / f64::from(per_day);
 		loop {
-			let writes = sched.tick(secs, SEED, &[(0, 64, 0)], &w);
+			let writes = sched.tick(secs, SEED, &[(0, 64, 0)], 1, &w);
 			for (at, val) in writes {
 				w.record(at, val);
 			}

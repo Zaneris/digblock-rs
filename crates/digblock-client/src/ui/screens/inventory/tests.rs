@@ -25,6 +25,15 @@ struct Rig {
 	style: Style,
 }
 
+/// A bar with nothing on it, for the rigs that are not about the bar.
+fn empty_bar() -> HotbarView {
+	HotbarView::build(
+		&Hotbar::new(),
+		&Inventory::default(),
+		&crate::hotbar::ToolSwap::default(),
+	)
+}
+
 fn rig() -> Rig {
 	let mut hotbar = Hotbar::new();
 	hotbar.auto_assign(B::Dirt); // bar slot 0
@@ -47,7 +56,7 @@ fn rig() -> Rig {
 		hits: &mut hits,
 		style,
 	};
-	screen.build(&mut ui, SIZE, &grid, &inv, 1.0);
+	screen.build(&mut ui, SIZE, &grid, &inv, &bar, 1.0);
 	crate::ui::hud::hotbar(&mut ui, SIZE, &bar, |i| InvId::Bar(i as u8));
 	Rig {
 		screen,
@@ -80,7 +89,7 @@ fn emit_at(size: (u32, u32), scale: f32) -> (DrawList, HitMap<InvId>, Style) {
 		hits: &mut hits,
 		style: Style::new(scale),
 	};
-	screen.build(&mut ui, size, &grid, &inv, 1.0);
+	screen.build(&mut ui, size, &grid, &inv, &empty_bar(), 1.0);
 	let left_holding = ui.style;
 	(dl, hits, left_holding)
 }
@@ -248,7 +257,7 @@ fn the_grid_columns_sit_over_the_bar_slots_they_drop_into() {
 			};
 			// The engine's own frame order: screen first, then the bar,
 			// one hit map serving both.
-			screen.build(&mut ui, size, &grid, &inv, 1.0);
+			screen.build(&mut ui, size, &grid, &inv, &bar, 1.0);
 			crate::ui::hud::hotbar(&mut ui, size, &bar, |i| InvId::Bar(i as u8));
 			// The two conditions, read off the layout rather than
 			// guessed: the ladder did not step, and the grid kept the
@@ -487,7 +496,7 @@ fn ghost_appears_only_mid_drag_and_build_emits_every_slot() {
 		style: r.style,
 	};
 	let inv = Inventory::default();
-	r.screen.build(&mut ui, SIZE, &r.grid, &inv, 1.0);
+	r.screen.build(&mut ui, SIZE, &r.grid, &inv, &r.bar, 1.0);
 	assert!(dl.cmds(Layer::Ghost).0.is_empty(), "no ghost before a drag");
 	// Every grid slot has a hit rect (empty ones are drop targets).
 	assert!(hits.rect_of(InvId::Grid(0)).is_some());
@@ -515,7 +524,175 @@ fn ghost_appears_only_mid_drag_and_build_emits_every_slot() {
 		hits: &mut hits,
 		style: r.style,
 	};
-	r.screen.build(&mut ui, SIZE, &r.grid, &inv, 1.0);
+	r.screen.build(&mut ui, SIZE, &r.grid, &inv, &r.bar, 1.0);
 	// One cube icon = three projected faces.
 	assert_eq!(dl.cmds(Layer::Ghost).0.len(), 3, "ghost mid-drag");
+}
+
+/// Every text on the Ghost layer — the tooltip's, and nothing else's
+/// while no drag is running.
+fn ghost_texts(dl: &DrawList) -> Vec<String> {
+	let (cmds, arena) = dl.cmds(Layer::Ghost);
+	cmds.iter()
+		.filter_map(|c| match c {
+			crate::ui::draw::Cmd::Text { range, .. } => {
+				Some(arena[range.0 as usize..range.1 as usize].to_string())
+			}
+			_ => None,
+		})
+		.collect()
+}
+
+/// A slot names what it holds while the cursor is on it — grid or bar,
+/// at the page's own glyph — and only then: an empty slot, a running
+/// drag and a cursor that has left all show nothing.
+#[test]
+fn hovering_a_slot_names_it_and_leaving_clears_it() {
+	let mut r = rig();
+	let inv = {
+		let mut inv = Inventory::default();
+		inv.add(B::Dirt, 5);
+		inv.add(B::Stone, 2);
+		inv
+	};
+	let feed = |r: &mut Rig, ev: &InputEvent| {
+		r.screen
+			.handle_input(ev, &r.hits, &r.style, &r.grid, &r.bar)
+	};
+	let frame = |r: &Rig| {
+		let mut dl = DrawList::default();
+		let mut hits = HitMap::default();
+		let mut ui = Ui {
+			dl: &mut dl,
+			hits: &mut hits,
+			style: r.style,
+		};
+		r.screen.build(&mut ui, SIZE, &r.grid, &inv, &r.bar, 1.0);
+		ghost_texts(&dl)
+	};
+	// The parked stone, in the grid.
+	let at = center(r.hits.rect_of(InvId::Grid(1)).unwrap());
+	feed(&mut r, &InputEvent::CursorMoved { x: at.0, y: at.1 });
+	let names = frame(&r);
+	assert_eq!(names, vec![B::Stone.name().to_uppercase()]);
+	// The dirt on the bar: named by the PAGE, since the bar draws later
+	// at the window's scale.
+	let at = center(r.hits.rect_of(InvId::Bar(0)).unwrap());
+	feed(&mut r, &InputEvent::CursorMoved { x: at.0, y: at.1 });
+	assert_eq!(frame(&r), vec![B::Dirt.name().to_uppercase()]);
+	// An empty slot has no name.
+	let at = center(r.hits.rect_of(InvId::Grid(5)).unwrap());
+	feed(&mut r, &InputEvent::CursorMoved { x: at.0, y: at.1 });
+	assert!(frame(&r).is_empty(), "an empty slot has nothing to say");
+	// Mid-drag the ghost rides the cursor and no name does.
+	let src = center(r.hits.rect_of(InvId::Grid(1)).unwrap());
+	feed(&mut r, &InputEvent::CursorMoved { x: src.0, y: src.1 });
+	feed(
+		&mut r,
+		&InputEvent::MouseButton {
+			button: MouseButton::Left,
+			pressed: true,
+		},
+	);
+	feed(
+		&mut r,
+		&InputEvent::CursorMoved {
+			x: src.0 + 80.0,
+			y: src.1,
+		},
+	);
+	assert!(frame(&r).is_empty(), "no name under a drag");
+	feed(
+		&mut r,
+		&InputEvent::MouseButton {
+			button: MouseButton::Left,
+			pressed: false,
+		},
+	);
+	// A cursor that has left — what a lifted touch sends — clears it.
+	feed(&mut r, &InputEvent::CursorMoved { x: at.0, y: at.1 });
+	feed(&mut r, &InputEvent::CursorMoved { x: -1.0, y: -1.0 });
+	assert!(frame(&r).is_empty(), "a cursor that left names nothing");
+}
+
+/// The name is drawn at the PAGE's glyph, not the window's — and the two
+/// differ exactly when the fit ladder has stepped, which is the only
+/// window a test can tell them apart in. The bar is drawn after the page
+/// at the frame's own scale, so a tooltip that took the window's size
+/// would sit a rung larger than everything it is naming.
+#[test]
+fn a_name_is_drawn_at_the_page_the_ladder_settled_on() {
+	let mut inv = Inventory::default();
+	inv.add(B::Dirt, 5);
+	let mut grid = InvGrid::default();
+	grid.place(0, B::Dirt);
+	let mut stepped = 0;
+	for size in WINDOWS {
+		for scale in SCALES {
+			let style = Style::new(scale);
+			let mut screen = InvScreen::default();
+			screen.open();
+			let mut dl = DrawList::default();
+			let mut hits = HitMap::default();
+			screen.build(
+				&mut Ui {
+					dl: &mut dl,
+					hits: &mut hits,
+					style,
+				},
+				size,
+				&grid,
+				&inv,
+				&empty_bar(),
+				1.0,
+			);
+			// Only the windows the ladder had to step in can tell a page
+			// glyph from a window glyph; the rest would pass either way.
+			let page = glyph_of(&dl);
+			if page == style.glyph {
+				continue;
+			}
+			let at = center(hits.rect_of(InvId::Grid(0)).expect("a filled slot"));
+			screen.handle_input(
+				&InputEvent::CursorMoved { x: at.0, y: at.1 },
+				&hits,
+				&style,
+				&grid,
+				&empty_bar(),
+			);
+			let mut dl = DrawList::default();
+			let mut hits = HitMap::default();
+			screen.build(
+				&mut Ui {
+					dl: &mut dl,
+					hits: &mut hits,
+					style,
+				},
+				size,
+				&grid,
+				&inv,
+				&empty_bar(),
+				1.0,
+			);
+			let named: Vec<f32> = dl
+				.cmds(Layer::Ghost)
+				.0
+				.iter()
+				.filter_map(|c| match c {
+					Cmd::Text { px, .. } => Some(*px),
+					_ => None,
+				})
+				.collect();
+			assert_eq!(
+				named,
+				vec![page],
+				"{size:?} at {scale}x: the page drew at {page}, the name at {named:?}"
+			);
+			stepped += 1;
+		}
+	}
+	assert!(
+		stepped > 0,
+		"no window in the sweep steps the ladder — this proves nothing"
+	);
 }

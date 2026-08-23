@@ -338,6 +338,9 @@ fn run_bot(
 				// simulate against the server's answers either way.
 				| NetEvent::Waystones { .. }
 				| NetEvent::CastRefused { .. }
+				| NetEvent::Kindled { .. }
+				| NetEvent::WardWinding { .. }
+				| NetEvent::WardEnded { .. }
 				| NetEvent::AreaReady => {}
 			}
 		}

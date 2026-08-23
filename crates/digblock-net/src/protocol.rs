@@ -29,7 +29,7 @@ pub const DEFAULT_MASTER_URL: &str = "https://master.digblock.net";
 /// discriminants by declaration order, so variants and fields are
 /// APPEND-ONLY — never reorder, never remove. `git log -S PROTOCOL_VERSION`
 /// is the history of what each bump carried.
-pub const PROTOCOL_VERSION: u16 = 32;
+pub const PROTOCOL_VERSION: u16 = 35;
 
 /// Chunk-column radius around an arrival — a join or a teleport — whose
 /// journaled columns must reach the client before it may render or
@@ -66,13 +66,12 @@ pub const AREA_SYNC_TIMEOUT_SECS: f32 = 5.0;
 /// honest answer to both: a range that admits a peer whose UI lies is worse
 /// than a narrow one.
 ///
-/// v31 is the floor for the second reason. A cell is a raw id on the wire
-/// and `BlockType::from_id` is the FORGIVING decode world data goes
-/// through, so an id past an older peer's `COUNT` reads as Air: it would
-/// render a stained pane as a hole, walk through it, and have every dig
-/// near it refused, while the server holds the cell solid. Adding block
-/// rows therefore raises the floor as surely as moving a field does.
-pub const MIN_PROTOCOL: u16 = 32;
+/// The current floor is the second kind: the Ward's cells no longer
+/// travel as edits at all — both ends derive them from the sphere in
+/// `WardWinding`/`WardEnded` — so an older client would stand in a
+/// sphere it cannot see, and would decode the first of those two as the
+/// seal announcement whose tag they took.
+pub const MIN_PROTOCOL: u16 = 35;
 
 // ---- handshake preamble ----------------------------------------------
 //

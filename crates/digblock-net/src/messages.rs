@@ -557,12 +557,21 @@ pub enum ClientMsg {
 	///
 	/// [`TELEPORT_COOLDOWN_SECS`]: crate::protocol::TELEPORT_COOLDOWN_SECS
 	Cast(CastKind),
+	/// The caster broke their Ward channel — the ONE cast the server runs
+	/// for the channel's whole length (`Cast(Ward)` is sent as the
+	/// channel BEGINS, so the glass climbs while the caster stands), and
+	/// so the one with something to unwind. The server also unwinds on
+	/// its own when the caster moves or leaves; this is the honest
+	/// client's prompt word. Appended in v34.
+	CastBreak,
 }
 
 /// What a [`ClientMsg::Cast`] winds up toward — shaped for the whole
 /// spell roster from day one so the message never needs a second form.
-/// `Wisp` and `Kindle` decode today and are refused until their spells
-/// land (the retired-verb pattern, run in reverse).
+/// `Kindle` is a RETIRED verb kept decodable and refused (the
+/// `AlchemyOp::Convert` pattern): the light no longer lands where the
+/// caster aims but in the cell their head is in, which the server
+/// already knows — so `KindleHere` carries nothing to trust.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
 pub enum CastKind {
 	/// A port to the biome waystone at this `SurfaceKind`
@@ -573,6 +582,12 @@ pub enum CastKind {
 		cell: [i32; 3],
 		face: u8,
 	},
+	/// Appended in v33.
+	KindleHere,
+	/// The Ward: a glass sphere about the caster's head, every cell
+	/// derived on the server (`digblock_core::ward`) — so, like
+	/// `KindleHere`, it carries nothing to trust. Appended in v34.
+	Ward,
 }
 
 /// Why a cast was refused — a reason, never a sentence; `voice` chooses
@@ -583,8 +598,9 @@ pub enum CastRefusal {
 	Locked,
 	/// The caster cannot pay the passage. Refused BEFORE any debit.
 	CantPay,
-	/// A kindle aimed at a cell that cannot hold conjured light — not
-	/// air, out of reach, protected, or not resident.
+	/// A conjuring with no place to land: a kindle whose head cell
+	/// cannot hold light, or a ward whose shell would close on a player
+	/// or over ground not resident.
 	BadTarget,
 }
 
@@ -829,6 +845,45 @@ pub enum ServerMsg {
 	/// build and click is not). Appended in v32.
 	CastRefused {
 		reason: CastRefusal,
+	},
+	/// Conjured light standing in `cell`, with the seconds it has left —
+	/// sent to everyone on the cast and to a joiner for each light still
+	/// burning. The light is per-viewer GI and the expiry is each
+	/// client's own clock from here; the server's list is what a joiner
+	/// and a departed caster both rely on, since a light outlives the
+	/// session that lit it. Appended in v33.
+	Kindled {
+		cell: [i32; 3],
+		secs_left: u16,
+	},
+	/// A Ward's channel BEGAN: a sphere of `radius` about `head`, cast by
+	/// `by`, climbing over `span` ticks. The CELLS never travel — both
+	/// ends derive them from the head and the radius (`ward::plan`) and
+	/// climb them in its order — so one frame stands for the hundreds of
+	/// edits a sphere is, whatever the rank. Sent to everyone: a client
+	/// too far away to hold the cells still learns of the cast, and reads
+	/// the sphere back out of the journal when it arrives there.
+	/// Appended in v35.
+	WardWinding {
+		by: PlayerId,
+		head: [i32; 3],
+		radius: u8,
+		span: u32,
+	},
+	/// A Ward's channel ENDED: `landed` cells of that same plan had been
+	/// handed to the world, and `sealed` says whether the sphere closed
+	/// about its caster or came apart again.
+	///
+	/// The count is what makes a break mid-climb exact — both ends take
+	/// the first `landed` of the plan in its own order — and `sealed` is
+	/// carried rather than inferred from `landed`, so the chime answers to
+	/// the server's own word. Appended in v35.
+	WardEnded {
+		by: PlayerId,
+		head: [i32; 3],
+		radius: u8,
+		landed: u32,
+		sealed: bool,
 	},
 }
 

@@ -196,6 +196,30 @@ pub enum NetEvent {
 	CastRefused {
 		reason: crate::messages::CastRefusal,
 	},
+	/// Conjured light standing in `cell` for `secs_left` more seconds —
+	/// anyone's, a joiner's backlog included.
+	Kindled {
+		cell: [i32; 3],
+		secs_left: u16,
+	},
+	/// A Ward's channel BEGAN — anyone's, our own included: a sphere of
+	/// `radius` about `head`, climbing over `span` ticks. The cells are
+	/// derived from the sphere, never sent.
+	WardWinding {
+		by: PlayerId,
+		head: [i32; 3],
+		radius: u8,
+		span: u32,
+	},
+	/// A Ward's channel ENDED with `landed` cells of its plan handed to
+	/// the world — `sealed` says whether they stayed.
+	WardEnded {
+		by: PlayerId,
+		head: [i32; 3],
+		radius: u8,
+		landed: u32,
+		sealed: bool,
+	},
 	Disconnected {
 		reason: String,
 	},
@@ -734,6 +758,33 @@ impl NetClient {
 			}
 			ServerMsg::Waystones { entries } => out.push(NetEvent::Waystones { entries }),
 			ServerMsg::CastRefused { reason } => out.push(NetEvent::CastRefused { reason }),
+			ServerMsg::Kindled { cell, secs_left } => {
+				out.push(NetEvent::Kindled { cell, secs_left });
+			}
+			ServerMsg::WardWinding {
+				by,
+				head,
+				radius,
+				span,
+			} => out.push(NetEvent::WardWinding {
+				by,
+				head,
+				radius,
+				span,
+			}),
+			ServerMsg::WardEnded {
+				by,
+				head,
+				radius,
+				landed,
+				sealed,
+			} => out.push(NetEvent::WardEnded {
+				by,
+				head,
+				radius,
+				landed,
+				sealed,
+			}),
 			ServerMsg::InventoryFull { counts } => {
 				// Raw pairs through to the engine — `Inventory::from_wire`
 				// does the strict decode (unknown ids dropped, flagged
@@ -891,6 +942,11 @@ impl NetClient {
 	/// unlock and the price, which are the real gates.
 	pub fn send_cast(&mut self, kind: crate::messages::CastKind) {
 		self.send_msg(&ClientMsg::Cast(kind));
+	}
+
+	/// The Ward channel broke — the server unwinds the climb.
+	pub fn send_cast_break(&mut self) {
+		self.send_msg(&ClientMsg::CastBreak);
 	}
 
 	/// Tell the server the draw distance changed (settings slider), so

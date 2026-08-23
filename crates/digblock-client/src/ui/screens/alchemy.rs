@@ -37,8 +37,9 @@ use digblock_core::skills::{self, Skill, SkillSet};
 use digblock_core::unlock;
 use digblock_platform::{InputEvent, Key, MouseButton};
 
+use crate::hotbar::HotbarView;
 use crate::ui::draw::Layer;
-use crate::ui::widgets::{self, DIM, GridSpec, Style, Ui, WHITE};
+use crate::ui::widgets::{self, Chip, DIM, GridSpec, Style, Ui, WHITE};
 use crate::ui::{HitMap, InvId, Rect, hud, scale, theme};
 
 /// One requested alchemy operation, in core vocabulary.
@@ -56,8 +57,9 @@ pub enum BenchJob {
 	Craft(BlockType, u32),
 }
 
+const BULK_PLAIN: u32 = 1;
 const BULK_SHIFT: u32 = 10;
-const BULK_CTRL: u32 = 100;
+const BULK_CTRL: u32 = 200;
 
 // This screen's own geometry (theme tokens cover everything shared).
 const ROW_ICON: f32 = 36.0;
@@ -65,6 +67,12 @@ const BTN_W: f32 = 152.0;
 const BTN_H: f32 = 34.0;
 /// Gap between an icon/slot and the text that describes it.
 const ICON_TEXT_GAP: f32 = 12.0;
+/// Room the detail strip keeps beside its price before the tail takes a
+/// row of its own. A tail cut down to its elision mark says less than a
+/// tail standing on its own line, and on a phone the price fills the row
+/// it is on. Measured against the WIDEST price rather than the drawn
+/// one, so the strip's height is not in the holdings' hands.
+const TAIL_MIN_W: f32 = 64.0;
 /// What a tile the level has not opened yet wears. Locked tiles dim
 /// rather than hide, and stay interactive — the screen teaches by letting
 /// you ask and answering, which is the whole reason a locked tile is
@@ -150,6 +158,52 @@ pub fn strip_reason(view: &AlchView, item: BlockType) -> StripReason {
 		};
 	}
 	StripReason::NothingToCharge
+}
+
+/// The price of `item` at this view's level as chips — feedstock lines
+/// first (matter in hand reads before the currency), then the essence
+/// lines post-waste — each number in [`theme::SHORT_INK`] when the
+/// holdings cannot cover it. The same lines [`strip_reason`] walks, so the
+/// chip that reads short and the rule that refuses are one answer.
+pub fn cost_chips(view: &AlchView, item: BlockType, locked: bool) -> Vec<Chip> {
+	let ink = |short: bool| {
+		if locked {
+			DIM
+		} else if short {
+			theme::SHORT_INK
+		} else {
+			WHITE
+		}
+	};
+	let tint = |t: u32| if locked { LOCKED_TINT } else { t };
+	let feedstock = alchemy::craft_feedstock(item).into_iter().map(|(f, n)| {
+		let (kind, t) = hud::item_icon(HotbarItem::Block(f), false);
+		Chip {
+			kind,
+			tint: tint(t),
+			n,
+			ink: ink(view.counts[f as usize] < n),
+		}
+	});
+	let ideal = alchemy::craft_ideal(item).unwrap_or_default();
+	let essence = ideal.into_iter().map(|(e, n)| {
+		let cost = alchemy::craft_cost(n, view.level);
+		Chip {
+			kind: hud::IconKind::Essence(e),
+			tint: tint(0xFFFF_FFFF),
+			n: cost,
+			ink: ink(view.subs[e as usize] < cost),
+		}
+	});
+	feedstock.chain(essence).collect()
+}
+
+/// What a chip names on hover: the feedstock block or the essence.
+fn chip_name(chip: &Chip) -> String {
+	match chip.kind {
+		hud::IconKind::Essence(e) => e.name().to_string(),
+		kind => hud::icon_block(kind).map(|b| b.name()).unwrap_or_default(),
+	}
 }
 
 impl AlchView {
@@ -497,16 +551,28 @@ impl AlchScreen {
 	/// `theme::fit_scale` steps the full layout down the quarter-rung
 	/// ladder when a short window at a big interface scale can't hold it
 	/// — never a fractional glyph.
-	pub fn build(&self, ui: &mut Ui<'_, InvId>, size: (u32, u32), view: &AlchView, daylight: f32) {
+	pub fn build(
+		&self,
+		ui: &mut Ui<'_, InvId>,
+		size: (u32, u32),
+		view: &AlchView,
+		bar: &HotbarView,
+		daylight: f32,
+	) {
 		let window_scale = ui.style.scale;
 		ui.dl.quad(
 			Layer::Backdrop,
 			Rect::new(0.0, 0.0, size.0 as f32, size.1 as f32),
 			widgets::scaled_dim(theme::SCREEN_DIM, daylight),
 		);
-		let bar_top = hud::row_grid(size, window_scale).origin.1;
+		let bar_grid = hud::row_grid(size, window_scale);
+		let bar_top = bar_grid.origin.1;
 		let budget = bar_top - (theme::GAP_ABOVE_BAR + theme::TOP_MARGIN) * window_scale;
-		let needed = |s: f32| self.content_h(&Style::new(s)) + 2.0 * theme::PAD * s;
+		let needed = |s: f32| {
+			let style = Style::new(s);
+			let row_w = self.row_w(&style, view, size);
+			self.content_h(&style, view, row_w) + 2.0 * theme::PAD * s
+		};
 		let restore = ui.style;
 		let fitted = theme::fit_scale(window_scale, budget, needed);
 		if fitted != window_scale {
@@ -515,10 +581,8 @@ impl AlchScreen {
 		let s = ui.style.scale;
 		let pad = theme::PAD * s;
 
-		let (width, height) = (self.content_w(&ui.style, view), self.content_h(&ui.style));
-		let row_w = width
-			.max(theme::MIN_PANEL_W * s)
-			.min(size.0 as f32 - 4.0 * pad);
+		let row_w = self.row_w(&ui.style, view, size);
+		let height = self.content_h(&ui.style, view, row_w);
 		let row_x = (size.0 as f32 - row_w) / 2.0;
 		let row_y = (bar_top - theme::GAP_ABOVE_BAR * window_scale - (height + 2.0 * pad))
 			.max(theme::TOP_MARGIN * window_scale)
@@ -526,10 +590,29 @@ impl AlchScreen {
 		let panel = theme::panel_of(row_x, row_y, row_w, height, s);
 		widgets::panel(ui.dl, Layer::Backdrop, panel, theme::PANEL_BG);
 
+		// What the cursor is on, named LAST so the tooltip covers it.
+		let mut hover: Option<(Rect, String)> = None;
 		let mut y = row_y;
-		self.emit_header(ui, view, row_x, row_w, &mut y);
-		self.emit_transmute(ui, view, row_x, row_w, y);
+		self.emit_header(ui, view, row_x, row_w, &mut y, &mut hover);
+		self.emit_transmute(ui, view, row_x, row_w, y, &mut hover);
+		// The bar is drawn after us at the window's scale; naming its
+		// slots from here is what keeps the name at THIS frame's glyph.
+		if hover.is_none() {
+			hover = hud::hovered_bar_slot(size, window_scale, bar, self.cursor);
+		}
+		if let Some((anchor, name)) = hover {
+			widgets::tooltip(ui.dl, &ui.style, size, anchor, &name);
+		}
 		ui.style = restore;
+	}
+
+	/// The panel's row width at `style`: the content's, never narrower
+	/// than the shared minimum and never wider than the window.
+	fn row_w(&self, style: &Style, view: &AlchView, size: (u32, u32)) -> f32 {
+		let pad = theme::PAD * style.scale;
+		self.content_w(style, view)
+			.max(theme::MIN_PANEL_W * style.scale)
+			.min(size.0 as f32 - 4.0 * pad)
 	}
 
 	// ---- layout ------------------------------------------------------
@@ -538,8 +621,18 @@ impl AlchScreen {
 	/// gap below. Must stay in step with the `*y` the header actually
 	/// leaves behind in `emit_header` — this is the measure half of the
 	/// same layout.
-	fn header_h(style: &Style) -> f32 {
-		(2.0 * theme::ROW_H + theme::SECTION_GAP) * style.scale
+	fn header_h(style: &Style, view: &AlchView, row_w: f32) -> f32 {
+		let rows = 1 + Self::holdings_rows(style, view, row_w);
+		(rows as f32 * theme::ROW_H + theme::SECTION_GAP) * style.scale
+	}
+
+	/// Rows the readout wraps onto inside a panel `row_w` wide.
+	fn holdings_rows(style: &Style, view: &AlchView, row_w: f32) -> usize {
+		let inner = row_w - 2.0 * scale::text_pad_x(style.scale);
+		let row_h = theme::ROW_H * style.scale;
+		widgets::chip_layout(style, 0.0, 0.0, inner, &Self::holdings_chips(view))
+			.last()
+			.map_or(1, |r| (r.y / row_h).round() as usize + 1)
 	}
 
 	fn grid_spec_at(style: &Style, origin: (f32, f32)) -> GridSpec {
@@ -551,17 +644,80 @@ impl AlchScreen {
 		}
 	}
 
-	/// The essence readout, which is also the widest text the page draws.
+	/// The essence readout: every holding as a chip, in essence order.
 	///
-	/// One function so the width the panel is MEASURED at and the string
-	/// the header EMITS cannot drift — the reason `text_row_w` exists at
-	/// all, and the reason a width is never counted in characters.
-	fn holdings_text(view: &AlchView) -> String {
-		Essence::ALL
+	/// One function so the run the panel is MEASURED against and the run
+	/// the header EMITS cannot drift.
+	fn holdings_chips(view: &AlchView) -> [Chip; Essence::COUNT] {
+		Essence::ALL.map(|e| Chip {
+			kind: hud::IconKind::Essence(e),
+			tint: 0xFFFF_FFFF,
+			n: view.subs[e as usize],
+			ink: DIM,
+		})
+	}
+
+	/// Every price the page could be asked to show at this level, as the
+	/// strip itself would draw it. One derivation, so the run the panel is
+	/// MEASURED against and the run the strip EMITS cannot drift — the
+	/// same discipline `holdings_chips` keeps for the readout.
+	fn visible_prices(view: &AlchView) -> impl Iterator<Item = Vec<Chip>> + '_ {
+		let next = next_unlock_level(view.level);
+		families()
 			.iter()
-			.map(|&e| format!("{} {}", e.name().to_uppercase(), view.subs[e as usize]))
-			.collect::<Vec<_>>()
-			.join("   ")
+			.flat_map(|f| f.members.iter().copied())
+			.filter(move |&m| member_visible(m, view.level, next))
+			.map(move |m| cost_chips(view, m, !unlock::can_craft(m, view.level)))
+	}
+
+	/// The strip's span for the price: what is left of a `row_w`-wide row
+	/// once the member's icon and the TRANSMUTE button have taken their
+	/// ends of it. The price is BOUNDED by this — drawn to infinity it ran
+	/// under the button, chips and digits both.
+	fn price_span(style: &Style, row_w: f32) -> f32 {
+		(row_w - Self::strip_furniture_w(style)).max(0.0)
+	}
+
+	/// Everything on the strip that is not the price: the row's insets,
+	/// the member icon, the gaps either side of the price, and the
+	/// button.
+	fn strip_furniture_w(style: &Style) -> f32 {
+		let s = style.scale;
+		2.0 * scale::text_pad_x(s) + ROW_ICON * s + 2.0 * ICON_TEXT_GAP * s + BTN_W * s
+	}
+
+	/// The strip's height: the shared action row, or as many
+	/// [`theme::ROW_H`] rows as the WIDEST price the page can show wraps
+	/// onto in a `row_w`-wide panel, plus one for the tail once a price
+	/// wraps at all — a panel that narrow has no room left beside the
+	/// last chip, and the tail is how the strip says ALREADY OWNED.
+	///
+	/// The widest rather than the selected member, and a reserve keyed on
+	/// the WIDEST price rather than on the tail actually being drawn, so
+	/// neither picking a costlier member nor crafting one moves the page
+	/// — the same argument `member_rows_h` makes for the member grid.
+	fn strip_h(style: &Style, view: &AlchView, row_w: f32) -> f32 {
+		let s = style.scale;
+		let (price_h, tight) = Self::price_block(style, view, row_w);
+		let reserve = if tight { theme::ROW_H * s } else { 0.0 };
+		(price_h + reserve).max(theme::ACTION_ROW_H * s)
+	}
+
+	/// How the WIDEST price the page can show lays out in a `row_w`-wide
+	/// panel: the height of the wrapped run, and whether its last row
+	/// leaves less than [`TAIL_MIN_W`] beside it — the one question that
+	/// decides where the tail goes, asked identically by the measure and
+	/// by the emit so the row the tail lands on always exists.
+	fn price_block(style: &Style, view: &AlchView, row_w: f32) -> (f32, bool) {
+		let span = Self::price_span(style, row_w);
+		let (mut h, mut tight) = (0.0f32, false);
+		for chips in Self::visible_prices(view) {
+			let placed = widgets::chip_layout(style, 0.0, 0.0, span, &chips);
+			let Some(last) = placed.last() else { continue };
+			h = h.max(last.y + last.h);
+			tight |= span - (last.x + last.w) < TAIL_MIN_W * style.scale;
+		}
+		(h, tight)
 	}
 
 	fn content_w(&self, style: &Style, view: &AlchView) -> f32 {
@@ -569,14 +725,27 @@ impl AlchScreen {
 		// screen measures against — the page keeps its column.
 		let spec = Self::grid_spec_at(style, (0.0, 0.0));
 		let grid = spec.extent(GRID_SLOTS).0;
-		// ...but the holdings row is TEXT, and text does not shrink with
-		// the panel: `glyph_px` floors, so the bottom rungs of the fit
-		// ladder take a quarter off every box while the readout stays the
-		// size it was. Folding it in is what keeps the row inside the
-		// panel it is drawn in — it used to be drawn at the grid's width
-		// and spill past the edge onto the dimmed world, with nothing
-		// clipping it, and the spill grew with the digits.
-		grid.max(theme::text_row_w(style, &Self::holdings_text(view)))
+		// The panel measures every row it draws, the strip included: its
+		// price is TEXT between two fixed-width things, so asking for the
+		// unwrapped run keeps it on one row wherever the window allows.
+		// The grid is the wider ask for today's catalog, which is exactly
+		// why this term has to be here rather than assumed — a costlier
+		// price or a wider button must widen the panel, not wrap under the
+		// button. Where the window forbids it, `strip_h` gives the wrapped
+		// run its rows.
+		let price = Self::visible_prices(view)
+			.map(|chips| widgets::chips_w(style, &chips))
+			.fold(0.0, f32::max);
+		let strip = Self::strip_furniture_w(style) + price;
+		// ...but the readout's numbers are TEXT, and text does not shrink
+		// with the panel: `glyph_px` floors, so the bottom rungs of the
+		// fit ladder take a quarter off every box while the digits stay
+		// the size they were. Asking for the unwrapped run keeps the
+		// readout on one row wherever the window allows it; where it does
+		// not, `holdings_rows` wraps it rather than letting it spill.
+		let holdings = Self::holdings_chips(view);
+		grid.max(2.0 * scale::text_pad_x(style.scale) + widgets::chips_w(style, &holdings))
+			.max(strip)
 	}
 
 	/// The tallest member row any family lays out (wrapped at the grid's
@@ -590,16 +759,16 @@ impl AlchScreen {
 			.fold(0.0, f32::max)
 	}
 
-	fn content_h(&self, style: &Style) -> f32 {
+	fn content_h(&self, style: &Style, view: &AlchView, row_w: f32) -> f32 {
 		let s = style.scale;
 		let transmute = hud::SLOT_PX * s
 			+ theme::ROW_GAP * s
 			+ Self::member_rows_h(style)
 			+ theme::SECTION_GAP * s
-			+ theme::ACTION_ROW_H * s
+			+ Self::strip_h(style, view, row_w)
 			+ theme::ROW_GAP * s
 			+ theme::ROW_H * s;
-		Self::header_h(style) + transmute
+		Self::header_h(style, view, row_w) + transmute
 	}
 
 	fn emit_header(
@@ -609,6 +778,7 @@ impl AlchScreen {
 		row_x: f32,
 		row_w: f32,
 		y: &mut f32,
+		hover: &mut Option<(Rect, String)>,
 	) {
 		let s = ui.style.scale;
 		let row_h = theme::ROW_H * s;
@@ -629,35 +799,30 @@ impl AlchScreen {
 			},
 		);
 		*y += row_h;
-		// Essence readout, always visible — and the row `content_w` sizes
-		// the panel against, through this same function.
-		//
-		// Elided against the width it is actually drawn at, because the
-		// panel cannot always be as wide as the readout wants: `row_w` is
-		// clamped to the window, so a player holding near the stack cap
-		// on a phone asks for more width than exists. `widgets::row` does
-		// not clip, so without this the tail is drawn past the panel edge
-		// onto the dimmed world.
-		let holdings = elide(
-			&ui.style,
-			&Self::holdings_text(view),
-			row_w - 2.0 * scale::text_pad_x(s),
-		);
-		widgets::row(
+		// Essence readout, always visible — the run `content_w` sizes the
+		// panel against, through the same function. Wrapped at the width
+		// it is actually drawn at, because the panel cannot always be as
+		// wide as the readout wants: `row_w` is clamped to the window, so
+		// a player holding near the cap on a phone asks for more width
+		// than exists, and nothing clips.
+		let text_pad = scale::text_pad_x(s);
+		let holdings = Self::holdings_chips(view);
+		let rects = widgets::chips(
 			ui.dl,
 			&ui.style,
 			Layer::Content,
-			Rect::new(row_x, *y, row_w, row_h),
-			widgets::RowContent {
-				text: &holdings,
-				right: None,
-				bar: None,
-				color: DIM,
-				highlight: false,
-				caret: false,
-			},
+			row_x + text_pad,
+			*y,
+			row_w - 2.0 * text_pad,
+			&holdings,
 		);
-		*y += row_h + theme::SECTION_GAP * s;
+		let (cx, cy) = self.cursor;
+		for (chip, rect) in holdings.iter().zip(&rects) {
+			if rect.contains(cx, cy) {
+				*hover = Some((*rect, chip_name(chip)));
+			}
+		}
+		*y += Self::holdings_rows(&ui.style, view, row_w) as f32 * row_h + theme::SECTION_GAP * s;
 	}
 
 	/// The page: a row of FAMILY tiles (each slowly rotating through its
@@ -672,6 +837,7 @@ impl AlchScreen {
 		row_x: f32,
 		row_w: f32,
 		mut y: f32,
+		hover: &mut Option<(Rect, String)>,
 	) {
 		let s = ui.style.scale;
 		let glyph = ui.style.glyph;
@@ -705,6 +871,9 @@ impl AlchScreen {
 			}
 			let rect = fam_spec.rect(col);
 			col += 1;
+			if rect.contains(cx, cy) {
+				*hover = Some((rect, fam.name.to_string()));
+			}
 			let all_locked = visible.iter().all(|&m| !unlock::can_craft(m, view.level));
 			// The tile trades one member for the next by shrinking the
 			// outgoing one away and growing the incoming one in, rather
@@ -759,6 +928,9 @@ impl AlchScreen {
 				}
 				let rect = mem_spec.rect(col);
 				col += 1;
+				if rect.contains(cx, cy) {
+					*hover = Some((rect, item.name()));
+				}
 				let locked = !unlock::can_craft(item, view.level);
 				let (kind, tint) = hud::item_icon(HotbarItem::Block(item), false);
 				widgets::slot(
@@ -794,18 +966,18 @@ impl AlchScreen {
 		y += Self::member_rows_h(&ui.style) + theme::SECTION_GAP * s;
 
 		// The detail strip (the shared action-row height): the selected
-		// member's icon, its name and per-line cost at YOUR level
-		// (post-waste — what it will actually charge, feedstock lines
-		// included), and the page's one TRANSMUTE button. Locked reads
-		// dim with its level; unlocked but short reads full-color with
-		// what's MISSING — "can't yet" and "can't afford" are different
-		// answers.
-		let strip_h = theme::ACTION_ROW_H * s;
+		// member's icon, its price at YOUR level as chips (post-waste —
+		// what it will actually charge, feedstock lines included, a line
+		// the holdings cannot cover in the short ink), a tail for the one
+		// case a chip cannot say, and the page's one TRANSMUTE button.
+		// Locked reads dim with its level. Its NAME is on hover like every
+		// other tile's, so the strip has room for every line of the price.
+		let strip_h = Self::strip_h(&ui.style, view, row_w);
 		let strip = Rect::new(row_x, y, row_w, strip_h);
-		// With nothing picked there is no item to name and nothing for the
-		// button to do, so the strip says what to do instead of naming an
-		// item the player never chose — and the modifier legend below it,
-		// which describes that button, waits with it.
+		// With nothing picked there is no item to price and nothing for
+		// the button to do, so the strip says what to do instead — and
+		// the modifier legend below it, which describes that button,
+		// waits with it.
 		let Some(f) = picked else {
 			widgets::label(
 				ui.dl,
@@ -821,22 +993,25 @@ impl AlchScreen {
 		let family = &families()[f];
 		let member = self.member.min(family.members.len() - 1);
 		let item = family.members[member];
-		let need = unlock::craft(item).unwrap_or(u32::MAX);
 		let locked = !unlock::can_craft(item, view.level);
 		let batches = view.affordable(item);
 		let (kind, tint) = hud::item_icon(HotbarItem::Block(item), false);
+		let icon = Rect::new(
+			strip.x + text_pad,
+			strip.y + (strip_h - ROW_ICON * s) / 2.0,
+			ROW_ICON * s,
+			ROW_ICON * s,
+		);
 		hud::draw_icon(
 			ui.dl,
 			Layer::Icons,
-			Rect::new(
-				strip.x + text_pad,
-				strip.y + (strip_h - ROW_ICON * s) / 2.0,
-				ROW_ICON * s,
-				ROW_ICON * s,
-			),
+			icon,
 			kind,
 			if locked { LOCKED_TINT } else { tint },
 		);
+		if icon.contains(cx, cy) {
+			*hover = Some((icon, item.name()));
+		}
 		let btn = Rect::new(
 			strip.x + strip.w - text_pad - BTN_W * s,
 			strip.y + (strip_h - BTN_H * s) / 2.0,
@@ -844,62 +1019,55 @@ impl AlchScreen {
 			BTN_H * s,
 		);
 		let text_x = strip.x + text_pad + ROW_ICON * s + ICON_TEXT_GAP * s;
-		let avail = btn.x - ICON_TEXT_GAP * s - text_x;
-		let text = if locked {
-			format!("{}   —   LV {need}", item.name().to_uppercase())
-		} else {
-			let ideal = alchemy::craft_ideal(item).expect("members are craftable");
-			let feedstock = alchemy::craft_feedstock(item);
-			// Feedstock lines first — matter in hand reads before the
-			// currency — then the essence lines at this level's waste.
-			let costs = feedstock
-				.iter()
-				.map(|&(f, n)| format!("{n} {}", f.name().to_uppercase()))
-				.chain(ideal.iter().map(|&(e, n)| {
-					format!(
-						"{} {}",
-						alchemy::craft_cost(n, view.level),
-						e.name().to_uppercase()
-					)
-				}))
-				.collect::<Vec<_>>()
-				.join(" + ");
-			// The case is decided once, in `strip_reason`; this only
-			// chooses words for it.
-			let tail = match strip_reason(view, item) {
-				StripReason::AtCap { tool: true } => "ALREADY OWNED".to_string(),
-				StripReason::AtCap { tool: false } => "ALREADY CHARGED".to_string(),
-				StripReason::Short { of, more } => {
-					let what = match of {
-						ShortOf::Feedstock(f) => f.name().to_uppercase(),
-						ShortOf::Essence(e) => e.name().to_uppercase(),
-					};
-					format!("NEED {more} MORE {what}")
-				}
-				StripReason::NothingToCharge => "NOTHING TO CHARGE".to_string(),
-				StripReason::Affords(n) => format!("×{n}"),
-			};
-			// The TAIL is what has to survive: a price is a static fact
-			// the player can go and read, but "why can't I" is this
-			// line's whole job — and the long prices at the end of the
-			// catalog are long enough to push it off the end. Drop the
-			// costs before letting that happen.
-			let full = format!("{}   —   {costs}   ·   {tail}", item.name().to_uppercase());
-			if ui.style.measure(&full) <= avail {
-				full
-			} else {
-				format!("{}   —   {tail}", item.name().to_uppercase())
+		let costs = cost_chips(view, item, locked);
+		let tail = strip_tail(view, item);
+		// The price is BOUNDED by what is left between the icon and the
+		// button — drawn to infinity it ran chips and digits under the
+		// button — and the tail goes wherever is left after it: beside the
+		// last chip where that fits, else on the row `strip_h` reserved
+		// under a wrapped price. Laid out before anything is emitted,
+		// because the block's height decides where the block starts.
+		let span = Self::price_span(&ui.style, row_w);
+		let row_h = theme::ROW_H * s;
+		let placed = widgets::chip_layout(&ui.style, text_x, 0.0, span, &costs);
+		let price_h = placed.last().map_or(0.0, |r| r.y + r.h);
+		let beside_x = placed
+			.last()
+			.map_or(text_x, |r| r.x + r.w + theme::CHIP_SEP * s);
+		let beside = btn.x - ICON_TEXT_GAP * s - beside_x;
+		// The reserved row, or none: `strip_h` asked the same question of
+		// the same prices, so the row this lands on always exists.
+		let own_row = tail.is_some() && Self::price_block(&ui.style, view, row_w).1;
+		let block_h = price_h + if own_row { row_h } else { 0.0 };
+		let top = strip.y + (strip_h - block_h) / 2.0;
+		let rects = widgets::chips(ui.dl, &ui.style, Layer::Content, text_x, top, span, &costs);
+		for (chip, rect) in costs.iter().zip(&rects) {
+			if rect.contains(cx, cy) {
+				*hover = Some((*rect, chip_name(chip)));
 			}
-		};
-		widgets::label(
-			ui.dl,
-			Layer::Content,
-			text_x,
-			strip.y + (strip_h - glyph) / 2.0,
-			glyph,
-			if locked { DIM } else { WHITE },
-			&elide(&ui.style, &text, avail),
-		);
+		}
+		// The price is the line that may not be dropped; the tail is the
+		// one that gives way, which is what `elide` is for — and it gives
+		// way to NOTHING rather than to an empty text command.
+		if let Some(tail) = tail {
+			let last_y = rects.last().map_or(top, |r| r.y);
+			let (tail_x, tail_y, avail) = if own_row {
+				(text_x, last_y + row_h, span)
+			} else {
+				(beside_x, last_y, beside)
+			};
+			if let Some(tail) = elide(&ui.style, &tail, avail) {
+				widgets::label(
+					ui.dl,
+					Layer::Content,
+					tail_x,
+					tail_y + (row_h - glyph) / 2.0,
+					glyph,
+					if locked { DIM } else { WHITE },
+					&tail,
+				);
+			}
+		}
 		// While a batch runs the one button is its STOP.
 		let running = self.crafting;
 		widgets::button(
@@ -929,9 +1097,9 @@ impl AlchScreen {
 			Layer::Content,
 			Rect::new(row_x, y, row_w, theme::ROW_H * s),
 			widgets::RowContent {
-				text: queued
-					.as_deref()
-					.unwrap_or("CLICK 1   ·   SHIFT 10   ·   CTRL 100"),
+				text: queued.as_deref().unwrap_or(&format!(
+					"CLICK {BULK_PLAIN}   ·   SHIFT {BULK_SHIFT}   ·   CTRL {BULK_CTRL}"
+				)),
 				right: None,
 				bar: queued.is_some().then(|| self.progress.clamp(0.0, 1.0)),
 				color: if queued.is_some() { WHITE } else { DIM },
@@ -1011,12 +1179,12 @@ impl AlchScreen {
 						} else if self.shift {
 							BULK_SHIFT
 						} else {
-							1
+							BULK_PLAIN
 						};
 						// QUEUED, not sent: `tick` drips one `Craft` per
-						// interval out of this, so a hundred-item batch is
-						// a hundred paced crafts rather than a frame's
-						// worth of XP. The clamp is unchanged — the offer
+						// interval out of this, so a bulk batch is that many
+						// paced crafts rather than a frame's worth of XP.
+						// The clamp is unchanged — the offer
 						// is still what the holdings afford right now, and
 						// the queue re-asks as it goes.
 						let count = want.min(view.affordable(item));
@@ -1037,6 +1205,24 @@ impl AlchScreen {
 			}
 			_ => None,
 		}
+	}
+}
+
+/// The one line the strip says that a chip cannot — `None` for a
+/// shortfall, because the chip drawn short already named the line and the
+/// amount. The case is decided in [`strip_reason`]; this only chooses
+/// words for it, and it is the screen's own label rather than a `voice`
+/// sentence.
+fn strip_tail(view: &AlchView, item: BlockType) -> Option<String> {
+	if !unlock::can_craft(item, view.level) {
+		return Some(format!("LV {}", unlock::craft(item).unwrap_or(u32::MAX)));
+	}
+	match strip_reason(view, item) {
+		StripReason::AtCap { tool: true } => Some("ALREADY OWNED".to_string()),
+		StripReason::AtCap { tool: false } => Some("ALREADY CHARGED".to_string()),
+		StripReason::Short { .. } => None,
+		StripReason::NothingToCharge => Some("NOTHING TO CHARGE".to_string()),
+		StripReason::Affords(n) => Some(format!("×{n}")),
 	}
 }
 
@@ -1069,19 +1255,21 @@ fn lock_badge(ui: &mut Ui<'_, InvId>, slot: Rect, level: u32) {
 }
 
 /// Cut `text` to fit `max_w`, marking the cut — there is no clipping.
-fn elide(style: &Style, text: &str, max_w: f32) -> String {
+/// `None` when not even the mark fits: a caller must draw nothing rather
+/// than an empty run, which is a text command with no pixels in it.
+fn elide(style: &Style, text: &str, max_w: f32) -> Option<String> {
 	if style.measure(text) <= max_w {
-		return text.into();
+		return Some(text.into());
 	}
 	let mut out: String = text.into();
 	while !out.is_empty() {
 		out.pop();
 		let candidate = format!("{}...", out.trim_end());
 		if style.measure(&candidate) <= max_w {
-			return candidate;
+			return Some(candidate);
 		}
 	}
-	String::new()
+	None
 }
 
 #[cfg(test)]

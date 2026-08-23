@@ -89,10 +89,12 @@ fn no_node_manifests_in_an_edited_cell() {
 		// The spent face itself never re-reads as a node.
 		let spent = spent_block(node).expect("a kind") as u16;
 		assert_eq!(revealed(spent, at, SEED, maxed(), false), None);
-		// Nor does anything else standing in that coordinate.
-		for b in [BlockType::Air, BlockType::Rubble, node] {
+		// Nor does anything else standing in that coordinate — except the
+		// live face itself, stored: that is the regrown node.
+		for b in [BlockType::Air, BlockType::Rubble] {
 			assert_eq!(revealed(b as u16, at, SEED, maxed(), false), None, "{b:?}");
 		}
+		assert_eq!(revealed(node as u16, at, SEED, maxed(), true), Some(node));
 		// A shaped cell in the same coordinate is not the host either.
 		assert_eq!(
 			revealed(make_cell(BlockType::StoneSlab, 1), at, SEED, maxed(), false),
@@ -271,27 +273,171 @@ fn landmarks_always_carry_a_heart_and_most_trees_do_not() {
 	assert!(without > with, "most trees are plain wood");
 }
 
-/// A spring stands only in the bed of standing fresh water, and only
-/// in the bed cell itself.
+/// A spring stands under standing water, in the bed SURFACE cell and
+/// nowhere else in its column — which is what puts the find under water
+/// rather than in the sand beside it. Which waters carry one at all is
+/// the shoreline test's question, below.
 #[test]
-fn springs_stand_only_in_fresh_beds() {
+fn a_spring_stands_in_the_bed_cell_and_nowhere_else_in_its_column() {
 	let (x, y, z) = find_springstone(SEED);
 	let s = crate::worldgen::column_shape(x, z, SEED);
-	assert!(matches!(s.surface, SurfaceKind::Lake | SurfaceKind::River));
 	assert!(s.water > s.height, "under standing water");
-	assert!(!springstone_at(x, y - 1, z, SEED), "not below the bed");
-	assert!(!springstone_at(x, y + 1, z, SEED), "not in the water");
-	// And never in the ocean: sweep for ocean columns and assert the
-	// rate never fires there.
-	let mut ocean = 0u32;
-	for ox in (-2048..2048).step_by(7) {
-		for oz in (-2048..2048).step_by(7) {
+	assert_eq!(y, s.height, "the bed surface cell");
+	for probe in 0..=s.water + 1 {
+		assert_eq!(
+			springstone_at(x, probe, z, SEED),
+			probe == y,
+			"({x},{probe},{z})"
+		);
+	}
+}
+
+/// The ocean carries springs only in its shoreline shallows, and more
+/// sparsely than the fresh beds do: sweep the world, sort every bed
+/// column by kind, and compare the rates that fall out.
+#[test]
+fn ocean_springs_keep_to_the_shallows_and_are_rarer() {
+	let (mut fresh, mut fresh_hit) = (0u32, 0u32);
+	let (mut shore, mut shore_hit) = (0u32, 0u32);
+	let mut deep = 0u32;
+	for ox in (-2048..2048).step_by(5) {
+		for oz in (-2048..2048).step_by(5) {
 			let s = crate::worldgen::column_shape(ox, oz, SEED);
-			if s.surface == SurfaceKind::Ocean {
-				ocean += 1;
-				assert!(!springstone_at(ox, s.height, oz, SEED), "at {ox},{oz}");
+			if s.water <= s.height {
+				continue;
+			}
+			let hit = springstone_at(ox, s.height, oz, SEED);
+			match s.surface {
+				SurfaceKind::Lake | SurfaceKind::River => {
+					fresh += 1;
+					fresh_hit += u32::from(hit);
+				}
+				SurfaceKind::Ocean if s.water - s.height <= SHORE_DEPTH => {
+					shore += 1;
+					shore_hit += u32::from(hit);
+				}
+				SurfaceKind::Ocean => {
+					deep += 1;
+					assert!(!hit, "a spring on the open floor at {ox},{oz}");
+				}
+				_ => assert!(!hit, "a spring under a puddle at {ox},{oz}"),
 			}
 		}
 	}
-	assert!(ocean > 0, "sample contains ocean");
+	assert!(
+		fresh > 0 && shore > 0 && deep > 0,
+		"sample covers every bed kind"
+	);
+	assert!(shore_hit > 0, "the shoreline carries springs");
+	// Rates, in the tables' own 256ths, each within a few of its constant.
+	let per_256 = |hit: u32, n: u32| u64::from(hit) * 256 / u64::from(n);
+	assert!(
+		per_256(fresh_hit, fresh).abs_diff(SPRING_IN_256) <= 3,
+		"{fresh_hit}/{fresh}"
+	);
+	assert!(
+		per_256(shore_hit, shore).abs_diff(SPRING_SHORE_IN_256) <= 2,
+		"{shore_hit}/{shore}"
+	);
+}
+
+/// A live face stored in the cell outright — a regrown node — is found
+/// by everyone: ahead of the reveal table and ahead of the edit bit,
+/// since the mesh already shows it to every client.
+#[test]
+fn a_stored_live_face_is_revealed_to_anyone() {
+	for &node in &NODES {
+		let cell = make_cell(node, 0);
+		for edited in [false, true] {
+			assert_eq!(
+				revealed(cell, (0, 0, 0), SEED, Levels::default(), edited),
+				Some(node)
+			);
+		}
+		assert_eq!(
+			dig_mode(
+				cell,
+				(0, 0, 0),
+				SEED,
+				Levels::default(),
+				true,
+				BlockType::EssenceSiphon
+			),
+			DigMode::Extract(node)
+		);
+		assert_eq!(
+			dig_mode(
+				cell,
+				(0, 0, 0),
+				SEED,
+				Levels::default(),
+				true,
+				BlockType::Air
+			),
+			DigMode::NeedsSiphon
+		);
+	}
+}
+
+/// `node_at` routes on the HOST, and the host is whatever the world
+/// really holds.
+///
+/// Walked over real [`crate::worldgen::build_column`] output rather than
+/// cells the test plants itself, because planting the host the test
+/// already chose is exactly what cannot see this: the three streams
+/// overlap the terrain, so a trunk column's heart span answers
+/// "heartwood" at coordinates the tree grew LEAVES in, and a host-blind
+/// query would let a spent face carried there and placed become a node
+/// site. Both counts are asserted, so neither half can pass by finding
+/// nothing.
+#[test]
+fn node_at_routes_on_the_host_the_world_really_holds() {
+	use crate::chunk::{CHUNK_SIZE, WORLD_VCHUNK, cell_id};
+	let n = CHUNK_SIZE as i32;
+	let hw = find_heartwood(SEED);
+	let (cx, cz) = (hw.0.div_euclid(n), hw.2.div_euclid(n));
+	// The three hosts, asked blind — the query this function used to be.
+	let hosts = [BlockType::Stone, BlockType::Wood, BlockType::Sand];
+	let (mut sited, mut overlapping) = (0, 0);
+	let column = crate::worldgen::build_column(cx, cz, SEED);
+	assert_eq!(column.len(), WORLD_VCHUNK as usize, "a whole column");
+	for (cy, chunk) in column.iter().enumerate() {
+		for ly in 0..CHUNK_SIZE {
+			for lz in 0..CHUNK_SIZE {
+				for lx in 0..CHUNK_SIZE {
+					let at = (
+						cx * n + lx as i32,
+						cy as i32 * n + ly as i32,
+						cz * n + lz as i32,
+					);
+					let block = BlockType::try_from_id(cell_id(chunk.get_cell(lx, ly, lz)))
+						.expect("worldgen writes real blocks");
+					match node_at(block, at, SEED) {
+						// Routed: the kind named must be one this very
+						// host carries, or `host_block` and `node_at`
+						// have come apart.
+						Some(node) => {
+							assert_eq!(host_block(node), Some(block), "{at:?} {node:?}");
+							sited += 1;
+						}
+						// Not this host — and if any OTHER host's stream
+						// would have answered here, this is a cell a
+						// blind query manufactures a site in.
+						None => {
+							overlapping += u32::from(
+								hosts
+									.iter()
+									.any(|&h| h != block && node_at(h, at, SEED).is_some()),
+							);
+						}
+					}
+				}
+			}
+		}
+	}
+	assert!(sited > 0, "no node stands in the sampled column at all");
+	assert!(
+		overlapping > 0,
+		"no cell in the sampled column holds a non-host over a live stream"
+	);
 }

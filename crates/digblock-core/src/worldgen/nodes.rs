@@ -14,6 +14,14 @@
 //! still holds its pristine host and has never been written.
 //! `JournalIndex::record` only ever inserts, so a spent node cannot be regrown
 //! by placing the host back.
+//!
+//! The one node that IS stored: a spent face the regrowth sweep
+//! ([`crate::worldjob::regrow`]) has given back. The edited bit is monotone, so
+//! the only way a find can return is the sweep writing the live face itself
+//! into the cell — which the anti-dupe permits because only the sweep can:
+//! no live face is ever an item ([`BlockType::is_slottable`]), so no player
+//! can place one. A stored face is ordinary chunk data everyone sees, and
+//! [`revealed`] treats it as found at any level.
 
 use crate::block::BlockType;
 use crate::worldgen::ore;
@@ -79,9 +87,13 @@ pub fn reveal_met(node: BlockType, levels: Levels) -> bool {
 /// coordinate has ever been written. Both gates matter and neither is
 /// redundant: the host-id test is what makes a spent node stay spent, and
 /// the edit test is what stops someone placing the host back into the
-/// coordinate to regrow it. The host id also routes the query — only a
-/// Stone cell can hold a deposit, only a Wood cell heartwood, only a Sand
-/// cell a spring — so the wrong-host case costs one integer compare.
+/// coordinate to regrow it. The host id is also what [`node_at`] routes
+/// on, which is why the two questions cannot disagree.
+///
+/// A cell holding a live face OUTRIGHT — a regrown node — is found by
+/// anyone, ahead of both gates: it is stored, so every client's mesh
+/// already shows it, and a node you can see and cannot draw is the worst
+/// outcome this whole system has.
 pub fn revealed(
 	cell: u16,
 	at: (i32, i32, i32),
@@ -89,20 +101,63 @@ pub fn revealed(
 	levels: Levels,
 	edited: bool,
 ) -> Option<BlockType> {
+	let block = BlockType::try_from_id(crate::chunk::cell_id(cell))?;
+	if block.is_node_block() {
+		return Some(block);
+	}
 	if edited {
 		return None;
 	}
-	let id = crate::chunk::cell_id(cell);
-	let node = if id == BlockType::Stone as u16 {
-		ore::ore_at(at.0, at.1, at.2, seed)?
-	} else if id == BlockType::Wood as u16 {
-		heartwood_at(at.0, at.1, at.2, seed).then_some(BlockType::Heartwood)?
-	} else if id == BlockType::Sand as u16 {
-		springstone_at(at.0, at.1, at.2, seed).then_some(BlockType::Springstone)?
-	} else {
-		return None;
-	};
+	let node = node_at(block, at, seed)?;
 	reveal_met(node, levels).then_some(node)
+}
+
+/// The node worldgen puts at this coordinate IN THIS HOST — no edit bit
+/// and no level, but the same routing [`revealed`] does, because it is
+/// the routing: `revealed` asks this and then applies the two gates.
+///
+/// The host is load-bearing rather than a shortcut. Asked of the position
+/// alone the three streams overlap: a trunk's heart span is a heartwood
+/// answer at coordinates where the tree grew LEAVES, or nothing at all.
+/// The regrowth sweep is the caller that notices — it asks whether a
+/// spent face stands where its find was, and a host-blind answer would
+/// let one carried in and placed manufacture a node site.
+pub fn node_at(host: BlockType, at: (i32, i32, i32), seed: f64) -> Option<BlockType> {
+	let (x, y, z) = at;
+	match host {
+		BlockType::Stone => ore::ore_at(x, y, z, seed),
+		BlockType::Wood => heartwood_at(x, y, z, seed).then_some(BlockType::Heartwood),
+		BlockType::Sand => springstone_at(x, y, z, seed).then_some(BlockType::Springstone),
+		_ => None,
+	}
+}
+
+/// The pristine host a node of this kind manifests in — the id
+/// [`node_at`] routes on, inverted for a caller holding the KIND and
+/// asking where it could stand. Total on [`NODES`].
+///
+/// Leystone's host is Stone and not soil: it rides the ore deposit
+/// stream as its surface tier and only its reveal is on the other
+/// ladder.
+#[inline]
+pub fn host_block(node: BlockType) -> Option<BlockType> {
+	Some(match node {
+		BlockType::Emberore
+		| BlockType::Duskstone
+		| BlockType::Glowvein
+		| BlockType::Aetherock
+		| BlockType::Leystone => BlockType::Stone,
+		BlockType::Heartwood => BlockType::Wood,
+		BlockType::Springstone => BlockType::Sand,
+		_ => return None,
+	})
+}
+
+/// The kind whose draw left `face` standing — [`spent_block`]'s inverse,
+/// found over [`NODES`] rather than tabled a second time, so the two can
+/// never name different sets.
+pub fn drawn_kind(face: BlockType) -> Option<BlockType> {
+	NODES.into_iter().find(|&n| spent_block(n) == Some(face))
 }
 
 /// What a dig on one cell actually IS, for this player with this tool in
@@ -246,17 +301,34 @@ pub fn heartwood_at(x: i32, y: i32, z: i32, seed: f64) -> bool {
 const SPRING_SALT: u64 = 0x5b41_0e57_04e5_ea11;
 
 /// The share of lake- and river-bed cells that carry a spring, in 256ths.
-const SPRING_IN_256: u64 = 18;
+const SPRING_IN_256: u64 = 8;
+
+/// The share of ocean SHORELINE bed cells that carry one, in the same
+/// 256ths — rarer than the fresh beds, a find for the wader rather than
+/// a reason to work the coast. Must not exceed [`SPRING_IN_256`]: the
+/// fresh rate is the prune every column pays before it is classified,
+/// and a shore rate above it would be cut down to it silently.
+const SPRING_SHORE_IN_256: u64 = 3;
+const _: () = assert!(
+	SPRING_SHORE_IN_256 <= SPRING_IN_256,
+	"the shore rate would be pruned to the fresh one"
+);
+
+/// How much water may stand over an ocean bed for it to count as the
+/// shoreline — the wading shallows off a beach, where the find can be
+/// seen from the sand, not the open floor.
+const SHORE_DEPTH: i32 = 3;
 
 /// Does this cell hold a springstone — a charged stone in the pristine
-/// bed of standing fresh water?
+/// bed of standing water?
 ///
 /// The rate rolls first because it is a hash where the bed test is five
 /// field evaluations ([`crate::worldgen::column_shape`]); only the cells
-/// that pass pay for the classification. Lake and river beds only — the
-/// ocean is salt, and a marsh puddle is not a spring — and only the bed
-/// surface cell itself, which is what puts the find under water and makes
-/// water features destinations.
+/// that pass pay for the classification. Lake and river beds at the full
+/// rate, the ocean's shoreline shallows at the rarer one, and never the
+/// open ocean floor or a marsh puddle — and only the bed surface cell
+/// itself, which is what puts the find under water and makes water
+/// features destinations.
 pub fn springstone_at(x: i32, y: i32, z: i32, seed: f64) -> bool {
 	springstone_bed(x, z, seed) == Some(y)
 }
@@ -273,13 +345,21 @@ pub fn springstone_at(x: i32, y: i32, z: i32, seed: f64) -> bool {
 /// field evaluations, and the hash rejects all but a small share of
 /// columns before any of them run.
 pub fn springstone_bed(x: i32, z: i32, seed: f64) -> Option<i32> {
-	if ore::mix(x, 0, z, seed.to_bits(), SPRING_SALT) & 0xFF >= SPRING_IN_256 {
+	let roll = ore::mix(x, 0, z, seed.to_bits(), SPRING_SALT) & 0xFF;
+	if roll >= SPRING_IN_256 {
 		return None;
 	}
 	let s = crate::worldgen::column_shape(x, z, seed);
+	if s.water <= s.height {
+		return None;
+	}
 	use crate::worldgen::SurfaceKind;
-	(matches!(s.surface, SurfaceKind::Lake | SurfaceKind::River) && s.water > s.height)
-		.then_some(s.height)
+	let bed = match s.surface {
+		SurfaceKind::Lake | SurfaceKind::River => true,
+		SurfaceKind::Ocean => s.water - s.height <= SHORE_DEPTH && roll < SPRING_SHORE_IN_256,
+		_ => false,
+	};
+	bed.then_some(s.height)
 }
 
 #[cfg(test)]

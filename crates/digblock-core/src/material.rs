@@ -252,7 +252,11 @@ impl Material {
 		match self {
 			// The ore tiers, drawn whole at the rock face: concentrates,
 			// rising steeply with depth.
-			M::Emberore => &[(E::Ferrum, 18)],
+			// The first tier also pays Terra: it sits at surface-cave
+			// depth, where the earth-essence line is the surface hunt's,
+			// so the miner's first vein feeds the same crafts the first
+			// leystone does.
+			M::Emberore => &[(E::Ferrum, 18), (E::Terra, 9)],
 			M::Duskstone => &[(E::Ferrum, 36)],
 			// The first tier that pays Aether at all, and the reason the
 			// Resonant Pick's Aether line is payable by anyone who has
