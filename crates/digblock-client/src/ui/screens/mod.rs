@@ -276,12 +276,10 @@ mod tests {
 		)
 	}
 
-	/// The sweep's roster is hand-kept, and what keeps it honest is the
-	/// capture roster every page joins anyway: a new `DebugScreen`
-	/// variant fails to COMPILE here until this map says which fixture
-	/// draws it — or says, explicitly, that it is a held-item state and
-	/// not a page. Without this, a new screen escapes the one-text-size
-	/// and dim/panel sweeps below without anyone choosing that.
+	/// The sweep's roster is hand-kept, and what keeps it honest is the capture roster every page
+	/// joins anyway: a new `DebugScreen` variant fails to COMPILE here until this map says which
+	/// fixture draws it — or says, explicitly, that it is a held-item state and not a page.
+	/// Without this, a new screen escapes the one-text-size and dim/panel sweeps below.
 	fn fixture_of(d: crate::DebugScreen) -> Option<&'static str> {
 		use crate::DebugScreen as D;
 		match d {
@@ -334,16 +332,11 @@ mod tests {
 		assert_eq!(checked, 4);
 	}
 
-	/// Every page drawn OVER the hotbar names the slot under the pointer,
-	/// all four of them.
-	///
-	/// The bar is drawn after whichever page is open, at the window's
-	/// scale, so a page that has stepped the fit ladder is a rung smaller
-	/// and a frame has exactly one text size — which is why the naming is
-	/// the PAGE's job and not the bar's. Two pages did it and two did not,
-	/// so tabbing from the inventory to the spellbook made the names stop
-	/// working. Swept rather than spot-checked, because the page nobody
-	/// thought of is the one that bites.
+	/// Every page drawn OVER the hotbar names the slot under the pointer, all four of them. The
+	/// bar is drawn after whichever page is open, at the window's scale, so a page that stepped
+	/// the fit ladder is a rung smaller and a frame has exactly one text size — which is why the
+	/// naming is the PAGE's job and not the bar's. Swept rather than spot-checked, because the
+	/// page nobody thought of is the one that bites.
 	#[test]
 	fn every_page_over_the_bar_names_its_slots() {
 		let size = (1280u32, 800u32);
@@ -477,12 +470,10 @@ mod tests {
 		}
 	}
 
-	/// A screen is a panel over a dimmed world, and every screen should
-	/// present that the same way. The menu laid a heavier dim behind a
-	/// lighter panel while the in-game screens did the opposite — two
-	/// separate `PANEL_BG` constants that had quietly drifted apart, which
-	/// read as the pages having different transparency when you tabbed
-	/// between them.
+	/// A screen is a panel over a dimmed world, and every screen should present that the same
+	/// way. The menu laid a heavier dim behind a lighter panel while the in-game screens did the
+	/// opposite — two separate `PANEL_BG` constants that had drifted apart, which read as the
+	/// pages having different transparency when you tabbed between them.
 	#[test]
 	fn every_screen_dims_and_panels_the_same_way() {
 		use crate::ui::theme;
@@ -513,16 +504,11 @@ mod tests {
 		}
 	}
 
-	/// The invariant the whole `ui::theme` module exists to hold: a screen
-	/// draws all of its text at the frame's one text size. The alchemy
-	/// screen broke it twice at once — an enlarged title, and a
-	/// shrink-to-fit that scaled its glyph by an arbitrary fraction — and
-	/// the result was immediately visible as "the alchemy page uses
-	/// different fonts".
-	///
-	/// The only sanctioned exception in the entire UI is
-	/// [`scale::FIXED_GLYPH_PX`], the debug overlay's pinned diagnostic
-	/// size, which no screen here draws.
+	/// The invariant the whole `ui::theme` module exists to hold: a screen draws all of its text
+	/// at the frame's one text size. The alchemy screen broke it twice at once — an enlarged
+	/// title, and a shrink-to-fit that scaled its glyph by an arbitrary fraction — and read as
+	/// "the alchemy page uses different fonts". The only sanctioned exception in the entire UI is
+	/// [`scale::FIXED_GLYPH_PX`], the debug overlay's pinned size, which no screen here draws.
 	#[test]
 	fn every_screen_draws_text_at_one_size() {
 		use crate::ui::theme;
@@ -542,17 +528,10 @@ mod tests {
 					);
 					assert!(px <= want, "{name} grew its text: {px} > {want}");
 					if name.starts_with("alchemy") || name.starts_with("inventory") {
-						// The screens that can outgrow their window, so a fit
-						// pass may step the whole page down. Both draw the
-						// same inventory grid — the inventory screen with a
-						// title row on top, which makes it the TALLER of the
-						// two, and it went without a ladder long enough to
-						// hang its first row off the top of an ordinary
-						// window.
-						//
-						// What a fit pass may not do is invent a size: every
-						// step is one `theme::fit_scale` rung off the frame's
-						// own scale, not a fraction of it, and the last one is
+						// The screens that can outgrow their window, so a fit pass may
+						// step the whole page down. What a fit pass may not do is invent
+						// a size: every step is one `theme::fit_scale` rung off the
+						// frame's own scale, not a fraction of it, and the last one is
 						// `theme::FIT_FLOOR`.
 						let mut rungs: Vec<f32> = (0..16)
 							.map(|k| scale::glyph_px(s - k as f32 * 0.25))

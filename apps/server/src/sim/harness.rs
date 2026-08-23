@@ -67,12 +67,10 @@ pub(crate) fn flat_sim_at(tag: &str, spawn: Vec3) -> Sim {
 	Sim::new_with_source(SEED, &dir, 1, 2, flat_source(), spawn).unwrap()
 }
 
-/// A world that is nothing but its own floor: one stone layer at
-/// y = `BEDROCK_Y`, air all the way up. The flat world's ground stands
-/// most of a world above the floor, so a test about the floor would have to
-/// tunnel down to it first; this stands the player straight on it, which
-/// puts every cell a ray can reach within one or two blocks of the plane
-/// under audit.
+/// A world that is nothing but its own floor: one stone layer at `BEDROCK_Y`, air all the way up.
+/// The flat world's ground stands most of a world above the floor, so a test about the floor would
+/// have to tunnel down to it first; this stands the player straight on it, putting every cell a ray
+/// can reach within a block or two of the plane under audit.
 pub(crate) fn bedrock_source() -> ColumnSource {
 	Arc::new(|_cx, _cz| {
 		let mut floor = ChunkData::default();
@@ -236,12 +234,10 @@ pub(crate) fn connect_named_as(
 	c
 }
 
-/// The draw distance every harness join asks for, in columns.
-///
-/// Named because tests reason against it: a test about interest radii has
-/// to know how far "out of range" is, and one that walks a player past it
-/// has to know when to stop. Deliberately small — the sim generates every
-/// column inside it before a client goes live.
+/// The draw distance every harness join asks for, in columns. Named because tests reason against
+/// it: a test about interest radii has to know how far "out of range" is, and one that walks a
+/// player past it has to know when to stop. Deliberately small — the sim generates every column
+/// inside it before a client goes live.
 pub(crate) const JOIN_DRAW_DIST: i32 = 4;
 
 /// Like `connect` but without asserting the handshake succeeded — for
@@ -343,13 +339,11 @@ pub(crate) fn dig_hold(
 		raycast
 	};
 	let hit = cast(pos, dir, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).expect("dig target");
-	// These tests exercise the EDIT path, not the skill gates: grant every
-	// level the target asks for, whichever skill it asks it of (the
-	// dedicated gate tests drive DigStart raw). Walking `dig_requirements`
-	// rather than naming the gates means a third one is granted here for
-	// free. Callers pass base-hardness-flavored hold lengths; stretch them
-	// by the effective level's FAMILY multiplier (SIM v12) so a "full
-	// hold" stays a full hold and a deliberately-short one stays short.
+	// These tests exercise the EDIT path, not the skill gates: grant every level the target asks
+	// for, whichever skill it asks it of (the dedicated gate tests drive DigStart raw), and walking
+	// `dig_requirements` rather than naming the gates means a third one is granted here for free.
+	// Callers pass base-hardness-flavored hold lengths, so stretch them by the effective level's
+	// FAMILY multiplier: a "full hold" stays full and a deliberately-short one stays short.
 	use digblock_core::skills::Skill;
 	let mut level = sim.test_mining_level(conn_id);
 	for req in digblock_core::unlock::dig_requirements(hit.block) {
@@ -367,12 +361,10 @@ pub(crate) fn dig_hold(
 	}
 	let permille = digblock_core::skills::dig_speed_permille(hit.block.dig_family(), level);
 	let hold_ticks = (hold_ticks * permille).div_ceil(1000);
-	// The slot a real client would declare, on the inputs AND on the
-	// completing edit: whatever the bar is pointing at, which
-	// `bench_set_active_tool` moves to the tool slot exactly as selecting
-	// a tool does for a player. A Collect can only come from there by the
-	// server's own gate, so it says so outright rather than depending on
-	// a vessel having been granted.
+	// The slot a real client would declare, on the inputs AND on the completing edit: whatever the
+	// bar points at, which `bench_set_active_tool` moves to the tool slot exactly as selecting a
+	// tool does for a player. A Collect can only come from there by the server's own gate, so it
+	// says so outright rather than depending on a vessel having been granted.
 	let slot = if kind == digblock_net::messages::EditKind::Collect {
 		digblock_core::hotbar::HOTBAR_SLOTS as u8 - 1
 	} else {

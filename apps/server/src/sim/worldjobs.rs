@@ -40,15 +40,10 @@ impl CellSource for SweepWorld<'_> {
 }
 
 /// Seconds this world had already lived when the process opened it.
-///
-/// The sweep clock has to be the WORLD's age: a rolled job salts its draw
-/// with the slot index, so a clock that restarts at zero on every boot
-/// re-offers one slot's draw forever — the same finds come back and the
-/// sites that lost that roll keep losing it. The data directory's own
-/// creation is the world's birth and costs no format change to read.
-/// Where the filesystem will not say when that was, the wall clock
-/// stands in: not an age, but it has the one property this needs, which
-/// is that it does not restart.
+/// The sweep clock has to be the WORLD's age: a rolled job salts its draw with the slot index, so a
+/// clock restarting at zero on every boot re-offers one slot's draw forever, and the sites that
+/// lost that roll keep losing it. The data directory's own creation is the world's birth; where the
+/// filesystem will not say, the wall clock stands in — not an age, but it does not restart.
 pub(super) fn world_epoch_secs(data_dir: &Path) -> f64 {
 	let now = std::time::SystemTime::now();
 	let elapsed = match std::fs::metadata(data_dir).and_then(|m| m.created()) {

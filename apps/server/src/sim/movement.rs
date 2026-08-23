@@ -27,16 +27,11 @@ impl Sim {
 		};
 		for input in batch.inputs {
 			if input.tick <= client.last_input_tick && client.last_input_tick != 0 {
-				// Classify before dropping. A redundancy copy of a tick we
-				// already held is the common case and costs nothing; a tick the
-				// buffer had drained past before it arrived is an input lost for
-				// good, and the only evidence the buffer was too shallow.
-				//
-				// Deliberately NOT derived from `input.tick` against
-				// `self.tick`: the client's counter free-runs and permanently
-				// loses ticks to its own frame hitches, so that difference
-				// measures client frame pacing as much as the wire. This
-				// measures the wire alone.
+				// Classify before dropping: a redundancy copy costs nothing, but a tick the
+				// buffer drained past before it arrived is an input lost for good, and the only
+				// evidence the buffer was too shallow. Deliberately NOT derived from `input.tick`
+				// against `self.tick` — the client's counter free-runs and loses ticks to its own
+				// frame hitches, so that difference measures client pacing as much as the wire.
 				let age = client.admit_hi.wrapping_sub(input.tick);
 				if age >= 64 || client.admit_seen & (1u64 << age) == 0 {
 					client.stats.late_lost += 1;
@@ -122,17 +117,11 @@ impl Sim {
 				client.hold_ticks = 0;
 				continue;
 			}
-			// Drain toward the target jitter-buffer depth: normally one
-			// input per tick; two when the buffer has backed up.
-			//
-			// The threshold is the target ITSELF, not target + slack. It
-			// used to be `JITTER_BUFFER_TICKS` plus a slack, which only
-			// trimmed above that sum and so could never converge on the
-			// depth it names: with `CLIENT_TICK_LEAD` starting the client
-			// ahead of the server, equilibrium sat above the nominal depth
-			// and every input paid the difference on its way to adoption.
-			// `DIG_GRACE_BASE` was sized around that lag — it was paying
-			// for this.
+			// Drain toward the target jitter-buffer depth: one input per tick, two when the
+			// buffer has backed up. The threshold is the target ITSELF, not target + slack —
+			// trimming only above the sum can never converge on the depth it names, and with
+			// `CLIENT_TICK_LEAD` starting the client ahead of the server the equilibrium sits
+			// above nominal, every input paying the difference on its way to adoption.
 			let consume = if client.inputs.len() > JITTER_BUFFER_TICKS as usize {
 				2
 			} else {
@@ -151,20 +140,11 @@ impl Sim {
 			client.stats.depth_samples += 1;
 			client.stats.depth_max = client.stats.depth_max.max(depth);
 
-			// Hold a HOLE open. `pop_first` takes the lowest tick present, so a
-			// buffer missing the next tick but holding later ones steps
-			// straight past the gap and kills the missing ticks the moment they
-			// land — `handle_inputs` refuses anything at or below the mark.
-			// Waiting a few ticks for the hole to fill is the entire difference
-			// between a reordered input arriving late and one lost for good.
-			//
-			// This is a hole, not an underrun: the buffer is non-empty and the
-			// tick we want is simply not in it yet. An empty buffer falls
-			// through to the drain below and coasts.
-			//
-			// `last_input_tick != 0` is load-bearing. A fresh client's first
-			// input is tick ~CLIENT_TICK_LEAD, so every join would otherwise
-			// stall the full cap against a "hole" the size of the client's lead.
+			// Hold a HOLE open: `pop_first` takes the lowest tick present, so a buffer missing the
+			// next tick steps past the gap and kills it on arrival — `handle_inputs` refuses
+			// anything at or below the mark. A hole is not an underrun; an empty buffer falls
+			// through to the drain and coasts. `last_input_tick != 0` is load-bearing: a fresh
+			// client's first input already leads the server, so every join would stall the cap.
 			let next = client.last_input_tick.wrapping_add(1);
 			if client.last_input_tick != 0
 				&& !client.inputs.is_empty()
@@ -227,14 +207,11 @@ fn step_client(
 				&& claimed.pos.distance(before) <= max_step
 				&& !probe_solid(claimed.pos, cell_at);
 			if sane {
-				// Second gate: sustained drift. The per-tick envelope
-				// bounds instantaneous divergence; the delta-vector EWMA
-				// bounds it over time. Honest deltas are zero-mean float
-				// noise (identical physics from the same adopted state)
-				// and cancel; riding the envelope edge needs a persistent
-				// directional bias that pumps the average instead. Insane
-				// claims never feed the average — one wild claim at the
-				// streaming edge must not lock an honest client out.
+				// Second gate: sustained drift. The per-tick envelope bounds instantaneous
+				// divergence, the EWMA of claim−sim deltas bounds it over time — honest deltas
+				// are zero-mean float noise and cancel, while riding the envelope edge needs a
+				// persistent directional bias that pumps the average. Insane claims never feed
+				// it: one wild claim at the streaming edge must not lock an honest client out.
 				let delta = claimed.pos - client.player.pos;
 				client.drift = client.drift * (1.0 - DRIFT_ALPHA) + delta * DRIFT_ALPHA;
 				if client.drift.length() <= DRIFT_TOLERANCE {

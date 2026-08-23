@@ -129,13 +129,10 @@ public sealed class AccountService(MasterDb db, IOptions<MasterOptions> options,
             return null;
         if (session.RevokedUtc is not null)
         {
-            // Only a ROTATED token turning up again is a security event: it
-            // was superseded by a refresh, so a second copy of it exists.
-            // We cannot tell the thief from the victim, so the whole chain
-            // dies and both sign in again. A signed-out or cascade-revoked
-            // token turning up is an ordinary stale client — refuse it, but
-            // do not cry wolf, and do not re-kill a chain that is already
-            // dead.
+            // Only a ROTATED token replayed is a security event: a refresh superseded it, so a
+            // second copy exists, and we cannot tell the thief from the victim — the whole chain
+            // dies and both sign in again. A signed-out or cascade-revoked token is an ordinary
+            // stale client: refuse it without crying wolf, and without re-killing a dead chain.
             if (session.RevokedReason == SessionRevocation.Rotated)
             {
                 log.LogWarning(

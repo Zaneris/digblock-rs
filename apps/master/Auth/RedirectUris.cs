@@ -2,37 +2,18 @@ using System.Net;
 
 namespace DigBlock.Master.Auth;
 
-/// <summary>Decides where a finished sign-in is allowed to bounce back to.
-///
-/// The single most abusable input in the flow: whatever passes here receives a
-/// one-time code in its query string. Two shapes are allowed and nothing else.
-///
-/// <b>Loopback</b> (RFC 8252 §7.3) — a native client binds an ephemeral port,
-/// so the port cannot be registered in advance and is explicitly ignored when
-/// matching. Only literal <c>127.0.0.1</c> and <c>[::1]</c>; <c>localhost</c>
-/// is refused, both because the RFC prefers literals and because it resolves
-/// through the host's name service, which is not ours to trust.
-///
-/// <b>Configured web origins</b> — exact match.
-///
-/// A leaked code is still useless without the PKCE verifier, so this is
-/// defence in depth — but it is what keeps the master from being an open
-/// redirector.</summary>
+/// <summary>Decides where a finished sign-in may bounce back to. Whatever passes here receives a
+/// one-time code, so this is what keeps the master from being an open redirector. Two shapes and
+/// nothing else: a loopback literal (RFC 8252 §7.3), whose ephemeral port cannot be registered in
+/// advance and is ignored when matching — never <c>localhost</c>, which resolves through the
+/// host's name service; and a configured web origin, matched exactly.</summary>
 public static class RedirectUris
 {
-    /// <summary>The browser client's own origins, allowed without any
-    /// configuration.
-    ///
-    /// Hardcoded rather than configured because they belong to this project.
-    /// Config is the wrong tool for a constant: it can be forgotten on a
-    /// deploy, and when it is, sign-in fails on the web only, with a message
-    /// about an unrecognised address and nothing in the logs to connect it to a
-    /// missing environment variable.
-    ///
-    /// Naming our OWN origins costs nothing — what this list exists to exclude
-    /// is origins we do not control. <c>Master:Auth:WebRedirectUris</c> still
-    /// adds to it. Desktop needs no equivalent: a native client's loopback port
-    /// is ephemeral, so those are matched by shape below.</summary>
+    /// <summary>The browser client's own origins, allowed without configuration — hardcoded
+    /// because config is the wrong tool for a constant: forgotten on a deploy it fails sign-in on
+    /// the web alone, with nothing in the logs naming the missing variable.
+    /// <c>Master:Auth:WebRedirectUris</c> still adds to it; desktop needs no equivalent, its
+    /// ephemeral loopback port being matched by shape below.</summary>
     private static readonly string[] Owned =
     [
         "https://digblock.net/",
@@ -62,12 +43,10 @@ public static class RedirectUris
             return true;
         }
 
-        // Matched on ORIGIN — scheme, host and port — not on the path.
-        // A path is not a trust boundary: the page redeeming the code is
-        // the same page either way, and same-origin is the boundary the
-        // whole browser security model is drawn on. Matching paths too
-        // would only mean sign-in working from `/` and mysteriously not
-        // from `/index.html`.
+        // Matched on ORIGIN — scheme, host and port — not on the path. A path is not a trust
+        // boundary: the page redeeming the code is the same either way, and same-origin is the
+        // boundary the whole browser security model is drawn on. Matching paths too would only
+        // mean sign-in working from `/` and mysteriously not from `/index.html`.
         foreach (var allowed in configured.Concat(Owned))
         {
             if (Uri.TryCreate(allowed, UriKind.Absolute, out var known)

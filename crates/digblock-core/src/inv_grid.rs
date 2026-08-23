@@ -13,18 +13,11 @@ use crate::block::BlockType;
 use crate::hotbar::{HOTBAR_SLOTS, Hotbar, HotbarItem, WIRE_EMPTY};
 use crate::inventory::Inventory;
 
-/// Whole rows of the hotbar's width, enough of them to sit comfortably
-/// above the slottable block-type count, so a full collection always
-/// fits.
-///
-/// That claim used to be a comment and is now a TEST
-/// (`the_grid_holds_every_type_a_player_can_own`), because the catalog
-/// grew past the old four rows: grid plus bar held every type exactly
-/// until §7.2's later materials landed, and a player who owned one of
-/// everything would have found a good many of them with nowhere to go.
-/// The wire does not care — `from_wire` takes what it is given and pads,
-/// so a save written at the old height decodes into the current one with
-/// its arrangement intact.
+/// Whole rows of the hotbar's width, enough of them to sit comfortably above the slottable block-
+/// type count, so a full collection always fits — a claim held by the test
+/// `the_grid_holds_every_type_a_player_can_own` rather than by this comment, because the catalog
+/// has already grown past a smaller grid. The wire does not care: `from_wire` takes what it is
+/// given and pads, so a save written at the old height decodes with its arrangement intact.
 pub const GRID_SLOTS: usize = 63;
 
 #[derive(Clone, PartialEq, Eq, Debug)]
@@ -117,19 +110,11 @@ impl InvGrid {
 	}
 }
 
-/// Repair the layout against the authoritative counts: exhausted slots clear
-/// on the BAR as well as in the grid, as do grid slots whose type moved to the
-/// bar; owned types placed nowhere go to a free bar slot first and overflow
-/// into the grid. Deliberate arrangements survive — a type parked in the grid
-/// stays there. The bar sweep runs first, so the slot an exhausted type gives
-/// up is free for the same pass to fill.
-///
-/// A type that isn't [`BlockType::is_slottable`] is swept out of both whatever
-/// its count says — the ONE rule keeping water out of the item screens now
-/// that its count means "the bucket is charged", and also the migration for
-/// saves written when water was an ordinary stack. An emptied slot is RELEASED
-/// rather than kept greyed at zero, which is safe only because the engine
-/// reconciles and mirrors the layout BEFORE the frame's clicks send edits.
+/// Repair the layout against the authoritative counts: exhausted slots clear on the bar as well as
+/// the grid, unplaced owned types take a free bar slot then the grid, arrangements survive. The bar
+/// sweep runs first, so a slot an exhausted type frees refills in the same pass. A type that isn't
+/// [`BlockType::is_slottable`] is swept from both — the ONE rule keeping water out of the item
+/// screens. An emptied slot is RELEASED, safe only because the engine mirrors layout before clicks.
 pub fn reconcile_layout(inv: &Inventory, bar: &mut Hotbar, grid: &mut InvGrid) {
 	// The tool slot's second axis, which no sweep below can reach: the bar
 	// holds `WaterTool` while `Hotbar::active_tool` says WHICH tool, and
@@ -306,12 +291,10 @@ mod tests {
 		assert_eq!(grid.get(3), None);
 	}
 
-	/// A client can name any tool it likes on the `Layout` wire —
-	/// `Hotbar::from_wire` has no counts to check it against. Reconciling
-	/// is what takes an unowned one back, and it is the ONLY thing that
-	/// does: the server's pick and siphon gates read `active_tool`
-	/// directly, so a tool that survives this call is a tool that gets
-	/// used for free.
+	/// A client can name any tool it likes on the `Layout` wire — `Hotbar::from_wire` has no counts
+	/// to check it against. Reconciling is what takes an unowned one back, and it is the ONLY thing
+	/// that does: the server's pick and siphon gates read `active_tool` directly, so a tool that
+	/// survives this call is a tool that gets used for free.
 	#[test]
 	fn an_unowned_active_tool_is_taken_back() {
 		let inv = inv_of(&[(B::Dirt, 1), (B::Bucket, 1)]);

@@ -64,13 +64,10 @@ impl CharView {
 	}
 }
 
-/// The §8.2 teasers: what the next threshold above `level` opens. The
-/// prose is the screen's; every LEVEL is READ from `unlock`, never
-/// restated, so a retune moves the screen with it — the pin below then
-/// only has to check the set still matches [`unlock::opens`].
-///
-/// Where several things land on one level, the row asks for the one its
-/// sentence leads with.
+/// The §8.2 teasers: what the next threshold above `level` opens. The prose is the screen's; every
+/// LEVEL is READ from `unlock`, never restated, so a retune moves the screen with it and the pin
+/// below only has to check the set still matches [`unlock::opens`]. Where several things land on
+/// one level, the row asks for the one its sentence leads with.
 pub(super) fn teasers(skill: Skill) -> Vec<(u32, &'static str)> {
 	match skill {
 		Skill::Mining => mining_teasers(),
@@ -264,8 +261,7 @@ fn group(n: u64) -> String {
 enum Row {
 	Title,
 	Space,
-	/// One skill: name + level on the left, the XP bar right-aligned
-	/// (the settings rows' slider geometry, reused as a readout).
+	/// One skill: name and level left, the XP bar right — the settings slider reused as a readout.
 	Skill {
 		text: String,
 		frac: f32,
@@ -490,12 +486,10 @@ mod tests {
 			.collect()
 	}
 
-	/// Everything on the row is derived from the XP total rather than
-	/// remembered: the level reached, what is banked into it, what the
-	/// next one costs, and the mastery total. Asserted as those VALUES
-	/// reaching the screen, each read from the table that defines it —
-	/// the words around them are the screen's own label and may be
-	/// reworded freely without breaking this, which is the point.
+	/// Everything on the row is derived from the XP total rather than remembered: the level
+	/// reached, what is banked into it, what the next one costs, and the mastery total. Asserted as
+	/// those VALUES reaching the screen, each read from the table that defines it — the words
+	/// around them are the screen's own label and may be reworded freely without breaking this.
 	#[test]
 	fn levels_bars_and_totals_derive_from_xp() {
 		let mut skills = SkillSet::default();
@@ -574,13 +568,11 @@ mod tests {
 		}
 	}
 
-	/// Every level the CORE opens something at has prose here, DERIVED
-	/// from `unlock::opens` rather than restated — the thresholds live in
-	/// the one module that enforces them, the wording lives here, and
-	/// retuning a threshold fails this test until someone writes the
-	/// sentence for it. The extra teasers (the pace steps, the waste
-	/// floor, mastery) are levels that change a NUMBER rather than open a
-	/// recipe, so they are ours alone.
+	/// Every level the CORE opens something at has prose here, DERIVED from `unlock::opens` rather
+	/// than restated — the thresholds live in the one module that enforces them, the wording lives
+	/// here, and retuning a threshold fails this test until someone writes the sentence for it. The
+	/// extra teasers (the pace steps, the waste floor, mastery) are levels that change a NUMBER
+	/// rather than open a recipe, so they are ours alone.
 	#[test]
 	fn every_unlock_level_has_prose() {
 		use digblock_core::alchemy;

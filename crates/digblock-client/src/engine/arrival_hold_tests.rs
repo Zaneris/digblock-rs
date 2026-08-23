@@ -25,17 +25,11 @@ fn welcome() -> ServerMsg {
 	}
 }
 
-/// The join's loading cover is the hold: `Welcome` no longer closes the
-/// Connecting screen itself, so a `Welcome` that arms nothing strands
-/// the player on "Joining world..." forever — the timeout escape hatch
-/// cannot fire on a hold that was never set.
-///
-/// This shipped broken because `begin_arrival_hold` asked
-/// `self.session.client.is_some()`, and its only two call sites are `pump_net`
-/// arms — where the connection is owned by value (`self.session.client.take()`)
-/// and the field always reads `None`. So drive the real event path
-/// rather than calling the helper: a unit test of the helper alone
-/// passes against exactly the bug it is meant to catch.
+/// The join's loading cover is the hold: `Welcome` no longer closes the Connecting screen itself,
+/// so a `Welcome` that arms nothing strands the player there forever — the timeout escape hatch
+/// cannot fire on a hold that was never set. Drive the real event path rather than calling
+/// `begin_arrival_hold`: its `self.session.client.is_some()` guard always reads `None` from
+/// `pump_net`'s arms, so a unit test of the helper alone passes against the bug it must catch.
 #[test]
 fn welcome_arms_the_arrival_hold_and_area_ready_releases_it() {
 	let mut config = EngineConfig::desktop();

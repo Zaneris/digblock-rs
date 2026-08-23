@@ -24,18 +24,15 @@ use crate::ui::{HitMap, InvId, Rect, theme};
 /// (move-not-duplicate, WaterTool protection).
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum InvAction {
-	/// Grid → bar drop: assign `block` to bar `slot` (the source grid
-	/// slot clears via reconcile).
+	/// Grid → bar drop: assign `block` to bar `slot` (the source grid slot clears via reconcile).
 	Assign { slot: usize, block: BlockType },
 	/// Bar → bar drop.
 	SwapBar { a: usize, b: usize },
-	/// Bar → grid drop: the item lands in exactly `grid_slot`, swapping
-	/// with any occupant (which takes the vacated bar slot).
+	/// Bar → grid drop: lands in exactly `grid_slot`, swapping with any occupant into the bar slot.
 	PlaceGrid { bar_slot: usize, grid_slot: usize },
 	/// Grid → grid drop: move/swap between two grid slots.
 	MoveGrid { from: usize, to: usize },
-	/// Bar → nothing drop: unassign (core refuses the tool); the item
-	/// re-files into the first free grid slot.
+	/// Bar → nothing drop: unassign (core refuses the tool); the item re-files into the grid.
 	ClearBar { slot: usize },
 }
 
@@ -65,13 +62,11 @@ impl InvScreen {
 		self.drag.cancel();
 	}
 
-	/// The grid: as many columns as the hotbar has slots, at the drawn
-	/// style's own slot size, over however many rows `GRID_SLOTS` fills.
-	/// The bar's column count because the grid is aligned to the bar, not
-	/// merely the same shape as it. Takes a `Style` rather than a bare
-	/// scale because the fit ladder may draw the page at a smaller one
-	/// than the frame's, and the measure pass has to ask about candidate
-	/// scales; `origin` is set per-build (see [`InvScreen::build`]).
+	/// The grid: as many columns as the hotbar has slots, at the drawn style's own slot size, over
+	/// however many rows `GRID_SLOTS` fills. The bar's column count because the grid is aligned to
+	/// the bar, not merely the same shape as it. Takes a `Style` rather than a bare scale because
+	/// the fit ladder may draw the page at a smaller one than the frame's; `origin` is set
+	/// per-build (see [`InvScreen::build`]).
 	fn grid_spec_at(style: &Style, origin: (f32, f32)) -> GridSpec {
 		Self::grid_spec_cols(style, origin, HOTBAR_SLOTS)
 	}
@@ -87,23 +82,11 @@ impl InvScreen {
 		}
 	}
 
-	/// How many columns to lay `GRID_SLOTS` out in, given the height actually
-	/// available for the grid.
-	///
-	/// Normally the bar's own count, which is what puts each column over the
-	/// slot it drops into. But the ladder bottoms out ([`theme::FIT_FLOOR`]) and
-	/// a small enough window at a large enough interface scale still has no room
-	/// for seven rows — and the page has already given up bar alignment by then,
-	/// because a fitted page CENTRES. So the same slots go into fewer, longer
-	/// rows instead.
-	///
-	/// Fewer rows and not smaller boxes, which is the whole argument: the glyph
-	/// size has a floor, so buying height by stepping below it shrinks every box
-	/// around text that cannot follow.
-	///
-	/// Never NARROWER than the bar: a page with room to spare must lay out
-	/// exactly as it always did, so the normal case comes out of the same
-	/// expression rather than being special-cased around it.
+	/// How many columns to lay `GRID_SLOTS` out in, given the height actually available for it.
+	/// Normally the bar's own count, which puts each column over the slot it drops into; but the
+	/// ladder bottoms out ([`theme::FIT_FLOOR`]) and a fitted page CENTRES anyway, so the same
+	/// slots go into fewer, longer rows — never NARROWER than the bar, and fewer rows rather than
+	/// smaller boxes, because the glyph size has a floor.
 	fn reflow(style: &Style, grid_budget: f32) -> usize {
 		let (cell, gap) = (hud::SLOT_PX * style.scale, hud::SLOT_GAP * style.scale);
 		let full_rows = GRID_SLOTS.div_ceil(HOTBAR_SLOTS);
@@ -112,16 +95,11 @@ impl InvScreen {
 		HOTBAR_SLOTS.max(GRID_SLOTS.div_ceil(rows))
 	}
 
-	/// The panel's content height: one title row over the grid. The
-	/// measure half of [`InvScreen::build`]'s layout — `fit_scale` calls
-	/// it at candidate scales, so it must derive everything from the
-	/// style it is handed and read nothing already committed at the
-	/// frame's own.
-	///
-	/// Measured at the BAR's column count, never a reflowed one: this is
-	/// what the ladder steps against, and a height that shrank as the grid
-	/// re-shaped would stop the ladder stepping at all. Reflow is the last
-	/// resort AFTER the ladder has spent itself, not an alternative to it.
+	/// The panel's content height: one title row over the grid. The measure half of
+	/// [`InvScreen::build`]'s layout — `fit_scale` calls it at candidate scales, so it must derive
+	/// everything from the style it is handed and read nothing already committed at the frame's.
+	/// Measured at the BAR's column count, never a reflowed one: a height that shrank as the grid
+	/// re-shaped would stop the ladder stepping at all, and reflow is the last resort after it.
 	fn content_h(style: &Style) -> f32 {
 		theme::ROW_H * style.scale + Self::grid_spec_at(style, (0.0, 0.0)).extent(GRID_SLOTS).1
 	}
@@ -149,18 +127,11 @@ impl InvScreen {
 			widgets::scaled_dim(theme::SCREEN_DIM, daylight),
 		);
 
-		// The slot rows and a title band make a page taller than a short window
-		// at a big interface scale has to give: the panel's top edge crosses
-		// the top of the window, and further up the scale the first row of
-		// slots goes with it and cannot be clicked at all. This screen ran off
-		// the TOP once the grid gained its extra rows, because it positioned
-		// itself by subtraction from the bar and never checked.
-		//
-		// So it walks the same ladder the alchemy screen does: the WHOLE style
-		// steps down a rung at a time, re-measured per rung, never a fractional
-		// glyph. The bar is not ours to shrink — it is drawn after us at the
-		// frame's own scale — so every measurement taken against it stays in
-		// `window_scale`.
+		// The slot rows and a title band make a page taller than a short window at a big
+		// interface scale has to give — this screen ran off the TOP once the grid gained its
+		// extra rows. So it walks the same ladder the alchemy screen does: the WHOLE style steps
+		// down a rung at a time, re-measured per rung, never a fractional glyph. The bar is not
+		// ours to shrink, so every measurement taken against it stays in `window_scale`.
 		let bar = hud::row_grid(size, window_scale);
 		let budget = bar.origin.1 - (theme::GAP_ABOVE_BAR + theme::TOP_MARGIN) * window_scale;
 		let needed = |s: f32| Self::content_h(&Style::new(s)) + 2.0 * theme::PAD * s;
@@ -181,13 +152,10 @@ impl InvScreen {
 		let grid_budget = budget - title_h - 2.0 * pad;
 		let cols = Self::reflow(&ui.style, grid_budget);
 		let (row_w, grid_h) = Self::grid_spec_cols(&ui.style, (0.0, 0.0), cols).extent(GRID_SLOTS);
-		// The left column is the BAR's, so the grid's cells land on the
-		// slots they drop into. That alignment only exists while the two
-		// share a scale, though: once the ladder has stepped there is
-		// nothing left to align to, and hanging a narrower panel off the
-		// bar's rail would follow it off the window — on a small window at
-		// a large interface scale the bar's own first column sits off the
-		// left edge. A fitted page therefore centres, like every other
+		// The left column is the BAR's, so the grid's cells land on the slots they drop into.
+		// That alignment only exists while the two share a scale: once the ladder has stepped
+		// there is nothing left to align to, and hanging a narrower panel off the bar's rail
+		// would follow it off the window. A fitted page therefore centres, like every other
 		// screen.
 		let row_x = if fitted == window_scale {
 			bar.origin.0

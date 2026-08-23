@@ -328,16 +328,11 @@ mod tests {
 		assert!(t.take_look().x > 10.0);
 	}
 
-	/// A finger never lands and holds perfectly still, so the drift it
-	/// makes while the dig hold arms must not be waiting to be spent as
-	/// look the moment the hold lands. It measured as a camera snap on
-	/// the first fine-aim of every dig: sub-slop movement left `last` at
-	/// the touch-down point, and the first Moved after the promotion
-	/// billed the whole of it at once.
-	///
-	/// Pinned as an inequality against the same gesture with no settling
-	/// in it rather than against a number, because what is wrong here is
-	/// double-counting, not a magnitude.
+	/// A finger never lands and holds perfectly still, so the drift it makes while the dig hold
+	/// arms must not be waiting to be spent as look the moment the hold lands: sub-slop movement
+	/// left `last` at the touch-down point, and the first Moved after the promotion billed the
+	/// whole of it at once. Pinned as an inequality against the same gesture with no settling, not
+	/// against a number, because what is wrong is double-counting rather than a magnitude.
 	#[test]
 	fn settling_before_a_dig_is_not_banked_as_look() {
 		let aim = |settle: f32| {

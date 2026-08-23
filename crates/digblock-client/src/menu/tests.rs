@@ -1227,16 +1227,10 @@ fn screen_name(s: &Screen) -> &'static str {
 	}
 }
 
-/// Every page a finger can reach, for the two touch rules that have to hold
-/// on all of them: it can be backed out of, and it never names a key.
-///
-/// Swept rather than spot-checked because both rules are about the pages
-/// nobody thought of. The server browser was the one that bit — its only
-/// exit was an Escape it advertised in a hint line, on a device with no
-/// Escape and no hint worth reading.
-///
-/// The sweep proves its own completeness at the end: every `Screen` variant
-/// `screen_name` knows about has to have been visited, so a page added later
+/// Every page a finger can reach, for the two touch rules that have to hold on all of them: it can
+/// be backed out of, and it never names a key. Swept rather than spot-checked because both rules
+/// are about the pages nobody thought of. The sweep proves its own completeness at the end: every
+/// `Screen` variant `screen_name` knows about has to have been visited, so a page added later
 /// fails to compile there and fails the coverage assert here.
 fn every_touch_page(mut visit: impl FnMut(&mut Menu, &str)) {
 	use std::collections::BTreeSet;

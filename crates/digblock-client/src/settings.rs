@@ -9,22 +9,18 @@
 pub const DRAW_MIN: i32 = 10;
 pub const DRAW_MAX: i32 = 32;
 pub const DRAW_STEP: i32 = 2;
-/// The absolute floor `clamped` accepts, and the slider minimum on a
-/// platform whose GPU has not proven it can afford `DRAW_MIN`
-/// (`EngineConfig::draw_min` — mobile web today). On `DRAW_MIN`'s own
-/// step grid, so lowering the floor moves no existing value. Accepted by
-/// `clamped` on EVERY platform: the same browser can flip between the
-/// mobile and desktop profiles across sessions over one saved file, and
-/// a value legal where it was written must survive being read anywhere.
+/// The absolute floor `clamped` accepts, and the slider minimum on a platform whose GPU has not
+/// proven it can afford `DRAW_MIN` (`EngineConfig::draw_min` — mobile web today). On `DRAW_MIN`'s
+/// own step grid, so lowering the floor moves no existing value. Accepted by `clamped` on EVERY
+/// platform: the same browser can flip between the mobile and desktop profiles across sessions
+/// over one saved file, and a value legal where it was written must survive being read anywhere.
 pub const DRAW_FLOOR: i32 = 6;
 
-/// Light-Sources slider bounds: a runtime cap on the GI light list. The
-/// maximum IS the list's compile-time capacity — derived, so the slider
-/// cannot offer a rung the buffer was not sized for. The resolve's NEE
-/// scans the whole list per pixel, which is why this is the knob that
-/// bounds what a torch field or a cave wall of revealed veins can cost;
-/// under the cap the nearest-to-the-view survivors win
-/// (`gi::select_lights`).
+/// Light-Sources slider bounds: a runtime cap on the GI light list. The maximum IS the list's
+/// compile-time capacity — derived, so the slider cannot offer a rung the buffer was not sized
+/// for. The resolve's NEE scans the whole list per pixel, which is why this bounds what a torch
+/// field or a cave wall of revealed veins can cost; under the cap the nearest-to-the-view
+/// survivors win (`gi::select_lights`).
 pub const LIGHT_CAP_MIN: i32 = 64;
 pub const LIGHT_CAP_STEP: i32 = 64;
 pub const LIGHT_CAP_MAX: i32 = crate::gi::MAX_LIGHTS as i32;
@@ -34,36 +30,20 @@ pub const LIGHT_CAP_MAX: i32 = crate::gi::MAX_LIGHTS as i32;
 pub const VOL_MAX: f32 = 2.0;
 pub const VOL_STEP: f32 = 0.1;
 
-/// Render-scale bounds. **No slider exposes this today** — render scale is
-/// locked at native for players and only `--render-scale` / `?renderscale=`
-/// move it, because the upscale is a plain bilinear blit: notching it down
-/// measured an image delta orders of magnitude worse than the GI notch that
-/// buys the same time (BENCH.md 2026-08-12). The whole path stays built,
-/// wired and reachable from the flag so it does not rot, and re-exposing it
-/// is a slider row plus an EASU/RCAS filter in the upscale pass.
-///
-/// `RENDER_SCALE_STEP` is what that row would step by; it is unused while
-/// the row is hidden.
+/// Render-scale bounds. **No slider exposes this today** — render scale is locked at native for
+/// players and only `--render-scale` / `?renderscale=` move it, because the upscale is a plain
+/// bilinear blit: notching it down measured an image delta orders of magnitude worse than the GI
+/// notch that buys the same time (BENCH.md 2026-08-12). The path stays wired so it does not rot;
+/// re-exposing it is a slider row plus an EASU/RCAS filter, which `RENDER_SCALE_STEP` waits for.
 pub const RENDER_SCALE_MIN: f32 = 0.5;
 pub const RENDER_SCALE_MAX: f32 = 1.0;
 pub const RENDER_SCALE_STEP: f32 = 0.05;
 
-/// GI-scale notches: the GI resolve and à-trous run at
-/// `render_size / GI_SCALE_DIVISORS[i]`.
-///
-/// DIVISORS, not a continuous slider, and that is forced rather than chosen:
-/// `chunk.wgsl`'s bilateral upsample is a 4-tap gather at render resolution, so
-/// the render:GI ratio has to be a clean integer or the footprint it walks stops
-/// matching the texels it reads. It is also why GI scale is expressed against
-/// the RENDER size and not the surface — anchored to native instead, a fractional
-/// render scale under a halved GI would ask for a non-integer ratio.
-///
-/// Full-resolution GI is deliberately not a rung: behind the à-trous filter
-/// and the bilateral upsample it buys almost no visible picture for the
-/// largest GPU-time and memory step the slider could take (BENCH.md
-/// 2026-08-12) — at retina fullscreen its accumulators are big enough to
-/// destabilize a browser's GPU process. It stays reachable from the capture
-/// levers, which is where GI-DESIGN.md's heavy-cost brackets are taken.
+/// GI-scale notches: the GI resolve and à-trous run at `render_size / GI_SCALE_DIVISORS[i]`.
+/// DIVISORS rather than a continuous slider, and forced: `chunk.wgsl`'s bilateral upsample is a
+/// 4-tap gather at render resolution, so the render:GI ratio must be a clean integer — which is
+/// also why GI scale is expressed against the RENDER size, not the surface. Full resolution is
+/// deliberately not a rung; it buys almost no picture for the largest step (BENCH.md 2026-08-12).
 pub const GI_SCALE_DIVISORS: [u32; 3] = [2, 3, 4];
 pub const GI_SCALE_DEFAULT: u32 = 2;
 
@@ -142,17 +122,11 @@ impl Default for Settings {
 	}
 }
 
-/// The `gi_scale_div` to START an interactive session at, from the display's
-/// backing scale. Applied once, and only when the player has expressed no
-/// preference — see `EngineConfig::gfx_defaults_auto`.
-///
-/// A high-density panel spends a multiple of its logical window's pixels, and
-/// the GI resolve is the largest term in that frame. **Which** term gives is a
-/// measured call, not a taste one: the interleaved A/B in BENCH.md 2026-08-12
-/// has a render-scale notch and a GI-scale notch buying the SAME time, with the
-/// GI notch costing orders of magnitude less picture, because the a-trous filter
-/// and the bilateral upsample already reconstruct that signal. So a dense
-/// display keeps the world at NATIVE resolution and drops lighting detail.
+/// The `gi_scale_div` to START an interactive session at, from the display's backing scale.
+/// Applied once, and only when the player has expressed no preference — see
+/// `EngineConfig::gfx_defaults_auto`. Which term gives on a dense panel is a measured call: the
+/// interleaved A/B in BENCH.md 2026-08-12 has a render-scale notch and a GI-scale notch buying
+/// the SAME time, the GI notch costing far less picture. So a dense display stays NATIVE.
 pub fn density_gi_div(backing_scale: f32) -> u32 {
 	if backing_scale >= 1.5 {
 		3

@@ -25,15 +25,11 @@ fn flat_world(x: i32, y: i32, z: i32) -> Option<u16> {
 	})
 }
 
-/// The anchor each seed resolves to. A drift here means players of an
-/// existing world wake up somewhere else, so these move only for a
-/// deliberate rule change — never as a side effect.
+/// The anchor each seed resolves to. A drift here means players of an existing world wake up
+/// somewhere else, so these move only for a deliberate rule change — never as a side effect.
 ///
-/// Last moved when the disc test became a real levelness check: the
-/// old rule permitted neighbours at `h + 1` and said nothing about
-/// neighbours below `h`, so spawns could sit boxed in by rock at head
-/// height or on the lip of a drop. Requiring a level disc relocated
-/// most seeds (`8675309` happened to already satisfy it).
+/// Last moved when the disc test became a real levelness check: the old rule permitted neighbours
+/// at `h + 1` and said nothing about those below `h`, so spawns could sit boxed in or on a lip.
 #[test]
 fn spawn_positions_are_pinned() {
 	for (seed, want) in [
@@ -665,14 +661,11 @@ fn built_flight(x: i32, y: i32, z: i32) -> Option<u16> {
 /// spent continuously.
 const RAMP_DY: f32 = super::MOUNT_RATE * TICK;
 
-/// Walking a flight is ONE continuous climb, not a series of hops: the
-/// feet move at the rate the ramp under them carries the walk, every
-/// tick, in both directions — never faster, and never backwards.
-/// Ascent failed both halves before SIM v10: merely brushing the next
-/// step's cell popped the feet a full RADIUS early — many times the
-/// honest per-tick rise — and the downhill glue then clawed them back
-/// onto the step below. Held for both flight styles — risers under the
-/// treads, and the floating diagonal.
+/// Walking a flight is ONE continuous climb, not a series of hops: the feet move at the rate the
+/// ramp under them carries the walk, every tick, in both directions — never faster, and never
+/// backwards. Ascent failed both halves before SIM v10: brushing the next step's cell popped the
+/// feet a full RADIUS early, many times the honest per-tick rise, and the downhill glue then
+/// clawed them back onto the step below. Held for both flight styles.
 #[test]
 fn stair_flight_climbs_at_a_constant_rate() {
 	for (name, world) in [
@@ -975,14 +968,11 @@ fn slab_stack_world(x: i32, y: i32, z: i32) -> Option<u16> {
 	}
 }
 
-/// A step up is the same motion as a stair: the feet rise at the
-/// ramp rate, no faster, and the mount lands exactly as the axis
-/// crosses onto the block. Before SIM v10 each rise was a one-tick
-/// teleport of the whole `AUTO_STEP_MAX` — the jarring pop this pins
-/// against. Every intermediate state must also pass `overlaps_solid`:
-/// a rate-limited mount spends its ticks with the capsule inside the
-/// side of the box it climbs, and the server's envelope probes
-/// exactly these.
+/// A step up is the same motion as a stair: the feet rise at the ramp rate, no faster, and the
+/// mount lands exactly as the axis crosses onto the block. Before SIM v10 each rise was a one-tick
+/// teleport of the whole `AUTO_STEP_MAX` — the jarring pop this pins against. Every intermediate
+/// state must also pass `overlaps_solid`: a rate-limited mount spends its ticks with the capsule
+/// inside the side of the box it climbs, and the server's envelope probes exactly these.
 #[test]
 fn slab_steps_mount_at_the_ramp_rate() {
 	let mut p = Player::new(Vec3::new(10.5, GROUND_EYE, 0.5));
@@ -1027,18 +1017,11 @@ fn slab_steps_mount_at_the_ramp_rate() {
 	);
 }
 
-/// The mount budget must not turn a LANDING into a slow sink: arriving
-/// downward faster than a mount climbs keeps the flat-bottomed snap.
-/// Dropped onto the very edge of a slab, the feet land on top of it
-/// and never end a tick below its surface.
-/// The mount budget must not turn a LANDING into a slow sink: arriving
-/// downward faster than a mount climbs keeps the flat-bottomed snap.
-/// Dropped onto the very edge of a slab — axis off the box, so the
-/// mount gates would otherwise all pass — the feet must never end a
-/// tick below its surface, at any drop height. The sweep matters: how
-/// far the first contacting tick overshoots the top depends on the
-/// phase of the fall, and only the deep overshoots exceed one tick of
-/// mount budget.
+/// The mount budget must not turn a LANDING into a slow sink: arriving downward faster than a
+/// mount climbs keeps the flat-bottomed snap. Dropped onto the very edge of a slab — axis off the
+/// box, so the mount gates would otherwise all pass — the feet must never end a tick below its
+/// surface, at any drop height. The sweep matters: how far the first contacting tick overshoots
+/// the top depends on the phase of the fall, and only the deep overshoots exceed one tick.
 #[test]
 fn fast_fall_onto_a_slab_edge_lands_flat() {
 	let world = |x: i32, y: i32, z: i32| -> Option<u16> {

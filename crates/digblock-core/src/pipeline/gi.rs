@@ -20,12 +20,10 @@ impl Pipeline {
 			.is_some_and(|c| gi_in_window(pos, c, window_chunks))
 	}
 
-	/// Scroll the GI window: when the camera crosses a chunk boundary,
-	/// re-dirty every resident chunk that just ENTERED the half-extent —
-	/// its window texels still hold whatever far column aliased there
-	/// while it was out of range. The strip that left needs nothing:
-	/// reads are lateral-capped to the half-extent, so its stale texels
-	/// are unreachable until it re-enters (and re-dirties here).
+	/// Scroll the GI window: when the camera crosses a chunk boundary, re-dirty every resident
+	/// chunk that just ENTERED the half-extent — its window texels still hold whatever far column
+	/// aliased there while it was out of range. The strip that left needs nothing: reads are
+	/// lateral-capped to the half-extent, so its stale texels are unreachable until it re-enters.
 	pub fn gi_recenter(&mut self, center: ChunkPos, window_chunks: i32) {
 		let c = (center.x, center.z);
 		let old = self.gi_center;

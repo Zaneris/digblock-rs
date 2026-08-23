@@ -21,14 +21,10 @@ fn admin_sim(tag: &str) -> Sim {
 	sim
 }
 
-/// Admin is an ACCOUNT decision. Two things follow, and both used to be
-/// false: sharing the admin's display name grants nothing, and the
-/// admin keeps their commands after a rename.
-///
-/// The name compare this replaced made `--admin-name admin` plus a join
-/// under the name "admin" a complete server takeover. The
-/// impersonation half of that is what the second assertion
-/// here pins.
+/// Admin is an ACCOUNT decision. Two things follow: sharing the admin's display name grants
+/// nothing — a name compare instead would make joining under the name "admin" a complete server
+/// takeover, and the impersonation half is what the second assertion here pins — and the admin
+/// keeps their commands after a rename.
 #[test]
 fn admin_keys_on_the_account_not_the_name() {
 	let mut sim = admin_sim("adminacct");
@@ -112,12 +108,10 @@ fn admin_gets_command_advertisement_others_do_not() {
 	);
 }
 
-/// `/reset` walks a levelled, stocked player back to minute one:
-/// skills zeroed and re-synced wholesale (the client re-reveals ore
-/// from a `Skills` frame, so a level drop un-reveals), every count
-/// wiped — the crafted bucket included, which is the point: the
-/// fresh-player opening can be walked without minting an account —
-/// and the layout swept by the same reconcile both ends run.
+/// `/reset` walks a levelled, stocked player back to minute one: skills zeroed and re-synced
+/// wholesale (the client re-reveals ore from a `Skills` frame, so a level drop un-reveals), every
+/// count wiped — the crafted bucket included, which is the point: the fresh-player opening can be
+/// walked without minting an account — and the layout swept by the same reconcile both ends run.
 #[test]
 fn reset_returns_a_player_to_minute_one() {
 	use digblock_core::block::{BlockType, Essence};
@@ -194,20 +188,10 @@ fn reset_returns_a_player_to_minute_one() {
 	);
 }
 
-/// Every essence is spellable by its own identifier, and nothing else
-/// is taken.
-///
-/// The vocabulary used to be advertised as a THIRD copy beside
-/// `parse_essence` and `Essence::ident`, and when the essences took
-/// their reagent names only the parser moved: `/give bob earth 100`
-/// answered "earth is not an essence" and then offered `earth`. The
-/// advertisement now lives in `voice`, built from `Essence::ALL` at the
-/// moment it is drawn, so that drift is no longer expressible — what is
-/// left to check here is the half the server still owns: the parser
-/// takes every identifier and refuses what is not one.
-///
-/// The rendered half is pinned client-side by
-/// `voice::the_give_usage_names_every_essence`.
+/// Every essence is spellable by its own identifier, and nothing else is taken. The parser is the
+/// half the server still owns; the advertised vocabulary lives in `voice`, built from
+/// `Essence::ALL` at the moment it is drawn, so the two cannot drift. The rendered half is pinned
+/// client-side by `voice::the_give_usage_names_every_essence`.
 #[test]
 fn give_only_advertises_essences_it_accepts() {
 	use super::parse_essence;

@@ -51,17 +51,11 @@ impl WaystoneStore {
 		Ok(store)
 	}
 
-	/// A roster resolved under an older placement rule is discarded so
-	/// boot re-places it — the one thing that may move a stored site,
-	/// and the reason `PLACEMENT_RULE` exists. Destructive, and
-	/// server-only like its journal sibling: the old file is archived
-	/// under the rule it was written for, and the re-placement is
-	/// written through immediately so a boot that resolves nothing
-	/// cannot archive twice.
-	///
-	/// The structures the old sites stamped stay standing as ordinary,
-	/// now-unprotected edits — the same answer `/set-spawn` gives when
-	/// it moves spawn out from under a pad.
+	/// A roster resolved under an older placement rule is discarded so boot re-places it — the one
+	/// thing that may move a stored site, and the reason `PLACEMENT_RULE` exists. Destructive and
+	/// server-only like its journal sibling: the old file is archived under the rule it was
+	/// written for, and the re-placement written through immediately so a boot that resolves
+	/// nothing cannot archive twice. The old sites' structures stay standing as unprotected edits.
 	fn migrate(&mut self) {
 		let rule = digblock_core::waystones::PLACEMENT_RULE;
 		if self.cfg.rule == rule {

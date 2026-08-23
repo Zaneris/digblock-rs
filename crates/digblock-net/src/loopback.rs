@@ -63,15 +63,11 @@ impl LoopbackEnd {
 		d.delay_pumps = delay_pumps;
 	}
 
-	/// Close this end: the PEER's next `poll` drains whatever is already
-	/// queued and then reports `Disconnected`.
-	///
-	/// Without this the loopback transport could not express a disconnect
-	/// at all — `status` was hardcoded to `Connected` and `poll` never
-	/// emitted the event — so no in-process test could exercise anything
-	/// the client does after `Welcome` when a connection dies. That is
-	/// exactly the path the liveness deadline and the native transport's
-	/// dead-thread detection live on.
+	/// Close this end: the PEER's next `poll` drains whatever is already queued and then reports
+	/// `Disconnected`. This is the only way the loopback transport can express a disconnect, and so
+	/// the only way an in-process test reaches what the client does after `Welcome` when a
+	/// connection dies — the path the liveness deadline and the native transport's dead-thread
+	/// detection live on.
 	pub fn close(&mut self, reason: &str) {
 		self.tx.lock().unwrap().closed = Some(reason.to_string());
 	}

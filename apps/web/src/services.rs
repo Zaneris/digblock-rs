@@ -38,12 +38,9 @@ struct ListServer {
 	max_players: u32,
 }
 
-/// A player count, clamped rather than rejected.
-///
-/// The master types these as `int` and (until recently) range-checked
-/// neither, so a server could register `players: -1`. Decoding straight
-/// into `u32` fails the WHOLE `ListResponse`, which means one bad row —
-/// hostile or merely buggy — hides every server on the master from every
+/// A player count, clamped rather than rejected. The master types these as `int`, so a server can
+/// register `players: -1`; decoding straight into `u32` fails the WHOLE `ListResponse`, which
+/// means one bad row — hostile or merely buggy — hides every server on the master from every
 /// client. A count is display text next to a name; it is not worth that.
 fn lenient_count<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
 	let n = i64::deserialize(d)?;
@@ -251,15 +248,11 @@ async fn join(
 	))
 }
 
-/// Decode the master's hex join token.
-///
-/// The ASCII-hex check is load-bearing, not belt-and-braces: `hex.len()` is
-/// BYTES, so a string of the right BYTE length carrying a multi-byte
-/// character passes the length gate and then panics on
-/// `&hex[i * 2..i * 2 + 2]`, which splits it mid-codepoint — aborting the
-/// wasm module. `?master=` is attacker-supplied in any shared link, so this
-/// needs no compromise to reach. `parse_sha256_hex` beside it has always
-/// filtered first; this now matches it.
+/// Decode the master's hex join token. The ASCII-hex check is load-bearing, not belt-and-braces:
+/// `hex.len()` is BYTES, so a string of the right BYTE length carrying a multi-byte character
+/// passes the length gate and then panics on a slice that splits it mid-codepoint, aborting the
+/// wasm module. `?master=` is attacker-supplied in any shared link, so this needs no compromise
+/// to reach.
 fn parse_token(hex: &str) -> Result<[u8; 16], String> {
 	if hex.len() != 32 {
 		return Err(format!("bad token length {}", hex.len()));

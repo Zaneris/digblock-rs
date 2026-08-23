@@ -1,24 +1,18 @@
-//! Compiles every shader in `digblock_assets::shader::ALL` with the WGSL front
-//! end that actually ships, by handing them to a headless Chrome.
+//! Compiles every shader in `digblock_assets::shader::ALL` with the WGSL front end that actually
+//! ships, by handing them to a headless Chrome.
 //!
-//! **Why this is not the naga test.** `shaders_parse_and_validate` in
-//! digblock-assets is naga, and naga is the PERMISSIVE end. Chrome uses Tint,
-//! which rejects things naga accepts, and the failure mode is the worst one
-//! available: a whole invalidated pipeline, in the browser only, with every
-//! native gate green. That has shipped twice — `pass` as a reserved word, and
-//! `highlight.wgsl` mixing `*` and `^` unparenthesized, which cost the block
-//! outline and the dig crack on web. Both were found by a person loading the
-//! page.
+//! **Why this is not the naga test.** `shaders_parse_and_validate` in digblock-assets is naga, the
+//! PERMISSIVE end; Chrome uses Tint, which rejects things naga accepts, and the failure mode is
+//! the worst available — a whole invalidated pipeline, in the browser only, with every native
+//! gate green.
 //!
-//! **Why a browser rather than a `tint` binary.** Dawn publishes no standalone
-//! tint executable, so the choice was building Dawn from source or driving the
-//! browser. The browser is also the more honest answer: a pinned tint can drift
-//! from the Chrome a player is running.
+//! **Why a browser rather than a `tint` binary.** Dawn publishes no standalone tint executable,
+//! and a pinned one could drift from the Chrome a player is running.
 //!
-//! **What it does NOT cover.** Shader modules only. A module that compiles can
-//! still fail at pipeline creation, where bindings are matched against layouts;
-//! `every_pipeline_builds_without_a_gpu` in digblock-client is the other half,
-//! and it runs on naga. Neither subsumes the other.
+//! **What it does NOT cover.** Shader modules only; a module that compiles can still fail at
+//! pipeline creation, where bindings are matched against layouts.
+//! `every_pipeline_builds_without_a_gpu` in digblock-client is the other half and runs on naga —
+//! neither subsumes the other.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -28,12 +22,9 @@ use std::process::Command;
 /// chatter and is ignored.
 const MARK: &str = "@@SC@@";
 
-/// A WGSL body as a JavaScript string literal.
-///
-/// `<` is escaped unconditionally rather than only where it could close the
-/// script block: WGSL is full of `<` (generics, comparisons, shifts), and
-/// deciding which ones are safe is a parsing problem this does not need to
-/// have.
+/// A WGSL body as a JavaScript string literal. `<` is escaped unconditionally rather than only
+/// where it could close the script block: WGSL is full of `<` (generics, comparisons, shifts),
+/// and deciding which ones are safe is a parsing problem this does not need to have.
 fn js_string(s: &str) -> String {
 	let mut out = String::with_capacity(s.len() + s.len() / 8);
 	out.push('"');
@@ -154,13 +145,10 @@ fn main() {
 		std::process::exit(1);
 	}
 
-	// Chrome is READ, not awaited. A headless run that has finished its
-	// work does not necessarily exit — `--dump-dom` wants a virtual-time
-	// budget that real GPU waits can stall, and `window.close()` leaves
-	// the process up — so both of those hang for as long as you let them.
-	// The harness announces its own end instead, and the browser is killed
-	// the moment it does, which also makes the deadline below a real
-	// bound rather than a hope.
+	// Chrome is READ, not awaited. A headless run that has finished its work does not necessarily
+	// exit — `--dump-dom` wants a virtual-time budget that real GPU waits can stall, and
+	// `window.close()` leaves the process up. The harness announces its own end instead and the
+	// browser is killed the moment it does, which also makes the deadline below a real bound.
 	let mut child = match Command::new(&chrome)
 		.args([
 			"--headless=new",

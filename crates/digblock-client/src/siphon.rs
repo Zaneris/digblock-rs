@@ -1,30 +1,18 @@
-//! The essence draw: what the Essence Siphon looks like while it works. Motes
-//! of the vein's own colour lift off the rock face and stream into the tool,
-//! over a kindle on the face they leave from.
+//! The essence draw: what the Essence Siphon looks like while it works. Motes of the vein's own
+//! colour lift off the rock face and stream into the tool, over a kindle on the face they leave.
 //!
-//! It exists because a field draw is the one action in the game that takes a
-//! block apart without breaking it, so the feedback every other hold uses says
-//! the wrong thing: the dig crack is a web of fractures spreading across rock
-//! about to fall, and a drawn seam leaves the mountain standing.
-//! `Engine::dig_progress` declines to draw one here; this is what it declines in
-//! favour of.
+//! A field draw is the one action that takes a block apart without breaking it, so the dig crack —
+//! a web of fractures spreading across rock about to fall — says the wrong thing;
+//! `Engine::dig_progress` declines to draw one here, and this is what it declines in favour of.
 //!
-//! The CPU owns one instance and an envelope; every mote's flight is a pure
-//! function of that instance and the shared animation clock, in siphon.wgsl —
-//! [`crate::spray`]'s arrangement and [`crate::confetti`]'s packing. There is no
-//! particle state to lose on suspend and nothing to rebuild on device loss but
-//! the pipeline.
+//! The CPU owns one instance and an envelope; every mote's flight is a pure function of that
+//! instance and the shared animation clock, in siphon.wgsl. There is no particle state to lose on
+//! suspend and nothing to rebuild on device loss but the pipeline.
 //!
-//! The motes converge on `digblock_core::gi::carried_origin` — the point a light
-//! in a hand radiates from — handed over by the engine rather than recomputed,
-//! so the stream ends exactly where the siphon's own green glow hangs. Deriving
-//! the drop here would put a second copy of a core constant on the far side of
-//! the CPU/GPU boundary.
-//!
-//! One documented v1 limit: this is YOUR draw only. A snapshot carries a
-//! remote's held item but nothing about a hold, so watching somebody else work a
-//! seam shows their glowing tool and no stream. Fixing it is a protocol field
-//! for a cosmetic.
+//! The motes converge on `digblock_core::gi::carried_origin`, handed over by the engine rather than
+//! recomputed, so the stream ends exactly where the siphon's own green glow hangs; deriving the
+//! drop here would put a second copy of a core constant across the CPU/GPU boundary. This is YOUR
+//! draw only — a snapshot carries a remote's held item but nothing about a hold.
 
 use digblock_platform::Gpu;
 
@@ -42,25 +30,18 @@ const INSTANCE_BYTES: wgpu::BufferAddress = 48;
 pub(crate) const FADE_IN_SECS: f32 = 0.18;
 pub(crate) const FADE_OUT_SECS: f32 = 0.42;
 
-/// What the envelope is set to the instant a draw COMPLETES.
-///
-/// One number covers both endings, which is why it is expressed this way
-/// rather than as a separate burst: a released hold begins its fade from
-/// wherever it had got to, and a completed one begins from here, so a
-/// finished extraction flares and then dies on the ordinary fade-out
-/// instead of blinking off the frame the cell turns spent. Above 1 on
-/// purpose — the envelope multiplies the motes' colour, so the flare is
-/// allowed to clip.
+/// What the envelope is set to the instant a draw COMPLETES. One number covers both endings, which
+/// is why it is expressed this way rather than as a separate burst: a released hold begins its
+/// fade from wherever it had got to, and a completed one begins from here, so a finished
+/// extraction flares and then dies on the ordinary fade-out instead of blinking off the frame the
+/// cell turns spent. Above 1 on purpose — the envelope multiplies the colour, so a flare may clip.
 pub(crate) const FLARE: f32 = 2.4;
 
-/// Advance the envelope by `dt`, with `live` saying whether the siphon is
-/// working a vein this frame.
-///
-/// Three behaviours, and the middle one is why this is a function rather
-/// than two lines at the call site: a flare still running when the NEXT
-/// draw begins settles back to full instead of being held there. It
-/// belongs to the vein that earned it, and carrying it forward would hand
-/// the next one a brightness it never paid for.
+/// Advance the envelope by `dt`, with `live` saying whether the siphon is working a vein this
+/// frame. Three behaviours, and the middle one is why this is a function rather than two lines at
+/// the call site: a flare still running when the NEXT draw begins settles back to full instead of
+/// being held there. It belongs to the vein that earned it, and carrying it forward would hand the
+/// next one a brightness it never paid for.
 pub(crate) fn envelope_step(current: f32, live: bool, dt: f32) -> f32 {
 	if live && current <= 1.0 {
 		(current + dt / FADE_IN_SECS).min(1.0)
@@ -75,13 +56,10 @@ pub(crate) fn envelope_step(current: f32, live: bool, dt: f32) -> f32 {
 /// `[source.xyz, progress][dest.xyz, envelope][tint.rgb, face code]`.
 pub(crate) type DrawInstance = [f32; 12];
 
-/// Which face of the cell a draw comes out of, as `axis * 2 + positive`
-/// — decoded by siphon.wgsl's `face_normal`, its twin.
-///
-/// A code rather than a vector because the instance has exactly one lane
-/// spare and a raycast normal only ever holds one of six values. A
-/// normal that is somehow not an axis falls to -z, which is a visible
-/// wrong face rather than a division by zero in the shader's basis.
+/// Which face of the cell a draw comes out of, as `axis * 2 + positive` — decoded by siphon.wgsl's
+/// `face_normal`, its twin. A code rather than a vector because the instance has exactly one lane
+/// spare and a raycast normal only ever holds one of six values. A normal that is somehow not an
+/// axis falls to -z, a visible wrong face rather than a division by zero in the shader's basis.
 fn face_code(normal: (i32, i32, i32)) -> f32 {
 	let (axis, positive) = if normal.0 != 0 {
 		(0, normal.0 > 0)

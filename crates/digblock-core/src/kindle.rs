@@ -43,18 +43,11 @@ mod tests {
 	use super::*;
 	use crate::chunk::make_cell;
 
-	/// A light never stands inside geometry. The arbiter is the placement
-	/// contract every other writer answers to
-	/// ([`crate::player::placement_blocked`]), asked of a head in the
-	/// middle of the cell — not the field this function happens to read,
-	/// which is the same answer written twice.
-	///
-	/// One DIRECTION, deliberately: a hosting cell is always one a head
-	/// could occupy, but the converse is not owed. `hosts` is stricter
-	/// than the capsule wherever a shape leaves head-room (a head fits
-	/// under a table), and stricter can only refuse a cast — never light
-	/// the inside of a rock. Counted, or a `hosts` that always said no
-	/// would pass.
+	/// A light never stands inside geometry. The arbiter is the placement contract every other
+	/// writer answers to ([`crate::player::placement_blocked`]), asked of a head in the middle of
+	/// the cell — not the field this function happens to read, which is the same answer twice.
+	/// ONE direction, deliberately: `hosts` is stricter than the capsule wherever a shape leaves
+	/// head-room, and stricter can only refuse a cast. Counted, or an always-no `hosts` passes.
 	#[test]
 	fn a_light_never_kindles_inside_geometry() {
 		let cell = (4, 9, -2);

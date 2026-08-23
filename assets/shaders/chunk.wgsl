@@ -31,13 +31,11 @@ const NORMALS = array<vec3f, 6>(
 );
 
 struct VsOut {
-	// @invariant, and load-bearing: the depth prepass runs `vs_depth` in
-	// a different pipeline and this pass depth-tests LessEqual against
-	// its result. Once the prepass grew a fragment stage and a varying
-	// (the face-normal code), the two pipelines no longer optimize the
-	// position math in the same context, and an ulp of divergence fails
-	// the test — solids full of view-dependent holes. water.wgsl learned
-	// this the hard way; both entries here carry the marker.
+	// @invariant, and load-bearing: the depth prepass runs `vs_depth` in a different pipeline
+	// and this pass depth-tests LessEqual against its result. Once the prepass grew a fragment
+	// stage and a varying, the two pipelines stopped optimizing the position math in the same
+	// context, and an ulp of divergence fails the test — solids full of view-dependent holes.
+	// Both entries here carry the marker, as water.wgsl's do.
 	@invariant @builtin(position) pos: vec4f,
 	@location(0) uv: vec2f,
 	@location(1) @interpolate(flat) layer: u32,
@@ -60,27 +58,19 @@ struct VsOut {
 	@location(7) @interpolate(flat) tint_down: u32,
 }
 
-// Packed vertex, two words. w0 — geometry, low to high: x, y and z in
-// TWELFTH-block units (the sub-block shape grid), then the normal index
-// and the corner code, with the top of the word spare. w1 — solid
-// material, low to high: texture layer, uv u and uv v (both in
-// twelfths), the emissive flag and the tint-from-below flag, with the
-// rest spare. Must agree with `mesher::pack` / `solid_word1`.
-// Twelfths → blocks with the whole-block part split off in INTEGER
-// space: full-block lattice vertices (the exact multiples of the
-// sub-grid) decode exactly even under fast-math (a plain float divide
-// becomes an inexact reciprocal multiply on some backends and shifts
-// triangle edges by an ulp).
+// Packed vertex, two words: w0 carries geometry (x, y and z in TWELFTH-block units, the normal
+// index and the corner code), w1 the solid material (texture layer, uv, the emissive and
+// tint-from-below flags). Must agree with `mesher::pack` / `solid_word1`. Twelfths → blocks with
+// the whole-block part split off in INTEGER space, so full-block lattice vertices decode exactly
+// even under fast-math — a plain float divide becomes an inexact reciprocal on some backends.
 fn twelfths(v: u32) -> f32 {
 	return f32(v / 12u) + f32(v % 12u) / 12.0;
 }
 
-// `origin` is location 1: the chunk's world origin, arriving from the
-// instance-step origin buffer the renderer binds once per pass, selected
-// by the draw's first_instance (= the chunk's slot). It replaced a
-// dynamic-offset UBO, so nothing here binds per chunk — water.wgsl and
-// the depth prepass carry the identical attribute and must be changed
-// with this one.
+// `origin` is location 1: the chunk's world origin, arriving from the instance-step origin buffer
+// the renderer binds once per pass, selected by the draw's first_instance (= the chunk's slot).
+// Nothing here binds per chunk — water.wgsl and the depth prepass carry the identical attribute
+// and must be changed with this one.
 @vertex
 fn vs(@location(0) packed: vec2u, @location(1) origin: vec4f) -> VsOut {
 	let w0 = packed.x;
@@ -108,17 +98,11 @@ fn vs(@location(0) packed: vec2u, @location(1) origin: vec4f) -> VsOut {
 	return o;
 }
 
-// Depth prepass: fills the R32F depth copy the GI resolve reconstructs world
-// positions from, AND one R8Uint face-normal code per pixel.
-//
-// The code must be RASTERIZED, not derived. `cross(dpdy(p), dpdx(p))` at half
-// res is garbage on every silhouette, and it poisoned the ray origin, the
-// ambient-cube axis weights and the backface term — then went into the sun
-// buffer, where `fs` compares it against the scene's EXACT per-vertex code. The
-// two cannot agree at a silhouette, so all four bilateral taps collapsed to the
-// same negligible weight and `acc / wsum` amplified whichever was least wrong.
-// Rasterizing makes it exact AND the same number on both sides, because it
-// comes from this one table.
+// Depth prepass: fills the R32F depth copy the GI resolve reconstructs world positions from, AND
+// one R8Uint face-normal code per pixel. The code must be RASTERIZED, not derived —
+// `cross(dpdy(p), dpdx(p))` at half res is garbage on every silhouette, and `fs` compares it
+// against the scene's EXACT per-vertex code, so the two could never agree there. Rasterizing
+// makes it exact AND the same number on both sides, because it comes from this one table.
 struct DepthOut {
 	@invariant @builtin(position) pos: vec4f,
 	@location(0) @interpolate(flat) ncode: u32,
@@ -142,11 +126,9 @@ fn fs_depth(i: DepthOut) -> @location(0) u32 {
 	return i.ncode;
 }
 
-// lowbias32 avalanche (the mixer highlight.wgsl carries) over a linear
-// combination with a distinct odd stride per axis. The avalanche is what
-// destroys the linear relation, so there is no plane of correlated cells
-// along any axis. Coordinates are WORLD, not chunk-local — the same
-// reason the old CPU-side hash took world coords: chunk-local tiles the
+// lowbias32 avalanche (the mixer highlight.wgsl carries) over a linear combination with a distinct
+// odd stride per axis. The avalanche destroys the linear relation, so there is no plane of
+// correlated cells along any axis. Coordinates are WORLD, not chunk-local: chunk-local tiles the
 // pattern with the chunk's own period, which reads as a grid.
 fn hash3(c: vec3i) -> u32 {
 	var x = bitcast<u32>(c.x) * 0x27d4eb2du
@@ -160,42 +142,23 @@ fn hash3(c: vec3i) -> u32 {
 	return x;
 }
 
-// Per-block albedo jitter — one value step and one hue step per block cell, so
-// a hillside of a single grass id stops reading as wallpaper (R23).
-//
-// It multiplies ALBEDO, and that placement is load-bearing: the à-trous filter
-// and the temporal accumulator only ever see the lighting buffers, so a
-// per-block step written into the LIGHT is a signal they are built to smooth
-// across exactly the edges it lives on. On the albedo it lands after the
-// bilateral upsample, where nothing downstream can filter or accumulate it. The
-// probes' material albedo stays untinted for a related reason — a block's
-// jitter must not ride its own bounce light, and paying for it would mean a
-// per-cell lookup inside every march.
-//
-// `tint_down` (the w1 flag) shifts the hashed cell one down: a door is one
-// object across two cells, and hashing each half separately gave one leaf two
-// tints — exactly the material break this function exists to CREATE between
-// neighbouring blocks. A shift of the anchor, not an exemption.
+// Per-block albedo jitter — one value step and one hue step per cell, so a hillside of a single
+// grass id stops reading as wallpaper (R23). It multiplies ALBEDO, and that placement is
+// load-bearing: the à-trous filter and the accumulator only see the lighting buffers, so a step
+// written into the LIGHT is exactly what they smooth away; the probes' albedo stays untinted so a
+// block's jitter never rides its own bounce. `tint_down` anchors a door's two cells on one tint.
 fn block_tint(world: vec3f, ncode: u32, tint_down: u32) -> vec3f {
-	// ±half-range of each step, calibrated on the DIG_VAULT stone wall — the
-	// flat one-material surface this exists for — against a sweep from no
-	// jitter to well past what is set here. Much smaller measures invisible
-	// at 1:1; much larger quilts, and the wall stops reading as one material.
-	// The hue step is what keeps a desaturated wall from varying in
-	// brightness alone, which reads as grime rather than as stone.
-	//
-	// These are ALBEDO half-ranges, so the effect scales with the light: the
-	// wall varies most where it is brightest and all but vanishes in shade.
-	// Correct for a material property, and why the numbers were picked in a
-	// dim torch-lit room rather than in daylight.
+	// ±half-range of each step, calibrated on the DIG_VAULT stone wall — the flat
+	// one-material surface this exists for. Much smaller is invisible at 1:1; much larger
+	// quilts, and the wall stops reading as one material. The hue step keeps a desaturated
+	// wall from varying in brightness alone, which reads as grime. These are ALBEDO
+	// half-ranges, so the effect scales with the light — correct for a material property.
 	const TINT_VALUE = 0.08;
 	const TINT_HUE = 0.03;
-	// Step half a twelfth INTO the surface along its own normal: on the
-	// face's axis `world` sits exactly on a cell boundary, where floor()
-	// answers the neighbour for a +face. Half a twelfth is finer than the
-	// thinnest sub-box and coarser than nothing, so the nudge lands
-	// inside this cell whatever the shape — a slab's top face and a full
-	// block's both resolve to the cell they belong to.
+	// Step half a twelfth INTO the surface along its own normal: on the face's axis `world`
+	// sits exactly on a cell boundary, where floor() answers the neighbour for a +face. Half
+	// a twelfth is finer than the thinnest sub-box, so the nudge lands inside this cell
+	// whatever the shape — a slab's top face and a full block's both resolve to their own.
 	let axis = ncode >> 1u;
 	let n = vec3f(f32(axis == 0u), f32(axis == 1u), f32(axis == 2u))
 		* select(1.0, -1.0, (ncode & 1u) == 1u);
@@ -216,31 +179,20 @@ fn block_tint(world: vec3f, ncode: u32, tint_down: u32) -> vec3f {
 @fragment
 fn fs(i: VsOut) -> @location(0) vec4f {
 	let tex = textureSample(blocks_tex, blocks_smp, i.uv, i.layer).rgb;
-	// Fullbright ink, through ink_common's shared `emissive_ink` — the ONE
-	// definition, so the same block reads identically here, in your own
-	// hand (viewmodel.wgsl) and in somebody else's (players.wgsl). The
-	// gain, why it rides the ink's own luminance, and what caps it all
-	// live on that function.
-	//
-	// This is the ink alone: `glows` and `emits` are independent block
-	// properties, so nothing here changes what a torch CASTS, only how
-	// the emitter itself reads.
+	// Fullbright ink, through ink_common's shared `emissive_ink` — the ONE definition, so the
+	// same block reads identically here, in your own hand (viewmodel.wgsl) and in somebody
+	// else's (players.wgsl). This is the ink alone: `glows` and `emits` are independent block
+	// properties, so nothing here changes what a torch CASTS, only how the emitter reads.
 	var col = select(tex, emissive_ink(tex), i.emissive == 1u);
 	// Emissive ink is its own light — no sun, no GI. It still travels to
 	// the eye through the medium like everything else, which is why the
 	// branch narrowed to the lighting instead of returning early.
 	if i.emissive == 0u {
-		// Bilateral upsample of the reduced-res GI buffers: the 4 nearest
-		// GI texels, each weighted by view-distance proximity and a
-		// face-normal match, so lighting never bleeds across the
-		// silhouette or around a corner.
-		//
-		// The ratio is a UNIFORM, not the fixed halving this hard-coded,
-		// which is what lets the GI resolve run at a coarser fraction of
-		// the render size (settings::GI_SCALE_DIVISORS). It stays an INTEGER
-		// divisor for exactly this line: `base` is the top-left of the 2x2
-		// GI neighbourhood covering this pixel, and a fractional ratio
-		// would make that neighbourhood drift off the texels it weights.
+		// Bilateral upsample of the reduced-res GI buffers: the 4 nearest GI texels, each
+		// weighted by view-distance proximity and a face-normal match, so lighting never
+		// bleeds across a silhouette or around a corner. The ratio is a UNIFORM, which is
+		// what lets the resolve run at a coarser fraction of the render size, and an INTEGER
+		// divisor, or the 2x2 neighbourhood `base` names drifts off the texels it weights.
 		let gi_div = max(i32(frame.misc.w), 1);
 		let dim = vec2i(textureDimensions(gi_indirect)) - 1;
 		let base = (vec2i(i.pos.xy) - gi_div / 2) / gi_div;
@@ -248,12 +200,10 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 		var sun_acc = 0.0;
 		var water_acc = 0.0;
 		var wsum = 0.0;
-		// Nearest-depth fallback: remember the single closest tap in case
-		// no tap agrees on the face. Both codes are now the SAME number
-		// from chunk.wgsl's `code_of` — the resolve rasterizes it rather
-		// than deriving it — so a mismatch means the half-res texel
-		// genuinely belongs to another surface, not that the two sides
-		// disagree about the same one.
+		// Nearest-depth fallback: remember the single closest tap in case no tap agrees on
+		// the face. Both codes are the SAME number from `code_of` — the resolve rasterizes
+		// it rather than deriving it — so a mismatch means the half-res texel genuinely
+		// belongs to another surface, not that the two sides disagree about the same one.
 		var best = vec4f(0.0);
 		var best_sun = vec4f(0.0);
 		var best_d = 1e30;
@@ -296,14 +246,11 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 		// the view ray uses — so sunlight reaching a submerged surface is
 		// red-starved, not just dim.
 		let sun_tr = medium_water_tr(water_acc / wsum);
-		// Twilight fades the LIGHT, not the shadow. Blending visibility
-		// toward 1.0 by the caster's strength — the shadow-map era's answer
-		// — inverts the meaning against a traced visibility: as strength
-		// falls to 0 near the horizon every surface facing the caster takes
-		// FULL, UNSHADOWED direct light, through walls. A sealed vault at
-		// sunrise lit one wall to 4x the other, and the lit wall FLIPPED at
-		// the horizon crossing. Strength belongs on the radiance; at full
-		// strength this is identical to what it replaced.
+		// Twilight fades the LIGHT, not the shadow. Blending visibility toward 1.0 by the
+		// caster's strength inverts the meaning against a traced visibility: as strength
+		// falls to 0 near the horizon, every surface facing the caster takes FULL,
+		// UNSHADOWED direct light, through walls, and the lit wall FLIPS at the horizon
+		// crossing. Strength belongs on the radiance.
 		let sh = sun_acc / wsum * sun_tr;
 		// Per-block jitter belongs to the material, so it multiplies here
 		// and not into either lighting term. Emissive ink never reaches

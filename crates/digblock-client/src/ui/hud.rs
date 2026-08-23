@@ -15,20 +15,11 @@ pub const SLOT_PX: f32 = 56.0;
 pub const SLOT_GAP: f32 = 4.0;
 pub const ICON_PX: f32 = 48.0;
 pub const BOTTOM_MARGIN: f32 = 12.0;
-/// EXTRA space before the last slot (SKILLS-DESIGN §6): the tool slot is not the
-/// ninth block slot, and standing it apart is the whole of how a player is told
-/// so.
-///
-/// It is added to ONE slot at DRAW time ([`bar_slot_rect`]) rather than to
-/// [`row_grid`]'s spacing, which stays the uniform lattice every panel measures
-/// itself against, so the inventory grid's columns keep landing on the block
-/// slots they drop into.
-///
-/// [`row_grid`]'s CENTRING is the one thing that has to know about it: the drawn
-/// row is a split wider than the lattice, so centring the lattice alone left the
-/// row sitting half a split right of centre, with the tool slot's selection ring
-/// clipped and the whole tool rail gone on a small window at a large interface
-/// scale. The origin therefore centres `lattice + split`.
+/// EXTRA space before the last slot (SKILLS-DESIGN §6): the tool slot is not the ninth block slot,
+/// and standing it apart is the whole of how a player is told so. Added to ONE slot at DRAW time
+/// ([`bar_slot_rect`]) rather than to [`row_grid`]'s spacing, which stays the uniform lattice
+/// every panel measures itself against. [`row_grid`]'s CENTRING has to know: the drawn row is a
+/// split wider than the lattice, so the origin centres `lattice + split`.
 pub const TOOL_SPLIT: f32 = 20.0;
 
 const FULL_TINT: u32 = 0xFFFF_FFFF;
@@ -40,32 +31,23 @@ pub enum IconKind {
 	Cube(BlockType),
 	/// Stairs/doors: the baked shape template, projected.
 	Shaped(BlockType),
-	/// The water tool: a little wooden bucket, with a source in it or
-	/// not. The charge is drawn, not tinted — "have I got water?" is the
-	/// question the bar has to answer at a glance.
+	/// The water tool: a wooden bucket whose charge is DRAWN, not tinted — the bar must answer it.
 	WaterTool { full: bool },
-	/// The Essence Siphon: a funnel, a stem, and a glowing bulb. Its own
-	/// geometry rather than the cube fallback, because a tool with no
-	/// texture layers of its own would otherwise draw as a water cube.
+	/// The Essence Siphon: funnel, stem and glowing bulb — its own geometry, not the cube fallback.
 	Siphon,
 	/// The Resonant Pick: a haft with a broad resonant head.
 	Pick,
 	/// The Master's Sigil: a crystal set in a standing metal plate.
 	Sigil,
-	/// An essence: the one FLAT icon, a chip sprite rather than geometry,
-	/// because essence is a count and not a thing in the world.
+	/// An essence: the one FLAT icon, since a count is not a thing in the world.
 	Essence(digblock_core::block::Essence),
 }
 
-/// The arrival cover: an OPAQUE full-screen fill with one centred line,
-/// held over a join or a teleport until the server has shipped the
-/// journaled columns around the destination.
-///
-/// Opaque rather than the screens' translucent dim on purpose — the whole
-/// point is that what is behind it is worldgen the journal is about to
-/// overwrite, so showing any of it through is showing the artifact. It is
-/// emitted on `Ghost`, the topmost layer, because it has to cover the
-/// hotbar and the crosshair too: nothing under it is real yet.
+/// The arrival cover: an OPAQUE full-screen fill with one centred line, held over a join or a
+/// teleport until the server has shipped the journaled columns around the destination. Opaque
+/// rather than the screens' translucent dim, because what is behind it is worldgen the journal is
+/// about to overwrite, so showing any of it through shows the artifact. Emitted on `Ghost`, the
+/// topmost layer, since it must cover the hotbar and crosshair too: nothing under it is real yet.
 pub fn arrival_cover(
 	dl: &mut super::DrawList,
 	style: &super::Style,
@@ -106,12 +88,9 @@ pub fn crosshair(dl: &mut super::DrawList, size: (u32, u32), scale: f32) {
 	);
 }
 
-/// Icon (kind, tint) for a hotbar item — the ghost drawn under the
-/// cursor mid-drag uses the same visuals as the slots.
-///
-/// `tool_full` is the water tool's charge, which is player state rather
-/// than part of the slot assignment, so it has to arrive alongside the
-/// item; every other item ignores it.
+/// Icon (kind, tint) for a hotbar item — the ghost drawn under the cursor mid-drag uses the same
+/// visuals as the slots. `tool_full` is the water tool's charge, which is player state rather than
+/// part of the slot assignment, so it arrives alongside the item; every other item ignores it.
 pub fn item_icon(item: HotbarItem, tool_full: bool) -> (IconKind, u32) {
 	match item {
 		HotbarItem::WaterTool => (IconKind::WaterTool { full: tool_full }, FULL_TINT),
@@ -125,18 +104,11 @@ pub fn item_icon(item: HotbarItem, tool_full: bool) -> (IconKind, u32) {
 	}
 }
 
-/// The block behind an icon.
-///
-/// The inverse of [`item_icon`] / [`tool_icon`], and the ONE place "which block
-/// is this icon" is answered. Both questions derived from it are properties of
-/// the block and never a special case on a type: whether the item draws as
-/// fullbright ink (`props().emissive`) and whether holding it lights the room
-/// (`props().light > 0`).
-///
-/// **Every icon has a row, tools included** — they are item-only rows, but they
-/// are rows, and asking one is exactly how those two questions stay properties
-/// of the block. `None` is left for an icon with genuinely nothing behind it
-/// rather than standing for "this is a tool".
+/// The block behind an icon: the inverse of [`item_icon`] / [`tool_icon`], and the ONE place
+/// "which block is this icon" is answered. Both questions derived from it are properties of the
+/// block and never a special case on a type — whether the item draws as fullbright ink
+/// (`props().emissive`), and whether holding it lights the room (`props().light > 0`). **Every
+/// icon has a row, tools included**; `None` is left for an icon with genuinely nothing behind it.
 pub fn icon_block(kind: IconKind) -> Option<BlockType> {
 	match kind {
 		IconKind::Cube(b) | IconKind::Shaped(b) => Some(b),
@@ -164,14 +136,11 @@ pub fn draw_icon(
 	}
 }
 
-/// The hotbar row's grid: bottom-centered. Shared with the inventory
-/// screen so its panel columns align with the bar.
-///
-/// The lattice this returns is nine even columns and nothing else — what
-/// gets CENTERED is the row as drawn, which is that lattice plus the
-/// [`TOOL_SPLIT`] the last slot steps out by. Centring the lattice alone
-/// is centring something narrower than the picture, and the difference
-/// lands entirely on the right-hand edge.
+/// The hotbar row's grid: bottom-centered. Shared with the inventory screen so its panel columns
+/// align with the bar. The lattice this returns is nine even columns and nothing else — what gets
+/// CENTERED is the row as drawn, which is that lattice plus the [`TOOL_SPLIT`] the last slot
+/// steps out by. Centring the lattice alone centres something narrower than the picture, and the
+/// difference lands entirely on the right-hand edge.
 pub fn row_grid(size: (u32, u32), scale: f32) -> GridSpec {
 	let (cell, gap) = (SLOT_PX * scale, SLOT_GAP * scale);
 	let total_w = HOTBAR_SLOTS as f32 * cell + (HOTBAR_SLOTS as f32 - 1.0) * gap;
@@ -200,15 +169,11 @@ pub fn bar_slot_rect(grid: &GridSpec, i: usize, scale: f32) -> super::Rect {
 	rect
 }
 
-/// The bar slot the cursor is over, and its name — `None` over an empty
-/// slot, a bare tool slot, or nothing at all.
-///
-/// A PAGE asks this, never the bar: the bar draws after every screen at
-/// the WINDOW's scale, while a page that has stepped the fit ladder is a
-/// rung smaller, and a frame has exactly one text size. So the page that
-/// is open names the bar's slots at its own glyph, and this is the one
-/// place that rule is written down — CLAUDE.md states it as "bar slots
-/// included".
+/// The bar slot the cursor is over, and its name — `None` over an empty slot, a bare tool slot, or
+/// nothing at all. A PAGE asks this, never the bar: the bar draws after every screen at the
+/// WINDOW's scale, while a page that has stepped the fit ladder is a rung smaller, and a frame has
+/// exactly one text size. So the open page names the bar's slots at its own glyph, and this is the
+/// one place that rule is written down — CLAUDE.md states it as "bar slots included".
 pub fn hovered_bar_slot(
 	size: (u32, u32),
 	window_scale: f32,
@@ -266,14 +231,10 @@ pub fn hotbar<Id: Copy + PartialEq>(
 	}
 }
 
-/// The icon for a tool, keyed by the BLOCK — which is the axis
-/// [`item_icon`] does not have, since `HotbarItem::WaterTool` names the
-/// tool SLOT and the roster in it is a separate question. Every path
-/// that can name a tool comes through here.
-///
-/// Tools have no texture layers of their own (they never render in the
-/// world), so every one of them needs authored geometry — the old cube
-/// fallback drew a WATER cube for anything new.
+/// The icon for a tool, keyed by the BLOCK — the axis [`item_icon`] does not have, since
+/// `HotbarItem::WaterTool` names the tool SLOT and the roster in it is a separate question. Every
+/// path that can name a tool comes through here. Tools have no texture layers of their own, so
+/// each needs authored geometry — the old cube fallback drew a WATER cube for anything new.
 pub fn tool_icon(tool: BlockType, bucket_full: bool) -> IconKind {
 	match tool {
 		BlockType::EssenceSiphon => IconKind::Siphon,
@@ -316,13 +277,10 @@ pub fn tool_rail(
 	let grid = row_grid(size, scale);
 	let slot = bar_slot_rect(&grid, HOTBAR_SLOTS - 1, scale);
 	let start = slot.x + slot.w + SLOT_GAP * scale * 2.0;
-	// The rail grows rightward from the bar's last slot into whatever the
-	// centred bar leaves — and that space SHRINKS as the interface scale
-	// grows, because the bar takes more of the window. A full rail at a
-	// large interface scale on a narrow window ran the last icon clean
-	// off the edge.
-	// Squeeze the cells to fit, down to a floor where they can still be
-	// told apart, and then draw only what actually fits.
+	// The rail grows rightward from the bar's last slot into whatever the centred bar leaves — and
+	// that space SHRINKS as the interface scale grows. A full rail at a large interface scale on a
+	// narrow window ran the last icon clean off the edge, so squeeze the cells to fit, down to a
+	// floor where they can still be told apart, and then draw only what actually fits.
 	let n = owned.iter().filter(|&&t| Some(t) != shown).count();
 	let room = (size.0 as f32 - start - SLOT_GAP * scale * 2.0).max(0.0);
 	let span = |c: f32, g: f32| n as f32 * c + (n as f32 - 1.0) * g;
@@ -394,11 +352,9 @@ pub enum HudButton {
 	Corner,
 	/// Thumb cluster: place/use at the crosshair (an edge, one per tap).
 	Place,
-	/// Thumb cluster: hold to jump. Drawn only when the jump-mode setting
-	/// selects the button over the double-tap.
+	/// Thumb cluster: hold to jump. Drawn only when the jump-mode setting selects the button.
 	Jump,
-	/// A hotbar slot: tap to select (the tool slot cycles when already
-	/// selected, mirroring the digit keys).
+	/// A hotbar slot: tap to select; the tool slot cycles when already selected, as digits do.
 	Slot(u8),
 }
 
@@ -485,14 +441,10 @@ fn glyph_bar(dl: &mut super::DrawList, r: super::Rect, fx: f32, fw: f32, fy: f32
 	);
 }
 
-/// The corner button alone: a ✕ when `close` (an open screen, or a menu
-/// page with somewhere to go back to), a hamburger otherwise.
-///
-/// Public because the MENU draws it too, and draws nothing else of the
-/// touch HUD — a finger needs the same way out of the server browser that
-/// it has out of the inventory, and the menu's own rows are the only
-/// other navigation it has. One function so the two cannot come to look
-/// like different controls.
+/// The corner button alone: a ✕ when `close` (an open screen, or a menu page with somewhere to go
+/// back to), a hamburger otherwise. Public because the MENU draws it too, and draws nothing else
+/// of the touch HUD — a finger needs the same way out of the server browser that it has out of
+/// the inventory. One function, so the two cannot come to look like different controls.
 pub fn corner_button(
 	dl: &mut super::DrawList,
 	scale: f32,
@@ -734,12 +686,10 @@ pub fn toasts(
 	}
 }
 
-/// The background bench's tell (SKILLS-DESIGN §13.4): one quiet line
-/// above the bar's TOOL end while a job runs with the screen closed. The
-/// bench working out of sight must be visible somewhere, or the first
-/// background extraction reads as "my essence changed on its own" — and
-/// it sits over the tool slot rather than in the toasts' center lane, so
-/// a toast and the tell never fight for the same pixels.
+/// The background bench's tell (SKILLS-DESIGN §13.4): one quiet line above the bar's TOOL end
+/// while a job runs with the screen closed — the bench working out of sight has to be visible
+/// somewhere, or the first background extraction reads as "my essence changed on its own". It
+/// sits over the tool slot rather than the toasts' center lane, so the two never collide.
 pub fn bench_tell(
 	dl: &mut super::DrawList,
 	style: &super::widgets::Style,

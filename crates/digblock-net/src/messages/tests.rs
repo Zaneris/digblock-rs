@@ -205,13 +205,10 @@ fn round_trip_all_variants() {
 	assert_eq!(format!("{d:?}"), format!("{back:?}"));
 }
 
-/// The client-direction frame cap has to clear every message a client
-/// legitimately sends, at its widest — otherwise the server drops
-/// honest players for "stream corrupt".
-///
-/// Each case below is built at its maximum: a name at `MAX_NAME_LEN`,
-/// a chat line at `MAX_CHAT_LEN` in two-byte characters, a full
-/// hotbar+grid layout of widest-varint ids.
+/// The client-direction frame cap has to clear every message a client legitimately sends, at its
+/// widest — otherwise the server drops honest players for "stream corrupt". Each case below is
+/// built at its maximum: a name at `MAX_NAME_LEN`, a chat line at `MAX_CHAT_LEN` in two-byte
+/// characters, a full hotbar+grid layout of widest-varint ids.
 #[test]
 fn max_client_frame_fits_every_client_message() {
 	use crate::protocol::{MAX_CHAT_LEN, MAX_CLIENT_FRAME, MAX_NAME_LEN};
@@ -283,14 +280,11 @@ fn max_client_frame_fits_every_client_message() {
 	}
 }
 
-/// A full snapshot must fit one datagram at the raised
-/// `MAX_SNAPSHOT_PLAYERS`, with every field at its worst-case width —
-/// the `const_assert` in protocol.rs asserts the arithmetic, this
-/// asserts the actual encoder agrees with it.
-///
-/// The old cliff this guards: before interest management, snapshots
-/// silently exceeded `MAX_DATAGRAM` once enough players were in range,
-/// and every snapshot stopped being sent.
+/// A full snapshot must fit one datagram at the raised `MAX_SNAPSHOT_PLAYERS`, with every field at
+/// its worst-case width — the `const_assert` in protocol.rs asserts the arithmetic, this asserts
+/// the actual encoder agrees with it. The cliff it guards: before interest management, snapshots
+/// silently exceeded `MAX_DATAGRAM` once enough players were in range, and every snapshot stopped
+/// being sent.
 #[test]
 fn a_full_snapshot_fits_one_datagram() {
 	use crate::protocol::{MAX_DATAGRAM, MAX_SNAPSHOT_PLAYERS};
@@ -713,13 +707,10 @@ fn golden_interact_and_alchemy_encoding() {
 	);
 }
 
-/// Golden bytes for the v29 admin reply. Same contract as the goldens
-/// above: a failure means the wire encoding moved, and moving it needs
-/// a `PROTOCOL_VERSION` bump.
-///
-/// The point of the variant is that the ARGUMENTS cross, not a
-/// sentence — so the bytes are the arguments, and a server that spelled
-/// the line out again would be visibly longer here.
+/// Golden bytes for the v29 admin reply. Same contract as the goldens above: a failure means the
+/// wire encoding moved, and moving it needs a `PROTOCOL_VERSION` bump. The point of the variant is
+/// that the ARGUMENTS cross, not a sentence — so the bytes are the arguments, and a server that
+/// spelled the line out again would be visibly longer here.
 #[test]
 fn golden_admin_reply_encoding() {
 	let s = ServerMsg::Admin(AdminReply::Teleported { x: 40, z: -20 });

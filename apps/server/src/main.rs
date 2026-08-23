@@ -12,11 +12,9 @@ use std::time::Duration;
 
 /// Turn every `--admin` argument into an account id, in order.
 ///
-/// An id passes straight through; a display name costs one lookup against
-/// the master. Doing it here rather than at each chat command is what makes
-/// admin a decision about an ACCOUNT: the name is resolved once, at boot,
-/// against the only party that can answer, and after that the name is just
-/// a label that its owner may change freely.
+/// An id passes straight through; a display name costs one lookup against the master. Doing it
+/// here rather than at each chat command is what makes admin a decision about an ACCOUNT: the name
+/// is resolved once, against the only party that can answer, and stays a label its owner may edit.
 fn resolve_admins(specs: &[String], master_url: &str) -> Result<Vec<AccountId>, String> {
 	specs
 		.iter()
@@ -191,14 +189,11 @@ fn main() {
 	for job in digblock_core::worldjob::production() {
 		sim.register_world_job(job);
 	}
-	// Resolve every admin to an account id before the first player can
-	// connect. A name is looked up ONCE, against the master, and only the
-	// resulting id is kept — so renaming does not drop admin, and a name
-	// claimed later by somebody else never inherits it.
-	//
-	// An unresolvable admin is fatal, the same discipline the old
-	// --admin-name shape check had: a server that boots with admin silently
-	// granted to nobody is worse than one that refuses to boot.
+	// Resolve every admin to an account id before the first player can connect. A name is looked
+	// up ONCE, against the master, and only the resulting id is kept — so renaming does not drop
+	// admin, and a name claimed later by somebody else never inherits it. An unresolvable admin is
+	// fatal: a server that boots with admin silently granted to nobody is worse than one that
+	// refuses to boot.
 	let admin_accounts = match resolve_admins(&admins, &master_url) {
 		Ok(ids) => ids,
 		Err(e) => {

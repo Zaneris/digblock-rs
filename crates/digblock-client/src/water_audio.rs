@@ -27,24 +27,16 @@ const GRACE_SECS: f32 = 1.0;
 /// Reconcile on its own slow tick — voices don't need frame-rate updates.
 const STEP_SECS: f32 = 0.1;
 
-/// Authored gain for a cluster of `n` impact cells at `dist` blocks.
-///
-/// Bigger clusters are louder, capped well under the mix ceiling. The
-/// distance taper is the load-bearing half: without it every voice
-/// inside [`RADIUS`] played at its cluster gain regardless of range, and
-/// the *only* falloff came from the platform panner — which on desktop
-/// clamps to unity for everything close by, so a trickle across the
-/// valley and the cascade at your feet arrived at the same loudness.
-/// Squared so distant water sits well back in the mix, and reaching
-/// exactly 0 at `RADIUS` also removes the pop when a voice ages in or
-/// out at the range edge.
+/// Authored gain for a cluster of `n` impact cells at `dist` blocks. Bigger clusters are louder,
+/// capped well under the mix ceiling. The distance taper is the load-bearing half: without it
+/// every voice inside [`RADIUS`] played at its cluster gain regardless of range, and the only
+/// falloff came from the platform panner, which on desktop clamps to unity for everything close
+/// by. Squared, and reaching exactly 0 at `RADIUS` so a voice aging in or out does not pop.
 fn gain_of(n: u32, dist: f32) -> f32 {
-	// Cluster gains were raised over their original authoring: a
-	// waterfall you are standing next to was too polite. Only this term
-	// moved — the taper's SHAPE is what the test below pins, and it is
-	// scale-invariant, so loudness and falloff stay independent knobs.
-	// Headroom check: MIN_SEP keeps the second and third voices well out,
-	// so even the worst realistic sum stays under the mix ceiling.
+	// Only the cluster term is the loudness knob — the taper's SHAPE is what the test below
+	// pins, and it is scale-invariant, so loudness and falloff stay independent. Headroom:
+	// MIN_SEP keeps the second and third voices well out, so even the worst realistic sum
+	// stays under the mix ceiling.
 	let cluster = (0.45 + 0.13 * (1.0 + n as f32).ln()).min(0.8);
 	let taper = (1.0 - dist / RADIUS).clamp(0.0, 1.0);
 	cluster * taper * taper

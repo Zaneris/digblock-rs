@@ -40,14 +40,11 @@ public enum AccountStatus
     Banned = 1,
 }
 
-/// <summary>A player. The <see cref="Id"/> is the identity the whole game
-/// keys on: it reaches a game server through <c>/api/tokens/verify</c>
-/// (never from the client), keys the server's <c>inventories.bin</c>
-/// records, and is what <c>--admin-id</c> compares against.
-///
-/// Deliberately holds <b>no PII</b>. The providers hand back an email and a
-/// real name; neither is stored, because neither is needed — the subject
-/// alone re-identifies a returning player.</summary>
+/// <summary>A player. The <see cref="Id"/> is the identity the whole game keys on: it reaches a
+/// game server through <c>/api/tokens/verify</c> (never from the client), keys the server's
+/// <c>inventories.bin</c> records, and is what <c>--admin-id</c> compares against. Deliberately
+/// holds <b>no PII</b> — the providers hand back an email and a real name and neither is stored,
+/// because the subject alone re-identifies a returning player.</summary>
 public sealed class Account
 {
     public Guid Id { get; set; }
@@ -65,13 +62,11 @@ public sealed class Account
     /// unnamed account rather than inventing a name for it.</summary>
     public string? DisplayName { get; set; }
 
-    /// <summary>Lowercased <see cref="DisplayName"/>, carrying the unique
-    /// index. Names are unique case-insensitively so that a name identifies
-    /// exactly one person — impersonation in chat is the whole reason, since
-    /// admin authority itself keys on <see cref="Id"/>.
-    ///
-    /// Nullable, and SQLite (like Postgres) treats NULLs in a unique index
-    /// as distinct, so every unnamed account coexists with no filter.</summary>
+    /// <summary>Lowercased <see cref="DisplayName"/>, carrying the unique index. Names are unique
+    /// case-insensitively so a name identifies exactly one person; impersonation in chat is the
+    /// whole reason, since admin authority itself keys on <see cref="Id"/>. Nullable, and SQLite
+    /// (like Postgres) treats NULLs in a unique index as distinct, so every unnamed account
+    /// coexists with no filter.</summary>
     public string? DisplayNameNormalized { get; set; }
 
     /// <summary>When the name last changed; null if never renamed. Drives
@@ -105,14 +100,11 @@ public sealed class ProviderLink
     public DateTimeOffset LinkedUtc { get; set; }
 }
 
-/// <summary>A name that used to belong to someone, held back from reuse for
-/// a quarantine window after it was released.
-///
-/// Rows exist only for <b>released</b> names; a live name's uniqueness is the
-/// index on <see cref="Account.DisplayNameNormalized"/>. Without the
-/// quarantine, renaming is an impersonation primitive: rename away, watch
-/// someone else's players still expect that name, and let an accomplice take
-/// it the same second.</summary>
+/// <summary>A name that used to belong to someone, held back from reuse for a quarantine window
+/// after it was released. Rows exist only for <b>released</b> names; a live name's uniqueness is
+/// the index on <see cref="Account.DisplayNameNormalized"/>. Without the quarantine, renaming is
+/// an impersonation primitive: rename away and let an accomplice take the name the same second,
+/// while everyone else still expects it to be yours.</summary>
 public sealed class NameReservation
 {
     /// <summary>Lowercased name; the primary key.</summary>
@@ -126,11 +118,8 @@ public sealed class NameReservation
     public DateTimeOffset ReleasedUtc { get; set; }
 }
 
-/// <summary>A signed-in device. The client stores the raw token; the master
-/// stores only its SHA-256, so a database read does not hand out sessions.
-///
-/// This is the credential that replaced the old per-device identity secret,
-/// and the differences are the point: it expires, it is revocable, and it is
+/// <summary>A signed-in device. The client stores the raw token; the master stores only its
+/// SHA-256, so a database read does not hand out sessions. It expires, it is revocable, and it is
 /// presented ONLY to the master — a game server never sees it.</summary>
 public sealed class Session
 {
@@ -161,16 +150,11 @@ public sealed class Session
     public string? Platform { get; set; }
 }
 
-/// <summary>A game server's claim on a <c>host:port</c>, and the hash of the
-/// key that proves it.
-///
-/// This is the only registry state that is persisted; liveness (players,
-/// cert hash, last heartbeat, strikes) stays in the in-memory
-/// <see cref="DigBlock.Master.ServerRegistry"/> and rebuilds from heartbeats
-/// after a restart. Persisting the claim buys two things: a server keeps its
-/// <see cref="Id"/> across a master redeploy, and — the security half — the
-/// key needed to re-register survives, so a restart cannot be used as a
-/// window to steal an address.</summary>
+/// <summary>A game server's claim on a <c>host:port</c>, and the hash of the key that proves it.
+/// The only persisted registry state — liveness (players, cert hash, heartbeat, strikes) lives in
+/// <see cref="DigBlock.Master.ServerRegistry"/> and rebuilds from heartbeats. Persisting keeps the
+/// <see cref="Id"/> stable across a redeploy and, the security half, keeps the re-register key, so
+/// a restart is not a window to steal an address.</summary>
 public sealed class ServerClaim
 {
     public Guid Id { get; set; }

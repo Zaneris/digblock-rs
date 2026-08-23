@@ -29,16 +29,11 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 const MAGIC: &[u8; 4] = b"DBJ1";
-/// v2: the block field widened to a u16 CELL (id + reserved state bits),
-/// pushing `by` along behind it in the record. Old-version files are
-/// archived to `.vN.bak` at open and the world starts fresh.
-/// v3: worldgen retune (SIM v5) — the record format is unchanged, but the
-/// same seed now yields different terrain, so stored edits are stale;
-/// archive and start fresh.
-///
-/// Client saves share this constant: bump it here and every local world
-/// goes incompatible together with the server's (the world list REFUSES
-/// rather than archives — see the store impls).
+/// A bump means stored edits cannot be trusted against the current worldgen or record layout:
+/// old-version files are archived to `.vN.bak` at open and the world starts fresh. v2 widened the
+/// block field to a u16 CELL; v3 was a worldgen retune (SIM v5) with the record format unchanged.
+/// Client saves share this constant — bump it here and every local world goes incompatible
+/// together with the server's, though the world list REFUSES rather than archives.
 pub const VERSION: u16 = 3;
 const HEADER_LEN: u64 = 16;
 const RECORD_LEN: u64 = 16;
@@ -48,18 +43,11 @@ const SYNC_INTERVAL_SECS: f32 = 1.0;
 /// Final block CELL value per edited cell within one chunk column.
 pub type ColumnEdits = FxHashMap<(i32, i32, i32), u16>;
 
-/// Chunk columns per region axis: a region is this many columns square.
-///
-/// Regions are the PERSISTENCE granularity, and exist because both homes
-/// of this format used to do work proportional to a world's total edit
-/// count on every save: the web store re-serialized the entire overlay
-/// every five seconds, and the server rewrote the whole file to compact
-/// it. Sharding by region makes both costs track what actually changed,
-/// so a mature world stops paying for its own history.
-///
-/// The size is a balance: bigger regions mean fewer, larger rewrites (and
-/// fewer localStorage keys); smaller ones mean more bookkeeping per edit.
-/// A region is about a few minutes of building in one place.
+/// Chunk columns per region axis: a region is this many columns square. Regions are the
+/// PERSISTENCE granularity, and exist because both homes of this format used to do work
+/// proportional to a world's total edit count on every save — the web store re-serialized the
+/// whole overlay, the server rewrote the whole file to compact it. The size is a balance: bigger
+/// regions mean fewer, larger rewrites and fewer localStorage keys; smaller ones more bookkeeping.
 pub const REGION_COLS: i32 = 16;
 
 /// Region owning a chunk column.
@@ -127,18 +115,11 @@ impl JournalIndex {
 		self.columns.keys().copied()
 	}
 
-	/// Edited columns in the REGIONS that a disc of `radius` columns about
-	/// `center` can touch. A superset of the columns actually in range —
-	/// the caller still tests each one — but it walks only the regions that
-	/// could matter rather than every edited column in the world.
-	///
-	/// This is what keeps residency sync O(active) instead of O(world age).
-	/// The late-sync scan runs per client every time their center column
-	/// moves — once per column crossed; against `edited_columns` that was a
-	/// full hash-map walk each time, and a mature world's column count times
-	/// a full server's players times their crossing rate is millions of key
-	/// visits a second, growing for the life of the world while everything
-	/// around it is bounded.
+	/// Edited columns in the REGIONS that a disc of `radius` columns about `center` can touch. A
+	/// superset of the columns actually in range — the caller still tests each one — but it walks
+	/// only the regions that could matter. This is what keeps residency sync O(active) instead of
+	/// O(world age): the late-sync scan runs per client every time their center column moves, and
+	/// against `edited_columns` that was a full hash-map walk growing for the life of the world.
 	pub fn columns_near(
 		&self,
 		center: (i32, i32),
@@ -222,8 +203,7 @@ impl JournalIndex {
 /// Why a snapshot (or file header) can't be used.
 #[derive(Debug, PartialEq)]
 pub enum JournalError {
-	/// Well-formed header from another format/worldgen version — the
-	/// save is real but stale; surface it, don't destroy it.
+	/// Well-formed header from another format/worldgen version — real but stale; don't destroy it.
 	WrongVersion(u16),
 	SeedMismatch {
 		file: f64,
@@ -261,13 +241,11 @@ pub fn snapshot_bytes(seed: f64, index: &JournalIndex) -> Vec<u8> {
 	out
 }
 
-/// Serialize ONE region as a standalone journal blob.
-///
-/// The bytes are an ordinary journal — same magic, version and record
-/// layout — that happens to contain only this region's cells. That is what
-/// makes the sharded layout a pure container change: every reader,
-/// including [`parse_snapshot`], is unchanged, and a shard can be merged
-/// back into a full index just by replaying it.
+/// Serialize ONE region as a standalone journal blob. The bytes are an ordinary journal — same
+/// magic, version and record layout — that happens to contain only this region's cells. That is
+/// what makes the sharded layout a pure container change: every reader, including
+/// [`parse_snapshot`], is unchanged, and a shard can be merged back into a full index just by
+/// replaying it.
 pub fn region_snapshot_bytes(seed: f64, index: &JournalIndex, region: (i32, i32)) -> Vec<u8> {
 	let live = index.region_live_cells(region);
 	let mut out = Vec::with_capacity((HEADER_LEN + live * RECORD_LEN) as usize);
@@ -369,36 +347,26 @@ const COMPACT_RETRY_SECS: u64 = 300;
 /// within the fluid/edit rate budgets, but fail safe.
 #[cfg(not(target_arch = "wasm32"))]
 const COMPACT_DELTA_MAX: usize = 65_536;
-/// Regions examined per `maintain()` when looking for something to
-/// compact. The scan is round-robin over the shard set rather than a
-/// full pass, so its cost is fixed no matter how many regions a mature
-/// world holds — the pre-shard code summed every column's live cells on
-/// every tick instead. A sweep of even a few thousand regions completes
-/// in seconds, which is nothing against `COMPACT_COOLDOWN_SECS`.
+/// Regions examined per `maintain()` when looking for something to compact. The scan is
+/// round-robin over the shard set rather than a full pass, so its cost is fixed no matter how
+/// many regions a mature world holds — the pre-shard code summed every column's live cells on
+/// every tick instead. A sweep of even a few thousand regions completes well inside
+/// `COMPACT_COOLDOWN_SECS`.
 #[cfg(not(target_arch = "wasm32"))]
 const COMPACT_SCAN_PER_TICK: usize = 8;
-/// Shard writers kept open at once. Regions are visited without bound —
-/// a player walks, a fluid front crosses a border — so this cap is what
-/// stops a long session from exhausting file descriptors; the least
-/// recently written shard is flushed, fsynced and closed to make room.
-/// Sized well past what a full server's players and fluid fronts touch
-/// simultaneously, so eviction stays a rare event rather than a
-/// per-append fsync treadmill.
+/// Shard writers kept open at once. Regions are visited without bound — a player walks, a fluid
+/// front crosses a border — so this cap is what stops a long session from exhausting file
+/// descriptors; the least recently written shard is flushed, fsynced and closed to make room.
+/// Sized well past what a full server's players and fluid fronts touch simultaneously, so
+/// eviction stays a rare event rather than a per-append fsync treadmill.
 #[cfg(not(target_arch = "wasm32"))]
 const MAX_OPEN_REGIONS: usize = 64;
 
-/// One open shard file. `dirty` = bytes still in the BufWriter;
-/// `unsynced` = bytes written since this shard's last fsync (which
-/// OUTLIVES `dirty`: `flush_writers` empties the buffer into the kernel
-/// without making anything durable); `used` is the LRU stamp (see
-/// [`Journal::open_writer`]).
-///
-/// The two flags are separate because [`Journal::sync`] fires on a global
-/// "something was written" trigger at a fixed interval, while the writer
-/// set is up to `MAX_OPEN_REGIONS` wide. Without a per-writer flag it
-/// fsynced EVERY open descriptor whenever any one of them took an append —
-/// a whole writer set's worth of fsyncs on the sim thread each interval,
-/// most of them for shards with nothing new.
+/// One open shard file. `unsynced` OUTLIVES `dirty` — `flush_writers` empties the BufWriter into
+/// the kernel without making anything durable — and `used` is the LRU stamp (see
+/// [`Journal::open_writer`]). The two flags are separate because [`Journal::sync`] fires on a
+/// global "something was written" trigger while the writer set is up to `MAX_OPEN_REGIONS` wide:
+/// without a per-writer flag it fsynced EVERY open descriptor whenever any one took an append.
 #[cfg(not(target_arch = "wasm32"))]
 struct RegionWriter {
 	file: BufWriter<File>,
@@ -407,17 +375,11 @@ struct RegionWriter {
 	used: u64,
 }
 
-/// In-flight runtime compaction of ONE region, stepped once per
-/// `maintain()` call.
-///
-/// Invariants the correctness rests on (see `append` for the capture
-/// rule): the in-memory `index` and `next_seq` are NEVER touched — only
-/// the shard is rewritten, so join sync and seq monotonicity are safe by
-/// construction. All live appends keep going to the OLD shard until the
-/// atomic rename, so a crash at any point leaves a complete old shard
-/// plus a garbage tmp that the next boot removes. Other regions are
-/// untouched: their appends land in files this run never replaces, so
-/// they must stay OUT of the delta.
+/// In-flight runtime compaction of ONE region, stepped once per `maintain()` call. The invariants
+/// correctness rests on (see `append` for the capture rule): the in-memory `index` and `next_seq`
+/// are NEVER touched, so join sync and seq monotonicity are safe by construction; live appends
+/// keep going to the OLD shard until the atomic rename, so a crash leaves a complete old shard
+/// plus a garbage tmp the next boot removes; other regions must stay OUT of the delta.
 #[cfg(not(target_arch = "wasm32"))]
 struct CompactionRun {
 	region: (i32, i32),
@@ -442,16 +404,11 @@ struct CompactionRun {
 	since_sync: u64,
 }
 
-/// The world journal as a DIRECTORY of per-region shards:
-/// `<dir>/world-{seedbits:016x}/r.{rx}.{rz}.journal`, each one a complete
-/// ordinary journal blob (same magic/version/records) holding a single
-/// region's cells.
-///
-/// Sharding is what keeps persistence work proportional to what changed
-/// instead of to the world's lifetime edit count: an append touches one
-/// shard, and compaction rewrites one region's bounded live set rather
-/// than every cell in the world. Pre-shard single-file worlds MIGRATE at
-/// open — the layout changed, the format did not.
+/// The world journal as a DIRECTORY of per-region shards (`r.{rx}.{rz}.journal` under a
+/// seed-named directory), each a complete ordinary journal blob holding one region's cells.
+/// Sharding keeps persistence work proportional to what changed instead of to the world's
+/// lifetime edit count: an append touches one shard, compaction rewrites one region's bounded
+/// live set. Pre-shard single-file worlds MIGRATE at open: the layout changed, not the format.
 #[cfg(not(target_arch = "wasm32"))]
 pub struct Journal {
 	/// The shard directory, not the data root the caller passed.
@@ -872,14 +829,11 @@ impl Journal {
 		self.next_compact_at = None;
 	}
 
-	/// Flush + fsync every shard with something new (the once-a-second
-	/// durability beat, and graceful shutdown).
-	///
-	/// Skipping already-synced writers is what keeps this O(shards written)
-	/// rather than O(shards open): the trigger in `maintain` is one global
-	/// `wrote_since_sync` flag, so a single append to one region used to
-	/// fsync all `MAX_OPEN_REGIONS` descriptors — and an fsync costs
-	/// milliseconds on a container volume, straight out of the sim tick.
+	/// Flush + fsync every shard with something new (the once-a-second durability beat, and
+	/// graceful shutdown). Skipping already-synced writers is what keeps this O(shards written)
+	/// rather than O(shards open): the trigger in `maintain` is one global `wrote_since_sync`
+	/// flag, so a single append to one region used to fsync every open descriptor — and an fsync
+	/// costs milliseconds on a container volume, straight out of the sim tick.
 	pub fn sync(&mut self) {
 		let mut errs = Vec::new();
 		for w in self.writers.values_mut() {
@@ -1005,17 +959,11 @@ fn load_shard(path: &Path, seed: f64, index: &mut JournalIndex) -> std::io::Resu
 	Ok(records)
 }
 
-/// Split a pre-shard whole-world journal into region shards.
-///
-/// Crash safety rests entirely on the ordering: every shard is written to a tmp,
-/// fsynced and atomically renamed, the shard directory is fsynced, and only THEN
-/// is the legacy file removed. A crash before that removal leaves the legacy file
-/// intact and the next boot redoes the whole split from the same source; a crash
-/// after it leaves a complete shard set. There is no window in which both are
-/// incomplete.
-///
-/// The shards come out compacted, so a bloated legacy file pays its rewrite
-/// once, here.
+/// Split a pre-shard whole-world journal into region shards. Crash safety rests entirely on the
+/// ordering: every shard is written to a tmp, fsynced and atomically renamed, the shard directory
+/// is fsynced, and only THEN is the legacy file removed — a crash before that removal leaves the
+/// legacy file intact and the next boot redoes the split, a crash after it leaves a complete
+/// shard set, and there is no window in which both are incomplete. The shards come out compacted.
 #[cfg(not(target_arch = "wasm32"))]
 fn migrate_legacy(legacy: &Path, shards: &Path, seed: f64) -> std::io::Result<()> {
 	let bytes = std::fs::read(legacy)?;
@@ -1254,13 +1202,11 @@ mod tests {
 		names
 	}
 
-	/// `columns_near` is an optimization, so its only contract is that it
-	/// never MISSES a column a brute-force filter would find. It is allowed
-	/// to return extras (whole regions, not discs) — callers re-test.
-	///
-	/// Checked against `edited_columns` over a spread wide enough to cross
-	/// several regions in both directions, including negative coordinates,
-	/// where `div_euclid` and a plain `/` disagree.
+	/// `columns_near` is an optimization, so its only contract is that it never MISSES a column a
+	/// brute-force filter would find. It is allowed to return extras (whole regions, not discs) —
+	/// callers re-test. Checked against `edited_columns` over a spread wide enough to cross
+	/// several regions in both directions, including negative coordinates, where `div_euclid` and
+	/// a plain `/` disagree.
 	#[test]
 	fn columns_near_never_misses_what_a_full_scan_finds() {
 		let mut index = JournalIndex::default();

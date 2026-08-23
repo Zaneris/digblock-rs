@@ -32,22 +32,11 @@ impl Pipeline {
 		input
 	}
 
-	/// The node reveal's per-job parcel, or `None` when this chunk cannot show
-	/// a node at all. The edited-cell list is gathered HERE because this is the
-	/// only place holding the map — the worker has block ids and nothing else.
-	///
-	/// Runs on the MAIN thread once per mesh job, out of the streaming budget,
-	/// which is why both guards exist. No node source reaching the box means no
-	/// stamp: the deposit half asks worldgen over the same box `apply_nodes`
-	/// walks, the surface halves scan the freshly built SNAPSHOT for hosts, and
-	/// the verdict rides the stamp as [`crate::mesher::NodeHosts`]. Otherwise
-	/// the edited-cell walk takes whichever side is smaller — `EditOverlay` has
-	/// no eviction and multiplayer keeps one fed by every broadcast edit, so
-	/// exactly where players build a column holds tens of thousands of entries.
-	///
-	/// The reveal LEVELS are NOT a guard, though they were written as one: the
-	/// first surface node reveals at the level everyone starts at. The host
-	/// scan is the gate.
+	/// The node reveal's per-job parcel, or `None` when this chunk cannot show a node at all. The
+	/// edited-cell list is gathered HERE because this is the only place holding the map, and runs
+	/// on the MAIN thread out of the streaming budget — hence both guards: no node source reaching
+	/// the box means no stamp, and the edited-cell walk takes whichever side is smaller. The reveal
+	/// LEVELS are NOT a guard; the host scan is, since a surface node reveals at the start level.
 	pub(super) fn node_stamp(
 		&self,
 		pos: ChunkPos,

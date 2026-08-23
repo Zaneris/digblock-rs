@@ -76,12 +76,11 @@ pub(super) fn carve(
 	// Locally flat level from the detail-free surface, quantized coarse.
 	let ws_smooth = soft_ceiling(h_ridge) - lp.margin - sea;
 	let ws = sea + ((ws_smooth / lp.step).floor() * lp.step).max(0.0);
-	// Bowl by min-carve: a dry rim ring at ws+1 near the shore, a bed up
-	// to `depth` below the level in the interior. Water fills only where
-	// the bowl actually bites below natural terrain that stood at or
-	// above the level — never over lower ground at a region-gate fade —
-	// so shoreline exposure stays within a bank's height. Non-bowl
-	// footprint columns keep their terrain but still suppress rivers.
+	// Bowl by min-carve: a dry rim ring at ws+1 near the shore, a bed up to `depth` below the
+	// level in the interior. Water fills only where the bowl bites below natural terrain that
+	// stood at or above the level — never over lower ground at a region-gate fade — so
+	// shoreline exposure stays within a bank's height. Non-bowl footprint columns keep their
+	// terrain but still suppress rivers.
 	let target = ws + 1.0 - (1.0 + lp.depth * t) * g;
 	if target >= h_pre || h_pre + 1.0 < ws {
 		return Some((h_pre.max(1.0), sea));

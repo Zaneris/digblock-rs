@@ -13,34 +13,27 @@ impl Engine {
 		self.hotbar.tool_in_hand() == BlockType::Bucket
 	}
 
-	/// The owned tool roster in deterministic block-id order: the
-	/// always-owned bucket plus every tool id with a nonzero count.
-	///
-	/// The predicate lives in core so the rail this feeds and the
-	/// ownership check `reconcile_layout` makes are literally the same
-	/// question — a client offering a tool its own server would take back
-	/// is a rejected swing, not a feature.
+	/// The owned tool roster in deterministic block-id order: the always-owned bucket plus every
+	/// tool id with a nonzero count. The predicate lives in core so the rail this feeds and the
+	/// ownership check `reconcile_layout` makes are literally the same question — a client offering
+	/// a tool its own server would take back is a rejected swing, not a feature.
 	pub(super) fn owned_tools(&self) -> Vec<BlockType> {
 		self.inventory.owned_tools().collect()
 	}
 
-	/// True while the tool is out AND empty — the scooping state. This is
-	/// the one that changes the picking ray, because it is the only state
-	/// in which the thing you want to hit is a fluid source. Charged, the
-	/// bucket aims at ordinary blocks like every other item, so it picks
-	/// with the ordinary ray and the outline lands on the face you're
-	/// about to pour against.
+	/// True while the tool is out AND empty — the scooping state, and the one that changes the
+	/// picking ray, because it is the only state in which the thing you want to hit is a fluid
+	/// source. Charged, the bucket picks with the ordinary ray, so the outline lands on the face
+	/// you are about to pour against.
 	pub(super) fn scoop_ready(&self) -> bool {
 		self.water_tool_selected() && !self.inventory.bucket_full()
 	}
 
-	/// Where the collidable body actually is, for occupancy questions
-	/// ("would this placement trap me?"). Deliberately NOT `camera.pos`:
-	/// the camera carries the tick interpolation and the decaying
-	/// reconciliation offset, so it can sit up to `POS_TOLERANCE` from the
-	/// body — and the server answers the same question from its own
-	/// simulated position, so a camera-based answer mispredicts. Aim rays
-	/// still come from the camera: you hit what you see.
+	/// Where the collidable body actually is, for occupancy questions ("would this placement trap
+	/// me?"). Deliberately NOT `camera.pos`: the camera carries the tick interpolation and the
+	/// decaying reconciliation offset, so it can sit up to `POS_TOLERANCE` from the body, and the
+	/// server answers the same question from its own simulated position. Aim rays still come from
+	/// the camera — you hit what you see.
 	pub(super) fn body_pos(&self) -> Vec3 {
 		if self.input.walking {
 			self.player.pos
@@ -72,17 +65,11 @@ impl Engine {
 		};
 	}
 
-	/// Is `hit` something the current tool can dig?
-	/// The local world's spawn: the same edit-aware resolve the server
-	/// runs, against this client's own edit overlay.
-	///
-	/// A world with no overlay (an unsaved session) has no recorded edits
-	/// to reason about, so the anchor stands; `ascend_clear` still steps
-	/// over anything built there this session.
-	/// The offline spawn as resolved against the save's edits — the eye
-	/// the arrival lock centres on. Split from [`Self::local_spawn`]
-	/// because the lock must anchor on the PAD, before the landing rule
-	/// steps over any residual obstruction.
+	/// The offline spawn as resolved against the save's edits — the eye the arrival lock centres
+	/// on, through the same edit-aware resolve the server runs. Split from [`Self::local_spawn`]
+	/// because the lock must anchor on the PAD, before the landing rule steps over any residual
+	/// obstruction. A world with no overlay has no recorded edits to reason about, so the anchor
+	/// stands and `ascend_clear` still steps over anything built there this session.
 	pub(super) fn local_spawn_resolved(&self) -> Vec3 {
 		match self.pipeline.overlay() {
 			Some(o) => digblock_core::spawn::resolve(self.save.spawn_pos, self.seed, &|x, y, z| {
@@ -99,14 +86,11 @@ impl Engine {
 		digblock_core::player::ascend_clear(resolved, &|x, y, z| pipeline.cell_at(x, y, z))
 	}
 
-	/// What a dig on this cell IS for us right now (SKILLS-DESIGN §5.3)
-	/// — the same `ore::dig_mode` the server asks of its own world, so
-	/// prediction and authority cannot disagree about whether an action
-	/// was a dig, a draw, or a refusal.
-	///
-	/// The chunk store still holds Stone here: the reveal is a stamp on
-	/// the MESH input, never a world write, which is what keeps ore out of
-	/// the journal and out of everyone else's world.
+	/// What a dig on this cell IS for us right now (SKILLS-DESIGN §5.3) — the same `dig_mode` the
+	/// server asks of its own world, so prediction and authority cannot disagree about whether an
+	/// action was a dig, a draw, or a refusal. The chunk store still holds Stone here: the reveal
+	/// is a stamp on the MESH input, never a world write, which keeps ore out of the journal and
+	/// out of everyone else's world.
 	pub(super) fn node_dig_mode(
 		&self,
 		cell: (i32, i32, i32),
@@ -125,18 +109,11 @@ impl Engine {
 		)
 	}
 
-	/// Has this cell ever been written — the provenance half of
-	/// `BlockType::dig_credit`, and the same bit `ore_dig_mode` above
-	/// passes to the reveal. Read off the `EditOverlay`, which MIRRORS the
-	/// server's journal in multiplayer, so both ends answer alike.
-	///
-	/// A place of one's own is recorded when the server echoes it rather
-	/// than when it is predicted (recording predictions is unfixable — a
-	/// rejection reverts through `set_cell` and `record` is insert-only),
-	/// so for one round trip a stone you just laid still reads as the
-	/// world's. That window cannot be reached by hand: a Rock-family hold
-	/// is orders of magnitude longer than a round trip, and the pick only
-	/// lengthens it.
+	/// Has this cell ever been written — the provenance half of `BlockType::dig_credit`, and the
+	/// same bit `node_dig_mode` above passes to the reveal. Read off the `EditOverlay`, which
+	/// MIRRORS the server's journal in multiplayer, so both ends answer alike. A place of one's own
+	/// is recorded when the server echoes it, not when it is predicted — recording predictions is
+	/// unfixable, since a rejection reverts through `set_cell` and `record` is insert-only.
 	pub(super) fn cell_edited(&self, cell: (i32, i32, i32)) -> bool {
 		self.pipeline.cell_edited(cell.0, cell.1, cell.2)
 	}
@@ -293,28 +270,22 @@ impl Engine {
 		}
 	}
 
-	/// Take every climb this world holds back down without telling
-	/// anyone — ours and each remote's, since the world under all of
-	/// them is the one going away.
-	///
-	/// Separate from [`Self::break_ward`] because leaving the WORLD is
-	/// not a broken channel: there is nobody left to send `CastBreak`
-	/// to, and only OUR climb would be the one to break. Doing neither
-	/// is what left half a sphere of glass in a saved world with the
-	/// fare spent; every path that puts this world down calls it while
-	/// that world is still the one under the cells.
+	/// Take every climb this world holds back down without telling anyone — ours and each remote's,
+	/// since the world under all of them is the one going away. Separate from [`Self::break_ward`]
+	/// because leaving the WORLD is not a broken channel: there is nobody left to send `CastBreak`
+	/// to, and only OUR climb would be the one to break. Every path that puts this world down calls
+	/// it while that world is still the one under the cells.
 	pub(super) fn abandon_ward(&mut self) {
 		for climb in std::mem::take(&mut self.ward_climbs) {
 			self.unwind_climb(climb);
 		}
 	}
 
-	/// One climb taken back down: the glass comes down crown-first, only
-	/// where it is still ours — somebody who dug a pane out mid-climb
-	/// keeps their hole — and the climb's fare returns. Restored from
-	/// the climb's OWN RECORD, never from a re-derived plan: a plan
-	/// drawn against a standing sphere names precisely the cells that
-	/// are missing from it, so re-deriving resurrects what was dug.
+	/// One climb taken back down: the glass comes down crown-first, only where it is still ours —
+	/// somebody who dug a pane out mid-climb keeps their hole — and the climb's fare returns.
+	/// Restored from the climb's OWN RECORD, never from a re-derived plan: a plan drawn against a
+	/// standing sphere names precisely the cells missing from it, so re-deriving would resurrect
+	/// what was dug.
 	pub(super) fn unwind_climb(&mut self, climb: WardClimb) {
 		for (c, written, prev) in climb.closing.unwind() {
 			if self.pipeline.cell_at(c.0, c.1, c.2) == Some(written) {
@@ -347,17 +318,11 @@ impl Engine {
 	/// caster waits for the seal — the bound on [`Self::ward_seal_grace`].
 	pub(super) const WARD_SEAL_GRACE_SECS: f32 = 0.6;
 
-	/// Ticks past its own length that a channel keeps guarding stillness.
-	///
-	/// The Ward alone, and only online. `Cast(Ward)` goes out as the
-	/// channel BEGINS, so the server's span starts one upstream latency
-	/// later and ends that much after the caster's own bar fills — and
-	/// until it does, the server is still enforcing its own stillness and
-	/// unwinds the WHOLE sphere, with no refusal and no word, for a
-	/// caster who has walked off. So the channel outlives its length,
-	/// guarding stillness and nothing else, until the seal takes the
-	/// climb away or this bound runs out. Offline the seal IS this end's
-	/// own last tick, so there is nothing to wait for.
+	/// Ticks past its own length that a channel keeps guarding stillness — the Ward alone, and only
+	/// online. `Cast(Ward)` goes out as the channel BEGINS, so the server's span ends one upstream
+	/// latency after the caster's own bar fills, and until it does the server still enforces its
+	/// own stillness and unwinds the WHOLE sphere, with no word, for a caster who has walked off.
+	/// Offline the seal IS this end's own last tick, so there is nothing to wait for.
 	fn ward_seal_grace(&self, target: CastTarget) -> u32 {
 		let waiting = target == CastTarget::Ward
 			&& self.own_ward().is_some()
@@ -438,14 +403,11 @@ impl Engine {
 		}
 	}
 
-	/// The offline arm of a waystone cast: the same tables the server
-	/// validates with, the same debit, and the site materializes on first
-	/// visit — stamped, protected and marked, what a server world did at
-	/// boot. The cast pays the roster's walk up to its own rung (pure
-	/// ring searches; the ladder resolves in order because the separation
-	/// rule is mutual), kept for the session. The XP is the fare's worth
-	/// and nothing else, which is the whole of what a server pays too —
-	/// the two arms have no award to keep in step any more.
+	/// The offline arm of a waystone cast: the same tables the server validates with, the same
+	/// debit, and the site materializes on first visit — stamped, protected and marked, what a
+	/// server world did at boot. The cast pays the roster's walk up to its own rung (pure ring
+	/// searches; the ladder resolves in order because the separation rule is mutual), kept for the
+	/// session. The XP is the fare's worth and nothing else, exactly as a server pays.
 	fn cast_waystone_offline(&mut self, idx: u8) {
 		use digblock_core::skills::Skill;
 		use digblock_core::worldgen::SurfaceKind;
@@ -501,12 +463,10 @@ impl Engine {
 				match self.session.client.as_mut() {
 					Some(net) if net.ready() => net.send_return_to_spawn(),
 					_ => {
-						// Same rule the server runs: relocate sideways out
-						// of anything dug into the spawn, never descend
-						// into it. The overlay — not `pipeline.cell_at` —
-						// is the edit view: the pipeline answers None for
-						// unloaded columns, which the support test would
-						// read as void.
+						// Same rule the server runs: relocate sideways out of anything dug
+						// into the spawn, never descend into it. The overlay — not
+						// `pipeline.cell_at` — is the edit view: the pipeline answers None
+						// for unloaded columns, which the support test would read as void.
 						let from = self.player.pos;
 						let pos = self.local_spawn();
 						self.apply_teleport(pos, Vec3::ZERO);
@@ -740,12 +700,10 @@ impl Engine {
 		self.ward_climbs = climbs;
 	}
 
-	/// One tick's worth of a climb handed to the world and recorded with
-	/// what it replaced, so a break can put it back. A cell somebody has
-	/// stepped into is left unwritten — a hole where a player stood, the
-	/// server's rule too — and so is one this end cannot read, which the
-	/// journal carries instead. Neither is recorded, so no unwind claims
-	/// a cell this end never wrote.
+	/// One tick's worth of a climb handed to the world and recorded with what it replaced, so a
+	/// break can put it back. A cell somebody has stepped into is left unwritten — the server's
+	/// rule too — and so is one this end cannot read, which the journal carries instead. Neither is
+	/// recorded, so no unwind claims a cell this end never wrote.
 	fn land_ward_tick(&mut self, climb: &mut WardClimb) {
 		let body = self.body_pos();
 		let cells = climb.closing.land();
@@ -762,12 +720,9 @@ impl Engine {
 		}
 	}
 
-	/// Walk a climb forward to a plan PREFIX — the server's own count of
-	/// what it handed the world, and the truth about a sphere whose
-	/// local clock is a round trip out of step either way. Behind it,
-	/// the rest lands here too; at or past it, the record already holds
-	/// everything the server ever wrote. A tick-sized step can overshoot
-	/// the count by one tick's cells — only a break can leave those
+	/// Walk a climb forward to a plan PREFIX — the server's own count of what it handed the world,
+	/// and the truth about a sphere whose local clock is a round trip out of step either way. A
+	/// tick-sized step can overshoot the count by one tick's cells; only a break can leave those
 	/// standing, and a break takes the whole record back down.
 	pub(super) fn land_ward_to(&mut self, climb: &mut WardClimb, prefix: usize) {
 		while climb.prefix < prefix && !climb.closing.done() {
@@ -775,12 +730,11 @@ impl Engine {
 		}
 	}
 
-	/// Hand one of a ward's cells to the world through the arm that owns
-	/// this world's edits: offline `set_cell`, the local write funnel a
-	/// save's overlay is recorded from; online `apply_authoritative`,
-	/// the path every journalled edit takes. Online `set_cell` records
-	/// nothing, so a sphere written that way is gone from the overlay
-	/// mirroring the journal and vanishes on the first hard eviction.
+	/// Hand one of a ward's cells to the world through the arm that owns this world's edits:
+	/// offline `set_cell`, the local write funnel a save's overlay is recorded from; online
+	/// `apply_authoritative`, the path every journalled edit takes. Online `set_cell` records
+	/// nothing, so a sphere written that way is gone from the overlay mirroring the journal and
+	/// vanishes on the first hard eviction.
 	pub(super) fn write_ward_cell(&mut self, c: digblock_core::ward::Cell, v: u16) {
 		if self.session.client.is_some() {
 			self.apply_remote_edit(c, v);
@@ -859,12 +813,11 @@ impl Engine {
 			.filter(|d| d.cell == hit.cell && d.cell_value == hit.cell_value)
 			.map(|d| (d.idle == 0, d.banked()));
 		if !same.is_some_and(|(live, _)| live) {
-			// A resume keeps its banked progress; anything else drops what
-			// it was holding (and tells the server, which is what stops it
-			// verifying aim on a cell we walked away from). Either way the
-			// hold re-opens from here, DigStart included — the server was
-			// told to stop the moment the button came up, so a resume has
-			// to ask it to start counting again.
+			// A resume keeps its banked progress; anything else drops what it was holding
+			// (and tells the server, which stops it verifying aim on a cell we walked away
+			// from). Either way the hold re-opens from here, DigStart included — the server
+			// was told to stop the moment the button came up, so a resume has to ask it to
+			// start counting again.
 			let carried = match same {
 				Some((_, banked)) => banked,
 				None => {
@@ -872,12 +825,10 @@ impl Engine {
 					0
 				}
 			};
-			// Family-scaled hold time (SIM v12) — the same `dig_required`
-			// the server's completion gate runs.
-			// An EXTRACTION is timed as the ORE rather than as the stone
-			// the cell still holds, so a deep seam takes longer than a
-			// shallow one and the ore rows' hardnesses are not dead
-			// numbers on blocks nobody digs.
+			// Family-scaled hold time (SIM v12) — the same `dig_required` the server's
+			// completion gate runs. An EXTRACTION is timed as the ORE rather than as the
+			// stone the cell still holds, so a deep seam takes longer than a shallow one and
+			// the ore rows' hardnesses are not dead numbers on blocks nobody digs.
 			let mode = self.node_dig_mode(hit.cell);
 			let timed = digblock_core::worldgen::nodes::dig_block(mode, hit.block);
 			let required = timed
@@ -921,12 +872,10 @@ impl Engine {
 					gain: 0.7,
 				});
 			} else {
-				// A draw rides the SAME voice as a dig, so every stop path
-				// — release, cancel, completion, world swap — already
-				// covers it, and the pitch ramp below reads as a resonance
-				// winding up rather than as a pick speeding up. WHICH sound
-				// it is belongs to `audio::dig_voice`, together with the
-				// finish it has to agree with.
+				// A draw rides the SAME voice as a dig, so every stop path already covers
+				// it, and the pitch ramp below reads as a resonance winding up rather than
+				// as a pick speeding up. WHICH sound it is belongs to `audio::dig_voice`,
+				// together with the finish it has to agree with.
 				let extracting =
 					matches!(mode, digblock_core::worldgen::nodes::DigMode::Extract(_));
 				self.emit(crate::audio::AudioCmd::LoopStart {
@@ -962,17 +911,11 @@ impl Engine {
 		}
 	}
 
-	/// Stop digging, but KEEP what the hold banked: progress bleeds back to
-	/// untouched over `skills::DIG_DECAY_TICKS` and a hold resumed inside that
-	/// window inherits what is left, so a thumb slipping off the button no
-	/// longer costs the whole block. Called once per sim step while not digging
-	/// — that repetition is what advances the decay, and dropping the record at
-	/// zero is what keeps a spent hold from being resumed for free.
-	///
-	/// The server is told once, on the transition, and runs the identical decay
-	/// from ITS release to ITS resume. Those two windows are the same interval
-	/// on a stable link, so only the JITTER separates them, which is what
-	/// `dig_grace` already exists to absorb.
+	/// Stop digging, but KEEP what the hold banked: progress bleeds back over
+	/// `skills::DIG_DECAY_TICKS`, and a hold resumed inside that window inherits what is left.
+	/// Called once per sim step while not digging — that repetition advances the decay, and
+	/// dropping the record at zero keeps a spent hold from being resumed for free. The server runs
+	/// the identical decay from ITS release: only JITTER separates them, which `dig_grace` absorbs.
 	pub(super) fn release_dig(&mut self) {
 		let Some(d) = self.dig.as_mut() else {
 			return;
@@ -1019,13 +962,11 @@ impl Engine {
 			return;
 		};
 		let prev = BlockType::from_id(digblock_core::chunk::cell_id(prev_cell));
-		// (cell, prev) list this dig clears — a door adds its partner, the
-		// Resonant Pick adds the plane of the face (SKILLS-DESIGN §5.6).
-		// Every extra cell holds the SAME id and is the plain breakable
-		// case (`pick::breaks_as_extra`), which is what makes
-		// `begin_multi`'s single `inv_delta` a correct description of the
-		// whole group — and what keeps the aimed door's own partner out of
-		// the plane, where it used to be counted AND written twice.
+		// (cell, prev) list this dig clears — a door adds its partner, the Resonant Pick adds
+		// the plane of the face (SKILLS-DESIGN §5.6). Every extra cell holds the SAME id and is
+		// the plain breakable case (`pick::breaks_as_extra`), which is what makes `begin_multi`'s
+		// single `inv_delta` a correct description of the whole group — and what keeps the aimed
+		// door's own partner out of the plane, where it would be counted AND written twice.
 		let mut cleared = vec![(hit.cell, prev_cell)];
 		for c in self.pick_plane(&hit) {
 			if let Some(v) = self.pipeline.cell_at(c.0, c.1, c.2) {
@@ -1125,21 +1066,11 @@ impl Engine {
 			pos: Some(cell_center(hit.cell)),
 			gain: end_gain,
 		});
-		// No swing is started here: the arc that began with this hold is running
-		// out on this very frame, and re-striking it bolts a whole second
-		// stroke onto a finished scoop. One credit even for the two-cell door.
-		//
-		// An extraction credits NOTHING here, and that is not an omission. A
-		// drawn seam pays essence (`alchemy::field_yield`) rather than a block,
-		// and essence arrives as a SPLIT, which a `PendingEdit`'s single
-		// `inv_delta` cannot carry. So online it is deliberately un-predicted
-		// and the server's `InventoryFull` rebase is the answer, the same path
-		// `ClientMsg::Alchemy` takes; offline the arm below pays it, where the
-		// engine is the authority. The CELL is predicted on both, so the vein
-		// turns spent under the player's hand with no latency either way.
-		//
-		// Everything else pays the `credit` resolved above the write: a stone
-		// somebody MADE comes back whole where the mountain's crumbles.
+		// No swing is started here: the arc that began with this hold is running out on this
+		// frame, and re-striking it bolts a second stroke onto a finished scoop. An extraction
+		// credits NOTHING here — a drawn seam pays essence as a SPLIT, which a `PendingEdit`'s
+		// single `inv_delta` cannot carry, so it is deliberately un-predicted and the server's
+		// `InventoryFull` rebase answers. The CELL is predicted, so the vein turns spent in hand.
 		let drop = if extracting.is_some() { None } else { credit };
 		if let Some(d) = drop {
 			self.inventory.add(d, broken);
@@ -1148,15 +1079,11 @@ impl Engine {
 		let (origin, dir) = (self.camera.pos, self.camera.dir());
 		match self.session.client.as_mut() {
 			Some(net) if net.ready() => {
-				// `tool` is `water_tool_selected` — the SLOT is not enough.
-				// It is the same predicate `diggable` and the scoop ray use,
-				// and the same one the server's Collect gate asks
-				// (`slot_item == WaterTool && active_tool == Bucket`).
-				// Reading the slot alone called every hold with the siphon,
-				// pick or sigil in hand a Collect, which the server answered
-				// WrongSlot: cell and credit reverted, so with any tool but
-				// the bucket active the player could dig NOTHING online —
-				// veins included — while offline the identical input worked.
+				// `tool` is `water_tool_selected` — the SLOT is not enough. It is the same
+				// predicate `diggable` and the scoop ray use, and the same one the server's
+				// Collect gate asks (`slot_item == WaterTool && active_tool == Bucket`).
+				// Reading the slot alone calls every hold with another tool in hand a
+				// Collect, which the server answers WrongSlot: cell and credit revert.
 				let kind = if tool {
 					digblock_net::messages::EditKind::Collect
 				} else {
@@ -1225,17 +1152,11 @@ impl Engine {
 		}
 		let block = match self.hotbar.selected_item() {
 			Some(HotbarItem::Block(b)) => b,
-			// The charged bucket pours its one source. It works here, and
-			// only here, because a charged bucket picks with the ORDINARY
-			// ray: the fluid ray stops INSIDE a source, leaving no face
-			// normal to build against, which is why right-clicking water
-			// with the old collect-only tool did nothing at all.
-			//
-			// The BUCKET, not the slot: the server's place gate requires
-			// `active_tool == Bucket`, so pouring with the pick or siphon
-			// active answered WrongSlot and the source appeared and
-			// vanished. Offline there was no such correction and it simply
-			// poured — a pick that puts down water.
+			// The charged bucket pours its one source. It works here, and only here, because
+			// a charged bucket picks with the ORDINARY ray: the fluid ray stops INSIDE a
+			// source, leaving no face normal to build against. The BUCKET, not the slot —
+			// the server's place gate requires `active_tool == Bucket`, so pouring with the
+			// pick or siphon active answers WrongSlot and the source appears and vanishes.
 			Some(HotbarItem::WaterTool)
 				if self.hotbar.active_tool() == Some(BlockType::Bucket)
 					&& self.inventory.bucket_full() =>
@@ -1251,12 +1172,10 @@ impl Engine {
 		use digblock_core::shapes::{
 			door_state, slab_grow_normal, slab_grown, slab_place_state, stair_state,
 		};
-		// A slab onto a same-material slab's OPEN face — the top of a
-		// floor slab, the underside of a ceiling one — grows the hit cell
-		// in place (1/3 → 2/3 → base block) instead of writing the
-		// neighbor. The wire still carries the canonical state-0 slab —
-		// the server re-derives both the grow and the anchor from its own
-		// raycast.
+		// A slab onto a same-material slab's OPEN face — the top of a floor slab, the
+		// underside of a ceiling one — grows the hit cell in place instead of writing the
+		// neighbor. The wire still carries the canonical state-0 slab: the server re-derives
+		// both the grow and the anchor from its own raycast.
 		let grow = block.is_slab()
 			&& cell_id(hit.cell_value) == block as u16
 			&& hit.normal == slab_grow_normal(hit.cell_value);

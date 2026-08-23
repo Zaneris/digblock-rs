@@ -115,29 +115,20 @@ impl GiDraw {
 		self.lights_dirty |= changed;
 	}
 
-	/// The voxel window's radius in chunks, AS BUILT.
-	///
-	/// The streaming side must key off this and not off the live
-	/// `config.draw_dist`, which the settings screen mutates at runtime
-	/// while the window texture keeps the size it was created with.
-	/// Approving a chunk outside the built window hands `upload_chunk` a
-	/// position whose `rem_euclid` wraps onto a DIFFERENT cell than the
-	/// gather's does — silently writing one part of the world into
-	/// another's slot, which is exactly the aliasing `gi_uploadable`
-	/// exists to prevent.
+	/// The voxel window's radius in chunks, AS BUILT. The streaming side must key off this and not
+	/// off the live `config.draw_dist`, which the settings screen mutates at runtime while the
+	/// window texture keeps the size it was created with. A chunk approved outside the built
+	/// window hands `upload_chunk` a position whose `rem_euclid` wraps onto a DIFFERENT cell than
+	/// the gather's — the aliasing `gi_uploadable` exists to prevent.
 	pub(crate) fn window_chunks(&self) -> i32 {
 		self.window_chunks as i32
 	}
 
-	/// Take one chunk's surface emitters from a finished mesh job
-	/// (`MeshData::lights`) — the vein rectangles this player can see.
-	///
-	/// Called on every mesh result, empty list included, because "this
-	/// chunk has no vein faces any more" is exactly what a completed
-	/// extraction produces and it has to reach the list. The same path
-	/// carries a tier lighting up the moment its reveal level is crossed:
-	/// crossing one re-meshes, the re-mesh stamps the ore, and the faces
-	/// arrive here with no threshold logic anywhere in the renderer.
+	/// Take one chunk's surface emitters from a finished mesh job (`MeshData::lights`) — the vein
+	/// rectangles this player can see. Called on every mesh result, empty list included, because a
+	/// completed extraction produces exactly "no vein faces any more" and it must reach the list.
+	/// The same path carries a tier lighting up as its reveal level is crossed — the crossing
+	/// re-meshes, the re-mesh stamps the ore, and no threshold logic lives in the renderer.
 	pub(crate) fn set_chunk_lights(&mut self, pos: ChunkPos, packed: &[u32]) {
 		use digblock_core::mesher::lights;
 		let world = (
@@ -190,36 +181,22 @@ impl GiDraw {
 		self.lights_dirty |= changed;
 	}
 
-	/// Forget an evicted chunk's emitters.
-	///
-	/// Nothing used to prune this map: the only removal was a chunk
-	/// re-classifying to zero emitters, so every torch ever seen stayed for the
-	/// process's life and a world swap carried the previous world's forward.
-	/// `flush_lights` walks the whole map every frame before its early-out, and
-	/// past `MAX_LIGHTS` a stale entry can out-sort a live one.
-	///
-	/// Deliberately does NOT touch the coarse mirror. The window is TOROIDAL and
-	/// much smaller than residency, so an evicted chunk's `rem_euclid` slot is
-	/// very likely owned by a different, live chunk by now — clearing it would
-	/// erase real occupancy, and it would buy nothing (BENCH.md 2026-08-12).
+	/// Forget an evicted chunk's emitters: without the prune, `flush_lights` walks stale entries
+	/// every frame, past `MAX_LIGHTS` one can out-sort a live emitter, and a world swap carries
+	/// the previous world's forward. Deliberately does NOT touch the coarse mirror — the window is
+	/// TOROIDAL and much smaller than residency, so an evicted chunk's `rem_euclid` slot is very
+	/// likely owned by a live one — clearing it would erase real occupancy (BENCH.md 2026-08-12).
 	pub(crate) fn remove_chunk(&mut self, pos: ChunkPos) {
 		if self.emitters.remove(&pos).is_some() | self.surfaces.remove(&pos).is_some() {
 			self.lights_dirty = true;
 		}
 	}
 
-	/// Drop every piece of GI state that only ever GROWS, so the next
-	/// upload sweep rebuilds it from what is actually resident (F7).
-	///
-	/// This is a diagnostic, not a fix. The coarse mirror and the emitter
-	/// map are never pruned on eviction, so both ratchet as a session
-	/// explores: `sky_y` climbs toward the tallest terrain seen ANYWHERE
-	/// rather than the tallest currently in the window, and every ray in
-	/// the resolve pays for the difference. Pair with `gi_redirty_all` on
-	/// the pipeline — this clears, that re-queues.
-	///
-	/// If frame time recovers after pressing F7, the ratchet is real and
-	/// the fix belongs in eviction, not here.
+	/// Drop every piece of GI state that only ever GROWS, so the next upload sweep rebuilds it
+	/// from what is actually resident (F7). A diagnostic, not a fix: the coarse mirror and the
+	/// emitter map are never pruned on eviction, so both ratchet as a session explores, and every
+	/// ray in the resolve pays for the difference. Pair with `gi_redirty_all` on the pipeline —
+	/// this clears, that re-queues. If frame time recovers after F7, the fix belongs in eviction.
 	pub(crate) fn clear_derived_state(&mut self) {
 		self.coarse_mirror.fill(0);
 		self.coarse_mips_dirty = true;

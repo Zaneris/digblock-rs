@@ -22,15 +22,11 @@ use wtransport::{Connection, Endpoint, Identity, RecvStream, SendStream, ServerC
 /// How long a fresh connection gets to produce its `PREAMBLE_LEN` preamble.
 const PREAMBLE_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Hard ceiling on everything before the sim hears about a connection:
-/// the QUIC/WebTransport handshake, the control stream, both timed reads,
-/// and the master round trip.
-///
-/// Without it a peer could hold a connection slot forever by simply never
-/// opening the control stream — `accept_bi()` had no deadline, and
-/// `keep_alive_interval` means the idle timeout never fires against a peer
-/// whose QUIC stack merely ACKs (which the spec requires). A wave of frozen
-/// tabs would then wedge the server against `MAX_CONNECTIONS` permanently.
+/// Hard ceiling on everything before the sim hears about a connection: handshake, control stream,
+/// both timed reads and the master round trip. Without it a peer holds a slot forever by never
+/// opening the control stream — `accept_bi()` has no deadline of its own, and `keep_alive_interval`
+/// means the idle timeout never fires against a peer whose QUIC stack merely ACKs, so a wave of
+/// frozen tabs would wedge the server against `MAX_CONNECTIONS` permanently.
 const LOBBY_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// How long past the preamble the Hello frame gets (mirrors the sim's old
@@ -65,15 +61,11 @@ const DGRAM_BUDGET: u32 = TICK_RATE * 2 / 10;
 /// sessions are dropped before the WebTransport accept.
 const MAX_CONNECTIONS: usize = 512;
 
-/// Live connections one peer address may hold, by default. Generous enough
-/// for a household or a shared connection playing together, tight enough
-/// that no single address can spend the whole table — see [`IpSlot`].
-///
-/// Configurable (`--max-conns-per-ip`) because the default is calibrated
-/// for an internet-facing server and every multi-client harness we run is
-/// the opposite case: `just bot -- --bots 12` and `just compose-bots` put
-/// every client behind ONE address, so the bots past the cap silently
-/// failed to connect and the soak read as a netcode regression.
+/// Live connections one peer address may hold, by default: generous enough for a household, tight
+/// enough that no single address can spend the whole table — see [`IpSlot`].
+/// Configurable (`--max-conns-per-ip`) because the default is calibrated for an internet-facing
+/// server and every multi-client harness is the opposite case — `just bot` and `just compose-bots`
+/// put every client behind ONE address, and bots past the cap read as a netcode regression.
 pub const DEFAULT_MAX_CONNECTIONS_PER_IP: usize = 8;
 
 /// Rotate the endpoint's certificate this often — well inside the validity
@@ -183,16 +175,10 @@ impl Drop for ConnSlot {
 type IpCounts = Arc<std::sync::Mutex<rustc_hash::FxHashMap<std::net::IpAddr, usize>>>;
 
 /// One address's share of the connection table, released on drop.
-///
-/// [`MAX_CONNECTIONS`] alone let ONE peer hold every slot and force an outbound
-/// token verify per slot per [`VERIFY_TIMEOUT`] window, turning this server into
-/// an unauthenticated amplifier against its own master. The ordering that allows
-/// it is unavoidable — a connection's account is not known until the verify
-/// answers — so the cap goes on the thing that identifies the abuser at that
-/// point, which is the address.
-///
-/// Same RAII shape as [`ConnSlot`]: a panic anywhere in the connection task
-/// would skip a paired decrement and leak the count forever.
+/// [`MAX_CONNECTIONS`] alone let ONE peer hold every slot and force an outbound token verify per
+/// slot per [`VERIFY_TIMEOUT`] window, turning this server into an unauthenticated amplifier
+/// against its own master. A connection's account is unknown until the verify answers, so the cap
+/// goes on what identifies the abuser at that point. Same RAII shape as [`ConnSlot`].
 struct IpSlot {
 	counts: IpCounts,
 	ip: std::net::IpAddr,
@@ -318,17 +304,11 @@ async fn handle_connection(
 	}
 }
 
-/// A stream-shaped ending, resolved to the CONNECTION's own account of it.
-///
-/// wtransport's stream errors carry nothing worth reading, while the connection
-/// knows whether it timed out, was closed by the peer and with what code, or
-/// died of a protocol error. That is also the exact half of the story a browser
-/// cannot tell: a `WebTransportError` sourced at the session carries an empty
-/// message by the spec, so on a phone the server's copy is the only copy.
-///
-/// Bounded, because a stream can fail on a connection that is still up, and this
-/// wait sits in front of the sim hearing about the departure — which is what
-/// frees the account to reconnect.
+/// A stream-shaped ending, resolved to the CONNECTION's own account of it: wtransport's stream
+/// errors carry nothing worth reading, while the connection knows whether it timed out, was closed
+/// by the peer and with what code, or died of a protocol error. That is the half a browser cannot
+/// tell — a session-sourced `WebTransportError` carries an empty message by the spec. Bounded,
+/// because this wait sits in front of the sim hearing the departure that frees the account.
 async fn peer_reason(conn: &Connection, what: &str) -> String {
 	match tokio::time::timeout(CLOSE_REASON_WAIT, conn.closed()).await {
 		Ok(e) => format!("{what}; {e}"),
@@ -403,13 +383,11 @@ async fn lobby(
 		return None;
 	}
 
-	// Await the Hello and verify its one-time token with the master BEFORE
-	// the sim ever hears about this connection — there is no tokenless way
-	// onto a server. Leftover bytes buffered past the Hello frame carry
-	// into the main loop untouched.
-	// The client direction's cap, not the server's: nothing a client sends
-	// is large, and the reader's much larger default limit exists for
-	// journal batches going the other way.
+	// Await the Hello and verify its one-time token with the master BEFORE the sim ever hears
+	// about this connection — there is no tokenless way onto a server. Leftover bytes buffered past
+	// the Hello frame carry into the main loop untouched. The limit is the client direction's cap,
+	// not the server's: nothing a client sends is large, and the reader's much larger default
+	// exists for journal batches going the other way.
 	let mut frames = FrameReader::with_limit(MAX_CLIENT_FRAME);
 	let mut buf = vec![0u8; 64 * 1024];
 	let hello = match tokio::time::timeout(
@@ -481,17 +459,11 @@ async fn lobby(
 	Some((send, recv, buf, frames, out_rx))
 }
 
-/// The admitted connection's pump: inbound frames/datagrams to the sim,
-/// outbound messages to the peer. No overall deadline here — a joined
-/// player is expected to stay for hours; liveness is QUIC's idle timeout.
-///
-/// Returns why it stopped. Every exit hands back its own words, because
-/// they used to be indistinguishable: all but one broke out silently and
-/// that one logged at `debug`, so `conn N: closed` was the entire
-/// server-side record of a kick, a goodbye, a peer that stopped reading,
-/// an idle timeout and a wire that went away. Which of those it was is
-/// the first question asked of any disconnect report, and the server is
-/// routinely the only side that can answer it.
+/// The admitted connection's pump: inbound frames/datagrams to the sim, outbound messages to the
+/// peer. No overall deadline — a joined player stays for hours; liveness is QUIC's idle timeout.
+/// Returns why it stopped, in each exit's own words: `conn N: closed` alone cannot distinguish a
+/// kick, a goodbye, a peer that stopped reading, an idle timeout and a wire that went away, and
+/// the server is routinely the only side that can answer which it was.
 #[allow(clippy::too_many_arguments)]
 async fn serve_connection(
 	conn: Connection,

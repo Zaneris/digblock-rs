@@ -65,20 +65,16 @@ struct HeldKeys {
 }
 
 /// Default per-frame wall-clock budget for main-thread streaming
-/// (`EngineConfig::stream_budget_ms`) — the modern form of the Java
-/// one-queue-item-per-frame rule. The first half bounds the result
-/// drain (chunk inserts + neighbor cascades); the rest bounds mesh
-/// uploads, with leftovers carried in `pending_uploads` to later frames.
-/// Workers keep producing at full speed — undrained results wait in the
-/// channel — so this trades a longer fill tail for even frame pacing:
-/// streaming + render must fit inside one high-refresh vsync interval.
+/// (`EngineConfig::stream_budget_ms`). The first half bounds the result drain
+/// (chunk inserts + neighbor cascades), the rest bounds mesh uploads, leftovers
+/// carried in `pending_uploads`. Workers keep producing at full speed, so this
+/// trades a longer fill tail for streaming + render fitting one vsync interval.
 const STREAM_BUDGET_MS: f32 = 3.0;
 /// Uploads always make this much progress per frame even with the budget
-/// exhausted, so a saturated drain can never starve the upload queue.
-/// Sized to a chunk stack's worth of the player's own column: the
-/// guarantee only has to cover where the player IS, and the queue is
-/// nearest-first, so anything beyond that is the far ring choosing to wait
-/// rather than to hitch. The byte ceiling below still applies.
+/// exhausted, so a saturated drain can never starve the upload queue. Sized to a
+/// chunk stack's worth of the player's own column: the guarantee only has to
+/// cover where the player IS, and the queue is nearest-first, so anything beyond
+/// that is the far ring choosing to wait rather than to hitch.
 const UPLOAD_MIN: usize = 2;
 
 /// The [`UPLOAD_MIN`] twin for the RTGI voxel window. Higher because a GI
@@ -95,20 +91,11 @@ const UPLOAD_BYTES_MAX_CONSTRAINED: usize = 768 << 10;
 /// Evicted chunks released per frame even with the budget spent, so a
 /// player who keeps walking can't outrun the release queue.
 const EVICT_MIN: usize = 8;
-/// Share of one display interval `pump_net` may spend applying authoritative
-/// edits. Each costs a copy-on-write cell write plus up to eight mesh-heap
-/// pushes, so a join sync's worth of them in one frame is a visible stall;
-/// spread over frames it is invisible.
-///
-/// A COUNT could not express that. What one edit costs swings by more than an
-/// order of magnitude — whether its chunk is still shared decides a whole-chunk
-/// copy-on-write — and the mesh jobs it queues are charged to this same thread
-/// later in the same frame even with a Web Worker pool up, since feeding one
-/// encodes and copies the padded snapshot and absorbing the result is
-/// main-thread work by definition. With no pool they run here outright, and the
-/// COUNT this replaced was sized against a native frame with worker threads
-/// behind it. Pricing the slice in TIME makes the same code back off on the
-/// platform that cannot afford it, with no constant to retune per display.
+/// Share of one display interval `pump_net` may spend applying authoritative edits. A COUNT could
+/// not express it: what one edit costs swings by more than an order of magnitude — whether its
+/// chunk is still shared decides a whole-chunk copy-on-write — and the mesh jobs it queues are
+/// charged to this same thread later in the same frame, Web Worker pool or not. Pricing the slice
+/// in TIME makes the same code back off on the platform that cannot afford it.
 const NET_EDIT_SHARE: f32 = 0.15;
 /// Edits that land before the clock is consulted at all — the guarantee
 /// that a frame already over budget still drains rather than parking the
@@ -741,14 +728,11 @@ enum CastTarget {
 	Waystone(u8),
 	/// The timed self-light.
 	Wisp,
-	/// Conjured light standing in the cell the head is in when the
-	/// channel COMPLETES, on its own clock (`digblock_core::kindle`).
+	/// Conjured light in the cell the head is in at COMPLETION, on its own clock.
 	Kindle,
-	/// The glass sphere about the head at completion
-	/// (`digblock_core::ward`).
+	/// The glass sphere about the head at completion (`digblock_core::ward`).
 	Ward,
-	/// The road that lays itself under the feet for its span
-	/// (`digblock_core::causeway`).
+	/// The road that lays itself under the feet for its span (`digblock_core::causeway`).
 	Causeway,
 }
 
@@ -820,14 +804,11 @@ struct TeleportFx {
 	seed: f32,
 }
 
-/// The essence draw the siphon is running, if any — presentation only,
-/// and the whole of what [`crate::siphon`] needs to draw a stream.
-///
-/// The geometry is kept through the fade-OUT rather than dropped with the
-/// hold, which is the only reason this is a struct and not a query. A
-/// completed extraction turns the cell to spent rock on the frame it
-/// lands, so by the time there is anything to flare about there is no
-/// vein left to ask where the motes were coming from.
+/// The essence draw the siphon is running, if any — presentation only, and the whole of what
+/// [`crate::siphon`] needs to draw a stream. The geometry is kept through the fade-OUT rather than
+/// dropped with the hold, which is the only reason this is a struct and not a query: a completed
+/// extraction turns the cell to spent rock on the frame it lands, so by the time there is anything
+/// to flare about there is no vein left to ask where the motes came from.
 #[derive(Clone, Copy)]
 struct SiphonDraw {
 	/// Centre of the face the motes lift off: the cell's own centre,
@@ -856,15 +837,11 @@ fn ms_since(t: web_time::Instant) -> f32 {
 	t.elapsed().as_secs_f32() * 1000.0
 }
 
-/// Milliseconds a frame may spend applying authoritative edits, given the
-/// measured display interval — so the same queue takes proportionally less
-/// of a shorter frame (see [`NET_EDIT_SHARE`]).
-///
-/// A free function rather than a method because the scaling rule is the
-/// part worth pinning, and a test for it should not need a GPU.
-/// `refresh_ms` is a measured percentile that reads zero until it settles;
-/// the nominal interval is the fallback, which is also what every
-/// pre-existing baseline was taken at.
+/// Milliseconds a frame may spend applying authoritative edits, given the measured display
+/// interval — so the same queue takes proportionally less of a shorter frame (see
+/// [`NET_EDIT_SHARE`]). A free function rather than a method because the scaling rule is the part
+/// worth pinning and a test for it should not need a GPU. `refresh_ms` is a measured percentile
+/// that reads zero until it settles; the nominal interval is the fallback.
 fn net_edit_budget_ms(refresh_ms: f32) -> f32 {
 	let interval = if refresh_ms > 0.0 {
 		refresh_ms
@@ -902,13 +879,10 @@ pub(super) fn player_color(id: u8) -> [f32; 3] {
 	[0.35 + 0.55 * r, 0.35 + 0.55 * g, 0.35 + 0.55 * b]
 }
 
-/// What a snapshot's held-item wire id looks like in a remote's hand.
-///
-/// Routes through `hud::item_icon`, the same function the hotbar and
-/// your own viewmodel use, so a remote hand can never show a different
-/// object from the one its owner is looking at. `None` = an empty hand,
-/// an unknown id from a newer server, or an id no slot could legally
-/// hold.
+/// What a snapshot's held-item wire id looks like in a remote's hand. Routes through
+/// `hud::item_icon`, the same function the hotbar and your own viewmodel use, so a remote hand can
+/// never show a different object from the one its owner is looking at. `None` = an empty hand, an
+/// unknown id from a newer server, or an id no slot could legally hold.
 pub(super) fn held_icon(held: u16) -> Option<crate::ui::hud::IconKind> {
 	use digblock_core::hotbar::{HotbarItem, WIRE_EMPTY, WIRE_TOOL};
 	let (item, full) = match held {
@@ -1011,12 +985,10 @@ impl Game for Engine {
 		self.draw(gpu, target, size);
 	}
 
-	/// A capture never takes the pointer. Without the first clause a
-	/// capture answered YES on frame one — it opens with no menu, so no
-	/// UI surface is open, so the desktop shell locked the cursor and
-	/// hid it for the length of the run. The operator lost their mouse
-	/// to a window they never meant to play, and everything they typed
-	/// in the meantime landed in the world.
+	/// A capture never takes the pointer. Without the first clause a capture answers YES on frame
+	/// one — it opens with no menu, so no UI surface is open — and the desktop shell locks and
+	/// hides the cursor for the run, taking the operator's mouse and swallowing everything they
+	/// type into a window they never meant to play.
 	fn wants_cursor_grab(&self) -> bool {
 		self.config.interactive
 			&& !self.ui.menu.is_open()

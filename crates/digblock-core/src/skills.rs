@@ -49,14 +49,11 @@ impl Skill {
 
 pub const MAX_LEVEL: u32 = 99;
 
-/// XP to advance FROM level L (index L-1) to L+1: a slow exponential, a
-/// fixed leading coefficient against a fixed per-level growth ratio, so the
-/// price doubles over a fixed span of levels (SKILLS-DESIGN.md §2 argues
-/// the shape). THIS TABLE IS THE CURVE — it is not a cache of a formula
-/// stated elsewhere. Pinned as integers rather than computed with `powf` at
-/// runtime: the values are a golden constant both sides must agree on
-/// forever, and libm rounding is not a foundation for that. Generated once
-/// at full precision, and `xp_curve_table_is_pinned` holds it.
+/// XP to advance FROM level L (index L-1) to L+1: a slow exponential, a fixed leading
+/// coefficient against a fixed per-level growth ratio, so the price doubles over a fixed span
+/// of levels (SKILLS-DESIGN.md §2 argues the shape). THIS TABLE IS THE CURVE, not a cache of a
+/// formula stated elsewhere: the values are a golden both sides must agree on forever, and libm
+/// rounding is not a foundation for that. `xp_curve_table_is_pinned` holds it.
 const XP_TO_NEXT: [u64; (MAX_LEVEL - 1) as usize] = [
 	88, 95, 102, 109, 117, 125, 134, //
 	144, 154, 166, 177, 190, 204, 219, //
@@ -150,15 +147,9 @@ impl SkillSet {
 
 	/// Take the HIGHER total per skill, for the legacy-character migration.
 	///
-	/// The max, never the sum. Both sides are the same player's XP, and a
-	/// sum would pay them twice for one career — join a server on the new
-	/// account, grind, then claim the old character, and the totals add.
-	/// The max says the honest thing instead: you are as far along as your
-	/// furthest self, and the ladder is unchanged by having walked it on
-	/// two keys.
-	///
-	/// This is [`Self::set_total`]'s rule, and deliberately so: totals only
-	/// ever grow, in a merge exactly as on the wire.
+	/// The max, never the sum. Both sides are the same player's XP, and a sum would pay them twice
+	/// for one career. This is [`Self::set_total`]'s rule, and deliberately so: totals only ever
+	/// grow, in a merge exactly as on the wire.
 	pub fn merge_from(&mut self, other: &Self) {
 		for s in Skill::ALL {
 			self.set_total(s, other.xp(s));
@@ -189,34 +180,20 @@ impl SkillSet {
 
 // ---- dig speed -------------------------------------------------------
 
-/// The levels at which a dig gets faster: a fixed stride up the ladder,
-/// plus the cap.
+/// The levels at which a dig gets faster: a fixed stride up the ladder, plus the cap.
 ///
-/// A dig speeds up a couple of dozen times in a life rather than at every
-/// level. Under the old per-level curve most levels moved a hold by a
-/// single tick or by nothing at all, so the reward read as noise; a
-/// fraction of the levels carrying proportionally more is the same total
-/// speedup made legible.
-/// The grid is deliberately independent of the curve's shape — this
-/// table says WHEN a player gets faster, [`DIG_TAPER`] says by how much.
+/// A dig speeds up a couple of dozen times in a life rather than at every level, so a reward
+/// lands as a felt jump instead of a tick nobody notices. The grid is deliberately independent
+/// of the curve's shape — this table says WHEN a player gets faster, [`DIG_TAPER`] by how much.
 pub const DIG_STEPS: [u32; 21] = [
 	1, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 99,
 ];
 
-/// How much of the journey from a family's novice speed to its mastery speed is
-/// complete at each of [`DIG_STEPS`], in permille. A pinned integer table, never
-/// a `powf` — same reason as the XP curve: it is a golden both ends must agree
-/// on to the unit, and a float would let two platforms round a hold apart.
-///
-/// **The increments strictly decrease, and that IS the design.** Each jump is a
-/// constant fraction smaller than the last, so the first step is the biggest
-/// speedup a player will ever feel. The early game is where a slow dig is most
-/// discouraging, and diminishing returns stop a late level from being a
-/// rounding error. The RELATIVE gain falls too, so the curve eases off in felt
-/// terms and not merely in ticks.
-///
-/// One table serves every family, so the shape is authored once. `Fixed` has a
-/// zero-width range and stays flat for free.
+/// How much of the journey from a family's novice speed to its mastery speed is complete at each
+/// of [`DIG_STEPS`], in permille. A pinned integer table, never a `powf` — the XP curve's reason:
+/// a golden both ends must agree on to the unit, where a float would round a hold apart.
+/// **The increments strictly decrease, and that IS the design** — the first step is the biggest
+/// speedup a player ever feels. One table serves every family, so the shape is authored once.
 const DIG_TAPER: [u32; 21] = [
 	0, 139, 259, 364, 455, 535, 604, 664, 716, 761, 801, 835, 865, 891, 914, 934, 951, 966, 979,
 	990, 1000,
@@ -243,21 +220,11 @@ pub fn dig_speed_step(level: u32) -> u32 {
 	DIG_STEPS[dig_step_index(level)]
 }
 
-/// §5.1's per-family dig-speed multiplier in permille: two endpoints per family
-/// — its novice speed and its mastery speed — with [`DIG_TAPER`] deciding how
-/// the journey between them is spent. A family says only how hard its material
-/// resists a novice and how fast mastery gets; the shape of the climb is shared.
-/// Fixed is flat: foliage is already near-instant, the torch is a fixture, and
-/// the water scoop's duration is pinned to the viewmodel swing.
-///
-/// The mastery endpoint IS the speed floor — no second clamp — and there is no
-/// mid anchor. So `hardness_ticks` is a BASE the curve scales at every level,
-/// and outside `Fixed` no level spends it unscaled: don't reintroduce an
-/// assertion that some level returns the raw hardness.
-///
-/// The RATIO between the two ends — what a whole life of levelling is worth as
-/// a multiple — is deliberately modest: mastery was once fast enough that the
-/// ladder's top was where the material stopped mattering.
+/// §5.1's per-family dig-speed multiplier in permille: two endpoints per family — its novice
+/// speed and its mastery speed — with [`DIG_TAPER`] deciding how the journey between them is
+/// spent. Fixed is flat: foliage is near-instant, the torch is a fixture, and the water scoop's
+/// duration is pinned to the viewmodel swing. The mastery endpoint IS the speed floor — no
+/// second clamp, no mid anchor — so no level outside `Fixed` spends `hardness_ticks` unscaled.
 pub fn dig_speed_permille(family: crate::block::DigFamily, level: u32) -> u32 {
 	use crate::block::DigFamily;
 	let (start, end) = match family {
@@ -269,37 +236,25 @@ pub fn dig_speed_permille(family: crate::block::DigFamily, level: u32) -> u32 {
 	start - (DIG_TAPER[dig_step_index(level)] * (start - end) + 500) / 1000
 }
 
-/// THE hold-to-dig duration both sides compute: the hardness scaled by the
-/// family multiplier for the digger's Mining level, rounded and floored to
-/// at least one tick. A level-up landing mid-hold skews client/server by a few
-/// ticks at most, which `dig_grace` absorbs — no new tolerance
-/// machinery. Hardness stays a separate parameter because callers hold
-/// the y-gated `dig_hardness(y)` result (the bedrock rule lives there).
+/// THE hold-to-dig duration both sides compute: the hardness scaled by the family multiplier for
+/// the digger's Mining level, rounded and floored to at least one tick. A level-up landing
+/// mid-hold skews client/server by a few ticks at most, which `dig_grace` absorbs. Hardness
+/// stays a separate parameter because callers hold the y-gated `dig_hardness(y)` result.
 pub fn dig_required(block: BlockType, hardness: u16, level: u32) -> u32 {
 	((u32::from(hardness) * dig_speed_permille(block.dig_family(), level) + 500) / 1000).max(1)
 }
 
-/// How long a released hold takes to bleed all the way back to
-/// untouched. One second is the MAXIMUM, not a flat cost: the rate is
-/// one whole bar per second, so a block a tick from breaking takes the
-/// full second and a barely-started one is gone almost at once. Setting
-/// it as a fraction of the bar rather than in ticks is what makes the
-/// crack retreat at the same visible speed on leaves and on stone.
+/// How long a released hold takes to bleed all the way back to untouched. A MAXIMUM, not a flat
+/// cost: the rate is one whole bar per second, so a block a tick from breaking takes the full
+/// span and a barely-started one is gone almost at once. Setting it as a fraction of the bar
+/// rather than in ticks is what makes the crack retreat at one visible speed on every block.
 pub const DIG_DECAY_TICKS: u32 = 60;
 
-/// The Resonant Pick's hold multiplier in permille (SKILLS-DESIGN §5.6),
-/// applied on top of the family curve when the pick is the ACTIVE tool.
+/// The Resonant Pick's hold multiplier in permille (SKILLS-DESIGN §5.6), applied on top of the
+/// family curve when the pick is the ACTIVE tool.
 ///
-/// **Level-only, never derived from how many cells actually qualify.** A
-/// world-derived multiplier would let the two ends disagree by the whole
-/// multiplier whenever their worlds differ by one cell, far outside what
-/// `dig_grace` absorbs.
-///
-/// The consequence is deliberate: a LONE block costs the multiplier too. The
-/// spread penalty is set against an offsetting tool bonus that very nearly
-/// cancels it, so swinging at one block costs about what a bare hand does and
-/// the pick is always worth holding, while a full row clears in the time of
-/// one.
+/// **Level-only, never derived from how many cells actually qualify** — a world-derived one
+/// would let the two ends disagree by the whole multiplier over a single differing cell.
 pub fn pick_permille(level: u32) -> u32 {
 	match crate::unlock::pick_cells(level) {
 		9 => 1800,
@@ -324,16 +279,11 @@ pub fn dig_required_with(
 	(base * pick_permille(level)).div_ceil(1000).max(1)
 }
 
-/// What is left of `progress` banked ticks out of `required` after `idle` ticks
-/// of not digging.
+/// What is left of `progress` banked ticks out of `required` after `idle` ticks of not digging.
 ///
-/// THE one decay rule: the client predicts with it, the server's completion
-/// gate charges it, and offline play runs the same call, so no two can drift.
-/// Integer and exact — it takes the ELAPSED idle count rather than accumulating
-/// a per-tick subtraction, because a fractional per-tick rate would be under
-/// one for every block in the game and so would round to zero and decay
-/// nothing. Truncating down means the bar outlives its arithmetic by up to a
-/// tick and reaches exactly zero at [`DIG_DECAY_TICKS`] for every hardness.
+/// THE one decay rule: client prediction, the server's completion gate and offline play all run
+/// this call, so no two can drift. It takes the ELAPSED idle count rather than accumulating a
+/// per-tick subtraction, which would be under one for every block and so round to zero.
 pub fn dig_decayed(progress: u32, required: u32, idle: u32) -> u32 {
 	let idle = idle.min(DIG_DECAY_TICKS);
 	progress.saturating_sub(required.saturating_mul(idle) / DIG_DECAY_TICKS)
@@ -350,14 +300,11 @@ pub fn dig_decayed(progress: u32, required: u32, idle: u32) -> u32 {
 // per-action XP is fixed for life. Shared verbatim by the server's
 // chokepoints and the offline engine.
 
-/// Mining XP for a completed dig of `block`, scaled down from its hardness.
-/// Zero for the undiggable (which can't complete a dig anyway) — and zero,
-/// BY NAME, for foliage and the torch: a trivial break is housekeeping,
-/// not mining, and the scale-down alone cannot say so, because its
-/// rounding hands even the softest block a whole point. The FLAT award —
-/// where the dig happened is [`depth_xp_permille`]'s business, and
-/// [`dig_award`] is what puts the two together (its cap is what keeps a
-/// zero-worth block's swing cells at zero too).
+/// Mining XP for a completed dig of `block`, scaled down from its hardness. Zero for the
+/// undiggable — and zero, BY NAME, for foliage and the torch: a trivial break is housekeeping,
+/// and the scale-down alone cannot say so, since its rounding hands even the softest block a
+/// whole point. The FLAT award; where the dig happened is [`depth_xp_permille`]'s business, and
+/// [`dig_award`] puts the two together (its cap keeps a zero-worth block's swing cells at zero).
 pub fn dig_xp(block: BlockType) -> u64 {
 	if block.is_foliage() || block == BlockType::Torch || block.is_conjured() {
 		return 0;
@@ -384,67 +331,34 @@ const PERMILLE: u32 = 1000;
 
 /// The depth reward at its deepest, in permille of the flat award.
 ///
-/// Bounded from both sides, and neither bound is arithmetic. Above: well
-/// under the multiple that would make depth compulsory — this is a reason
-/// to go down, not a tax on staying up. Below: enough to be worth
-/// noticing. What used to bind it from underneath was the rounding, and no
-/// longer does: [`dig_award`] rounds to NEAREST, so any ramp above
-/// [`PERMILLE`] moves every award in the game by construction
-/// (`the_depth_reward_moves_every_award`) — however cheap the block, and
-/// however small the award scale is retuned to be.
+/// Bounded from both sides, and neither bound is arithmetic. Above: well under the multiple that
+/// would make depth compulsory. Below: enough to be worth noticing. [`dig_award`] rounds to
+/// NEAREST, so any ramp above [`PERMILLE`] moves every award in the game by construction.
 pub const DEPTH_XP_MAX_PERMILLE: u32 = 1500;
 
-/// What a cell the Resonant Pick's swing reached — every cell but the one under
-/// the crosshair — pays, in permille of its own flat award (§5.6).
+/// What a cell the Resonant Pick's swing reached — every cell but the one under the crosshair —
+/// pays, in permille of its own flat award (§5.6).
 ///
-/// A wide swing is a reach bonus, not an XP multiplier. The pick already pays
-/// for itself in **material**: one hold hands back a whole plane, at a
-/// level-only multiple of a single-cell hold. Paying full XP per cell on top
-/// would make the tool the only sensible way to earn Mining at all, and each of
-/// its two reach milestones a step change in levelling speed rather than in
-/// what the tool DOES.
-///
-/// Floored at one whole point per cell by [`dig_award`]: an extra cell that
-/// pays literally nothing reads as a bug rather than as a discount.
+/// A wide swing is a reach bonus, not an XP multiplier: the pick already pays for itself in
+/// MATERIAL. Floored at one point per cell by [`dig_award`] — a cell paying nothing reads as a bug.
 pub const PICK_EXTRA_PERMILLE: u32 = 200;
 
-/// §5.2's depth reward: the multiplier on a dig's Mining XP for the cell it
-/// happened in, in permille. Flat at and above [`DEPTH_XP_FROM`], then rising
-/// LINEARLY with depth to [`DEPTH_XP_MAX_PERMILLE`] at [`DEPTH_XP_TO`].
-///
-/// **Linear per block rather than quantized into depth layers**, the opposite
-/// of what [`DIG_STEPS`] does to the dig curve. That curve had to be quantized
-/// because ticks are fine-grained enough that a per-level change moved a hold
-/// by one or by nothing. XP has no such problem: the awards are small integers
-/// and [`dig_award`]'s rounding quantizes them for free, leaving each block
-/// type its own ladder of whole-point steps as you descend
-/// (`the_depth_reward_climbs_one_point_at_a_time`). Layering on top would buy
-/// cliffs — depths where one more block down is worth a permanent step and
-/// every block after it is worth nothing.
+/// §5.2's depth reward: the multiplier on a dig's Mining XP for the cell it happened in, in
+/// permille. Flat at and above [`DEPTH_XP_FROM`], then rising LINEARLY with depth to
+/// [`DEPTH_XP_MAX_PERMILLE`] at [`DEPTH_XP_TO`]. **Linear per block rather than quantized into
+/// depth layers**, the opposite of [`DIG_STEPS`]: [`dig_award`]'s rounding already quantizes the
+/// awards, and layering on top would buy cliffs where one block down is a permanent step.
 pub fn depth_xp_permille(y: i32) -> u32 {
 	let depth = (DEPTH_XP_FROM - y.clamp(DEPTH_XP_TO, DEPTH_XP_FROM)) as u32;
 	let span = (DEPTH_XP_FROM - DEPTH_XP_TO) as u32;
 	PERMILLE + (DEPTH_XP_MAX_PERMILLE - PERMILLE) * depth / span
 }
 
-/// THE award for one completed dig, `(Mining, Alchemy)` — the whole answer in
-/// one call, so no award site can read the tables and forget the depth reward.
-/// The server's dig-credit chokepoint and the engine's offline arm call this
-/// and nothing else.
-///
-/// `prev` is the journaled truth about the cell that was replaced (never the
-/// raycast hit), `broken` how many cells the one hold cleared, and `y` the
-/// ANCHOR cell's — a wide pick swing spans several rows, and the anchor is the
-/// one cell both ends provably agree on. The whole swing is scaled once rather
-/// than cell by cell: one action, one rounding.
-///
-/// **Only the aimed cell pays in full**; every other cell pays
-/// [`PICK_EXTRA_PERMILLE`] of one. A door pair is still ONE block and never
-/// reaches that arm, since `broken` counts blocks rather than cells.
-///
-/// A field draw pays its per-kind figure in BOTH skills instead, and the depth
-/// reward deliberately does not touch it: the ore tiers are depth-banded
-/// already, so scaling them by depth would count the same axis twice.
+/// THE award for one completed dig, `(Mining, Alchemy)` — one call, so no award site can read
+/// the tables and forget the depth reward. `prev` is the journaled truth about the cell replaced
+/// (never the raycast hit), `broken` how many cells the hold cleared, `y` the ANCHOR cell's —
+/// one rounding for the whole swing. **Only the aimed cell pays in full**, the rest
+/// [`PICK_EXTRA_PERMILLE`]; a field draw pays in BOTH skills and the depth ramp never touches it.
 pub fn dig_award(
 	prev: BlockType,
 	extracting: Option<BlockType>,
@@ -472,34 +386,21 @@ pub fn dig_award(
 		0 => 0,
 		n => base * unit + u64::from(n - 1) * each,
 	};
-	// To NEAREST rather than truncated. The awards are small integers, so
-	// truncation quietly under-delivers both the ramp and the fraction, and
-	// it under-delivers them worst on the cheapest digs — the ones with the
-	// least room to show it. Rounding is also what makes the ramp's
-	// guarantee structural: every award moves with depth for any multiplier
-	// above unity, so neither a new cheap row nor a retune of the award
-	// scale can silently strand the bottom of the hardness order on a flat
-	// number.
+	// To NEAREST rather than truncated. The awards are small integers, so truncation quietly
+	// under-delivers both the ramp and the fraction, worst on the cheapest digs. Rounding is also
+	// what makes the ramp's guarantee structural: every award moves with depth for any multiplier
+	// above unity, so neither a new cheap row nor a retune of the award scale can strand the
+	// bottom of the hardness order on a flat number.
 	let scale = unit * unit;
 	let mining = (flat * u64::from(depth_xp_permille(y)) + scale / 2) / scale;
 	(mining, 0)
 }
 
-/// The DUAL award for one field draw — a siphon taking a node where it stands:
-/// `(Mining, Alchemy)`. `None` for anything that is not a node.
-///
-/// A draw is mechanically a dig and thematically an alchemical separation, so
-/// it pays both, and WHICH skill takes the headline follows which skill found
-/// the node: the ore tiers pay Mining first with an Alchemy cut, the surface
-/// nodes invert it, because the surface hunt is Alchemy's and a forager who
-/// never opens a mine still moves the skill that revealed the find. There is no
-/// second moment behind either — a node is never an item, so no draw is
-/// "finished at the bench" later.
-///
-/// Tabled rather than derived from hardness: these are headline rewards and the
-/// curve through them is a decision. Which is why the table does NOT follow a
-/// retune of [`dig_xp`] — a retune moves what a find is worth RELATIVE to plain
-/// digging, deliberately: a lever, not a drift.
+/// The DUAL award for one field draw — a siphon taking a node where it stands: `(Mining,
+/// Alchemy)`. `None` for anything that is not a node. A draw is mechanically a dig and
+/// thematically an alchemical separation, so it pays both, and the headline follows which skill
+/// FOUND the node. Tabled rather than derived from hardness, so a [`dig_xp`] retune moves what a
+/// find is worth RELATIVE to plain digging: a lever, not a drift.
 pub fn field_xp(node: BlockType) -> Option<(u64, u64)> {
 	Some(match node {
 		// The Alchemy cuts sit high against their Mining headlines on
@@ -521,29 +422,18 @@ pub fn field_xp(node: BlockType) -> Option<(u64, u64)> {
 }
 
 /// Alchemy XP per crafted item: the craft's full worth at the bench
-/// ([`crate::alchemy::craft_worth`], a fixed fraction of the ideal pre-waste
-/// cost, feedstock included) — fixed for life. Zero for uncraftable items.
-///
-/// §13.4's award-side HALVING is deliberately gone. It existed because the
-/// bench was an unbounded XP machine, and the lever un-pulls with the machine:
-/// a craft is now bounded by essence that had to be found and matter that had
-/// to be quarried, so it may pay what it is worth. Award and pace read the same
-/// underlying worth, so a thing worth more to make takes the time the work
-/// takes.
-///
-/// This is the bench's ONLY award: Alchemy is earned by drawing nodes in the
-/// field ([`field_xp`]) and by making things here, and by nothing that can be
-/// repeated against an unbounded supply.
+/// ([`crate::alchemy::craft_worth`], a fixed fraction of the ideal pre-waste cost, feedstock
+/// included) — fixed for life, zero for uncraftable items. Award and pace read the same
+/// underlying worth, so a thing worth more to make takes the time the work takes. This is the
+/// bench's ONLY award: nothing here may be repeated against an unbounded supply.
 pub fn craft_xp(item: BlockType) -> u64 {
 	u64::from(crate::alchemy::craft_worth(item))
 }
 
-/// Arcana XP for a Return Home cast, derived from the DISTANCE the jump
-/// covered rather than a flat figure — the depth ramp's spirit: the
-/// world scales the award, both ends compute it from positions the
-/// server already holds, and a zero-length jump pays zero, which is the
-/// anti-idle rule stated as arithmetic. Capped, so no journey is worth
-/// making only to be teleported back out of.
+/// Arcana XP for a Return Home cast, derived from the DISTANCE the jump covered rather than a
+/// flat figure — the depth ramp's spirit: the world scales the award, both ends compute it from
+/// positions the server already holds, and a zero-length jump pays zero, which is the anti-idle
+/// rule stated as arithmetic. Capped, so no journey is worth making only to teleport back out.
 pub fn home_xp(dist_blocks: f32) -> u64 {
 	((dist_blocks.max(0.0) / HOME_XP_STRIDE) as u64).min(HOME_XP_CAP)
 }
@@ -554,29 +444,19 @@ pub const HOME_XP_STRIDE: f32 = 8.0;
 /// The home award's ceiling, per jump.
 pub const HOME_XP_CAP: u64 = 60;
 
-/// Arcana XP for a PRICED cast, derived from what it drains — the
-/// `craft_xp` rule: the award rides the price, so a fare retune moves
-/// its XP with it and no spell pays out of proportion to its drain.
-/// Zero-cost casts pay zero structurally.
+/// Arcana XP for a PRICED cast, derived from what it drains — the `craft_xp` rule: the award
+/// rides the price, so a fare retune moves its XP with it and zero-cost casts pay zero.
 ///
-/// The rate and the fares are one decision, not two: raising the fares
-/// alone would pay MORE per cast for costing more, which is the opposite
-/// of a sink. What the rate cannot be is UNIT-blind, now that the fares
-/// climb the essence ladder: a unit is not one worth across the five, so
-/// counting units alone would pay the far cold port — a single unit of
-/// the one essence nothing transmutes into — less than the lowland ones
-/// (`the_port_tables_are_twins_and_the_fare_is_payable` sweeps the
-/// level-sorted roster for exactly that ordering).
+/// The rate cannot be UNIT-blind now that the fares climb the essence ladder: counting units
+/// alone would pay the far cold port less than the lowland ones, which the port sweep forbids.
 pub fn cast_xp(essence: crate::block::Essence, essence_price: u32) -> u64 {
 	u64::from(essence_price) * cast_xp_per_unit(essence)
 }
 
-/// Points per unit of the essence a cast drains. Four of the five share
-/// the base rate — their fares are already denominated in comparable
-/// units, so a costlier passage pays more by costing more. Aether is the
-/// exception it is everywhere else: the one essence that cannot be
-/// transmuted INTO, so a unit of it is worth a whole passage priced in
-/// anything else, and a one-unit fare still crowns the ladder.
+/// Points per unit of the essence a cast drains. Four of the five share the base rate — their
+/// fares are already denominated in comparable units, so a costlier passage pays more by costing
+/// more. Aether is the exception it is everywhere else: the one essence that cannot be
+/// transmuted INTO, so a one-unit fare in it still crowns the ladder.
 pub fn cast_xp_per_unit(essence: crate::block::Essence) -> u64 {
 	match essence {
 		crate::block::Essence::Aether => CAST_XP_PER_ESSENCE * AETHER_CAST_WORTH,

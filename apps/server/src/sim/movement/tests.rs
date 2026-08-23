@@ -186,12 +186,10 @@ fn standing_on_stair_claim_adopted() {
 	let _c = connect(&mut sim, 1);
 	wait_live(&mut sim, 1);
 
-	// Honest local twin over the same world, one tick ahead. Claims
-	// carry a float-noise x offset so adoption is DETECTABLE: the
-	// server's own sim never produces the offset, so equality below
-	// holds only if every claim was adopted verbatim (the old
-	// cell-granular probe passed the un-offset version of this test
-	// vacuously — server sim and twin were bit-identical anyway).
+	// Honest local twin over the same world, one tick ahead. Claims carry a float-noise x offset so
+	// adoption is DETECTABLE: the server's own sim never produces it, so the equality below holds
+	// only if every claim was adopted verbatim — the old cell-granular probe passed the un-offset
+	// version of this test vacuously, server sim and twin being bit-identical anyway.
 	const EPS: f32 = 1e-4;
 	let mut local = Player::new(spawn);
 	let mut t = 100;
@@ -314,12 +312,10 @@ fn sustained_edge_riding_locked_out_then_recovers() {
 	wait_live(&mut sim, 1);
 	let start = sim.test_player(1).unwrap();
 
-	// Fly cheat riding the per-tick envelope: every claim a small step
-	// up from the previous claim — each one individually within
-	// POS_TOLERANCE and the displacement clamp while adopted, but the
-	// delta EWMA is pure +y bias and trips DRIFT_TOLERANCE within a
-	// handful of ticks; after that the sim stops following and the
-	// marching claims fall out of the hard envelope too.
+	// Fly cheat riding the per-tick envelope: every claim a small step up from the previous, each
+	// individually within POS_TOLERANCE and the displacement clamp while adopted, but the delta
+	// EWMA is pure +y bias and trips DRIFT_TOLERANCE within a handful of ticks; after that the sim
+	// stops following and the marching claims fall out of the hard envelope too.
 	let mut t = 100;
 	for i in 1..=60 {
 		let claim = PlayerState {
@@ -603,13 +599,11 @@ fn a_hold_is_paid_back_by_the_catch_up_drain() {
 	let s = sim.input_stats(1);
 	assert_eq!(s.late_lost, 0, "the hole was recovered: {s:?}");
 	assert!(s.held > 0, "and recovered by holding: {s:?}");
-	// The borrowed ticks were given back, not banked. Without the
-	// catch-up the backlog would still be sitting at the hold's full
-	// depth — one in, one out forever — and every later input would pay
-	// that as standing latency. `JITTER_BUFFER_TICKS` is the level the
-	// catch-up trims to, so being at or under it is "level with the
-	// wire"; it is not zero, because a sender delivering in strides
-	// always has a tick or so in hand.
+	// The borrowed ticks were given back, not banked: without the catch-up the backlog would still
+	// sit at the hold's full depth — one in, one out forever — and every later input would pay that
+	// as standing latency. `JITTER_BUFFER_TICKS` is the level the catch-up trims to, so at or under
+	// it is "level with the wire"; it is not zero, because a sender delivering in strides always
+	// has a tick or so in hand.
 	let backlog = sim.test_input_backlog(1);
 	assert!(
 		backlog <= JITTER_BUFFER_TICKS as usize,

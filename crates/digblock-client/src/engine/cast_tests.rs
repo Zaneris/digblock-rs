@@ -404,13 +404,11 @@ fn a_flying_caster_conjures_where_they_are() {
 	assert_eq!(ward.head, here, "the sphere closes about where we are");
 }
 
-/// Every standing kindled light keys its own carrier. Two on one key
-/// share a `fired` slot and re-place each other every frame from two
-/// different cells (the `CARRIER_DEBUG` lesson) — and the counter behind
-/// the key is MASKED, so this is the minter's promise rather than the
-/// type's. Swept over as many lights as a full server can have burning
-/// at once, which is the bound `the_bank_outlasts_every_light_that_can_burn_at_once`
-/// holds the bank against.
+/// Every standing kindled light keys its own carrier. Two on one key share a `fired` slot and
+/// re-place each other every frame from two different cells (the `CARRIER_DEBUG` lesson) — and the
+/// counter behind the key is MASKED, so this is the minter's promise rather than the type's. Swept
+/// over as many lights as a full server can have burning at once, the bound
+/// `the_bank_outlasts_every_light_that_can_burn_at_once` holds the bank against.
 #[test]
 fn every_standing_kindled_light_keys_its_own_carrier() {
 	let mut e = fresh();
@@ -881,14 +879,11 @@ fn the_offline_award_and_refund_find_our_own_climb() {
 	);
 }
 
-/// The Ward's stillness contract outlives the caster's own channel.
-///
-/// `Cast(Ward)` goes out as the channel BEGINS, so the server's span
-/// starts one upstream latency later and seals that much after the
-/// caster's own bar fills — and until it does, the server is still
-/// enforcing stillness and unwinds the WHOLE sphere, with no refusal and
-/// no word, for a caster who walked. So the channel keeps guarding while
-/// a climb stands under it, and the seal releases it.
+/// The Ward's stillness contract outlives the caster's own channel. `Cast(Ward)` goes out as the
+/// channel BEGINS, so the server's span starts one upstream latency later and seals that much after
+/// the caster's own bar fills — and until it does, the server is still enforcing stillness and
+/// unwinds the WHOLE sphere, with no refusal and no word, for a caster who walked. So the channel
+/// keeps guarding while a climb stands under it, and the seal releases it.
 #[test]
 fn a_ward_channel_guards_stillness_until_the_seal() {
 	let (mut e, _server) = connected();

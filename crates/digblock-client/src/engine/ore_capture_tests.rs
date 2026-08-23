@@ -6,21 +6,11 @@ use digblock_core::worldgen::ore;
 /// never carved.
 use super::debug_plans::ORE_CHAMBER_R as R;
 
-/// DIG_ORE's one rule, and the only one that makes the scene work at all:
-/// the plan must not write over a single cell the deposit claims. A write
-/// reaches the anti-dupe for real — the plan is applied through
-/// `pipeline.set_cell`, which records into the `EditOverlay`, and
-/// `nodes::revealed` answers None for an edited cell forever — so a stray
-/// write deletes the subject of the photograph permanently and silently,
-/// because the chamber still looks right.
-///
-/// The carve loop always guarded this; the floor plate did not, and it is
-/// laid BELOW the deposit centre, straight through the lowest rim of a
-/// max-radius blob.
-///
-/// `crossings` is what stops this going vacuous: it counts the vein cells
-/// lying IN the plate's plane, so a sample that never puts one there fails
-/// as loudly as a plan that paves over them.
+/// DIG_ORE's one rule: the plan must not write over a single cell the deposit claims. The plan is
+/// applied through `pipeline.set_cell`, which records into the `EditOverlay`, and `nodes::revealed`
+/// answers None for an edited cell forever — so a stray write deletes the subject of the photograph
+/// permanently and silently, because the chamber still looks right. `crossings` is what stops this
+/// going vacuous: it counts the vein cells lying IN the floor plate's plane.
 #[test]
 fn the_ore_capture_plan_never_writes_over_the_vein() {
 	let mut crossings = 0usize;
@@ -80,18 +70,11 @@ fn the_ore_capture_plan_never_writes_over_the_vein() {
 	);
 }
 
-/// **The deposit the scene picks is one the stamp can actually reveal.** A
-/// vein manifests only in pristine STONE, so a deposit rolled into open air
-/// — or under a lake — reveals nothing at any level, and DIG_ORE photographs
-/// an empty stone-plated box that reads as a bug in the reveal rather than
-/// in the scene. Nothing above catches it:
-/// `the_ore_capture_plan_never_writes_over_the_vein` asserts only that the
-/// carve spares the vein's cells, which is just as true when there is no
-/// rock around them.
-///
-/// Searching by horizontal distance alone was survivable while every band
-/// ran to the bottom of the world; the redesign gave each band a FLOOR, and
-/// shallow tiers then routinely rolled above the terrain.
+/// **The deposit the scene picks is one the stamp can actually reveal.** A vein manifests only in
+/// pristine STONE, so a deposit rolled into open air — or under a lake — reveals nothing at any
+/// level, and DIG_ORE photographs an empty stone-plated box that reads as a bug in the reveal.
+/// `the_ore_capture_plan_never_writes_over_the_vein` does not catch it: sparing the vein's cells is
+/// just as true when there is no rock around them, and each band's FLOOR lifts shallow tiers.
 #[test]
 fn every_capture_deposit_stands_in_rock() {
 	let mut checked = 0usize;

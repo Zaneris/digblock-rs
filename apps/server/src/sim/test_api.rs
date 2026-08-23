@@ -12,13 +12,10 @@ impl Sim {
 		self.store.set_cell(x, y, z, cell);
 	}
 
-	/// Put a client somewhere, bypassing the admin command — for staging a
-	/// spatial arrangement a test needs, without walking there.
-	///
-	/// The interest centre moves with them, dirty flag and all: setting
-	/// the centre alone leaves `update_residency`'s own check with nothing
-	/// to notice, so the store would keep serving the columns around
-	/// wherever the client USED to be until something else moved.
+	/// Put a client somewhere, bypassing the admin command — for staging a spatial arrangement a
+	/// test needs without walking there. The interest centre moves with them, dirty flag and all:
+	/// setting the centre alone leaves `update_residency`'s own check with nothing to notice, so
+	/// the store would keep serving the columns around wherever the client USED to be.
 	#[cfg(test)]
 	pub(super) fn test_teleport(&mut self, conn_id: u64, pos: Vec3) {
 		if let Some(c) = self.clients.get_mut(&conn_id) {
@@ -119,12 +116,10 @@ impl Sim {
 			.map_or(1, |c| c.skills.level(digblock_core::skills::Skill::Mining))
 	}
 
-	/// Raise a client's Mining to `level` (total-XP floor — never lowers,
-	/// like the wire's max-total rule). Harness/bench support: edit-path
-	/// digs must clear the strength wall without earning through it (the
-	/// gate's own test drives DigStart raw). Not #[cfg(test)] because
-	/// netbench — a bin, not a test — drives a real in-process Sim whose
-	/// flat world is stone.
+	/// Raise a client's Mining to `level` (total-XP floor — never lowers, like the wire's max-total
+	/// rule). Harness/bench support: edit-path digs must clear the strength wall without earning
+	/// through it (the gate's own test drives DigStart raw). Not #[cfg(test)] because netbench — a
+	/// bin, not a test — drives a real in-process Sim whose flat world is stone.
 	pub fn bench_set_mining_level(&mut self, conn_id: u64, level: u32) {
 		use digblock_core::skills::{Skill, total_xp_for};
 		if let Some(c) = self.clients.get_mut(&conn_id) {

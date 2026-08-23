@@ -33,52 +33,16 @@ fn main() {
 		..Default::default()
 	};
 
-	// Deterministic-capture flags:
-	//   --screenshot out.png [--exit] [--frames N]
-	//   --offscreen (draw off the swapchain — the flag that lets a capture
-	//            run with the screen locked or the window covered; not
-	//            implied by --screenshot, since it also drops the present
-	//            wait a frame-time run measures)
-	//   --seed <f64 bits or decimal> --metrics-csv out.csv
-	//   --yaw <deg> --pitch <deg> (initial camera view; yaw 90 faces +x,
-	//            the sun azimuth plane)
-	//   --bench (scripted flight, inputs off, vsync off; supplies its own
-	//            seed, tod, frame count and CSV path)
-	//   --fly N / --warp N (fly the bench path N frames then freeze, or
-	//            arrive at that same pose with no motion behind it — the
-	//            temporal-artifact A/B; pair with --frames)
-	//   --walk (modifier on either: an eye-height oscillation, one block
-	//            forward and one back, instead of the flyover — a
-	//            screen-space artifact scales with screen motion, so the
-	//            two paths are two regimes)
-	//   --render-scale S (DEV/CAPTURE ONLY — no slider exposes it and it
-	//            is locked at native for players. World resolution as a
-	//            fraction of the surface; the UI stays native)
-	//   --gi-scale D (GI resolve divisor against the render size: a slider
-	//            rung, or the lever-only full-res divisor; the interactive
-	//            high-DPI default is derived from display density. This is
-	//            the knob that pays — see settings::density_gi_div)
-	//   --bench-speed B (flyover blocks/s; the DEFAULT is every BENCH.md
-	//            baseline's value, several times walking pace and a
-	//            different STREAMING regime — drop it to walking pace to
-	//            soak at how the game is played)
-	//   --size WxH (logical window size; the GI resolve is a fraction of
-	//            the surface, so this is what a cross-platform comparison
-	//            has to hold equal)
-	//   --pos x y z (stand here instead of at the seed's spawn)
-	//   --fixed-dt S (step the world by exactly S per frame — what makes
-	//            a capture comparable ACROSS BUILDS at all)
-	//   DIG_STUB=<terms> (remove shading terms to attribute a frame)
-	//   --knobs (list every DIG_* scene and lever and exit; a DIG_* the
-	//            list does not name is fatal, as a bad value is)
-	//   --no-vsync --workers N --draw-dist N (workload knobs / profiling)
+	// Deterministic-capture flags; CLAUDE.md's "Capture, bench & metrics flags" is the roster.
+	// The couplings that bite: --fixed-dt is what makes a capture comparable ACROSS BUILDS,
+	// --offscreen is deliberately not implied by --screenshot (it also drops the present wait a
+	// frame-time run measures), --render-scale is dev/capture only, and --bench-speed's default is
+	// every BENCH.md baseline's value — a different STREAMING regime, not merely a faster one.
 	let mut frames: Option<u32> = None;
-	// Multiplayer goes through the master server exclusively: it lists
-	// servers, distributes cert pins, and mints the one-time join tokens
-	// game servers require. There is no direct-connect path. The
-	// production master is the default; --master-url / DIG_MASTER_URL
-	// point dev stacks elsewhere, and an explicitly empty value opts out
-	// of master-backed features (menu multiplayer, music) entirely.
+	// Multiplayer goes through the master exclusively: it lists servers, distributes cert pins and
+	// mints the one-time join tokens game servers require, so there is no direct-connect path. The
+	// production master is the default; --master-url / DIG_MASTER_URL point dev stacks elsewhere,
+	// and an explicitly empty value opts out of master-backed features (menu multiplayer, music).
 	let mut master_url = std::env::var("DIG_MASTER_URL").ok();
 	let mut join = false;
 	let mut server_filter: Option<String> = None;
@@ -309,18 +273,11 @@ fn main() {
 		// for uncapped raw-cost measurement (percentiles = true frame
 		// cost; presentation judders inherently at >display rate).
 	} else if options.exit_after_screenshot && options.screenshot.is_none() {
-		// `--exit` means what the --tod guard above already calls it: a
-		// run that quits on its own. Without this it meant something much
-		// narrower — the platform's only non-bench exit is the one behind
-		// the SCREENSHOT (`exit_after_screenshot && screenshot.is_some()`),
-		// and `--frames` on its own merely says WHEN to shoot rather than
-		// when to stop.
-		//
-		// So `--metrics-csv out.csv --frames 400 --exit` armed neither
-		// path and ran until it was killed, writing CSV rows the whole
-		// time. It reads exactly like "run 400 frames and quit", which is
-		// the trap: every flag in it is real, the combination is silently
-		// inert, and the failure looks like a hang rather than a mistake.
+		// `--exit` means what the --tod guard above already calls it: a run that quits on its own.
+		// Without this it meant something much narrower — the platform's only non-bench exit sits
+		// behind the SCREENSHOT, and `--frames` alone says WHEN to shoot rather than when to stop,
+		// so `--metrics-csv out.csv --frames 400 --exit` armed neither path and ran until it was
+		// killed. Every flag in it is real, the combination inert, and it looked like a hang.
 		let Some(n) = frames else {
 			eprintln!(
 				"--exit needs something to end the run: --frames N, a --screenshot, or --bench"
@@ -342,14 +299,11 @@ fn main() {
 		eprintln!("{e}");
 		std::process::exit(2);
 	}
-	// The other half of that rule, and the one the environment needs: the
-	// page refuses a `?key` it does not know, but reading the table out of
-	// the environment can only MISS a misspelled variable, so `DIG_VUALT=1`
-	// used to photograph open terrain and exit 0 — the silent wrong scene
-	// this module exists to prevent, arriving through the launcher that
-	// takes its scenes by name. Tolerated beside the table: this launcher's
-	// own three, and DIG_CHROME, which the shader gate and the web harness
-	// read and a developer therefore keeps exported.
+	// The other half of that rule, and the one the environment needs: the page refuses a `?key` it
+	// does not know, but reading the table out of the environment can only MISS a misspelled
+	// variable, so `DIG_VUALT=1` photographs open terrain and exits 0 — the silent wrong scene this
+	// sweep exists to prevent. Tolerated beside the table: this launcher's own three, and
+	// DIG_CHROME, which the shader gate and the web harness read and a developer keeps exported.
 	const OWN_ENV: &[&str] = &[
 		"DIG_MASTER_URL",
 		"DIG_IDENTITY_FILE",
@@ -548,18 +502,11 @@ fn main() {
 	}
 }
 
-/// The key this machine's pre-account character is filed under on the servers it
-/// used to play on: the truncated SHA-256 of the old identity secret, which is
-/// exactly what those servers stored.
-///
-/// **Read-only, and it never creates the file.** The secret it hashes was a
-/// bearer credential the client used to mint out of thin air; nothing does that
-/// any more, so a machine without one has no old character and must not be given
-/// a key to somebody else's. Absent, unreadable and all-zeros all answer `None`.
-///
-/// The secret itself stops here — only the hash goes on the wire. Not much of a
-/// defence, since the hash is what a claim needs, but it keeps the one file that
-/// used to be replayed to every server from being replayed anywhere at all.
+/// The key this machine's pre-account character is filed under on servers it used to play on: the
+/// truncated SHA-256 of the old identity secret, which is what those servers stored.
+/// **Read-only, and it never creates the file** — the secret it hashes was a bearer credential
+/// nothing mints any more, so a machine without one must not be handed a key to somebody else's.
+/// Absent, unreadable and all-zeros all answer `None`; only the hash ever goes on the wire.
 fn legacy_identity() -> Option<[u8; 16]> {
 	let path = std::env::var("DIG_IDENTITY_FILE")
 		.map(std::path::PathBuf::from)
@@ -579,15 +526,11 @@ fn legacy_identity() -> Option<[u8; 16]> {
 	Some(digblock_net::protocol::legacy_identity_hash(&secret))
 }
 
-/// The Account screen's Copy ID button.
-///
-/// The `Clipboard` is kept alive for the process rather than made per copy.
-/// On X11 the clipboard is not a buffer the system owns — it is a promise
-/// served by the application that put it there, so a context dropped right
-/// after setting takes the contents with it and the paste comes back empty.
-/// One long-lived instance keeps serving it. (The other obvious fix,
-/// arboard's `set().wait()`, blocks until another app takes the selection,
-/// which on this call path would freeze the frame.)
+/// The Account screen's Copy ID button. The `Clipboard` is kept alive for the process rather than
+/// made per copy: on X11 the clipboard is not a buffer the system owns but a promise served by the
+/// application that put it there, so a context dropped right after setting takes the contents with
+/// it and the paste comes back empty. arboard's `set().wait()` is the other obvious fix and blocks
+/// until another app takes the selection, which on this call path would freeze the frame.
 fn copy_to_clipboard(text: &str) {
 	use std::sync::{Mutex, OnceLock};
 	static CLIPBOARD: OnceLock<Option<Mutex<arboard::Clipboard>>> = OnceLock::new();

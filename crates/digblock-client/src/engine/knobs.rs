@@ -195,14 +195,11 @@ pub const ALL: &[Knob] = &[
 const SCREEN_NAMES: &str = "menu|inventory|inventory-hover|alchemy|alchemy-hover|transmute|transmuting|\
 	skills|spellbook|spellbook-hover|hand|bucket|bucket-full|torch|siphon|pick|sigil";
 
-/// Read every knob through `get` and write what it means into `config`.
-///
-/// `get` answers with the raw value the launcher found, or `None` when
-/// the knob was not set — a flag's value is ignored beyond its presence.
-/// Knobs that depend on one another (`siphon` rides `ore`, `vaultdark`
-/// implies `vault`) are resolved here, so neither launcher can get the
-/// order wrong. An explicit pitch already in `config` survives the
-/// siphon's default.
+/// Read every knob through `get` and write what it means into `config`. `get` answers with the raw
+/// value the launcher found, or `None` when the knob was not set — a flag's value is ignored beyond
+/// its presence. Knobs that depend on one another (`siphon` rides `ore`, `vaultdark` implies
+/// `vault`) are resolved here, so neither launcher can get the order wrong. An explicit pitch
+/// already in `config` survives the siphon's default.
 pub fn apply(
 	config: &mut EngineConfig,
 	get: &dyn Fn(&Knob) -> Option<String>,
@@ -438,15 +435,10 @@ mod tests {
 		}
 	}
 
-	/// The list a typo's error prints is prose sitting beside a match
-	/// arm, and the two drift the moment a screen is added — so every
-	/// spelling it offers has to BE one, and no two may name the same
-	/// screen, or the help is telling a player about a page twice and
-	/// about another one never.
-	///
-	/// The other direction — a variant nobody can spell — is held where
-	/// it can fail to COMPILE: `screens`'s `fixture_of` matches
-	/// exhaustively over [`DebugScreen`].
+	/// The list a typo's error prints is prose sitting beside a match arm, and the two drift the
+	/// moment a screen is added — so every spelling it offers has to BE one, and no two may name
+	/// the same screen. The other direction, a variant nobody can spell, is held where it can fail
+	/// to COMPILE: `screens`'s `fixture_of` matches exhaustively over [`DebugScreen`].
 	#[test]
 	fn every_screen_the_error_offers_can_be_asked_for() {
 		let mut seen = std::collections::HashSet::new();

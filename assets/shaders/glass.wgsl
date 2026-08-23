@@ -1,34 +1,18 @@
-// Glass shader — the Translucent MESH BUCKET (glass cubes, crystal,
-// translucent shaped covers), drawn inside the water pass after the water
-// draw, over the composited scene in the post target, in TWO commuting
-// halves:
+// Glass shader — the Translucent MESH BUCKET (glass cubes, crystal, translucent shaped covers),
+// drawn inside the water pass after the water draw, over the composited scene, in two halves:
 //
-// - `fs_tint` MULTIPLIES the backdrop by the texel's transmittance
-//   (blend dst x src): a pane over bright sky GLOWS with what it passes,
-//   which alpha blending can never say — coverage averages, a filter
-//   filters. T = 1 - a(1 - albedo) per texel, the LUT rule's per-texel
-//   twin (`material_lut`), so what the eye sees through a pane and what
-//   the GI carries through its cell are one formula. One cell, one T:
-//   see `fs_tint` for the pairing that buys it and for where it slips.
-// - `fs_shine` ADDS the surface's own light: the covered fraction shades
-//   as a diffuse surface, and `glows` rows add their ink — a crystal's
-//   cracks read in the dark.
+// - `fs_tint` MULTIPLIES the backdrop by the texel's transmittance: a pane over bright sky GLOWS
+//   with what it passes, which alpha blending can never say — coverage averages, a filter filters.
+//   T is the LUT rule's per-texel twin (`material_lut`), so what the eye sees through a pane and
+//   what the GI carries through its cell are one formula.
+// - `fs_shine` ADDS the surface's own light: the covered fraction shades as a diffuse surface,
+//   and `glows` rows add their ink.
 //
-// The halves do NOT commute across panes — a pane is `dst*T + S`, and two
-// of those compose differently in each order — so `GlassDraw::draw` walks
-// its chunks BACK TO FRONT and runs a chunk's tint and shine together.
-// Running all tints and then all shines would be order-free only by
-// letting every shine escape every filter, which diverges as panes stack.
-// Two panes in ONE chunk still share a tint: the standing approximation.
-// Winding needs no split (a cube's two faces both tint, which is its
-// thickness), and the sqrt below is what makes that pair cost one cell.
-//
-// The vertex words are the SOLID stream's — the decode below must agree
-// with mesher::pack / solid_word1, exactly as chunk.wgsl and water.wgsl
-// must. Lighting for the shine half is water's R17 split: probe gather
-// per VERTEX, short sun DDA per fragment — a blended surface is absent
-// from the depth prepass, so the raw probe field (group 2, gi_common) is
-// the only lighting it can read (the water/players precedent).
+// The halves do NOT commute across panes, so `GlassDraw::draw` walks its chunks BACK TO FRONT and
+// runs a chunk's tint and shine together. The vertex words are the SOLID stream's — the decode
+// below must agree with mesher::pack / solid_word1, exactly as chunk.wgsl and water.wgsl must. A
+// blended surface is absent from the depth prepass, so the raw probe field is the only lighting
+// the shine half can read: water's R17 split, probe gather per VERTEX, sun DDA per fragment.
 
 // The Frame struct + group(0) binding(0) come from frame_common.wgsl. The
 // pipeline shares water's layout, whose group 0 carries the scene targets
@@ -59,22 +43,18 @@ const SUN_STEPS = 12;
 // water.wgsl's SUN_MIN_L for why the weight multiplies the light colour.
 const SUN_MIN_L = 0.002;
 
-// How much of the light falling on a pane scatters back off its surface
-// — the ADDITIVE half's weight. Small on purpose: a pane's appearance is
-// its transmission (the multiply half), and most of what does not pass
-// is absorbed, not re-emitted. Without this the shine half treated the
-// covered fraction as a full diffuse wall and a stained pane in daylight
-// bloomed additive white over its own tinted backdrop.
+// How much of the light falling on a pane scatters back off its surface — the ADDITIVE half's
+// weight. Small on purpose: a pane's appearance is its transmission, and most of what does not
+// pass is absorbed rather than re-emitted. Without this the shine half treated the covered
+// fraction as a full diffuse wall and a stained pane in daylight bloomed additive white over its
+// own tinted backdrop.
 const GLASS_REFLECT = 0.22;
 
-// The shine half's share of one FACE, under the same pairing convention
-// the tint half's sqrt encodes: a closed volume shows a ray two faces, so
-// each carries half of what the cell contributes. Ink needs it stated
-// because `emissive_ink` is shared with the lit passes and pinned against
-// them — a crystal that was an Opaque row until this bucket existed drew
-// its ink once, and would otherwise glow twice as bright free-standing as
-// it does set into a wall. GLASS_REFLECT is NOT scaled by this: it was
-// tuned against the doubled term and already absorbs it.
+// The shine half's share of one FACE, under the same pairing convention the tint half's sqrt
+// encodes: a closed volume shows a ray two faces, so each carries half of what the cell
+// contributes. Ink needs it stated because `emissive_ink` is shared with the lit passes and
+// pinned against them, and a crystal would otherwise glow twice as bright free-standing as set
+// into a wall. GLASS_REFLECT is NOT scaled by this — it was tuned against the doubled term.
 const INK_PER_FACE = 0.5;
 
 // See chunk.wgsl: exact twelfths → blocks decode.
@@ -83,14 +63,11 @@ fn twelfths(v: u32) -> f32 {
 }
 
 struct VsOut {
-	// @invariant on BOTH entries, and load-bearing: the tint half and the
-	// shine half rasterize the same triangles from the same stream, and a
-	// one-ulp difference between them would leave a fragment taking the
-	// multiply without the add (a dark seam) or the add without the
-	// multiply (a bright fringe). It also settles the coplanar tie with
-	// the water prepass that `LessEqual` now depends on, instead of
-	// leaving it to per-frame luck. Same reasoning as chunk.wgsl and
-	// water.wgsl — build the position identically in both entries.
+	// @invariant on BOTH entries, and load-bearing: the tint half and the shine half rasterize
+	// the same triangles from the same stream, and a one-ulp difference would leave a fragment
+	// taking the multiply without the add (a dark seam) or the add without the multiply (a
+	// bright fringe). It also settles the coplanar tie with the water prepass that `LessEqual`
+	// depends on. Same reasoning as chunk.wgsl and water.wgsl — build the position identically.
 	@invariant @builtin(position) pos: vec4f,
 	@location(0) uv: vec2f,
 	@location(1) @interpolate(flat) layer: u32,
@@ -167,20 +144,11 @@ fn vs_tint(@location(0) packed: vec2u, @location(1) origin: vec4f) -> VsTintOut 
 	return o;
 }
 
-// What this texel lets through, per channel — the blend multiplies the
-// backdrop by exactly this (src_factor Zero, dst_factor Src). The SQUARE
-// ROOT of the texel's T: a view ray crosses a closed glass volume's
-// faces in PAIRS (same-type interior faces cull), so per-pair the
-// backdrop takes T — which is what the GI charges a one-cell wall, and
-// the case every window is.
-//
-// Two shapes fall outside the pair, and both are v1 edges recorded in
-// GI-DESIGN R35 rather than fixed here. A pane whose far face is culled
-// by an OPAQUE neighbour (glass laid on dirt, set into stone) shows the
-// ray one face and charges sqrt(T) where the cell is worth T. And a wall
-// n cells THICK still shows one pair, so the draw charges T while the
-// marches charge T^n. Both want the mesher to say whether a face has a
-// partner, which is a vertex bit nobody has spent yet.
+// What this texel lets through, per channel — the blend multiplies the backdrop by exactly this.
+// The SQUARE ROOT of the texel's T: a view ray crosses a closed glass volume's faces in PAIRS
+// (same-type interior faces cull), so per-pair the backdrop takes T, which is what the GI charges
+// a one-cell wall. A face culled by an opaque neighbour and a wall n cells thick both fall outside
+// the pair — v1 edges recorded in GI-DESIGN R35, wanting a mesher "has a partner" vertex bit.
 @fragment
 fn fs_tint(i: VsTintOut) -> @location(0) vec4f {
 	let tex = textureSample(blocks_tex, blocks_smp, i.uv, i.layer);

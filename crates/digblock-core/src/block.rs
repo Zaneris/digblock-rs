@@ -322,14 +322,11 @@ blocks! {
 	Wardglass = 90 => conjured(dig(translucent(props(RenderClass::Glass, true, tex::WARDGLASS, tex::WARDGLASS, tex::WARDGLASS)), 25, DigFamily::Soft)),
 }
 
-/// The indestructible world floor: cells at this height can never be
-/// dug (`BlockType::dig_hardness`), and worldgen's cave pass never
-/// carves them — so no path exists to a hole in the bottom of the world.
-///
-/// This is THE number. [`crate::protect::WORLD_FLOOR`] — the write-side
-/// half of the same rule — is an alias of it rather than a second
-/// literal, so the plane a dig refuses and the plane a write refuses
-/// cannot drift apart.
+/// The indestructible world floor: cells at this height can never be dug
+/// (`BlockType::dig_hardness`), and worldgen's cave pass never carves them — so no path exists to
+/// a hole in the bottom of the world. This is THE number: [`crate::protect::WORLD_FLOOR`], the
+/// write-side half of the same rule, is an alias rather than a second literal, so the plane a dig
+/// refuses and the plane a write refuses cannot drift apart.
 pub const BEDROCK_Y: i32 = 0;
 
 /// Ceiling on texture-array layers, tied to the packed vertex format's
@@ -370,22 +367,13 @@ pub enum RenderClass {
 	None,
 	/// Solid mesh; occludes neighbor faces.
 	Opaque,
-	/// Solid mesh; does not occlude; culls faces against same-type
-	/// neighbors. Memberless today — reserved for a future alpha-TESTED
-	/// block; glass went `Glass` (alpha-blended) instead.
+	/// Solid mesh, no occlusion, culls same-type. Memberless — reserved for an alpha-TESTED block.
 	Cutout,
-	/// Water mesh (alpha-blended, no depth write); emits faces only toward
-	/// `None` neighbors; culls same-type; top faces get the surface lip.
+	/// Water mesh: emits faces only toward `None` neighbors, culls same-type, top faces get a lip.
 	Translucent,
-	/// Alpha-blended glass: rides the `Translucent` BUCKET's stream (solid
-	/// vertex format, blended after water); does not occlude; culls faces
-	/// against same-type neighbors only, so a pane shows the world and the
-	/// water behind it. Distinct from `Translucent` because every reader of
-	/// that class means WATER (the GI's op-1 water counter included).
+	/// Alpha-blended glass; distinct from `Translucent`, whose every reader means WATER.
 	Glass,
-	/// Sub-block geometry from the `shapes` registry (sub-grid). Solid
-	/// stream; occlusion is per-face via the shape's coverage masks, and
-	/// shaped blocks never cast AO (like Cutout).
+	/// Sub-block geometry from the `shapes` registry; occlusion is per-face via coverage masks.
 	Shaped,
 }
 
@@ -396,33 +384,25 @@ pub enum RenderClass {
 pub enum ShapeKind {
 	/// An even stepped ascent; the state nibble carries the facing.
 	Stairs,
-	/// Thin two-cell leaf; the state nibble carries facing, open, and
-	/// which half of the leaf this cell is.
+	/// Thin two-cell leaf; the state nibble carries facing, open, and which half this cell is.
 	Door,
-	/// Bottom-anchored partial fill; the state nibble carries the
-	/// thickness and the anchor.
+	/// Bottom-anchored partial fill; the state nibble carries the thickness and the anchor.
 	Slab,
 	/// Floor-mounted torch: post + glowing head, one stateless variant.
 	Torch,
-	/// Full-footprint top on four legs; stateless, so tables pushed
-	/// together read as one surface.
+	/// Full-footprint top on four legs; stateless, so tables pushed together read as one surface.
 	Table,
-	/// Seat, back and four legs; the state nibble carries the facing (the
-	/// back).
+	/// Seat, back and four legs; the state nibble carries the facing (the back).
 	Chair,
-	/// A one-cell cot: mattress on a low frame, pillow at the head end;
-	/// the state nibble carries the facing (the head).
+	/// A one-cell cot, mattress on a low frame; the state nibble carries the facing (the head).
 	Bed,
 }
 
-/// The SHAPE axis of SKILLS-DESIGN §7.2's material × shape grid: the form
-/// a substance is worked into. Distinct from [`ShapeKind`], which is a
-/// rendering/collision tag — `Block` has no sub-block geometry at all, and
-/// `ShapeKind::Torch` is a functional item rather than a form you can put
-/// any material into, so it has no family here.
-///
-/// The transmute tab's families ARE this enum, which is why a new
-/// material × shape pair grows the catalog without growing the screen.
+/// The SHAPE axis of SKILLS-DESIGN §7.2's material × shape grid: the form a substance is worked
+/// into. Distinct from [`ShapeKind`], which is a rendering/collision tag — `Block` has no
+/// sub-block geometry at all, and `ShapeKind::Torch` is a functional item rather than a form you
+/// can put any material into, so it has no family here. The transmute tab's families ARE this
+/// enum, which is why a new material × shape pair grows the catalog without growing the screen.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ShapeFamily {
 	/// The full cube — the shape a material arrives in.
@@ -488,35 +468,22 @@ impl ShapeFamily {
 	}
 }
 
-/// The five reagents — what a siphon draws a NODE into (SKILLS-DESIGN §14).
-/// `repr` indices are a wire and persistence format (flagged inventory pairs
-/// `SUB_WIRE_FLAG | index`), APPEND-ONLY.
-///
-/// **The indices are frozen; the names are not.** Renaming a variant moves no
-/// byte: the discriminants are explicit, nothing serializes an `Essence` by
-/// name (no serde, no `FromStr`), and the one place a name is parsed —
-/// `/give` — reads [`Essence::ident`], which is not the label.
-///
-/// The first two indices deliberately keep the retired `Material` enum's
-/// numbering — Vitae sits where sub-wood lived and Terra where sub-stone did —
-/// so every record written under the old two-family economy decodes 1:1 with
-/// NO migration code. The design doc's decode-time migration IS this
-/// numbering.
+/// The five reagents — what a siphon draws a NODE into (SKILLS-DESIGN §14). `repr` indices are a
+/// wire and persistence format (flagged inventory pairs), APPEND-ONLY. **The indices are frozen;
+/// the names are not** — renaming moves no byte, since the discriminants are explicit, nothing
+/// serializes an `Essence` by name, and `/give` reads [`Essence::ident`]. The first two keep the
+/// retired `Material` enum's numbering, so old two-family records decode 1:1 with NO migration.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Essence {
-	/// Living matter, drawn from the heartwood in a trunk. Legacy
-	/// sub-wood's slot.
+	/// Living matter, drawn from the heartwood in a trunk. Legacy sub-wood's slot.
 	Vitae = 0,
-	/// Mineral bulk, drawn from leystone in pristine deep stone. Legacy
-	/// sub-stone's slot.
+	/// Mineral bulk, drawn from leystone in pristine deep stone. Legacy sub-stone's slot.
 	Terra = 1,
-	/// Water, drawn from springstone in a fresh bed — under the surface
-	/// of a lake or a river, which is what makes reaching it the trip.
+	/// Water, drawn from springstone in a fresh bed under a lake or river, which makes it a trip.
 	Unda = 2,
 	/// Metal, drawn from the ore tiers.
 	Ferrum = 3,
-	/// The rare one: cannot be transmuted into, ever, and the only
-	/// balance the redesign's one-time reset lets a player keep.
+	/// The rare one: cannot be transmuted into, ever.
 	Aether = 4,
 }
 
@@ -536,13 +503,9 @@ impl Essence {
 		Self::ALL.get(v as usize).copied()
 	}
 
-	/// The screens' label, stored in one case ([`Material::name`]'s rule).
-	///
-	/// Still a function rather than a `Debug` of the variant: letting a
-	/// screen derive it from the identifier would make the identifier a
-	/// display format, which is the coupling that stopped these being
-	/// renamed for a release in the first place.
-	///
+	/// The screens' label, stored in one case ([`Material::name`]'s rule). Still a function rather
+	/// than a `Debug` of the variant: letting a screen derive it from the identifier would make
+	/// the identifier a display format, which is the coupling that stopped these being renamed.
 	/// NOT what `/give` parses — see [`Essence::ident`].
 	pub fn name(self) -> &'static str {
 		match self {
@@ -554,14 +517,10 @@ impl Essence {
 		}
 	}
 
-	/// What an OPERATOR types — ASCII, lower case, and never translated.
-	///
-	/// The same spelling as the label today, and a separate function all
-	/// the same: the moment the label is translated, a shared one would
-	/// have an admin typing Japanese to hand out a reagent. `/give`'s
-	/// parser and the usage line it advertises both read THIS, so the two
-	/// still cannot drift from each other — which was the point of
-	/// sharing in the first place.
+	/// What an OPERATOR types — ASCII, lower case, and never translated. The same spelling as the
+	/// label today, and a separate function all the same: the moment the label is translated, a
+	/// shared one would have an admin typing Japanese to hand out a reagent. `/give`'s parser and
+	/// the usage line it advertises both read THIS, so the two still cannot drift.
 	pub fn ident(self) -> &'static str {
 		match self {
 			Essence::Vitae => "vitae",
@@ -572,12 +531,10 @@ impl Essence {
 		}
 	}
 
-	/// What an essence LOOKS like — core and rim — the one authority for
-	/// its colour. `texgen` paints the chip sprite from it, the surface
-	/// nodes' [`BlockType::node_flecks`] read theirs from it, and a screen
-	/// tinting anything essence-coloured asks here, so a retint moves the
-	/// sprite, the host rock and the light together. The ore tiers keep
-	/// colours of their own: a tier's identity is the point of its flecks.
+	/// What an essence LOOKS like — core and rim — the one authority for its colour. `texgen`
+	/// paints the chip sprite from it, the surface nodes' [`BlockType::node_flecks`] read theirs
+	/// from it, and a screen tinting anything essence-coloured asks here, so a retint moves the
+	/// sprite, the host rock and the light together. The ore tiers keep colours of their own.
 	#[inline]
 	pub const fn palette(self) -> ([u8; 3], [u8; 3]) {
 		match self {
@@ -610,16 +567,9 @@ impl Essence {
 pub enum MeshBucket {
 	/// The single-word solid stream (opaque and cutout geometry).
 	Solid,
-	/// The two-word water stream (surface lips, flow/splash payload,
-	/// alpha blend, no depth write).
+	/// The two-word water stream (surface lips, flow/splash payload, alpha blend, no depth write).
 	Water,
-	/// The blended-glass stream: solid vertex format, drawn after water as
-	/// a transmittance MULTIPLY plus an additive shine — not alpha
-	/// blending, which averages coverage where a filter must filter. The
-	/// two do not commute across panes, so the draw walks its chunks
-	/// back-to-front and runs both halves per chunk. Also the GI's
-	/// translucency predicate — shaped rows keep `class Shaped`, so the
-	/// bucket is the one field that names every see-through block.
+	/// The blended-glass stream, and the field that names every see-through block (R35).
 	Translucent,
 }
 
@@ -650,17 +600,11 @@ pub struct BlockProps {
 	/// Cave carving may replace this block (natural terrain, not
 	/// structures) — consumed by worldgen's cave pass.
 	pub carveable: bool,
-	/// Worldgen never PLACES one of these, so every one standing in a world was
-	/// crafted by somebody — which is what lets `unlock::pickup` refuse the DIG
-	/// below the block's own `unlock::craft` level. Pinned against worldgen by
-	/// `worldgen_never_places_a_crafted_block`.
-	///
-	/// Not the same question as [`BlockType::is_bench_only`], which asks
-	/// whether the world ever HANDS you one; this implies that without being
-	/// implied by it. Clean rock is the gap: the world is made of stone and
-	/// every dig yields Rubble, so the bench is its only source and it is still
-	/// not `crafted` — a natural quarry would otherwise stand behind the craft
-	/// gate.
+	/// Worldgen never PLACES one of these, so every one standing in a world was crafted by
+	/// somebody — which is what lets `unlock::pickup` refuse the DIG below the block's own
+	/// `unlock::craft` level. Pinned by `worldgen_never_places_a_crafted_block`. Not the same
+	/// question as [`BlockType::is_bench_only`]: clean rock is the gap, since the world is made of
+	/// stone and every dig yields Rubble, so the bench is its only source and it is not `crafted`.
 	pub crafted: bool,
 	/// Texture-array layer indices (order fixed by
 	/// digblock_assets::tex::LAYERS). u16 so the full MAX_TEX_LAYERS
@@ -675,19 +619,11 @@ pub struct BlockProps {
 	/// Inventory credit override for a completed dig, whoever put the block
 	/// there; `dig_drop()` falls back to the block itself when diggable.
 	pub drops: Option<BlockType>,
-	/// Inventory credit override for the WORLD'S OWN copy of this block: it
-	/// comes apart in your hands, while one somebody placed hands itself back
-	/// (`dig_credit`). The difference between rock in a mountain and a block
-	/// on a shelf.
-	///
-	/// This is what lets a substance the world is MADE of still be worked at
-	/// the bench without opening a loop: the only clean stone a player can
-	/// hold came off the bench, which is what [`BlockType::is_bench_only`]
-	/// tests. Were a bench stone to crumble too, craft → place → dig would
-	/// launder a made block back into a world-given one and collect the XP.
-	///
-	/// Mutually exclusive with [`Self::drops`] (pinned by `table_sanity`): a
-	/// row says either "always this" or "this, unless somebody made it".
+	/// Inventory credit override for the WORLD'S OWN copy of this block: it comes apart in your
+	/// hands, while one somebody placed hands itself back (`dig_credit`). This is what lets a
+	/// substance the world is MADE of be worked at the bench without opening a loop — were a
+	/// bench stone to crumble too, craft → place → dig would launder a made block back into a
+	/// world-given one. Mutually exclusive with [`Self::drops`] (pinned by `table_sanity`).
 	pub crumbles: Option<BlockType>,
 	/// Written by a spell, never crafted or found: a dig yields nothing
 	/// and no slot holds one (`dig_drop`, `is_slottable`). See
@@ -696,17 +632,11 @@ pub struct BlockProps {
 	/// Sub-block shape family; `Some` ⟺ `class == RenderClass::Shaped`
 	/// (pinned by `table_sanity`).
 	pub shape: Option<ShapeKind>,
-	/// Stage-A light (SKILLS-DESIGN §7.4): every face renders fullbright
-	/// ink — the shader skips the sun/shadow/AO terms. Independent of
-	/// [`Self::light`] on purpose: ore-reveal seams want ink that casts
-	/// nothing, and a future recessed lamp could cast without glowing.
-	///
-	/// Both stay per-ROW builders while everything else about a §7.2 grid
-	/// cell derives from the material × shape pair, so both are the one
-	/// thing a second shape of a substance can silently disagree about.
-	/// They may not: `every_shape_of_a_material_agrees_on_light` holds a
-	/// material's shapes to one answer, which is what a FUNCTIONAL row
-	/// (torch, lamp) opts out of by carrying no material at all.
+	/// Stage-A light (SKILLS-DESIGN §7.4): every face renders fullbright ink — the shader skips
+	/// the sun/shadow terms. Independent of [`Self::light`] on purpose: ore-reveal seams want ink
+	/// that casts nothing, and a recessed lamp could cast without glowing. Both stay per-ROW
+	/// builders while the rest of a §7.2 grid cell derives from the pair, so both are what a
+	/// second shape can silently disagree about — `every_shape_of_a_material_agrees_on_light`.
 	pub emissive: bool,
 	/// The level this block CASTS, feeding the GI material LUT and
 	/// `gi.rs`'s light list and nothing else (GI-DESIGN.md). Purely
@@ -714,55 +644,38 @@ pub struct BlockProps {
 	/// Agrees across a material's shapes for the same reason
 	/// [`Self::emissive`] does.
 	pub light: u8,
-	/// This block radiates from its exposed FACES, not from the middle of its
-	/// cell — the difference between a lamp and a seam in a wall.
-	///
-	/// A torch is a point: it stands in open air and one entry at its flame is
-	/// the whole of it. Most of a vein is buried, and **buried rock must light
-	/// nothing** — so a cell's worth of ore is a light only where it MEETS the
-	/// air. Setting this makes the block's light a surface quantity:
-	/// `gi::classify_chunk` places no point source, and the mesher, already
-	/// deciding face by face what is exposed, hands the renderer merged
-	/// rectangles instead (GI-DESIGN.md R31).
-	///
-	/// [`Self::light`] still says how bright and the LUT in what colour. This
-	/// says only WHERE FROM.
+	/// This block radiates from its exposed FACES, not from the middle of its cell — the
+	/// difference between a lamp and a seam in a wall. Most of a vein is buried, and **buried rock
+	/// must light nothing**, so a cell's worth of ore is a light only where it MEETS the air:
+	/// `gi::classify_chunk` places no point source, and the mesher hands the renderer merged
+	/// rectangles instead (GI-DESIGN R31). [`Self::light`] says how bright; this says WHERE FROM.
 	pub surface_light: bool,
 	/// Which per-material dig-speed curve applies (SKILLS-DESIGN §5.1).
 	/// Set together with hardness by the `dig` builder so a diggable row
 	/// can never forget it. Shared client/server behavior — a family
 	/// change is a SIM_VERSION bump like a hardness retune.
 	pub dig_family: DigFamily,
-	/// The substance this block is made OF (SKILLS-DESIGN §7.2's grid).
-	/// Together with [`Self::shape`] it derives the unlock level, the craft
-	/// cost, the extraction yield and the earned half of the strength wall — see
-	/// [`crate::material`]. `None` for air, the water family and every
-	/// FUNCTIONAL item (tools, torches, lamps): function is priced by hand,
-	/// never by volume, so those carry their own small tables instead.
+	/// The substance this block is made OF (SKILLS-DESIGN §7.2's grid). Together with
+	/// [`Self::shape`] it derives the unlock level, the craft cost, the extraction yield and the
+	/// earned half of the strength wall — see [`crate::material`]. `None` for air, the water
+	/// family and every FUNCTIONAL item: function is priced by hand, never by volume.
 	pub material: Option<Material>,
 }
 
-/// The per-material dig-speed families (SKILLS-DESIGN §5.1). A family is
-/// just the two ENDPOINTS of its Mining curve — its first-level speed and
-/// its mastery speed — so it chooses the approach and the ceiling and
-/// nothing else; the shape between them is one shared taper in
-/// `skills::dig_speed_permille`. It is also the axis the strength wall is
-/// keyed on (`unlock::mine`), which is what opens every block of a family
-/// together. `Fixed` is the zero-width range for things that must never
-/// scale: near-instant foliage, fixtures, and the water scoop whose
-/// duration is pinned to the viewmodel swing.
+/// The per-material dig-speed families (SKILLS-DESIGN §5.1). A family is just the two ENDPOINTS
+/// of its Mining curve — first-level speed and mastery speed — so it chooses the approach and the
+/// ceiling and nothing else; the shape between them is one shared taper in
+/// `skills::dig_speed_permille`. It is also the axis the strength wall is keyed on
+/// (`unlock::mine`), which opens every block of a family together.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum DigFamily {
-	/// Exactly the base duration at every level — never faster, never
-	/// slower.
+	/// Exactly the base duration at every level — never faster, never slower.
 	Fixed,
 	/// Loose ground: the gentlest climb, and diggable from the first swing.
 	Soft,
-	/// Timber: a firmer start and a gentler ceiling. The middle rung of the
-	/// strength wall.
+	/// Timber: a firmer start and a gentler ceiling, the middle rung of the strength wall.
 	Wood,
-	/// Rock resists a novice hard, and is the last rung of the strength
-	/// wall.
+	/// Rock resists a novice hard, and is the last rung of the strength wall.
 	Rock,
 }
 
@@ -854,12 +767,10 @@ const fn crumbles(mut p: BlockProps, d: BlockType) -> BlockProps {
 	p
 }
 
-/// The substance half of SKILLS-DESIGN §7.2's grid. Everything a
-/// structural block's economy needs — unlock level, craft cost, extraction
-/// yield, the earned strength wall — falls out of this plus the row's `shaped` tag, so a
-/// material × shape pair is a row and a PNG rather than four table edits.
-/// FUNCTIONAL items deliberately have none (`material_roster_is_pinned`
-/// holds the split).
+/// The substance half of SKILLS-DESIGN §7.2's grid. Everything a structural block's economy needs
+/// — unlock level, craft cost, extraction yield, the earned strength wall — falls out of this
+/// plus the row's `shaped` tag, so a material × shape pair is a row and a PNG rather than four
+/// table edits. FUNCTIONAL items deliberately have none (`material_roster_is_pinned` holds it).
 const fn mat(mut p: BlockProps, m: Material) -> BlockProps {
 	p.material = Some(m);
 	p
@@ -944,14 +855,11 @@ pub mod tex {
 	pub const RUBBLE: u16 = 16;
 	pub const TORCH_SIDE: u16 = 17;
 	pub const TORCH_FLAME: u16 = 18;
-	/// Planed timber — the material crafted things are made OF, as
-	/// opposed to [`LOG`], which is the tree. [`LUMBER_LIGHT`] is the
-	/// joinery (the bucket, the furniture, and the Lumber block with its
-	/// stairs, slab and door); [`LUMBER_DARK`] and [`LUMBER_RED`] are the
-	/// second and third timbers, each with a block set of its own. The
-	/// dark one is also what [`TORCH_SIDE`]'s post is cut from, because
-	/// that texture is drawn fullbright and a pale timber has no headroom
-	/// left to take the emissive gain.
+	/// Planed timber — the material crafted things are made OF, as opposed to [`LOG`], which is
+	/// the tree. [`LUMBER_LIGHT`] is the joinery (bucket, furniture, and the Lumber block set);
+	/// [`LUMBER_DARK`] and [`LUMBER_RED`] are the second and third timbers, each with a block set
+	/// of its own. The dark one is also [`TORCH_SIDE`]'s post, because that texture is drawn
+	/// fullbright and a pale timber has no headroom left to take the emissive gain.
 	pub const LUMBER_LIGHT: u16 = 19;
 	pub const LUMBER_DARK: u16 = 20;
 	pub const LUMBER_RED: u16 = 21;
@@ -972,20 +880,16 @@ pub mod tex {
 	pub const CRYSTAL: u16 = 32;
 	pub const LANTERN: u16 = 33;
 	pub const AETHERLAMP: u16 = 34;
-	/// The two tool glows (§7.3), worn by the siphon and pick ROWS. Those
-	/// blocks are never placed, so these two layers are read in exactly
-	/// two places: the emissive face of the tool's authored geometry
-	/// (`item_geom`), and the GI material LUT, which takes the colour of
-	/// the light a held tool casts from its row's texture. Authoring the
-	/// glow authors the light.
+	/// The two tool glows (§7.3), worn by the siphon and pick ROWS. Those blocks are never placed,
+	/// so these layers are read in exactly two places: the emissive face of the tool's authored
+	/// geometry (`item_geom`), and the GI material LUT, which takes the colour of the light a held
+	/// tool casts from its row's texture. Authoring the glow authors the light.
 	pub const SIPHON_GLOW: u16 = 35;
 	pub const PICK_GLOW: u16 = 36;
-	/// The four SPENT vein faces — the same rock as their live tier, with
-	/// the light gone out of the flecks. One per tier rather than the one
-	/// grey [`DEPLETED_STONE`] they replace, because a tapped seam is still
-	/// the rock it was: you should be able to tell at a glance which vein
-	/// you worked, and the block you carry home from it is a trophy of that
-	/// tier and no other.
+	/// The four SPENT vein faces — the same rock as their live tier, with the light gone out of
+	/// the flecks. One per tier rather than the one grey [`DEPLETED_STONE`] they replace, because
+	/// a tapped seam is still the rock it was: you should be able to tell at a glance which vein
+	/// you worked, and the block you carry home from it is a trophy of that tier and no other.
 	pub const DEPLETED_EMBERORE: u16 = 37;
 	pub const DEPLETED_DUSKSTONE: u16 = 38;
 	pub const DEPLETED_GLOWVEIN: u16 = 39;
@@ -1121,15 +1025,11 @@ impl BlockType {
 		Some((self.material()?, self.shape_family()?))
 	}
 
-	/// What this block is CALLED — the label every screen shows and the
-	/// name a refusal speaks (a `Debug` name like "WoodStairs" is not UI
-	/// text). Stored in ONE case, and a screen that shouts calls
-	/// `to_uppercase` where it draws.
-	///
-	/// A grid item is its substance then its form — "Stone" + "Stairs" —
-	/// so a new material × shape pair names itself and cannot land on the
-	/// `?`. Only the hand-priced functional items are named by hand, for
-	/// the same reason they are priced by hand.
+	/// What this block is CALLED — the label every screen shows and the name a refusal speaks (a
+	/// `Debug` name like "WoodStairs" is not UI text). Stored in ONE case, and a screen that
+	/// shouts calls `to_uppercase` where it draws. A grid item is its substance then its form, so
+	/// a new material × shape pair names itself and cannot land on the `?`; only the hand-priced
+	/// functional items are named by hand, for the same reason they are priced by hand.
 	pub fn name(self) -> String {
 		if let Some((m, s)) = self.grid_cell() {
 			return match s.item_suffix() {
@@ -1154,15 +1054,10 @@ impl BlockType {
 		}
 	}
 
-	/// The authored block for a grid cell, or `None` where the catalog has
-	/// no such pair. The grid is a GATING rule, not a promise that every
-	/// cell exists — nobody is owed snow stairs.
-	///
-	/// Memoized, because this is not the cold lookup it reads as:
-	/// `slab_base` is the one asking, and it sits on the slab GROW path
-	/// that every place-against-a-slab runs through. A linear walk of the
-	/// catalog with two table reads per row is a lot of work to learn that
-	/// a wood slab completes into wood.
+	/// The authored block for a grid cell, or `None` where the catalog has no such pair. The grid
+	/// is a GATING rule, not a promise that every cell exists — nobody is owed snow stairs.
+	/// Memoized, because this is not the cold lookup it reads as: `slab_base` is the one asking,
+	/// and it sits on the slab GROW path that every place-against-a-slab runs through.
 	pub fn from_grid(m: Material, s: ShapeFamily) -> Option<BlockType> {
 		static GRID: std::sync::OnceLock<Vec<Option<BlockType>>> = std::sync::OnceLock::new();
 		let grid = GRID.get_or_init(|| {
@@ -1206,15 +1101,11 @@ impl BlockType {
 		matches!(self.props().fluid, Some(f) if f.source)
 	}
 
-	/// May a placement overwrite a cell holding this block? Air and water
-	/// yield; every real block must be dug first. THE one authority, shared by
-	/// the client's prediction and the server's validation — the two must
-	/// agree exactly or a place either desyncs or is rejected after prediction.
-	///
-	/// Deliberately not `!props().collides`, which the door's upper half used
-	/// to ask. An OPEN door has empty collision boxes, so that test called it
-	/// free: aim at the floor inside a doorway, right-click, and the door was
-	/// overwritten — no drop, no dig timer, and its upper half orphaned.
+	/// May a placement overwrite a cell holding this block? Air and water yield; every real block
+	/// must be dug first. THE one authority, shared by the client's prediction and the server's
+	/// validation — the two must agree exactly or a place either desyncs or is rejected after
+	/// prediction. Deliberately not `!props().collides`: an OPEN door has empty collision boxes,
+	/// so that test let a right-click inside a doorway overwrite the door and orphan its top half.
 	#[inline]
 	pub fn is_replaceable(self) -> bool {
 		matches!(self, BlockType::Air) || self.is_water()
@@ -1234,14 +1125,11 @@ impl BlockType {
 		(h > 0).then_some(h)
 	}
 
-	/// THE dig-permission gate — hold length for digging this block at
-	/// world height `y`, or None when it can't be dug at all. Combines
-	/// the per-block hardness with the bedrock rule: the world floor
-	/// (y = `BEDROCK_Y`) is indestructible, so the bottom of the world
-	/// can never be opened. Client prediction, the server's hold + edit
-	/// validation, and the bot all route through this one predicate;
-	/// worldgen upholds the same floor by never carving the bedrock course
-	/// (see worldgen/caves.rs).
+	/// THE dig-permission gate — hold length for digging this block at world height `y`, or None
+	/// when it can't be dug at all. Combines the per-block hardness with the bedrock rule: the
+	/// world floor is indestructible, so the bottom of the world can never be opened. Client
+	/// prediction, the server's hold + edit validation and the bot all route through this one
+	/// predicate; worldgen upholds the same floor by never carving it (worldgen/caves.rs).
 	#[inline]
 	pub fn dig_hardness(self, y: i32) -> Option<u16> {
 		if y <= BEDROCK_Y {
@@ -1250,15 +1138,11 @@ impl BlockType {
 		self.hardness_ticks()
 	}
 
-	/// What digging the WORLD'S own copy of this block hands you: the
-	/// `drops` or `crumbles` override, else the block itself. None for
-	/// undiggable blocks.
-	///
-	/// The question every economy rule means — [`Self::is_bench_only`],
-	/// [`crate::unlock::pickup`] and the no-matter-creation pins all ask
-	/// what a fresh world can put in a player's hands, never what one
-	/// particular cell will. That answer belongs to [`Self::dig_credit`],
-	/// of which this is the pristine case.
+	/// What digging the WORLD'S own copy of this block hands you: the `drops` or `crumbles`
+	/// override, else the block itself. None for undiggable blocks. The question every economy
+	/// rule means — [`Self::is_bench_only`], [`crate::unlock::pickup`] and the no-matter-creation
+	/// pins all ask what a fresh world can put in a player's hands, never what one particular cell
+	/// will. That answer belongs to [`Self::dig_credit`], of which this is the pristine case.
 	#[inline]
 	pub fn dig_drop(self) -> Option<BlockType> {
 		self.hardness_ticks()?;
@@ -1269,21 +1153,11 @@ impl BlockType {
 		Some(p.drops.or(p.crumbles).unwrap_or(self))
 	}
 
-	/// What a completed dig actually CREDITS: the world's own rock crumbles,
-	/// and a cell somebody wrote hands back what they put in it.
-	///
-	/// `edited` is whether that coordinate has ever been written — the server
-	/// reads its journal, the client its `EditOverlay` mirror, exactly as
-	/// [`crate::worldgen::nodes::revealed`] does and for the same anti-dupe
-	/// reason. Nothing can be written into solid rock, so an edited cell
-	/// holding a `crumbles` block is one somebody PLACED, and it comes back
-	/// whole. That is what shuts the craft-and-extract loop on a substance the
-	/// world is made of.
-	///
-	/// `alchemy` is the DIGGER'S level, and the crumble stands for anyone who
-	/// could not have made one — they are not undoing their own work. Asked
-	/// through [`crate::unlock::can_craft`] rather than compared here: no
-	/// caller holds an unlock number.
+	/// What a completed dig actually CREDITS: the world's own rock crumbles, and a cell somebody
+	/// wrote hands back what they put in it — which is what shuts the craft-and-extract loop on a
+	/// substance the world is made of. `edited` is whether that coordinate has ever been written,
+	/// read from the journal or its `EditOverlay` mirror for the same anti-dupe reason
+	/// [`crate::worldgen::nodes::revealed`] does. `alchemy` asks [`crate::unlock::can_craft`].
 	#[inline]
 	pub fn dig_credit(self, edited: bool, alchemy: u32) -> Option<BlockType> {
 		self.hardness_ticks()?;
@@ -1300,20 +1174,11 @@ impl BlockType {
 		}
 	}
 
-	/// Is the bench this block's only source — can no dig in an untouched
-	/// world ever put one in a player's hands?
-	///
-	/// THE question the transmutation catalog is gated on: nothing the world
-	/// hands you may be transmuted. The gate lives in `unlock`/`alchemy`;
-	/// this is only the predicate.
-	///
-	/// Derived, never listed — bench-only means nothing the world places
-	/// crumbles or drops into it — which gets the awkward rows right without
-	/// anyone remembering them: a bucket scoop credits Water through this same
-	/// path, a tool is never dug, an ore credits itself. Strictly weaker than
-	/// [`Self::is_crafted_only`], and the gap is the whole design: the world is
-	/// MADE of stone but hands you Rubble. Memoized, since a linear catalog
-	/// walk per call answers a property of the table.
+	/// Is the bench this block's only source — can no dig in an untouched world ever put one in a
+	/// player's hands? THE question the transmutation catalog is gated on: nothing the world hands
+	/// you may be transmuted (the gate itself lives in `unlock`/`alchemy`). Derived, never listed,
+	/// and memoized. Strictly weaker than [`Self::is_crafted_only`], and the gap is the whole
+	/// design: the world is MADE of stone but hands you Rubble.
 	pub fn is_bench_only(self) -> bool {
 		static BENCH: std::sync::OnceLock<Vec<bool>> = std::sync::OnceLock::new();
 		let bench = BENCH.get_or_init(|| {
@@ -1331,20 +1196,11 @@ impl BlockType {
 		bench[self as usize]
 	}
 
-	/// Does holding this type claim a hotbar or inventory slot?
-	///
-	/// Two exceptions of the same shape — a thing that exists in the world but
-	/// is never an item you arrange. **Water**: the only water a player
-	/// carries is the water tool's one charge, and the tool has its own slot;
-	/// the count still lives in the [`crate::inventory::Inventory`], which is
-	/// where the charge is stored and persisted. **A live node**: world
-	/// geometry. A draw pays essence and leaves the kind's spent face, and the
-	/// spent face is what you break and carry.
-	///
-	/// [`crate::inv_grid::reconcile_layout`] enforces both, which makes this
-	/// the MIGRATION as well as the rule: a save written while water was a
-	/// stack, or while a siphon handed out ore, drops those slots on the first
-	/// reconcile rather than needing a version.
+	/// Does holding this type claim a hotbar or inventory slot? Two exceptions of the same shape —
+	/// a thing that exists in the world but is never an item you arrange. **Water**: the only
+	/// water a player carries is the tool's one charge, whose count still lives in the
+	/// [`crate::inventory::Inventory`]. **A live node**: world geometry; you carry the spent face.
+	/// [`crate::inv_grid::reconcile_layout`] enforces both, which makes this the MIGRATION too.
 	#[inline]
 	pub fn is_slottable(self) -> bool {
 		self != BlockType::Water && !self.is_tool() && !self.is_node_block() && !self.is_conjured()
@@ -1357,32 +1213,20 @@ impl BlockType {
 		self.props().conjured
 	}
 
-	/// One of the LIVE node faces — an ore tier or a surface node, the
-	/// blocks the reveal stamp paints into pristine host cells. None is
-	/// ever an item.
-	///
-	/// The roster itself is [`crate::worldgen::nodes`]'s; this is the
-	/// membership test the block layer needs without reaching into
-	/// worldgen, and `node_roster_matches_the_block_predicate` pins the
-	/// two against each other.
+	/// One of the LIVE node faces — an ore tier or a surface node, the blocks the reveal stamp
+	/// paints into pristine host cells. None is ever an item. The roster itself is
+	/// [`crate::worldgen::nodes`]'s; this is the membership test the block layer needs without
+	/// reaching into worldgen, and `node_roster_matches_the_block_predicate` pins the two.
 	#[inline]
 	pub fn is_node_block(self) -> bool {
 		self.node_flecks().is_some()
 	}
 
-	/// The fleck palette of a live node: the crystal's own colour, and the
-	/// lighter rim that catches the light around it.
-	///
-	/// ONE authority for what a tier looks like. `texgen` paints the flecks
-	/// and the spent rock's dead flecks from it, and the GI material LUT casts
-	/// the vein's light in the core colour — so a retint moves the rock, its
-	/// tapped sibling and the light together.
-	///
-	/// It has to be STATED rather than measured. An emitter's tint is normally
-	/// the mean of its texture, which works for a torch because a torch is
-	/// mostly flame; an ore texture is a wide grey field with a few flecks, so
-	/// its mean is stone. No weighting recovers the hue — the problem is the
-	/// composition, not the average (GI-DESIGN.md R31).
+	/// The fleck palette of a live node: the crystal's own colour, and the lighter rim around it.
+	/// ONE authority for what a tier looks like — `texgen` paints the flecks and the spent rock's
+	/// dead flecks from it, and the GI material LUT casts the vein's light in the core colour.
+	/// STATED rather than measured: an emitter's tint is normally its texture's mean, but an ore
+	/// texture is a wide grey field with a few flecks, so its mean is stone (GI-DESIGN.md R31).
 	#[inline]
 	pub const fn node_flecks(self) -> Option<([u8; 3], [u8; 3])> {
 		Some(match self {

@@ -16,35 +16,20 @@ use digblock_platform::Gpu;
 /// (a departure and an arrival per jump, short-lived — [`LIFE`]), and
 /// the kindled orbs within [`KINDLED_RADIUS`].
 pub(crate) const MAX_FX: usize = 24;
-/// How many of [`MAX_FX`] the standing orbs may claim, the rest being
-/// RESERVED for the channel aura and the live bursts.
-///
-/// [`prepare`] truncates in FILL order, and kindling has no cooldown
-/// while a light stands for [`digblock_core::kindle::SECS`] — so a
-/// player lighting a mine shaft walks past a full list inside a minute,
-/// and from then on every cast they start would show no channel aura at
-/// all, the one thing on screen that says a channel is running. Orbs
-/// compete for their own share by DISTANCE ([`nearest_orbs`]), because
-/// the far cull is per-orb while the cap is by position: without it one
-/// sixty blocks behind evicts one two blocks ahead.
-///
-/// [`prepare`]: Teleport::prepare
+/// How many of [`MAX_FX`] the standing orbs may claim, the rest being RESERVED for the channel
+/// aura and the live bursts. `Teleport::prepare` truncates in FILL order and kindling has no
+/// cooldown, so without a reserve a player lighting a mine shaft would cast with no channel aura —
+/// the one thing on screen that says a channel is running. Orbs compete for their share by
+/// DISTANCE ([`nearest_orbs`]), or one sixty blocks behind evicts one two blocks ahead.
 pub(crate) const MAX_KINDLED_FX: usize = 12;
 /// Beyond this many blocks a kindled orb is not uploaded at all — the
 /// marker's rule; its LIGHT still reaches the GI list at any range.
 pub(crate) const KINDLED_RADIUS: f32 = 64.0;
-/// The kindled orb's near ramp, in blocks: nothing at all inside
-/// [`KINDLED_NEAR_DARK`], full weight from [`KINDLED_NEAR_FULL`] out.
-///
-/// A light stands in the cell its caster's EYE was in, so their own orb
-/// sits a fifth of a block away as often as not — and a camera-facing
-/// additive quad that close straddles the near plane and paints most of
-/// the screen near-white until they walk out of the cell. The dark
-/// distance must therefore cover the whole host cell: half a cell's
-/// diagonal is the farthest an eye can be from its own cell's centre,
-/// which is what `an_orb_in_your_own_cell_never_draws` pins. Nothing is
-/// lost by not drawing it — the LIGHT is a separate entry in the GI
-/// list and reaches the room either way.
+/// The kindled orb's near ramp, in blocks: nothing at all inside [`KINDLED_NEAR_DARK`], full
+/// weight from [`KINDLED_NEAR_FULL`] out. A light stands in the cell its caster's EYE was in, so
+/// their own orb sits a fraction of a block away, and a camera-facing additive quad that close
+/// straddles the near plane and whites out the screen. The dark distance must cover the whole host
+/// cell — `an_orb_in_your_own_cell_never_draws` pins it; the LIGHT reaches the room either way.
 pub(crate) const KINDLED_NEAR_DARK: f32 = 1.0;
 pub(crate) const KINDLED_NEAR_FULL: f32 = 2.0;
 /// Motes per effect — keep in sync with teleport.wgsl `MOTES`, held by
@@ -69,8 +54,7 @@ pub(crate) enum Mode {
 	Departure,
 	Arrival,
 	Channel,
-	/// A standing kindled orb; `t` is its age, the envelope its last
-	/// seconds.
+	/// A standing kindled orb; `t` is its age, the envelope its last seconds.
 	Kindled,
 }
 
@@ -110,13 +94,10 @@ pub(crate) fn near_fade(dist: f32) -> f32 {
 	((dist - KINDLED_NEAR_DARK) / (KINDLED_NEAR_FULL - KINDLED_NEAR_DARK)).clamp(0.0, 1.0)
 }
 
-/// The indices of the [`MAX_KINDLED_FX`] nearest orbs, nearest first, out
-/// of one distance per standing light, in list order.
-///
-/// A fixed-size insertion rather than a sort: the standing-light list is
-/// world state and belongs to nobody's camera, so selecting from it must
-/// not reorder it, and a frame must not allocate to draw. Ties keep list
-/// order, which makes the pick a pure function of the input.
+/// The indices of the [`MAX_KINDLED_FX`] nearest orbs, nearest first, out of one distance per
+/// standing light, in list order. A fixed-size insertion rather than a sort: the standing-light
+/// list is world state and belongs to nobody's camera, so selecting from it must not reorder it,
+/// and a frame must not allocate to draw. Ties keep list order, which makes the pick pure.
 pub(crate) fn nearest_orbs(d2: impl Iterator<Item = f32>) -> ([u32; MAX_KINDLED_FX], usize) {
 	let mut key = [f32::INFINITY; MAX_KINDLED_FX];
 	let mut idx = [0u32; MAX_KINDLED_FX];
@@ -271,12 +252,10 @@ mod tests {
 		);
 	}
 
-	/// The caster's own orb never draws. Their light stands in the cell
-	/// their EYE occupies, and the farthest an eye can be from that
-	/// cell's own centre is half a cell's diagonal — derived here rather
-	/// than written down, so a wider ramp is free and a narrower one
-	/// fails. Inside that, the billboard straddles the near plane and
-	/// covers the screen.
+	/// The caster's own orb never draws. Their light stands in the cell their EYE occupies, and the
+	/// farthest an eye can be from that cell's centre is half a cell's diagonal — derived here
+	/// rather than written down, so a wider ramp is free and a narrower one fails. Inside that,
+	/// the billboard straddles the near plane and covers the screen.
 	#[test]
 	fn an_orb_in_your_own_cell_never_draws() {
 		let half_diagonal = glam::Vec3::splat(0.5).length();

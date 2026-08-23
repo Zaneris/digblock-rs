@@ -35,19 +35,11 @@ const DEPOSIT_SALT: u64 = 0x0e5e_ee45_1c3d_b10b;
 /// measures what falls out of the pair and reports it.
 const DEPOSIT_IN_256: u64 = 200;
 
-/// The tiers, shallowest-first: `(block, floor, ceiling, weight)` — a deposit's
-/// CENTRE rolls a tier whose band contains its y, weighted among the bands open
-/// there.
-///
-/// Every band has a FLOOR as well as a ceiling, and adjacent bands overlap only
-/// at their seams, so **depth predicts tier**: Emberore is confined to
-/// surface-cave depths and a find at the bottom is never common ore. Bands that
-/// ran to bedrock made the bottom of the world mostly first-tier ore again — a
-/// disappointment at the end of the longest dig in the game.
-///
-/// Leystone is the SURFACE tier and not a Mining ore at all: it rides this same
-/// deposit stream and manifests in pristine Stone exactly as the ore tiers do,
-/// but its reveal keys on ALCHEMY.
+/// The tiers, shallowest-first: `(block, floor, ceiling, weight)` — a deposit's CENTRE rolls a
+/// tier whose band contains its y, weighted among the bands open there. Every band has a FLOOR as
+/// well as a ceiling and adjacent bands overlap only at their seams, so **depth predicts tier**;
+/// bands that ran to bedrock made the bottom of the world mostly first-tier ore again. Leystone
+/// rides this same stream and manifests in pristine Stone as the ores do, but reveals on ALCHEMY.
 const TIERS: [(BlockType, i32, i32, u64); 5] = [
 	(BlockType::Leystone, 96, 200, 10),
 	(BlockType::Emberore, 64, 140, 8),
@@ -99,21 +91,17 @@ const RIM_SALT: u64 = 0x5eed_1e55_1a17_e5e5;
 /// with the shape of its edge.
 const TRACE_SALT: u64 = 0xae74_e7ac_e51f_7b0d;
 
-/// The share of a tracing tier's cells that carry Aether, in 256ths — the
-/// same currency as [`DEPOSIT_IN_256`], and deliberately a RATE rather
-/// than another line in the tier's yield: the smallest whole unit an
-/// essence split can express is already far more Aether than a middle-tier
-/// seam should be worth, so the only way to price this below a unit per
-/// draw is to price it as a chance of one.
+/// The share of a tracing tier's cells that carry Aether, in 256ths — the same currency as
+/// [`DEPOSIT_IN_256`], and deliberately a RATE rather than another line in the tier's yield: the
+/// smallest whole unit an essence split can express is already far more Aether than a middle-tier
+/// seam should be worth, so the only way to price this below a unit per draw is as a chance of one.
 const TRACE_IN_256: u64 = 13;
 
-/// Splitmix64 over a 3D cell + the world seed, salted per stream — the
-/// three-axis sibling of `decoration::hash`. Each axis rides its own odd
-/// multiplier so a change on any one of them reaches every output bit.
-/// `pub(crate)` so every per-cell stream draws from the same mixer with a
-/// salt of its own — the surface nodes in [`super::nodes`], and the grass
-/// sweep's sun-ray jitter in `worldjob::grass` — rather than each copying
-/// the magic multipliers.
+/// Splitmix64 over a 3D cell + the world seed, salted per stream — the three-axis sibling of
+/// `decoration::hash`. Each axis rides its own odd multiplier so a change on any one of them
+/// reaches every output bit. `pub(crate)` so every per-cell stream draws from the same mixer with
+/// a salt of its own — the surface nodes in [`super::nodes`], the grass sweep's sun-ray jitter in
+/// `worldjob::grass` — rather than each copying the magic multipliers.
 #[inline]
 pub(crate) fn mix(cx: i32, cy: i32, cz: i32, seed_bits: u64, salt: u64) -> u64 {
 	let mut h = u64::from(cx as u32).wrapping_mul(0x9e37_79b9_7f4a_7c15);
@@ -181,12 +169,10 @@ fn tier_at(y: i32, roll: u64) -> Option<BlockType> {
 	None
 }
 
-/// Every deposit whose blob can reach the inclusive block box — the
-/// apron gather, for callers testing many cells (the mesh stamp).
-///
-/// Returned in grid order, which is deterministic and therefore safe to
-/// use for tie-breaking: overlapping deposits resolve to the FIRST in this
-/// list, and both consumers walk it the same way.
+/// Every deposit whose blob can reach the inclusive block box — the apron gather, for callers
+/// testing many cells (the mesh stamp). Returned in grid order, which is deterministic and
+/// therefore safe to use for tie-breaking: overlapping deposits resolve to the FIRST in this list,
+/// and both consumers walk it the same way.
 pub fn deposits_near(min: (i32, i32, i32), max: (i32, i32, i32), seed: f64) -> Vec<Deposit> {
 	let mut out = Vec::new();
 	for_each_deposit(min, max, seed, |d| {
@@ -233,21 +219,11 @@ pub fn ore_at(x: i32, y: i32, z: i32, seed: f64) -> Option<BlockType> {
 	})
 }
 
-/// Does this vein cell carry a trace of Aether, on top of whatever its tier
-/// pays (`alchemy::field_yield`)?
-///
-/// Pure in the cell and the world seed, exactly like [`rim_open`] and the
-/// deposit stream above it — so the server, the engine's offline arm and a
-/// rejoin a year later all agree about which seams were rich, with nothing
-/// stored and nothing on the wire. Rolling it per draw would put the answer in
-/// whichever machine happened to ask, which for a value the server credits is
-/// no answer at all.
-///
-/// **Duskstone alone traces.** Aether is otherwise an endgame currency, while
-/// the Resonant Pick asks for some at the middle of the ladder. This is the
-/// luck beside that ladder — the chance a player working the middle tier walks
-/// up to the bench already holding what the pick wants, rather than a supply
-/// anyone can plan around.
+/// Does this vein cell carry a trace of Aether, on top of whatever its tier pays
+/// (`alchemy::field_yield`)? Pure in the cell and the world seed, exactly like [`rim_open`] — so
+/// the server, the engine's offline arm and a rejoin a year later all agree about which seams were
+/// rich, with nothing stored and nothing on the wire. **Duskstone alone traces**: it is the luck
+/// beside the ladder where the Resonant Pick asks for Aether, not a supply anyone can plan around.
 pub fn traces_aether(ore: BlockType, x: i32, y: i32, z: i32, seed: f64) -> bool {
 	ore == BlockType::Duskstone && mix(x, y, z, seed.to_bits(), TRACE_SALT) & 0xFF < TRACE_IN_256
 }
@@ -287,15 +263,11 @@ pub fn lowest_reveal() -> u32 {
 		.expect("four tiers")
 }
 
-/// The same question on the other axis: the lowest ALCHEMY level at which any
-/// tier in the deposit stream is visible. Its twin above walks [`ORES`] because
-/// Mining's tiers are exactly that list; this one walks [`TIERS`], because the
-/// stream also carries surface nodes that [`ORES`] deliberately excludes.
-///
-/// Derived rather than naming the one tier that qualifies today: hardcoded, a
-/// second Alchemy-revealed tier would be stamped by nobody while the dig path
-/// revealed it anyway — a find you can see and cannot extract, from a one-word
-/// table edit. [`u32::MAX`] when no tier answers to Alchemy at all.
+/// The same question on the other axis: the lowest ALCHEMY level at which any tier in the deposit
+/// stream is visible. Its twin above walks [`ORES`] because Mining's tiers are exactly that list;
+/// this one walks [`TIERS`], because the stream also carries surface nodes [`ORES`] excludes.
+/// Derived rather than naming the one tier that qualifies today: hardcoded, a second
+/// Alchemy-revealed tier would be a find you can see and cannot extract. [`u32::MAX`] if none.
 pub fn lowest_alchemy_reveal() -> u32 {
 	TIERS
 		.iter()
@@ -304,15 +276,11 @@ pub fn lowest_alchemy_reveal() -> u32 {
 		.unwrap_or(u32::MAX)
 }
 
-/// The nearest deposit within the sense's own reach
-/// ([`crate::unlock::prospect_range`], which widens with the Mining
-/// level) whose tier this miner cannot yet SEE — the prospector's sense
-/// (§5.5). `None` below the sense's first rank.
-///
-/// Unrevealed on purpose: a sense that also hums at veins already
-/// glittering in front of you is noise. This is the one hint the game
-/// gives about what is behind the wall, and it says only "something you
-/// have not levelled into is near", never what or exactly where.
+/// The nearest deposit within the sense's own reach ([`crate::unlock::prospect_range`], which
+/// widens with the Mining level) whose tier this miner cannot yet SEE — the prospector's sense
+/// (§5.5). `None` below the sense's first rank. Unrevealed on purpose: a sense that also hums at
+/// veins already glittering in front of you is noise. It says only "something you have not
+/// levelled into is near", never what or exactly where.
 pub fn unseen_nearby(at: (i32, i32, i32), seed: f64, mining: u32) -> Option<Deposit> {
 	let r = crate::unlock::prospect_range(mining)?;
 	let mut best: Option<(i64, Deposit)> = None;

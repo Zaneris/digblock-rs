@@ -15,17 +15,14 @@
 
 use crate::block::{BlockType, Essence};
 
-/// A substance the bench can work, in unlock order (which is also the
-/// order members appear on the transmute tab).
+/// A substance the bench can work, in unlock order (which is also the order members appear on the
+/// transmute tab).
 ///
-/// Some rows have no authored block yet — they are declared here because
-/// the level and the essence split ARE the design, and a later catalog
-/// wave should be a block row and a PNG, not another table. A material
-/// with no rows simply contributes nothing to any family or threshold.
+/// Some rows have no authored block yet: the level and the essence split ARE the design, so a later
+/// catalog wave should be a block row and a PNG rather than another table.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Material {
-	/// The felled trunk — the starter timber, and the one thing a fresh
-	/// player can already shape.
+	/// The felled trunk — the starter timber, and the one thing a fresh player can already shape.
 	Wood,
 	Dirt,
 	Sand,
@@ -41,9 +38,7 @@ pub enum Material {
 	Grass,
 	Mud,
 	Glass,
-	/// The stained panes: clean glass in a colour. Separate SUBSTANCES,
-	/// not styles — one grid cell holds one block, and each pane's tint
-	/// is what its light does to a room.
+	/// Stained panes: separate SUBSTANCES, not styles — a tint is what its light does to a room.
 	RedGlass,
 	GreenGlass,
 	BlueGlass,
@@ -57,43 +52,27 @@ pub enum Material {
 	/// Grown from Aether: the endgame material, and it glows.
 	Crystal,
 
-	// ---- recipe-less: never crafted in any shape ----------------------
-	/// What mined rock actually is (§7.1) — the mass Earth feedstock.
+	// ---- recipe-less: never crafted in any shape. Rubble is the mass Earth feedstock (§7.1) ----
 	Rubble,
 	Gravel,
 	DryGrass,
 	/// Broadleaf canopy: filler.
 	Leaf,
-	/// Conifer canopy. A separate material from [`Self::Leaf`] because
-	/// they are separate SUBSTANCES, and because one grid cell holds one
-	/// block.
+	/// Conifer canopy. A separate material from [`Self::Leaf`] — one grid cell holds one block.
 	PineLeaf,
-	/// Revealed and drawn at the rock face, never crafted in any shape
-	/// (§5.3).
+	/// Revealed and drawn at the rock face, never crafted in any shape (§5.3).
 	Emberore,
 	Duskstone,
 	Glowvein,
 	Aetherock,
-	/// A tapped-out vein face — crumbles to Rubble like any other rock.
-	/// Superseded by the four per-tier rocks below and kept only so cells
-	/// written before them still decode.
+	/// A tapped-out vein face, superseded by the per-tier rocks below; kept so old cells decode.
 	DepletedStone,
-	/// The four spent vein faces (§5.3) — the rock a siphon leaves and the
-	/// only thing a vein ever puts in your hands.
-	///
-	/// One material per tier rather than one shared "spent rock", because
-	/// they are what a player keeps: the whole point of carrying one home
-	/// is that it says which seam you worked. They are worth nothing at the
-	/// bench and cost nothing to make, which is the same standing the live
-	/// ores have and for the same reason — there is no recipe to run a loop
-	/// with.
+	/// The four spent vein faces (§5.3) — one per tier, so a trophy says which seam you worked.
 	DepletedEmberore,
 	DepletedDuskstone,
 	DepletedGlowvein,
 	DepletedAetherock,
-	/// The three surface nodes and their spent faces (the essence
-	/// redesign): the ores' standing exactly — never crafted in any shape,
-	/// drawn where they stand, and the spent face is the trophy.
+	/// The three surface nodes and their spent faces — the ores' standing exactly, never crafted.
 	Heartwood,
 	DrainedHeartwood,
 	Leystone,
@@ -151,17 +130,11 @@ impl Material {
 		Material::SpentSpringstone,
 	];
 
-	/// The blocks a craft of this substance consumes — the MATTER half of a
-	/// feedstock-and-catalyst recipe (the essence redesign's craft shape).
-	/// One cube of feedstock per craft; the shape's batch
-	/// ([`crate::shapes::craft_batch`]) says how many pieces that cube
-	/// cuts into. `None` = the substance is transmuted from essence alone
-	/// (Metal, Crystal — nothing in the world IS them yet).
-	///
-	/// Bulk building stays affordable because of this split: the weight of
-	/// a wall's price is the rock you quarried for it, and the essence line
-	/// beside it is a CATALYST — small, universal, and the whole reason the
-	/// currency has purpose.
+	/// The blocks a craft of this substance consumes — the MATTER half of a feedstock-and-catalyst
+	/// recipe. One cube of feedstock per craft; the shape's batch ([`crate::shapes::craft_batch`])
+	/// says how many pieces that cube cuts into. `None` = transmuted from essence alone (Metal,
+	/// Crystal). Bulk building stays affordable because of this split: the weight of a wall's
+	/// price is the rock you quarried, and the essence line beside it is a CATALYST.
 	pub fn feedstock(self) -> Option<BlockType> {
 		use Material as M;
 		Some(match self {
@@ -187,16 +160,11 @@ impl Material {
 		})
 	}
 
-	/// The essence half of a cube's price, before waste. For a substance
-	/// with [`Self::feedstock`] this is the CATALYST — a small per-cube
-	/// line, never prorated by the shape, since a craft consumes a whole
-	/// feedstock cube whatever it cuts it into. For the essence-only
-	/// substances it is the whole price. `None` = the bench cannot make
-	/// this substance in any shape.
-	///
-	/// With bench extraction gone this is a pure SINK price: essence only
-	/// ever enters the world at a node draw ([`Self::node_units`]) and only
-	/// ever leaves it here, so no split can loop back on itself.
+	/// The essence half of a cube's price, before waste. For a substance with [`Self::feedstock`]
+	/// this is the CATALYST — never prorated by the shape, since a craft consumes a whole feedstock
+	/// cube whatever it cuts it into. For the essence-only substances it is the whole price.
+	/// `None` = the bench cannot make this substance in any shape. A pure SINK price: essence
+	/// enters only at a node draw ([`Self::node_units`]) and leaves only here, so nothing loops.
 	pub fn craft_units(self) -> Option<&'static [(Essence, u32)]> {
 		use Essence as E;
 		use Material as M;
@@ -335,13 +303,11 @@ impl Material {
 	}
 }
 
-/// Prorate a whole-cube essence split down to a shape's `units`, rounding
-/// each line UP — the craft side, where the player pays.
+/// Prorate a whole-cube essence split down to a shape's `units`, rounding each line UP — the craft
+/// side, where the player pays.
 ///
-/// A whole cube is the identity, which is what keeps every
-/// raw-block recipe exactly what it was before the grid. (The DOWN-rounded
-/// yield twin retired with bench extraction: nothing is prorated for a
-/// payout any more — a node is drawn whole, and only a node pays.)
+/// A whole cube is the identity, which keeps every raw-block recipe exactly what it was before the
+/// grid. Nothing is prorated for a payout any more: a node is drawn whole, and only a node pays.
 pub fn cost_split(lines: &[(Essence, u32)], units: u32) -> Vec<(Essence, u32)> {
 	let subs = crate::shapes::SUBS_PER_BLOCK;
 	lines
@@ -459,12 +425,10 @@ mod tests {
 		}
 	}
 
-	/// The feedstock-and-catalyst shape, held together: every craftable
-	/// substance either names a world-handed feedstock cube plus a SMALL
-	/// catalyst, or transmutes from essence alone at a whole cube's worth
-	/// — never both readings at once, and never a feedstock the bench
-	/// itself is the only source of (which would nest the bootstrap
-	/// deadlock one table deeper).
+	/// The feedstock-and-catalyst shape, held together: every craftable substance either names a
+	/// world-handed feedstock cube plus a SMALL catalyst, or transmutes from essence alone at a
+	/// whole cube's worth — never both at once, and never a feedstock the bench itself is the only
+	/// source of, which would nest the bootstrap deadlock one table deeper.
 	#[test]
 	fn feedstock_recipes_carry_catalysts_and_essence_recipes_carry_cubes() {
 		for &m in &Material::ALL {

@@ -91,15 +91,11 @@ fn dig_table_sanity() {
 	}
 }
 
-/// Only the world's own rock crumbles, and it crumbles for everyone who
-/// could not have made one.
-///
-/// The two halves are one rule read from either end: a pristine cell is
-/// the mountain's whatever your level, and an edited one is somebody's
-/// work — returned whole to a mason, and broken by anyone who has not
-/// learned to cut it. `dig_drop` is the pristine answer and must stay
-/// level-blind, because every economy pin means "what can a fresh world
-/// put in a player's hands".
+/// Only the world's own rock crumbles, and it crumbles for everyone who could not have made one.
+/// The two halves are one rule read from either end: a pristine cell is the mountain's whatever
+/// your level, and an edited one is somebody's work — returned whole to a mason, and broken by
+/// anyone who has not learned to cut it. `dig_drop` is the pristine answer and must stay
+/// level-blind, because every economy pin means "what can a fresh world put in a player's hands".
 #[test]
 fn only_the_worlds_own_rock_crumbles() {
 	use crate::skills::MAX_LEVEL;
@@ -132,14 +128,11 @@ fn only_the_worlds_own_rock_crumbles() {
 	}
 }
 
-/// A conjured row pays a dig NOTHING, and is dug all the same.
-///
-/// One cast writes a whole sphere of them, so each of the four answers a
-/// dig can hand back has to be empty — drop, credit, XP, slot — and any
-/// one of them alone turns a fare into a mint. Diggability is the clause
-/// pulling the other way, pinned here beside them: a shell nobody can
-/// break is a cage. Enforced in four modules, and each clause is
-/// invisible to the sweep nearest it, which is why they are gathered.
+/// A conjured row pays a dig NOTHING, and is dug all the same. One cast writes a whole sphere of
+/// them, so each of the four answers a dig can hand back has to be empty — drop, credit, XP, slot
+/// — and any one of them alone turns a fare into a mint. Diggability is the clause pulling the
+/// other way, pinned here beside them: a shell nobody can break is a cage. Enforced in four
+/// modules, each clause invisible to the sweep nearest it, which is why they are gathered.
 #[test]
 fn a_conjured_row_pays_nothing_and_is_still_diggable() {
 	use crate::skills::{DEPTH_XP_TO, MAX_LEVEL, dig_award, dig_xp};
@@ -180,16 +173,11 @@ fn a_conjured_row_pays_nothing_and_is_still_diggable() {
 	);
 }
 
-/// A block's dig family is a decision, never a builder default — but it
-/// is a decision per SUBSTANCE, not per piece. So the roster names one
-/// row for each material and each block that has no material at all,
-/// and a sweep carries that answer to every shape cut from it. Adding a
-/// stair costs nothing here; adding a MATERIAL, or a node host, is a
-/// line — which is the half that was ever really a choice.
-///
-/// The completeness check at the end is what keeps the roster honest:
-/// a new diggable row that neither carries a listed material nor names
-/// itself above fails here rather than silently inheriting.
+/// A block's dig family is a decision, never a builder default — but a decision per SUBSTANCE, not
+/// per piece. The roster names one row for each material and each block with no material at all,
+/// and a sweep carries that answer to every shape cut from it: adding a stair costs nothing here,
+/// adding a MATERIAL or a node host is a line. The completeness check at the end keeps the roster
+/// honest — a new diggable row naming neither fails here rather than silently inheriting.
 #[test]
 fn dig_families_are_pinned() {
 	use BlockType as B;
@@ -301,12 +289,10 @@ fn dig_families_are_pinned() {
 	);
 }
 
-/// The material assignment is an explicit roster for the same reason
-/// the dig families are: it decides a block's unlock level, its craft
-/// cost, its extraction yield and its earned wall all at once, so a new
-/// row picking one up by accident would move four numbers silently.
-/// The blocks WITHOUT a material are the other half of the decision —
-/// functional items, priced by hand (§7.3).
+/// The material assignment is an explicit roster for the same reason the dig families are: it
+/// decides a block's unlock level, its craft cost, its extraction yield and its earned wall all at
+/// once, so a new row picking one up by accident would move four numbers silently. The blocks
+/// WITHOUT a material are the other half of the decision — functional items, priced by hand (§7.3).
 #[test]
 fn material_roster_is_pinned() {
 	use BlockType as B;
@@ -466,18 +452,11 @@ fn the_grid_is_material_times_shape() {
 	}
 }
 
-/// Light is a property of the SUBSTANCE, not of the piece it was cut
-/// into: a crystal slab is the same crystal as the cube it came off, so it
-/// wears the same ink and casts the same level.
-///
-/// This is the grid's one un-derived pair — `emissive` and `light` stayed
-/// per-ROW builders, and a per-row property on a grid axis drifts the
-/// moment a material grows a second shape. It did: `Crystal` glowed and
-/// `CrystalSlab` did not, so growing a slab stack snapped the identical
-/// volume of the identical stuff to fullbright in one frame. The two are
-/// pinned SEPARATELY because they are genuinely independent; what neither
-/// may do is differ between a cube and its own slab. FUNCTIONAL rows carry
-/// no material at all, so they are outside this by construction.
+/// Light is a property of the SUBSTANCE, not of the piece it was cut into: a crystal slab is the
+/// same crystal as the cube it came off, so it wears the same ink and casts the same level. This
+/// is the grid's one un-derived pair — `emissive` and `light` stayed per-ROW builders, and a
+/// per-row property on a grid axis drifts the moment a material grows a second shape. The two are
+/// pinned SEPARATELY, being independent; what neither may do is differ between shapes of one row.
 #[test]
 fn every_shape_of_a_material_agrees_on_light() {
 	let mut compared = 0;
@@ -564,14 +543,11 @@ fn bedrock_floor_is_undiggable() {
 	}
 }
 
-/// Every water row agrees across the fields that describe it. The
-/// amount is what the render class, the mesh bucket and the collision
-/// flag all follow, so a row that holds water and collides — or one
-/// that is opaque — is a table error the mesher draws wrong. The
-/// bucket/class equivalence is asserted rather than assumed — and glass
-/// deliberately kept it true by taking its own class (`Glass`) and its
-/// own bucket (`Translucent`), so Translucent-the-class still names
-/// exactly the water family.
+/// Every water row agrees across the fields that describe it. The amount is what the render class,
+/// the mesh bucket and the collision flag all follow, so a row that holds water and collides — or
+/// one that is opaque — is a table error the mesher draws wrong. The bucket/class equivalence is
+/// asserted rather than assumed, and glass deliberately kept it true by taking its own class
+/// (`Glass`) and its own bucket (`Translucent`), so Translucent-the-class still names water.
 #[test]
 fn the_water_rows_agree_across_every_field_that_describes_them() {
 	let fullest = BlockType::ALL

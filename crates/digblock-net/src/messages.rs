@@ -22,12 +22,9 @@ pub enum NoPlayer {
 	},
 }
 
-/// Which command a usage line is for.
-///
-/// The COMMAND is the server's fact; the line describing it is the
-/// client's. Naming the command rather than sending its prose is what
-/// lets `/give` advertise the essences from `Essence::ALL` at the point
-/// of rendering, so the advertisement and the parser cannot drift.
+/// Which command a usage line is for. The COMMAND is the server's fact; the line describing it is
+/// the client's. Naming the command rather than sending its prose is what lets `/give` advertise
+/// the essences from `Essence::ALL` at render time, so advertisement and parser cannot drift.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdminUsage {
 	Tp,
@@ -46,18 +43,13 @@ pub enum AdminUsage {
 
 /// An admin command's answer, as typed data rather than a sentence.
 ///
-/// Admin replies used to cross the wire as English inside
-/// `ServerMsg::Chat` from `SERVER_ID`, which put player-visible text in
-/// the server — the one place the third writing rule says it may not
-/// live — and left every test asserting the words a handler prints
-/// rather than what it did. Appended in v29.
+/// Admin replies used to cross the wire as English inside `ServerMsg::Chat` from `SERVER_ID`,
+/// which put player-visible text in the server — the one place the third writing rule says it may
+/// not live — and left every test asserting words rather than what a handler did. Appended in v29.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 pub enum AdminReply {
 	Usage(AdminUsage),
-	/// One row of the command catalog, echoed by `/help`. Carries the
-	/// catalog's own strings rather than a variant: the usage stem is the
-	/// dispatch key AND the client's autocomplete stem, so it is an
-	/// identifier the client needs verbatim, not a sentence to translate.
+	/// One `/help` catalog row; the usage stem is the dispatch key and an identifier, not prose.
 	CommandHint {
 		usage: String,
 		desc: String,
@@ -86,8 +78,7 @@ pub enum AdminReply {
 	},
 	NotLookingAtBlock,
 	NotLookingAtTopFace,
-	/// The aimed spot cannot hold a spawn: the clearance it would need
-	/// rides along so the line can state it without knowing the rule.
+	/// The aimed spot cannot hold a spawn; the clearance it would need rides along.
 	SpawnNotClear {
 		clear: u32,
 		capsule: u32,
@@ -106,8 +97,7 @@ pub enum AdminReply {
 		already: bool,
 	},
 	NoClearSpawnToLock,
-	/// Pinned by hand but not protected: the point stays put, its cells
-	/// can still be dug.
+	/// Pinned by hand but not protected: the point stays put, its cells can still be dug.
 	SpawnSetButUnlocked {
 		cell: [i32; 3],
 	},
@@ -160,8 +150,7 @@ pub enum AdminReply {
 	NoBanMatches {
 		arg: String,
 	},
-	/// A pre-account character on this server was folded into the account
-	/// that just joined (AUTH-DESIGN §6).
+	/// A pre-account character was folded into the account that just joined (AUTH-DESIGN §6).
 	LegacyCharacterClaimed,
 	/// A slash line from a player who is not an admin.
 	CommandsAreAdminOnly,
@@ -201,14 +190,11 @@ pub struct InputBatch {
 	pub inputs: Vec<InputTick>,
 }
 
-/// YOUR own authoritative state. Full `f32` precision, deliberately:
-/// `predict.rs` compares the echo against its claim within `POS_EPS2`, so
-/// a claim the server adopted has to round-trip bit-comparably or EVERY
-/// snapshot takes the rewind-and-replay path. This is the one place in a
-/// snapshot where precision is load-bearing rather than cosmetic.
-///
-/// No `look`: the server echoes back the direction we sent it, and nothing
-/// on the client reads it. No `id` either — it is ours by construction.
+/// YOUR own authoritative state. Full `f32` precision, deliberately: `predict.rs` compares the
+/// echo against its claim within `POS_EPS2`, so a claim the server adopted has to round-trip
+/// bit-comparably or EVERY snapshot takes the rewind-and-replay path. No `look`: the server
+/// echoes back the direction we sent it and nothing on the client reads it. No `id` either — it
+/// is ours by construction.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
 pub struct SelfState {
 	pub pos: [f32; 3],
@@ -239,12 +225,10 @@ pub struct RemoteState {
 	/// (`WIRE_EMPTY`/`WIRE_TOOL`/[`HELD_TOOL_FULL`]/block id) — remote
 	/// clients render it in hand. Appended in v10.
 	pub held: u16,
-	/// The player's visible effect, packed by [`pack_fx`]: the wisp they
-	/// burn today, with a kind reserved for the siphon draw's remote half
-	/// (which needs the drawn CELL, a field of its own when it lands).
-	/// Appending a struct field is the one genuinely breaking postcard
-	/// change, which is what the v32 `MIN_PROTOCOL` raise carries.
-	/// Appended in v32.
+	/// The player's visible effect, packed by [`pack_fx`]: the wisp they burn today, with a kind
+	/// reserved for the siphon draw's remote half. Appending a struct field is the one genuinely
+	/// breaking postcard change, which is what the v32 `MIN_PROTOCOL` raise carries. Appended in
+	/// v32.
 	pub fx: u8,
 }
 
@@ -252,9 +236,7 @@ pub struct RemoteState {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RemoteFx {
 	None,
-	/// A burning wisp; the argument is its cast light level, with the
-	/// whitened flag beside it — a remote's wisp must cast exactly what
-	/// its caster earned, and their skills are not in the snapshot.
+	/// A burning wisp: its cast light level and whitened flag; caster skills are not in snapshots.
 	Wisp {
 		level: u8,
 		whitened: bool,
@@ -281,12 +263,9 @@ pub fn unpack_fx(b: u8) -> RemoteFx {
 	}
 }
 
-/// `held` sentinel for a CHARGED water tool.
-///
-/// It lives here rather than in `digblock_core::hotbar` because the
-/// arrangement encoding has no business knowing about it: a slot holds
-/// the tool, never the tool's charge, and `Hotbar::from_wire` treats
-/// this value as the unknown id it is. Appended in v12.
+/// `held` sentinel for a CHARGED water tool. It lives here rather than in `digblock_core::hotbar`
+/// because the arrangement encoding has no business knowing about it: a slot holds the tool,
+/// never the tool's charge, and `Hotbar::from_wire` treats this value as the unknown id it is.
 pub const HELD_TOOL_FULL: u16 = u16::MAX - 2;
 
 /// Encode a look direction as the wire yaw. Vertical looks (a player
@@ -305,13 +284,10 @@ pub fn yaw_from_wire(yaw: u16) -> f32 {
 	yaw as f32 / 65536.0 * std::f32::consts::TAU
 }
 
-/// Interpolate between two wire yaws along the SHORTEST arc.
-///
-/// Done in `u16` space on purpose: `wrapping_sub` on the difference is
-/// exactly the signed shortest arc, with the wrap at north handled for
-/// free. Lerping the decoded radians instead would sweep a player the long
-/// way round whenever they crossed the discontinuity — the old code dodged
-/// that only because it lerped the look VECTOR and renormalized.
+/// Interpolate between two wire yaws along the SHORTEST arc. Done in `u16` space on purpose:
+/// `wrapping_sub` on the difference is exactly the signed shortest arc, with the wrap at north
+/// handled for free. Lerping the decoded radians instead would sweep a player the long way round
+/// whenever they crossed the discontinuity.
 pub fn yaw_lerp(a: u16, b: u16, t: f32) -> u16 {
 	let arc = b.wrapping_sub(a) as i16;
 	a.wrapping_add((arc as f32 * t).round() as i16 as u16)
@@ -346,41 +322,19 @@ pub struct Snapshot {
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
 pub enum EditKind {
 	Dig,
-	/// `block` is a full u16 CELL (id + reserved state bits) — postcard
-	/// varints keep small ids narrow anyway. The server rejects nonzero
-	/// state bits until something consumes them.
+	/// `block` is a full u16 CELL (id + reserved state bits); nonzero state bits are rejected.
 	Place {
 		block: u16,
 	},
-	/// Water-tool collect: validated with the fluid-aware raycast; the
-	/// hit must be a fluid source. Applies Air and charges the bucket
-	/// (one unit of Water). Subject to the same hold-to-dig timing gate
-	/// as `Dig`, and refused with `BucketFull` if the tool already holds
-	/// one — the bucket carries a charge, not a stack.
-	// (PlaceArc is appended at the enum's tail — postcard is append-only.)
+	/// Water-tool collect: the fluid-aware ray, the same hold gate as `Dig`, `BucketFull` if full.
 	Collect,
-	/// Use/interact click (door open-close toggle): validated with the
-	/// interact-aware raycast (`raycast_interact` — an open door's swung
-	/// leaf still stops it); the hit must be interactive. `normal` may
-	/// be zero. Appended in v8.
+	/// Use/interact click (door toggle): the interact-aware ray; `normal` may be zero. In v8.
 	Interact,
-	/// A Mason's Arc placement: `Place`, extended into a full line of
-	/// `unlock::arc_cells` along the verified face normal — all or
-	/// nothing, so both ends derive one set or the request bounces.
-	/// Refused for slabs, doors and water (each carries machinery of its
-	/// own the line must not multiply). Appended in v32.
+	/// A Mason's Arc: `Place` extended `unlock::arc_cells` along the normal, all or nothing.
 	PlaceArc {
 		block: u16,
 	},
-	/// One plank of a Causeway: `cell` is the claimed cell, and nothing
-	/// else in the request is read — no ray, no reach, no slot. The
-	/// caster's client NAMES it because a plank is needed the tick the
-	/// feet leave support and a round trip is several ticks; the server
-	/// bounds the claim against its OWN copy of the player
-	/// (`digblock_core::causeway::claim_ok`) rather than re-deriving a
-	/// tick that is gone. Safe to trust that far because the trail
-	/// retires its own tail: a crafted client's standing footprint is
-	/// `causeway::TRAIL` cells whatever it claims. Appended in v36.
+	/// One Causeway plank: the client NAMES `cell`; the server bounds it via `causeway::claim_ok`.
 	CausewayStep,
 }
 
@@ -388,14 +342,9 @@ pub enum EditKind {
 /// the core tables). Appended in v8.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
 pub enum AlchemyOp {
-	/// RETIRED (v28, the essence redesign): bench extraction is gone, so
-	/// the server refuses this outright — nothing debited, the standing
-	/// `InventoryFull` rebase as the whole answer. The variant stays
-	/// because the wire is append-only: a frame that stops decoding is a
-	/// session that dies mid-parse instead of a verb that stopped working.
+	/// RETIRED (v28): refused, nothing debited; kept decodable, the wire being append-only.
 	Convert { block: u16, count: u32 },
-	/// Craft `count` batches of the shaped item `item` from essence and
-	/// feedstock.
+	/// Craft `count` batches of the shaped item `item` from essence and feedstock.
 	Craft { item: u16, count: u32 },
 }
 
@@ -410,9 +359,7 @@ pub struct BlockEdit {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub enum ClientMsg {
-	/// Append-only across supported protocol versions from v2 on (the
-	/// version-first preamble tells the peer which shape to expect, and
-	/// postcard tolerates trailing bytes).
+	/// Append-only from v2 on: the version-first preamble tells the peer which shape to expect.
 	Hello {
 		protocol: u16,
 		name: String,
@@ -456,9 +403,7 @@ pub enum ClientMsg {
 		slot: u8,
 	},
 	Bye,
-	/// Hold-to-dig began on `cell` (dig or water-collect — the server
-	/// captures the cell's current block itself; a content change resets
-	/// the hold). Replaces any prior hold for this client.
+	/// Hold-to-dig began on `cell`; the server captures the block itself. Replaces any prior hold.
 	DigStart {
 		cell: [i32; 3],
 		/// The hotbar slot the hold is being made with, for the same
@@ -472,125 +417,50 @@ pub enum ClientMsg {
 		/// peer's frame.
 		slot: u8,
 	},
-	/// Hold released or retargeted before completing. Hygiene only — the
-	/// server also self-resets via its per-tick aim check.
+	/// Hold released or retargeted before completing. Hygiene only — the server also self-resets.
 	DigCancel,
-	/// Chat line. Server-side: token-bucket limited, sanitized to
-	/// printable ASCII, broadcast back to everyone (sender included —
-	/// the echo is the delivery confirmation).
+	/// Chat line. Server-side: rate-limited, sanitized, echoed back to everyone, sender included.
 	Chat {
 		text: String,
 	},
-	/// Teleport me back to the spawn point. Server-side: subject to the
-	/// per-client [`TELEPORT_COOLDOWN_SECS`] window it SHARES with every
-	/// port (violations are ignored — the menu enforces it honestly);
-	/// answered with `ServerMsg::Teleported`.
-	///
-	/// [`TELEPORT_COOLDOWN_SECS`]: crate::protocol::TELEPORT_COOLDOWN_SECS
+	/// Teleport me to spawn; the shared `TELEPORT_COOLDOWN_SECS` window. Answers `Teleported`.
 	ReturnToSpawn,
-	/// Runtime draw-distance change (settings slider). Server re-clamps
-	/// exactly like Hello's value and adjusts the sync radius from the
-	/// next tick.
+	/// Runtime draw-distance change; the server re-clamps exactly as it does Hello's value.
 	SetDrawDist {
 		draw_dist: i32,
 	},
-	/// Alchemy convert/craft. NOT client-predicted — the server answers
-	/// every op (success or failure) with an `InventoryFull` rebase.
-	/// Rides the edit action queue in wire order, so craft-then-place in
-	/// one tick debits before the place's stock gate. Appended in v8.
+	/// Alchemy craft. NOT predicted — every op is answered with an `InventoryFull` rebase. In v8.
 	Alchemy {
 		op: AlchemyOp,
 	},
-	/// The player's item layout (hotbar wire encoding: `WIRE_EMPTY`/
-	/// `WIRE_TOOL`/block id), sent on any arrangement change. Rides the
-	/// edit action queue in wire order, so assign-to-bar-then-place in
-	/// one tick validates against the new bar. The server sanitizes,
-	/// enforces Place/Collect slots against it, echoes it in snapshots'
-	/// held item, and persists it with the identity's inventory.
-	/// Appended in v10.
+	/// The player's item layout (hotbar wire encoding), sent on any arrangement change. In v10.
 	Layout {
 		hotbar: Vec<u16>,
 		grid: Vec<u16>,
 	},
-	/// Claim the pre-account character this server holds for `legacy`, and fold
-	/// it into the account that sent this. Appended in v24.
-	///
-	/// `legacy` is the LOOKUP KEY those records were filed under — the truncated
-	/// hash of the old device secret, computed locally. The secret itself never
-	/// leaves the machine, and there is nothing a server could learn here that
-	/// it could present elsewhere as an identity.
-	///
-	/// It is still a bearer credential for one thing: whoever presents it first
-	/// gets those records. That is unavoidable — the server stores only the
-	/// hash, so it has nothing to run a challenge against — and it is bounded,
-	/// because a successful claim DELETES the legacy entry. See AUTH-DESIGN.md
-	/// §6.
-	///
-	/// Sent once per connection, immediately after `Hello`. In-order on the
-	/// reliable stream, so the server already knows which account is asking.
-	/// Unmatched claims are silent.
+	/// Claim this server's pre-account character: `legacy` is the local hash key. AUTH-DESIGN §6.
 	ClaimLegacy {
 		legacy: [u8; 16],
 	},
-	/// This client's transport has no datagram channel: its unreliable traffic
-	/// will arrive as [`ClientMsg::Unreliable`] on this stream, and the server
-	/// must answer in kind ([`ServerMsg::Unreliable`]). Appended in v26.
-	///
-	/// Sent once per connection, immediately after `Hello`, by a client whose
-	/// transport says so — today only iOS Safari, whose `WebTransport.datagrams`
-	/// has no writable side. In-order on the reliable stream, so it lands before
-	/// the first snapshot the server would otherwise send where this client
-	/// cannot hear it.
-	///
-	/// A capability, deliberately not a preference. Announcing it rather than
-	/// inferring it from the first `Unreliable` frame is what keeps the two
-	/// directions from disagreeing.
+	/// This transport has no datagram channel — a capability, announced and never inferred. In v26.
 	NoDatagrams,
-	/// One datagram that could not travel as one: the encoded
-	/// [`Datagram`] payload, verbatim. Appended in v26.
-	///
-	/// The payload is bit-identical to what the datagram would have
-	/// carried, so both ends decode it through exactly the same path —
-	/// the fallback owes its correctness to having no second encoding to
-	/// drift from. What it loses is the lossiness: these are delivered
-	/// and ordered like everything else on this stream, so a lost packet
-	/// costs a retransmit instead of a skipped frame. That is the whole
-	/// trade, and it is the right way round for a client that would
-	/// otherwise be unable to play at all.
+	/// One datagram that could not travel as one: the encoded [`Datagram`] payload, verbatim.
 	Unreliable(Vec<u8>),
-	/// A completed cast channel asking for its spell. The channel itself
-	/// is client pacing (the `handle_return_to_spawn` stance: honest
-	/// clients gate locally); the server validates the UNLOCK and the
-	/// PRICE, which are the real gates, and — for anything that MOVES
-	/// the caster — the shared [`TELEPORT_COOLDOWN_SECS`] window.
-	/// Appended in v32.
-	///
-	/// [`TELEPORT_COOLDOWN_SECS`]: crate::protocol::TELEPORT_COOLDOWN_SECS
+	/// A completed cast channel asking for its spell; the server validates unlock and price.
 	Cast(CastKind),
-	/// The caster broke their Ward channel — the ONE cast the server runs
-	/// for the channel's whole length (`Cast(Ward)` is sent as the
-	/// channel BEGINS, so the glass climbs while the caster stands), and
-	/// so the one with something to unwind. The server also unwinds on
-	/// its own when the caster moves or leaves; this is the honest
-	/// client's prompt word. Appended in v34.
+	/// The caster broke their Ward channel; the server also unwinds on its own. Appended in v34.
 	CastBreak,
-	/// Take the road up now, before its span runs out — the spellbook
-	/// row is a toggle, since a caster who wants to descend cannot wait
-	/// out a causeway that keeps catching them. No refund: the fare
-	/// bought the span, not the seconds spent. Appended in v36.
+	/// Take the road up now, before its span runs out. No refund: the fare bought the span.
 	CausewayEnd,
 }
 
-/// What a [`ClientMsg::Cast`] winds up toward — shaped for the whole
-/// spell roster from day one so the message never needs a second form.
-/// `Kindle` is a RETIRED verb kept decodable and refused (the
-/// `AlchemyOp::Convert` pattern): the light no longer lands where the
-/// caster aims but in the cell their head is in, which the server
-/// already knows — so `KindleHere` carries nothing to trust.
+/// What a [`ClientMsg::Cast`] winds up toward — shaped for the whole spell roster from day one so
+/// the message never needs a second form. `Kindle` is a RETIRED verb kept decodable and refused
+/// (the `AlchemyOp::Convert` pattern): the light lands in the cell the caster's head is in, which
+/// the server already knows, so `KindleHere` carries nothing to trust.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
 pub enum CastKind {
-	/// A port to the biome waystone at this `SurfaceKind`
-	/// declaration-order index.
+	/// A port to the biome waystone at this `SurfaceKind` declaration-order index.
 	Waystone(u8),
 	Wisp,
 	Kindle {
@@ -599,14 +469,9 @@ pub enum CastKind {
 	},
 	/// Appended in v33.
 	KindleHere,
-	/// The Ward: a glass sphere about the caster's head, every cell
-	/// derived on the server (`digblock_core::ward`) — so, like
-	/// `KindleHere`, it carries nothing to trust. Appended in v34.
+	/// The Ward: every cell derived on the server (`digblock_core::ward`), so nothing to trust.
 	Ward,
-	/// The Causeway: begins the road. Carries nothing — the rung decides
-	/// how long it stands, and each plank comes later as its own
-	/// [`EditKind::CausewayStep`]. Recasting while one stands ends it
-	/// instead ([`ClientMsg::CausewayEnd`]). Appended in v36.
+	/// The Causeway: begins the road; each plank follows as its own [`EditKind::CausewayStep`].
 	Causeway,
 }
 
@@ -618,9 +483,7 @@ pub enum CastRefusal {
 	Locked,
 	/// The caster cannot pay the passage. Refused BEFORE any debit.
 	CantPay,
-	/// A conjuring with no place to land: a kindle whose head cell
-	/// cannot hold light, or a ward whose shell would close on a player
-	/// or over ground not resident.
+	/// A conjuring with no place to land: a head cell that cannot hold light, or a blocked shell.
 	BadTarget,
 }
 
@@ -634,42 +497,21 @@ pub enum RejectReason {
 	BadBlock,
 	/// The server cannot persist edits right now (journal unhealthy).
 	ServerError,
-	/// Timed dig not satisfied: no hold on record for this cell, or not
-	/// enough elapsed ticks (hardness minus the grace).
+	/// Timed dig not satisfied: no hold on record for this cell, or too few elapsed ticks.
 	DigIncomplete,
-	/// Place refused: no stock of that block (an `InventoryFull` snapshot
-	/// follows so the client can re-base).
+	/// Place refused: no stock of that block; an `InventoryFull` snapshot follows to re-base.
 	NoStock,
-	/// Place/Collect refused: the declared hotbar slot doesn't hold the
-	/// item the edit claims to use. Honest clients never see this — the
-	/// slot rides the same reliable stream as `Layout`. Appended in v10.
+	/// Place/Collect refused: the declared slot doesn't hold the item the edit claims. In v10.
 	WrongSlot,
-	/// The cell may never be modified: the world floor, or a region an
-	/// admin has locked. Honest clients predict this locally and never
-	/// send the edit; the server rejects it regardless. Appended in v11.
+	/// The cell may never be modified: the world floor, or a region an admin has locked.
 	Protected,
-	/// Collect refused: the water tool is already charged. An honest
-	/// client never aims the scoop with a full bucket — the fluid ray is
-	/// only picked while it's empty. Appended in v12.
+	/// Collect refused: the water tool is already charged; an honest client never aims with one.
 	BucketFull,
-	/// Dig refused: the block's `unlock::mine` level exceeds the
-	/// digger's Mining level (SKILLS-DESIGN §5.1's strength wall). Sent at
-	/// `DigStart` like `Protected`, so the player isn't left holding the
-	/// button; honest clients predict it in `diggable()` and never open
-	/// the hold. Appended in v17.
+	/// Dig refused by `unlock::mine` (§5.1's strength wall); sent at `DigStart`, like `Protected`.
 	SkillGated,
-	/// Dig refused: the block is craft-only and the digger's Alchemy level
-	/// is below its `unlock::craft` level, so the pickup would hand out
-	/// an item they cannot make (`unlock::pickup`). Rides the
-	/// same `DigStart` path as `SkillGated`; predicted in `diggable()`.
-	/// Appended in v19.
+	/// Dig refused: craft-only, and the digger is below its `unlock::pickup` level. In v19.
 	NotUnlocked,
-	/// Dig refused: the cell shows this player a revealed ore vein and
-	/// their active tool is not the Essence Siphon (SKILLS-DESIGN §5.3).
-	/// If you can SEE the seam, the game will not let you spend it on a
-	/// stone dig by accident. Sent at `DigStart` like `SkillGated`, so
-	/// nobody holds the button through a timer for nothing; predicted in
-	/// `diggable()`. Appended in v21.
+	/// Dig refused: the cell shows this player a revealed vein and the tool is not the siphon.
 	NeedsTool,
 }
 
@@ -737,167 +579,82 @@ pub enum ServerMsg {
 	PlayerLeft {
 		id: PlayerId,
 	},
-	/// Authoritative inventory snapshot: (block id, count) pairs, absent
-	/// = zero. Sent after `JournalDone` on join and alongside every
-	/// `NoStock` and `WrongSlot` rejection (drift-repair backstop — both
-	/// are how a drifted count presents); every other transition is
-	/// implicit in the predict/confirm/reject flow.
+	/// Authoritative inventory snapshot; also sent on `NoStock`/`WrongSlot` to repair count drift.
 	InventoryFull {
 		counts: Vec<(u16, u32)>,
 	},
-	/// A player's chat line, already sanitized. `from` resolves to a
-	/// display name via the client's PlayerJoined roster.
+	/// A player's chat line, already sanitized; `from` resolves via the PlayerJoined roster.
 	Chat {
 		from: PlayerId,
 		text: String,
 	},
-	/// The server moved YOUR player (return to spawn, admin /tp).
-	/// Hard-set — the client drops its prediction buffer and in-flight
-	/// acks instead of smoothing across the map. Remote players just see
-	/// the jump in snapshots.
+	/// The server moved YOUR player. Hard-set — the client drops its prediction buffer and acks.
 	Teleported {
 		pos: [f32; 3],
 		/// Facing to adopt on arrival; all-zeros = keep the current
 		/// view (return-to-spawn). Appended in v9.
 		look: [f32; 3],
 	},
-	/// Authoritative world-clock heartbeat, broadcast every
-	/// [`TOD_SYNC_TICKS`](crate::protocol::TOD_SYNC_TICKS): the client
-	/// hard-sets its sun to this angle (the drift since the last beat is
-	/// far below visible). Added in v7.
+	/// Authoritative world-clock heartbeat, every `TOD_SYNC_TICKS`: the client hard-sets its sun.
 	TimeOfDay {
 		tod: f32,
 	},
-	/// The server's chat-command set, sent only to clients that may use
-	/// it (the configured admin) after join sync. `(usage, description)`
-	/// pairs, e.g. `("/tp <x> <z> [n|s|e|w]", "teleport to column
-	/// top")`. Drives the client's chat Tab-autocomplete; the client
-	/// bakes in no command knowledge. Added in v9.
+	/// The server's chat-command set, sent only to an admin: `(usage, description)` pairs.
 	AdminCommands {
 		commands: Vec<(String, String)>,
 	},
-	/// The identity's persisted item layout, sent in join sync right
-	/// after `InventoryFull` (only when one is stored). The client
-	/// sanitizes and reconciles it against the counts. Appended in v10.
+	/// The identity's persisted item layout, sent right after `InventoryFull` when one is stored.
 	Layout {
 		hotbar: Vec<u16>,
 		grid: Vec<u16>,
 	},
-	/// A hold-to-dig was refused at `DigStart`, before any timer ran.
-	/// `DigStart` carries no seq, so this answers by cell instead.
-	///
-	/// Only sent for refusals the client cannot predict — a protected
-	/// region it has no knowledge of. Ordinary undiggable targets stay
-	/// silent (the client's own `diggable` check already agrees), so this
-	/// never becomes chatter on a mistimed swing.
-	///
-	/// LAST on purpose: postcard encodes the variant index, so this must
-	/// be appended, never inserted. Appended in v11.
+	/// A hold refused at `DigStart`, answered by cell; only for refusals no client can predict.
 	DigRefused {
 		cell: [i32; 3],
 		reason: RejectReason,
 	},
-	/// Full per-skill XP sync: `(skill index, total)` pairs, absent =
-	/// zero. Sent in join sync after `Layout` — always, even when empty
-	/// (a fresh identity), so the client never guesses. Levels are
-	/// derived client-side from the shared curve. Appended in v16.
+	/// Full per-skill XP sync: `(skill index, total)` pairs; always sent in join sync, even empty.
 	Skills {
 		xp: Vec<(u8, u64)>,
 	},
-	/// One skill's new TOTAL after a server-side award. A total rather
-	/// than a delta on purpose: idempotent and reorder-safe — the client
-	/// takes the max and animates the difference itself. Appended in
-	/// v16.
+	/// One skill's new TOTAL after an award — a total, not a delta: idempotent and reorder-safe.
 	XpGain {
 		skill: u8,
 		total: u64,
 	},
-	/// Another player just reached `level` in `skill` — the cue for the
-	/// confetti over their head. Sent to everyone BUT the author (who
-	/// learns it from their own `XpGain` and celebrates locally), so a
-	/// client never has to filter its own id out. Carries the derived
-	/// level rather than a total: nobody else's XP is any of your
-	/// business, and the level is all the presentation needs. Appended in
-	/// v18.
+	/// Another player reached `level` in `skill`; sent to everyone BUT the author, who has XpGain.
 	LevelUp {
 		player: PlayerId,
 		skill: u8,
 		level: u32,
 	},
-	/// Every journaled column within `AREA_SYNC_RADIUS` of where you were just
-	/// put has been sent — the ground under you is the real one now.
-	///
-	/// The client holds the world (no render, no player sim) from `Welcome` or
-	/// `Teleported` until this lands, because until then it is standing on
-	/// pristine worldgen the journal is about to overwrite: on a spawn anyone
-	/// has dug out, the arrival pose is a guess the first snapshot then
-	/// corrects, which reads as being *moved* after joining.
-	///
-	/// Deliberately not `JournalDone`, which is sent at handshake time BEFORE
-	/// any column goes out. One message covers both entrances, and it is sent
-	/// immediately when the radius holds no edits at all. Appended in v20.
+	/// The ground under you is real now; the client holds the world from `Welcome` until it lands.
 	AreaReady,
-	/// A snapshot for a client that announced [`ClientMsg::NoDatagrams`]:
-	/// the encoded [`Datagram`] payload, verbatim. Appended in v26.
-	///
-	/// Sent only to such a client, and dropped on a full outbound queue
-	/// exactly as the datagram it stands in for would be — a snapshot
-	/// stays lossy at the SEND, whatever carries it. That distinction is
-	/// load-bearing: every other frame on this stream drops the player
-	/// when the queue refuses it, and a stalled reader must not be killed
-	/// by the one message class that has always tolerated a stall.
+	/// A snapshot for a `NoDatagrams` client: the encoded payload, DROPPED on a full queue.
 	Unreliable(Vec<u8>),
-	/// An admin command's answer, as typed data. Replaces the English
-	/// that used to ride `Chat` from `SERVER_ID`; the sentence is now
-	/// `voice`'s. Appended in v29.
+	/// An admin command's answer, as typed data; the sentence is `voice`'s. Appended in v29.
 	Admin(AdminReply),
-	/// The world's RESOLVED waystones — `(SurfaceKind index, eye)` — sent
-	/// once in join sync after `Skills`. Server state the client cannot
-	/// derive: each eye was resolved against the journal ONCE and stored,
-	/// so re-deriving from the seed would disagree exactly on damaged
-	/// worlds. Appended in v32.
+	/// The world's RESOLVED waystones — server state the client cannot derive from the seed.
 	Waystones {
 		entries: Vec<(u8, [f32; 3])>,
 	},
-	/// A cast the server would not perform, and why — the spellbook greys
-	/// what it can predict, so an honest client sees this only across a
-	/// race (levelling down is impossible, but spending essence between
-	/// build and click is not). Appended in v32.
+	/// A cast the server would not perform, and why; honest clients see this only across a race.
 	CastRefused {
 		reason: CastRefusal,
 	},
-	/// Conjured light standing in `cell`, with the seconds it has left —
-	/// sent to everyone on the cast and to a joiner for each light still
-	/// burning. The light is per-viewer GI and the expiry is each
-	/// client's own clock from here; the server's list is what a joiner
-	/// and a departed caster both rely on, since a light outlives the
-	/// session that lit it. Appended in v33.
+	/// Conjured light in `cell` with the seconds left; a light outlives the session that lit it.
 	Kindled {
 		cell: [i32; 3],
 		secs_left: u16,
 	},
-	/// A Ward's channel BEGAN: a sphere of `radius` about `head`, cast by
-	/// `by`, climbing over `span` ticks. The CELLS never travel — both
-	/// ends derive them from the head and the radius (`ward::plan`) and
-	/// climb them in its order — so one frame stands for the hundreds of
-	/// edits a sphere is, whatever the rank. Sent to everyone: a client
-	/// too far away to hold the cells still learns of the cast, and reads
-	/// the sphere back out of the journal when it arrives there.
-	/// Appended in v35.
+	/// A Ward channel BEGAN: the CELLS never travel, both ends deriving them from head and radius.
 	WardWinding {
 		by: PlayerId,
 		head: [i32; 3],
 		radius: u8,
 		span: u32,
 	},
-	/// A Ward's channel ENDED: `landed` cells of that same plan had been
-	/// handed to the world, and `sealed` says whether the sphere closed
-	/// about its caster or came apart again.
-	///
-	/// The count is what makes a break mid-climb exact — both ends take
-	/// the first `landed` of the plan in its own order — and `sealed` is
-	/// carried rather than inferred from `landed`, so the chime answers to
-	/// the server's own word. Appended in v35.
+	/// A Ward's channel ENDED: `landed` cells of that plan reached the world; `sealed` is carried.
 	WardEnded {
 		by: PlayerId,
 		head: [i32; 3],

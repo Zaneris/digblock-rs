@@ -78,20 +78,11 @@ fn edits_validate_apply_and_journal() {
 	);
 }
 
-/// Nothing at all writes the world floor — every action the wire can carry,
-/// driven against it in one world.
-///
-/// `dig_hardness(BEDROCK_Y) == None` is already pinned in block.rs and proves
-/// nothing about the call sites, because most of the writes that can reach
-/// the floor are DERIVED rather than aimed: the Resonant Pick's plane spreads
-/// onto cells the player never named, a door's second half is worked out from
-/// the half you hit, a placement lands one cell PAST the ray's target, and
-/// fluid falls into holes nobody clicked. Each is its own seam and each has
-/// to refuse on its own.
-///
-/// The floor is protected POSITIONALLY, never by block identity (there is no
-/// bedrock block type; worldgen leaves plain Stone at `BEDROCK_Y`), so the
-/// phases below deliberately stand a slab of other things in it.
+/// Nothing at all writes the world floor — every action the wire can carry, driven against it in
+/// one world. `dig_hardness(BEDROCK_Y) == None` proves nothing about the call sites, because most
+/// writes that reach the floor are DERIVED rather than aimed — a pick's plane, a door's second
+/// half, a placement one cell PAST the ray, fluid falling — so each seam has to refuse on its own.
+/// The floor is protected POSITIONALLY, not by block identity, so the phases stand a slab in it.
 #[test]
 fn nothing_writes_the_world_floor() {
 	use digblock_core::block::BEDROCK_Y as FLOOR;
@@ -139,13 +130,10 @@ fn nothing_writes_the_world_floor() {
 	c.msgs.clear();
 
 	// ---- 2. a PLACE whose target lands in the floor plane ------------
-	// A placement writes `hit + normal`, and every ray from open air
-	// meets the floor's TOP face, whose normal points away from it — so
-	// the only exposure is a SIDE face, and that takes a hole beside the
-	// cell. Stage one (nothing in this test can open it, which is the
-	// point) and shoot through it at the wall it exposes: the target is
-	// then squarely a floor cell and the protected-write scan is the
-	// only thing left between the request and the store.
+	// A placement writes `hit + normal`, and every ray from open air meets the floor's TOP face,
+	// whose normal points away from it — so the only exposure is a SIDE face, and that takes a hole
+	// beside the cell. Stage one and shoot through it at the wall it exposes: the target is then
+	// squarely a floor cell, and the protected-write scan is all that is left before the store.
 	let hole = (sx - 1, FLOOR, sz);
 	let wall = (sx - 2, FLOOR, sz);
 	sim.test_set_cell(hole.0, hole.1, hole.2, BlockType::Air as u16);
@@ -188,12 +176,10 @@ fn nothing_writes_the_world_floor() {
 	c.msgs.clear();
 
 	// ---- 3. a door pair straddling the floor -------------------------
-	// A door is ONE object across two cells, so both of its writes are
-	// derived from whichever half the ray found. Stand one with its
-	// lower half IN the floor and work the UPPER half — the half that is
-	// not protected — twice: a toggle, then a dig. Each assembles a
-	// write for the partner in the floor plane, and each has to refuse
-	// the whole action rather than half-applying it.
+	// A door is ONE object across two cells, so both writes derive from whichever half the ray
+	// found. Stand one with its lower half IN the floor and work the UPPER, unprotected half twice,
+	// a toggle then a dig. Each assembles a write for the partner in the floor plane, and each has
+	// to refuse the whole action rather than half-applying it.
 	let upper = (sx, FLOOR + 1, sz - 3);
 	let lower = (upper.0, FLOOR, upper.2);
 	let lower_cell = make_cell(
@@ -258,12 +244,10 @@ fn nothing_writes_the_world_floor() {
 	c.msgs.clear();
 
 	// ---- 4. a bucket scoop out of the floor --------------------------
-	// A Collect empties its cell as surely as a dig does, and it picks
-	// its target with the FLUID ray rather than the plain one — a
-	// second entry into the same gate. Its slot is pinned last, which
-	// is what `dig_hold` declares; whether this player owns a vessel
-	// at all never comes up, because protection answers at DigStart,
-	// ahead of every tool question.
+	// A Collect empties its cell as surely as a dig does, and picks its target with the FLUID ray
+	// rather than the plain one — a second entry into the same gate. Whether this player owns a
+	// vessel at all never comes up, because protection answers at DigStart, ahead of every tool
+	// question.
 	let spring = (sx + 2, FLOOR, sz);
 	sim.test_set_cell(spring.0, spring.1, spring.2, BlockType::Water as u16);
 	let scoop_dir = (Vec3::new(
@@ -290,14 +274,10 @@ fn nothing_writes_the_world_floor() {
 	c.msgs.clear();
 
 	// ---- 5. the Resonant Pick's plane --------------------------------
-	// The one phase whose action must SUCCEED. A full-plane swing at
-	// the lower cell of a wall standing on the floor puts the floor row
-	// squarely in the plane, holding the very same Stone id, so nothing
-	// but `pick::breaks_as_extra`'s own y test keeps it out. Filtering
-	// is what is being pinned, NOT refusal: a locked spawn deliberately
-	// refuses the whole swing, and doing that at the floor made the pick
-	// stop working at the bottom of every mine and blame a cell the
-	// player never aimed at.
+	// The one phase whose action must SUCCEED. A full-plane swing at the lower cell of a wall
+	// standing on the floor puts the floor row squarely in the plane, holding the very same Stone
+	// id, so only `pick::breaks_as_extra`'s own y test keeps it out. FILTERING is what is pinned,
+	// NOT refusal: refusing the whole swing stops the pick working at the bottom of every mine.
 	let px = sx + 3;
 	for y in [FLOOR + 1, FLOOR + 2] {
 		for z in (sz - 1)..=(sz + 1) {
@@ -508,15 +488,11 @@ fn dig_timing_gate() {
 	);
 }
 
-/// §7.1's rock rule from the server's side, in both directions: the
-/// mountain's own stone crumbles to Rubble, and one a mason PLACED
-/// comes back whole.
-///
-/// The authority for "placed" is the journal — the same bit the ore
-/// reveal reads — and it has to be sampled BEFORE the dig writes its
-/// own entry, which is the one way this silently inverts: every dig
-/// would then find itself standing in an edited cell and hand out clean
-/// stone for a quarried one.
+/// §7.1's rock rule from the server's side, in both directions: the mountain's own stone crumbles
+/// to Rubble, and one a mason PLACED comes back whole. The authority for "placed" is the journal —
+/// the same bit the ore reveal reads — and it must be sampled BEFORE the dig writes its own entry,
+/// which is the one way this silently inverts: every dig would then find itself standing in an
+/// edited cell and hand out clean stone for a quarried one.
 #[test]
 fn a_placed_stone_comes_back_whole_and_a_quarried_one_crumbles() {
 	let mut sim = flat_sim("placedstone");
@@ -552,13 +528,11 @@ fn a_placed_stone_comes_back_whole_and_a_quarried_one_crumbles() {
 	);
 }
 
-/// The other half of the same rule: below the mason's own unlock a
-/// placed stone crumbles like any other rock. That is not a refusal and
-/// not a punishment — a player who could not have MADE one is not
-/// undoing their own work, so they get the rubble and the XP that goes
-/// with it, and the craft-and-extract loop still cannot close, because
-/// the levels that can make a stone are exactly the levels it comes
-/// back whole to.
+/// The other half of the same rule: below the mason's own unlock a placed stone crumbles like any
+/// other rock. Not a refusal and not a punishment — a player who could not have MADE one is not
+/// undoing their own work, so they get the rubble and the XP that goes with it, and the
+/// craft-and-extract loop still cannot close, because the levels that can make a stone are exactly
+/// the levels it comes back whole to.
 #[test]
 fn below_the_masons_unlock_even_a_placed_stone_crumbles() {
 	let mut sim = flat_sim("placedstonelow");
@@ -1754,12 +1728,10 @@ fn slab_top_place_grows_to_base_block_with_per_step_debits() {
 	assert_eq!(sim.test_cell_at(above.0, above.1, above.2), Some(slab0));
 }
 
-/// Both halves of the client's natural double-click — fresh 1/3, then
-/// grow — enqueued in ONE tick, the racing shape whose acks supersede
-/// each other client-side. The server accepts and debits BOTH: this is
-/// the truth the client's deferred-delta rule (`PendingEdits`) has to
-/// match, and a client that refunds the second debit at supersede time
-/// drifts a phantom item for good.
+/// Both halves of the client's natural double-click — fresh 1/3, then grow — enqueued in ONE tick,
+/// the racing shape whose acks supersede each other client-side. The server accepts and debits
+/// BOTH: this is the truth the client's deferred-delta rule (`PendingEdits`) has to match, and a
+/// client that refunds the second debit at supersede time drifts a phantom item for good.
 #[test]
 fn racing_slab_places_in_one_tick_both_debit() {
 	let mut sim = flat_sim("slabrace");
@@ -2220,13 +2192,11 @@ fn door_place_writes_both_halves_one_debit() {
 	assert!(applied.contains(&(0, upper)), "{applied:?}");
 }
 
-/// An OPEN door has empty collision boxes, so the plain place ray runs
-/// straight through its leaf and stops on the floor beyond — making the
-/// door's own cell the placement target. Nothing used to check that the
-/// target was replaceable (only the door's derived UPPER half was
-/// checked, and with `!collides`, which an open door passes), so one
-/// right-click destroyed any player's door: no drop, no hold-to-dig
-/// timer, and an orphaned upper half whose partner no longer resolved.
+/// An OPEN door has empty collision boxes, so the plain place ray runs straight through its leaf
+/// and stops on the floor beyond — making the door's own cell the placement target. The target has
+/// to be checked for replaceability: checking only the derived UPPER half, and with `!collides`,
+/// which an open door passes, let one right-click destroy any player's door — no drop, no
+/// hold-to-dig timer, and an orphaned upper half whose partner no longer resolved.
 #[test]
 fn placing_into_an_open_door_is_refused() {
 	let mut sim = flat_sim("doorover");

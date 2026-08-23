@@ -5,18 +5,11 @@
 use super::*;
 
 impl Pipeline {
-	/// Call every frame with the player's chunk position. Performs the
-	/// visibility scan on chunk-boundary crossings, tops up workers, and
-	/// drains results (mesh outputs capped at `upload_budget`; the whole
-	/// drain stops at `deadline` — undrained results wait in the channel,
-	/// so worker throughput is unaffected, only main-thread pacing).
-	/// `inline_allowance` lets the inline executor run extra jobs beyond
-	/// its fixed floor while their predicted cost fits (the adaptive web
-	/// budget); `None` keeps the floor-only batch. Ignored while jobs run
-	/// off-thread — the allowance prices JOBS, and a pool doesn't spend
-	/// this thread's time on them. `deadline` still governs everything
-	/// else, pool or not: pulling the pool's replies, the drain, and
-	/// feeding the pool are all main-thread work either way.
+	/// Call every frame with the player's chunk position. Mesh uploads cap at `upload_budget` and
+	/// the whole drain stops at `deadline`; undrained results wait in the channel, so only
+	/// main-thread pacing suffers, never worker throughput. `inline_allowance` runs the inline
+	/// executor past its fixed floor while predicted cost fits (`None` keeps the floor-only batch)
+	/// and prices JOBS, so a pool ignores it — `deadline` governs both.
 	pub fn maintain(
 		&mut self,
 		center: ChunkPos,
@@ -43,19 +36,11 @@ impl Pipeline {
 			self.center = center;
 			self.visibility_scan(&mut out.evicted);
 		}
-		// Inline jobs run before the drain so their results land this frame;
-		// workers get topped up after.
-		//
-		// The deadline is deliberately NOT extended by what the jobs spent —
-		// that makes the stages ADD UP, which is the miss the budget exists
-		// to avoid. Slicing bounds the overrun at the source and every stage
-		// keeps a minimum-progress floor, so a blown deadline delays work
-		// without ever starving it.
-		//
-		// An external pool's results arrived as their own event-loop tasks,
-		// so pull them into the queue the drain reads first — under the
-		// deadline, because every `poll` decodes, but always at least one, or
-		// the pool's inbox only grows.
+		// Inline jobs run before the drain so their results land this frame. The deadline is
+		// deliberately NOT extended by what they spent — extending makes the stages ADD UP, the
+		// miss the budget exists to avoid; every stage keeps a minimum-progress floor, so a blown
+		// deadline delays work without starving it. An external pool's replies are pulled into the
+		// drain's queue first, under the deadline but always at least one, or its inbox only grows.
 		let mut lost: Vec<JobKey> = Vec::new();
 		// The pull can stop with replies still in the pool, which
 		// `has_pending` — which sees only the decoded queue — cannot know.
@@ -105,15 +90,11 @@ impl Pipeline {
 		out
 	}
 
-	/// Desired set: y ∈ 0..WORLD_VCHUNK, Euclidean distance < draw_dist in
-	/// chunk units — the Java updateVisible cull. Chunks leaving the set
-	/// are dropped (results in flight are rejected by the slot check).
-	///
-	/// Ordinary movement takes the incremental path: crossing one chunk
-	/// boundary shifts the disc by one, which changes O(r) columns out of
-	/// O(r²), and this runs OUTSIDE the streaming deadline — a full rescan
-	/// here was an unbudgeted multi-millisecond burst arriving at walking
-	/// cadence, once per chunk boundary crossed.
+	/// Desired set: y ∈ 0..WORLD_VCHUNK, Euclidean distance < draw_dist in chunk units. Chunks
+	/// leaving the set are dropped (results in flight are rejected by the slot check). Ordinary
+	/// movement takes the incremental path: crossing one boundary shifts the disc by one, changing
+	/// O(r) columns out of O(r²), and this runs OUTSIDE the streaming deadline — a full rescan here
+	/// is an unbudgeted multi-millisecond burst arriving once per chunk boundary crossed.
 	pub(super) fn visibility_scan(&mut self, evicted: &mut Vec<ChunkPos>) {
 		let r = self.draw_dist;
 		let c = self.center;

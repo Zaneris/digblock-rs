@@ -5,14 +5,11 @@ using Microsoft.Extensions.Options;
 
 namespace DigBlock.Master.Accounts;
 
-/// <summary>The JSON half of accounts: redeem a sign-in, keep a session
-/// alive, own a display name.
-///
-/// Every one of these is bearer-authenticated or one-time-code
-/// authenticated — never cookies. That separation is load-bearing: the
-/// browser pages under <c>/auth</c> use a cookie, these do not, and so the
-/// <c>AllowAnyOrigin</c> CORS policy the web client needs stays legal
-/// (any-origin plus credentials is not).</summary>
+/// <summary>The JSON half of accounts: redeem a sign-in, keep a session alive, own a display name.
+/// Every one of these is bearer-authenticated or one-time-code authenticated — never cookies. That
+/// separation is load-bearing: the browser pages under <c>/auth</c> use a cookie, these do not, and
+/// so the <c>AllowAnyOrigin</c> CORS policy the web client needs stays legal (any-origin plus
+/// credentials is not).</summary>
 public static class AccountEndpoints
 {
     public static void MapAccountEndpoints(this WebApplication app)

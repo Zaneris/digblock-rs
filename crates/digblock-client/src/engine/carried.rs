@@ -1,20 +1,16 @@
-//! Carried lights: the per-frame list of emitters that hang on a body rather
-//! than in a cell (GI-DESIGN.md R28).
+//! Carried lights: the per-frame list of emitters that hang on a body rather than in a cell
+//! (GI-DESIGN.md R28).
 //!
-//! **A carried light is an ordinary entry in the same light list a placed torch
-//! uses** — there is no second lighting path, which is what gives one bounce,
-//! hard shadows, water response and a lit hand for free. It hangs at
-//! `gi::carried_origin`, a function of POSITION and not facing, so the cell is
-//! provably non-solid and mouse-look cannot move it.
+//! **A carried light is an ordinary entry in the same light list a placed torch uses** — there is
+//! no second lighting path, which is what gives one bounce, hard shadows, water response and a lit
+//! hand for free. It hangs at `gi::carried_origin`, a function of POSITION and not facing, so the
+//! cell is provably non-solid and mouse-look cannot move it.
 //!
-//! Motion is expressed as RE-PLACEMENT — travel `CARRY_INVAL_STEP` and it fires
-//! the same `gi_invalidate` a block edit fires. The trigger is a DISTANCE, never
-//! a cell crossing, which on a boundary would fire every frame for a player
-//! going nowhere. Putting a light OUT re-places it too, or the probes hold its
-//! bounce for seconds after the list has dropped it.
-//!
-//! Fires are banked by [`Carried::commit`] only once the renderer has actually
-//! queued them.
+//! Motion is expressed as RE-PLACEMENT — travel `CARRY_INVAL_STEP` and it fires the same
+//! `gi_invalidate` a block edit fires. The trigger is a DISTANCE, never a cell crossing, which on a
+//! boundary would fire every frame for a player going nowhere. Putting a light OUT re-places it
+//! too, or the probes hold its bounce for seconds after the list has dropped it. Fires are banked
+//! by [`Carried::commit`] only once the renderer has actually queued them.
 
 use super::{held_icon, player_color};
 use digblock_core::BlockType;
@@ -63,12 +59,9 @@ pub(super) const KINDLED_BANK: u16 = 0x4000;
 /// to this.
 pub(super) const KINDLED_MASK: u16 = 0x3FFF;
 
-/// Everything one remote contributes to this frame: the body box, the
-/// item in its hand, and the light that item carries.
-///
-/// ONE site, so the fake remote `DIG_PLAYERBOX` parks exercises exactly
-/// what a real one does — which is the only reason that scene is worth
-/// having.
+/// Everything one remote contributes to this frame: the body box, the item in its hand, and the
+/// light that item carries. ONE site, so the fake remote `DIG_PLAYERBOX` parks exercises exactly
+/// what a real one does — the only reason that scene is worth having.
 pub(super) fn push_remote(
 	bodies: &mut Vec<[f32; 8]>,
 	held_out: &mut Vec<(crate::ui::hud::IconKind, [f32; 8])>,
@@ -115,45 +108,24 @@ pub(super) fn push_remote(
 	carried.push(r.key, pos, block, 0);
 }
 
-/// How near the camera a carried light has to be for its MOTION to be worth
-/// re-placing in the probe field.
-///
-/// The light itself still reaches the list at any range — this is only about the
-/// invalidation sphere, and past this distance the wake it leaves is too dim to
-/// read. `GiDraw::invalidate` drains a fixed few spheres a frame and shares that
-/// budget with world edits, so a crowd of distant carriers must not spend it.
-///
-/// This gate is the ONLY bound applied here, deliberately. Past it the queue's
-/// own policy is already right: bounded, and dropping the OLDEST, because the
-/// newest position is the one whose light is most wrong. A second per-frame cap
-/// would either starve a carrier or hand the probes a position its carrier left
-/// seconds ago.
+/// How near the camera a carried light has to be for its MOTION to be worth re-placing in the
+/// probe field. The light itself still reaches the list at any range — this is only about the
+/// invalidation sphere, whose fixed few-a-frame budget `GiDraw::invalidate` shares with world
+/// edits. This gate is the ONLY bound applied here: past it the queue's own policy already drops
+/// the OLDEST, and a second per-frame cap would starve a carrier or hand the probes a stale spot.
 pub(super) const CARRIED_INVAL_DIST: f32 = 32.0;
 
-/// How far a carried light must travel before its motion is re-placed in the
-/// probe field.
-///
-/// A DISTANCE since the last fire, deliberately **not** a cell crossing. A
-/// crossing test is phase-dependent and pathological: a player resting on a cell
-/// boundary, with the sub-block wobble the tick lerp and the decaying
-/// reconciliation offset both produce, crosses back and forth every frame.
-/// Distance has no such failure mode, is frame-rate independent, needs no
-/// hysteresis, and handles a teleport for free.
-///
-/// One C0 probe spacing, so a probe can never be more than its own cell stale
-/// between fires — pinned by `a_carrier_never_outruns_a_probe_cell`.
+/// How far a carried light must travel before its motion is re-placed in the probe field. A
+/// DISTANCE since the last fire, deliberately **not** a cell crossing: a player resting on a cell
+/// boundary, with the sub-block wobble the tick lerp and the reconciliation offset produce, crosses
+/// back and forth every frame. One C0 probe spacing, so a probe can never be more than its own cell
+/// stale between fires — pinned by `a_carrier_never_outruns_a_probe_cell`.
 pub(super) const CARRY_INVAL_STEP: f32 = 2.0;
 
-/// This frame's carried lights, and the bookkeeping that turns a light
-/// which MOVES into a light that was re-PLACED.
-///
-/// The whole design is in that sentence: a torch in a hand is an
-/// ordinary entry in the ordinary GI light list, and its motion is
-/// expressed through the same hook a block edit uses. Travelling a probe
-/// spacing fires `Renderer::gi_invalidate`, which resets probe ages
-/// around the new position — so the bounce field re-traces at full
-/// weight instead of decaying slowly from a stale value — and caps the
-/// resolve's screen history nearby while it does. Standing still fires
+/// This frame's carried lights, and the bookkeeping that turns a light which MOVES into a light
+/// that was re-PLACED. Travelling a probe spacing fires `Renderer::gi_invalidate`, which resets
+/// probe ages around the new position — so the bounce field re-traces at full weight instead of
+/// decaying from a stale value — and caps the resolve's screen history nearby. Standing still fires
 /// nothing, so a lit room settles as deeply as one lit from the floor.
 #[derive(Default)]
 pub(super) struct Carried {
@@ -179,32 +151,21 @@ impl Carried {
 		self.pending.clear();
 	}
 
-	/// Add one carrier if what they hold emits at all.
-	///
-	/// Derived, never special-cased: any block whose `emits` level is nonzero is
-	/// a light in a hand exactly as it is a light on the ground, and it enters
-	/// the list under the SAME class byte a placed one does — so tint and cast
-	/// level come from one LUT row and a carried torch cannot drift from the
-	/// torch beside it.
-	///
-	/// What it does NOT share is `gi::light_origin`, which is applied CPU-side
-	/// in `GiDraw::upload_chunk` and answers "where inside its cell does this
-	/// shape glow" — a question a carried light has no cell to ask.
-	/// `carried_origin` is the whole answer here. Do not "unify" the two:
-	/// removing the offset in upload_chunk silently undoes R26 and puts every
-	/// placed torch's light back at its cell centre.
+	/// Add one carrier if what they hold emits at all. Derived, never special-cased: any block
+	/// whose `emits` level is nonzero enters the list under the SAME class byte a placed one does,
+	/// so tint and cast level come from one LUT row and a carried torch cannot drift from the torch
+	/// beside it. What it does NOT share is `gi::light_origin`, applied CPU-side in
+	/// `GiDraw::upload_chunk` — do not "unify" the two, or R26 undoes and every torch re-centres.
 	pub(super) fn push(&mut self, key: u16, eye: Vec3, held: Option<BlockType>, mining: u32) {
 		let Some(b) = held.filter(|b| b.props().light > 0) else {
 			return;
 		};
 		let o = digblock_core::gi::carried_origin(eye);
-		// What a carried light does NOT take from the class byte: how
-		// bright it burns and how blue it stays, when the wielder has
-		// earned better. Both ride the entry rather than the LUT, because
-		// the same tool in two hands may cast differently — see
-		// `core::gi::carried_light`, which is where the rule lives. The
-		// level goes out as 0 when it agrees with the row, so an ordinary
-		// carrier packs the word R28 packed.
+		// What a carried light does NOT take from the class byte: how bright it burns and how
+		// blue it stays, when the wielder has earned better. Both ride the entry rather than the
+		// LUT, because the same tool in two hands may cast differently — `core::gi::carried_light`
+		// is where the rule lives. The level goes out as 0 when it agrees with the row, so an
+		// ordinary carrier packs the word R28 packed.
 		let cast = digblock_core::gi::carried_light(b, mining);
 		self.lights.push(crate::gi::Emitter {
 			pos: o.to_array(),
@@ -224,12 +185,10 @@ impl Carried {
 		self.keys.push(key);
 	}
 
-	/// Arcane light with no item behind it — a wisp on a body, or a
-	/// kindled light standing in a cell — at an origin the caller
-	/// chose. Both wear the conjured-light row's class, so the self-light and
-	/// the standing light are one colour; a wisp's level and whitening
-	/// answer to the CASTER's Arcana (`unlock::wisp_light`), the pick's
-	/// carried-light rule, while a kindled light takes the row's own.
+	/// Arcane light with no item behind it — a wisp on a body, or a kindled light standing in a
+	/// cell — at an origin the caller chose. Both wear the conjured-light row's class, so the two
+	/// are one colour; a wisp's level and whitening answer to the CASTER's Arcana
+	/// (`unlock::wisp_light`), the pick's carried-light rule, while a kindled one takes the row's.
 	pub(super) fn push_arcane(&mut self, key: u16, origin: Vec3, level: u8, whitened: bool) {
 		self.lights.push(crate::gi::Emitter {
 			pos: origin.to_array(),
@@ -244,12 +203,10 @@ impl Carried {
 		self.keys.push(key);
 	}
 
-	/// Close the frame: note which carriers have travelled far enough to
-	/// be re-placed, and which have STOPPED being lights.
-	///
-	/// A carrier that is NEW fires immediately — the probes around it
-	/// have never seen this light — which is what makes selecting a torch
-	/// light the room without waiting for a step.
+	/// Close the frame: note which carriers have travelled far enough to be re-placed, and which
+	/// have STOPPED being lights. A carrier that is NEW fires immediately — the probes around it
+	/// have never seen this light — which is what makes selecting a torch light the room without
+	/// waiting for a step.
 	pub(super) fn finish(&mut self, cam: Vec3) {
 		for (i, &key) in self.keys.iter().enumerate() {
 			let p = Vec3::from_array(self.lights[i].pos);
@@ -259,25 +216,19 @@ impl Carried {
 			{
 				continue;
 			}
-			// One sphere, not two. A step is far shorter than the sphere
-			// `invalidate` queues in either cascade, so the space
-			// just vacated is covered many times over; only a jump longer
-			// than the radius would need the departure point, and nothing
-			// in the game moves a player that far without a teleport,
-			// which resets the whole screen history anyway.
+			// One sphere, not two. A step is far shorter than the sphere `invalidate` queues in
+			// either cascade, so the space just vacated is covered many times over; only a jump
+			// longer than the radius would need the departure point, and nothing moves a player
+			// that far without a teleport, which resets the whole screen history anyway.
 			if cam.distance_squared(p) <= CARRIED_INVAL_DIST * CARRIED_INVAL_DIST {
 				self.pending.push((key, p.to_array()));
 			}
 		}
-		// A light going OUT is a lighting change exactly as a light
-		// arriving is, and it is the half that was missing: `flush_lights`
-		// drops the entry from the GPU list the same frame, so the direct
-		// pool dies at once — but the probes keep its bounce and decay it
-		// over seconds, so a room stayed lit by a torch that had been put
-		// away. Digging a PLACED torch has always invalidated, through
-		// `take_gi_edits`, which is precisely the asymmetry a carried
-		// light is not supposed to have. Covers a remote disconnecting
-		// or falling out of the snapshot too.
+		// A light going OUT is a lighting change exactly as a light arriving is, and it is the
+		// half that was missing: `flush_lights` drops the entry from the GPU list the same frame,
+		// so the direct pool dies at once — but the probes keep its bounce and decay it over
+		// seconds. Digging a PLACED torch has always invalidated through `take_gi_edits`, the
+		// asymmetry a carried light must not have. Covers a remote leaving the snapshot too.
 		let keys = &self.keys;
 		let (cam, pending) = (cam, &mut self.pending);
 		self.fired.retain(|&(k, p)| {
@@ -291,17 +242,11 @@ impl Carried {
 		});
 	}
 
-	/// Bank the positions that actually reached the renderer.
-	///
-	/// Separate from `finish` because `pending` is drained inside the
-	/// `renderer.is_some()` arm: banking at queue time meant that a frame
-	/// with no renderer — device loss, or the wait for the GPU at startup
-	/// — recorded a fire that never happened, and the carrier then sat
-	/// stale until it had walked another whole `CARRY_INVAL_STEP`.
-	///
-	/// A departed carrier is not re-banked: its key is gone from `fired`
-	/// and its light no longer exists, so there is nothing left to
-	/// compare a future position against.
+	/// Bank the positions that actually reached the renderer. Separate from `finish` because
+	/// `pending` is drained inside the `renderer.is_some()` arm: banking at queue time meant a
+	/// frame with no renderer — device loss, or the wait for the GPU at startup — recorded a fire
+	/// that never happened, leaving the carrier stale for another whole `CARRY_INVAL_STEP`. A
+	/// departed carrier is not re-banked: its key is gone and there is nothing left to compare.
 	pub(super) fn commit(&mut self) {
 		for &(key, p) in &self.pending {
 			let p = Vec3::from_array(p);
@@ -337,13 +282,10 @@ mod carried_tests {
 		c.push(key, eye, Some(BlockType::Torch), 1);
 	}
 
-	/// Every kindled key is its own carrier: none collides with a body,
-	/// a remote's wisp, or the local specials, whatever the counter
-	/// reads — two carriers on one key would share a fired slot and
-	/// re-place each other forever (the `CARRIER_DEBUG` lesson).
-	///
-	/// The mask's own width is the sweep: past it the counter repeats,
-	/// so `0..=KINDLED_MASK` is every key this bank can ever hand out.
+	/// Every kindled key is its own carrier: none collides with a body, a remote's wisp, or the
+	/// local specials, whatever the counter reads — two carriers on one key would share a fired
+	/// slot and re-place each other forever (the `CARRIER_DEBUG` lesson). The mask's own width is
+	/// the sweep: past it the counter repeats, so `0..=KINDLED_MASK` is every key it can hand out.
 	#[test]
 	fn the_key_banks_never_meet() {
 		let specials = [CARRIER_SELF, CARRIER_WISP, CARRIER_DEBUG];
@@ -359,19 +301,11 @@ mod carried_tests {
 		}
 	}
 
-	/// The other half of "its own carrier", and the half the banks alone
-	/// cannot give: the counter is MASKED, so it wraps, and two lights
-	/// standing on one key share a `fired` slot and re-place each other
-	/// every frame from two different cells.
-	///
-	/// What makes that unreachable is a RELATIONSHIP, not the arithmetic:
-	/// a light stands for `kindle::SECS` and a cast takes a whole channel
-	/// to wind, so a full server can only have so many burning at once,
-	/// and the bank has to be wider than that. Quicken the channel,
-	/// lengthen the span or raise the player cap far enough and this is
-	/// the test that says the bank needs another bit.
-	/// `Engine::kindle_light` is the minter; `every_standing_kindled_light_keys_its_own_carrier`
-	/// drives it.
+	/// The other half of "its own carrier", and the half the banks alone cannot give: the counter
+	/// is MASKED, so it wraps, and two lights on one key share a `fired` slot and re-place each
+	/// other from two different cells. What makes that unreachable is a RELATIONSHIP — a light
+	/// stands for `kindle::SECS` and a cast takes a whole channel to wind — so quicken the channel
+	/// or raise the player cap far enough and `Engine::kindle_light`'s bank needs another bit.
 	#[test]
 	fn the_bank_outlasts_every_light_that_can_burn_at_once() {
 		let quickest =
@@ -419,15 +353,11 @@ mod carried_tests {
 		);
 	}
 
-	/// The whole cost model rests on this: a player standing still with a
-	/// torch is not a moving emitter, so nothing is invalidated and the
-	/// room they are in converges as deeply as one lit from the floor.
-	///
-	/// It is also why the trigger is a DISTANCE and not a cell crossing.
-	/// The second half of this test is the pathology a crossing rule
-	/// has: a carrier wobbling either side of a cell boundary — which is
-	/// what the tick lerp and the decaying reconciliation offset produce
-	/// — would fire on every single frame.
+	/// The whole cost model rests on this: a player standing still with a torch is not a moving
+	/// emitter, so nothing is invalidated and the room they are in converges as deeply as one lit
+	/// from the floor. It is also why the trigger is a DISTANCE and not a cell crossing — the
+	/// second half of this test is the pathology a crossing rule has, a carrier wobbling either
+	/// side of a boundary on the tick lerp and reconciliation offset, firing on every frame.
 	#[test]
 	fn a_still_carrier_is_not_a_moving_emitter() {
 		let eye = Vec3::new(64.0, 70.0, 64.0);
@@ -574,14 +504,11 @@ mod carried_tests {
 		}
 	}
 
-	/// A light going OUT is a lighting change exactly as one arriving is.
-	///
-	/// `flush_lights` drops the entry the same frame, so the direct pool
-	/// dies at once — but the probes hold its bounce and decay it over
-	/// seconds, so without this a room stayed lit by a torch that had
-	/// been put away. Digging a PLACED torch has always invalidated,
-	/// through `take_gi_edits`, and the whole R28 thesis is that a
-	/// carried light is not a second kind of thing.
+	/// A light going OUT is a lighting change exactly as one arriving is. `flush_lights` drops the
+	/// entry the same frame, so the direct pool dies at once — but the probes hold its bounce and
+	/// decay it over seconds, so without this a room stayed lit by a torch that had been put away.
+	/// Digging a PLACED torch has always invalidated through `take_gi_edits`, and the whole R28
+	/// thesis is that a carried light is not a second kind of thing.
 	#[test]
 	fn putting_a_torch_away_invalidates_where_it_was() {
 		let eye = Vec3::new(64.0, 70.0, 64.0);

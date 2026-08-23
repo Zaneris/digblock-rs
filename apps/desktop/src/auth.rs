@@ -27,11 +27,8 @@ const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// A signed-in session, as stored on this machine.
 ///
-/// This is what replaced the old `identity` file, and the differences are
-/// the point. That was the identity: whoever held those 16 bytes WAS the
-/// player, on every server, forever. This is a credential FOR an identity —
-/// it expires, the account screen can revoke it, and it is presented only
-/// to the master. A game server never sees it.
+/// A credential FOR an identity, never the identity itself: it expires, the account screen can
+/// revoke it, and it is presented only to the master. A game server never sees it.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Session {
 	pub account_id: String,
@@ -58,10 +55,8 @@ pub(crate) fn load(path: &Path) -> Option<Session> {
 
 /// Persist owner-readable only.
 ///
-/// The old identity file learned this the hard way (it shipped 0644 for a
-/// while). Same reasoning applies with less at stake: this token can be
-/// revoked and expires, but for as long as it lives it can join servers as
-/// this player, and nothing else on the machine has any business reading it.
+/// For as long as it lives, this token can join servers as this player, and nothing else on the
+/// machine has any business reading it.
 pub(crate) fn store(path: &Path, session: &Session) {
 	let write = || -> std::io::Result<()> {
 		if let Some(dir) = path.parent() {

@@ -44,11 +44,10 @@ pub(crate) fn build(
 	build_inner(device, color_format, desc, true)
 }
 
-/// A pipeline whose creation was watched by error scopes, so a failure
-/// costs the caller's draw instead of the frame: an invalid pipeline
-/// poisons the whole encoder that binds it, and the frame's one `finish`
-/// then drops EVERY pass — a black window (targets.rs). A draw the frame
-/// can live without builds through [`build_guarded`] and binds only what
+/// A pipeline whose creation was watched by error scopes, so a failure costs the caller's draw
+/// instead of the frame: an invalid pipeline poisons the whole encoder that binds it, and the
+/// frame's one `finish` then drops EVERY pass — a black window (targets.rs). A draw the frame can
+/// live without builds through [`build_guarded`] and binds only what
 /// [`GuardedPipeline::pipeline`] hands back.
 pub(crate) struct GuardedPipeline {
 	label: String,
@@ -57,13 +56,10 @@ pub(crate) struct GuardedPipeline {
 }
 
 enum Verdict {
-	// The scope's answer is a promise on WebGPU, so the verdict starts
-	// unresolved and the pipeline is withheld until it lands — at most
-	// the few boot frames the browser takes to answer.
+	// A promise on WebGPU: the pipeline is withheld until the scope's answer lands.
 	Pending(Pending),
 	Valid,
-	// The message is for `build_failed` — the test build is its only
-	// reader; the running engine already logged it at the transition.
+	// The message is for `build_failed`; the engine already logged it at the transition.
 	#[cfg_attr(not(test), expect(dead_code))]
 	Invalid(String),
 }
@@ -114,14 +110,11 @@ fn watched(
 	)
 }
 
-/// The same two scopes, driven through the raw `GPUDevice`. **Nothing
-/// reachable from the browser may call `Device::push_error_scope`**:
-/// wgpu 30 reads a popped scope through a `JsOption`, which counts only
-/// `undefined` as absent, while a CLEAN `popErrorScope` resolves `null`
-/// — which then reaches a converter that panics on anything but a
-/// validation or out-of-memory error. Every pop aborts the module,
-/// error or not, so the guard would crash the page it exists to keep
-/// rendering.
+/// The same two scopes, driven through the raw `GPUDevice`. **Nothing reachable from the browser
+/// may call `Device::push_error_scope`**: wgpu reads a popped scope through a `JsOption`, which
+/// counts only `undefined` as absent, while a CLEAN `popErrorScope` resolves `null` — which then
+/// reaches a converter that panics on anything but a validation or out-of-memory error. Every pop
+/// aborts the module, error or not, so the guard would crash the page it exists to keep rendering.
 #[cfg(target_arch = "wasm32")]
 fn watched(
 	device: &wgpu::Device,

@@ -33,9 +33,7 @@ pub enum Src<'a> {
 	Chunk(&'a ChunkData),
 	/// All air: the sky sentinel, or above the world top.
 	Air,
-	/// Not generated (or below the world bottom): shell cells read as air;
-	/// on a face offset it also suppresses that border's faces (Java null
-	/// neighbor — whichever chunk generates second re-dirties this one).
+	/// Not generated: shell cells read as air, and a face offset also suppresses that border.
 	Missing,
 }
 
@@ -66,16 +64,11 @@ pub struct NodeStamp {
 	/// for the surface nodes. Two players standing in the same cave mesh
 	/// the same chunk differently, which is the feature.
 	pub levels: crate::worldgen::nodes::Levels,
-	/// Which host families this box was found to hold, decided on the
-	/// main thread while the snapshot was being assembled.
-	///
-	/// Carried rather than re-derived because the answer is already in
-	/// hand: `Pipeline::node_stamp` has to walk the ids to know whether a
-	/// stamp is worth making at all, so asking again in the worker is a
-	/// second full scan of the same array for a question already
-	/// answered. It is also the ONLY gate that prunes anything — the
-	/// reveal levels cannot, now that the first surface node reveals at
-	/// the level everyone starts at.
+	/// Which host families this box was found to hold, decided on the main thread while the
+	/// snapshot was assembled. Carried rather than re-derived because `Pipeline::node_stamp`
+	/// already walked the ids to know whether a stamp was worth making, so asking again in the
+	/// worker is a second full scan for an answered question. It is also the ONLY gate that prunes
+	/// anything — the reveal levels cannot, since the first surface node reveals at level one.
 	pub hosts: NodeHosts,
 	/// Padded indices of cells this world has ever written, SORTED — the
 	/// anti-dupe's edit gate. Almost always empty, and bounded by the
@@ -199,17 +192,11 @@ impl MeshInput {
 		self.blocks[pidx(x, y, z)]
 	}
 
-	/// The node reveal (SKILLS-DESIGN §5.3, generalized): rewrite
-	/// qualifying pristine HOST cells to their node's BLOCK ID, before
-	/// anything looks at this array — deposits in Stone, heartwood in
-	/// trunk Wood, springstone in bed Sand.
-	///
-	/// Stamping ids rather than texture layers is the whole trick. The
-	/// design doc proposed teaching the mesher about ore and swapping the
-	/// layer it picks; instead the mesher, the texture path, the emissive
-	/// bit, `block_tint` and shaped culling all simply see a real node
-	/// block and need no change whatsoever. The reveal costs a few
-	/// function calls in the worker and nothing anywhere else.
+	/// The node reveal (SKILLS-DESIGN §5.3, generalized): rewrite qualifying pristine HOST cells
+	/// to their node's BLOCK ID, before anything looks at this array — deposits in Stone,
+	/// heartwood in trunk Wood, springstone in bed Sand. Stamping ids rather than texture layers
+	/// is the whole trick: the mesher, the texture path, the emissive bit, `block_tint` and shaped
+	/// culling all simply see a real node block and need no change whatsoever.
 	pub fn apply_nodes(&mut self) {
 		use crate::worldgen::{nodes, ore};
 		let Some(stamp) = self.nodes.take() else {
@@ -220,33 +207,25 @@ impl MeshInput {
 		let stone = BlockType::Stone as u16;
 		let inside = |v: i32, base: i32| (v - base).clamp(0, span);
 		let idx = |x: i32, y: i32, z: i32| ((y * PADDED as i32 + z) * PADDED as i32 + x) as usize;
-		// ONE reveal predicate, shared with the dig path — see
-		// `nodes::reveal_met`, which is the authority precisely so a
-		// second spelling here cannot answer differently about a block in
-		// neither table. Pass two below reverts a claim on this answer,
-		// and a claim left standing that the dig path calls plain stone is
-		// the worst outcome this whole system has.
+		// ONE reveal predicate, shared with the dig path: `nodes::reveal_met` is the authority
+		// precisely so a second spelling here cannot answer differently about a block in neither
+		// table. Pass two below reverts a claim on this answer, and a claim left standing that
+		// the dig path calls plain stone is the worst outcome this whole system has.
 		let hidden = |b: BlockType| !nodes::reveal_met(b, stamp.levels);
-		// ---- the deposit stream (Stone hosts: the ore tiers + leystone).
-		//
-		// Runs deposit-major, not cell-major: a chunk sits under a few
-		// dozen deposits and holds thousands of padded cells, so walking
-		// the blobs is orders of magnitude less work than asking every
-		// cell. The lowest reveal across the whole TIERS table still
-		// early-outs the walk for a player who has reached none of them on
-		// either axis; the surface tier's own reveal is low enough that
-		// this is mostly the fresh-account case.
+		// ---- the deposit stream (Stone hosts: the ore tiers + leystone). Runs deposit-major,
+		// not cell-major: a chunk sits under a few dozen deposits and holds thousands of padded
+		// cells, so walking the blobs is far less work than asking every cell. The lowest reveal
+		// across the whole TIERS table still early-outs the walk for a player who has reached
+		// none of them on either axis, which is mostly the fresh-account case.
 		let any_deposit_visible = stamp.levels.mining >= ore::lowest_reveal()
 			|| stamp.levels.alchemy >= ore::lowest_alchemy_reveal();
 		if stamp.hosts.deposits && any_deposit_visible && oy <= ore::MAX_DEPOSIT_Y + ore::MAX_RADIUS
 		{
-			// Pass one: every deposit CLAIMS its cells, revealed or not, in
-			// the same grid order `ore::ore_at` walks — so the first deposit
-			// to reach a shared cell wins on both sides. A claim that turns
-			// out to be invisible is undone below; skipping unrevealed
-			// deposits here would let a later one stamp a cell the dig path
-			// says belongs to the first, and a node you can see and cannot
-			// extract is the worst outcome this whole system has.
+			// Pass one: every deposit CLAIMS its cells, revealed or not, in the same grid order
+			// `ore::ore_at` walks — so the first deposit to reach a shared cell wins on both
+			// sides. A claim that turns out invisible is undone below; skipping unrevealed
+			// deposits here would let a later one stamp a cell the dig path says belongs to the
+			// first, and a node you can see and cannot extract is the worst outcome here.
 			let mut claimed: Vec<u16> = Vec::new();
 			for d in ore::deposits_near((ox, oy, oz), (ox + span, oy + span, oz + span), stamp.seed)
 			{
@@ -309,20 +288,11 @@ impl MeshInput {
 				}
 			}
 		}
-		// ---- springstone (Sand hosts). Column-major, exactly like the
-		// heartwood pass above it: a bed is a property of the COLUMN, so one
-		// `springstone_bed` answers for the whole of it and the only question
-		// left is whether the y it names is in this box. Cell-major asked the
-		// same (x, z)-keyed question once per SAND CELL.
-		//
-		// It must NOT pre-filter on the cell above being water, cheap as that
-		// is: that reads the SNAPSHOT where `nodes::revealed` reads worldgen,
-		// so a client's own predicted bucket scoop over a bed made the spring
-		// vanish from the picture while the dig path still called it a draw. A
-		// guard the dig path does not share cannot be a guard. The rate hash
-		// inside `springstone_bed` runs before its own field evaluations and
-		// prunes nearly everything, which is what makes asking the real
-		// question affordable here.
+		// ---- springstone (Sand hosts). Column-major, like the heartwood pass above it: a bed
+		// is a property of the COLUMN, so one `springstone_bed` answers for the whole of it and
+		// only the y is left to check. It must NOT pre-filter on the cell above being water,
+		// cheap as that is: that reads the SNAPSHOT where `nodes::revealed` reads worldgen, so a
+		// predicted bucket scoop hid the spring while the dig path still called it a draw.
 		let sand = BlockType::Sand as u16;
 		if stamp.hosts.springs && !hidden(BlockType::Springstone) {
 			for z in 0..=span {
@@ -354,15 +324,11 @@ impl MeshInput {
 pub struct MeshData {
 	/// Packed two-word vertices (see `pack`), 4 per face (TL,TR,BL,BR).
 	pub solid: Vec<u32>,
-	/// Same two-word format; word 1 additionally carries the water payload
-	/// packed above the layer field, in order: the surface drop code (the
-	/// shader lowers the vertex by that fraction of a block — zero is full
-	/// height), the falling flag, the flow direction, the splash code (top
-	/// code at a fall's impact cell, one lower per ring of Chebyshev
-	/// distance out — expanding foam rings), and the vertex fall distance
-	/// (blocks of falling water above; bottom-plane verts one more so the
-	/// interpolated "blocks fallen" is continuous down a column, and it
-	/// saturates rather than wrapping its field).
+	/// Same two-word format; word 1 additionally carries the water payload packed above the layer
+	/// field, in order: the surface drop code, the falling flag, the flow direction, the splash
+	/// code (one lower per ring of Chebyshev distance out — expanding foam rings), and the vertex
+	/// fall distance. Bottom-plane verts take one more block of fall so the interpolated "blocks
+	/// fallen" is continuous down a column, and the field saturates rather than wrapping.
 	pub water: Vec<u32>,
 	/// Water-fall impact cells (the fall-impact predicate), packed
 	/// chunk-local as x, then y, then z — spray-emitter metadata. Rides the
@@ -375,17 +341,11 @@ pub struct MeshData {
 	/// Faces land here by BUCKET, so a shaped translucent (a crystal slab,
 	/// a pane) rides along with the glass cubes.
 	pub translucent: Vec<u32>,
-	/// Exposed faces of SURFACE emitters, greedy-merged into rectangles
-	/// ([`lights::pack`]) — the GI's area lights for revealed veins.
-	///
-	/// Rides the mesh for exactly the reason `impacts` does, and for two
-	/// more that only apply here: the ore reveal has already run over this
-	/// chunk's padded array (so the list holds only tiers this player can
-	/// SEE), and face exposure is the question the mesher was already
-	/// answering (so it holds only faces this player can see AT). Every
-	/// path that changes either — streaming, a dig, a place, levelling into
-	/// a new tier — re-meshes, and the lights follow with no extra scans
-	/// and nothing to keep in step.
+	/// Exposed faces of SURFACE emitters, greedy-merged into rectangles ([`lights::pack`]) — the
+	/// GI's area lights for revealed veins. Rides the mesh because the reveal has already run over
+	/// this padded array (so the list holds only tiers this player can SEE) and face exposure is
+	/// the question the mesher was already answering. Every path that changes either — streaming,
+	/// a dig, a place, levelling into a new tier — re-meshes, so nothing has to be kept in step.
 	pub lights: Vec<u32>,
 }
 
@@ -415,12 +375,10 @@ fn neighbor_cover(cell: u16, dir: Dir) -> Cover {
 	geometric_cover(cell, dir)
 }
 
-/// [`neighbor_cover`] without the see-through bypass: the coverage this
-/// cell presents as GEOMETRY, ignoring whether you can see through it.
-/// Only same-type translucent neighbours ask for this — it is what gives
-/// a shaped pane the interior-face rule `RenderClass::Glass` gives a
-/// full cube, and asking it of a DIFFERENT translucent type would cull
-/// the face you see through.
+/// [`neighbor_cover`] without the see-through bypass: the coverage this cell presents as GEOMETRY,
+/// ignoring whether you can see through it. Only same-type translucent neighbours ask for this — it
+/// gives a shaped pane the interior-face rule `RenderClass::Glass` gives a full cube, and asking it
+/// of a DIFFERENT translucent type would cull the face you see through.
 fn geometric_cover(cell: u16, dir: Dir) -> Cover {
 	let b = BlockType::from_id(crate::chunk::cell_id(cell));
 	match b.props().class {
@@ -471,19 +429,11 @@ fn face_visible(me: BlockType, neighbor: Option<u16>, dir: Dir) -> bool {
 	}
 }
 
-/// Pack a vertex's GEOMETRY word (word 0 — solid and water share it), in order:
-/// x, y and z in TWELFTH-block units (the sub-block shape grid; full-block
-/// geometry lands on its whole-block lattice points), then the normal, then the
-/// corner code (TL, TR, BL, BR), with the top of the word free.
-///
-/// Word 1 is per-stream material, assembled by the caller. Solid
-/// ([`solid_word1`]): texture layer (capped at `MAX_TEX_LAYERS`), uv u and v in
-/// twelfths, the emissive flag (chunk.wgsl skips the lighting terms) and
-/// tint-from-below (chunk.wgsl hashes the cell one down). Water: texture layer
-/// then the payload (see `MeshData::water`), reading uv from the corner code.
-///
-/// Every consumer moves with this layout — chunk.wgsl's `vs` and `vs_depth`,
-/// water.wgsl, and the renderer's vertex attributes.
+/// Pack a vertex's GEOMETRY word (word 0 — solid and water share it), in order: x, y and z in
+/// TWELFTH-block units (the sub-block shape grid), then the normal, then the corner code. Word 1 is
+/// per-stream material, assembled by the caller: [`solid_word1`] carries texture layer, uv in
+/// twelfths, the emissive flag and tint-from-below; water carries the layer then the payload. Every
+/// consumer moves with this layout — chunk.wgsl's `vs` and `vs_depth`, water.wgsl, the attributes.
 #[inline]
 fn pack(pos: (u32, u32, u32), normal: Dir, corner: u32) -> u32 {
 	let (x, y, z) = pos;
@@ -499,16 +449,10 @@ fn solid_word1(tex: u32, uv_u: u32, uv_v: u32, emissive: bool, tint_below: bool)
 	tex | (uv_u << 10) | (uv_v << 14) | ((emissive as u32) << 18) | ((tint_below as u32) << 19)
 }
 
-/// One vertex's geometry attributes on their way into `pack`. Positions
-/// are in twelfths of a block.
-/// Corner lattice positions [TL, TR, BL, BR] of the face of block
-/// (x, y, z) toward `dir` — the Java addFaces geometry (per-face origin
-/// offset + diagonal vector).
-///
-/// Public because this order and [`quad_indices`] are one contract: any
-/// quad drawn through that index buffer must come out of this table, or
-/// it winds inward and `cull: Back` deletes it. The render crate's item
-/// geometry builds its boxes against this.
+/// Corner lattice positions [TL, TR, BL, BR] of the face of block (x, y, z) toward `dir`, as a
+/// per-face origin offset plus a diagonal vector. Public because this order and [`quad_indices`]
+/// are one contract: any quad drawn through that index buffer must come out of this table, or it
+/// winds inward and `cull: Back` deletes it. The render crate's item geometry builds on it.
 pub fn face_corners(x: i32, y: i32, z: i32, dir: Dir) -> [(i32, i32, i32); 4] {
 	let ((ox, oy, oz), (dx, dy, dz)) = match dir {
 		Dir::South => ((0, 0, 0), (1, 1, 0)),
@@ -536,16 +480,10 @@ fn occludes(id: u16) -> bool {
 	BlockType::from_id(id).props().class == RenderClass::Opaque
 }
 
-/// Emit one face quad in `face_corners` order (TL TR BL BR), which
-/// [`quad_indices`] triangulates as the diagonal between the first and
-/// last emit slots.
-///
-/// The order used to FLIP to the other diagonal so that it crossed the
-/// lower-AO-sum corner pair, turning a single dark corner into a radial
-/// gradient instead of a hard crease. With baked AO gone there is no
-/// per-corner signal left to steer it, so the winding is simply fixed —
-/// pinned by `every_quad_winds_in_face_corner_order`, because a quad
-/// wound the other way is deleted by `cull: Back`.
+/// Emit one face quad in `face_corners` order (TL TR BL BR), which [`quad_indices`] triangulates as
+/// the diagonal between the first and last emit slots. With baked AO gone there is no per-corner
+/// signal left to steer the diagonal, so the winding is simply fixed — pinned by
+/// `every_quad_winds_in_face_corner_order`, since a quad wound the other way `cull: Back` deletes.
 fn emit_face(out: &mut Vec<u32>, b: (usize, usize, usize), dir: Dir, tex: u32, emissive: bool) {
 	let corners = face_corners(b.0 as i32, b.1 as i32, b.2 as i32, dir);
 	for (ci, &(cx, cy, cz)) in corners.iter().enumerate() {
@@ -569,12 +507,10 @@ fn emit_face(out: &mut Vec<u32>, b: (usize, usize, usize), dir: Dir, tex: u32, e
 	}
 }
 
-/// Stamp a shaped block's baked quad template. Outlined like the water
-/// path — shaped cells are rare and the solid loop is hot. Interior quads
-/// always emit; boundary quads cull against the neighbor's coverage of
-/// the shared plane (mask-driven, so stacked mirrored stairs and
-/// stair-against-wall cull correctly, cross-chunk included — the padded
-/// shell carries state).
+/// Stamp a shaped block's baked quad template. Outlined like the water path — shaped cells are rare
+/// and the solid loop is hot. Interior quads always emit; boundary quads cull against the
+/// neighbor's coverage of the shared plane, mask-driven so stacked mirrored stairs and
+/// stair-against-wall cull correctly, cross-chunk included since the padded shell carries state.
 #[inline(never)]
 fn emit_shaped(
 	out: &mut Vec<u32>,
@@ -606,14 +542,11 @@ fn emit_shaped(
 			}
 			let (ox, oy, oz) = dir.offset();
 			let ncell = input.get_cell(bx + ox, by + oy, bz + oz);
-			// Same-type culling, shaped edition. `neighbor_cover` answers
-			// `None` for any translucent neighbour so a pane cannot cull
-			// the face you see through it — but between two cells of the
-			// SAME type there is nothing to see, and emitting both leaves
-			// coincident quads the no-depth-write glass pass tints twice.
-			// Full cubes get this from `face_visible`'s `Glass` arm; the
-			// state rides along, so a top slab beside a bottom slab still
-			// draws (their shapes do not meet).
+			// Same-type culling, shaped edition. `neighbor_cover` answers `None` for any
+			// translucent neighbour so a pane cannot cull the face you see through it — but
+			// between two cells of the SAME type there is nothing to see, and emitting both
+			// leaves coincident quads the no-depth-write glass pass tints twice. The state rides
+			// along, so a top slab beside a bottom slab still draws: their shapes do not meet.
 			let same_type = crate::chunk::cell_id(ncell) == me as u16;
 			let cover = if same_type && me.props().bucket == crate::block::MeshBucket::Translucent {
 				geometric_cover(ncell, dir)

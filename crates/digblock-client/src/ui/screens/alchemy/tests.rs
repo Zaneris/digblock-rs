@@ -177,13 +177,10 @@ fn family(r: &Rig, name: &str) -> InvId {
 	)
 }
 
-/// A batch DRIPS: one paced `Craft { count: 1 }` per interval, with a
-/// progress line under the button counting what is left, until the
-/// queue empties or the price does.
-///
-/// This is the whole point of pacing a craft. The CTRL multiplier used
-/// to pay a hundred crafts' XP in one frame, which made the bench's
-/// one instant action also its fastest XP.
+/// A batch DRIPS: one paced `Craft { count: 1 }` per interval, with a progress line under the
+/// button counting what is left, until the queue empties or the price does. This is the whole point
+/// of pacing a craft: the CTRL multiplier once paid a hundred crafts' XP in one frame, which made
+/// the bench's one instant action also its fastest XP.
 #[test]
 fn a_transmute_batch_drips_instead_of_paying_at_once() {
 	let mut r = rig_at(20, |inv| {
@@ -327,12 +324,10 @@ fn family_selection_and_the_single_transmute_button() {
 		},
 	);
 
-	// BLOCKS: switching family lands on the first unlocked member —
-	// Lumber, since the grid puts a material's whole learned set at
-	// the material's own level and planed timber is the first
-	// substance the bench makes in cube form. (The felled log is not
-	// here: the world hands you that one, so it has no recipe.) The
-	// one button queues THAT.
+	// BLOCKS: switching family lands on the first unlocked member — Lumber, since the grid puts a
+	// material's whole learned set at the material's own level and planed timber is the first
+	// substance the bench makes in cube form. The felled log is not here: the world hands you that
+	// one, so it has no recipe. The one button queues THAT.
 	let blocks = center(r.hits.rect_of(family(&r, "Blocks")).unwrap());
 	press(&mut r, blocks);
 	rebuild(&mut r);
@@ -460,18 +455,11 @@ fn the_vessels_craft_from_timber_alone() {
 	);
 }
 
-/// The bug this page's chips exist to fix: with a name and a price
-/// sharing one line, the price was dropped whenever the line did not
-/// fit, and half the catalog's did not. Now every visible member shows
-/// every line of its price, at every rung the fit ladder reaches — and
-/// it shows it BESIDE the button rather than under it.
-///
-/// Swept at the phone windows `the_essence_readout_never_spills_out_of_its_panel`
-/// uses, which is the regime the desktop window never reaches: the panel
-/// is clamped to the window there, so the price has to be bounded by the
-/// space before the button and the strip has to reserve the rows a
-/// bounded run wraps onto. Drawn to infinity, the widest price put two
-/// chip icons and their digits inside the button.
+/// Every visible member shows every line of its price, at every rung the fit ladder reaches, and
+/// shows it BESIDE the button rather than under it — with a name and a price sharing one line the
+/// price was dropped whenever the line did not fit. Swept at the phone windows the readout test
+/// uses, the regime the desktop window never reaches: the panel is clamped to the window there, so
+/// a price must be bounded by the space before the button and the strip reserve the rows it wraps.
 #[test]
 fn the_strip_never_drops_a_price() {
 	// Two purses, because the tail is a different line in each: rich and
@@ -577,11 +565,9 @@ fn the_strip_never_drops_a_price() {
 					let row_w = panel_of(&dl).w - 2.0 * theme::PAD * fitted.scale;
 					// …and every price line fits BESIDE the button. Nothing
 					// but the button's own label may be inside it: an icon
-					// there is a chip drawn over the control, and a second
-					// text there is a price digit under the word TRANSMUTE.
-					// Found by its backdrop rather than its hit rect, because
-					// a closed offer registers no hit and is exactly the state
-					// whose tail is longest.
+					// there is a chip over the control, a second text a price
+					// digit under TRANSMUTE. Found by its backdrop, since a
+					// closed offer has no hit rect and the longest tail.
 					let btn = dl
 						.cmds(Layer::Backdrop)
 						.0
@@ -727,18 +713,11 @@ fn panel_sits_above_the_hotbar_and_fits_short_windows() {
 	}
 }
 
-/// The essence readout stays INSIDE the panel, at every rung of the fit
-/// ladder and with the holdings at their widest.
-///
-/// It is the one row on the page whose width is DATA, and it does not
-/// shrink with the panel: `glyph_px` floors at a whole pixel, so the
-/// ladder's bottom rungs take a quarter off every box while the text stays
-/// where it is. Sizing the page on the inventory grid's extent alone spilled
-/// this row past the panel edge onto the dimmed world, unclipped and growing
-/// with the digits.
-///
-/// Swept at the scales the fit ladder actually reaches, with a full stack of
-/// every essence so the string is as long as the game can make it.
+/// The essence readout stays INSIDE the panel, at every rung of the fit ladder and with the
+/// holdings at their widest. It is the one row on the page whose width is DATA and it does not
+/// shrink with the panel: `glyph_px` floors at a whole pixel, so the ladder's bottom rungs take a
+/// quarter off every box while the text stays where it is. Sizing the page on the inventory grid's
+/// extent alone spilled this row past the panel edge onto the dimmed world, unclipped.
 #[test]
 fn the_essence_readout_never_spills_out_of_its_panel() {
 	let mut inv = Inventory::default();
@@ -958,12 +937,10 @@ fn the_page_hides_everything_past_the_next_unlock() {
 	}
 }
 
-/// Owning a tool is a yes/no (§7.3), so the bench sells exactly one
-/// and then stops offering it. `apply_alchemy` refuses a craft that
-/// would vanish into the cap — an offer the rule refuses is one the
-/// player pays a tool's whole price for and gets nothing back — and
-/// the strip says WHY: a cap is not a shortfall, and naming a cost
-/// here would send them off to gather something that cannot help.
+/// Owning a tool is a yes/no (§7.3), so the bench sells exactly one and then stops offering it.
+/// `apply_alchemy` refuses a craft that would vanish into the cap — an offer the rule refuses is
+/// one the player pays a tool's whole price for and gets nothing back — and the strip says WHY: a
+/// cap is not a shortfall, and naming a cost here would send them gathering what cannot help.
 #[test]
 fn an_owned_tool_is_no_longer_on_offer() {
 	let mut r = rig_at(99, |inv| {

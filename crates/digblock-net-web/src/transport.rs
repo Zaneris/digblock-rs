@@ -31,25 +31,19 @@ extern "C" {
 	fn create_bidirectional_stream(this: &WebTransport) -> Result<js_sys::Promise, JsValue>;
 	#[wasm_bindgen(method, catch)]
 	fn close(this: &WebTransport) -> Result<(), JsValue>;
-	/// `catch`, because `getStats` is not merely allowed to fail — it is
-	/// allowed not to EXIST. It is in the spec but unimplemented in Chrome,
-	/// which is the only browser this client runs on, so calling it throws
-	/// `TypeError: getStats is not a function` rather than returning a
-	/// promise that rejects. Without the catch that throw unwinds out of
-	/// `poll`, out of `Engine::update`, and out of the rAF handler, which is
-	/// never re-armed: the whole game freezes on a black screen a few frames
-	/// after the join that started polling. A diagnostic the overlay renders
-	/// as dashes when absent must not be able to end the session.
+	/// `catch`, because `getStats` is not merely allowed to fail — it is allowed not to EXIST. It
+	/// is in the spec but unimplemented in Chrome, the only browser this client runs on, so calling
+	/// it throws rather than returning a rejecting promise. Without the catch that throw unwinds
+	/// out of `poll` and out of the rAF handler, which is never re-armed and the game freezes. A
+	/// diagnostic the overlay renders as dashes when absent must not be able to end the session.
 	#[wasm_bindgen(method, js_name = getStats, catch)]
 	fn get_stats(this: &WebTransport) -> Result<js_sys::Promise, JsValue>;
 
-	/// `WebTransportStats`. Only `smoothedRtt` is bound — the browser's own
-	/// QUIC round-trip estimate, in milliseconds. Declared here rather than
-	/// taken from web-sys because this crate binds the whole WebTransport
-	/// surface itself, and mixing the two would mean two `WebTransport`
-	/// types. The getter returns `JsValue`, not `f64`: the field is
-	/// optional in the spec, so an implementation that omits it must read
-	/// as absent rather than as zero.
+	/// `WebTransportStats`. Only `smoothedRtt` is bound — the browser's own QUIC round-trip
+	/// estimate, in milliseconds. Declared here rather than taken from web-sys because this crate
+	/// binds the whole WebTransport surface itself, and mixing the two would mean two
+	/// `WebTransport` types. The getter returns `JsValue`, not `f64`: the field is optional in the
+	/// spec, so an implementation that omits it must read as absent rather than as zero.
 	type WebTransportStats;
 	#[wasm_bindgen(method, getter = smoothedRtt)]
 	fn smoothed_rtt(this: &WebTransportStats) -> JsValue;
@@ -158,17 +152,11 @@ pub struct WebTransportClient {
 const RTT_SAMPLE_FRAMES: u32 = 30;
 
 thread_local! {
-	/// Swallows write-promise rejections (lossy by contract; without a
-	/// catch every dropped datagram logs an unhandled-rejection warning).
-	///
-	/// Module-lifetime, deliberately NOT owned by the client. `close()`
-	/// rejects every in-flight write, and those rejections are microtasks
-	/// that fire AFTER the wasm call returns — by which point a
-	/// client-owned closure has already been dropped along with the
-	/// struct. wasm-bindgen's shim then throws "closure invoked
-	/// recursively or after being dropped" from inside a catch handler,
-	/// i.e. as an unhandled rejection, on every single disconnect. Exactly
-	/// the noise that makes a real disconnect bug unreadable.
+	/// Swallows write-promise rejections (lossy by contract; without a catch every dropped datagram
+	/// logs an unhandled-rejection warning). Module-lifetime, deliberately NOT owned by the client:
+	/// `close()` rejects every in-flight write, and those rejections are microtasks that fire AFTER
+	/// the wasm call returns, by which point a client-owned closure has been dropped along with the
+	/// struct — wasm-bindgen's shim then throws from inside a catch handler on every disconnect.
 	static NOOP_CATCH: Closure<dyn FnMut(JsValue)> = Closure::new(|_: JsValue| {});
 }
 
@@ -179,12 +167,10 @@ fn js_reason(v: &JsValue) -> String {
 	let text = js_sys::Object::try_from(v)
 		.map(|o| String::from(o.to_string()))
 		.unwrap_or_else(|| format!("{v:?}"));
-	// A `WebTransportError` carries the two things its message does not,
-	// and its message is routinely empty: WHERE it came from — the session
-	// or one stream — and, for a stream the peer reset, the code it was
-	// reset with. `Error.toString()` on an empty message is just the type
-	// name, so without this every failure on this transport reads as the
-	// same three words, which on a phone is the whole of the evidence.
+	// A `WebTransportError` carries the two things its message does not, and its message is
+	// routinely empty: WHERE it came from — the session or one stream — and, for a stream the peer
+	// reset, the code it was reset with. `Error.toString()` on an empty message is just the type
+	// name, so without this every failure on this transport reads as the same three words.
 	let Some(source) = prop(v, "source").and_then(|s| s.as_string()) else {
 		return text;
 	};
@@ -217,17 +203,11 @@ fn set_timeout(ms: i32, f: impl FnOnce() + 'static) {
 	}
 }
 
-/// A property that is present and not nullish, or `None`.
-///
-/// Every hop through the WebTransport object graph goes through this
-/// rather than a typed getter, because a browser can implement the API in
-/// PARTS: the constructor and the session can be there while `datagrams`
-/// is `undefined`, and reading `.writable` off `undefined` throws. A throw
-/// inside the driver task lands in no `Result` at all — it unwinds out of
-/// the task and out of wasm, and surfaces as an unhandled rejection nobody
-/// is reading, so the connection simply expires at the client's connect
-/// timeout with "connect timeout" as the only evidence anything happened.
-/// That is not a diagnosis on a phone. Every step names itself instead.
+/// A property that is present and not nullish, or `None`. Every hop through the WebTransport
+/// object graph goes through this rather than a typed getter, because a browser can implement the
+/// API in PARTS: the session can be there while `datagrams` is `undefined`, and reading `.writable`
+/// off `undefined` throws. A throw inside the driver task lands in no `Result` — it unwinds out of
+/// wasm as an unhandled rejection, and the connection just expires at the client's connect timeout.
 fn prop(target: &JsValue, name: &str) -> Option<JsValue> {
 	js_sys::Reflect::get(target, &JsValue::from_str(name))
 		.ok()
@@ -262,24 +242,16 @@ fn fail(shared: &SharedRef, reason: String) {
 	shared.borrow_mut().push_disconnected(reason);
 }
 
-/// How long a stream's account of the end waits for the session's.
-///
-/// A connection going down settles both at once, and the read is already
-/// in flight, so it wins every time. This is only long enough for the
-/// `closed` promise to land in a later microtask; against a disconnect it
-/// is not a delay anyone can perceive.
+/// How long a stream's account of the end waits for the session's. A connection going down settles
+/// both at once, and the read is already in flight, so it wins every time. This is only long
+/// enough for the `closed` promise to land in a later microtask, and is imperceptible.
 const SESSION_GRACE_MS: i32 = 250;
 
-/// One reader loop ending — reported only if the SESSION does not account
-/// for itself first.
-///
-/// When a QUIC connection goes away BOTH things happen: the pending read
-/// rejects and `closed` settles. The read always gets there first, so what
-/// the player was shown is `stream read: WebTransportError` — a type name
-/// with an empty message — in place of the session's own story, which is
-/// the one that says whether the server dropped us and with what code. A
-/// stream ending is the right answer only when the session outlives it,
-/// and waiting a beat is exactly what tells the two apart.
+/// One reader loop ending — reported only if the SESSION does not account for itself first. When a
+/// QUIC connection goes away BOTH things happen: the pending read rejects and `closed` settles.
+/// The read always gets there first, so the player is shown a type name with an empty message in
+/// place of the session's own story, the one that says whether the server dropped us and with what
+/// code. A stream ending is right only when the session outlives it; a beat tells the two apart.
 fn stream_failed(shared: &SharedRef, reason: String) {
 	{
 		let mut s = shared.borrow_mut();
@@ -302,14 +274,11 @@ fn stream_failed(shared: &SharedRef, reason: String) {
 /// watchdog is its only reader.
 type Stage = Rc<Cell<&'static str>>;
 
-/// Report a step that never finished, before the client's own connect
-/// deadline expires and reports nothing in particular.
-///
-/// A rejection names itself; a promise that simply never settles does
-/// not, and the two are indistinguishable from above — both end as
-/// `CONNECT_TIMEOUT_SECS` of silence. This fires at a fraction of that
-/// deadline so the stage that was pending is what the player sees, which
-/// on a phone is the only diagnosis available at all.
+/// Report a step that never finished, before the client's own connect deadline expires and reports
+/// nothing in particular. A rejection names itself; a promise that simply never settles does not,
+/// and the two are indistinguishable from above — both end as `CONNECT_TIMEOUT_SECS` of silence.
+/// This fires at a fraction of that deadline so the stage that was pending is what the player
+/// sees, which on a phone is the only diagnosis available at all.
 fn watch_for_stall(shared: &SharedRef, stage: &Stage) {
 	/// Of the client's connect deadline. Well short of it, so the two
 	/// cannot race for which message a player gets.
@@ -375,16 +344,11 @@ async fn read_loop(reader: ReadableStreamDefaultReader, shared: SharedRef, datag
 	}
 }
 
-/// Connect with the server's pinned certificate hash (the only trust
-/// mode a browser can express for self-signed servers). Returns
-/// immediately with `Connecting`; `url` is a WebTransport URL, e.g.
-/// `https://127.0.0.1:4433`.
-///
-/// `force_no_datagrams` pretends this browser has no datagram channel
-/// (`?nodatagrams`). Otherwise the reliable-stream fallback could only be
-/// exercised on the one browser that needs it, which is also the one
-/// hardest to attach a console to — a path with no way to run it on a dev
-/// machine is a path that rots.
+/// Connect with the server's pinned certificate hash, the only trust mode a browser can express
+/// for self-signed servers. Returns immediately with `Connecting`; `url` is a WebTransport URL.
+/// `force_no_datagrams` pretends this browser has no datagram channel (`?nodatagrams`), because
+/// otherwise the reliable-stream fallback could only be exercised on the one browser that needs it
+/// and is hardest to attach a console to — a path with no way to run on a dev machine rots.
 pub fn connect(url: &str, cert_hash: [u8; 32], force_no_datagrams: bool) -> WebTransportClient {
 	let shared: SharedRef = Rc::new(RefCell::new(Shared {
 		events: VecDeque::new(),
@@ -419,14 +383,11 @@ pub fn connect(url: &str, cert_hash: [u8; 32], force_no_datagrams: bool) -> WebT
 
 	let transport_handle: JsValue = AsRef::<JsValue>::as_ref(&transport).clone();
 
-	// Driver: ready → control stream → the single Connected → datagrams,
-	// then park on `closed` while the two read loops run.
-	//
-	// Every step is fallible and says which one it was. A browser with
-	// PARTIAL WebTransport support gives out somewhere in here, and until
-	// it reports itself the only symptom is the client's connect timeout
-	// ten seconds later, with a server log showing a session that opened
-	// and never spoke.
+	// Driver: ready → control stream → the single Connected → datagrams, then park on `closed`
+	// while the two read loops run. Every step is fallible and says which one it was: a browser
+	// with PARTIAL WebTransport support gives out somewhere in here, and until it reports itself
+	// the only symptom is the client's connect timeout, with a server log showing a session that
+	// opened and never spoke.
 	let stage: Stage = Rc::new(Cell::new("opening the session"));
 	watch_for_stall(&shared, &stage);
 	{
@@ -455,15 +416,11 @@ pub fn connect(url: &str, cert_hash: [u8; 32], force_no_datagrams: bool) -> WebT
 				Ok(r) => r,
 				Err(e) => return fail(&shared, e),
 			};
-			// Datagrams BEFORE Connected, because the answer rides the
-			// Hello that Connected triggers: a client with no datagram
-			// channel has to announce it on the first frame it sends, and
-			// a probe that lands a tick later would be a tick too late.
-			//
-			// Absence is a fact about this browser, not a failure — iOS
-			// Safari ships `WebTransport.datagrams` with no writable side
-			// — so it is recorded rather than reported, and the netcode
-			// carries the traffic on the reliable stream instead.
+			// Datagrams BEFORE Connected, because the answer rides the Hello that Connected
+			// triggers: a client with no datagram channel must announce it on the first frame
+			// it sends, and a probe landing a tick later is a tick too late. Absence is a fact
+			// about this browser, not a failure — iOS Safari ships `WebTransport.datagrams` with
+			// no writable side — so it is recorded rather than reported.
 			let datagrams = "datagrams";
 			let pair = (!no_datagrams.get())
 				.then(|| prop(AsRef::<JsValue>::as_ref(&transport), "datagrams"))
@@ -589,18 +546,11 @@ impl NetTransport for WebTransportClient {
 		self.sample_rtt();
 	}
 
-	/// Ask the browser to flush the reliable stream and end it.
-	///
-	/// No waiting, because a page cannot wait: `close()` hands back a
-	/// promise, and on the `pagehide` path there is no later task for it
-	/// to resolve in. Ordering is still on our side — the goodbye was
-	/// written to the same writer a moment ago, and a WritableStream
-	/// close is queued behind the writes already in it, so the browser
-	/// flushes them together if it flushes at all.
-	///
-	/// Strictly weaker than the native close, and that asymmetry is
-	/// inherent: nothing a tab does on unload is guaranteed to reach the
-	/// network. The server's idle timeout remains the backstop.
+	/// Ask the browser to flush the reliable stream and end it. No waiting, because a page cannot
+	/// wait: `close()` hands back a promise, and on the `pagehide` path there is no later task for
+	/// it to resolve in. Ordering is still on our side — a WritableStream close is queued behind
+	/// the writes already in it, so the browser flushes them together if it flushes at all.
+	/// Strictly weaker than the native close; the server's idle timeout remains the backstop.
 	fn close(&mut self) {
 		if self.status == ConnStatus::Closed {
 			return;
@@ -675,20 +625,11 @@ impl WebTransportClient {
 	}
 }
 
-/// Open a throwaway WebTransport session, read the browser's own QUIC round-trip
-/// estimate, close — the browser mirror of digblock-net-native's `probe`, and the
-/// same measurement it makes. Calls `done` with `Some(ms)` on success, `None` on
-/// failure or timeout.
-///
-/// Timing the connect instead is a QUIC+TLS handshake plus an HTTP/3 extended
-/// CONNECT — two round trips at best, plus DNS, which does not scale with
-/// distance at all. See the native probe's module docs for the full reasoning,
-/// which both platforms share.
-///
-/// In practice Chrome does not implement `getStats`, so the browser build falls
-/// back to the handshake time and reports no ping at all on the overlay. The
-/// stats path is kept because it is the correct measurement the moment a browser
-/// ships it, and because the fallback is honest.
+/// Open a throwaway WebTransport session, read the browser's own QUIC round-trip estimate, close —
+/// the browser mirror of digblock-net-native's `probe`, and the same measurement it makes. Calls
+/// `done` with `Some(ms)` on success, `None` on failure or timeout. Timing the connect instead is a
+/// handshake plus an HTTP/3 extended CONNECT, which does not scale with distance at all — see the
+/// native probe's module docs. Chrome does not implement `getStats`, so today no ping is reported.
 pub fn probe(
 	url: &str,
 	cert_hash: [u8; 32],

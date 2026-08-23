@@ -54,12 +54,10 @@ impl Renderer {
 			],
 		});
 
-		// Water group 0: the frame UBO (water copy) plus the scene
-		// targets — the pre-water solid depth copy (textureLoad, no
-		// sampler), the offscreen scene color, and a linear sampler
-		// (refraction/SSR offsets). Folding the scene targets into
-		// group 0 keeps the water pipelines within the default
-		// bind-group limit while freeing group 2 for the GI world data.
+		// Water group 0: the frame UBO (water copy) plus the scene targets — the pre-water solid
+		// depth copy (textureLoad, no sampler), the offscreen scene color, and a linear sampler for
+		// refraction/SSR offsets. Folding the scene targets into group 0 keeps the water pipelines
+		// within the default bind-group limit while freeing group 2 for the GI world data.
 		let water_frame_bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
 			label: Some("water frame + scene targets"),
 			entries: &[
@@ -153,14 +151,11 @@ impl Renderer {
 			},
 		);
 
-		// Shared group scheme: 0 = frame, 1 = materials, 2 = GI. For the
-		// solids that's the two resolve outputs; water (and players)
-		// carry the raw GI world data instead (`GiDraw::gather_bgl`) and
-		// gather per fragment — their surfaces aren't in the depth
-		// prepass the resolve maps. Chunk origins are NOT a bind group —
-		// they arrive as the instance-step vertex stream at slot 1 (see
-		// `origin_vertex_layout`). Water swaps group 0 for its
-		// frame+scene combo layout.
+		// Shared group scheme: 0 = frame, 1 = materials, 2 = GI. For the solids that's the two
+		// resolve outputs; water and players carry the raw GI world data instead
+		// (`GiDraw::gather_bgl`) and gather per fragment, since their surfaces aren't in the depth
+		// prepass the resolve maps. Chunk origins are NOT a bind group — they arrive as the
+		// instance-step vertex stream at slot 1. Water swaps group 0 for its frame+scene layout.
 		let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
 			label: Some("chunk"),
 			bind_group_layouts: &[Some(&frame_bgl), Some(&materials_bgl), Some(gi.scene_bgl())],
@@ -199,14 +194,11 @@ impl Renderer {
 			},
 		);
 
-		// Depth prepass: same vertex stream, and since M3 a fragment
-		// stage that rasterizes ONE face-normal code per pixel into an
-		// R8Uint target. That costs the double-rate Z a position-only
-		// pass would have had, and buys two things the GI could not get
-		// any other way: an exact normal for the resolve (its
-		// derivative-derived one was garbage on every silhouette) and a
-		// code bit-identical to the one chunk.wgsl compares against, so
-		// the bilateral upsample stops collapsing at edges.
+		// Depth prepass: same vertex stream, plus a fragment stage rasterizing ONE face-normal code
+		// per pixel into an R8Uint target. That costs the double-rate Z a position-only pass would
+		// have had, and buys two things the GI could not get otherwise: an exact normal for the
+		// resolve (its derivative-derived one was garbage on every silhouette) and a code
+		// bit-identical to chunk.wgsl's, so the bilateral upsample stops collapsing at edges.
 		let prepass_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
 			label: Some("depth prepass"),
 			bind_group_layouts: &[Some(&frame_bgl)],
@@ -270,15 +262,11 @@ impl Renderer {
 			},
 		);
 
-		// The upscale: the same shader and layout as `blit_pipeline`, but
-		// DEPTHLESS. `build` gives a pipeline a depth-stencil state, and a
-		// pipeline that has one may only run in a pass that has a depth
-		// attachment — which is why `blit_pipeline` works inside the water
-		// pass and silently invalidates the encoder in a standalone
-		// fullscreen pass. The failure mode is worth remembering: an
-		// invalid pass poisons the whole encoder, so `finish()` yields a
-		// command buffer that drops EVERY pass, and the window goes black
-		// with no HUD rather than showing a wrong-looking blit.
+		// The upscale: the same shader and layout as `blit_pipeline`, but DEPTHLESS. A pipeline
+		// `build` gave a depth-stencil state may only run in a pass that has a depth attachment,
+		// which is why `blit_pipeline` works inside the water pass and silently invalidates the
+		// encoder in a standalone fullscreen pass. An invalid pass poisons the whole encoder, so
+		// `finish()` drops EVERY pass and the window goes black rather than showing a wrong blit.
 		let upscale_pipeline = crate::pipeline_builder::build_depthless(
 			device,
 			surface_format,

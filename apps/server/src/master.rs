@@ -25,21 +25,18 @@ pub struct MasterConfig {
 	/// Base URL, e.g. `http://127.0.0.1:5200`.
 	pub url: String,
 	pub server_name: String,
-	/// Public host clients connect to. None (the default) advertises the
-	/// address the master observes making the registration — right for
-	/// the common port-forwarded home host, since players must reach the
-	/// same public IP the registration left from. Set to override with a
-	/// DNS name, or when the observed egress is not the game traffic's
-	/// ingress (multi-homed hosts, split routing).
+	/// Public host clients connect to. None (the default) advertises the address the master
+	/// observes making the registration — right for the common port-forwarded home host, since
+	/// players must reach the same public IP the registration left from. Set to override with a
+	/// DNS name, or when the observed egress is not the game traffic's ingress (multi-homed
+	/// hosts, split routing).
 	pub advertise_host: Option<String>,
 	pub advertise_port: u16,
-	/// Our registration key for this address, if we have registered before.
-	///
-	/// The master remembers which key holds a `host:port` and refuses a
-	/// registration from anyone else while something is live there, so this
-	/// is what makes a restart a re-registration rather than a takeover
-	/// attempt. Persisted beside the world data ([`KEY_FILE`]); `None` on a
-	/// first run, which is when the master mints one.
+	/// Our registration key for this address, if we have registered before. The master remembers
+	/// which key holds a `host:port` and refuses a registration from anyone else while something
+	/// is live there, so this is what makes a restart a re-registration rather than a takeover
+	/// attempt. Persisted beside the world data ([`KEY_FILE`]); `None` on a first run, which is
+	/// when the master mints one.
 	pub server_key: Option<String>,
 }
 // probe_host is gone from this struct as well as the wire. The master
@@ -95,8 +92,7 @@ impl MasterState {
 
 #[derive(Debug)]
 pub enum RegisterError {
-	/// The master's probe-back failed: a configuration problem (wrong
-	/// `--advertise-host`, UDP not forwarded), not a transient.
+	/// The master's probe-back failed: a configuration problem, not a transient.
 	Unreachable(String),
 	/// Master unreachable or 5xx — transient.
 	Transport(String),
@@ -335,13 +331,11 @@ pub fn notify_shutdown(url: &str, reg: &Registration) {
 
 // ---- async orchestration --------------------------------------------------
 
-/// Register (retrying forever with capped backoff — joins are refused until
-/// it lands), then heartbeat on `HEARTBEAT_INTERVAL`; a 404 means the master
-/// restarted, so drop the registration and re-register. `cert_hash` is
-/// shared with the cert-rotation task, which updates it and signals
-/// `reregister` so the master hands out the new pin; the hash is re-read on
-/// every registration attempt, so a rotation landing mid-retry still
-/// registers the current cert.
+/// Register (retrying forever with capped backoff — joins are refused until it lands), then
+/// heartbeat on `HEARTBEAT_INTERVAL`; a 404 means the master restarted, so drop the registration
+/// and re-register. `cert_hash` is shared with the cert-rotation task, which updates it and
+/// signals `reregister` so the master hands out the new pin; the hash is re-read on every
+/// registration attempt, so a rotation landing mid-retry still registers the current cert.
 pub async fn run(
 	state: Arc<MasterState>,
 	mut cfg: MasterConfig,
@@ -465,13 +459,11 @@ pub fn load_key(path: &std::path::Path) -> Option<String> {
 	(!key.is_empty()).then_some(key)
 }
 
-/// Persist the registration key, owner-readable only.
-///
-/// It is a bearer credential for one `host:port` on one master: whoever
-/// holds it can re-register that address, which means renaming the server
-/// or pointing it at a different machine. Not catastrophic — it grants no
-/// access to player data and cannot mint join tokens — but there is no
-/// reason for it to be world-readable beside a world journal that is.
+/// Persist the registration key, owner-readable only. It is a bearer credential for one
+/// `host:port` on one master: whoever holds it can re-register that address, which means renaming
+/// the server or pointing it at a different machine. Not catastrophic — it grants no access to
+/// player data and cannot mint join tokens — but there is no reason for it to be world-readable
+/// beside a world journal that is.
 fn store_key(path: &std::path::Path, key: &str) {
 	let write = || -> std::io::Result<()> {
 		if let Some(dir) = path.parent() {

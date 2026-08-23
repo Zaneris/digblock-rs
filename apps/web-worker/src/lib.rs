@@ -17,16 +17,11 @@
 use digblock_core::pipeline::{Job, run_job};
 use wasm_bindgen::prelude::*;
 
-/// Decode a job, run it, encode the result — the whole worker.
-///
-/// A message that doesn't decode answers with an empty buffer rather than
-/// trapping: the wasm here has no way to report a fault except by dying,
-/// and a dead worker is a pool that silently loses a share of its
-/// throughput for the rest of the session. The main thread reads an empty
-/// reply as "accepted, could not run it", hands the job back to the
-/// pipeline through `JobDispatch::lost`, and the chunk is requeued — the
-/// bootstrap's catch answers this way for a trap too, so every accepted
-/// job produces exactly one reply.
+/// Decode a job, run it, encode the result — the whole worker. A message that doesn't decode
+/// answers with an empty buffer rather than trapping: a dead worker silently loses a share of the
+/// pool's throughput for the session. The main thread reads an empty reply as "accepted, could not
+/// run it" and requeues through `JobDispatch::lost`; the bootstrap's catch answers a trap the same
+/// way, so every accepted job produces exactly one reply.
 #[wasm_bindgen]
 pub fn run_job_bytes(input: &[u8]) -> Vec<u8> {
 	// Cheap after the first call, and the alternative on this platform is

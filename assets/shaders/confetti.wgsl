@@ -15,17 +15,11 @@
 // VERTEX stage here, which the gather layout has allowed since water's
 // per-vertex probe gather (R17).
 
-// RTGI camera light (gi_probe.wgsl's cam_light entry) — the same
-// argument spray.wgsl makes: a flake has no surface worth gathering at,
-// and confetti is thrown within a few blocks of somebody's head, so the
-// camera's probe ambient + traced sun is theirs.
-//
-// That argument covers BOUNCE and the sun, and it does not stretch to
-// local lights: the camera's own distance to a torch is not the flake's,
-// and a level-up is celebrated indoors as often as out. So the direct
-// term is the one thing this pass computes at the flake instead of
-// inheriting — the shared `sum_lights` over group(2)'s emitter list,
-// exactly as players do (R34).
+// RTGI camera light (gi_probe.wgsl's cam_light entry) — spray.wgsl's argument: a flake has no
+// surface worth gathering at, and confetti is thrown within a few blocks of a head, so the
+// camera's probe ambient + traced sun are the flake's too. That covers bounce and the sun and
+// not local lights — the camera's distance to a torch is not the flake's — so the direct term
+// is computed AT the flake, through the shared `sum_lights` over group(2), as players do (R34).
 struct CamLight {
 	ambient: vec4f,
 	sun: vec4f,
@@ -141,16 +135,11 @@ fn vs(
 	// Lit like spray: probe ambient + traced sun, twilight fading the
 	// LIGHT and never the shadow (chunk.wgsl's rule).
 	let sh = cam_light.sun.rgb * frame.light_dir.w;
-	// Plus the emitter list, because bounce and sun are the two things a cave
-	// has none of: a burst thrown beside a torch used to be a cloud of BLACK
-	// paper over a lit floor, which is R33's bug in the billboard family.
-	// Priced at the flake's CENTRE — the whole quad sits inside a fraction of
-	// a block, so one answer serves its six corners — and with the ZERO
-	// normal, since a tumbling flake has no normal that holds still and paper
-	// this thin takes light from either side.
-	//
-	// The reach gate is players': past `gi_lateral_max` a shadow ray has no
-	// window to march, and a burst is thrown over a REMOTE player's head too.
+	// Plus the emitter list: bounce and sun are the two things a cave has none of, and without it
+	// a burst beside a torch is a cloud of BLACK paper over a lit floor (R33). Priced at the
+	// flake's CENTRE — the quad sits inside a fraction of a block — and with a ZERO normal, since
+	// a tumbling flake has no normal that holds still and paper this thin takes light from either
+	// side. Reach-gated at `gi_lateral_max` like players: past it a shadow ray has no window.
 	var nee = vec3f(0.0);
 	let lat = center.xz - frame.cam_pos.xz;
 	let gmax = gi_lateral_max(frame.gi_misc.x);

@@ -65,16 +65,11 @@ impl Renderer {
 			view_formats: &[],
 		});
 		let scene_view = scene.create_view(&wgpu::TextureViewDescriptor::default());
-		// The post target: water, the viewmodel and the GI debug view draw
-		// HERE while sampling `scene` for refraction and SSR.
-		//
-		// Two textures rather than one, and this is not optional. Water
-		// reads the scene colour it is blending over, so a pass that both
-		// writes and samples one texture is a read-write hazard on the same
-		// resource — and an invalid pass poisons the whole encoder, so
-		// `finish()` yields a command buffer that drops EVERY pass in the
-		// frame. The symptom is a completely black window with no HUD, not
-		// a wrong-looking water surface.
+		// The post target: water, the viewmodel and the GI debug view draw HERE while sampling
+		// `scene` for refraction and SSR. Two textures rather than one, and not optional: water
+		// reads the scene colour it is blending over, so one texture both written and sampled is
+		// a read-write hazard, and an invalid pass poisons the whole encoder — `finish()` drops
+		// EVERY pass in the frame, so the symptom is a black window with no HUD.
 		let post = gpu.device.create_texture(&wgpu::TextureDescriptor {
 			label: Some("post color"),
 			size: extent,

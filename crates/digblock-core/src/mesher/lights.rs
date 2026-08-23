@@ -1,20 +1,18 @@
 //! Surface emitters: turning a revealed vein into area lights (R31).
 //!
-//! A torch is a point in open air. A vein is not: most of it is buried, buried
-//! rock must light nothing, and the exposed part is a FACE — an area source.
+//! A torch is a point in open air. A vein is not: most of it is buried, buried rock must light
+//! nothing, and the exposed part is a FACE — an area source.
 //!
-//! **Why this lives in the mesher**: it is the only pass holding all three
-//! inputs at once — the reveal has already run, so the padded array holds real
-//! ore ids for exactly the tiers this player has levelled into; exposure is the
-//! question the mesher exists to answer; and the padded shell means a vein
-//! straddling a chunk edge does not go dark down one column.
-//! `crate::gi::classify_chunk` can do none of it, because it reads the raw
-//! store and the store holds Stone where a vein is.
+//! **Why this lives in the mesher**: it is the only pass holding all three inputs at once — the
+//! reveal has already run, so the padded array holds real ore ids for exactly the tiers this
+//! player has levelled into; exposure is the question the mesher exists to answer; and the padded
+//! shell means a vein straddling a chunk edge does not go dark down one column.
+//! `crate::gi::classify_chunk` can do none of it, because it reads the raw store and the store
+//! holds Stone where a vein is.
 //!
-//! **Merging is not only an optimisation.** The resolve's NEE reservoir walks
-//! the whole light list *per pixel*. The merged rectangle is also the better
-//! light: one quad with a cosine at its own surface, rather than a row of
-//! points each with its own hotspot.
+//! **Merging is not only an optimisation.** The resolve's NEE reservoir walks the whole light
+//! list *per pixel*, and the merged rectangle is also the better light: one quad with a cosine at
+//! its own surface, rather than a row of points each with its own hotspot.
 
 use crate::block::BlockType;
 use crate::chunk::CHUNK_SIZE;
@@ -22,17 +20,11 @@ use crate::dir::{DIRS, Dir};
 
 use super::{MeshInput, face_visible, pidx};
 
-/// One emissive rectangle, packed into a word — the same shape
-/// [`super::MeshData::impacts`] uses for spray, and encoded on the wire by
-/// the same run.
-///
-/// Fields in order: the anchor cell (chunk-local, a nibble an axis), the
-/// face direction, the two spans measured along [`tangents`] (stored one
-/// less than the span, so a span always fits its nibble), and the block
-/// id whose LUT row carries the light's level and its colour.
-///
-/// Widths are pinned by `a_packed_rect_round_trips`; nothing outside this
-/// module and its decoder may know the offsets.
+/// One emissive rectangle, packed into a word — the same shape [`super::MeshData::impacts`] uses
+/// for spray, encoded on the wire by the same run. Fields in order: the anchor cell (chunk-local,
+/// a nibble an axis), the face direction, the two spans along [`tangents`] (stored one less than
+/// the span, so a span always fits its nibble), and the block id whose LUT row carries the
+/// light's level and colour. Pinned by `a_packed_rect_round_trips`; no offset escapes the decoder.
 const X_SHIFT: u32 = 0;
 const Y_SHIFT: u32 = 4;
 const Z_SHIFT: u32 = 8;
@@ -42,13 +34,10 @@ const SPAN_V_SHIFT: u32 = 19;
 const ID_SHIFT: u32 = 23;
 const NIBBLE: u32 = 0xF;
 
-/// The two axes a face of `dir` spans, in ascending axis order — so a
-/// rectangle's `u` and `v` mean the same thing to the packer and to the
-/// renderer that unpacks it. `0`/`1`/`2` are x/y/z.
-///
-/// Ascending rather than a handedness convention on purpose: the
-/// rectangle is axis-aligned and its two spans are interchangeable, so
-/// there is nothing for a winding order to buy and one less thing for the
+/// The two axes a face of `dir` spans, in ascending axis order, so a rectangle's `u` and `v` mean
+/// the same thing to the packer and to the renderer that unpacks it. `0`/`1`/`2` are x/y/z.
+/// Ascending rather than a handedness convention: the rectangle is axis-aligned and its two spans
+/// are interchangeable, so there is nothing for a winding order to buy and one less thing for the
 /// two ends to disagree about.
 #[inline]
 pub const fn tangents(dir: Dir) -> (usize, usize) {
@@ -91,12 +80,9 @@ pub fn unpack(w: u32) -> ((u32, u32, u32), Dir, u32, u32, u16) {
 	)
 }
 
-/// Every exposed face of every surface emitter in the chunk, greedy-merged
-/// into rectangles.
-///
-/// Runs as its own sweep rather than inside the face loop because merging
-/// needs a whole slice at once, and because the overwhelming majority of
-/// chunks hold no emitter at all and should pay one scan and leave.
+/// Every exposed face of every surface emitter in the chunk, greedy-merged into rectangles. Its
+/// own sweep rather than part of the face loop because merging needs a whole slice at once, and
+/// because the vast majority of chunks hold no emitter at all and should pay one scan and leave.
 pub fn collect(input: &MeshInput) -> Vec<u32> {
 	let n = CHUNK_SIZE;
 	// Cheap reject: no surface emitter anywhere means no slices to build.
@@ -130,12 +116,9 @@ pub fn collect(input: &MeshInput) -> Vec<u32> {
 						continue;
 					}
 					// Exposed by exactly the mesher's own rule — the same
-					// `face_visible`, the same missing-neighbour
-					// suppression — so a lit face and a DRAWN face are the
-					// same set by construction. A face nobody can see
-					// lights nobody, and a face at a chunk seam whose
-					// neighbour has not arrived stays dark until it does
-					// rather than guessing.
+					// `face_visible`, the same missing-neighbour suppression — so a lit
+					// face and a DRAWN face are the same set by construction. A seam face
+					// whose neighbour has not arrived stays dark until it does.
 					let on_border = match dir {
 						Dir::West => x == n - 1,
 						Dir::North => z == n - 1,
@@ -165,13 +148,10 @@ pub fn collect(input: &MeshInput) -> Vec<u32> {
 	out
 }
 
-/// Greedy-merge one slice's mask into maximal rectangles of one id.
-///
-/// The ordinary voxel greedy walk: take the first unclaimed cell, run as
-/// far as it can along `u`, then grow along `v` for as long as every cell
-/// of the next row matches, clearing as it goes. Rectangles are maximal in
-/// `u` first, which is arbitrary and fine — they are lights, not geometry,
-/// and no seam can show between two of them.
+/// Greedy-merge one slice's mask into maximal rectangles of one id: take the first unclaimed
+/// cell, run as far as it can along `u`, then grow along `v` while every cell of the next row
+/// matches, clearing as it goes. Maximal in `u` first, which is arbitrary and fine — they are
+/// lights, not geometry, and no seam can show between two of them.
 #[allow(clippy::too_many_arguments)]
 fn merge_slice(
 	mask: &mut [u16],

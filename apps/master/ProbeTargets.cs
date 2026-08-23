@@ -3,17 +3,11 @@ using System.Net.Sockets;
 
 namespace DigBlock.Master;
 
-/// <summary>Which addresses the reachability probe is allowed to dial.
-///
-/// Registration is anonymous, so <c>/api/servers/register</c> is an
-/// unauthenticated way to make the master open a connection to an address of
-/// the caller's choosing and report what happened — an SSRF probe with a
-/// four-value error oracle. The oracle is worth keeping (a self-hoster needs
-/// <c>certMismatch</c> apart from <c>timeout</c>); the set of interesting
-/// TARGETS is not, so everything off the public internet is refused.
-///
-/// The check must happen after DNS resolution, never on the string: a hostname
-/// that resolves to 10.0.0.5 is the whole trick.</summary>
+/// <summary>Which addresses the reachability probe is allowed to dial. Registration is anonymous,
+/// so the endpoint is an unauthenticated SSRF probe with an error oracle. The oracle is worth
+/// keeping — a self-hoster needs <c>certMismatch</c> apart from <c>timeout</c> — so the set of
+/// interesting TARGETS is narrowed instead. The check must happen after DNS resolution, never on
+/// the string: a hostname that resolves to a private address is the whole trick.</summary>
 public static class ProbeTargets
 {
     /// <summary>Is this an address on the public internet?</summary>

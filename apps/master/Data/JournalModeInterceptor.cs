@@ -3,18 +3,11 @@ using Microsoft.EntityFrameworkCore.Diagnostics;
 
 namespace DigBlock.Master.Data;
 
-/// <summary>Forces SQLite's rollback journal back to DELETE on every
-/// connection.
-///
-/// EF Core's SQLite provider issues <c>PRAGMA journal_mode = 'wal'</c> itself
-/// on open — a good default on a local disk and a broken one here. WAL needs a
-/// shared-memory <c>-shm</c> file and SQLite documents it as unsupported over a
-/// network filesystem; Azure Files is SMB. Left alone, the master works
-/// perfectly in development and corrupts or locks up in production.
-///
-/// The pragma runs AFTER the provider's, so this one sticks. Unconditional
-/// rather than configurable on purpose: a mode that differs between a
-/// developer's machine and production is a mode nobody tests.</summary>
+/// <summary>Forces SQLite's rollback journal back to DELETE on every connection, AFTER EF Core's
+/// provider issues <c>PRAGMA journal_mode = 'wal'</c> on open, so this one sticks. WAL needs a
+/// shared-memory <c>-shm</c> file and is unsupported over the network filesystem the production
+/// volume is (Azure Files is SMB), so left alone the master works in development and corrupts in
+/// production. Unconditional on purpose: a mode that differs is a mode nobody tests.</summary>
 public sealed class JournalModeInterceptor : DbConnectionInterceptor
 {
     public override void ConnectionOpened(DbConnection connection, ConnectionEndEventData eventData)

@@ -343,14 +343,11 @@ impl WorldJob for Bad {
 	}
 }
 
-/// THE anti-dupe guard. A journal write sets the cell's monotone edited
-/// bit, and `nodes::revealed` reads that bit as spent — so a sweep over a
-/// node's host would destroy every reveal in a band around every player,
-/// irreversibly. A LIVE FACE is worse still: it is the reveal itself,
-/// stored. The registry refuses rather than trusting the author.
-///
-/// Swept over every block rather than over a roster somebody wrote down,
-/// which is what makes a new host or a new node kind land here.
+/// THE anti-dupe guard. A journal write sets the cell's monotone edited bit, and `nodes::revealed`
+/// reads that bit as spent — so a sweep over a node's host would destroy every reveal in a band
+/// around every player, irreversibly. A LIVE FACE is worse still: it is the reveal itself, stored.
+/// Swept over every block rather than over a roster somebody wrote down, which is what makes a new
+/// host or a new node kind land here.
 #[test]
 fn a_node_scope_is_refused_at_registration() {
 	let mut refused = 0;
@@ -373,21 +370,11 @@ fn a_node_scope_is_refused_at_registration() {
 	assert!(refused > 1, "nothing was refused — the guard is not wired");
 }
 
-/// `node_host` and `nodes::revealed` must name the same set, or the guard
-/// above is guarding the wrong thing. Asserted over a scanned region, and
-/// in three answers rather than two: a host reveals in SOME of it, a
-/// stored live face in ALL of it, and everything else in none. So
-/// dropping a host from `node_host` fails on the block's own witnesses,
-/// adding one fails on their absence, and the face half says why it is
-/// the graver of the two — a sweep over a host spends the reveals
-/// worldgen seeded, a sweep over a face spends every cell it touches.
-///
-/// The candidates are cells a node could plausibly occupy (spring beds,
-/// trunk spans, an underground stripe), located by the column helpers so
-/// the scan is cheap — but every verdict is `revealed`'s own. A fixed
-/// list of probe positions is NOT enough here: nodes are sparse salted
-/// hashes, and a list that happens to dodge every node passes whatever
-/// `node_host` says.
+/// `node_host` and `nodes::revealed` must name the same set, or the guard above is guarding the
+/// wrong thing. Asserted over a scanned region in three answers rather than two: a host reveals in
+/// SOME of it, a stored live face in ALL of it, everything else in none — so dropping a host fails
+/// on its own witnesses and adding one fails on their absence. A fixed list of probe positions is
+/// NOT enough: nodes are sparse salted hashes, and a list that dodges every node passes anything.
 #[test]
 fn a_node_host_is_never_sweepable() {
 	use crate::decoration;
@@ -506,12 +493,10 @@ fn sweep_at(s: &mut Scheduler, secs: f64, players: u32, world: &dyn CellSource) 
 	}
 }
 
-/// The head-count the host observes is the head-count the rule reads:
-/// `Scheduler::tick`'s argument reaches [`Run::players`] unchanged and
-/// per sweep, so a rule that scales by how busy a world has been is
-/// reading the world rather than a constant. The slots are checked with
-/// it, because a `Run` that never advanced would satisfy the first half
-/// on its own.
+/// The head-count the host observes is the head-count the rule reads: `Scheduler::tick`'s argument
+/// reaches [`Run::players`] unchanged and per sweep, so a rule that scales by how busy a world has
+/// been is reading the world rather than a constant. The slots are checked with it, because a
+/// `Run` that never advanced would satisfy the first half on its own.
 #[test]
 fn the_head_count_and_the_slot_reach_every_apply() {
 	let (job, runs) = Spy::boxed(false);
@@ -534,12 +519,11 @@ fn the_head_count_and_the_slot_reach_every_apply() {
 	);
 }
 
-/// A ROLLED job anchors to the slot standing when it first sees the
-/// clock and sweeps at the next one. The hosts restart that clock at
-/// zero on every world entry and every server boot, so without the
-/// anchor the load-time slot — and the draw it seeds — is replayed every
-/// session. A settled rule is deliberately not anchored: replaying its
-/// slot is a no-op, and waiting would cost it a whole slot of spread.
+/// A ROLLED job anchors to the slot standing when it first sees the clock and sweeps at the next
+/// one. The hosts restart that clock at zero on every world entry and every server boot, so
+/// without the anchor the load-time slot — and the draw it seeds — is replayed every session. A
+/// settled rule is deliberately not anchored: replaying its slot is a no-op, and waiting would
+/// cost it a whole slot of spread.
 #[test]
 fn a_rolled_job_skips_the_slot_it_loads_into() {
 	let w = Slab::of(BlockType::Dirt);
@@ -567,14 +551,11 @@ fn a_rolled_job_skips_the_slot_it_loads_into() {
 	}
 }
 
-/// Every rule the game runs, in one list both hosts register from.
-///
-/// A pin rather than a derived check, because nothing in Rust can
-/// enumerate the modules that define rules — and the bug it names is the
-/// one no test of a rule can see: a job nothing registers never runs in
-/// production however well its own behaviour is covered. Building the
-/// real roster is also the standing check that no production scope can
-/// destroy a node reveal, since `register` refuses one.
+/// Every rule the game runs, in one list both hosts register from. A pin rather than a derived
+/// check, because nothing in Rust can enumerate the modules that define rules — and the bug it
+/// names is the one no test of a rule can see: a job nothing registers never runs in production
+/// however well its own behaviour is covered. Building the real roster is also the standing check
+/// that no production scope can destroy a node reveal, since `register` refuses one.
 #[test]
 fn the_production_roster_is_pinned() {
 	const RULES: [&str; 6] = [

@@ -1,40 +1,27 @@
-//! The Resonant Pick's break pattern (SKILLS-DESIGN §5.6): one hold, several
-//! cells — the plane perpendicular to the face you hit, a row at the first
-//! Mining milestone and the full plane at the second. The set is derived from
-//! the ray on BOTH ends, never chosen by the client, so there is no cheat
-//! surface and no second opinion about which cells an action touched.
+//! The Resonant Pick's break pattern (SKILLS-DESIGN §5.6): one hold, several cells — the plane
+//! perpendicular to the face you hit, a row at the first Mining milestone and the full plane at
+//! the second. The set is derived from the ray on BOTH ends, never chosen by the client, so there
+//! is no cheat surface and no second opinion about which cells an action touched. Two rules make
+//! the rest of the machinery work unchanged:
 //!
-//! Two rules make the rest of the machinery work unchanged:
-//!
-//! - **Every extra cell must pay the SAME credit**, because
-//!   `PendingEdits::begin_multi` carries ONE `inv_delta` for the whole group —
-//!   which is also what lets a rejection revert it in one subtraction. Equal
-//!   block ids are not enough: provenance decides what a cell hands back
-//!   ([`BlockType::dig_credit`]), and a plane straddling a quarry face and a
-//!   mason's wall holds one id while paying out two items.
-//! - **The timing multiplier is level-only** ([`crate::skills`]), never
-//!   derived from how many cells actually qualify. A world-derived one would
-//!   let the two ends disagree by the whole multiplier over a single differing
-//!   cell, far outside what `dig_grace` absorbs.
+//! - **Every extra cell must pay the SAME credit**, because `PendingEdits::begin_multi` carries
+//!   ONE `inv_delta` for the whole group, which is also what lets a rejection revert it in one
+//!   subtraction. Equal block ids are not enough: provenance decides what a cell hands back
+//!   ([`BlockType::dig_credit`]), so a plane straddling a quarry face and a mason's wall holds
+//!   one id while paying out two items.
+//! - **The timing multiplier is level-only** ([`crate::skills`]), never derived from how many
+//!   cells qualify: a world-derived one would let the two ends disagree by the whole multiplier
+//!   over a single differing cell, far outside what `dig_grace` absorbs.
 
 use crate::block::BlockType;
 use crate::chunk::cell_id;
 use crate::worldgen::nodes::DigMode;
 
-/// May this cell join the plane as an EXTRA? Asked of every candidate by both
-/// ends over their own worlds, so the two swings touch the same set. The AIMED
-/// cell is never asked — it is the only one allowed to be a slab shrink or a
-/// tapped vein. An extra must pay the same credit (see the header), be
-/// diggable at this y (so a nine-wide swing at a wall on bedrock excludes the
-/// world floor), be neither door nor slab (the extras loop writes bare air,
-/// and a door is one object across two cells), and be an ordinary break rather
-/// than a draw — a vein still HOLDS its host and passes the id test, so the
-/// plane would clear it for the host's credit and mark the cell edited, which
-/// the anti-dupe reads as spent forever.
-///
-/// A locked SPAWN is deliberately absent: it is server-only knowledge, and a
-/// locked cell in the plane must refuse the WHOLE swing
-/// (`a_protected_cell_refuses_the_whole_pick_swing`).
+/// May this cell join the plane as an EXTRA? Asked of every candidate by both ends over their own
+/// worlds, so the two swings touch the same set; the AIMED cell is never asked, being the only one
+/// allowed to be a slab shrink or a tapped vein. Clearing a vein as an extra would pay the host's
+/// credit and mark the cell edited, which the anti-dupe reads as spent forever. A locked SPAWN is
+/// deliberately absent — server-only knowledge, and it must refuse the WHOLE swing.
 pub fn breaks_as_extra(
 	id: u16,
 	credit: Option<BlockType>,
@@ -64,14 +51,10 @@ fn axis_of(normal: (i32, i32, i32)) -> usize {
 	}
 }
 
-/// The axis a ROW break runs along: the horizontal one in the face's
-/// plane.
-///
-/// For a wall (normal along x or z) there is exactly one horizontal
-/// choice and it is the other horizontal axis — a vertical row would be
-/// a well, not a tunnel. For a floor or ceiling both in-plane axes are
-/// horizontal, so it runs ACROSS the view: derived from the look
-/// direction, which both ends already have on the wire.
+/// The axis a ROW break runs along: the horizontal one in the face's plane. For a wall there is
+/// exactly one horizontal choice, the other horizontal axis — a vertical row would be a well, not
+/// a tunnel. For a floor or ceiling both in-plane axes are horizontal, so it runs ACROSS the view,
+/// derived from the look direction both ends already have on the wire.
 fn row_axis(normal: (i32, i32, i32), dir: [f32; 3]) -> usize {
 	match axis_of(normal) {
 		0 => 2,
@@ -119,12 +102,10 @@ fn offsets(normal: (i32, i32, i32), dir: [f32; 3], width: usize) -> Vec<(i32, i3
 	out
 }
 
-/// The cells one hold breaks, target FIRST and every extra the caller's
-/// `extra_ok` accepts — which should be [`breaks_as_extra`] against that
-/// end's own world, and nothing looser.
-///
-/// The order is deterministic and identical on both ends, which is what
-/// lets `begin_multi`'s single `inv_delta` describe the whole group.
+/// The cells one hold breaks, target FIRST and every extra the caller's `extra_ok` accepts — which
+/// should be [`breaks_as_extra`] against that end's own world, and nothing looser. The order is
+/// deterministic and identical on both ends, which is what lets `begin_multi`'s single `inv_delta`
+/// describe the whole group.
 pub fn cells(
 	cell: (i32, i32, i32),
 	normal: (i32, i32, i32),
@@ -144,15 +125,11 @@ mod tests {
 	use super::*;
 	use crate::chunk::make_cell;
 
-	/// The five ways a neighbour is NOT an ordinary extra. Each one was a
-	/// real break: the plane reached bedrock, shattered a rank of doors
-	/// into orphaned halves, double-paid the aimed door's own partner, and
-	/// cleared revealed veins to air for Rubble — the last one destroying
-	/// the deposit permanently, since a cleared cell is an edited cell and
-	/// `ore::revealed` never comes back from that.
-	///
-	/// The fifth arrived with the conditional rock rule: two cells can hold
-	/// the same id and still pay out different items.
+	/// The five ways a neighbour is NOT an ordinary extra: the plane reaching bedrock, shattering a
+	/// rank of doors into orphaned halves, double-paying the aimed door's own partner, clearing a
+	/// revealed vein to air for Rubble — which destroys the deposit permanently, since a cleared
+	/// cell is an edited cell and `ore::revealed` never comes back from that — and the conditional
+	/// rock rule, where two cells hold the same id and still pay out different items.
 	#[test]
 	fn an_extra_has_to_be_the_plain_case() {
 		let stone = make_cell(BlockType::Stone, 0);

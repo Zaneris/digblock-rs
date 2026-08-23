@@ -141,13 +141,10 @@ fn free_tcp_port() -> u16 {
 		.port()
 }
 
-/// Sign in as `subject` through the master's development endpoint, which
-/// is how anything without a browser gets an account. The same subject
-/// always lands on the same account, so a test can rejoin as "itself".
-///
-/// Returns (session token, account id, display name). The display name is
-/// the subject when that is a legal one — which is what the callers rely on
-/// to assert the roster.
+/// Sign in as `subject` through the master's development endpoint, which is how anything without a
+/// browser gets an account. The same subject always lands on the same account, so a test can rejoin
+/// as "itself". Returns (session token, account id, display name); the display name is the subject
+/// when that is a legal one, which is what the callers rely on to assert the roster.
 fn dev_sign_in(master_url: &str, subject: &str) -> (String, String, Option<String>) {
 	let mut res = ureq::post(format!("{master_url}/api/dev/signin"))
 		.send_json(serde_json::json!({ "subject": subject }))
@@ -187,13 +184,10 @@ fn mint_token_with(master_url: &str, session: &str) -> ([u8; 16], String) {
 	(token, join["url"].as_str().unwrap().to_string())
 }
 
-/// Write a pre-account character into a server's data dir, as a v1
-/// `inventories.bin` — what a server that ran before accounts left behind.
-///
-/// Hand-built, because that is the only shape this data ever comes in: no
-/// build still writes v1, so a fixture derived from the current writer
-/// would stop standing for the thing being migrated the moment the format
-/// moved again.
+/// Write a pre-account character into a server's data dir, as a v1 `inventories.bin` — what a
+/// server that ran before accounts left behind. Hand-built, because that is the only shape this
+/// data ever comes in: no build still writes v1, so a fixture derived from the current writer would
+/// stop standing for the thing being migrated the moment the format moved again.
 fn plant_legacy_character(data_dir: &Path, legacy: [u8; 16], block: BlockType, count: u32) {
 	std::fs::create_dir_all(data_dir).expect("data dir");
 	let mut buf = Vec::new();
@@ -244,13 +238,11 @@ impl TestServer {
 		Self::start_with_legacy(tag, master_url, registered, None)
 	}
 
-	/// As `start`, but the data dir already holds a pre-account character
-	/// — a server that ran before accounts and is now being upgraded.
-	///
-	/// It has to be planted HERE, between wiping the dir and opening the
-	/// sim: the store reads its file once at open and rewrites the whole
-	/// thing on every flush, so a record written a moment later would be
-	/// erased by the first save instead of migrated.
+	/// As `start`, but the data dir already holds a pre-account character — a server that ran
+	/// before accounts and is now being upgraded. It has to be planted HERE, between wiping the
+	/// dir and opening the sim: the store reads its file once at open and rewrites the whole
+	/// thing on every flush, so a record written a moment later would be erased by the first
+	/// save instead of migrated.
 	fn start_with_legacy(
 		tag: &str,
 		master_url: &str,
@@ -772,15 +764,11 @@ fn verified_join_uses_master_display_name() {
 	);
 }
 
-/// Server names are display-only and sanitized, never rejected: the master
-/// keeps letters/digits/space/-/_, collapses space runs, and caps the
-/// length. Registration must not fail over cosmetics.
-///
-/// This used to ride on the end of the display-name test, re-registering
-/// the same host:port anonymously. That is refused now — see
-/// `a_keyless_registration_cannot_take_a_live_address` — so the test owns
-/// the registration and presents the key it was given, which is what a real
-/// server restart does.
+/// Server names are display-only and sanitized, never rejected: the master keeps
+/// letters/digits/space/-/_, collapses space runs, and caps the length. Registration must not fail
+/// over cosmetics. The test owns its registration and presents the key it was given, which is what
+/// a real server restart does — re-registering the same host:port anonymously is refused, see
+/// `a_keyless_registration_cannot_take_a_live_address`.
 #[test]
 fn a_dirty_server_name_is_sanitized_not_rejected() {
 	let _ = env_logger::builder().is_test(true).try_init();
@@ -815,15 +803,11 @@ fn a_dirty_server_name_is_sanitized_not_rejected() {
 	);
 }
 
-/// The registration takeover: read a live server's host,
-/// port and certHash out of the public listing, POST them back as your own
-/// registration, and inherit its entry. The probe passes — it dials the
-/// victim — so the probe was never the thing standing in the way.
-///
-/// Registration is still anonymous. What changed is that an address
-/// remembers the key that claimed it, so a registration without that key
-/// is refused while anything is live there, and the source is temp-banned
-/// so retrying in a loop is pointless.
+/// The registration takeover: read a live server's host, port and certHash out of the public
+/// listing, POST them back as your own registration, and inherit its entry. The probe passes — it
+/// dials the victim — so the probe was never the thing standing in the way. Registration is still
+/// anonymous; what stops it is that an address remembers the key that claimed it, so a keyless
+/// registration is refused while anything is live there and the source is temp-banned.
 #[test]
 fn a_keyless_registration_cannot_take_a_live_address() {
 	let _ = env_logger::builder().is_test(true).try_init();
@@ -910,16 +894,11 @@ fn the_listing_carries_protocol_and_sim_versions() {
 	);
 }
 
-/// Leaving properly frees the account IMMEDIATELY, so the same player can come
-/// straight back.
-///
-/// This is what `ClientMsg::Bye` is for. Without it a closed client is only
-/// reaped on QUIC's idle timeout, and since one account may hold one live
-/// connection, the session being held hostage belongs to the very player trying
-/// to rejoin. The goodbye is only half of it: `write_all` merely buffers into
-/// the QUIC stream, so `NetClient::disconnect` pairs the message with a bounded
-/// flush, and a test that sent `Bye` and dropped the transport would pass or
-/// fail on timing.
+/// Leaving properly frees the account IMMEDIATELY, so the same player can come straight back —
+/// what `ClientMsg::Bye` is for. Without it a closed client is only reaped on QUIC's idle timeout,
+/// and since one account may hold one live connection, the session held hostage belongs to the
+/// player trying to rejoin. The goodbye is only half of it: `write_all` merely buffers into the
+/// QUIC stream, so `NetClient::disconnect` pairs the message with a bounded flush.
 #[test]
 fn a_goodbye_frees_the_account_at_once() {
 	let _ = env_logger::builder().is_test(true).try_init();
@@ -943,15 +922,11 @@ fn a_goodbye_frees_the_account_at_once() {
 	again.wait("welcome on rejoin", |c| c.welcomed);
 }
 
-/// The development sign-in derives an account id from the subject string,
-/// and that derivation is a golden constant.
-///
-/// `just play` hardcodes the id for "admin" as `DEV_ADMIN_ID` and passes it
-/// to the game server as `--admin` before anybody has signed in — which is
-/// only possible because the id is a pure function of the subject. Change
-/// the derivation and `just play` silently grants admin to nobody, which is
-/// exactly the failure mode the boot-time resolution exists to prevent
-/// everywhere else.
+/// The development sign-in derives an account id from the subject string, and that derivation is a
+/// golden constant. `just play` hardcodes the id for "admin" as `DEV_ADMIN_ID` and passes it to the
+/// game server as `--admin` before anybody has signed in, which is only possible because the id is
+/// a pure function of the subject. Change the derivation and `just play` silently grants admin to
+/// nobody.
 #[test]
 fn dev_account_ids_are_derived_from_the_subject() {
 	let _ = env_logger::builder().is_test(true).try_init();
@@ -971,18 +946,11 @@ fn dev_account_ids_are_derived_from_the_subject() {
 	assert_ne!(other, admin);
 }
 
-/// The server keys a player on the ACCOUNT the master vouches for, not on
-/// the connection or on anything the client said about itself.
-///
-/// Observed two ways, both race-free. A second connection for the SAME
-/// account is refused — which only makes sense if the server recognised it
-/// as the same player. A connection for a DIFFERENT account is admitted
-/// alongside it, and shows up in the roster under the name the master
-/// holds, not the one the client claimed.
-///
-/// That a rejoin finds the same INVENTORY is pinned separately by the sim's
-/// `account_inventory_persists_across_reconnect_and_reboot`, which drives
-/// the disconnect deterministically.
+/// The server keys a player on the ACCOUNT the master vouches for, not on the connection or on
+/// anything the client said about itself. Observed two ways, both race-free: a second connection
+/// for the SAME account is refused, and one for a DIFFERENT account is admitted alongside it and
+/// shows up in the roster under the name the master holds. That a rejoin finds the same INVENTORY
+/// is pinned by the sim's `account_inventory_persists_across_reconnect_and_reboot`.
 #[test]
 fn the_server_keys_a_player_on_their_account() {
 	let _ = env_logger::builder().is_test(true).try_init();
@@ -1033,14 +1001,11 @@ fn the_server_keys_a_player_on_their_account() {
 	);
 }
 
-/// The pre-account migration over a real connection: a player who used to
-/// play here before accounts existed offers the key their old character is
-/// filed under, and it lands on their account. Once.
-///
-/// The sim covers the transfer itself deterministically; what only a real
-/// connection can show is that the claim RIDES THE JOIN — the client sends
-/// it unprompted behind its Hello, and the corrected inventory arrives
-/// without anybody asking for it.
+/// The pre-account migration over a real connection: a player who used to play here before
+/// accounts existed offers the key their old character is filed under, and it lands on their
+/// account. Once. The sim covers the transfer deterministically; what only a real connection can
+/// show is that the claim RIDES THE JOIN — the client sends it unprompted behind its Hello, and the
+/// corrected inventory arrives without anybody asking for it.
 #[test]
 fn a_pre_account_character_migrates_onto_the_account() {
 	let _ = env_logger::builder().is_test(true).try_init();
@@ -1094,17 +1059,11 @@ fn a_pre_account_character_migrates_onto_the_account() {
 
 // ---- the production registration path (docker/compose.yml) -----------------
 
-/// The rest of this suite runs the game server on the HOST, which forces
-/// `Master:Dev:ProbeHostOverride` on: a containerized master cannot reach
-/// `127.0.0.1` any other way. That override points BOTH probes at one host and
-/// collapses the source probe into the advertised one, so everything
-/// registration decides from the source probe is untested there.
-///
-/// This rig puts both sides in containers on one network — the only topology
-/// where the master dials the registrant's real address. It brings up
-/// `docker/compose.yml` rather than a copy, which would drift from the rig
-/// people actually run. Cost: it builds the SERVER image, which is why this is
-/// one test doing two assertions rather than two tests.
+/// The rest of this suite runs the game server on the HOST, forcing `Master:Dev:ProbeHostOverride`
+/// on, which collapses the source probe into the advertised one — so everything registration
+/// decides from the source probe is untested there. This rig containerizes both sides on one
+/// network, the only topology where the master dials the registrant's real address, bringing up
+/// `docker/compose.yml` itself rather than a drifting copy. It builds the SERVER image: one test.
 struct ComposeRig {
 	project: String,
 	master_url: String,
@@ -1202,12 +1161,11 @@ impl ComposeRig {
 
 impl Drop for ComposeRig {
 	fn drop(&mut self) {
-		// `--rmi local` is not a tidiness flag. The project name carries the
-		// PID, so compose names the images it builds here after THIS run and
-		// no later one ever reuses them; `down` alone takes the containers,
-		// the network and the volumes, and strands a server and a master
-		// image that nothing else collects. `local` is the images compose
-		// built for this project — never a base layer someone else shares.
+		// `--rmi local` is not a tidiness flag. The project name carries the PID, so compose
+		// names the images built here after THIS run and no later one reuses them; `down`
+		// alone takes the containers, the network and the volumes, and strands a server and a
+		// master image nothing else collects. `local` is the images compose built for this
+		// project — never a base layer someone else shares.
 		let _ = self
 			.compose()
 			.args(["down", "-v", "--remove-orphans", "--rmi", "local"])
@@ -1220,19 +1178,11 @@ impl Drop for ComposeRig {
 	}
 }
 
-/// Registration's two hard cases, on the only topology that can tell them apart
-/// — both turn on whether the SOURCE probe passes.
-///
-/// 1. An operator who lost `./data` and restarted must be able to re-key. This
-///    regressed once already and silently: the refusal fired on `live` alone,
-///    and `live` is the in-memory registry, which outlives the process it
-///    describes by up to `Registry:IdleTimeoutSeconds` — so the recovery path
-///    in AUTH-DESIGN.md §3 was unreachable in exactly the case it was written
-///    for. The kill here is deliberately ungraceful, because a clean shutdown
-///    de-registers and the stale entry is the whole point.
-/// 2. The registration takeover must still be refused. Passing the source probe
-///    means serving the pinned certificate from the registrant's OWN address,
-///    which needs the incumbent's private key.
+/// Registration's two hard cases, on the only topology that tells them apart — both turn on the
+/// SOURCE probe. An operator who lost `./data` must be able to re-key; that regressed silently when
+/// the refusal fired on `live` alone, which outlives the process it describes by up to
+/// `Registry:IdleTimeoutSeconds`, so the kill below is deliberately ungraceful. And the takeover
+/// must still be refused: passing the source probe needs the incumbent's private key.
 #[test]
 fn a_lost_key_is_recovered_only_by_the_machine_at_that_address() {
 	let _ = env_logger::builder().is_test(true).try_init();
@@ -1322,12 +1272,10 @@ fn a_lost_key_is_recovered_only_by_the_machine_at_that_address() {
 	}
 }
 
-/// Omitting the advertise host lists the server at the address the
-/// master OBSERVED making the registration — the port-forwarded-home
-/// default. The probe still dials the dev-split probe host; the listing
-/// must carry the observed address, echoed back as observedHost. (No
-/// assumption about WHICH address Docker's NAT shows the container —
-/// only that the listing and the echo agree.)
+/// Omitting the advertise host lists the server at the address the master OBSERVED making the
+/// registration — the port-forwarded-home default. The probe still dials the dev-split probe host;
+/// the listing must carry the observed address, echoed back as observedHost. (No assumption about
+/// WHICH address Docker's NAT shows the container — only that the listing and the echo agree.)
 #[test]
 fn omitted_advertise_host_lists_observed_address() {
 	let _ = env_logger::builder().is_test(true).try_init();
@@ -1418,17 +1366,11 @@ fn probe_rejects_wrong_cert_hash() {
 	}
 }
 
-/// The LIVE connection publishes a wire round trip too, not just the
-/// one-shot probe — that is what lets the overlay show the same quantity
-/// the server browser does.
-///
-/// Pins the two failure modes loopback can see: that the background thread
-/// publishes at all (the value starts as an "unknown" sentinel, so a
-/// transport that never stores would read as `None` forever), and that it
-/// is a measurement rather than quinn's 333 ms initial default. The value
-/// is deliberately NOT compared against `rtt_ms`: they are independent by
-/// construction, and the ack loop needs a joined, snapshotting session
-/// while this needs only a connection.
+/// The LIVE connection publishes a wire round trip too, not just the one-shot probe — that is what
+/// lets the overlay show the same quantity the server browser does. Pins the two failure modes
+/// loopback can see: that the background thread publishes at all (the value starts as an "unknown"
+/// sentinel), and that it is a measurement rather than quinn's initial default. Deliberately NOT
+/// compared against `rtt_ms`: they are independent, and the ack loop needs a joined session.
 #[test]
 fn a_live_connection_publishes_its_wire_rtt() {
 	let _ = env_logger::builder().is_test(true).try_init();
@@ -1449,19 +1391,11 @@ fn a_live_connection_publishes_its_wire_rtt() {
 	);
 }
 
-/// The CLIENT-side probe — the one behind the server browser's ping column —
-/// reports the transport's own round-trip estimate, not the time the handshake
-/// took.
-///
-/// Loopback cannot tell a good latency figure from a bad one, so this pins the
-/// two failure modes it CAN see: that the probe still reaches a real server
-/// after the API change, and that the number is a measurement rather than a
-/// constant. The realistic regression is quinn's RFC 9002 initial RTT, reported
-/// identically for every server in the list, which is what `Connection::rtt`
-/// returns before it has a sample of its own.
-///
-/// No master here on purpose: an unregistered server still completes the
-/// WebTransport handshake, which is all a probe does.
+/// The CLIENT-side probe — the one behind the server browser's ping column — reports the
+/// transport's own round-trip estimate, not the time the handshake took. Loopback cannot tell a
+/// good figure from a bad one, so this pins the two failure modes it CAN see: that the probe still
+/// reaches a real server, and that the number is a measurement rather than quinn's RFC 9002 initial
+/// RTT. No master on purpose: an unregistered server still completes the handshake.
 #[test]
 fn client_probe_reports_a_round_trip_not_a_handshake() {
 	let _ = env_logger::builder().is_test(true).try_init();
@@ -1555,12 +1489,10 @@ fn garbage_preamble_is_dropped_not_hung() {
 	assert!(closed, "server hung instead of dropping a garbage preamble");
 }
 
-/// In-process cert rotation, end to end: after `rotate_cert` the live
-/// endpoint must serve the new certificate — proven by the master's real
-/// QUIC probe, which re-registration pins to the freshly minted hash — the
-/// master must replace (not duplicate) the listing, a client connected
-/// before the swap must ride through it undisturbed, and a join minted
-/// after the swap must complete.
+/// In-process cert rotation, end to end: after `rotate_cert` the live endpoint must serve the new
+/// certificate — proven by the master's real QUIC probe, which re-registration pins to the freshly
+/// minted hash — the master must replace rather than duplicate the listing, a client connected
+/// before the swap must ride through it undisturbed, and a join minted after must complete.
 #[test]
 fn cert_rotation_reregisters_and_serves_new_cert() {
 	let _ = env_logger::builder().is_test(true).try_init();
@@ -1610,13 +1542,10 @@ fn cert_rotation_reregisters_and_serves_new_cert() {
 	});
 }
 
-/// A hostile or buggy registrant cannot hide every server on the master.
-///
-/// The master types player counts as `int` and range-checked neither the
-/// register nor the heartbeat, while both clients decode them as unsigned
-/// — so one entry with `players: -1` failed the WHOLE `/api/servers`
-/// decode client-side, and nobody could see any server at all. Fixed on
-/// both sides: the master clamps so the bad value never leaves, and the
+/// A hostile or buggy registrant cannot hide every server on the master. The master types player
+/// counts as `int` and range-checked neither the register nor the heartbeat, while both clients
+/// decode them as unsigned — so one entry with `players: -1` failed the WHOLE `/api/servers` decode
+/// client-side. Fixed on both sides: the master clamps so the bad value never leaves, and the
 /// clients clamp so a stale master cannot do it either.
 #[test]
 fn a_negative_player_count_cannot_break_the_server_list() {

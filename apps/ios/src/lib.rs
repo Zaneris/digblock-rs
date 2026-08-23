@@ -1,12 +1,9 @@
 use digblock_client::{Engine, EngineConfig};
 use digblock_platform::RunOptions;
 
-/// Called from main.m. winit's run_app invokes UIApplicationMain internally
-/// and never returns.
-///
-/// `unsafe(no_mangle)` is edition 2024 spelling the obligation out: an
-/// unmangled symbol is a promise that nothing else in the final binary
-/// claims this name, and the compiler cannot check it. `main.m` is the
+/// Called from main.m. winit's run_app invokes UIApplicationMain internally and never returns.
+/// `unsafe(no_mangle)` is the obligation spelled out: an unmangled symbol promises that nothing
+/// else in the final binary claims this name, and the compiler cannot check it. `main.m` is the
 /// only caller.
 #[unsafe(no_mangle)]
 pub extern "C" fn digblock_main() {

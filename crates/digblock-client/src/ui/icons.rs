@@ -10,12 +10,11 @@ use digblock_platform::Gpu;
 
 use super::draw::{Cmd, DrawList, Layer};
 
-/// Worst case: every visible slot (grid + bar + ghost) carries a 3D
-/// icon. Plain cubes and the bucket project a handful of quads; shaped
-/// items project up to two variants' templates (a door's two halves) —
-/// and a shaped type can sit in the grid AND on the bar only once each
-/// (assignments are unique per type). Derived from the core counts so a
-/// new `blocks!` row can never overflow it.
+/// Worst case: every visible slot (grid + bar + ghost) carries a 3D icon. Plain cubes and the
+/// bucket project a handful of quads; shaped items project up to two variants' templates (a
+/// door's two halves), and a shaped type can sit in the grid AND on the bar only once each, since
+/// assignments are unique per type. Derived from the core counts so a new `blocks!` row can never
+/// overflow it.
 const BUCKET_QUADS: usize = 7;
 const SHAPED_SITES: usize = 2 * SHAPED_COUNT + 1;
 /// Chips: the essence readout, one price's lines, every spell fare and

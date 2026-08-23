@@ -5,18 +5,11 @@
 use super::*;
 
 impl Sim {
-	/// One-time transfer of this server's pre-account character onto the
-	/// account that asked for it (`ClientMsg::ClaimLegacy`, protocol v24).
-	///
-	/// **Silence is the normal answer.** Every client that still has an old
-	/// identity file sends this on every join, to every server, because it
-	/// cannot know which ones it has already migrated on — so "nothing held
-	/// under that key" is the overwhelmingly common case and is not an
-	/// error. Only a claim that actually moves something says anything.
-	///
-	/// The one-time-ness lives in the store: a successful claim deletes the
-	/// quarantined record, so a repeat is indistinguishable from a key that
-	/// was never here. Nothing tracks who has claimed what.
+	/// One-time transfer of this server's pre-account character onto the account that asked for it
+	/// (`ClientMsg::ClaimLegacy`). Silence is the normal answer: a client cannot know which servers
+	/// it has already migrated on, so it asks on every join, and "nothing held under that key" is
+	/// the common case rather than an error. The one-time-ness lives in the store — a successful
+	/// claim deletes the quarantined record, so a repeat looks like a key that was never here.
 	pub(super) fn claim_legacy(&mut self, conn_id: u64, legacy: [u8; 16]) {
 		// An unverified connection has no account to migrate ONTO, so there
 		// is nothing this could mean. That is the offline harness and the
@@ -136,17 +129,11 @@ impl Sim {
 			refuse(&out, "server full".into());
 			return;
 		};
-		// AccountId::NONE = no master vouched for this connection, so there
-		// is nothing to persist against: session-only inventory, no dup
-		// check. That is the offline harness and the tests, never a real
-		// join — net.rs refuses a connection it could not verify.
-		//
-		// Two live connections sharing one persisted inventory would stomp
-		// each other's copy, so the second is refused. The check is the same
-		// shape it always was; what changed is that the key is now something
-		// the master said rather than something the client chose, so
-		// "already connected" can no longer be dodged by picking a different
-		// secret.
+		// `AccountId::NONE` = no master vouched for this connection, so there is nothing to persist
+		// against: session-only inventory, no dup check. That is the offline harness and the tests,
+		// never a real join — net.rs refuses a connection it could not verify. Two live connections
+		// sharing one persisted inventory would stomp each other's copy, so the second is refused,
+		// keyed on what the master said rather than on a secret the client could pick again.
 		let identity = (!account.is_none()).then_some(account);
 		if let Some(account) = identity
 			&& self.clients.values().any(|c| c.identity == Some(account))
@@ -169,15 +156,11 @@ impl Sim {
 		reconcile_layout(&inventory, &mut hotbar, &mut grid);
 		let name = sanitize_name(&name);
 		let draw_dist = draw_dist.clamp(DRAW_DIST_MIN, DRAW_DIST_MAX);
-		// Resume where they left off. Rejoining used to be a free trip to spawn
-		// that sidestepped the return-to-spawn cooldown; stored positions close
-		// that, and `last_teleport_tick` stops a rejoin resetting the timer too.
-		//
-		// The landing rule still applies: the world may have changed while they
-		// were away, so a resumed position is stepped clear the same way a spawn
-		// is. Anonymous joins and pre-v3 records start at spawn. The spawn
-		// facing rides along only when this join really is a spawn — a player
-		// resuming in their own house has already chosen a view.
+		// Resume where they left off; `last_teleport_tick` rides along so a rejoin cannot clear the
+		// return-to-spawn cooldown. The world may have changed while they were away, so a resumed
+		// position is stepped clear the same way a spawn is. Anonymous joins and pre-v3 records
+		// start at spawn, and the spawn facing rides along only when this join really is a spawn —
+		// a player resuming in their own house has already chosen a view.
 		let (spawn, spawn_look) = match record.pos {
 			Some(p) => (self.clear_landing(Vec3::from_array(p)), Vec3::ZERO),
 			None => (self.safe_spawn(), self.spawn_look()),
@@ -201,17 +184,11 @@ impl Sim {
 			},
 		);
 
-		// Join sync: final cell state for every edited column in range,
-		// QUEUED rather than sent. Encoding them all here meant thousands
-		// of frames and megabytes inside one tick's budget on a mature
-		// world — a hitch for everyone else on the server, every time anyone
-		// joined — and past OUT_CAP the joiner simply lost the race and got
-		// dropped. `pump_join_sync` drains the queue a few per tick against
-		// the room the outbound queue actually has.
-		//
-		// Region-indexed, so this is O(columns near the spawn) rather than
-		// O(every edited column in the world); the radius test still does
-		// the real filtering.
+		// Join sync: final cell state for every edited column in range, QUEUED rather than sent —
+		// encoding them all inside one tick's budget hitches every other player, and past OUT_CAP
+		// the joiner loses the race and is dropped. `pump_join_sync` drains a few per tick against
+		// the room the outbound queue actually has. Region-indexed, so this is O(columns near the
+		// spawn) rather than O(every edited column in the world); the radius test still filters.
 		let center = column_of(spawn);
 		let mut cols: Vec<(i32, i32)> = self
 			.journal

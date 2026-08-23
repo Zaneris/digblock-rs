@@ -27,9 +27,7 @@ pub enum SpellAction {
 	CastKindle,
 	/// Begin the Ward's channel (the sphere closes about the head at completion).
 	CastWard,
-	/// Begin the Causeway's channel, or — with a road already standing —
-	/// take it up. One row for both, because a caster who wants to
-	/// descend cannot wait out a road that keeps catching them.
+	/// Begin the Causeway's channel, or — with a road standing — take it up: one row for both.
 	ToggleCauseway,
 	/// Flip the Mason's Arc stance.
 	ToggleArc,
@@ -128,13 +126,10 @@ impl SpellView {
 			.collect()
 	}
 
-	/// `cooldown_secs` is the engine's live TELEPORT countdown — one
-	/// clock over Return Home and every port — ceiling-rounded by the
-	/// caller (a "0s" row that is not yet ready would be a lie).
-	/// `ports` is what THIS world offers (the engine filters online to
-	/// the sites its server resolved); a port greys on the same two
-	/// things the cast is refused for, its fare and that clock, so the
-	/// offer and the rule cannot drift.
+	/// `cooldown_secs` is the engine's live TELEPORT countdown — one clock over Return Home and
+	/// every port — ceiling-rounded by the caller (a "0s" row that is not yet ready would be a
+	/// lie). `ports` is what THIS world offers; a port greys on the same two things the cast is
+	/// refused for, its fare and that clock, so the offer and the rule cannot drift.
 	pub fn build(
 		skills: &SkillSet,
 		cooldown_secs: u32,
@@ -303,8 +298,7 @@ pub(super) fn next_rung(level: u32) -> Option<(u32, &'static str)> {
 enum Row {
 	Title,
 	Space,
-	/// One castable spell: name left, readiness right, clickable when
-	/// ready.
+	/// One castable spell: name left, readiness right, clickable when ready.
 	Spell {
 		id: InvId,
 		text: String,

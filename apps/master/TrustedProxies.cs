@@ -2,38 +2,18 @@ using System.Net;
 
 namespace DigBlock.Master;
 
-/// <summary>Which peers may set <c>X-Forwarded-For</c> and be believed.
-///
-/// The observed source address used to be cosmetic, so the forwarded-headers
-/// middleware ran with its known-proxy lists CLEARED. That is no longer safe:
-/// the source address is the first address the registration probe dials, the
-/// partition every rate limit is cut by, and the subject of a registration
-/// temp-ban. Left open, a direct caller could send
-/// <c>X-Forwarded-For: 1.2.3.4</c> to serve someone else's ban, evade their
-/// own, or pick a fresh rate-limit bucket per request.
-///
-/// <c>ForwardLimit = 1</c> does NOT close that — it bounds how many hops are
-/// walked, and says nothing about whether the immediate peer was an ingress at
-/// all. Only a known-proxy list answers that.
-///
-/// The rule: believe the header only from a peer whose own address cannot
-/// appear as a caller on the public internet. That is the same partition
-/// <see cref="ProbeTargets"/> draws for SSRF, from the other side, and the two
-/// must keep saying the same thing: every network here is one
-/// <see cref="ProbeTargets.IsPublic"/> rejects.
-///
-/// Azure Container Apps is why the loopback-only framework default will not
-/// do — its ingress reaches the app from the platform's own 100.64.0.0/10
-/// carrier-NAT space.
-///
-/// Residual, and accepted: on a LAN or a Docker network a peer that is already
-/// inside can still spoof the header. That is the same trust boundary
-/// <c>Master:Probe:AllowPrivateTargets</c> draws.</summary>
+/// <summary>Which peers may set <c>X-Forwarded-For</c> and be believed. The source address is the
+/// probe's first dial, each rate limit's partition and a temp-ban's subject, so an open header
+/// lets a caller serve someone else's ban or pick a fresh bucket. <c>ForwardLimit = 1</c> does not
+/// close that — only a known-proxy list says whether the peer was an ingress. Believe it only from
+/// a peer <see cref="ProbeTargets.IsPublic"/> rejects, and keep the two in step.</summary>
 public static class TrustedProxies
 {
-    /// <summary>Ranges that never appear as a public-internet caller, so a
-    /// peer inside one is infrastructure in front of us rather than a
-    /// client. Kept in step with <see cref="ProbeTargets.IsPublic"/>.</summary>
+    /// <summary>Ranges that never appear as a public-internet caller, so a peer inside one is
+    /// infrastructure in front of us rather than a client; kept in step with
+    /// <see cref="ProbeTargets.IsPublic"/>. Residual and accepted: on a LAN or a Docker network a
+    /// peer already inside can still spoof the header — the same trust boundary
+    /// <c>Master:Probe:AllowPrivateTargets</c> draws.</summary>
     private static readonly (string Prefix, int Bits)[] BuiltIn =
     [
         ("0.0.0.0", 8),        // "this network"

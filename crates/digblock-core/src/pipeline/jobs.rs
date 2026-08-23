@@ -232,13 +232,11 @@ impl Pipeline {
 		}
 	}
 
-	/// Inline executor: run the unconditional floor batch (one `Generate`
-	/// or up to `INLINE_MESH_CAP` meshes), then — with an allowance —
-	/// keep starting jobs while their predicted cost still fits. Jobs are
-	/// uninterruptible, so prediction is the only overshoot control; a
-	/// popped job that doesn't fit is requeued (one wasted `MeshInput`
-	/// build at most). Results queue for `drain_results`, which applies the
-	/// caller's shared deadline.
+	/// Inline executor: run the unconditional floor batch (one `Generate` or up to
+	/// `INLINE_MESH_CAP` meshes), then — with an allowance — keep starting jobs while their
+	/// predicted cost still fits. Jobs are uninterruptible, so prediction is the only overshoot
+	/// control; a popped job that doesn't fit is requeued. Results queue for `drain_results`,
+	/// which applies the caller's shared deadline.
 	pub(super) fn run_inline_jobs(&mut self, allowance: Option<std::time::Duration>) {
 		let start = web_time::Instant::now();
 		let mut meshes = 0usize;
@@ -277,17 +275,11 @@ impl Pipeline {
 		}
 	}
 
-	/// Returns the number of jobs bounced back because workers were
-	/// saturated (0 or 1 — a bounce ends the loop). No-op whenever jobs
-	/// run on this thread (they already ran in `run_inline_jobs`).
-	///
-	/// Shares the caller's frame deadline, with the usual one-job floor.
-	/// Handing a job to a pool is not free on every platform: the web's
-	/// `submit` encodes it and copies it into a JS buffer — two passes
-	/// over a whole `MeshInput` that native's channel send does not
-	/// make — and a pass can offer `DEPTH × workers` of them, so an
-	/// unbudgeted top-up is a millisecond-scale stage hiding inside a
-	/// budget that thinks it covers everything.
+	/// Returns the number of jobs bounced back because workers were saturated (0 or 1 — a bounce
+	/// ends the loop). No-op whenever jobs run on this thread. Shares the caller's frame deadline,
+	/// with the usual one-job floor: handing a job to a pool is not free everywhere — the web's
+	/// `submit` encodes it and copies it into a JS buffer, two passes over a whole `MeshInput`
+	/// that native's channel send does not make, and a pass can offer `DEPTH × workers` of them.
 	pub(super) fn top_up_workers(&mut self, deadline: Option<web_time::Instant>) -> u32 {
 		if self.exec.runs_inline() {
 			return 0;

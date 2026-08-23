@@ -1,21 +1,18 @@
-//! Every level threshold in the game, and the one question each gate asks.
-//! Nothing else may hold an unlock number, and no caller compares levels itself.
+//! Every level threshold in the game, and the one question each gate asks. Nothing else may
+//! hold an unlock number, and no caller compares levels itself.
 //!
-//! - **The levels** — [`shape`] and [`material`] (§7.2's two grid axes),
-//!   [`functional`] for the hand-priced items, plus [`mine`] and the two reveal
-//!   axes. Each is the sole authority for its own axis, and the two questions
-//!   players actually ask are DERIVED: [`craft`] is `max(shape, material)` and
-//!   [`pickup`] reads `craft` of the drop.
-//! - **The questions** — [`can_craft`], [`dig_blocked`], asked identically by
-//!   client prediction, the server's `DigStart` backstop, the bot's target
-//!   filter and the test harness, so all four agree by construction.
-//! - **What a level opens** — [`opens`], DERIVED from those tables, so retuning
-//!   a threshold moves the fanfare and the character screen's teasers with it.
+//! - **The levels** — [`shape`] and [`material`] (§7.2's two grid axes), [`functional`] for the
+//!   hand-priced items, plus [`mine`] and the two reveal axes. Each is its axis's sole
+//!   authority; [`craft`] is `max(shape, material)` and [`pickup`] reads `craft` of the drop.
+//! - **The questions** — [`can_craft`], [`dig_blocked`], asked identically by client
+//!   prediction, the server's `DigStart` backstop, the bot's target filter and the test
+//!   harness, so all four agree by construction.
+//! - **What a level opens** — [`opens`], DERIVED from those tables, so retuning a threshold
+//!   moves the fanfare and the character screen's teasers with it.
 //!
-//! No wording lives here. A gate answers with a [`Requirement`] — the
-//! block, the skill and the level — and the client's `voice` is what turns
-//! one into a sentence, which is why the wire sends a REASON and never a
-//! sentence and why a translation never touches this file.
+//! No wording lives here: a gate answers with a [`Requirement`] — the block, the skill and the
+//! level — and the client's `voice` turns one into a sentence, which is why the wire sends a
+//! REASON and never a sentence.
 
 use crate::block::{BlockType, ShapeFamily};
 use crate::material::Material;
@@ -23,14 +20,11 @@ use crate::skills::{MAX_LEVEL, Skill, SkillSet};
 
 // ---- the tables ------------------------------------------------------
 
-/// The Alchemy level that opens a SHAPE — can you work any substance into
-/// this form at all? (SKILLS-DESIGN §7.2's shape axis.)
-///
-/// The full cube sits at the very first level deliberately: the
-/// progression belongs to the
-/// materials, so a substance arrives in every form you have already
-/// learned rather than dribbling in one shape at a time. Reaching a shape
-/// LATER then hands it to you in every material you already own.
+/// The Alchemy level that opens a SHAPE — can you work any substance into this form at all?
+/// (SKILLS-DESIGN §7.2's shape axis.) The full cube sits at the very first level deliberately:
+/// the progression belongs to the materials, so a substance arrives in every form you have
+/// already learned rather than dribbling in one shape at a time. Reaching a shape LATER then
+/// hands it to you in every material you already own.
 pub fn shape(s: ShapeFamily) -> u32 {
 	match s {
 		ShapeFamily::Block | ShapeFamily::Slab => 1,
@@ -43,18 +37,11 @@ pub fn shape(s: ShapeFamily) -> u32 {
 	}
 }
 
-/// The Alchemy level that opens a MATERIAL — when does this substance
-/// become workable at all? `None` = never, in any shape.
-///
-/// A level here is not a promise that any particular cell is craftable:
-/// [`craft`] refuses anything the world hands you, so Dirt has a level and
-/// no craftable form, because the world gives dirt away and nobody has
-/// authored a dirt slab. Both halves are deliberate — the level is what a
-/// dirt slab WOULD open at, and the grid exists so that authoring one is a
-/// block row and a PNG.
-///
-/// Materials with no authored block yet are listed for the same reason:
-/// the level IS the design.
+/// The Alchemy level that opens a MATERIAL — when does this substance become workable at all?
+/// `None` = never, in any shape. A level here is not a promise that any cell is craftable:
+/// [`craft`] refuses anything the world hands you, so Dirt has a level and no craftable form.
+/// The level is what a dirt slab WOULD open at, and authoring one is a block row and a PNG —
+/// which is why materials with no authored block are listed too: the level IS the design.
 pub fn material(m: Material) -> Option<u32> {
 	use Material as M;
 	Some(match m {
@@ -101,12 +88,10 @@ pub fn material(m: Material) -> Option<u32> {
 	})
 }
 
-/// The Alchemy level for a FUNCTIONAL item — one §7.3 prices by hand
-/// because it is a function rather than a substance. `None` = not a
-/// functional item (ask the grid instead).
-///
-/// The twin of [`alchemy::functional_ideal`]: a level and a price are one
-/// decision, pinned so neither can exist without the other.
+/// The Alchemy level for a FUNCTIONAL item — one §7.3 prices by hand because it is a function
+/// rather than a substance. `None` = not a functional item (ask the grid instead). The twin of
+/// [`alchemy::functional_ideal`]: a level and a price are one decision, pinned so neither can
+/// exist without the other.
 pub fn functional(b: BlockType) -> Option<u32> {
 	Some(match b {
 		// The water vessel (§13.5) sits a few rungs past the start, beside
@@ -151,22 +136,11 @@ pub fn functional(b: BlockType) -> Option<u32> {
 	})
 }
 
-/// Alchemy level that unlocks crafting `b`; `None` = never craftable.
-///
-/// **Nothing the world hands you may be transmuted.** The bench exists to make
-/// what a fresh world does not give away, so the catalog opens on
-/// [`BlockType::is_bench_only`] before it asks any table — dirt, sand, snow,
-/// grass, mud, the felled log and the bucket charge are things you go and pick
-/// up, and a recipe for one is the bench competing with a shovel. What remains
-/// is the worked stuff.
-///
-/// Clean rock is the exception the rule is BUILT to allow rather than one
-/// carved out of it: the world is made of stone but hands you Rubble, so it is
-/// bench-only by the same derivation as everything else.
-///
-/// Then §7.2's grid rule, enforced rather than described: a material × shape
-/// pair unlocks at `max(shape level, material level)`, so reaching Stone opens
-/// clean stone in block, slab, stairs and door forms together.
+/// Alchemy level that unlocks crafting `b`; `None` = never craftable. **Nothing the world hands
+/// you may be transmuted** — the catalog opens on [`BlockType::is_bench_only`] before it asks
+/// any table, and clean rock is the exception the rule is BUILT to allow rather than one carved
+/// out of it: the world is made of stone but hands you Rubble. Then §7.2's grid rule, enforced
+/// rather than described: a pair unlocks at `max(shape level, material level)`.
 pub fn craft(b: BlockType) -> Option<u32> {
 	if !b.is_bench_only() {
 		return None;
@@ -178,15 +152,11 @@ pub fn craft(b: BlockType) -> Option<u32> {
 	Some(material(m)?.max(shape(s)))
 }
 
-/// The Mining level a vein of `b` becomes VISIBLE at (SKILLS-DESIGN
-/// §5.3), or `None` for anything that is not an ore.
-///
-/// This is a stranger gate than the others, and deliberately: below it the
-/// cell is Stone to that player in every respect — it renders as stone,
-/// raycasts as stone, digs as stone, and the server agrees, so a
-/// low-level miner tunnelling through a deposit spends it without ever
-/// knowing. You dig what you can see. That is what makes crossing a
-/// threshold an event (veins fade in around you) rather than a number.
+/// The Mining level a vein of `b` becomes VISIBLE at (SKILLS-DESIGN §5.3), or `None` for
+/// anything that is not an ore. A stranger gate than the others, deliberately: below it the
+/// cell is Stone to that player in every respect — it renders, raycasts and digs as stone, and
+/// the server agrees, so a low-level miner tunnelling through a deposit spends it without
+/// knowing. That is what makes crossing a threshold an event rather than a number.
 pub fn reveal(b: BlockType) -> Option<u32> {
 	Some(match b {
 		// Deliberately ABOVE the Rock family's strength wall (§5.1), not on
@@ -205,14 +175,10 @@ pub fn reveal(b: BlockType) -> Option<u32> {
 	})
 }
 
-/// The ALCHEMY level a SURFACE node becomes visible at — [`reveal`]'s
-/// twin on the other skill, so Alchemy owns the surface hunt the way
-/// Mining owns the deep one (the essence redesign). Same stranger-gate
-/// semantics: below it the cell is its host in every respect, and you
-/// draw what you can see.
-///
-/// A node answers to exactly ONE of the two reveal tables (pinned in
-/// `worldgen::nodes`).
+/// The ALCHEMY level a SURFACE node becomes visible at — [`reveal`]'s twin on the other skill,
+/// so Alchemy owns the surface hunt the way Mining owns the deep one. Same stranger-gate
+/// semantics: below it the cell is its host in every respect, and you draw what you can see. A
+/// node answers to exactly ONE of the two reveal tables (pinned in `worldgen::nodes`).
 pub fn alchemy_reveal(b: BlockType) -> Option<u32> {
 	Some(match b {
 		// The day-one node, and necessarily so: every essence in the game
@@ -244,13 +210,10 @@ pub const BENCH_FASTEST_AT: u32 = 45;
 /// ([`crate::alchemy::waste_permille`] owns the floor it clamps to).
 pub const WASTE_DIP_AT: u32 = 56;
 
-/// How many cells one hold breaks with the Resonant Pick in hand
-/// (SKILLS-DESIGN §5.6): a single cell below the tool's own Mining level,
-/// then a row, then the full square plane.
-///
-/// A width, not a boolean, because the pick's two ranks are one
-/// progression: the same machinery widens, and the timing multiplier
-/// beside it in `skills` steps with it.
+/// How many cells one hold breaks with the Resonant Pick in hand (SKILLS-DESIGN §5.6): a single
+/// cell below the tool's own Mining level, then a row, then the full square plane. A width, not
+/// a boolean, because the pick's two ranks are one progression — the same machinery widens, and
+/// the timing multiplier beside it in `skills` steps with it.
 pub fn pick_cells(level: u32) -> usize {
 	match level {
 		l if l >= PICK_PLANE_AT => PICK_PLANE,
@@ -259,12 +222,9 @@ pub fn pick_cells(level: u32) -> usize {
 	}
 }
 
-/// The Mining level the swing widens to a row at.
-///
-/// Named rather than left inside [`pick_cells`]'s match, and that is the
-/// rule for every threshold in this file: one nothing can NAME is one
-/// every reader writes down again — the character screen's teasers and
-/// two test suites were each carrying their own copy.
+/// The Mining level the swing widens to a row at. Named rather than left inside
+/// [`pick_cells`]'s match, and that is the rule for every threshold in this file: one nothing
+/// can NAME is one every reader writes down again.
 pub const PICK_WIDE_AT: u32 = 33;
 
 /// The Mining level the swing reaches [`PICK_PLANE`] at. Deep in the
@@ -273,11 +233,9 @@ pub const PICK_WIDE_AT: u32 = 33;
 /// 1–60 compression keeps exactly this exception).
 pub const PICK_PLANE_AT: u32 = 85;
 
-/// The pick's second rank: the full plane, the widest it ever breaks.
-///
-/// Named because two things key on "the pick is at its last rank" and
-/// neither may own a threshold of its own — [`pick_cells`] here, and
-/// [`crate::gi::carried_light`], which brightens the tool's glow at
+/// The pick's second rank: the full plane, the widest it ever breaks. Named because two things
+/// key on "the pick is at its last rank" and neither may own a threshold of its own —
+/// [`pick_cells`] here, and [`crate::gi::carried_light`], which brightens the tool's glow at
 /// exactly the level the swing widens.
 pub const PICK_PLANE: usize = 9;
 
@@ -310,14 +268,11 @@ pub const PROSPECT_FAINT_AT: u32 = 18;
 /// other threshold in sight.
 pub const PROSPECT_SHARP_AT: u32 = 43;
 
-/// The Mining mastery capstone (§5.5): every field extraction draws one
-/// extra vein's worth of essence. It crowns the CONTENT ladder — the
-/// level the last reveal's stretch ends at — rather than the level cap,
-/// which the 1–60 compression leaves as expansion headroom.
-///
-/// Extra DRAWS rather than extra units, which is what `alchemy::field_yield`
-/// spends it as: a tier that pays in two essences has to get more of both,
-/// or the capstone would quietly favour whichever line was listed first.
+/// The Mining mastery capstone (§5.5): every field extraction draws one extra vein's worth of
+/// essence. It crowns the CONTENT ladder — the level the last reveal's stretch ends at — rather
+/// than the level cap, which the 1–60 compression leaves as expansion headroom. Extra DRAWS
+/// rather than extra units, which is what `alchemy::field_yield` spends it as: a tier paying in
+/// two essences must get more of both, or the capstone would favour whichever was listed first.
 pub fn ore_mastery(level: u32) -> u32 {
 	u32::from(level >= MASTERY_AT)
 }
@@ -326,14 +281,11 @@ pub fn ore_mastery(level: u32) -> u32 {
 /// is the top of the CONTENT ladder rather than the level cap.
 pub const MASTERY_AT: u32 = 60;
 
-/// Arcana's teleport cooldown: how long EVERY teleport rests before the
-/// next one, stepping DOWN at the two swift rungs — a rung is felt as
-/// "the world comes back sooner". One clock across Return Home and every
-/// waystone port, so no chain of hops can outrun it; a per-spell timer
-/// would let a player ring the roster and land home for free. The first
-/// level's answer IS the game's base cooldown; `digblock-net` aliases
-/// that base onto the protocol const its message doc names, so there is
-/// one number.
+/// Arcana's teleport cooldown: how long EVERY teleport rests before the next one, stepping DOWN
+/// at the two swift rungs. One clock across Return Home and every waystone port, so no chain of
+/// hops can outrun it — a per-spell timer would let a player ring the roster and land home for
+/// free. The first level's answer IS the game's base cooldown; `digblock-net` aliases that base
+/// onto the protocol const its message doc names, so there is one number.
 pub fn teleport_cooldown_secs(level: u32) -> u32 {
 	match level {
 		l if l >= TELEPORT_SWIFTER_AT => 30,
@@ -353,13 +305,11 @@ pub const TELEPORT_SWIFT_AT: u32 = 18;
 /// The second, deep in the ladder beside the last ports.
 pub const TELEPORT_SWIFTER_AT: u32 = 56;
 
-/// The waystone ladder: the Arcana level that makes each biome's port
-/// castable, ordered by remoteness and rarity — common lowland first,
-/// the far cold last, crowning the content top. `None` is a kind with no
-/// port: the water kinds are not destinations, and a shore band or a
-/// slope patch is scenery, not a place (the doc comment on the arm is
-/// the roster's record). The sites themselves derive in
-/// `waystones::Roster`; this table is the only place their levels live.
+/// The waystone ladder: the Arcana level that makes each biome's port castable, ordered by
+/// remoteness and rarity — common lowland first, the far cold last, crowning the content top.
+/// `None` is a kind with no port: the water kinds are not destinations, and a shore band or a
+/// slope patch is scenery, not a place. The sites themselves derive in `waystones::Roster`;
+/// this table is the only place their levels live.
 pub fn waystone(kind: crate::worldgen::SurfaceKind) -> Option<u32> {
 	use crate::worldgen::SurfaceKind as K;
 	Some(match kind {
@@ -428,12 +378,10 @@ pub const WARD_AT: u32 = 16;
 pub const WARD_WIDE_AT: u32 = 36;
 pub const WARD_VAST_AT: u32 = 52;
 
-/// How many seconds a causeway stands for a caster at this Arcana. Zero
-/// below the first rung IS "cannot cast", [`ward_radius`]'s convention.
-/// Each rung lengthens the road and ([`crate::alchemy::causeway_price`])
-/// raises its fare by MORE, so a longer causeway is never a cheaper
-/// second of one — the Ward's "never a free upgrade" rule, which a span
-/// that grew on its own would break.
+/// How many seconds a causeway stands for a caster at this Arcana. Zero below the first rung IS
+/// "cannot cast", [`ward_radius`]'s convention. Each rung lengthens the road and
+/// ([`crate::alchemy::causeway_price`]) raises its fare by MORE, so a longer causeway is never
+/// a cheaper second of one — the Ward's "never a free upgrade" rule.
 pub fn causeway_secs(level: u32) -> u32 {
 	match level {
 		l if l >= CAUSEWAY_VAST_AT => 60,
@@ -480,31 +428,22 @@ pub fn wisp_secs(level: u32) -> u32 {
 // cell OUTRIGHT — placed, or regrown — to the level that would have
 // revealed it, at exactly that level and no higher.
 
-/// §5.1's strength wall: the Mining level below which `b` refuses to be
-/// dug at all; the first level means ungated. Deliberately a wall — the doc's original "no
-/// strength wall" stance was reversed by design.
-///
-/// TWO gates, and a block waits for the later of them. [`mine_family`] is
-/// the strength ladder every diggable block sits on; [`mine_material`] is
-/// the handful of substances that additionally have to be EARNED, and it
-/// can only ever push a block later, never earlier.
+/// §5.1's strength wall: the Mining level below which `b` refuses to be dug at all; the first
+/// level means ungated. TWO gates, and a block waits for the later of them — [`mine_family`] is
+/// the strength ladder every diggable block sits on, and [`mine_material`] is the handful of
+/// substances that additionally have to be EARNED, which can only ever push a block later,
+/// never earlier.
 pub fn mine(b: BlockType) -> u32 {
 	let family = mine_family(b.dig_family());
 	let material = b.material().map_or(1, mine_material);
 	family.max(material)
 }
 
-/// The strength wall keyed on the DIG FAMILY — the same axis that decides
-/// how long a hold takes (§5.1), which is the only thing raw strength can
-/// honestly be about. Soil and foliage from the first swing, then timber,
-/// then rock: the ladder a player climbs is soil → trees → stone, and each
-/// rung is opened by digging the one below it.
-///
-/// Keying it here rather than on the substance is what stopped rock being
-/// the only family with a wall at all. It also puts GRAVEL behind the
-/// same wall as stone — it used to be the ungated "entry rock", and it
-/// isn't one any more, because timber is the thing that now stands
-/// between bare ground and the quarry.
+/// The strength wall keyed on the DIG FAMILY — the same axis that decides how long a hold takes
+/// (§5.1), which is the only thing raw strength can honestly be about. Soil and foliage from
+/// the first swing, then timber, then rock: each rung is opened by digging the one below it.
+/// Keying it here rather than on the substance is what stops rock being the only family with a
+/// wall, and it puts GRAVEL behind the same wall as stone rather than leaving it entry rock.
 fn mine_family(f: crate::block::DigFamily) -> u32 {
 	use crate::block::DigFamily as F;
 	match f {
@@ -514,12 +453,11 @@ fn mine_family(f: crate::block::DigFamily) -> u32 {
 	}
 }
 
-/// The substances that have to be earned on top of their family's wall,
-/// keyed on the SUBSTANCE because that is what being earned is about — a
-/// metal stair resists exactly as its metal does, and listing every shape
-/// by hand was how the old table came to name four blocks and miss the
-/// fifth. Everything whose only wall is its strength answers the first
-/// level here and takes [`mine_family`]'s number.
+/// The substances that have to be earned on top of their family's wall, keyed on the SUBSTANCE
+/// because that is what being earned is about — a metal stair resists exactly as its metal
+/// does, and listing every shape by hand is how a table comes to name four blocks and miss the
+/// fifth. Everything whose only wall is its strength answers the first level here and takes
+/// [`mine_family`]'s number.
 fn mine_material(m: Material) -> u32 {
 	use Material as M;
 	match m {
@@ -553,21 +491,11 @@ fn mine_material(m: Material) -> u32 {
 	}
 }
 
-/// [`mine_material`]'s twin on the other ladder: the substances whose
-/// reveal is an ALCHEMY level, which is the three SURFACE nodes.
-///
-/// Here for the same reason the ore arms are in [`mine_material`], and
-/// against the same failure: a live face standing in a cell OUTRIGHT is
-/// ordinary chunk data every visitor's mesh shows, because
-/// `nodes::revealed` answers a stored face ahead of both reveal gates.
-/// The regrowth sweep writes exactly that, so without these arms a
-/// brand-new arrival draws the springs a levelled player left behind —
-/// in the essence the Ward's fare is priced in. Neither wall covers it:
-/// Springstone is Soft, so on strength alone it opens at the first level.
-///
-/// Keyed to [`alchemy_reveal`] rather than hand-numbered, so a retune of
-/// the surface ladder cannot leave the two disagreeing
-/// (`no_node_opens_before_the_level_that_reveals_it`).
+/// [`mine_material`]'s twin on the other ladder: the substances whose reveal is an ALCHEMY
+/// level, which is the three SURFACE nodes. A live face standing in a cell OUTRIGHT is ordinary
+/// chunk data every visitor's mesh shows — `nodes::revealed` answers a stored face ahead of
+/// both reveal gates, and the regrowth sweep writes exactly that. Keyed to [`alchemy_reveal`]
+/// rather than hand-numbered (`no_node_opens_before_the_level_that_reveals_it`).
 fn draw_material(m: Material) -> u32 {
 	use Material as M;
 	match m {
@@ -599,24 +527,11 @@ fn alchemy_reveal_of(b: BlockType) -> u32 {
 	}
 }
 
-/// The strength wall's Alchemy counterpart: the level below which `b` refuses
-/// to be dug on the other ladder (the first level means ungated).
-///
-/// TWO gates, [`mine`]'s shape on this axis, and a block waits for the later
-/// of them. The RECIPE half says picking it up would hand you an item you
-/// cannot make; the [`draw_material`] half says drawing it would hand you a
-/// find you could not have revealed.
-///
-/// The recipe half is derived from [`craft`] rather than tabled again. It keys
-/// on the DROP, not the block, because the gate is about the item that lands in
-/// the inventory — mined rock is Rubble whatever the cell was, so quarrying
-/// pristine Stone stays a Mining question. And it keys on `block::crafted`
-/// rather than on craftability alone: `Wood` and `Lumber` are both craftable,
-/// but only one grows on a tree. Craft-ONLY blocks are the ones a player can
-/// only have crafted, so requiring their own recipe level is what stops anyone
-/// mining around an unlock through someone else's build. It cannot express the
-/// node half at all: a node has no recipe, so it answers the first level for
-/// the richest find in the game.
+/// The strength wall's Alchemy counterpart: the level below which `b` refuses to be dug on the
+/// other ladder (the first level means ungated). TWO gates, [`mine`]'s shape on this axis: the
+/// RECIPE half says picking it up would hand you an item you cannot make, the [`draw_material`]
+/// half a find you could not have revealed. The recipe half derives from [`craft`], keying on
+/// the DROP and on craft-ONLY, never craftability — `Wood` has a recipe and grows on trees.
 pub fn pickup(b: BlockType) -> u32 {
 	let recipe = match b.dig_drop() {
 		Some(d) if d.is_crafted_only() => craft(d).unwrap_or(1),
@@ -639,15 +554,9 @@ pub fn can_craft(b: BlockType, level: u32) -> bool {
 pub enum Kind {
 	/// The block is too hard for this Mining level (the strength wall).
 	Strength,
-	/// The Alchemy wall ([`pickup`]): the block is craft-only and this
-	/// level cannot make one, or it is a surface node this level could
-	/// not have revealed. Either way the dig would hand out something
-	/// the player has not reached.
+	/// The Alchemy wall ([`pickup`]): the dig would hand out something the player has not reached.
 	Recipe,
-	/// A revealed ore vein and the wrong tool in hand (§5.3). Unlike the
-	/// other two this is not about a LEVEL at all — it is the one refusal
-	/// a player can clear without gaining anything, by switching tools,
-	/// and the one that never appears in a [`Requirement`].
+	/// A revealed vein and the wrong tool in hand (§5.3) — not a LEVEL, never a [`Requirement`].
 	Tool,
 }
 
@@ -684,13 +593,10 @@ pub fn dig_requirements(b: BlockType) -> [Requirement; 2] {
 	]
 }
 
-/// THE dig-permission question: the first requirement `skills` fails, or
-/// `None` when the block may be dug.
-///
-/// Every consumer of the gates routes through this — client prediction
-/// (`diggable`, and the feed line `step_dig` speaks), the server's
-/// `DigStart` backstop, the bot's target filter — so a new gate is added
-/// in exactly one place and every one of them enforces it.
+/// THE dig-permission question: the first requirement `skills` fails, or `None` when the block
+/// may be dug. Every consumer of the gates routes through this — client prediction, the
+/// server's `DigStart` backstop, the bot's target filter — so a new gate is added in exactly
+/// one place and every one of them enforces it.
 pub fn dig_blocked(b: BlockType, skills: &SkillSet) -> Option<Requirement> {
 	dig_requirements(b)
 		.into_iter()
@@ -709,15 +615,11 @@ pub fn requirement(b: BlockType, kind: Kind) -> Option<Requirement> {
 
 // ---- what a level opens ----------------------------------------------
 
-/// Does reaching `level` in `skill` open something that was shut at
-/// `level - 1`? The level-up fanfare asks this to pick its voice (a
-/// bigger sound for a level that hands you something) and the character
-/// screen's teasers are pinned against it, and the answer is DERIVED from
-/// the tables themselves rather than a second list — retuning a threshold
-/// moves the fanfare with it, and cannot drift.
-///
-/// The first level is never an unlock: it is where everyone starts, and no one
-/// levels up INTO it.
+/// Does reaching `level` in `skill` open something that was shut at `level - 1`? The level-up
+/// fanfare asks this to pick its voice and the character screen's teasers are pinned against
+/// it; the answer is DERIVED from the tables rather than a second list, so retuning a threshold
+/// moves the fanfare with it and cannot drift. The first level is never an unlock: it is where
+/// everyone starts, and no one levels up INTO it.
 pub fn opens(skill: Skill, level: u32) -> bool {
 	if level <= 1 || level > MAX_LEVEL {
 		return false;

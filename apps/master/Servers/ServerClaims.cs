@@ -4,18 +4,11 @@ using Microsoft.EntityFrameworkCore;
 
 namespace DigBlock.Master.Servers;
 
-/// <summary>Who holds which <c>host:port</c>, and the key that proves it.
-///
-/// Registration stays anonymous — no operator account, no signup, a
-/// self-hoster still just runs the container. What changed is that the
-/// FIRST registration of an address mints a key and the address remembers
-/// it, so a later registration has to present it. That is the whole of
-/// "anonymous but sticky", and it closes the registration takeover
-/// without adding a step to anybody's day.
-///
-/// Persisted (unlike the liveness registry) for two reasons: the key has to
-/// outlive a master restart or the sticky check would reset every deploy,
-/// and a server keeps its <c>ServerId</c> across one.</summary>
+/// <summary>Who holds which <c>host:port</c>, and the key that proves it. Registration
+/// stays anonymous, but the FIRST registration of an address mints a key it remembers and
+/// a later one must present, which closes the registration takeover. Persisted, unlike
+/// the liveness registry: the key must outlive a master restart or the sticky check
+/// resets every deploy, and a server keeps its <c>ServerId</c> across one.</summary>
 public sealed class ServerClaims(MasterDb db)
 {
     /// <summary>Addresses are compared lowercased. A DNS name is

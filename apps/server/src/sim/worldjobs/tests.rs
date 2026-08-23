@@ -155,12 +155,11 @@ fn a_locked_spawn_refuses_a_sweep() {
 	assert!(swept > 0, "the lock covered ALL of it — nothing was proven");
 }
 
-/// The frontier feeds itself: run 1's writes are journaled edits, so run
-/// 2's candidates include their neighbors — grass advances exactly one
-/// ring per run with no rule-side bookkeeping. The noon registration
-/// only: its ray is vertical, and the flat harness world is one real
-/// worldgen knows nothing about, so an angled ray leaving residency
-/// would be judged against terrain that is not there.
+/// The frontier feeds itself: run 1's writes are journaled edits, so run 2's candidates include
+/// their neighbors — grass advances exactly one ring per run with no rule-side bookkeeping. The
+/// noon registration only: its ray is vertical, and the flat harness world is one real worldgen
+/// knows nothing about, so an angled ray leaving residency would be judged against terrain that
+/// is not there.
 #[test]
 fn the_grass_frontier_sustains_itself() {
 	let mut sim = flat_sim("wj-frontier");
@@ -222,12 +221,10 @@ fn the_grass_frontier_sustains_itself() {
 	check(&sim, 2);
 }
 
-/// The sweep clock survives a restart. A rolled job salts its draw with
-/// the slot index, so a clock that began again at zero would re-offer
-/// one slot's draw on every boot — the same finds handed back forever,
-/// and the sites that lost that roll losing it forever. Two sims over
-/// ONE data directory: the second opens with its clock strictly ahead of
-/// where the first one stood.
+/// The sweep clock survives a restart. A rolled job salts its draw with the slot index, so a
+/// clock that began again at zero would re-offer one slot's draw on every boot — the same finds
+/// handed back forever, and the sites that lost that roll losing it forever. Two sims over ONE
+/// data directory: the second opens with its clock strictly ahead of where the first one stood.
 #[test]
 fn the_sweep_clock_does_not_restart_with_the_process() {
 	let dir = temp_dir("wj-epoch");

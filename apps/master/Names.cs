@@ -1,14 +1,10 @@
 namespace DigBlock.Master;
 
 /// <summary>The display-name rule, mirroring <c>validate_name</c> in
-/// <c>crates/digblock-net/src/protocol.rs</c>. That Rust function is the
-/// definition; this is the authoritative backstop on the side that mints
-/// names, and the two must move together.
-///
-/// Written as an explicit char walk rather than the regex it replaced.
-/// <c>^[A-Za-z0-9_-]{3,10}$</c> counts UTF-16 units while the Rust side
-/// counts <c>char</c>s — identical only because the alphabet happens to be
-/// ASCII, which is a coincidence the code should not be leaning on.</summary>
+/// <c>crates/digblock-net/src/protocol.rs</c> — that Rust function is the
+/// definition, this the backstop on the side that mints names, and the two must
+/// move together. An explicit char walk rather than a regex: a regex counts
+/// UTF-16 units where the Rust side counts <c>char</c>s.</summary>
 public static class Names
 {
     public const int MinLength = 3;

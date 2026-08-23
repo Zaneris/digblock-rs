@@ -189,13 +189,10 @@ fn an_offline_place_smothers_the_grass_beneath() {
 	);
 }
 
-/// The head-count a local world feeds the scheduler reaches the rule.
-///
-/// A solo world is deliberately ONE — `Run::players` is a peak, and the
-/// offline arm has exactly one player to peak at — but nothing said so:
-/// the constant could be swapped for anything, or the `observe` call
-/// dropped entirely, and the sweep would still run. This is the client
-/// host's half of the feed; core pins the scheduler's.
+/// The head-count a local world feeds the scheduler reaches the rule. A solo world is deliberately
+/// ONE — `Run::players` is a peak, and the offline arm has exactly one player to peak at — but
+/// nothing said so: the constant could be swapped, or the `observe` call dropped entirely, and the
+/// sweep would still run. This is the client host's half of the feed; core pins the scheduler's.
 #[test]
 fn a_local_world_sweeps_with_one_player() {
 	use std::sync::atomic::{AtomicU32, Ordering};
@@ -234,13 +231,11 @@ fn a_local_world_sweeps_with_one_player() {
 	);
 }
 
-/// The scheduler's clock is the WORLD's age, not the session's.
-///
-/// `worldjob::regrow` salts its roll with the run's slot, so a clock
-/// that restarted at zero on every entry would replay the same slot and
-/// draw the same answer: a spent node that lost its roll would lose it
-/// again for ever. Entering a save winds the clock to the age its own
-/// stamps describe — both already persisted, so nothing new is stored.
+/// The scheduler's clock is the WORLD's age, not the session's. `worldjob::regrow` salts its roll
+/// with the run's slot, so a clock that restarted at zero on every entry would replay the same
+/// slot and draw the same answer: a spent node that lost its roll would lose it again for ever.
+/// Entering a save winds the clock to the age its own stamps describe — both already persisted,
+/// so nothing new is stored.
 #[test]
 fn entering_a_save_resumes_the_worlds_age() {
 	let (mut engine, _) = local_world();

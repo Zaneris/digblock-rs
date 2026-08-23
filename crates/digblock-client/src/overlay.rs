@@ -22,13 +22,11 @@ const LINE_PX: f32 = 20.0;
 const MARGIN: f32 = 8.0;
 const PAD: f32 = 6.0;
 
-/// A millisecond figure that may be unknown, in a FIXED column width
-/// either way — the debug panel's width is a budget, not a measurement, so
-/// a field that changed width would slide every column after it.
-///
-/// Unknown is dashes, never 0.0: a transport with no estimate (loopback,
-/// the benchmark wires) would otherwise read as a perfect zero-latency
-/// connection, which is the one wrong answer worse than no answer.
+/// A millisecond figure that may be unknown, in a FIXED column width either way — the debug
+/// panel's width is a budget, not a measurement, so a field that changed width would slide every
+/// column after it. Unknown is dashes, never 0.0: a transport with no estimate (loopback, the
+/// benchmark wires) would otherwise read as a perfect zero-latency connection, which is the one
+/// wrong answer worse than no answer.
 struct MsOrDash(f32);
 
 impl std::fmt::Display for MsOrDash {
@@ -41,15 +39,11 @@ impl std::fmt::Display for MsOrDash {
 	}
 }
 
-/// Column budget for the debug panel. The panel's width is derived from
-/// this rather than from the current frame's longest line, so it never
-/// resizes or slides while numbers stream through it. Every field in the
-/// panel's lines is printf-padded to a fixed width, so this only has to
-/// cover the widest of them — currently the `net` line.
-///
-/// `debug_lines_fit_the_column_budget` pins it from both sides: every line
-/// must fit, and the budget must not sit far past the widest, so growing
-/// this to paper over a runaway line is not an option.
+/// Column budget for the debug panel. The panel's width is derived from this rather than from the
+/// current frame's longest line, so it never resizes or slides while numbers stream through it.
+/// Every field in the panel's lines is printf-padded to a fixed width, so this only has to cover
+/// the widest. `debug_lines_fit_the_column_budget` pins it from both sides: every line must fit,
+/// and the budget must not sit far past the widest, so growing it to paper over a line is out.
 const DEBUG_COLS: usize = 116;
 
 /// Baseline-to-baseline spacing in the debug panel. Never tighter than
@@ -80,15 +74,11 @@ const CHAT_HISTORY_LINES: usize = 6;
 /// Alpha for those recalled lines: legible, but plainly in the past.
 const HISTORY_ALPHA: f32 = 0.45;
 
-/// The feed entries to draw, newest first, each with the alpha to draw
-/// it at. Live messages fade over their final second; once the ttl goes
-/// non-positive an entry is normally invisible, but with the chat box
-/// open the most recent [`CHAT_HISTORY_LINES`] of them come back dim.
-///
-/// The engine pushes oldest-first and never reorders, so walking in
-/// reverse visits strictly decreasing ttls — every live entry precedes
-/// every expired one and `map_while` can stop at the first entry that
-/// isn't being shown.
+/// The feed entries to draw, newest first, each with the alpha to draw it at. Live messages fade
+/// over their final second; once the ttl goes non-positive an entry is normally invisible, but
+/// with the chat box open the most recent [`CHAT_HISTORY_LINES`] come back dim. The engine pushes
+/// oldest-first and never reorders, so walking in reverse visits strictly decreasing ttls and
+/// `map_while` can stop at the first entry that isn't being shown.
 fn visible_feed<T>(
 	feed: &[(T, f32, u32)],
 	chat_open: bool,
@@ -174,16 +164,11 @@ fn debug_lines(stats: &OverlayStats, scratch: &mut String, lines: &mut [(u32, St
 		let _ = scratch.write_fmt(args);
 		lines[i] = (color, scratch.clone());
 	};
-	// `drop` is the one that answers "did we miss a vsync slot": frames
-	// enough past the MEASURED display period to have missed one, so it
-	// works at any refresh rate. `hitch` is a fixed threshold and cannot
-	// see a single dropped frame on a fast panel at all. `ref` is the
-	// estimated period backing drop — n/a until the first report window,
-	// during which drops aren't counted either, and briefly stale after a
-	// refresh-rate change. Without these, a p95 a little over the display
-	// period is unfalsifiable by eye: vsync can only present whole
-	// multiples of that period, so the tail is sampling noise, but
-	// nothing on the overlay said so.
+	// `drop` answers "did we miss a vsync slot": frames enough past the MEASURED display period
+	// to have missed one, so it works at any refresh rate, where the fixed-threshold `hitch`
+	// cannot see a single dropped frame on a fast panel. `ref` is the estimated period behind
+	// drop. Without these a p95 a little over the display period is unfalsifiable by eye: vsync
+	// presents only whole multiples of that period, so the tail is sampling noise.
 	let refresh = match s.refresh_ms {
 		r if r > 0.0 => format!("{r:5.2}"),
 		_ => "  n/a".to_owned(),
@@ -341,19 +326,11 @@ fn debug_lines(stats: &OverlayStats, scratch: &mut String, lines: &mut [(u32, St
 		),
 		None => line(6, DIM, format_args!("net  offline")),
 	}
-	// Where this frame was taken. Not a measurement — it is on a performance
-	// panel because a screenshot of a rendering bug is nearly useless without
-	// the world it happened in, and every field here is an argument the capture
-	// flags take:
-	//
-	//     --seed S --pos X Y Z --yaw Y --pitch P --tod T
-	//
-	// so photographing the panel is enough to reproduce the frame. The facing is
-	// the same eight-point compass the admin commands answer with
-	// (`core::compass`) — a heading is what a player can actually report.
-	//
-	// `seed` is the one unpadded field, deliberately; it cannot make the panel
-	// move, since the width comes from DEBUG_COLS regardless.
+	// Where this frame was taken. Not a measurement — it is on a performance panel because a
+	// screenshot of a rendering bug is useless without the world it happened in, and every field
+	// here is an argument the capture flags take (`--seed`, `--pos`, `--yaw`, `--pitch`, `--tod`),
+	// so photographing the panel is enough to reproduce the frame. The facing is the same
+	// eight-point compass the admin commands answer with — a heading is what a player reports.
 	let w = &s.world;
 	let facing = digblock_core::compass::compass_abbrev(look_dir(w.yaw_deg, w.pitch_deg));
 	line(
@@ -373,18 +350,11 @@ fn debug_lines(stats: &OverlayStats, scratch: &mut String, lines: &mut [(u32, St
 	);
 }
 
-/// The seed at full round-trip precision, in the shorter of the two forms
-/// Rust prints an f64 in.
-///
-/// It has to round-trip exactly — worldgen is a pure function of the seed,
-/// so a seed the panel rounded names a DIFFERENT world, which is worse than
-/// printing none at all. It also has to be bounded, because the panel clips
-/// at [`DEBUG_COLS`] and clipping is how a wrong seed would arrive looking
-/// right. `{}` satisfies the first and not the second: it never uses an
-/// exponent, so a denormal seed is 300-plus characters of decimal. `{:e}`
-/// satisfies both but reads badly for the ordinary case (`4.2e1` for 42).
-/// Taking the shorter gives every plausible seed its plain form and the
-/// pathological ones a 24-character worst case.
+/// The seed at full round-trip precision, in the shorter of the two forms Rust prints an f64 in.
+/// It has to round-trip exactly — worldgen is a pure function of the seed, so a rounded seed names
+/// a DIFFERENT world — and it has to be bounded, because the panel clips at [`DEBUG_COLS`] and
+/// clipping is how a wrong seed would arrive looking right. `{}` never uses an exponent, so a
+/// denormal seed runs to hundreds of characters; `{:e}` reads badly for the ordinary case.
 fn seed_text(seed: f64) -> String {
 	let plain = format!("{seed}");
 	let exp = format!("{seed:e}");
@@ -420,13 +390,11 @@ impl Overlay {
 			view_formats: &[],
 		});
 		let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
-		// Linear, not Nearest. Glyphs are rasterized at the exact pixel
-		// size they're drawn at and land on whole-pixel origins, so the
-		// common case is a 1:1 blit where the two filters are identical.
-		// The case that isn't 1:1 is name tags, which follow a 3D
-		// projection at arbitrary subpixel positions: Nearest would drop
-		// and duplicate whole texel columns there, popping stems between
-		// one and two pixels wide as the player walks. Linear just blurs.
+		// Linear, not Nearest. Glyphs are rasterized at the exact pixel size they're drawn
+		// at and land on whole-pixel origins, so the common case is a 1:1 blit where the
+		// two filters are identical. The case that isn't 1:1 is name tags, at arbitrary
+		// subpixel positions: Nearest would drop and duplicate whole texel columns there,
+		// popping stems between one and two pixels wide as the player walks. Linear blurs.
 		let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
 			label: Some("overlay font"),
 			mag_filter: wgpu::FilterMode::Linear,
@@ -573,16 +541,11 @@ impl Overlay {
 			.extend_from_slice(&[v(x, y), v(x1, y), v(x, y1), v(x1, y), v(x1, y1), v(x, y1)]);
 	}
 
-	/// Draw `text` in a `px`-tall layout box whose TOP edge is at `y`
-	/// (`self.glyph` for scaled surfaces, [`FIXED_GLYPH_PX`] for pinned
-	/// ones). Returns the advance, so callers that need the width don't
-	/// measure the same string twice.
-	///
-	/// The origin and every glyph's pen are rounded to whole pixels: the
-	/// glyph was rasterized at exactly `px`, so landing it on the pixel
-	/// grid makes the blit 1:1. Each pen is rounded independently rather
-	/// than accumulating rounded advances, which keeps spacing within half
-	/// a pixel of ideal with no drift down a long line.
+	/// Draw `text` in a `px`-tall layout box whose TOP edge is at `y` (`self.glyph` for scaled
+	/// surfaces, [`FIXED_GLYPH_PX`] for pinned ones). Returns the advance, so callers that need
+	/// the width don't measure the same string twice. The origin and every glyph's pen are
+	/// rounded to whole pixels, since the glyph was rasterized at exactly `px`; each pen rounds
+	/// independently rather than accumulating rounded advances, so a long line cannot drift.
 	fn push_text(
 		&mut self,
 		id: font::FaceId,
@@ -647,12 +610,10 @@ impl Overlay {
 		}
 	}
 
-	/// Rebuild the vertex buffer for this frame: the draw list's
-	/// Backdrop/Content/Ghost layers (crosshair, HUD, screens, menu —
-	/// all engine-emitted), plus the legacy direct-push surfaces (debug
-	/// panel, feed, chat, nametags), which draw UNDER the Content layer
-	/// so screens can dim them. The two derived splits bracket the icon
-	/// pipeline's main and ghost stages.
+	/// Rebuild the vertex buffer for this frame: the draw list's Backdrop/Content/Ghost layers
+	/// (crosshair, HUD, screens, menu — all engine-emitted), plus the legacy direct-push surfaces
+	/// (debug panel, feed, chat, nametags), which draw UNDER the Content layer so screens can dim
+	/// them. The two derived splits bracket the icon pipeline's main and ghost stages.
 	#[allow(clippy::too_many_arguments)]
 	pub(crate) fn prepare(
 		&mut self,
@@ -738,12 +699,10 @@ impl Overlay {
 		debug_lines(stats, &mut scratch, &mut lines);
 		self.line_scratch = scratch;
 
-		// Width comes from the fixed column budget, NOT from this frame's
-		// longest line. The panel is right-anchored, so sizing it to live
-		// content made it resize and slide on every frame that changed a
-		// digit count — unreadable while streaming. Every field above is
-		// padded to a fixed width so the lines don't actually vary;
-		// DEBUG_COLS is the belt to that's braces, and
+		// Width comes from the fixed column budget, NOT from this frame's longest line. The
+		// panel is right-anchored, so sizing it to live content resizes and slides it on
+		// every frame that changes a digit count. Every field above is padded to a fixed
+		// width; DEBUG_COLS is the belt to that's braces, and
 		// `debug_lines_fit_the_column_budget` pins both.
 		let text_w = DEBUG_COLS as f32 * font::mono().advance(' ', FIXED_GLYPH_PX);
 		let graph_w = GRAPH_FRAMES as f32 * BAR_W;
@@ -797,13 +756,11 @@ impl Overlay {
 		usable.max(self.glyph * 4.0)
 	}
 
-	/// Server-message feed (system notifications + chat): top-left under
-	/// the input line, NEWEST at the top so the latest message sits next
-	/// to where the player types; long lines wrap at the screen midpoint;
-	/// each entry fades out over its final second (`ttl` clamps to alpha)
-	/// in its own color (chat lines are tinted per sender). `top` is
-	/// where the block starts (below the open input line). With the box
-	/// open, faded-out messages come back dimly — see [`visible_feed`].
+	/// Server-message feed (system notifications + chat): top-left under the input line, NEWEST at
+	/// the top so the latest message sits next to where the player types; long lines wrap at the
+	/// screen midpoint; each entry fades out over its final second in its own color (chat lines
+	/// are tinted per sender). `top` is where the block starts. With the box open, faded-out
+	/// messages come back dimly — see [`visible_feed`].
 	fn push_feed(
 		&mut self,
 		size: (u32, u32),

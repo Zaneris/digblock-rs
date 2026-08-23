@@ -17,31 +17,11 @@ fn hash11(x0: u32) -> f32 {
 	return f32(x & 0xffffffu) / 16777216.0;
 }
 
-// ---------------------------------------------------------------------
-// The crack: a TREE of jagged polylines, not a radial web. Root branches leave
-// a hash-placed origin, each throws off one branch partway along, and whatever
-// slots remain carry one more generation; every polyline's heading random-walks
-// at each joint. A spoke web reads as a pinwheel however hard you wobble it; a
-// line that wanders and splits reads as something giving way.
-//
-// Growth is by ARC LENGTH from the origin, not by radius, so the break spreads
-// as you dig and RETREATS as a released hold decays (`skills::dig_decayed`) —
-// the same motion run backwards rather than a fade.
-//
-// The tree is walked ONCE per pixel and children go into FIXED slots. A
-// next-free-slot counter would reshuffle the slots, and therefore the per-branch
-// hashes, as growth reached spawn points in a different order — that pops
-// mid-hold.
-//
-// Roots each fork ONCE rather than a few forking twice: same budget, but a fork
-// lands beside its parent, so wide-and-shallow covers the face while
-// narrow-and-deep piles into one quadrant.
-//
-// **Every knob below marked `per cell` is a RANGE, not a value**, drawn from the
-// CELL hash rather than the (cell, face) one that places individual lines — so
-// all six faces of a block fail the same WAY with different lines. With the
-// tree's shape fixed, a fixed count of lines would be a signature, and the eye
-// reads the signature rather than the angles.
+// The crack: a TREE of jagged polylines, not a radial web — a spoke web reads as a pinwheel.
+// Growth is by ARC LENGTH from the origin, so the break spreads as you dig and RETREATS as a
+// released hold decays (`skills::dig_decayed`). Walked ONCE per pixel into FIXED slots: a
+// next-free-slot counter would reshuffle the per-branch hashes mid-hold. Roots fork ONCE, wide
+// and shallow. Every `per cell` knob is a RANGE off the CELL hash — six faces, one failure WAY.
 const CR_BRANCH = 16u; // slots; the ceiling on roots × 2 + their forks
 const CR_STEP = 4u;    // loop bound; deeper generations stop earlier
 const CR_ROOT_LO = 4u; // per cell: fewest roots...
@@ -58,21 +38,17 @@ const CR_WIDE_N = 0.0060;
 // not absolute, so a long-segmented block's fine cracks stay in
 // proportion to its coarse ones.
 const CR_SEG_FALL = 0.26;
-// Raggedness. The polyline walk gives the crack its LARGE-scale wander;
-// on its own that reads as a twig, because a segment is a clean straight
-// line between joints. So the sample point is warped by a little noise
-// before any distance is measured, which frays every segment along its
-// whole length for one fixed cost instead of one per extra joint.
-// Amplitude stays under the line's half-width, or the fraying pinches
-// the crack in two.
+// Raggedness. The polyline walk gives the crack its LARGE-scale wander, but a segment is a clean
+// straight line between joints and on its own reads as a twig, so the sample point is warped by a
+// little noise before any distance is measured — every segment frayed along its whole length for
+// one fixed cost instead of one per extra joint. Amplitude stays under the line's half-width, or
+// the fraying pinches the crack in two.
 const CR_RAG = 16.0;   // warp cells across the face
 const CR_RAG_AMP = 0.018; // warp amplitude, face units
-// Head start withheld from a root, as a fraction of the full arc. Roots
-// all leaving at once put a symmetrical asterisk on the block through
-// the opening of the hold — the exact pinwheel this was meant to be
-// rid of. Staggered, the break opens as one or two cracks and the rest
-// join in as it bites. Root 0 is never delayed, so the very first frame
-// of a hold has a mark.
+// Head start withheld from a root, as a fraction of the full arc. Roots all leaving at once put a
+// symmetrical asterisk on the block through the opening of the hold — the pinwheel this exists to
+// be rid of. Staggered, the break opens as one or two cracks and the rest join in as it bites.
+// Root 0 is never delayed, so the very first frame of a hold has a mark.
 const CR_STAGGER = 0.16;
 // Origin jitter, as a fraction of the face's own half-extent — a break
 // that always started dead centre was half of why the old web read as a
@@ -103,12 +79,10 @@ fn cr_child(i: u32, nroot: u32) -> u32 {
 // One mix, two disjoint fields out — a 2D gradient costs four of these,
 // not eight scalar hashes.
 fn cr_h2(c: vec2i) -> vec2f {
-	// The parentheses are MANDATORY, not style: Tint rejects a bare
-	// `a * b ^ c * d` ("mixing '*' and '^' requires parenthesis") while
-	// naga accepts it, so an unparenthesized version compiles natively,
-	// passes the asset validation test, and then invalidates this whole
-	// pipeline in Chrome — no outline, no crack, a wall of uncaptured
-	// errors. `gi_resolve.wgsl`'s hash is written the same way.
+	// The parentheses are MANDATORY, not style: Tint rejects a bare `a * b ^ c * d` while naga
+	// accepts it, so an unparenthesized version compiles natively, passes the asset validation
+	// test, and then invalidates this whole pipeline in Chrome — no outline, no crack, a wall of
+	// uncaptured errors. `gi_resolve.wgsl`'s hash is written the same way.
 	var x =(u32(c.x) * 0x9e3779b9u) ^ (u32(c.y) * 0x85ebca6bu);
 	x ^= x >> 16u;
 	x *= 0x7feb352du;
@@ -168,12 +142,11 @@ fn fs(in: VsOut) -> @location(0) vec4f {
 		let fork = CR_FORK_LO + CR_FORK_N * hash11(cseed * 61u + 23u);
 		let seg0 = CR_SEG_LO + CR_SEG_N * hash11(cseed * 61u + 41u);
 		let wide = CR_WIDE_LO + CR_WIDE_N * hash11(cseed * 61u + 53u);
-		// The arc a full hold propagates, derived from this block's own
-		// segment length rather than fixed. A block that cracks in long
-		// strides has further to run, and both finish at progress 1 —
-		// a shared constant would leave the coarse blocks half-drawn.
-		// `span` is one root's own reach; `arc` adds room for the last
-		// root's head start, so a staggered root still finishes on time.
+		// The arc a full hold propagates, derived from this block's own segment length rather
+		// than fixed: a block that cracks in long strides has further to run, and both finish at
+		// progress 1, where a shared constant would leave the coarse blocks half-drawn. `span` is
+		// one root's own reach; `arc` adds room for the last root's head start, so a staggered
+		// root still finishes on time.
 		let span = f32(CR_STEP) * seg0 * 1.05;
 		let arc = span * (1.0 + CR_STAGGER);
 
@@ -188,12 +161,10 @@ fn fs(in: VsOut) -> @location(0) vec4f {
 		// in clean arc length, so the frontier advances smoothly.
 		let pw = p + cr_warp(p * CR_RAG + f32(seed & 63u)) * CR_RAG_AMP;
 
-		// The branch frontier. Slots 0..nroot are the roots; the rest
-		// are written by their parent's walk, below, and stay off until
-		// growth actually reaches the joint they hang from — which is
-		// `b_on` staying at the zero WGSL gives an uninitialized
-		// function-scope var, so an unreached slot is skipped rather
-		// than walked from garbage.
+		// The branch frontier. Slots 0..nroot are the roots; the rest are written by their
+		// parent's walk below and stay off until growth reaches the joint they hang from —
+		// `b_on` left at the zero WGSL gives an uninitialized function-scope var, so an
+		// unreached slot is skipped rather than walked from garbage.
 		var b_pos: array<vec2f, CR_BRANCH>;
 		var b_dir: array<vec2f, CR_BRANCH>;
 		var b_t0: array<f32, CR_BRANCH>;

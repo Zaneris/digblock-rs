@@ -5,12 +5,10 @@
 use super::*;
 
 impl Pipeline {
-	/// Set one block, remeshing the chunk and every Ready neighbor whose
-	/// padded shell can see the edited cell (faces, and the edge/corner
-	/// diagonals at touched borders). Returns the previous block; None if
-	/// outside the world, the chunk isn't Ready, or the edit is a no-op.
-	/// In-flight meshes of the old data are dropped by the generation
-	/// check in `drain_results`.
+	/// Set one block, remeshing the chunk and every Ready neighbor whose padded shell can see the
+	/// edited cell (faces, and the edge/corner diagonals at touched borders). Returns the previous
+	/// block; None if outside the world, the chunk isn't Ready, or the edit is a no-op. In-flight
+	/// meshes of the old data are dropped by the generation check in `drain_results`.
 	pub fn set_block(
 		&mut self,
 		x: i32,
@@ -119,12 +117,10 @@ impl Pipeline {
 		}
 	}
 
-	/// Apply an AUTHORITATIVE block value (a server edit): unlike
-	/// [`set_block`], an edit into a not-yet-generated chunk is not
-	/// dropped — it is held and applied (pre-mesh) when the chunk lands,
-	/// so join-sync edits racing generation can never be lost. Every
-	/// world consumer gets this for free by owning a `Pipeline`, instead
-	/// of re-inventing the retry map the engine used to keep.
+	/// Apply an AUTHORITATIVE block value (a server edit): unlike [`set_block`], an edit into a
+	/// not-yet-generated chunk is not dropped — it is held and applied (pre-mesh) when the chunk
+	/// lands, so join-sync edits racing generation can never be lost. Every world consumer gets
+	/// this by owning a `Pipeline`, instead of re-inventing a retry map of its own.
 	pub fn apply_authoritative(&mut self, x: i32, y: i32, z: i32, cell: u16) -> ApplyEdit {
 		if crate::chunk::split_world(x, y, z).is_none() {
 			return ApplyEdit::Rejected;
@@ -173,12 +169,11 @@ impl Pipeline {
 		self.deferred_count
 	}
 
-	/// Re-mesh the chunk owning this cell, without writing anything. For
-	/// the one case where a chunk's MESH depends on something other than
-	/// its cells: the ore reveal reads the edit overlay, so recording a
-	/// cell can change what its column draws while every value stays put.
-	/// Neighbours are deliberately not bumped — the reveal is a per-cell
-	/// stamp inside the owning chunk and no padded shell reads it.
+	/// Re-mesh the chunk owning this cell, without writing anything. For the one case where a
+	/// chunk's MESH depends on something other than its cells: the ore reveal reads the edit
+	/// overlay, so recording a cell can change what its column draws while every value stays put.
+	/// Neighbours are deliberately not bumped — the reveal is a per-cell stamp inside the owning
+	/// chunk.
 	pub(super) fn remesh_at(&mut self, x: i32, y: i32, z: i32) {
 		let Some(((cx, cy, cz), _)) = crate::chunk::split_world(x, y, z) else {
 			return;

@@ -7,17 +7,11 @@ using Microsoft.Extensions.Options;
 
 namespace DigBlock.Master.Auth;
 
-/// <summary>The browser half of sign-in.
-///
-/// The master is the authorization server as far as the game is concerned, and
-/// the client never sees a provider token: the client opens a browser at
-/// <c>/auth/start</c> with a redirect target, a state and a PKCE challenge; the
-/// browser does the provider round trip here; the master bounces back to that
-/// target with a one-time code, which the client redeems for a session over its
-/// own HTTPS connection.
-///
-/// The payoff is that adding a provider is a change here and nowhere else — no
-/// client release, no new redirect URI, no protocol bump.</summary>
+/// <summary>The browser half of sign-in. The master is the authorization
+/// server as far as the game is concerned, and the client never sees a provider
+/// token: it opens a browser at <c>/auth/start</c> with a redirect target, a
+/// state and a PKCE challenge, and redeems the one-time code bounced back there
+/// for a session. Adding a provider is a change here and nowhere else.</summary>
 public static class AuthEndpoints
 {
     /// <summary>The cookie scheme that carries the provider identity across
@@ -111,13 +105,11 @@ public static class AuthEndpoints
         }
     }
 
-    /// <summary>A remote sign-in can fail without ever reaching
-    /// <c>/auth/complete</c>: the player cancels at the provider's consent
-    /// screen, or the browser replays a callback whose correlation cookie is
-    /// already spent — the back button after a finished sign-in does exactly
-    /// that. The handler's default is to throw, which reads as a stack page
-    /// in Development and a bare 500 in production, so both events answer
-    /// with the same page every other dead end in this flow gets.</summary>
+    /// <summary>A remote sign-in can fail without reaching <c>/auth/complete</c>:
+    /// the player cancels at the provider's consent screen, or the back button
+    /// replays a callback whose correlation cookie is already spent. The
+    /// handler's default is to throw — a stack page in Development, a bare 500
+    /// in production — so both events answer with this flow's error page.</summary>
     private static void FailWithAPage(RemoteAuthenticationEvents events)
     {
         events.OnAccessDenied = ctx =>

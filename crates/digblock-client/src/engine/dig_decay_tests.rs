@@ -67,12 +67,10 @@ fn releasing_a_hold_bleeds_it_out_instead_of_binning_it() {
 	assert_eq!(web(&engine), None, "and the block outlines unbroken");
 }
 
-/// A siphon draw ENDS the press that made it. The cell it emptied now
-/// holds the tier's spent rock, and quarrying that is a second action
-/// — one the same press used to roll straight into, destroying the
-/// trophy on the hold that earned it. The latch names one cell, so a
-/// seam next to it still draws without letting go, and only the button
-/// coming up re-arms the drawn one.
+/// A siphon draw ENDS the press that made it: the cell now holds the tier's spent rock, and
+/// quarrying that is a second action — one the same press would roll straight into, destroying
+/// the trophy on the hold that earned it. The latch names ONE cell, so a seam next to it still
+/// draws without letting go, and only the button coming up re-arms the drawn one.
 #[test]
 fn a_drawn_cell_needs_a_fresh_press_before_it_breaks() {
 	let (mut engine, cell) = block_ahead(BlockType::Dirt);
@@ -102,17 +100,11 @@ fn a_drawn_cell_needs_a_fresh_press_before_it_breaks() {
 	);
 }
 
-/// The conditional rock rule, client half: a stone standing in a cell
-/// somebody WROTE comes back whole to a mason and crumbles for anyone
-/// who could not have cut it (SKILLS-DESIGN §7.1/§7.5). Prediction has
-/// to agree with the server here or a quarry silently drifts the two
-/// inventories apart — there is no rebase behind an ordinary dig.
-///
-/// `block_ahead` stands the block through `Pipeline::set_block`, and
-/// the engine always carries an `EditOverlay`, so the cell it leaves is
-/// an edited one — which is exactly the case under test. The pristine
-/// half is `only_the_worlds_own_rock_crumbles` in core and the server's
-/// own pair over the real edit path.
+/// The conditional rock rule, client half: a stone standing in a cell somebody WROTE comes
+/// back whole to a mason and crumbles for anyone who could not have cut it (SKILLS-DESIGN
+/// §7.1/§7.5). Prediction has to agree with the server or a quarry silently drifts the two
+/// inventories apart — there is no rebase behind an ordinary dig. `block_ahead` leaves an
+/// EDITED cell, the case under test; the pristine half is `only_the_worlds_own_rock_crumbles`.
 #[test]
 fn the_client_predicts_a_placed_stone_coming_back_whole() {
 	use digblock_core::skills::{Skill, total_xp_for};

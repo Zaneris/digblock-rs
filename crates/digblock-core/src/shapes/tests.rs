@@ -202,14 +202,11 @@ fn draw_bounds_are_the_tight_box_around_the_drawn_geometry() {
 	}
 }
 
-/// A door is one object across two cells, so `object_bounds` answers
-/// the same anchor and the same box from either half: the pair's lower
-/// cell, and a box two cells tall.
-///
-/// The union has to be a real union rather than the lower half
-/// stretched — the handle protrudes past the leaf on the lower half
-/// and the lites do not, so it is the LOWER half that sets the thin
-/// axis and the UPPER half's box does not reach it.
+/// A door is one object across two cells, so `object_bounds` answers the same anchor and the same
+/// box from either half: the pair's lower cell, and a box two cells tall. The union has to be a
+/// real union rather than the lower half stretched — the handle protrudes past the leaf on the
+/// lower half and the lites do not, so it is the LOWER half that sets the thin axis and the UPPER
+/// half's box does not reach it.
 #[test]
 fn a_door_bounds_as_one_object() {
 	use crate::chunk::make_cell;

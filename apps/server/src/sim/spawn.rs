@@ -10,37 +10,26 @@ use super::*;
 /// generous to a snapshot's jitter, far short of a stride.
 const WARD_STILL: f32 = 0.6;
 
-/// Cast attempts one client may make back to back, and the rate the
-/// bucket refills at. Sized for the spellbook rather than for the wire:
-/// a channel outlasts the whole burst, so no honest client can reach it,
-/// while the reliable stream's own frame budget admits casts far faster
-/// than a spellbook can offer them — and every one is a sphere derived
-/// and scanned against every player before it can be refused.
+/// Cast attempts one client may make back to back, and the rate the bucket refills at. Sized for
+/// the spellbook rather than for the wire: a channel outlasts the whole burst, so no honest client
+/// can reach it, while the reliable stream admits casts far faster than a spellbook can offer them
+/// — and every one is a sphere derived and scanned against every player before it can be refused.
 pub(super) const CAST_BURST: f32 = 6.0;
 pub(super) const CAST_RATE_PER_SEC: u32 = 4;
 
-/// Standing kindled lights the world may hold at once.
-///
-/// The list is a server-wide backlog handed to every joiner, and only
-/// expiry takes an entry off it — so without a ceiling a few minutes of
-/// casting is an unbounded send at every join for as long as the lights
-/// burn. One light per cell (a recast REFRESHES) is what makes the
-/// ceiling generous: reaching it takes that many distinct lit cells
-/// alive at once.
+/// Standing kindled lights the world may hold at once. The list is a server-wide backlog handed to
+/// every joiner and only expiry takes an entry off it, so without a ceiling a few minutes of
+/// casting is an unbounded send at every join for as long as the lights burn. One light per cell (a
+/// recast REFRESHES) is what makes the ceiling generous: reaching it takes that many distinct lit
+/// cells alive at once.
 pub(super) const MAX_KINDLED: usize = 256;
 
 impl Sim {
-	/// The spawn point to use right now.
-	///
-	/// Either operator override short-circuits the search. A hand-picked
-	/// point (`/set-spawn`) is an explicit decision and stays exactly where
-	/// it was put; a locked region is unmodifiable, so it cannot have
-	/// stopped being valid and there is nothing to search for. Otherwise
-	/// the anchor is re-validated against the journal and the search
-	/// relocates sideways if players have dug it out. Stateless on purpose
-	/// — a transient hole that happens to be open when someone joins costs
-	/// that one player an offset, and the next join snaps back to the
-	/// anchor rather than inheriting a stored detour.
+	/// The spawn point to use right now. Either operator override short-circuits the search: a
+	/// hand-picked point stays where it was put, and a locked region cannot have stopped being
+	/// valid. Otherwise the anchor is re-validated against the journal and the search relocates
+	/// sideways if players have dug it out. Stateless on purpose — a transient hole open at one
+	/// join costs that player an offset, and the next join snaps back rather than inherit a detour.
 	pub(super) fn spawn_point(&self) -> Vec3 {
 		if let Some(eye) = self.spawn_store.pinned() {
 			return Vec3::from_array(eye);
@@ -53,17 +42,11 @@ impl Sim {
 		})
 	}
 
-	/// Whether `eye` passes every spawn rule as the world stands.
-	///
-	/// Vacuously true for the synthetic-column test seam: those worlds are not
-	/// described by real worldgen, so the pristine half would reject a spawn that
-	/// is perfectly good in the world the sim actually has.
-	///
-	/// Also vacuously true for a hand-picked spawn, which this predicate cannot
-	/// judge and does not need to. It guards `/lock-spawn` against pinning a
-	/// spawn the *search* only returned because it gave up; a point an admin
-	/// aimed at has no give-up case and was already checked against the real
-	/// world by [`digblock_core::spawn::stands_clear`].
+	/// Whether `eye` passes every spawn rule as the world stands. Vacuously true for the
+	/// synthetic-column test seam, whose worlds real worldgen does not describe, and for a
+	/// hand-picked spawn, which this predicate cannot judge and need not: it exists to stop a
+	/// spawn the *search* returned only because it gave up being pinned, and an admin's point has
+	/// no give-up case and was already checked by [`digblock_core::spawn::stands_clear`].
 	pub(super) fn spawn_valid(&self, eye: Vec3) -> bool {
 		self.spawn_store.point().is_some()
 			|| !self.spawn_search
@@ -72,12 +55,10 @@ impl Sim {
 			})
 	}
 
-	/// The world as it actually is at one cell: the resident chunk (which
-	/// already carries its journal overlay) falling back to the journal for
-	/// columns that are not loaded. `None` = neither can answer.
-	///
-	/// Raw cells, not `try_from_id`: a state-carrying cell (a stair, a
-	/// slab) must read as its real, solid block, not decode to nothing.
+	/// The world as it actually is at one cell: the resident chunk (which already carries its
+	/// journal overlay) falling back to the journal for columns that are not loaded, `None` when
+	/// neither can answer. Raw cells, not `try_from_id`: a state-carrying cell such as a stair or
+	/// a slab must read as its real, solid block rather than decode to nothing.
 	pub(super) fn world_cell(&self, x: i32, y: i32, z: i32) -> Option<u16> {
 		self.store
 			.cell_at(x, y, z)
@@ -165,12 +146,10 @@ impl Sim {
 		self.residency_dirty = true;
 	}
 
-	/// Protection is always on: with no stored lock, resolve spawn against
-	/// the journal and lock the RESULT — never the raw anchor, so an
-	/// existing world whose anchor was dug out locks the relocated spawn
-	/// rather than the crater. On the pathological seed where even the
-	/// search gives up, boot proceeds unlocked and retries next boot
-	/// instead of pinning a bad answer.
+	/// Protection is always on: with no stored lock, resolve spawn against the journal and lock
+	/// the RESULT — never the raw anchor, so an existing world whose anchor was dug out locks the
+	/// relocated spawn rather than the crater. Where even the search gives up, boot proceeds
+	/// unlocked and retries next boot instead of pinning a bad answer.
 	pub(super) fn ensure_spawn_lock(&mut self) {
 		if self.spawn_store.lock().is_some() {
 			return;
@@ -186,20 +165,11 @@ impl Sim {
 		log::info!("spawn locked at {eye}");
 	}
 
-	/// Resolve, stamp and record every arrival site: spawn's structure,
-	/// and one waystone per laddered biome kind. Idempotent — a stored
-	/// site is never re-derived (its region cannot change), and a
-	/// re-stamp skips cells the journal already holds — so boot converges
-	/// to a no-op after the first run. A kind whose walk finds nothing is
-	/// skipped and retried next boot; a port to nowhere must not exist.
-	///
-	/// The unresolved kinds are derived TOGETHER, because the separation
-	/// rule is mutual (`waystones::sites`) — and only when at least one
-	/// is missing, so a settled world pays no ring walks at all. Damage
-	/// resolution still nudges a pad sideways off whatever players built
-	/// through it, which is the one thing that can put a stored site
-	/// inside another's exclusion; it moves a pad by a few blocks, and
-	/// the alternative is a port standing in a crater.
+	/// Resolve, stamp and record every arrival site: spawn's structure, and one waystone per
+	/// laddered biome kind. Idempotent, so boot converges to a no-op; a kind whose walk finds
+	/// nothing is skipped and retried next boot, because a port to nowhere must not exist. The
+	/// unresolved kinds are derived TOGETHER, since `waystones::sites`' separation rule is mutual,
+	/// and only when one is missing, so a settled world pays no ring walks at all.
 	pub(super) fn ensure_arrival_sites(&mut self) {
 		if let Some(l) = self.spawn_store.lock() {
 			self.stamp_site(Vec3::from_array(l.eye));
@@ -229,8 +199,10 @@ impl Sim {
 						continue;
 					};
 					// An existing world may have built through the
-					// pristine site: resolve sideways off the damage the
-					// way spawn does, then the answer is FOREVER.
+					// pristine site: resolve sideways off the damage
+					// the way spawn does, then the answer is FOREVER.
+					// The nudge is the one thing that can land a site
+					// inside another's exclusion; a crater is worse.
 					let eye = if digblock_core::spawn::valid(a, seed, &|x, y, z| {
 						self.journal_cell(x, y, z)
 					}) {
@@ -270,12 +242,10 @@ impl Sim {
 		}
 	}
 
-	/// Whether this client's teleport cooldown has run out.
-	///
-	/// ONE clock behind every teleport — Return Home and every port —
-	/// because per-spell timers would let a player ring the roster and
-	/// land home with nothing to wait for. The caster's own skills
-	/// decide the window, since the server holds them.
+	/// Whether this client's teleport cooldown has run out. ONE clock behind every teleport —
+	/// Return Home and every port — because per-spell timers would let a player ring the roster
+	/// and land home with nothing to wait for. The caster's own skills decide the window, since
+	/// the server holds them.
 	pub(super) fn teleport_ready(&self, client: &Client) -> bool {
 		use digblock_core::skills::Skill;
 		let cooldown =
@@ -321,12 +291,10 @@ impl Sim {
 			client_send(client, &ServerMsg::CastRefused { reason });
 		};
 		{
-			// The bucket, spent HERE so no spell can be added outside it,
-			// and ahead of every spell's validation so a flood pays for
-			// nothing. Silent when it runs dry, like the teleport window
-			// and the bench drip: an honest client cannot reach it, and a
-			// refusal is a sentence about the caster, not about their
-			// client.
+			// The bucket, spent HERE so no spell can be added outside it, and ahead of every
+			// spell's validation so a flood pays for nothing. Silent when it runs dry, like the
+			// teleport window and the bench drip: an honest client cannot reach it, and a refusal
+			// is a sentence about the caster, not about their client.
 			let Some(client) = self.clients.get_mut(&conn_id) else {
 				return;
 			};
@@ -417,16 +385,11 @@ impl Sim {
 		self.process_cast(conn_id, digblock_core::skills::cast_xp(essence, fare));
 	}
 
-	/// Conjured light: validate the rung, the host — the cell the
-	/// caster's head is in, as the SERVER holds it — and the world's
-	/// room for another light, then debit, stand the light on the sim's
-	/// clock and tell everyone. Not a cell write: a light is never
-	/// matter, and nothing about it reaches the journal.
-	///
-	/// One light per CELL. A recast where one already stands refreshes
-	/// that light's expiry instead of standing a second, which is what
-	/// keeps [`MAX_KINDLED`] a ceiling on lit PLACES rather than on
-	/// casts.
+	/// Conjured light: validate the rung, the host — the cell the caster's head is in, as the
+	/// SERVER holds it — and the world's room for another light, then debit, stand the light on
+	/// the sim's clock and tell everyone. Not a cell write: a light is never matter and nothing
+	/// about it reaches the journal. One light per CELL — a recast refreshes that light's expiry
+	/// instead of standing a second, which keeps [`MAX_KINDLED`] a ceiling on PLACES, not casts.
 	fn cast_kindle(&mut self, conn_id: u64) {
 		use digblock_core::skills::Skill;
 		use digblock_net::messages::CastRefusal;
@@ -475,19 +438,11 @@ impl Sim {
 		self.process_cast(conn_id, digblock_core::skills::cast_xp(essence, fare));
 	}
 
-	/// The Ward, on `Cast(Ward)` sent as the caster's channel BEGINS: the
-	/// sphere is derived from the caster's head as the SERVER holds it
-	/// (`ward::plan`), scanned whole for players and refused whole — the
-	/// Arc's rule. What is accepted is a CLIMB: the cells land over the
-	/// channel's own ticks, and the seal is the server's to declare.
-	///
-	/// The cheap gates come FIRST and the plan last. Everything above the
-	/// plan is a read or two; the plan is a cubic scan of the sphere plus
-	/// a pass over every player, and `Cast` arrives on a stream that
-	/// admits far more messages a second than a spellbook can — so an
-	/// affordability check after the plan is a core a broke client can
-	/// pin. The DEBIT still comes after the plan and the player scan, so
-	/// a refused cast costs nothing.
+	/// The Ward, on `Cast(Ward)` sent as the caster's channel BEGINS: `ward::plan` derives the
+	/// sphere from the caster's head as the SERVER holds it, scans it whole for players and
+	/// refuses it whole — the Arc's rule. What is accepted is a CLIMB, landing over the channel's
+	/// own ticks. The cheap gates come FIRST and the plan last, or an affordability check behind a
+	/// cubic scan is a core a broke client can pin; the DEBIT trails both, so a refusal is free.
 	fn cast_ward(&mut self, conn_id: u64) {
 		use digblock_core::skills::Skill;
 		use digblock_net::messages::CastRefusal;
@@ -570,20 +525,11 @@ impl Sim {
 		});
 	}
 
-	/// One tick of every ward still climbing. A caster who has left,
-	/// or stepped further than [`WARD_STILL`] from where they began,
-	/// has broken the channel whatever their client said, and the climb
-	/// unwinds. Otherwise the tick's cells land; a cell somebody has
-	/// since stepped into, or one a region has come to protect since the
-	/// cast, is left unwritten rather than closed over — a hole where a
-	/// player stood, the protected cells' honesty. The tick the climb
-	/// completes, the sphere is SEALED: announced, and paid in XP.
-	///
-	/// Protection is re-asked here rather than filtered into the plan,
-	/// beside the player test and for the same reason: a region can
-	/// appear DURING a channel — an admin moving spawn, a waystone
-	/// resolving on someone's first port — and a plan filtered once at
-	/// the cast would glass a pad that became protected a tick later.
+	/// One tick of every ward still climbing. A caster who has left, or stepped further than
+	/// [`WARD_STILL`] from where they began, has broken the channel whatever their client said.
+	/// Otherwise the tick's cells land, leaving a cell a player has stepped into unwritten rather
+	/// than closed over; the completing tick SEALS the sphere. Protection is re-asked per tick,
+	/// not filtered into the plan, or a region appearing mid-channel would be glassed over.
 	pub(super) fn step_closings(&mut self) {
 		// A ward's cells are journaled edits like any other: an unhealthy
 		// journal stops the climb where it stops fluid and the sweeps,
@@ -644,15 +590,11 @@ impl Sim {
 		}
 	}
 
-	/// Put back what a broken climb had landed, crown-first, through the
-	/// same write path — but only a cell that still holds our glass, so a
-	/// pane somebody dug out mid-climb stays dug.
-	///
-	/// The fare goes back to a caster still here, as one correction to
-	/// the balance their client is predicting. One who left mid-channel
-	/// forfeits it: crediting `player_store` instead was declined rather
-	/// than impossible — the record `drop_client` wrote on the way out is
-	/// right there, and a reconnect reads it.
+	/// Put back what a broken climb had landed, crown-first, through the same write path — but
+	/// only a cell that still holds our glass, so a pane somebody dug out mid-climb stays dug.
+	/// The fare goes back to a caster still here, as one correction to the balance their client
+	/// is predicting; one who left mid-channel forfeits it. Crediting `player_store` instead was
+	/// declined rather than impossible — `drop_client`'s record is right there for a rejoin.
 	fn unwind_ward(&mut self, w: WardClosing) {
 		let by = w.by;
 		self.ward_ended(&w, false);

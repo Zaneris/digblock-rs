@@ -36,15 +36,12 @@ pub enum Sfx {
 	SiphonTake,
 	LevelUp,
 	LevelUnlock,
-	/// The cast channel's wind — TEMPORARILY the siphon's resonant loop
-	/// (see assets/sfx/SOURCES.md): the roster carries its real names now
-	/// so the recordings can swap in without touching a call site.
+	/// The cast channel's wind — TEMPORARILY the siphon's resonant loop (assets/sfx/SOURCES.md).
 	CastLoop,
 	/// The departure's release, and the arrival's landing.
 	TeleportOut,
 	TeleportIn,
-	/// The Ward sealing over its caster — the crown cell of a climb that
-	/// rode the channel's own loop.
+	/// The Ward sealing over its caster — the crown cell of a climb on the channel's own loop.
 	WardClose,
 }
 
@@ -133,18 +130,11 @@ pub enum Material {
 	Wood,
 }
 
-/// Which material a block sounds like — derived from what the block IS, never
-/// from a roster.
-///
-/// §7.2's substance axis answers this for every real block, and it is already
-/// what decides a block's price, yield and unlock. Functional items have no
-/// substance by design; those fall to the `DigFamily` their row declares.
-///
-/// Both matches are EXHAUSTIVE on purpose. A hand-listed roster ending in
-/// `_ => Earth` silently missed every row §7.2 added: mining an Aetherock seam,
-/// breaking crystal or walking a metal floor all played the sound of digging
-/// soil. With no catch-all arm, a new material or dig family fails the BUILD
-/// instead.
+/// Which material a block sounds like — derived from what the block IS, never from a roster.
+/// §7.2's substance axis answers for every real block; functional items have no substance by
+/// design and fall to the `DigFamily` their row declares. Both matches are EXHAUSTIVE on
+/// purpose: with no catch-all arm a new material or dig family fails the BUILD, where a roster
+/// ending in `_ => Earth` silently played soil for every row §7.2 added.
 pub fn material_of(b: BlockType) -> Material {
 	use digblock_core::block::DigFamily;
 	use digblock_core::material::Material as Subst;
@@ -221,19 +211,11 @@ pub fn break_sfx(m: Material) -> Sfx {
 	}
 }
 
-/// The two sounds a hold speaks: the loop while it runs, and the one-shot it
-/// lands on. `extracting` says whether this hold is a field draw rather than a
-/// dig.
-///
-/// One function because the pair has to agree with itself — a hold that hums and
-/// then shatters is worse than one that does neither — and because the pair is
-/// exactly what a draw has to override. Resolving both halves through
-/// [`material_of`], which for an ore is rock, made drawing a seam sound
-/// precisely like quarrying one out.
-///
-/// The `block` each half is asked about is still the caller's, because the two
-/// are read at different moments: the loop at the hold's start, the finish
-/// against the cell as it stood when it gave way.
+/// The two sounds a hold speaks: the loop while it runs and the one-shot it lands on, with
+/// `extracting` saying whether the hold is a field draw. One function because the pair has to
+/// agree with itself and because the pair is exactly what a draw overrides — resolving both
+/// halves through [`material_of`], which for an ore is rock, makes drawing a seam sound like
+/// quarrying one out. Each half is asked about the caller's `block`, read at different moments.
 pub fn dig_voice(extracting: bool, block: BlockType) -> (Sfx, Sfx) {
 	if extracting {
 		(Sfx::SiphonDraw, Sfx::SiphonTake)
@@ -301,29 +283,21 @@ pub enum AudioCmd {
 	/// App suspended / tab hidden: silence everything, keep state.
 	Pause,
 	Resume,
-	/// User volume settings, multipliers on the authored gains (unity
-	/// leaves them as authored, and they may go above it). Applies to
-	/// running voices too — a stationary loop must not wait for its next
-	/// `LoopMove`.
+	/// Multipliers on the authored gains, applied to running voices too — not only at `LoopMove`.
 	Volume {
 		music: f32,
 		sfx: f32,
 	},
-	/// Which music pool to draw from. Sent when the world clock crosses
-	/// a horizon, and once at startup. Deliberately advisory: fillers
-	/// switch at the next track boundary rather than cutting the one
-	/// that's playing, so dusk doesn't chop a track in half.
+	/// Which music pool to draw from — advisory, so fillers switch at the next track boundary.
 	MusicSet {
 		night: bool,
 	},
 }
 
-/// A shuffled permutation of `0..n`, from `seed`. Both fillers use this
-/// so neither needs an RNG dependency of its own, and the shuffle is
-/// testable without an audio device.
-///
-/// Fisher-Yates over a SplitMix64 stream: the playlist is a handful of
-/// tracks, so all this has to be is unbiased and cheap.
+/// A shuffled permutation of `0..n`, from `seed`. Both fillers use this so neither needs an RNG
+/// dependency of its own, and the shuffle is testable without an audio device. Fisher-Yates
+/// over a SplitMix64 stream: the playlist is a handful of tracks, so all this has to be is
+/// unbiased and cheap.
 pub fn shuffle_order(seed: u64, n: usize) -> Vec<usize> {
 	let mut order: Vec<usize> = (0..n).collect();
 	let mut state = seed;
@@ -471,15 +445,11 @@ pub fn ambient_sfx(z: AmbientZone) -> Sfx {
 	}
 }
 
-/// The prospector's sense (SKILLS-DESIGN §5.5): a faint shimmer near a
-/// deposit you cannot yet see, paced so it is a hint rather than a
-/// metronome.
-///
-/// A cadence emitter like `Footsteps`, but paced by TIME rather than by
-/// distance — the point is "something is near", and a player standing
-/// still at a wall should still hear it. Silence resets the clock, so
-/// walking into range speaks at once instead of on the next tick of a
-/// free-running timer.
+/// The prospector's sense (SKILLS-DESIGN §5.5): a faint shimmer near a deposit you cannot yet
+/// see. A cadence emitter like `Footsteps`, but paced by TIME rather than by distance — the
+/// point is "something is near", and a player standing still at a wall should still hear it.
+/// Silence resets the clock, so walking into range speaks at once instead of on the next tick
+/// of a free-running timer.
 pub struct Prospect {
 	since: f32,
 }
@@ -623,17 +593,11 @@ mod tests {
 		for b in [B::Dirt, B::Sand, B::Snow, B::DryGrass] {
 			assert_eq!(material_of(b), Material::Earth, "{b:?}");
 		}
-		// Every shape of a substance sounds like the substance: a slab and
-		// a stair are the same stuff as the cube they came from.
-		//
-		// The cube is `from_grid(m, Block)` — §7.2's own inverse, and the
-		// lookup `slab_base` already uses. It used to be a `find` for the
-		// material's row whose `shape_family()` was `None`, which no grid
-		// row can ever satisfy: `None` is reserved for the FUNCTIONAL
-		// shapes (torch, table, chair, bed) and every one of those is
-		// material-LESS by construction, as `material_roster_is_pinned`
-		// spells out. The predicate was unsatisfiable, so every iteration
-		// took the `continue` and the assert never ran once.
+		// Every shape of a substance sounds like the substance: a slab and a stair are the same
+		// stuff as the cube they came from. The cube is `from_grid(m, Block)` — §7.2's own
+		// inverse, and the lookup `slab_base` already uses. NOT a `find` for the material's row
+		// whose `shape_family()` is `None`: no grid row can satisfy that, since `None` is
+		// reserved for the material-LESS functional shapes, so the sweep would run vacuously.
 		let mut worked = 0;
 		for b in BlockType::ALL {
 			let Some(m) = b.material() else { continue };
@@ -657,13 +621,10 @@ mod tests {
 		);
 	}
 
-	/// A draw and a dig speak different languages at BOTH ends, and the
-	/// two vocabularies never overlap.
-	///
-	/// The disjointness is the real assertion. An extraction reads as a
-	/// draw only for as long as nothing it plays is also what breaking
-	/// rock plays — and rock is exactly what the old mapping resolved a
-	/// vein to, so the failure mode here is not hypothetical.
+	/// A draw and a dig speak different languages at BOTH ends, and the two vocabularies never
+	/// overlap. The disjointness is the real assertion: an extraction reads as a draw only for
+	/// as long as nothing it plays is also what breaking rock plays, and rock is what a vein
+	/// resolves to through `material_of`.
 	#[test]
 	fn a_field_draw_never_sounds_like_a_dig() {
 		use digblock_core::block::BlockType as B;

@@ -1,27 +1,18 @@
-//! Persistent per-player state (inventory counts + item layout), keyed by the
-//! player's master account id. NOT part of the block journal — the journal is
-//! cell-keyed and its compaction discards authorship.
+//! Persistent per-player state (inventory counts + item layout), keyed by the player's master
+//! account id. NOT part of the block journal — the journal is cell-keyed and its compaction
+//! discards authorship.
 //!
-//! Records are tiny, so the format is a whole-file snapshot rewritten atomically
-//! at most once per [`FLUSH_INTERVAL`]; a hard crash loses at most that interval,
-//! which is deliberate since blocks themselves are journaled. The rewrite runs on
-//! a dedicated writer thread ([`StoreWriter`]) because on a container or network
-//! volume the fsync is several dropped ticks every interval. Unlike the journal,
-//! a store that cannot write does NOT refuse edits.
+//! Records are tiny, so the format is a whole-file snapshot rewritten atomically at most once per
+//! [`FLUSH_INTERVAL`]; a hard crash loses at most that interval, deliberate since blocks
+//! themselves are journaled. The rewrite runs on a dedicated writer thread ([`StoreWriter`])
+//! because on a container or network volume the fsync is several dropped ticks every interval.
+//! Unlike the journal, a store that cannot write does NOT refuse edits.
 //!
-//! **Every version this project has written still loads**, because the
-//! archive-and-start-fresh path is reserved for actual corruption. Two shapes
-//! keep that true:
-//!
-//! - **The file has TWO sections**: records keyed by account, and
-//!   [`Self::legacy`] records still keyed by the pre-account device hash, held in
-//!   quarantine. A quarantined record is inert and the only thing that can happen
-//!   to it is [`PlayerStore::claim_legacy`]; the quarantine only ever SHRINKS, so
-//!   it needs no cap.
-//! - **The layout blob is SELF-DESCRIBING.** Its leading byte is a shape tag, not
-//!   a present/absent flag, so a `GRID_SLOTS` change is a no-op here — no version
-//!   bump, no archive path, and no silent re-interpretation of somebody's stored
-//!   arrangement.
+//! **Every version this project has written still loads**, the archive-and-start-fresh path being
+//! reserved for actual corruption. Two shapes keep that true: the file has TWO sections — records
+//! keyed by account, and [`Self::legacy`] records keyed by the pre-account device hash, in a
+//! quarantine that only ever SHRINKS and so needs no cap; and the layout blob is SELF-DESCRIBING,
+//! a leading shape tag, not a present/absent flag, so a `GRID_SLOTS` change needs no version bump.
 
 use digblock_core::hotbar::{HOTBAR_SLOTS, WIRE_EMPTY};
 use digblock_core::inv_grid::GRID_SLOTS;
@@ -37,35 +28,25 @@ use std::time::{Duration, Instant};
 const MAGIC: [u8; 4] = *b"DBI1";
 const VERSION: u16 = 10;
 
-/// The version from which the bucket is a CRAFTED tool (SKILLS-DESIGN
-/// §13.5). Every record below it was written when the bucket was owned by
-/// everyone — the count machinery just never stored one — so the reader
-/// grants it, writing down the ownership the old build implied. Never a
-/// windfall: records at this version and above own exactly what their
-/// counts say, and a brand-new account starts with none. The record BODY
+/// The version from which the bucket is a CRAFTED tool (SKILLS-DESIGN §13.5). Every record below
+/// it was written when the bucket was owned by everyone — the count machinery just never stored
+/// one — so the reader grants it, writing down the ownership the old build implied. Never a
+/// windfall: records at this version and above own exactly what their counts say. The record BODY
 /// is unchanged; the version is the grant's whole trigger.
 const FIRST_CRAFTED_BUCKET_VERSION: u16 = 7;
 
-/// The version from which essence is FOUND, not ground (SKILLS-DESIGN
-/// §14). Every record below it holds balances earned against the
-/// unbounded bench the redesign removed, so the reader clears them —
-/// all but Aether, which was always the scarce one. The record BODY is
-/// unchanged; the version is the reset's whole trigger, so it runs at
-/// most once per record and a fresh account never sees it.
+/// The version from which essence is FOUND, not ground (SKILLS-DESIGN §14). Every record below it
+/// holds balances earned against the unbounded bench the redesign removed, so the reader clears
+/// them — all but Aether, which was always the scarce one. The record BODY is unchanged; the
+/// version is the reset's whole trigger, so it runs at most once per record and a fresh account
+/// never sees it.
 const FIRST_FOUND_ESSENCE_VERSION: u16 = 8;
 
-/// The window in which a record carried the waystones its account had
-/// arrived at, for a first-arrival milestone that no longer exists. The
-/// field is gone from the BODY, so a reader in the window has bytes to
-/// skip and one above it has none. Frozen: they describe bytes on disk.
-///
-/// Below the upper bound an Arcana total may hold milestone XP, which
-/// was worth several levels at the early rungs and is not earnable now.
-/// The reader winds Arcana — and only Arcana — back to nothing, so every
-/// account walks the current ladder from the same place. It runs at most
-/// once per record, because reading rewrites at [`VERSION`], and a fresh
-/// account never sees it. Mining and Alchemy are untouched: nothing
-/// about those careers changed.
+/// The window in which a record carried the waystones its account had arrived at, for a milestone
+/// that no longer exists: the field is gone from the BODY, so a reader in the window has bytes to
+/// skip and one above it has none. Frozen — they describe bytes on disk. Below the upper bound an
+/// Arcana total may hold milestone XP that is not earnable now, so the reader winds Arcana, and
+/// only Arcana, back to nothing; reading rewrites at [`VERSION`], so it runs at most once.
 const FIRST_ARRIVALS_VERSION: u16 = 9;
 const FIRST_VERSION_WITHOUT_ARRIVALS: u16 = 10;
 
@@ -91,16 +72,11 @@ const LAYOUT_SIZED: u8 = 2;
 /// [`GRID_SLOTS`], which is free to grow.
 const LEGACY_GRID_SLOTS: usize = 36;
 
-/// The hotbar width [`LAYOUT_LEGACY`] blobs were written at. FROZEN for exactly
-/// the same reason as [`LEGACY_GRID_SLOTS`], and split out because the legacy arm
-/// originally read the LIVE `HOTBAR_SLOTS` — the one half of the blob still
-/// described by a constant free to move.
-///
-/// Grow the bar and every tag-`1` record over-reads by two bytes a slot, desyncs
-/// into the next record's key, and `PlayerStore::open` takes that for corruption
-/// and archives everybody's inventory. The regression test could not have caught
-/// it either, because its fixture was built from the same live constant and
-/// would have moved with the break.
+/// The hotbar width [`LAYOUT_LEGACY`] blobs were written at. FROZEN for exactly the same reason as
+/// [`LEGACY_GRID_SLOTS`], and split out because the legacy arm originally read the LIVE
+/// `HOTBAR_SLOTS`. Grow the bar and every tag-`1` record over-reads, desyncs into the next
+/// record's key, and `PlayerStore::open` takes that for corruption and archives everybody's
+/// inventory — a regression test built from the same live constant would move with the break.
 const LEGACY_HOTBAR_SLOTS: usize = 9;
 
 /// Both frozen widths describe bytes on disk, so this asserts the FORMAT,
@@ -112,12 +88,10 @@ const _: () = assert!(
 	"legacy layout widths describe bytes already written — never retune them"
 );
 
-/// The sized blob spends one byte per length, which is the whole reason
-/// growing the grid costs nothing here. Fail the BUILD rather than
-/// truncating somebody's arrangement to `len & 255`. Two asserts, not one
-/// conjunction: today's values make either side imply the other, which
-/// clippy reads as a redundant comparison rather than as the guard on
-/// future growth it is.
+/// The sized blob spends one byte per length, which is the whole reason growing the grid costs
+/// nothing here. Fail the BUILD rather than truncating somebody's arrangement. Two asserts, not
+/// one conjunction: today's values make either side imply the other, which clippy reads as a
+/// redundant comparison rather than as the guard on future growth it is.
 const _: () = assert!(
 	HOTBAR_SLOTS <= u8::MAX as usize,
 	"the hotbar length is a u8 on disk — widen the blob before growing past 255"
@@ -130,31 +104,18 @@ const _: () = assert!(
 /// Dirty-state flush cadence.
 const FLUSH_INTERVAL: Duration = Duration::from_secs(5);
 
-/// Account cap: beyond this, the least-recently-USED record is evicted on
-/// insert. Bounds the file; an evicted player's state is lost.
-///
-/// Least-recently-used, not first-inserted. The old policy never refreshed a
-/// key's position, so eviction walked strictly in join order and threw out the
-/// longest-standing players first — including ones currently online and actively
-/// writing.
-///
-/// It used to bound the file without bounding the ABUSE, since the key was
-/// client-chosen and join tokens were free. That is closed upstream now: a
-/// record needs a master account, an account needs a real third-party login, and
-/// `/api/join` is rate-limited per session.
+/// Account cap: beyond this, the least-recently-USED record is evicted on insert. Bounds the file;
+/// an evicted player's state is lost. Least-recently-used, not first-inserted — a policy that
+/// never refreshed a key's position evicts in join order and throws out the longest-standing
+/// players first, online ones included. It bounds the file, not the ABUSE; that is closed
+/// upstream, a record needing a master account and `/api/join` being rate-limited per session.
 const MAX_IDENTITIES: usize = 10_000;
 
-/// The stored key: the player's master account id.
-///
-/// Sixteen bytes, exactly as before — a UUID is the same width as the
-/// truncated hash it replaced, which is why v5 rewrote the meaning of this
-/// field and nothing else about the format. Its byte order is a FILE
-/// FORMAT: every record is filed under it, so a parser that read the id
-/// differently would orphan every player silently, the store still loading
-/// and simply never finding anybody. That is pinned where the type lives,
-/// by `protocol::account_ids_round_trip_through_their_canonical_text`.
-// A `use` alias rather than a `type` alias so the tuple constructor comes
-// with it — this module builds keys from raw bytes when it parses a file.
+/// The stored key: the player's master account id, sixteen bytes. Its byte order is a FILE FORMAT
+/// — every record is filed under it, so a parser reading the id differently would orphan every
+/// player silently, the store still loading and never finding anybody; pinned by
+/// `protocol::account_ids_round_trip_through_their_canonical_text`.
+// A `use` alias, not a `type` alias, so the tuple constructor comes with it.
 pub use digblock_net::protocol::AccountId as IdentityKey;
 
 /// A player's item arrangement in hotbar wire encoding (`WIRE_EMPTY`/
@@ -171,22 +132,15 @@ pub struct PlayerRecord {
 	/// `None` = never stored (v1 data, or a pre-layout disconnect); the
 	/// sim derives the deterministic default instead.
 	pub layout: Option<PlayerLayout>,
-	/// Eye position at last disconnect. `None` = pre-v3 data or a first
-	/// join; the sim starts those players at the resolved spawn.
-	///
-	/// Resuming here is what closes the rejoin exploit: without it,
-	/// reconnecting was a free trip to spawn that ignored the
-	/// return-to-spawn cooldown entirely.
+	/// Eye position at last disconnect. `None` = pre-v3 data or a first join; the sim starts those
+	/// players at the resolved spawn. Resuming here is what closes the rejoin exploit: without it,
+	/// reconnecting was a free trip to spawn that ignored the return-to-spawn cooldown entirely.
 	pub pos: Option<[f32; 3]>,
-	/// Server tick of the player's last teleport of any kind — one clock
-	/// for Return Home and every port — so the cooldown survives a
-	/// reconnect too; resuming in place would otherwise still leave
-	/// "rejoin to reset the timer" open.
-	///
-	/// Ticks are per-run and reset to 0 on restart, so a stored tick from
-	/// a previous run reads as long expired (`wrapping_sub` yields a huge
-	/// interval). That fails open across restarts, which is the safe
-	/// direction for a convenience cooldown.
+	/// Server tick of the player's last teleport of any kind — one clock for Return Home and every
+	/// port — so the cooldown survives a reconnect; resuming in place would otherwise still leave
+	/// "rejoin to reset the timer" open. Ticks are per-run and reset on restart, so a stored tick
+	/// from a previous run reads as long expired (`wrapping_sub` yields a huge interval), failing
+	/// open across restarts, the safe direction for a convenience cooldown.
 	pub last_teleport_tick: Option<u32>,
 	/// Per-skill XP totals. Pre-v4 records read as empty with their
 	/// inventories intact — existing players keep their stuff and start the
@@ -195,20 +149,11 @@ pub struct PlayerRecord {
 }
 
 impl PlayerRecord {
-	/// This record with `old` folded in — the legacy-character migration's whole
-	/// definition of what a player gets back. Four rules, each the conservative
-	/// reading of "the same person owned both":
-	///
-	/// - **Stuff adds**, saturating at every cap, so owning a tool on both sides
-	///   still means owning one ([`Inventory::merge_from`]).
-	/// - **XP takes the higher total, never the sum** — one career, two keys.
-	/// - **Where you are, and your spawn cooldown, stay where the ACCOUNT left
-	///   them.** A claim must not teleport a player who is standing somewhere,
-	///   and inheriting a stale cooldown would hand them a free return; the old
-	///   values are used only when the account has none.
-	/// - **The arrangement likewise**, with one difference: whichever layout
-	///   survives is about to be run through `reconcile_layout` against the
-	///   MERGED counts, so items that gained a slot get filed rather than lost.
+	/// This record with `old` folded in — the legacy-character migration's whole definition of what
+	/// a player gets back, each rule the conservative reading of "the same person owned both".
+	/// Stuff ADDS, saturating at every cap ([`Inventory::merge_from`]); XP takes the HIGHER total,
+	/// never the sum; position and spawn cooldown stay where the ACCOUNT left them, the old values
+	/// used only when it has none; the arrangement likewise, `reconcile_layout` re-filing after.
 	fn merged_with(&self, old: &Self) -> Self {
 		let mut inventory = self.inventory.clone();
 		inventory.merge_from(&old.inventory);
@@ -295,20 +240,11 @@ impl PlayerStore {
 		Ok(store)
 	}
 
-	/// Fold this server's pre-account character for `legacy` into `account`,
-	/// and delete the quarantined copy. `None` when nothing is held under that
-	/// key.
-	///
-	/// **Deleting the source IS the one-time-ness.** There is no "claimed" flag
-	/// to keep in step with anything: a second attempt looks exactly like a
-	/// first attempt for a key that was never here, which is also what every
-	/// client that keeps its old identity file sends on every join forever. Two
-	/// accounts racing the same key resolve the same way — first through takes
-	/// it.
-	///
-	/// The merge is defined by [`PlayerRecord::merged_with`], and it is a merge
-	/// rather than an overwrite because the account may already have played
-	/// here.
+	/// Fold this server's pre-account character for `legacy` into `account`, and delete the
+	/// quarantined copy; `None` when nothing is held under that key. **Deleting the source IS the
+	/// one-time-ness** — no "claimed" flag to keep in step, a second attempt looks like a first for
+	/// a key that was never here, and two accounts racing one resolve first-through-takes-it. A
+	/// merge ([`PlayerRecord::merged_with`]), not an overwrite: the account may have played here.
 	pub fn claim_legacy(&mut self, legacy: [u8; 16], account: IdentityKey) -> Option<PlayerRecord> {
 		let old = self.legacy.remove(&legacy)?;
 		let merged = self.get(&account).merged_with(&old);
@@ -379,16 +315,11 @@ impl PlayerStore {
 		}
 	}
 
-	/// Coalesced flush for a disconnect: writes only if the interval has
-	/// elapsed, exactly like `maintain`.
-	///
-	/// This used to force a flush unconditionally. Every write rebuilds and
-	/// fsyncs the WHOLE file (see `write_snapshot`), on the sim thread, so
-	/// a server emptying out — a crowd dropping in one tick — paid a
-	/// full-file rewrite and an fsync each, inside a single tick's budget.
-	/// The module already accepts losing up to `FLUSH_INTERVAL` of changes
-	/// to a hard crash; there is no reason a disconnect should be stricter
-	/// than a crash.
+	/// Coalesced flush for a disconnect: writes only if the interval has elapsed, exactly like
+	/// `maintain`. Forcing one unconditionally is wrong — every write rebuilds and fsyncs the WHOLE
+	/// file (see `write_snapshot`) on the sim thread, so a crowd dropping in one tick pays a
+	/// full-file rewrite and an fsync each inside a single tick's budget. The module already
+	/// accepts losing up to `FLUSH_INTERVAL` to a hard crash; a disconnect need not be stricter.
 	pub fn sync_soon(&mut self) {
 		self.maintain();
 	}
@@ -412,13 +343,11 @@ impl PlayerStore {
 		self.dirty = false;
 	}
 
-	/// Encode into a buffer borrowed from the writer's free list.
-	///
-	/// Two sections: the account-keyed records, then the quarantined
-	/// pre-account ones behind their own count. The quarantine is written
-	/// back on every flush precisely because it is not otherwise touched —
-	/// a snapshot format that only wrote what changed would drop it on the
-	/// first save after boot, which is the whole point of keeping it.
+	/// Encode into a buffer borrowed from the writer's free list. Two sections: the account-keyed
+	/// records, then the quarantined pre-account ones behind their own count. The quarantine is
+	/// written back on every flush precisely because it is not otherwise touched — a format that
+	/// only wrote what changed would drop it on the first save after boot, which is the whole
+	/// point of keeping it.
 	fn encode_snapshot(&mut self) -> Vec<u8> {
 		let mut buf = self.writer.take_buffer();
 		buf.clear();
@@ -523,18 +452,11 @@ fn write_atomic(path: &Path, buf: &[u8]) -> io::Result<()> {
 	std::fs::rename(&tmp, path)
 }
 
-/// The background writer: owns the fsync, so the sim thread does not.
-///
-/// A flush rebuilds the WHOLE file (records are tiny; the format is a
-/// snapshot) and fsyncs it. That is milliseconds on local SSD and tens of
-/// milliseconds on a container or network volume — several dropped sim ticks
-/// every `FLUSH_INTERVAL`, taken straight out of the tick budget. Encoding
-/// stays on the sim thread (it needs the live map); only the I/O moves.
-///
-/// Submissions COALESCE: the channel holds one buffer, and a newer
-/// snapshot replaces an unstarted older one. Falling behind therefore
-/// costs staleness, never unbounded queueing — and the newest state always
-/// wins, which is the only thing the format can express anyway.
+/// The background writer: owns the fsync, so the sim thread does not. A flush rebuilds the WHOLE
+/// file and fsyncs it — milliseconds on local SSD, tens on a container or network volume, several
+/// dropped sim ticks every `FLUSH_INTERVAL`. Encoding stays on the sim thread (it needs the live
+/// map); only the I/O moves. Submissions COALESCE — the channel holds one buffer and a newer
+/// snapshot replaces an unstarted older one — so falling behind costs staleness, never queueing.
 struct StoreWriter {
 	tx: Option<crossbeam_channel::Sender<Vec<u8>>>,
 	/// Buffers handed back by the writer, to be filled again.
@@ -625,18 +547,11 @@ impl Drop for StoreWriter {
 	}
 }
 
-/// Decode a layout blob of `hotbar_len + grid_len` words into the CURRENT shape,
-/// padding short halves with `WIRE_EMPTY` and dropping any beyond today's
-/// constants.
-///
-/// It always consumes exactly the words the writer declared, whatever the
-/// constants are now — that is the part that matters. A reader that stopped
-/// early would leave the remainder to be read as the next field and desync the
-/// whole record stream, which is precisely how a grid resize turns into "archive
-/// the file and start fresh".
-///
-/// Truncation is lossy by construction, but `reconcile_layout` re-files anything
-/// that lost its slot on the first pass after load.
+/// Decode a layout blob of `hotbar_len + grid_len` words into the CURRENT shape, padding short
+/// halves with `WIRE_EMPTY` and dropping any beyond today's constants. It always consumes exactly
+/// the words the writer declared, whatever the constants are now — a reader that stopped early
+/// would leave the remainder to be read as the next field and desync the whole record stream.
+/// Truncation is lossy, but `reconcile_layout` re-files anything that lost its slot after load.
 fn read_layout(
 	r: &mut &[u8],
 	hotbar_len: usize,
@@ -711,13 +626,10 @@ fn parse(bytes: &[u8]) -> io::Result<StoreFile> {
 	Ok(StoreFile { accounts, legacy })
 }
 
-/// One record: the 16-byte key, then whichever sections `version` wrote.
-///
-/// The `version >=` guards are back, and they carry real weight again: v5
-/// briefly refused everything older, which let them go, and reading v1-v4
-/// forward into the quarantine is exactly what the migration needs. A v1
-/// record ends after its inventory, a v2 after its layout, a v3 after its
-/// position — each absent section reads as the empty value it always did.
+/// One record: the 16-byte key, then whichever sections `version` wrote. The `version >=` guards
+/// carry real weight: reading v1-v4 forward into the quarantine is exactly what the migration
+/// needs. A v1 record ends after its inventory, a v2 after its layout, a v3 after its position —
+/// each absent section reads as the empty value it always did.
 fn read_record(
 	r: &mut &[u8],
 	version: u16,

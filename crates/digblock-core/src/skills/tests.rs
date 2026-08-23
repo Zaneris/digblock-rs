@@ -1,11 +1,9 @@
 use super::*;
 
-/// The legacy-character migration's XP rule: the higher total per
-/// skill, never the sum.
+/// The legacy-character migration's XP rule: the higher total per skill, never the sum.
 ///
-/// A sum would pay one career twice — play the new account up, then
-/// claim the old one, and the ladder shortens for anybody who happened
-/// to have both. The max leaves the curve meaning what it meant.
+/// A sum would pay one career twice — play the new account up, then claim the old one, and the
+/// ladder shortens for anybody who had both. The max leaves the curve meaning what it meant.
 #[test]
 fn merging_two_of_a_players_careers_takes_the_further_one() {
 	let mut mine = SkillSet::default();
@@ -103,16 +101,11 @@ fn skill_set_accumulates_and_round_trips() {
 	assert_eq!(decoded.to_wire(), vec![(0, 42)]);
 }
 
-/// Goldens along the shared taper, pinned as OUTPUTS to catch a taper
-/// edit nobody meant — a relationship cannot notice that the curve
-/// between the endpoints changed shape, which is the whole risk here.
-///
-/// The endpoints themselves are deliberately NOT asserted: `DIG_TAPER`
-/// runs 0..=1000, so `dig_speed_permille(f, 1)` returns the family's
-/// `start` and `(f, MAX_LEVEL)` its `end` by construction. Writing those
-/// down again restates the match arm and cannot fail. What IS asserted
-/// is the thing the endpoints exist to buy — every family that scales
-/// gets faster, and the flat one does not move.
+/// Goldens along the shared taper, pinned as OUTPUTS to catch a taper edit nobody meant — a
+/// relationship cannot notice that the curve between the endpoints changed SHAPE, the whole risk
+/// here. The endpoints are deliberately NOT asserted: `dig_speed_permille` returns the family's
+/// `start` and `end` there by construction. What IS asserted is what they buy — every scaling
+/// family gets faster, and the flat one does not move.
 #[test]
 fn dig_speed_anchors_are_pinned() {
 	use crate::block::DigFamily as F;
@@ -396,13 +389,11 @@ fn the_depth_reward_is_flat_above_the_waterline() {
 	}
 }
 
-/// §5.6: the pick's reach is a bonus in MATERIAL, not in XP. The cell
-/// under the crosshair pays in full and every cell behind it a fraction
-/// of one — floored at a point, because a fraction of the cheap end of
-/// the hardness order is nothing at all, and capped at the award itself,
-/// so the floor can never out-pay the cell it is a fraction of. Walked
-/// over the whole diggable roster and every reach the tool has, because
-/// both bounds bite only at the ends of the hardness order.
+/// §5.6: the pick's reach is a bonus in MATERIAL, not in XP. The cell under the crosshair pays in
+/// full and every cell behind it a fraction of one — floored at a point, because a fraction of the
+/// cheap end of the hardness order is nothing at all, and capped at the award itself, so the floor
+/// can never out-pay the cell it is a fraction of. Walked over the whole diggable roster and every
+/// reach the tool has, because both bounds bite only at the ends of the hardness order.
 #[test]
 fn a_wide_swing_pays_the_aimed_cell_in_full_and_the_rest_a_fraction() {
 	// At the waterline the ramp is identity, so the split IS the answer.
@@ -467,14 +458,11 @@ fn the_depth_reward_tops_out_where_a_dig_still_reaches() {
 	}
 }
 
-/// The reward has to be VISIBLE, and the awards are small integers, so
-/// a multiplier that rounded away on the cheapest dig in the game would
-/// be no reward at all there. Every diggable block pays strictly more at
-/// the bottom than at the waterline — including the ones at the very
-/// floor of the award scale, which pay a single point flat and which a
-/// truncating ramp could not have moved by any multiplier under two.
-/// `dig_award` rounds to nearest instead, so this holds for any ramp
-/// above unity and stays true through a retune of either end.
+/// The reward has to be VISIBLE, and the awards are small integers, so a multiplier that rounded
+/// away on the cheapest dig in the game would be no reward at all there. Every diggable block pays
+/// strictly more at the bottom than at the waterline — including those at the very floor of the
+/// award scale, which a truncating ramp could not have moved by any multiplier under two.
+/// `dig_award` rounds to nearest, so this survives a retune of either end.
 #[test]
 fn the_depth_reward_moves_every_award() {
 	assert!(
@@ -499,12 +487,9 @@ fn the_depth_reward_moves_every_award() {
 	}
 }
 
-/// Descending never pays less, and the ladder has no rung missing:
-/// stone walks from its flat award to its deepest ONE POINT AT A TIME.
-/// That whole-point stepping is why the ramp is linear instead of
-/// layered — the flooring already delivers the felt steps a quantized
-/// ramp would have been added to produce, and it delivers them without
-/// a cliff to stand on.
+/// Descending never pays less, and the ladder has no rung missing: stone walks from its flat award
+/// to its deepest ONE POINT AT A TIME. That whole-point stepping is why the ramp is linear instead
+/// of layered — the flooring already delivers the felt steps, without a cliff to stand on.
 #[test]
 fn the_depth_reward_climbs_one_point_at_a_time() {
 	let stone = BlockType::Stone;

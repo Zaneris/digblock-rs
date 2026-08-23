@@ -23,13 +23,11 @@ struct Vm {
 
 @group(0) @binding(0) var<uniform> vm: Vm;
 
-// RTGI camera light (gi_probe.wgsl's cam_light entry): [0] = omni
-// probe ambient at the camera, [1].rgb = sun
-// transmittance there — rgb, not one grey lane, because water absorbs
-// red an order of magnitude harder than blue and a submerged camera's
-// sunlight is tinted. The hand is at the camera by definition, so this IS its
-// light — indoors the ambient carries the torch glow and the sun term
-// dies, no CPU probe reads anywhere.
+// RTGI camera light (gi_probe.wgsl's cam_light entry): [0] = omni probe ambient at the camera,
+// [1].rgb = sun transmittance there — rgb, not one grey lane, because water absorbs red an order
+// of magnitude harder than blue and a submerged camera's sunlight is tinted. The hand is at the
+// camera by definition, so this IS its light: indoors the ambient carries the torch glow and the
+// sun term dies, with no CPU probe reads anywhere.
 struct CamLight {
 	ambient: vec4f,
 	sun: vec4f,
@@ -94,19 +92,11 @@ fn fs(in: VsOut) -> @location(0) vec4f {
 	// page has no mips, and Tint's derivative-uniformity rule wants the
 	// level spelled out anyway.
 	let tex = textureSampleLevel(materials, mat_smp, in.uv, i32(in.layer), 0.0);
-	// Fullbright ink is its own light: no ambient, no sun, no diffuse —
-	// exactly as chunk.wgsl treats the same block standing in the world, and
-	// through the same shared `emissive_ink`, so a torch you are holding and
-	// a torch on the floor are one object rendered twice.
-	//
-	// No medium term on either branch, unlike chunk.wgsl. Two independent
-	// reasons: the item is one world unit from the eye, where air
-	// transmittance is 1.0 to every digit that matters; and this pass carries
-	// no frame uniforms to read a medium from. The honest gap that leaves — a
-	// submerged camera's hand takes no water extinction — is not new here.
-	//
-	// Two ways to be ink and one function to draw it: the whole item
-	// (`glows`, a torch), or this face alone (a tool's lit part).
+	// Fullbright ink is its own light — no ambient, no sun, no diffuse — through the same shared
+	// `emissive_ink` chunk.wgsl uses, so a held torch and a floor torch are one object rendered
+	// twice. No medium term on either branch, unlike chunk.wgsl: the item is one world unit from
+	// the eye and this pass carries no frame uniforms to read a medium from, so a submerged
+	// camera's hand takes no water extinction. Ink is the whole item (`glows`) or this face alone.
 	let ink = vm.light_color.w > 0.5 || in.ink > 0.5;
 	let lit = select(tex.rgb * in.shade, emissive_ink(tex.rgb), ink);
 	return vec4f(lit, 1.0);

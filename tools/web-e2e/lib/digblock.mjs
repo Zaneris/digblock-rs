@@ -64,17 +64,11 @@ const INIT = () => {
 	}
 };
 
-// Chromium's DPR emulation is only skin deep: `devicePixelRatio` reports
-// the emulated ratio, but a ResizeObserver's `devicePixelContentBoxSize`
-// keeps answering in the HOST display's device pixels — and that is the
-// box winit sizes the canvas from, so the two disagree by the ratio
-// between them in whichever direction they differ: an emulated 2× page on
-// a 1× host renders into a 1× backing and stretches it, and an emulated 1×
-// page on a Retina host gets a backing twice what its scale factor says.
-// Either way the UI is drawn for the wrong surface. A window with no
-// emulation over it does not do this (`--native --headed` shows
-// 2400×1616 at 2×). Derive the device box from the CSS box and the ratio
-// the page believes, which is what a real display would have reported.
+// Chromium's DPR emulation is only skin deep: `devicePixelRatio` reports the emulated ratio, but a
+// ResizeObserver's `devicePixelContentBoxSize` keeps answering in the HOST display's device pixels
+// — and that is the box winit sizes the canvas from, so the two disagree by the ratio between them
+// and the UI is drawn for the wrong surface. A window with no emulation over it does not do this.
+// Derive the device box from the CSS box and the ratio the page believes, as a real display would.
 const HONEST_DPR = () => {
 	const proto = ResizeObserverEntry.prototype;
 	const desc = Object.getOwnPropertyDescriptor(proto, "devicePixelContentBoxSize");
@@ -115,13 +109,11 @@ export class Dig {
 		return this.page.evaluate(() => window.__dig);
 	}
 
-	/** What the page can still say about a stall. Every startup stage can
-	 *  HANG rather than fail, and both ends already know which one: the
-	 *  lifecycle events say how far the platform got, and the loading
-	 *  overlay's own watchdog writes the stalled stage (and the navigation
-	 *  type) into `#status`. Without them a wasm fetch that never
-	 *  returned, an adapter that never resolved and a first frame that
-	 *  never presented all read as the same generic timeout. */
+	/** What the page can still say about a stall. Every startup stage can HANG rather than fail,
+	 *  and both ends already know which one: the lifecycle events say how far the platform got,
+	 *  and the loading overlay's own watchdog writes the stalled stage (and the navigation type)
+	 *  into `#status`. Without them a wasm fetch that never returned, an adapter that never
+	 *  resolved and a first frame that never presented all read as the same generic timeout. */
 	async #diagnose() {
 		return this.page
 			.evaluate(() => {
@@ -209,10 +201,9 @@ export class Dig {
 }
 
 /**
- * Open the game at `origin + query` in a fresh context and wait for its
- * first frame. `size` is the canvas in CSS px and `dpr` the backing scale —
- * the web's `--size` and the display it lands on, which the desktop can
- * only choose with `--display`.
+ * Open the game at `origin + query` in a fresh context and wait for its first frame. `size` is the
+ * canvas in CSS px and `dpr` the backing scale — the web's `--size` and the display it lands on,
+ * which the desktop can only choose with `--display`.
  */
 export async function boot(browser, origin, params = {}, { size = [1280, 800], dpr = 1, mobile = false, native = false, timeout = 60_000 } = {}) {
 	// `native` drops Playwright's viewport/DPR emulation: the page gets the

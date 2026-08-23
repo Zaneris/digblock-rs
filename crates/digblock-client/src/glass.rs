@@ -100,23 +100,11 @@ impl GlassDraw {
 		}
 	}
 
-	/// Draw the culled translucent list (indices into `chunks`) BACK TO
-	/// FRONT, each chunk's tint half immediately followed by its shine.
-	///
-	/// The two halves do NOT commute across panes: a pane's real operator
-	/// is `dst*T + S`, and `f_A(f_B(x))` differs from `f_B(f_A(x))` unless
-	/// the shines happen to balance. Running all tints and then all shines
-	/// is order-independent, but only because every shine then escapes
-	/// every filter — stack panes and the transmission falls to nothing
-	/// while the additive term grows without bound, so a deep glass
-	/// corridor gets BRIGHTER. Interleaving per chunk in depth order makes
-	/// the composite exact whenever the panes sit in different chunks; two
-	/// panes inside ONE chunk still share a tint and are the standing
-	/// approximation. The cost is two pipeline binds per translucent
-	/// chunk, and glass is sparse.
-	///
-	/// The caller has bound groups 0-2, the index buffer, and the origin
-	/// stream at vertex slot 1. Returns (draws, triangles).
+	/// Draw the culled translucent list (indices into `chunks`) BACK TO FRONT, each chunk's tint
+	/// half immediately followed by its shine: the two do NOT commute across panes, and running all
+	/// tints then all shines lets every shine escape every filter, so a deep glass corridor gets
+	/// BRIGHTER. Two panes in ONE chunk share a tint, the standing approximation. The caller has
+	/// bound groups 0-2, the index buffer and the origin stream at slot 1. Returns (draws, tris).
 	pub(crate) fn draw(
 		&self,
 		pass: &mut wgpu::RenderPass<'_>,

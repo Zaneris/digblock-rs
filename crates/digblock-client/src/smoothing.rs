@@ -3,22 +3,11 @@
 use digblock_core::player::TICK;
 use glam::Vec3;
 
-/// Interpolation anchor: the player position from *before* the most recent sim
-/// tick.
-///
-/// The player sim runs on a fixed-`TICK` accumulator while frames arrive at
-/// whatever rate the display allows. Drawing the raw post-tick position samples
-/// that sim at an unrelated rate, so a frame may run no tick, one, or several,
-/// and the camera alternates between not moving and moving double — aliasing
-/// that gets *worse* the further the refresh rate is from the sim rate, and that
-/// no amount of network tuning touches.
-///
-/// The fix is the standard one (Fiedler's *Fix Your Timestep!*, Unity's
-/// `Rigidbody.interpolation`): draw between the two states by how far the
-/// accumulator has refilled. It costs half a tick of average visual latency;
-/// extrapolating forward instead overshoots into walls.
-///
-/// Presentation only: gameplay reads the authoritative `Player::pos`.
+/// Interpolation anchor: the player position from *before* the most recent sim tick. The sim runs
+/// on a fixed-`TICK` accumulator while frames arrive at whatever rate the display allows, so
+/// drawing the raw post-tick position aliases — the camera alternates between not moving and moving
+/// double. Draw between the two states by how far the accumulator has refilled; extrapolating
+/// forward instead overshoots into walls. Presentation only: gameplay reads `Player::pos`.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct TickLerp {
 	prev: Vec3,
@@ -52,19 +41,11 @@ impl TickLerp {
 		self.prev -= error;
 	}
 
-	/// Where to draw, given the post-tick position and the leftover accumulator.
-	/// `accum` is always < `TICK` after the sim loop; the clamp is a backstop.
-	///
-	/// Written out rather than `Vec3::lerp`, and the difference is not
-	/// stylistic. glam's lerp is `a*(1 - t) + b*t`, which is exact at `t == 1`
-	/// but NOT when `a == b`: two roundings of the same coordinate need not sum
-	/// back to it, so a player standing perfectly still had a camera that
-	/// jittered in the last ulp every few frames. Nothing SEES that directly —
-	/// but `GiDraw::flush_lights` compares a carried light's position for exact
-	/// equality to decide whether the light list is stale, so a still
-	/// torch-bearer paid a full rebuild on a large share of frames.
-	/// `a + (b - a)*t` returns `a` bit-exactly when `a == b`, which is the
-	/// property that early-out rests on.
+	/// Where to draw, given the post-tick position and the leftover accumulator; `accum` is
+	/// always < `TICK` after the sim loop, so the clamp is a backstop. Written out rather than
+	/// `Vec3::lerp`: glam's `a*(1 - t) + b*t` is not exact when `a == b`, while `a + (b - a)*t`
+	/// returns `a` bit-exactly. `GiDraw::flush_lights` compares a carried light's position for
+	/// exact equality to decide staleness, so a still torch-bearer would rebuild for nothing.
 	pub(crate) fn render_pos(&self, curr: Vec3, accum: f32) -> Vec3 {
 		let t = (accum / TICK).clamp(0.0, 1.0);
 		self.prev + (curr - self.prev) * t
@@ -75,18 +56,11 @@ impl TickLerp {
 mod tests {
 	use super::*;
 
-	/// A player who is not moving must draw at EXACTLY the same place
-	/// every frame, in every bit — not merely close.
-	///
-	/// The accumulator sweeps the whole tick between frames, so the lerp
-	/// parameter is different every time even at rest, and the naive
-	/// `a*(1 - t) + b*t` form does not return `a` for all of them. What
-	/// consumes the difference is `GiDraw::flush_lights`, which compares a
-	/// carried light's position for exact equality to decide whether the
-	/// GPU light list is stale; a camera that wobbles in the last ulp made
-	/// a motionless torch-bearer rebuild and re-upload it for nothing.
-	/// Coordinates deliberately include awkward fractions and a negative,
-	/// because powers of two pass either way.
+	/// A player who is not moving must draw at EXACTLY the same place every frame, in every bit
+	/// — not merely close. The accumulator sweeps the whole tick between frames, so the lerp
+	/// parameter differs every time even at rest. `GiDraw::flush_lights` compares a carried
+	/// light's position for exact equality to decide whether the GPU light list is stale.
+	/// Coordinates include awkward fractions and a negative; powers of two pass either way.
 	#[test]
 	fn a_resting_camera_does_not_drift() {
 		for p in [

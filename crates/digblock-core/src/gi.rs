@@ -23,10 +23,7 @@ pub enum GiOpacity {
 	Air,
 	Translucent,
 	Opaque,
-	/// See-through with a per-class rgb transmittance (glass, crystal):
-	/// the marches multiply a throughput instead of stopping, and the
-	/// coarse rule still sets the blocker bit so a brick of panes is
-	/// marched rather than skipped straight through untinted.
+	/// See-through with per-class rgb transmittance: the marches multiply throughput, never stop.
 	Tinted,
 }
 
@@ -44,19 +41,11 @@ pub struct GiChunk {
 	pub emitters: Vec<(u8, u8, u8, u8)>,
 }
 
-/// First class byte the shaped-variant classes occupy. Everything below is a
-/// plain block id (or air); everything from here up indexes [`shape_classes`].
-/// The window texture is `R8Uint`, so one byte is the whole budget and this
-/// constant is where it is SPLIT.
-///
-/// **The price to know before adding a material: a dozen-odd classes per shaped
-/// material** (a cover per stair facing, per slab anchor and thickness, per
-/// closed door facing). `shape_classes_fit_the_byte` pins both ends and prints
-/// the remaining headroom rather than merely passing — and holds a margin back,
-/// so the free slots are NOT a material's worth of room. The next shaped
-/// material has to move this split first; the full-cube half is only used up to
-/// the last block id, so every id between that and the base sits idle. A NEW
-/// shape family is the expensive case, costing covers in every material at once.
+/// First class byte the shaped-variant classes occupy: below is a plain block id (or air), from
+/// here up indexes [`shape_classes`]. The window texture is `R8Uint`, so one byte is the whole
+/// budget and this constant is where it is SPLIT. **A shaped material costs a dozen-odd classes**
+/// — a NEW shape family is the expensive case, costing covers in every material at once.
+/// `shape_classes_fit_the_byte` pins both ends, prints the headroom and holds a margin back.
 pub const SHAPE_CLASS_BASE: u8 = 112;
 
 /// One synthetic class: the block whose material the LUT entry borrows,
@@ -83,13 +72,10 @@ fn union_box(boxes: &[SubBox]) -> Option<SubBox> {
 	}))
 }
 
-/// The class table and the (id, state) → class byte index. Index slots
-/// hold the class byte, or 0 for "occludes nothing" (an open door).
-///
-/// The index is sized by the roster rather than by a fixed id space, so
-/// shaped rows are limited only by the class budget above — the old
-/// fixed-size table silently capped shaped ids at a number the grid's
-/// materials reach.
+/// The class table and the (id, state) → class byte index. Index slots hold the class byte, or 0
+/// for "occludes nothing" (an open door). The index is sized by the roster rather than by a fixed
+/// id space, so shaped rows are limited only by the class budget above — the fixed-size table it
+/// replaced silently capped shaped ids at a number the grid's materials reach.
 static SHAPE_CLASSES: LazyLock<(Vec<ShapeClass>, Vec<u8>)> = LazyLock::new(|| {
 	let mut classes: Vec<ShapeClass> = Vec::new();
 	let mut index = vec![0u8; BlockType::COUNT * 16];
@@ -134,28 +120,18 @@ pub fn shape_classes() -> &'static [ShapeClass] {
 	&SHAPE_CLASSES.0
 }
 
-/// The emissive band of a shaped emitter, as a fraction of its cell
-/// measured DOWN FROM THE CELL TOP.
-///
-/// texgen's `torch_side` paints its top rows as fire and leaves the rest
-/// as wood — this constant is that band — and shaped UVs are cut from the
-/// CELL's face (`shapes::uv_cell`: `v = G - 1 - y`), so the band is
-/// cell-relative, not box-relative: the part of it above the shape's own
-/// top simply isn't drawn. For the torch, whose post stops short of the
-/// cell top, that leaves a visible flame over the top of the post.
+/// The emissive band of a shaped emitter, as a fraction of its cell measured DOWN FROM THE CELL
+/// TOP. texgen's `torch_side` paints its top rows as fire and leaves the rest as wood — this
+/// constant is that band — and shaped UVs are cut from the CELL's face (`shapes::uv_cell`), so the
+/// band is cell-relative, not box-relative: the part above the shape's own top isn't drawn. For
+/// the torch, whose post stops short of the cell top, that leaves a flame over the post.
 const EMISSIVE_BAND: f32 = 5.0 / 12.0;
 
-/// Where inside its cell an emitting class actually radiates from, in block
-/// units (0..1 per axis).
-///
-/// A full cube emits from its center. A shaped emitter does not: a torch is a
-/// slim post whose fire is the top of its height, so a center origin puts the
-/// point source down in the wooden handle. Under `LIGHT_NEAR` that costs no
-/// brightness — irradiance is flat in there — but the hard point shadows it
-/// casts project from the wrong height.
-///
-/// Written per-axis though only y moves today, so a wall-mounted variant works
-/// when the state nibble arrives.
+/// Where inside its cell an emitting class actually radiates from, in block units (0..1 per axis).
+/// A full cube emits from its center; a shaped emitter does not — a torch is a slim post whose
+/// fire is the top of its height, so a center origin puts the point source down in the handle.
+/// Under `LIGHT_NEAR` that costs no brightness, but the hard point shadows project from the wrong
+/// height. Written per-axis though only y moves today, so a wall-mounted variant works.
 pub fn light_origin(class: u8) -> [f32; 3] {
 	const MID: [f32; 3] = [0.5, 0.5, 0.5];
 	if class < SHAPE_CLASS_BASE {
@@ -182,48 +158,27 @@ pub fn light_origin(class: u8) -> [f32; 3] {
 	[ctr(b.min[0], b.max[0]), y, ctr(b.min[2], b.max[2])]
 }
 
-/// How far below the eye a light a player is CARRYING hangs.
-///
-/// The eye sits [`crate::player::EYE_TO_CROWN`] below the crown of a
-/// [`crate::player::HEIGHT`] body, so this hangs around shoulder height
-/// — comfortably inside the capsule, which is the whole point. The
-/// crown is the near wall and the only one worth watching: shrinking
-/// this drop thins the overlap between the light's cell and the body
-/// that proves that cell non-solid, and
-/// `a_carried_light_hangs_inside_the_body` is where the clearance is
-/// pinned. See [`carried_origin`].
+/// How far below the eye a light a player is CARRYING hangs. The eye sits
+/// [`crate::player::EYE_TO_CROWN`] below the crown of a [`crate::player::HEIGHT`] body, so this
+/// hangs around shoulder height — comfortably inside the capsule, which is the whole point. The
+/// crown is the near wall: shrinking this drop thins the overlap between the light's cell and the
+/// body that proves that cell non-solid, pinned by `a_carried_light_hangs_inside_the_body`.
 pub const CARRY_DROP: f32 = 0.25;
 
-/// Where a light carried by a player whose eye is at `eye` radiates from.
-///
-/// Deliberately a function of POSITION alone and not of facing. The cost is
-/// that the light does not sit where the item is drawn — about half a block
-/// off, which against `LIGHT_RANGE` is nothing.
-///
-/// What it buys, and neither is cosmetic. **Mouse-look never moves the light**,
-/// so a player standing still and turning is not a moving emitter: no
-/// invalidation fires, the resolve's screen history climbs back to `N_MAX`, and
-/// a lit room settles as deeply as one lit by a torch on the floor. And **the
-/// cell is guaranteed non-solid** — the player's own capsule occupies it — so
-/// nothing can bury the light inside geometry when they brush a wall.
+/// Where a light carried by a player whose eye is at `eye` radiates from. Deliberately a function
+/// of POSITION alone and not of facing: the light does not sit where the item is drawn, about half
+/// a block off, which against `LIGHT_RANGE` is nothing. What it buys — **mouse-look never moves
+/// the light**, so a player turning in place is not a moving emitter and the resolve's history
+/// climbs back; and **the cell is guaranteed non-solid**, the player's own capsule occupies it.
 pub fn carried_origin(eye: glam::Vec3) -> glam::Vec3 {
 	eye - glam::Vec3::Y * CARRY_DROP
 }
 
-/// What a held emitter casts at, for a wielder at this Mining level.
-///
-/// Every block answers with its own row and stops there — a torch in a hand is
-/// the torch on the floor (R28). The Resonant Pick is the one exception, and a
-/// deliberate one: the tool that breaks a whole plane resonates hard enough to
-/// work by, so its glow steps up with the swing.
-///
-/// Keyed on [`crate::unlock::pick_cells`] reaching [`crate::unlock::PICK_PLANE`]
-/// rather than a level of its own, because two thresholds for one rank drift
-/// apart the first time either moves.
-///
-/// A remote's pick answers at its row's level: their skills are not in the
-/// snapshot, and inventing a rank for someone else's tool would put a light in
-/// the world that the player holding it cannot see.
+/// What a held emitter casts at, for a wielder at this Mining level. Every block answers with its
+/// own row and stops there — a torch in a hand is the torch on the floor (R28). The Resonant Pick
+/// is the one exception, keyed on [`crate::unlock::pick_cells`] reaching
+/// [`crate::unlock::PICK_PLANE`] rather than a level of its own, because two thresholds for one
+/// rank drift apart. A remote's pick casts at its row's level — their skills are not in a snapshot.
 pub fn carried_light(b: BlockType, mining: u32) -> CarriedLight {
 	if b == BlockType::ResonantPick
 		&& crate::unlock::pick_cells(mining) == crate::unlock::PICK_PLANE
@@ -244,27 +199,19 @@ pub fn carried_light(b: BlockType, mining: u32) -> CarriedLight {
 pub struct CarriedLight {
 	/// The cast level, [`crate::block::BlockProps::light`]'s units.
 	pub level: u8,
-	/// Draw this light's tint pulled toward white.
-	///
-	/// The pick's authored blue is what makes its glow READ as resonance
-	/// at a glance, and it is also why the tool is a poor lamp: a
-	/// saturated blue carries almost no luminance, so a room lit by one
-	/// is dim and uniformly blue however high the level goes. At the
-	/// resonant rank the tool stops being a signal and becomes a light to
-	/// work by — brighter, and less blue for the same reason a hot flame
-	/// is less orange. It rides the light-list ENTRY beside the level,
-	/// not the class, because it is a property of the wielder.
+	/// Draw this light's tint pulled toward white. The pick's authored blue is what makes its glow
+	/// READ as resonance, and also why the tool is a poor lamp: a saturated blue carries almost no
+	/// luminance. At the resonant rank the tool stops being a signal and becomes a light to work
+	/// by — brighter, and less blue for the same reason a hot flame is less orange. It rides the
+	/// light-list ENTRY beside the level, not the class, because it is a property of the wielder.
 	pub whitened: bool,
 }
 
-/// What the Resonant Pick casts at once it breaks the full plane — see
-/// [`carried_light`], the only thing that reads it.
-///
-/// Set against the WHITENED tint rather than the authored one, which is
-/// most of the answer to why it is not higher: whitening more than
-/// doubles what the same level delivers, so this lands the resonant pick
-/// as the brightest thing a hand can hold short of a torch, and the step
-/// up from its own first rank is one a player cannot miss.
+/// What the Resonant Pick casts at once it breaks the full plane — see [`carried_light`], the only
+/// thing that reads it. Set against the WHITENED tint rather than the authored one, which is most
+/// of the answer to why it is not higher: whitening more than doubles what the same level
+/// delivers, so this lands the resonant pick as the brightest thing a hand can hold short of a
+/// torch, and the step up from its own first rank is one a player cannot miss.
 const PICK_RESONANT_LIGHT: u8 = 12;
 
 /// The class byte for one cell: 0 for air, the block id for full cubes
@@ -290,16 +237,11 @@ pub fn gi_class(cell: u16) -> u8 {
 	b as u8
 }
 
-/// How a full-cube class attenuates rays (LUT-side mirror; also the
-/// coarse rule). Shaped cells don't route through this — their
-/// synthetic classes are partial by construction — EXCEPT translucent
-/// ones, which [`gi_class`] hands back as their base id so they land
-/// here like any full cube.
-///
-/// The see-through test is the BUCKET, not a class: a translucent
-/// shaped row keeps `RenderClass::Shaped`, and `Translucent`-the-class
-/// still means water (the marches' op-1 path-length counter). Glass is
-/// `Tinted`: light passes, filtered by the class's own transmittance.
+/// How a full-cube class attenuates rays (LUT-side mirror; also the coarse rule). Shaped cells
+/// don't route through this — their synthetic classes are partial by construction — EXCEPT
+/// translucent ones, which [`gi_class`] hands back as their base id. The see-through test is the
+/// BUCKET, not a class: a translucent shaped row keeps `RenderClass::Shaped`, and
+/// `Translucent`-the-class still means water (the marches' op-1 path-length counter).
 #[inline]
 pub fn opacity(b: BlockType) -> GiOpacity {
 	if b.props().bucket == crate::block::MeshBucket::Translucent {
@@ -345,14 +287,11 @@ pub fn classify_chunk(data: &ChunkData) -> GiChunk {
 					continue;
 				}
 				let b = BlockType::from_id(crate::chunk::cell_id(cell));
-				// A SURFACE emitter is not a point source and does not
-				// belong in this list: a vein radiates from the faces it
-				// opens into, and most of a vein opens into nothing. The
-				// mesher — the one pass that is already deciding, face by
-				// face, what is exposed — hands the renderer those
-				// rectangles instead (GI-DESIGN.md R31). Placing a point
-				// here as well would light buried rock AND double every
-				// exposed cell.
+				// A SURFACE emitter is not a point source and does not belong in this
+				// list: a vein radiates from the faces it opens into, and most of a vein
+				// opens into nothing. The mesher — already deciding face by face what is
+				// exposed — hands the renderer those rectangles instead (GI-DESIGN.md
+				// R31). A point here as well would light buried rock AND double every cell.
 				let emits = b.props().light > 0 && !b.props().surface_light;
 				if emits {
 					emitters.push((x as u8, y as u8, z as u8, class));
@@ -489,12 +428,11 @@ mod tests {
 	#[test]
 	fn the_bucket_is_the_see_through_predicate() {
 		use crate::block::{MeshBucket, RenderClass};
-		// Set equality, both directions, rather than a re-spelling of
-		// `opacity`'s arms: the bucket names EXACTLY the tinted blocks,
-		// and `Translucent`-the-class still names exactly the water the
-		// marches count path length through. Written as memberships, a
-		// row that gained the bucket without the op — or the reverse —
-		// fails here by name, while a retune of the arms' ORDER does not.
+		// Set equality, both directions, rather than a re-spelling of `opacity`'s arms: the
+		// bucket names EXACTLY the tinted blocks, and `Translucent`-the-class still names
+		// exactly the water the marches count path length through. Written as memberships, a
+		// row that gained the bucket without the op — or the reverse — fails here by name,
+		// while a retune of the arms' ORDER does not.
 		let (mut tinted, mut water) = (0u32, 0u32);
 		for b in BlockType::ALL {
 			let p = b.props();

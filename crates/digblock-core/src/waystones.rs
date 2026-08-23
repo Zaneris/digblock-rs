@@ -1,36 +1,26 @@
-//! Waystone sites: one canonical arrival pad per biome per world, and
-//! the structure every arrival pad wears (spawn's included).
+//! Waystone sites: one canonical arrival pad per biome per world, and the structure every arrival
+//! pad wears (spawn's included).
 //!
-//! [`Roster`] is spawn's own pristine ring walk with a per-kind gate, so
-//! every rule that makes a spawn standable makes a waystone standable —
-//! derived from the seed, never stored HERE. It is a roster rather than
-//! a function per kind because [`MIN_SEPARATION`] is a MUTUAL rule: a
-//! pad can only be judged against the pads already placed, so a per-kind
-//! answer would depend on who asked first. The authority resolves the
-//! set against its edits once, stamps each structure as ORDINARY
-//! journaled edits, stores the answers and locks the spheres; that model
-//! (and why worldgen never changes) is MAGIC-DESIGN §5's record.
+//! [`Roster`] is spawn's own pristine ring walk with a per-kind gate, so every rule that makes a
+//! spawn standable makes a waystone standable — derived from the seed, never stored HERE. It is a
+//! roster rather than a function per kind because [`MIN_SEPARATION`] is a MUTUAL rule: a pad can
+//! only be judged against the pads already placed, so a per-kind answer would depend on who asked
+//! first. The authority resolves the set against its edits once, stamps each structure as ORDINARY
+//! journaled edits, stores the answers and locks the spheres; MAGIC-DESIGN §5 records that model.
 //!
-//! [`stamp`] is a pure builder in the debug-plan shape: it RETURNS
-//! writes, and each side applies them through its own authoritative path
-//! — the worldjob precedent. It deliberately builds from EXISTING block
-//! rows: a pad reads as masonry somebody raised, the marker spiral
-//! carries the arcane identity, and the append-only table stays open for
-//! a bespoke stone later.
+//! [`stamp`] is a pure builder that RETURNS writes, each side applying them through its own
+//! authoritative path — the worldjob precedent. It deliberately builds from EXISTING block rows,
+//! so the append-only table stays open for a bespoke stone later.
 
 use crate::block::BlockType;
 use crate::spawn::{CLEAR, LOCK_RADIUS};
 use crate::worldgen::SurfaceKind;
 use glam::Vec3;
 
-/// How far every arrival pad stands from every other, in blocks, spawn
-/// included — measured horizontally, because a pad is a place on the
-/// map rather than a point in the air.
-///
-/// The floor is generous on purpose: a port that sets you down within
-/// sight of the pad you left is not a trip, and "the first port" has to
-/// be a sentence about somewhere else. Comfortably past the draw
-/// distance a player actually runs, so arriving at one pad never puts
+/// How far every arrival pad stands from every other, in blocks, spawn included — measured
+/// horizontally, because a pad is a place on the map rather than a point in the air. Generous on
+/// purpose: a port that sets you down within sight of the pad you left is not a trip, and it sits
+/// comfortably past the draw distance a player actually runs, so arriving at one pad never puts
 /// another on screen.
 pub const MIN_SEPARATION: i32 = 320;
 
@@ -53,21 +43,11 @@ const _: () = assert!(STONE_OUT > CLEAR, "stones must clear the validated disc")
 const _: () =
 	assert!(STONE_OUT * STONE_OUT + (STONE_H + 1) * (STONE_H + 1) <= LOCK_RADIUS * LOCK_RADIUS);
 
-/// The world's waystones, resolved rung by rung.
-///
-/// The roster resolves as a SET because [`MIN_SEPARATION`] is mutual —
-/// see the module header. Placement order is the ladder's, lowest rung
-/// first (ties by kind index, so `unlock::waystone` alone decides it):
-/// the earliest port a player unlocks gets the nearest site the map can
-/// offer, and every later rung is pushed outward by the ones already
-/// standing. Spawn's own anchor is placed before any of them, so no pad
-/// can crowd the place everybody starts.
-///
-/// Rungs resolve LAZILY and in order, and the answer is identical to
-/// resolving the lot: a rung's site depends only on the rungs below it,
-/// so a prefix is exact. That is what lets an interactive caller pay one
-/// near ring walk for the first port instead of the whole ladder's — the
-/// walks are pure but the far ones are not cheap.
+/// The world's waystones, resolved rung by rung. The roster resolves as a SET because
+/// [`MIN_SEPARATION`] is mutual — see the module header. Placement order is the ladder's, lowest
+/// rung first (ties by kind index, so `unlock::waystone` alone decides it), and spawn's anchor is
+/// placed before any of them. Rungs resolve LAZILY and in order for the same answer, since a
+/// rung's site depends only on the rungs below it, so a prefix is exact.
 pub struct Roster {
 	seed: f64,
 	/// Every pad standing so far, spawn's included — the exclusion set.

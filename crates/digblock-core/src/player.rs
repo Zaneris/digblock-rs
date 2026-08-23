@@ -29,10 +29,9 @@ pub const TICK: f32 = 1.0 / 60.0;
 
 // --- Swimming. Any change here is a sim-behavior change: re-pin BOTH
 // golden trajectories and bump SIM_VERSION. ---------------------------
-/// The rendered surface of a resting source sits this far below the cell
-/// top (water.wgsl sinks a corner by its drop code's fraction of a
-/// block); physics flips
-/// where water LOOKS like it ends. Mirrored by the engine's eye_in_water.
+/// The rendered surface of a resting source sits this far below the cell top (water.wgsl sinks a
+/// corner by its drop code's fraction of a block); physics flips where water LOOKS like it ends.
+/// Mirrored by the engine's eye_in_water.
 pub const WATER_SURFACE_DROP: f32 = 0.111;
 /// Passive sink speed in water when idle, blocks/s (the velocity target
 /// with no input; vs TERM_VELOCITY in air).
@@ -109,26 +108,15 @@ const SKIN_PROBE: f32 = 2e-3;
 
 // --- Auto-step. Any change here is a sim-behavior change: bump
 // SIM_VERSION. ---------------------------------------------------------
-/// Max rise a walking player mounts automatically (SIM v9): one slab
-/// third. The ε absorbs twelfths-lattice float skew; the next real rise
-/// is the two-thirds slab, comfortably outside. Deliberately equal to one
-/// stair tread — stairs are excluded structurally (only the Ramp branch
-/// lifts on a stair; its box-fallback still walls), so the tread
-/// coincidence can't climb a stair's back face. Must stay under the
-/// adoption envelope's per-tick displacement clamp or honest step claims
-/// reject.
+/// Max rise a walking player mounts automatically (SIM v9): one slab third, plus an ε for
+/// twelfths-lattice float skew. Deliberately equal to one stair tread — stairs are excluded
+/// structurally — and must stay under the adoption envelope's per-tick clamp or step claims reject.
 const AUTO_STEP_MAX: f32 = 4.0 / 12.0 + 1e-3;
-/// How fast a mount may carry the feet upward, blocks/s. This is exactly
-/// the rate a stair's 45° diagonal lifts a walk (rise = run, so the ramp
-/// climbs at `WALK_SPEED`), which is the point: a step and a flight of
-/// stairs are the same motion, and a step of one slab third now takes
-/// exactly the ticks the equivalent ramp would. A ramp needs no clamp — its
-/// geometry never asks for more — so this only ever binds on the step,
-/// whose surface is a cliff rather than a slope.
-///
-/// The sim doing this is what makes the camera smooth: `TickLerp` draws
-/// between tick states, so a mount spread over ticks needs no
-/// presentation special case, exactly like stairs.
+/// How fast a mount may carry the feet upward, blocks/s. Exactly the rate a stair's 45° diagonal
+/// lifts a walk (rise = run, so the ramp climbs at `WALK_SPEED`), which is the point: a step and a
+/// flight of stairs are the same motion. A ramp never asks for more, so this only binds on the
+/// step. The sim doing this is what makes the camera smooth — `TickLerp` draws between tick states,
+/// so a mount spread over ticks needs no presentation special case.
 const MOUNT_RATE: f32 = WALK_SPEED;
 
 /// Eye spawn position from the seed alone — see [`crate::spawn::anchor`],
@@ -181,15 +169,11 @@ impl Player {
 		self.out = s.vel;
 	}
 
-	/// Standing support probe: any supporting surface within reach of the
-	/// feet whose xz footprint is within RADIUS of the axis. Cubes scan
-	/// the single layer just below the feet (the classic rule, bit-
-	/// identical); shaped cells also scan one layer up — a stair's own
-	/// cell contains the feet mid-ramp, and its bottom edge sits exactly
-	/// at the layer boundary.
-	/// Public because the Causeway asks it: a plank is owed exactly when
-	/// the feet have no support, and both ends must ask the ONE probe
-	/// rather than each deciding what "falling" means.
+	/// Standing support probe: any supporting surface within reach of the feet whose xz footprint
+	/// is within RADIUS of the axis. Cubes scan the single layer just below the feet (the classic
+	/// rule, bit-identical); shaped cells also scan one layer up, since a stair's own cell holds
+	/// the feet mid-ramp. Public because the Causeway asks it: a plank is owed exactly when the
+	/// feet have no support, and both ends must ask the ONE probe rather than each defining it.
 	pub fn grounded(&self, cell_at: &dyn Fn(i32, i32, i32) -> Option<u16>) -> bool {
 		if self.out.y > 0.0 {
 			return false;
@@ -246,21 +230,11 @@ impl Player {
 		false
 	}
 
-	/// Iterative capsule-vs-grid penetration resolution: fix the deepest
-	/// contact each pass. Ground contacts (steep upward normal while
-	/// descending) resolve vertically onto the supporting plane — a
-	/// flat-bottomed stance, so block edges don't shed the player. Everything
-	/// else pushes along the contact normal with the into-contact velocity
-	/// removed: walls slide, ceilings stop the jump.
-	///
-	/// Stairs are the exception: within RAMP_SNAP_MAX of the diagonal they
-	/// emit a pure GROUND contact at the ramp height, never a horizontal push,
-	/// so walking a flight is smooth both ways. Deeper than the snap band they
-	/// fall back to their sub-boxes and block like walls. `dry` gates the
-	/// downhill glue so swimming over submerged stairs doesn't stick.
-	///
-	/// An auto-step is the same kind of contact and gets the same kind of
-	/// motion: the tick's [`MOUNT_RATE`] budget is spent across iterations.
+	/// Iterative capsule-vs-grid penetration resolution: fix the deepest contact each pass. Ground
+	/// contacts resolve vertically onto the supporting plane — a flat-bottomed stance, so block
+	/// edges don't shed the player; everything else pushes along the contact normal, walls sliding
+	/// and ceilings stopping the jump. Stairs within RAMP_SNAP_MAX emit a GROUND contact at the
+	/// ramp height (`dry` gates the downhill glue); an auto-step is the same, spending MOUNT_RATE.
 	fn resolve(&mut self, dt: f32, cell_at: &dyn Fn(i32, i32, i32) -> Option<u16>, dry: bool) {
 		let feet = |pos: Vec3| pos.y - EYE_TO_FEET;
 		let mut step_budget = MOUNT_RATE * dt;
@@ -321,12 +295,9 @@ impl Player {
 								// starts.
 								let top = support.unwrap_or(y as f32);
 								let lift = top - feet(self.pos);
-								// Pinched: solid cells above leave less
-								// than capsule height over the ramp here —
-								// the snap would jam the crown into the
-								// ceiling, so the stair reverts to its
-								// boxes and blocks like a wall (no
-								// squeezing through sub-capsule gaps).
+								// Pinched: solid cells above leave less than capsule height over
+								// the ramp here — the snap would jam the crown into the ceiling,
+								// so the stair reverts to its boxes and blocks like a wall.
 								let pinched = (1..=2).any(|k| {
 									!matches!(cell_shape(cell_at(x, y + k, z)), CellShape::Empty)
 										&& (y + k) as f32 - top < HEIGHT
@@ -418,13 +389,11 @@ impl Player {
 		}
 	}
 
-	/// Fraction of the capsule (feet..crown) below the visible water
-	/// surface, 0..1. Single-column probe at the capsule axis; every
-	/// water-family cell counts as full height (flow amounts are
-	/// transient fluid-sim state that can differ across the wire — the
-	/// physics must not flip-flop with them); the topmost water cell
-	/// tops out at the rendered surface, WATER_SURFACE_DROP below the
-	/// lattice plane.
+	/// Fraction of the capsule (feet..crown) below the visible water surface, 0..1. Single-column
+	/// probe at the capsule axis; every water-family cell counts as full height — flow amounts are
+	/// transient fluid-sim state that can differ across the wire, and physics must not flip-flop
+	/// with them. The topmost water cell tops out at the rendered surface, WATER_SURFACE_DROP below
+	/// the lattice plane.
 	fn submersion(&self, cell_at: &dyn Fn(i32, i32, i32) -> Option<u16>) -> f32 {
 		let (x, z) = (self.pos.x.floor() as i32, self.pos.z.floor() as i32);
 		let feet = self.pos.y - EYE_TO_FEET;

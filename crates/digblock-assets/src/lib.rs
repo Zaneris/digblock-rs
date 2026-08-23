@@ -29,12 +29,10 @@ pub mod tex {
 	pub const RUBBLE: &[u8] = include_bytes!("../../../assets/textures/Rubble.png");
 	pub const TORCH_SIDE: &[u8] = include_bytes!("../../../assets/textures/TorchSide.png");
 	pub const TORCH_FLAME: &[u8] = include_bytes!("../../../assets/textures/TorchFlame.png");
-	// Hand-made again: planed timber in three tones, the material crafted
-	// things are made OF. `LUMBER_LIGHT` is the joinery: the bucket, and
-	// the Lumber block with its stairs, slab and door. `LUMBER_DARK` and
-	// `LUMBER_RED` are the second and third timbers, and the dark one is
-	// also what TORCH_SIDE's post is cut from — a texture drawn
-	// fullbright has to be authored dark.
+	// Hand-made: planed timber in three tones, the material crafted things are made OF.
+	// `LUMBER_LIGHT` is the joinery — the bucket, and the Lumber block with its stairs, slab and
+	// door. `LUMBER_DARK` is also what TORCH_SIDE's post is cut from: a texture drawn fullbright
+	// has to be authored dark.
 	pub const LUMBER_LIGHT: &[u8] = include_bytes!("../../../assets/textures/LumberLight.png");
 	pub const LUMBER_DARK: &[u8] = include_bytes!("../../../assets/textures/LumberDark.png");
 	pub const LUMBER_RED: &[u8] = include_bytes!("../../../assets/textures/LumberRed.png");
@@ -101,17 +99,11 @@ pub mod tex {
 	pub const ESSENCE_AETHER: &[u8] = include_bytes!("../../../assets/textures/EssenceAether.png");
 	pub const WARDGLASS: &[u8] = include_bytes!("../../../assets/textures/Wardglass.png");
 
-	/// Texture-array layer order — the layer index is what block PROPS
-	/// reference, and `digblock_core::block::tex` mirrors this list
-	/// position for position.
-	///
-	/// The index is RUNTIME ONLY: it lives in mesh vertex bits and nothing
-	/// else, so it is not a wire or save format and the list may be
-	/// reordered. What it may not do is drift from the core mirror, which
-	/// would silently texture blocks with each other's PNGs. A `const`
-	/// assert in digblock-client (`texture.rs`, the only file that can see
-	/// both crates) fails the BUILD on a length skew, so move them
-	/// together.
+	/// Texture-array layer order — the layer index is what block PROPS reference, and
+	/// `digblock_core::block::tex` mirrors this list position for position. The index is RUNTIME
+	/// ONLY (mesh vertex bits, never a wire or save format), so the list may be reordered; what it
+	/// may not do is drift from the core mirror, which would texture blocks with each other's PNGs.
+	/// A `const` assert in digblock-client's `texture.rs` fails the BUILD on a skew.
 	pub const LAYERS: [&[u8]; 58] = [
 		WATER,
 		DIRT,
@@ -260,23 +252,11 @@ pub mod font {
 }
 
 pub mod shader {
-	// WGSL has no include mechanism, so shared preludes are prepended with
-	// concat! at include time, each the sole definition of one thing so the
-	// passes cannot silently disagree: frame_common.wgsl (the Frame uniform
-	// block + its group(0) binding), medium_common.wgsl (the participating
-	// medium and its extinction constants), sky_common.wgsl (the
-	// procedural-sky core, shared so the sky pass, water reflections and the
-	// medium's in-scatter are one function), gi_common.wgsl (the probe gather
-	// + the group(2) world bindings), and ink_common.wgsl.
-	//
-	// Order is frame_common, medium_common, sky_common, gi_common, ink_common,
-	// body. medium_common sits early on purpose: it is dependency-free
-	// precisely so the GI compute kernels — which carry their own uniform block
-	// and CANNOT take frame_common — can still share its water extinction with
-	// the view ray.
-	//
-	// naga error line numbers in the body files are offset by the total prelude
-	// length.
+	// WGSL has no include mechanism, so shared preludes are prepended with concat! at include
+	// time, each the sole definition of one thing so the passes cannot silently disagree. Order is
+	// frame_common, medium_common, sky_common, gi_common, ink_common, body; medium_common sits
+	// early because it is dependency-free, so the GI compute kernels — own uniform block, CANNOT
+	// take frame_common — can still share its water extinction with the view ray.
 	pub const CHUNK: &str = concat!(
 		include_str!("../../../assets/shaders/frame_common.wgsl"),
 		include_str!("../../../assets/shaders/medium_common.wgsl"),
@@ -381,12 +361,10 @@ pub mod shader {
 		include_str!("../../../assets/shaders/highlight_crack.wgsl"),
 	);
 	pub const HOTBAR_ICONS: &str = include_str!("../../../assets/shaders/hotbar_icons.wgsl");
-	/// The first-person viewmodel. Deliberately WITHOUT the frame
-	/// prelude: it is authored in view space and carries its own
-	/// projection and light rig, so the shared Frame block would only be
-	/// an unused binding it must not declare. ink_common is the one
-	/// prelude it can take, and only because it declares no bindings at
-	/// all — a torch in your hand has to glow by the same rule as the
+	/// The first-person viewmodel. Deliberately WITHOUT the frame prelude: it is authored in view
+	/// space and carries its own projection and light rig, so the shared Frame block would only be
+	/// an unused binding it must not declare. ink_common is the one prelude it can take, and only
+	/// because it declares no bindings at all — a torch in your hand glows by the same rule as the
 	/// torch on the floor beside it, and that rule is a pure function.
 	pub const VIEWMODEL: &str = concat!(
 		include_str!("../../../assets/shaders/ink_common.wgsl"),
@@ -469,17 +447,11 @@ pub mod shader {
 
 #[cfg(test)]
 mod tests {
-	/// Validate every WGSL shader without needing a GPU or a browser, so
-	/// this runs on any machine and inside plain `cargo test`.
-	///
-	/// naga is the PERMISSIVE front end and deliberately not the only one
-	/// asked: `pass` is a reserved word at runtime that validated fine
-	/// here and killed the resolve pipeline in the running engine (R15
-	/// follow-up), and `highlight.wgsl` once mixed `*` and `^`
-	/// unparenthesized, which naga accepts and Tint does not. That second
-	/// front end is `just check-shaders` (tools/shadercheck), which
-	/// compiles this same `ALL` in a headless Chrome — keep both reading
-	/// `ALL` so a shader cannot be in one gate and not the other.
+	/// Validate every WGSL shader without needing a GPU or a browser, so this runs on any machine
+	/// and inside plain `cargo test`. naga is the PERMISSIVE front end and deliberately not the
+	/// only one asked — Tint rejects things it accepts, and the second gate is `just
+	/// check-shaders` (tools/shadercheck), which compiles this same `ALL` in a headless Chrome.
+	/// Keep both reading `ALL` so a shader cannot be in one gate and not the other.
 	#[test]
 	fn shaders_parse_and_validate() {
 		for (name, src) in super::shader::ALL {
@@ -514,23 +486,11 @@ mod tests {
 			.unwrap_or_else(|e| panic!("{name}: not a number: {e}"))
 	}
 
-	/// The spatial filter has to run on every pixel the temporal one cut short.
-	/// That is the whole trade — give up temporal samples, let `gi_atrous` hand
-	/// them back — and it holds only while a moving pixel's history stays under
-	/// the length at which the filter decides the pixel is converged and skips
-	/// it.
-	///
-	/// It stopped holding silently once. A cap that was a smooth function of
-	/// per-frame reprojection travel let the far field walk around with a
-	/// history longer than `N_CONVERGED`, since per-frame parallax collapses
-	/// with view distance — the band that most needed the filter was the band
-	/// not getting it, and the only symptom was a shadow ten blocks out sliding
-	/// with the player (R13). A two-state cap makes the relationship structural,
-	/// and this pins it against a future retune of either constant.
-	///
-	/// Since the deterministic sun, this trade covers only INDIRECT: the sun's
-	/// filter is penumbra-driven reconstruction that runs at rest too, and its
-	/// history is capped at N_SUN.
+	/// The spatial filter has to run on every pixel the temporal one cut short — give up temporal
+	/// samples, let `gi_atrous` hand them back — which holds only while a moving pixel's history
+	/// stays under `N_CONVERGED`. Not a smooth cap on reprojection travel: parallax collapses with
+	/// view distance, so the far field kept the longest history and the least filtering (R13). The
+	/// trade covers INDIRECT only; the sun's own history is capped at N_SUN.
 	#[test]
 	fn a_moving_pixel_always_gets_the_spatial_filter() {
 		let moving = wgsl_const(super::shader::GI_RESOLVE, "N_MOVING");
@@ -542,15 +502,11 @@ mod tests {
 		);
 	}
 
-	/// The whole point of the deterministic sun ray is that its history is
-	/// too short to smear: a k-frame average can only be dragged k frames
-	/// far, whatever the resampling does. That guarantee lives in one
-	/// constant, and someone "fixing" residual edge shimmer by raising it
-	/// back toward N_MAX would silently re-open the artifact R13 spent
-	/// weeks measuring. It must also not exceed N_MOVING — the sun's
-	/// cap is the tighter of the two by design, so a moving pixel's shared
-	/// counter never makes the sun blend SLOWER than the indirect it rides
-	/// with.
+	/// The whole point of the deterministic sun ray is that its history is too short to smear: a
+	/// k-frame average can only be dragged k frames far, whatever the resampling does. That
+	/// guarantee lives in one constant, and raising it back toward N_MAX to "fix" residual edge
+	/// shimmer re-opens the R13 artifact. It must also not exceed N_MOVING, the tighter cap by
+	/// design, so a moving pixel's shared counter never blends the sun SLOWER than the indirect.
 	#[test]
 	fn sun_history_is_short_by_construction() {
 		let n_sun = wgsl_const(super::shader::GI_RESOLVE, "N_SUN");
@@ -566,20 +522,11 @@ mod tests {
 		);
 	}
 
-	/// A `glows` block reads the same wherever it is drawn, because there is ONE
-	/// definition of the gain and every pass that can draw one takes it as a
-	/// prelude.
-	///
-	/// The pin is a COUNT of DECLARATIONS, not a comparison of values, and that
-	/// is the point: two module-scope declarations would be a WGSL error and
-	/// need no test, but a function-scope `const EMISSIVE_GAIN` shadows the
-	/// prelude's silently.
-	///
-	/// Counting `const EMISSIVE_GAIN` rather than `EMISSIVE_GAIN = ` is what
-	/// makes that true. The narrower pattern misses the TYPED form that
-	/// `wgsl_const` itself supports, and comparing the value cannot catch it
-	/// either, since the prelude is prepended and its declaration is found
-	/// first.
+	/// A `glows` block reads the same wherever it is drawn, because there is ONE definition of the
+	/// gain and every pass that can draw one takes it as a prelude. The pin is a COUNT of
+	/// DECLARATIONS, not a comparison of values: two module-scope declarations would be a WGSL
+	/// error and need no test, but a function-scope `const EMISSIVE_GAIN` shadows the prelude's
+	/// silently, and comparing values cannot catch it — the prelude's declaration is found first.
 	#[test]
 	fn every_pass_that_draws_ink_shares_one_gain() {
 		let shared = wgsl_const(super::shader::INK_COMMON, "EMISSIVE_GAIN");
@@ -629,17 +576,11 @@ mod tests {
 		);
 	}
 
-	/// The fragment-side NEE (R20, shared by the resolve and players since R33)
-	/// and the probe pass's stochastic one price the same torch with const twins
-	/// — the probe kernel lives in a shader that cannot share bindings, so the
-	/// compiler cannot hold them together. If they drift, the deterministic
-	/// direct pool and the cache's bounce of that same pool disagree about the
-	/// light's strength, and the seam moves with the camera. Retuning is legal —
-	/// in both files at once.
-	///
-	/// The resolve and players are listed even though they share gi_common's ONE
-	/// declaration: what the loop catches for them is a function-scope shadowing
-	/// const.
+	/// The fragment-side NEE (R20) and the probe pass's stochastic one price the same torch with
+	/// const twins — the probe kernel lives in a shader that cannot share bindings, so the compiler
+	/// cannot hold them together. If they drift, the direct pool and the cache's bounce of that
+	/// same pool disagree about the light's strength and the seam moves with the camera; retuning
+	/// is legal in both files at once. Listed passes sharing gi_common catch a shadowing const.
 	#[test]
 	fn resolve_and_probe_agree_on_light_calibration() {
 		for name in ["LIGHT_RANGE", "LIGHT_GAIN", "LIGHT_NEAR"] {
@@ -661,18 +602,11 @@ mod tests {
 		}
 	}
 
-	/// Every pass that prices local lights does it through the ONE
-	/// `gi_light_score` gi_common carries (R33, R34) — defined once, with no
-	/// shadowing copy, and each pass actually CALLS the estimator built on it,
-	/// because a pass that takes the prelude and never calls it is a body
-	/// torches cannot light.
-	///
-	/// The two estimators differ on purpose and the pin says which pass runs
-	/// which: the resolve resamples the pool behind an accumulator, while
-	/// players and confetti sum the brightest few in front of nothing at all.
-	/// Swapping them is the R34 bug in either direction — a dither on an
-	/// unfiltered surface, or a march per tap per pixel across the whole
-	/// screen.
+	/// Every pass that prices local lights does it through the ONE `gi_light_score` gi_common
+	/// carries (R33, R34), with no shadowing copy, and each pass actually CALLS the estimator built
+	/// on it — a pass that takes the prelude and never calls it is a body torches cannot light. The
+	/// two estimators differ on purpose and the pin says which runs which: the resolve resamples
+	/// behind an accumulator, players and confetti sum the brightest few. Swapping them is R34.
 	#[test]
 	fn every_nee_consumer_runs_the_shared_estimator() {
 		for (name, src, estimator) in [
@@ -697,12 +631,10 @@ mod tests {
 		}
 	}
 
-	// The size bound is the real assertion: a stock Google face runs to
-	// hundreds of kilobytes and fontdue eagerly outlines all of it at
-	// load, so committing an unsubset TTF is a startup regression that
-	// nothing else would catch. Subset to the Latin repertoire, a face is
-	// a small fraction of that — see assets/fonts/SOURCES.md for the exact
-	// recipe.
+	// The size bound is the real assertion: a stock Google face runs to hundreds of kilobytes and
+	// fontdue eagerly outlines all of it at load, so committing an unsubset TTF is a startup
+	// regression nothing else would catch. Subset to the Latin repertoire a face is a small
+	// fraction of that — see assets/fonts/SOURCES.md for the recipe.
 	#[test]
 	fn faces_are_small_subset_ttfs() {
 		for (name, bytes) in super::font::ALL {

@@ -32,13 +32,11 @@ impl ChunkPos {
 	}
 }
 
-/// Block data, shared with mesh jobs via `Arc`; edits go through
-/// copy-on-write (`Arc::make_mut`), so a job's snapshot stays consistent.
-/// Indexed y-major, then z, then x (`ChunkData::index`).
-/// Bits of a cell that hold the block id. The rest of the cell is spare
-/// bits and then a reserved per-cell STATE nibble on top (stairs
-/// facing×half etc.). The whole u16 cell travels the wire and the journal,
-/// so the id/state split can be re-drawn without another format break.
+/// Block data, shared with mesh jobs via `Arc`; edits go through copy-on-write
+/// (`Arc::make_mut`), so a job's snapshot stays consistent. Indexed y-major, then z, then x.
+///
+/// `ID_BITS` are the block id; the rest is spare bits and a reserved per-cell STATE nibble. The
+/// whole u16 cell travels the wire and the journal, so the id/state split can be re-drawn.
 pub const ID_BITS: u32 = 10;
 pub const ID_MASK: u16 = (1 << ID_BITS) - 1;
 pub const STATE_SHIFT: u32 = 12;

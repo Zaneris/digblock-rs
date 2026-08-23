@@ -84,12 +84,10 @@ function parse(argv) {
 	for (let i = 0; i < argv.length; i++) {
 		const a = argv[i];
 		if (!a.startsWith("--")) throw new Error(`unexpected argument ${a}`);
-		// `--name=value` as well as `--name value`. Splitting here rather
-		// than letting the whole token fall through to the passthrough arm
-		// is what stops `--frames=90` reaching the page as a knob spelled
-		// "frames=90": the page would accept `?frames=90` and the harness
-		// would never learn the run ends, so it photographs frame one of an
-		// interactive page and exits 0.
+		// `--name=value` as well as `--name value`. Splitting here rather than letting the whole
+		// token fall through to the passthrough arm is what stops `--frames=90` reaching the page
+		// as a knob spelled "frames=90": the page would accept it, the harness would never learn
+		// the run ends, and it photographs frame one of an interactive page and exits 0.
 		const eq = a.indexOf("=");
 		const name = eq === -1 ? a.slice(2) : a.slice(2, eq);
 		let inline = eq === -1 ? null : a.slice(eq + 1);

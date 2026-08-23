@@ -200,12 +200,10 @@ fn the_carriers_own_light_survives_any_cap() {
 	}
 }
 
-/// The unproven-daylight fade (R32) is bit-identical above its top
-/// edge because `smoothstep` saturates there — which is only the
-/// surface-world guarantee while that edge IS the surface's floor.
-/// This crate is the one that sees both the shader source and
-/// worldgen, so it holds the two together: the ramp tops out at
-/// `SEA_LEVEL`, and its bottom edge sits below its top (a degenerate
+/// The unproven-daylight fade (R32) is bit-identical above its top edge because `smoothstep`
+/// saturates there — which is only the surface-world guarantee while that edge IS the surface's
+/// floor. This crate is the one that sees both the shader source and worldgen, so it holds the two
+/// together: the ramp tops out at `SEA_LEVEL`, and its bottom edge sits below its top (a degenerate
 /// or inverted smoothstep would fade nothing, or everything).
 #[test]
 fn the_sky_fade_tops_out_at_sea_level() {
@@ -444,17 +442,11 @@ fn the_carried_flag_matches_the_shaders() {
 	);
 }
 
-/// Every estimator clamps the list's own header count to the buffer's
-/// capacity, and that capacity is `MAX_LIGHTS` — the allocation
-/// `flush_lights` selects into and truncates to. The shader cannot see
-/// the Rust const, so raising one without the other silently discards
-/// exactly the emitters the CPU took the trouble to keep: they sit in
-/// the buffer, the header counts them, and every march walks past the
-/// tail. This crate is the one that sees both sides.
-///
-/// The rule is checked as "no unclamped read" rather than against a
-/// fixed number of loops, because R34 made a second estimator a second
-/// copy of the clamp and there is nothing to stop a third.
+/// Every estimator clamps the list's own header count to the buffer's capacity, and that capacity
+/// is `MAX_LIGHTS` — the allocation `flush_lights` selects into. The shader cannot see the Rust
+/// const, so raising one without the other silently discards exactly the emitters the CPU kept:
+/// they sit in the buffer, the header counts them, and every march walks past the tail. Checked as
+/// "no unclamped read" rather than a fixed loop count, since nothing stops a third estimator.
 #[test]
 fn every_light_loop_clamps_to_the_lists_capacity() {
 	let src = digblock_assets::shader::GI_COMMON;
@@ -481,15 +473,11 @@ fn every_light_loop_clamps_to_the_lists_capacity() {
 	);
 }
 
-/// The whole-chunk reach skip may only ever be CONSERVATIVE: it exists
-/// to avoid touching entries, so admitting a chunk the per-emitter test
-/// then rejects costs a little time, while dropping one that held a
-/// reachable light silently puts a room out.
-///
-/// Swept against the per-emitter rule over every cell of a band of
-/// chunks, which is the only way to catch the failure that matters —
-/// the corner cells, where a chunk's nearest edge is much closer than
-/// its centre.
+/// The whole-chunk reach skip may only ever be CONSERVATIVE: admitting a chunk the per-emitter
+/// test then rejects costs a little time, while dropping one that held a reachable light silently
+/// puts a room out. Swept against the per-emitter rule over every cell of a band of chunks, the
+/// only way to catch the failure that matters — the corner cells, where a chunk's nearest edge is
+/// much closer than its centre.
 #[test]
 fn the_chunk_reach_skip_never_drops_a_reachable_light() {
 	let cam = [37.5, 64.0, -12.25];
@@ -527,15 +515,11 @@ fn the_chunk_reach_skip_never_drops_a_reachable_light() {
 	assert!(admitted > 0 && skipped > 0, "{admitted} in, {skipped} out");
 }
 
-/// A rectangle reaches the shader as a PAIR — position and class word,
-/// then extents and facing — and a point source's half of that pair
-/// stays zero.
-///
-/// The stride is the thing to guard. Both NEE passes index
-/// `lights[i * 2 ...]`, so an entry that packed one vec4 or three
-/// would not fail loudly: every light past the first would simply be
-/// read out of the middle of its neighbour, which looks like a
-/// lighting bug rather than a format one.
+/// A rectangle reaches the shader as a PAIR — position and class word, then extents and facing —
+/// and a point source's half of that pair stays zero. The stride is the thing to guard: both NEE
+/// passes index `lights[i * 2 ...]`, so an entry that packed one vec4 or three would not fail
+/// loudly — every light past the first would be read out of the middle of its neighbour, which
+/// looks like a lighting bug rather than a format one.
 #[test]
 fn a_surface_emitter_packs_its_rectangle_beside_its_position() {
 	let cam = [0.0, 0.0, 0.0];
@@ -613,12 +597,10 @@ fn the_sky_ceiling_tops_the_highest_brick() {
 	assert_eq!(sky_ceiling(&mirror, w, h, d), (24 * 8 + 7) as f32);
 }
 
-/// The sweep must be a PERMUTATION, not merely a shuffle: over one
-/// full cycle every probe has to be traced exactly once, or some
-/// probes never converge and others burn budget twice. That is the
-/// whole reason the stride has to be coprime with the count, and it
-/// is the kind of property that fails silently — the picture just
-/// keeps a stale patch somewhere.
+/// The sweep must be a PERMUTATION, not merely a shuffle: over one full cycle every probe has to
+/// be traced exactly once, or some probes never converge and others burn budget twice. That is why
+/// the stride has to be coprime with the count, and it is the kind of property that fails silently
+/// — the picture just keeps a stale patch somewhere.
 #[test]
 fn the_permuted_sweep_visits_every_probe_exactly_once() {
 	for dims in [C0_DIMS, C1_DIMS, (1, 1, 1), (7, 5, 3), (16, 16, 16)] {
@@ -651,16 +633,11 @@ fn the_stride_cannot_overflow_the_shaders_multiply() {
 	}
 }
 
-/// The history format must be able to REPRESENT the increment its history
-/// length asks for. Twice now it could not: rgba8 first, then rgba16f, both
-/// of which let `hi + (x - hi)/N_MAX` round to zero and froze the running
-/// average at whatever it held — permanently, per pixel, in a pattern locked
-/// to wherever the player had walked. It took a capture harness that can see
-/// motion to notice either time, because a still has already converged.
-///
-/// So the two knobs are pinned against each other: blending at alpha 1/N
-/// stalls once the residual falls under about N ulps of the stored value.
-/// Raising N_MAX or dropping the format now fails here instead.
+/// The history format must be able to REPRESENT the increment its history length asks for: rgba8
+/// and rgba16f both let `hi + (x - hi)/N_MAX` round to zero and froze the running average per
+/// pixel, in a pattern locked to wherever the player had walked — visible only to a harness that
+/// can see motion, since a still has already converged. So the two knobs are pinned against each
+/// other: blending at alpha 1/N stalls once the residual falls under about N ulps of the value.
 #[test]
 fn history_format_resolves_the_accumulator() {
 	// N_MAX lives in the shader; read it rather than duplicating it,
@@ -711,13 +688,11 @@ fn wgsl_f32(src: &str, name: &str) -> f32 {
 		.unwrap_or_else(|e| panic!("{name}: not a number: {e}"))
 }
 
-/// The sun target's g channel packs `code + 256 * n`, and every reader
-/// unpacks with integer bit-ops — which only works while the packed
-/// integer is EXACT in the accumulator format. rgba32f holds integers
-/// to 2^24; someone dropping the target to rgba16f "because the sun
-/// history is short now" would corrupt the pack (and the indirect
-/// counter inside it, which still climbs to N_MAX) long before the
-/// average itself froze.
+/// The sun target's g channel packs `code + 256 * n`, and every reader unpacks with integer
+/// bit-ops — which only works while the packed integer is EXACT in the accumulator format. rgba32f
+/// holds integers to 2^24; dropping the target to rgba16f "because the sun history is short now"
+/// would corrupt the pack, and the indirect counter inside it that still climbs to N_MAX, long
+/// before the average itself froze.
 #[test]
 fn packed_metadata_stays_exact() {
 	let n_max = wgsl_f32(digblock_assets::shader::GI_RESOLVE, "N_MAX");
@@ -771,12 +746,10 @@ fn the_penumbra_fits_the_filter() {
 	);
 }
 
-/// The disocclusion prior primes a fresh pixel's history from the
-/// probe cache. It must stay under both caps that could otherwise be
-/// asked to correct it: a primed pixel that is immediately moving
-/// lives at N_MOVING, and the sun alpha rides min(n, N_SUN) — a prior
-/// claiming more confidence than either would slow the very signals
-/// the short caps exist to keep responsive.
+/// The disocclusion prior primes a fresh pixel's history from the probe cache. It must stay under
+/// both caps that could otherwise be asked to correct it: a primed pixel that is immediately
+/// moving lives at N_MOVING, and the sun alpha rides min(n, N_SUN) — a prior claiming more
+/// confidence than either would slow the very signals the short caps exist to keep responsive.
 #[test]
 fn the_disocclusion_prior_stays_under_the_caps() {
 	let n_prior = wgsl_f32(digblock_assets::shader::GI_RESOLVE, "N_PRIOR");
@@ -801,14 +774,11 @@ fn the_disocclusion_prior_stays_under_the_caps() {
 	);
 }
 
-/// The LUT's packed sub-box words must decode in the shader to the
-/// twelfths the shape authored — `gi_boxes_hit` unpacks the min
-/// triple and then the max triple out of one word. The core side pins
-/// the same format from the packer's end
-/// (`box_pack_matches_the_shader_decode`); this end pins that the LUT
-/// actually carries the boxes: every synthetic class entry is the
-/// PARTIAL opacity class with a nonzero first box, borrowing its base
-/// block's light level.
+/// The LUT's packed sub-box words must decode in the shader to the twelfths the shape authored —
+/// `gi_boxes_hit` unpacks the min triple and then the max triple out of one word. The core side
+/// pins the same format from the packer's end (`box_pack_matches_the_shader_decode`); this end
+/// pins that the LUT actually carries the boxes: every synthetic class entry is the PARTIAL
+/// opacity class with a nonzero first box, borrowing its base block's light level.
 #[test]
 fn the_lut_carries_the_shape_covers() {
 	let lut = material_lut(&[]);
@@ -830,14 +800,10 @@ fn the_lut_carries_the_shape_covers() {
 	);
 }
 
-/// Word 1 carries the cast COLOUR above the level, and for every row
-/// but the ore it is the row's own albedo — so nothing that lit a room
-/// before this field existed lights it differently now.
-///
-/// The ores are the exception the field was added for. Their textures
-/// mean out to stone, so a derived tint would have every tier casting
-/// the same colourless light; they state their fleck palette instead,
-/// and that palette must actually reach the LUT.
+/// Word 1 carries the cast COLOUR above the level, and for every row but the ore it is the row's
+/// own albedo. The ores are the exception the field was added for: their textures mean out to
+/// stone, so a derived tint would have every tier casting the same colourless light — they state
+/// their fleck palette instead, and that palette must actually reach the LUT.
 #[test]
 fn the_cast_colour_is_the_albedo_except_where_a_vein_says_otherwise() {
 	// One distinct mean per layer, so "took the right one" is
@@ -882,14 +848,11 @@ fn the_cast_colour_is_the_albedo_except_where_a_vein_says_otherwise() {
 	}
 }
 
-/// The tinted word (.z) and its op, swept and pinned at the endpoints.
-/// Op 4 rides exactly the translucent bucket; every other full-cube row
-/// leaves .z zero (the no-box sentinel the shaped classes rely on). The
-/// filter itself is pinned by its two ENDPOINTS rather than its formula:
-/// a fully-covering texture filters light to its own albedo, and a
-/// fully-open one filters nothing — the relationship `gi_glass_tr`
-/// (gi_common.wgsl) decodes, worked here because nothing in WGSL can be
-/// asked at test time.
+/// The tinted word (.z) and its op, swept and pinned at the endpoints. Op 4 rides exactly the
+/// translucent bucket; every other full-cube row leaves .z zero (the no-box sentinel the shaped
+/// classes rely on). The filter is pinned by its two ENDPOINTS rather than its formula: a
+/// fully-covering texture filters light to its own albedo, and a fully-open one filters nothing —
+/// the relationship `gi_glass_tr` (gi_common.wgsl) decodes, worked here because WGSL cannot be run.
 #[test]
 fn the_tinted_word_is_the_bucket_and_pins_its_endpoints() {
 	use digblock_core::block::MeshBucket;

@@ -13,15 +13,11 @@ mod services;
 mod settings;
 mod store;
 
-/// A query param that carries a value, absent if the key isn't there.
-///
-/// A key that IS there but doesn't parse is fatal, never a silent fall
-/// back to the default. These select bench arms — `?workers=`, `?frames=`,
-/// `?warp=` — and a typo that quietly ran the shipped default gets
-/// recorded in BENCH.md as the arm that was asked for. Same rule the
-/// engine's other capture knobs follow (a bad `DIG_STUB` term is fatal;
-/// desktop exits 2 on a bad flag value); on wasm the panic hook prints it
-/// to the console, which is this platform's version of exiting loudly.
+/// A query param that carries a value, absent if the key isn't there. A key that IS there but
+/// doesn't parse is fatal, never a silent fall back to the default: these select bench arms, and a
+/// typo that quietly ran the shipped default gets recorded in BENCH.md as the arm that was asked
+/// for — the rule every other capture knob follows. On wasm the panic hook prints to the console,
+/// which is this platform's version of exiting loudly.
 fn param<T: std::str::FromStr>(p: &web_sys::UrlSearchParams, key: &str) -> Option<T> {
 	let raw = p.get(key)?;
 	match raw.parse() {
@@ -62,12 +58,10 @@ async fn boot() -> Result<(), JsValue> {
 	// "Starting…" stage could never paint before the engine was built.
 	digblock_platform::yield_to_browser().await;
 
-	// A sign-in that came back lands here as `?code=&state=` and NOTHING
-	// else — the master replaces the redirect target's query with its own.
-	// `take_callback` puts back the query that configured this page from
-	// where `auth::begin` parked it, so it has to run BEFORE the params are
-	// read, or `?master=` is lost and the code is redeemed against the
-	// production default instead of the master that minted it.
+	// A sign-in that came back lands here as `?code=&state=` and NOTHING else — the master
+	// replaces the redirect target's query with its own. `take_callback` puts back the query that
+	// configured this page, so it has to run BEFORE the params are read, or `?master=` is lost and
+	// the code is redeemed against the production default instead of the master that minted it.
 	let callback = auth::take_callback();
 
 	let params = web_sys::window()
@@ -76,16 +70,10 @@ async fn boot() -> Result<(), JsValue> {
 		.expect("window.location");
 	reject_unknown_params(&params);
 
-	// Query params mirror the desktop flags: ?seed=, ?tod=, ?draw=,
-	// ?ssr=0, ?overlay, ?name=, ?master= (menu multiplayer),
-	// ?join / ?server= (non-interactive join for scripted flows). The
-	// defaults are full desktop quality — these exist to opt weaker
-	// hardware down.
-	//
-	// Except on a phone or tablet, where the base config is the mobile
-	// one: `?mobile` / `?mobile=0` overrides the detection both ways (the
-	// URL wins, as everywhere), which is also how desktop A/Bs the mobile
-	// defaults without a device in hand.
+	// Query params mirror the desktop flags; the defaults are full desktop quality, and these
+	// exist to opt weaker hardware down. Except on a phone or tablet, where the base config is
+	// the mobile one: `?mobile` / `?mobile=0` overrides the detection both ways (the URL wins, as
+	// everywhere), which is also how desktop A/Bs the mobile defaults without a device in hand.
 	let mobile = params
 		.get("mobile")
 		.map_or_else(is_mobile_browser, |v| v != "0");
@@ -145,21 +133,11 @@ async fn boot() -> Result<(), JsValue> {
 	}
 	config.walk = flag(&params, "walk");
 
-	// ONE predicate, exactly as desktop derives it (`apps/desktop/main.rs`),
-	// rather than a guard per capture flag. A capture path gets no menu, no
-	// audio, no master traffic, and neither loads nor saves settings — the
-	// per-flag version of this shipped covering `?bench` alone, which left
-	// `?warp`/`?fly` running their scripted flight behind the title
-	// screen's dim, and left every capture reading (and WRITING) whatever
-	// draw distance and lighting detail this browser happened to have
-	// saved. Two runs of the same arm have to measure the same thing.
-	//
-	// `?capture` is the web's `--screenshot`: the page cannot take the
-	// picture itself, so the harness outside does, and this is how it asks
-	// for the hermetic, menu-less, input-deaf run the desktop capture
-	// gets. `?play` keeps everything interactive and merely skips the
-	// menu — the scripted-input path: a harness that presses K wants the
-	// alchemy screen, not the title screen's dim.
+	// ONE predicate, exactly as desktop derives it (`apps/desktop/main.rs`), rather than a guard
+	// per capture flag: a capture path gets no menu, no audio, no master traffic, and neither
+	// loads nor saves settings, so two runs of the same arm measure the same thing. `?capture` is
+	// the web's `--screenshot` — the hermetic, menu-less, input-deaf run — while `?play` keeps
+	// everything interactive and merely skips the menu, for a harness that presses a key.
 	let capture = flag(&params, "capture");
 	let interactive = !config.bench && config.fly.is_none() && !capture;
 	config.menu = interactive && !flag(&params, "play");
@@ -405,12 +383,10 @@ async fn boot() -> Result<(), JsValue> {
 	.map_err(|e| JsValue::from_str(&e.to_string()))
 }
 
-/// The display's safe-area insets (notch, home indicator) in PHYSICAL px
-/// — the engine's HUD coordinate space. Script cannot read `env()`
-/// directly; resolving it through a probe element's computed padding is
-/// the standard route. Read once at boot: the common mobile posture is
-/// one orientation per session, and a rotation merely costs the HUD its
-/// inset margin until reload.
+/// The display's safe-area insets (notch, home indicator) in PHYSICAL px — the engine's HUD
+/// coordinate space. Script cannot read `env()` directly; resolving it through a probe element's
+/// computed padding is the standard route. Read once at boot: the common mobile posture is one
+/// orientation per session, and a rotation merely costs the HUD its inset margin until reload.
 fn safe_area_insets() -> Option<digblock_client::ui::hud::SafeArea> {
 	let window = web_sys::window()?;
 	let document = window.document()?;
@@ -445,14 +421,11 @@ fn safe_area_insets() -> Option<digblock_client::ui::hud::SafeArea> {
 	Some(insets)
 }
 
-/// Is this page running as an installed home-screen app rather than in a
-/// browser tab?
+/// Is this page running as an installed home-screen app rather than in a browser tab?
 ///
-/// Two spellings, because iOS predates the standard one: `display-mode`
-/// is the media query every other browser answers, and
-/// `navigator.standalone` is what Safari has always used. Either counts —
-/// what the caller wants to know is whether there is still browser chrome
-/// to get rid of.
+/// Two spellings, because iOS predates the standard one: `display-mode` is the media query every
+/// other browser answers, `navigator.standalone` is what Safari has always used. Either counts —
+/// the caller wants to know whether there is still browser chrome to get rid of.
 fn installed_web_app() -> bool {
 	let Some(w) = web_sys::window() else {
 		return false;
@@ -498,16 +471,11 @@ fn worker_module_url() -> Option<String> {
 		.filter(|s| !s.is_empty())
 }
 
-/// The key this browser's pre-account character is filed under on the
-/// servers it used to play on: the truncated SHA-256 of the old identity
-/// secret, which localStorage still holds as hex.
-///
-/// The desktop twin of this is `legacy_identity` in apps/desktop. They
-/// must agree byte for byte — a player who used both gets the same key
-/// only if both hash the same secret the same way — which is why the hash
-/// itself is `protocol::legacy_identity_hash` and only the STORAGE differs
-/// here. Same rules: read-only, never created, and absent/malformed/
-/// all-zeros all answer `None`.
+/// The key this browser's pre-account character is filed under on the servers it used to play on:
+/// the truncated SHA-256 of the old identity secret, which localStorage still holds as hex. The
+/// desktop twin is `legacy_identity` in apps/desktop and the two must agree byte for byte, which
+/// is why the hash itself is `protocol::legacy_identity_hash` and only the STORAGE differs here.
+/// Read-only, never created; absent, malformed and all-zeros all answer `None`.
 fn legacy_identity() -> Option<[u8; 16]> {
 	let hex = web_sys::window()?
 		.local_storage()
@@ -521,11 +489,9 @@ fn legacy_identity() -> Option<[u8; 16]> {
 
 /// The Account screen's Copy ID button.
 ///
-/// `navigator.clipboard.writeText` only works inside the task that handled
-/// the user's click, which is why the engine drains this from `input`
-/// rather than `update`. The returned promise is deliberately dropped:
-/// awaiting it would push the result into a later task, and there is
-/// nothing useful to do with it.
+/// `navigator.clipboard.writeText` only works inside the task that handled the user's click, which
+/// is why the engine drains this from `input` rather than `update`. The returned promise is
+/// deliberately dropped: awaiting it would push the result into a later task.
 fn copy_to_clipboard(text: &str) {
 	let Some(window) = web_sys::window() else {
 		return;
@@ -566,15 +532,11 @@ const PAGE_PARAMS: &[&str] = &[
 	"mute",
 ];
 
-/// A key the page does not know is FATAL, like a bad value is. `?vualt`
-/// would otherwise photograph open terrain as the vault, which is the
-/// silent-wrong-scene failure every other parse here refuses; and the
-/// harness that drives this page passes its flags through by name, so
-/// this is where its typos are caught. The sign-in residue (`code`,
-/// `state`) is tolerated rather than assumed gone: `take_callback`
-/// scrubs the URL only once it has matched a pending request, so a
-/// callback that lands without one — another tab, cleared storage, a
-/// pasted URL — must still boot instead of reading as a typo.
+/// A key the page does not know is FATAL, like a bad value is. `?vualt` would otherwise photograph
+/// open terrain as the vault, and the harness that drives this page passes its flags through by
+/// name, so this is where its typos are caught. The sign-in residue (`code`, `state`) is tolerated
+/// rather than assumed gone: `take_callback` scrubs the URL only once it has matched a pending
+/// request, so a callback landing without one must still boot instead of reading as a typo.
 fn reject_unknown_params(params: &web_sys::UrlSearchParams) {
 	let known = |k: &str| {
 		PAGE_PARAMS.contains(&k)

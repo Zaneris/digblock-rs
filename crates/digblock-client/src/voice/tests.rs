@@ -251,15 +251,11 @@ fn every_message_has_words_of_its_own() {
 	}
 }
 
-/// A message's arguments must actually reach its words. Asserted by
-/// VARYING each one and demanding the line change — which proves the
-/// template consumes the argument without this test knowing a single
-/// word of it, so any rewording is free and a dropped `{}` is not.
-///
-/// One pair per ARGUMENT, not per variant: a template that keeps the
-/// name but drops the count passes any single mixed-variation pair.
-/// `DigRefused` is covered by `a_refusal_names_the_block_and_the_level`
-/// instead, which pins its arguments by containment.
+/// A message's arguments must actually reach its words: VARY each one and demand the line change,
+/// which proves the template consumes the argument without this test knowing a word of it — a
+/// rewording is free and a dropped `{}` is not. One pair per ARGUMENT, not per variant: a template
+/// that keeps the name but drops the count passes any single mixed-variation pair. `DigRefused` is
+/// covered by `a_refusal_names_the_block_and_the_level`, which pins its arguments by containment.
 #[test]
 fn every_argument_reaches_the_words() {
 	use AdminReply as A;
@@ -759,14 +755,11 @@ fn every_argument_reaches_the_words() {
 	}
 }
 
-/// The refusal carries the block, the skill and the level that opens it
-/// — asserted as those three VALUES appearing, each read from the table
-/// that owns it. Nothing is asserted about the words between them, so a
-/// rewording costs nothing here and a template that drops the level
-/// still fails.
-///
-/// The name arrives in the ONE case core stores it in: a sentence that
-/// re-cased it would be transforming text a translation has to own.
+/// The refusal carries the block, the skill and the level that opens it — asserted as those three
+/// VALUES appearing, each read from the table that owns it. Nothing is asserted about the words
+/// between them, so a rewording costs nothing and a template that drops the level still fails. The
+/// name arrives in the ONE case core stores it in: a sentence that re-cased it would be
+/// transforming text a translation has to own.
 #[test]
 fn a_refusal_names_the_block_and_the_level() {
 	for (block, kind, level) in [
@@ -793,14 +786,11 @@ fn a_refusal_names_the_block_and_the_level() {
 	}
 }
 
-/// `/give`'s usage line names every essence, in the identifier the
-/// parser takes — the two are built from `Essence::ALL` at opposite
-/// ends of the wire, and this is the end that draws it.
-///
-/// Its counterpart, that `parse_essence` accepts every identifier, is
-/// `admin::give_only_advertises_essences_it_accepts`. Together they
-/// close the gap that once let a refusal repeat the word it had just
-/// rejected.
+/// `/give`'s usage line names every essence, in the identifier the parser takes — the two are
+/// built from `Essence::ALL` at opposite ends of the wire, and this is the end that draws it. Its
+/// counterpart, that `parse_essence` accepts every identifier, is
+/// `admin::give_only_advertises_essences_it_accepts`; together they close the gap that lets a
+/// refusal repeat the word it just rejected.
 #[test]
 fn the_give_usage_names_every_essence() {
 	let line = render(&Msg::Admin(AdminReply::Usage(AdminUsage::Give)));

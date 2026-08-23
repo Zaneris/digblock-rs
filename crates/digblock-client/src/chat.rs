@@ -14,10 +14,7 @@ pub(crate) enum ChatAction {
 	Send(String),
 	/// The box closed without sending (Escape, or Enter on empty).
 	Closed,
-	/// Tab completed a command: both halves of the server-advertised
-	/// pair, for the feed to speak. Joined by `voice` rather than here —
-	/// a sentence composed at its call site is one nothing can
-	/// translate.
+	/// Tab completed a command: the server-advertised pair, joined by `voice` and never here.
 	Hint { usage: String, desc: String },
 }
 

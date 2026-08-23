@@ -70,13 +70,11 @@ fn expect_terrain(wx: i32, wy: i32, wz: i32, seed: f64) -> BlockType {
 	}
 }
 
-/// Column rules re-implemented independently of worldgen's internals:
-/// stone below DIRT_DEPTH of topsoil, sand topsoil for ocean floors and
-/// beaches, bare stone above STONE_SURFACE, grass-over-dirt otherwise,
-/// water fills to SEA_LEVEL, air above; the cave field carves terrain
-/// cells of land columns (never the bedrock course, never water or sand).
-/// Validates fill_chunk's cell indexing and per-chunk assembly across the
-/// stack.
+/// Column rules re-implemented independently of worldgen's internals: stone below DIRT_DEPTH of
+/// topsoil, sand topsoil for ocean floors and beaches, bare stone above STONE_SURFACE,
+/// grass-over-dirt otherwise, water to SEA_LEVEL, air above; the cave field carves terrain cells
+/// of land columns, never the bedrock course and never water or sand. Validates fill_chunk's cell
+/// indexing and per-chunk assembly across the stack.
 #[test]
 fn column_rules() {
 	let seed = 1234.5678;
@@ -408,12 +406,10 @@ fn cave_slice_dump() {
 	assert!(pct < 15.0, "carving stays a small fraction ({pct:.2}%)");
 }
 
-/// `BlockProps::crafted` claims worldgen places none of these — the claim
-/// the craft gate rests on (`unlock::pickup` refuses to dig one
-/// below its recipe's level, which would be a wall across natural terrain
-/// if the world grew them). Asked of worldgen itself, over a spread of
-/// seeds and columns that touches every generation path: ocean, mountains,
-/// caves, rivers, and the decorated surface with its trees.
+/// `BlockProps::crafted` claims worldgen places none of these — the claim the craft gate rests on
+/// (`unlock::pickup` refuses to dig one below its recipe's level, which would be a wall across
+/// natural terrain if the world grew them). Asked of worldgen itself, over a spread of seeds and
+/// columns touching every generation path: ocean, mountains, caves, rivers, decorated surface.
 #[test]
 fn worldgen_never_places_a_crafted_block() {
 	for seed in [42.0, 7.5, -300.25] {

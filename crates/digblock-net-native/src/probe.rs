@@ -49,12 +49,10 @@ pub fn probe(
 					.await
 					.ok()?
 					.ok()?;
-				// Handshake time is still the reachability answer; it is
-				// just not the latency one. Kept as the fallback for the
-				// case where the estimate has no sample of its own yet and
-				// quinn still reports its RFC 9002 initial default, which
-				// would read as one fixed figure against every server
-				// listed.
+				// Handshake time is still the reachability answer, just not the latency one. Kept
+				// as the fallback for when the estimate has no sample of its own yet and quinn
+				// still reports its RFC 9002 initial default, which would read as one fixed
+				// figure against every server listed.
 				let handshake = start.elapsed();
 				let rtt = conn.rtt();
 				let took = if rtt.is_zero() || rtt > handshake {

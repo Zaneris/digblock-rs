@@ -29,21 +29,13 @@ pub(crate) enum Event {
 	SurfaceLost,
 	/// `SurfaceError::Timeout`.
 	SurfaceTimeout,
-	/// Nobody can see the window — it is minimized, or another window
-	/// covers it completely. Distinct from a timeout because it is not
-	/// transient: it lasts until a person moves a window, so the retry has
-	/// to be paced rather than immediate.
+	/// Nobody can see the window: not transient like a timeout, so the retry has to be paced.
 	SurfaceOccluded,
 	/// Any other surface error.
 	SurfaceFatal,
-	/// The device-lost callback fired (possibly off-thread; the shell
-	/// polls a flag and feeds this on the main thread).
+	/// The device-lost callback fired, possibly off-thread; the shell feeds it on the main thread.
 	DeviceLost,
-	/// A surface was just (re)created with this format. Emitted after
-	/// every surface creation, including the first — the machine records
-	/// the format the game's pipelines were built for and orders a
-	/// rebuild when a resume picks a different one (monitor/GPU swap
-	/// while backgrounded: every pipeline's color target would mismatch).
+	/// A surface was (re)created with this format; a different one on resume orders a rebuild.
 	SurfaceFormatPicked(wgpu::TextureFormat),
 }
 
@@ -53,8 +45,7 @@ pub(crate) enum Action {
 	InitAll,
 	/// Pause clock, deliver FocusLost + `on_suspend`, drop the surface.
 	SuspendGame,
-	/// Recreate the surface (and window if the OS killed it), notify
-	/// resize + `on_resume`.
+	/// Recreate the surface (and window if the OS killed it), notify resize + `on_resume`.
 	RecreateSurface,
 	/// `Game::rebuild_gpu_resources` on the current device.
 	RebuildRenderer,
@@ -64,9 +55,7 @@ pub(crate) enum Action {
 	ReconfigureSurface,
 	/// Transient (timeout): just request another frame.
 	RetryNextFrame,
-	/// Occluded: idle a beat, then ask again. Occlusion clears on its own
-	/// so the loop must keep asking, but asking as fast as the CPU allows
-	/// spends a whole core drawing nothing.
+	/// Occluded: idle a beat, then ask again — asking as fast as the CPU allows burns a core.
 	IdleThenRetry,
 	Exit,
 }

@@ -382,12 +382,10 @@ fn every_registration_keeps_the_sun_above_the_horizon() {
 	assert_eq!(names.len(), roster.len(), "registrations share a name");
 }
 
-/// `smothered_by` and the mesher must name ONE set of covers: a cover
-/// smothers exactly when the mesh stops drawing the grass top face
-/// under it. Swept over every block × valid state against a real mesh
-/// — an independent oracle — so a shape whose underside opens (or a
-/// class change that seals one) moves both sides or fails here. Both
-/// outcomes counted, or a sweep of spared covers would pass vacuously.
+/// `smothered_by` and the mesher must name ONE set of covers: a cover smothers exactly when the
+/// mesh stops drawing the grass top face under it. Swept over every block × valid state against a
+/// real mesh — an independent oracle — so a shape whose underside opens moves both sides or fails
+/// here. Both outcomes counted, or a sweep of spared covers would pass vacuously.
 #[test]
 fn a_cover_smothers_exactly_when_it_culls_the_grass_top_face() {
 	use crate::chunk::{ChunkData, make_cell};

@@ -58,25 +58,20 @@ pub fn terrain_height(x: i32, z: i32, seed: f64) -> i32 {
 	column_shape(x, z, seed).height
 }
 
-/// The inclusive y span where pristine soil can live in this column: the
-/// surface cell plus `DIRT_DEPTH` of subsoil below it. Every pristine
-/// non-stone soil cell — cave-exposed ones included, since the carve
-/// removes cells rather than moving them — lies inside;
-/// `subsoil_span_bounds_every_pristine_dirt_cell` walks built columns to
-/// pin that, so a deeper soil layer fails a test instead of silently
-/// escaping callers that scan this span.
+/// The inclusive y span where pristine soil can live in this column: the surface cell plus
+/// `DIRT_DEPTH` of subsoil below it. Every pristine non-stone soil cell — cave-exposed ones
+/// included, since the carve removes cells rather than moving them — lies inside;
+/// `subsoil_span_bounds_every_pristine_dirt_cell` walks built columns to pin that, so a deeper
+/// soil layer fails a test instead of silently escaping callers that scan this span.
 pub fn subsoil_span(x: i32, z: i32, seed: f64) -> (i32, i32) {
 	let h = terrain_height(x, z, seed);
 	(h - DIRT_DEPTH + 1, h)
 }
 
-/// [`column_shape`], but rejecting on altitude from the centre field
-/// alone — one evaluation instead of five. Classification only ever
-/// LOWERS the discretized height (marsh puddles dip a block), so a centre
-/// height at or below `min_height` proves the column's is too. Every
-/// caller that scans candidate columns rejects the overwhelming majority
-/// on altitude, and the survivors pay nothing extra: the centre field is
-/// evaluated once either way. `Some` is bit-identical to `column_shape`.
+/// [`column_shape`], but rejecting on altitude from the centre field alone — one evaluation
+/// instead of five. Classification only ever LOWERS the discretized height, so a centre height at
+/// or below `min_height` proves the column's is too. Survivors pay nothing extra: the centre field
+/// is evaluated once either way. `Some` is bit-identical to `column_shape`.
 pub fn column_shape_above(x: i32, z: i32, seed: f64, min_height: i32) -> Option<ColumnShape> {
 	let p = &TerrainParams::DEFAULT;
 	let f = fields(p, x, z, seed);

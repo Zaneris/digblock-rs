@@ -270,15 +270,11 @@ pub struct ShapeVariant {
 	pub face_masks: [FaceMask; 6],
 	/// `face_masks[d].is_full()`, precomputed.
 	pub occludes_full: [bool; 6],
-	/// Union AABB of the DRAWN geometry, in twelfths — the box of best
-	/// fit around the shape. The crosshair outline wraps this instead of
-	/// the cell, so a slab or a door leaf is boxed at its own size; a
-	/// stair's is the full cube, because that already IS its best fit.
-	/// Taken from the authored boxes (which is exactly what the raster
-	/// fills, so no drawn quad can fall outside it) rather than from
-	/// `collision` — a closed door's knob protrudes past the leaf
-	/// physics uses, and an outline that cut through it would read as a
-	/// bug.
+	/// Union AABB of the DRAWN geometry, in twelfths — the box of best fit around the shape. The
+	/// crosshair outline wraps this instead of the cell, so a slab or a door leaf is boxed at its
+	/// own size; a stair's is the full cube, because that already IS its best fit. Taken from the
+	/// authored boxes, which is exactly what the raster fills, rather than from `collision` — a
+	/// closed door's knob protrudes past the leaf physics uses.
 	pub bounds: SubBox,
 	/// Stairs: the ascending facing — physics resolves a diagonal ramp
 	/// instead of the sub-boxes when approaching from the low side.
@@ -307,15 +303,10 @@ pub fn shape_of_cell(cell: u16) -> Option<&'static ShapeVariant> {
 	shape_of(BlockType::from_id(cell_id(cell)), cell_state(cell))
 }
 
-/// Force every variant table to bake NOW, during load.
-///
-/// Baking is lazy per family, and each family bakes ALL its variants at
-/// once: the first door to reach a mesher, a `neighbor_cover` probe, a
-/// physics test or the alchemy screen pays for the whole family — well
-/// under a millisecond natively, several times that on wasm — in whatever
-/// frame happens to touch it first. That is a guaranteed one-frame hitch at an arbitrary moment of
-/// gameplay, so spend it where a pause is already expected instead. Warm
-/// calls are single-digit nanoseconds, so this is purely about WHEN.
+/// Force every variant table to bake NOW, during load. Baking is lazy per family and each family
+/// bakes ALL its variants at once, so the first door to reach a mesher, a `neighbor_cover` probe,
+/// a physics test or the alchemy screen pays for the whole family — a one-frame hitch at an
+/// arbitrary moment of gameplay. Warm calls are nanoseconds: this is only about WHEN.
 pub fn prewarm() {
 	let _ = LazyLock::force(&STAIRS);
 	let _ = LazyLock::force(&DOORS);
@@ -359,22 +350,11 @@ pub fn draw_bounds(cell: u16) -> Option<SubBox> {
 	shape_of_cell(cell).map(|v| v.bounds)
 }
 
-/// The cell a whole OBJECT is anchored to, plus the box of best fit around all
-/// of it, in twelfths **of that anchor cell** — so a door hands back its LOWER
-/// half and a box two cells tall, and every single-cell block hands back itself
-/// and [`draw_bounds`]. **The caller must not assume the box fits inside one
-/// cell.**
-///
-/// This is the crosshair outline's box, and it exists because a door is one
-/// object wearing two cells: boxing the half under the crosshair drew a frame
-/// around whichever panel you aimed at, which is not the thing the click acts
-/// on — dig either half and both go.
-///
-/// The partner's geometry is DERIVED (same id, facing and open bit, other half)
-/// rather than read out of the world, exactly as [`door_partner`] derives its
-/// cell, so this stays a pure function of one cell value. The union is a real
-/// union, not the lower half stretched: the handle protrudes past the leaf and
-/// the lites do not.
+/// The cell a whole OBJECT is anchored to, plus the box of best fit around all of it, in twelfths
+/// **of that anchor cell** — so a door hands back its LOWER half and a box two cells tall. **The
+/// caller must not assume the box fits inside one cell.** This is the crosshair outline's box: a
+/// door is one object wearing two cells, and boxing the half under the crosshair framed whichever
+/// panel you aimed at. The partner's geometry is DERIVED, so this stays pure in one cell value.
 pub fn object_bounds(cell: (i32, i32, i32), value: u16) -> ((i32, i32, i32), Option<SubBox>) {
 	let b = BlockType::from_id(cell_id(value));
 	if !b.is_door() {
@@ -402,15 +382,11 @@ pub fn object_bounds(cell: (i32, i32, i32), value: u16) -> ((i32, i32, i32), Opt
 	(anchor, Some(u))
 }
 
-/// Whether a cell takes its per-block tint from the cell BELOW instead of
-/// its own: the upper half of a door, so a two-cell leaf wears ONE tint
-/// and reads as one object rather than as two planks sawn from different
-/// timber. Rides the mesh as a flag in the solid material word — see
-/// `mesher::solid_word1` and chunk.wgsl's `block_tint`.
-///
-/// A cell, not a block type, because it is the door's *half* that decides
-/// — and it is deliberately a hash-anchor shift rather than a "doors are
-/// exempt" rule, so the leaf still varies from the door next to it.
+/// Whether a cell takes its per-block tint from the cell BELOW instead of its own: the upper half
+/// of a door, so a two-cell leaf wears ONE tint and reads as one object rather than two planks
+/// sawn from different timber. Rides the mesh as a flag in the solid material word — see
+/// `mesher::solid_word1` and chunk.wgsl's `block_tint`. A cell, not a block type, because the
+/// door's *half* decides; a hash-anchor shift, so the leaf still varies from the door beside it.
 #[inline]
 pub fn tint_from_below(cell: u16) -> bool {
 	BlockType::from_id(cell_id(cell)).is_door() && door_parts(cell_state(cell)).2
@@ -443,13 +419,11 @@ pub fn state_valid(cell: u16) -> bool {
 
 // --- alchemy ----------------------------------------------------------
 
-/// How many items one craft produces (the essence redesign's
-/// feedstock-and-catalyst shape). A feedstock recipe consumes ONE cube of
-/// matter, so it yields as many of the shape as the cube's volume cuts
-/// into — floored, the remainder being the waste of the cut — which is
-/// what makes matter conservation structural: a craft can only ever
-/// output at most the volume it consumed. Essence-only recipes buy one
-/// at a time, exactly as they always did.
+/// How many items one craft produces (the essence redesign's feedstock-and-catalyst shape). A
+/// feedstock recipe consumes ONE cube of matter, so it yields as many of the shape as the cube's
+/// volume cuts into — floored, the remainder being the waste of the cut — which is what makes
+/// matter conservation structural: a craft can only ever output at most the volume it consumed.
+/// Essence-only recipes buy one at a time.
 pub fn craft_batch(b: BlockType) -> u32 {
 	match b.grid_cell() {
 		Some((m, s)) if m.feedstock().is_some() => (SUBS_PER_BLOCK / s.units()).max(1),
@@ -459,12 +433,9 @@ pub fn craft_batch(b: BlockType) -> u32 {
 
 // --- authored geometry ------------------------------------------------
 
-/// Canonical stairs, ascending toward +x: three plain steps of equal
-/// rise, each tread running the full depth of the cell. (Two
-/// nosing/reveal detail passes were tried and
-/// reverted: an overhanging tread lip reads asymmetric — the top step
-/// has nothing overhanging it — and an inset-tread reveal didn't look
-/// right either. Plain steps it is.)
+/// Canonical stairs, ascending toward +x: three plain steps of equal rise, each tread running the
+/// full depth of the cell. Two nosing/reveal detail passes were tried and reverted — an
+/// overhanging tread lip reads asymmetric, the top step having nothing overhanging it.
 const STAIR_BOXES: [SubBox; 3] = [
 	SubBox::new([0, 0, 0], [12, 4, 12]),
 	SubBox::new([4, 4, 0], [12, 8, 12]),
@@ -500,12 +471,11 @@ const DOOR_UPPER_BOXES: [SubBox; 6] = [
 	SubBox::new([1, 5, 2], [3, 7, 10]),   // horizontal mullion
 ];
 
-/// Slab fills by state, indexed by the size bit and then the anchor bit:
-/// one third or two thirds of the cell's height, anchored to its floor or
-/// to its ceiling. The one-third rise is deliberately one stair tread —
-/// the auto-step threshold serves both. A ceiling slab is the floor one
-/// mirrored about the cell's mid-plane, which is what keeps every pair
-/// the same volume (and so the same alchemy cost and the same dig).
+/// Slab fills by state, indexed by the size bit and then the anchor bit: one third or two thirds
+/// of the cell's height, anchored to its floor or to its ceiling. The one-third rise is
+/// deliberately one stair tread — the auto-step threshold serves both. A ceiling slab is the
+/// floor one mirrored about the cell's mid-plane, which keeps every pair the same volume, and so
+/// the same alchemy cost and the same dig.
 const SLAB_BOXES: [SubBox; 4] = [
 	SubBox::new([0, 0, 0], [12, 4, 12]),
 	SubBox::new([0, 0, 0], [12, 8, 12]),
@@ -513,26 +483,18 @@ const SLAB_BOXES: [SubBox; 4] = [
 	SubBox::new([0, 4, 0], [12, 12, 12]),
 ];
 
-/// The torch: one centered post, square in section and stopping short of the
-/// cell's top. Floor-mounted, stateless — wall mounting is a state nibble away
-/// when wanted. Small enough that auto-step walking OVER it reads fine.
-///
-/// The post is as slim as a CENTERED box gets on this grid (an odd width can't
-/// straddle the middle), and it carries no head: a flare over the top read as a
-/// mallet rather than a flame, and the flame is the TEXTURE's business anyway —
-/// `torch_side` paints its upper rows as glow, so one box carries wood below
-/// and fire above.
+/// The torch: one centered post, square in section and stopping short of the cell's top.
+/// Floor-mounted, stateless — wall mounting is a state nibble away when wanted. Small enough that
+/// auto-step walking OVER it reads fine. As slim as a CENTERED box gets on this grid (an odd
+/// width cannot straddle the middle), and it carries no head: a flare over the top read as a
+/// mallet, and the flame is the TEXTURE's business — `torch_side` paints its upper rows as glow.
 const TORCH_BOXES: [SubBox; 1] = [SubBox::new([5, 0, 5], [7, 10, 7])];
 
-/// A table: a full-footprint top on four corner legs.
-/// Stateless — a square top has no facing to lose, and it means tables
-/// pushed together read as one continuous surface rather than a grid of
-/// rotations that don't line up.
-///
-/// The top is deliberately the cell's whole footprint, not inset: an
-/// inset top
-/// leaves a visible gap between adjacent tables at exactly the seam a
-/// player builds a long table across.
+/// A table: a full-footprint top on four corner legs. Stateless — a square top has no facing to
+/// lose, so tables pushed together read as one continuous surface rather than a grid of rotations
+/// that don't line up. The top is deliberately the cell's whole footprint, not inset: an inset
+/// top leaves a visible gap between adjacent tables at exactly the seam a player builds a long
+/// table across.
 const TABLE_BOXES: [SubBox; 5] = [
 	SubBox::new([0, 10, 0], [12, 12, 12]),
 	SubBox::new([1, 0, 1], [3, 10, 3]),
@@ -541,13 +503,10 @@ const TABLE_BOXES: [SubBox; 5] = [
 	SubBox::new([9, 0, 9], [11, 10, 11]),
 ];
 
-/// A chair, canonically BACKED toward +x: seat at mid-height, back rising
-/// from it, four legs. Placing uses the look direction unrotated, so a chair
-/// dropped while facing +x has its back away and its seat turned toward
-/// the placer — which is what you want when setting one at a table.
-///
-/// The seat sits above `AUTO_STEP_MAX`, so a walk does not climb onto
-/// furniture; you jump onto a chair like anything else waist-high.
+/// A chair, canonically BACKED toward +x: seat at mid-height, back rising from it, four legs.
+/// Placing uses the look direction unrotated, so a chair dropped while facing +x has its back
+/// away and its seat turned toward the placer — which is what you want when setting one at a
+/// table. The seat sits above `AUTO_STEP_MAX`, so a walk does not climb onto furniture.
 const CHAIR_BOXES: [SubBox; 6] = [
 	SubBox::new([2, 6, 2], [10, 8, 10]),
 	SubBox::new([8, 8, 2], [10, 12, 10]),
@@ -557,17 +516,11 @@ const CHAIR_BOXES: [SubBox; 6] = [
 	SubBox::new([8, 0, 8], [10, 6, 10]),
 ];
 
-/// A bed, canonically HEADED toward +x: a mattress on a low frame with a
-/// raised pillow at the head end, so the facing is readable from across a
-/// room rather than only up close.
-///
-/// One cell, not two. A two-cell frame is the obvious next version, but a
-/// horizontal pair is genuinely new machinery — the door's pair is
-/// VERTICAL, and `door_partner`, `object_bounds`, the place path's derived
-/// second cell and the server's assembled `writes` all special-case that
-/// axis. A cot is a real object today; the long frame can arrive with the
-/// feature that would justify the cost (setting your spawn), which is when
-/// somebody actually has to answer where a sleeper wakes up.
+/// A bed, canonically HEADED toward +x: a mattress on a low frame with a raised pillow at the
+/// head end, so the facing is readable from across a room. One cell, not two — a horizontal pair
+/// is genuinely new machinery, since the door's pair is VERTICAL and `door_partner`,
+/// `object_bounds`, the place path's derived second cell and the server's assembled `writes` all
+/// special-case that axis. The long frame can arrive with the feature that justifies it.
 const BED_BOXES: [SubBox; 6] = [
 	SubBox::new([0, 3, 1], [12, 6, 11]),
 	SubBox::new([8, 6, 2], [11, 8, 10]),
@@ -710,14 +663,11 @@ fn rotate_boxes(boxes: &[SubBox], k: u8) -> Vec<SubBox> {
 	out
 }
 
-/// The door swing: a rigid 90° rotation about the leaf's vertical pivot
-/// axis, in the corner of the cell the hinge stands in. Valid for door
-/// parts only — they all live inside the swing envelope on x, so their
-/// images stay inside the cell (the `debug_assert` below IS that
-/// envelope). The leaf/handle images match the old x↔z mirror, their
-/// x-extents being symmetric about the pivot; the hinge, mounted
-/// off-center on the leaf's back, is what makes the rotation visibly
-/// rigid.
+/// The door swing: a rigid 90° rotation about the leaf's vertical pivot axis, in the corner of the
+/// cell the hinge stands in. Valid for door parts only — they all live inside the swing envelope
+/// on x, so their images stay inside the cell (the `debug_assert` below IS that envelope). The
+/// leaf/handle images match the old x↔z mirror, their x-extents being symmetric about the pivot;
+/// the hinge, mounted off-center on the leaf's back, is what makes the rotation visibly rigid.
 fn swing_open(b: &SubBox) -> SubBox {
 	debug_assert!(b.max[0] <= 4, "door part outside the swing envelope");
 	SubBox {

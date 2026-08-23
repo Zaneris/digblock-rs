@@ -8,27 +8,17 @@ using Microsoft.Extensions.Options;
 namespace DigBlock.Master.Dev;
 
 /// <summary>Sign-in without a provider, for the things that cannot open a
-/// browser: <c>just play</c>, the headless bots, and the Rust e2e suite.
-///
-/// This is a real hole, so it is gated three ways: the option must be set,
-/// the environment must be Development, and setting the option outside
-/// Development kills the process at boot (see Program.cs). Nothing here is
-/// reachable on a production master, and a misconfiguration is loud rather
-/// than silent.</summary>
+/// browser: <c>just play</c>, the headless bots, and the Rust e2e suite. A real
+/// hole, so it is gated three ways: the option must be set, the environment
+/// must be Development, and setting the option outside Development kills the
+/// process at boot (Program.cs). A misconfiguration is loud, never silent.</summary>
 public static class DevEndpoints
 {
-    /// <summary>The account id for a dev subject.
-    ///
-    /// Deterministic on purpose: <c>just play</c> needs to pass the admin's
-    /// account id to the game server BEFORE anybody has signed in, and a
-    /// derived id means it can be a constant in the justfile instead of a
-    /// startup handshake. <c>dev_account_ids_are_pinned</c> holds the
-    /// derivation still.
-    ///
-    /// Built from the digest's bytes in order, via the textual form, rather
-    /// than <c>new Guid(byte[])</c> — that constructor is mixed-endian on
-    /// its first three fields, so the printed id would not match the digest
-    /// and would be a nuisance to reproduce from a shell script.</summary>
+    /// <summary>The account id for a dev subject, deterministic on purpose:
+    /// <c>just play</c> passes the admin's id to the game server before anybody
+    /// has signed in, so it can be a justfile constant. Built via the textual
+    /// form, not <c>new Guid(byte[])</c>, which is mixed-endian on its first
+    /// three fields. <c>dev_account_ids_are_pinned</c> holds the derivation.</summary>
     public static Guid AccountId(string subject)
     {
         var digest = SHA256.HashData(Encoding.UTF8.GetBytes("digblock-dev-account:" + subject));

@@ -19,15 +19,7 @@ pub const WIRE_TOOL: u16 = u16::MAX - 1;
 pub enum HotbarItem {
 	/// Places this block; its count comes from the inventory.
 	Block(BlockType),
-	/// THE tool slot marker — permanently the last slot (SKILLS-DESIGN
-	/// §6 formalized it: the block slots plus one dedicated tool slot).
-	/// WHICH tool it holds is a separate axis, [`Hotbar::active_tool`]:
-	/// tapping 9 with the slot already selected cycles through the owned
-	/// tool roster. The launch tool is the water bucket, whose charge —
-	/// one unit of water in the inventory, see
-	/// [`crate::inventory::Inventory::bucket_full`] — decides its
-	/// clicks: empty, left-click holds on a source to scoop; charged,
-	/// right-click pours it back out.
+	/// THE tool slot marker, permanently last; the tool it holds is [`Hotbar::active_tool`].
 	WaterTool,
 }
 
@@ -72,17 +64,11 @@ impl Hotbar {
 		self.active_tool
 	}
 
-	/// The active tool as the plain id the shared dig questions take
-	/// (`nodes::dig_mode`, `skills::dig_required_with`) — `Air` whenever the
-	/// hand is not on the tool, which those functions already read as an empty
-	/// hand. One helper, so client prediction and the server spell the
-	/// convention identically.
-	///
-	/// Holding a tool is TWO questions — which one the slot holds
-	/// ([`Self::active_tool`]), and whether that slot is the selected one — and
-	/// every gate but the bucket's used to ask only the first. The tool axis
-	/// persists across a block selection, so a player with dirt in hand still
-	/// drew veins with the siphon and still broke the pick's plane.
+	/// The active tool as the plain id the shared dig questions take (`nodes::dig_mode`,
+	/// `skills::dig_required_with`) — `Air` whenever the hand is not on the tool, which those
+	/// functions already read as an empty hand. Holding a tool is TWO questions, which tool the
+	/// slot holds and whether that slot is selected, and every gate but the bucket's used to ask
+	/// only the first — a player with dirt in hand still drew veins and broke the pick's plane.
 	#[inline]
 	pub fn tool_in_hand(&self) -> BlockType {
 		match self.selected_item() {
@@ -132,14 +118,11 @@ impl Hotbar {
 		self.slots[self.selected]
 	}
 
-	/// First acquisition of a block type claims the first free slot (the
-	/// tool holds the last one, so blocks fill the rest; called on every dig
-	/// credit — later credits find it already assigned). A full bar
-	/// leaves the type unassigned — it still counts in the inventory,
-	/// just isn't reachable from the bar yet. A type that isn't
-	/// [`BlockType::is_slottable`] is never assigned at all: the dig
-	/// credit for a scooped source must not flash a water slot onto the
-	/// bar for the frame before `reconcile_layout` sweeps it off again.
+	/// First acquisition of a block type claims the first free slot; the tool holds the last one,
+	/// so blocks fill the rest. A full bar leaves the type unassigned — it still counts in the
+	/// inventory, just isn't reachable from the bar yet. A type that isn't
+	/// [`BlockType::is_slottable`] is never assigned at all: the dig credit for a scooped source
+	/// must not flash a water slot onto the bar before `reconcile_layout` sweeps it off again.
 	pub fn auto_assign(&mut self, b: BlockType) {
 		if !b.is_slottable() {
 			return;
@@ -210,13 +193,11 @@ impl Hotbar {
 		})
 	}
 
-	/// Sanitizing decode of a persisted arrangement: unknown ids turn
-	/// into empty slots, a duplicated block keeps its first slot, and
-	/// the tool slot is ALWAYS the last one (§6) — `WIRE_TOOL` or a tool
-	/// id anywhere in the input just names the active tool (`WIRE_TOOL`
-	/// = the migrated bucket), and a legacy layout that had parked the
-	/// tool mid-bar comes back with it pinned at the end. Hostile or
-	/// stale input always yields a valid bar.
+	/// Sanitizing decode of a persisted arrangement: unknown ids turn into empty slots, a
+	/// duplicated block keeps its first slot, and the tool slot is ALWAYS the last one (§6) —
+	/// `WIRE_TOOL` or a tool id anywhere in the input just names the active tool, and a legacy
+	/// layout that parked the tool mid-bar comes back with it pinned at the end. Hostile or stale
+	/// input always yields a valid bar.
 	pub fn from_wire(wire: &[u16; HOTBAR_SLOTS]) -> Self {
 		let mut hb = Self::new();
 		hb.slots = [None; HOTBAR_SLOTS];
@@ -244,12 +225,10 @@ impl Hotbar {
 		hb
 	}
 
-	/// Select a slot by index — the server's mirror of a selection that
-	/// reaches it as an index (`InputTick.active_slot`,
-	/// `EditRequest.slot`) rather than as a keystroke. Out of range
-	/// clamps rather than being ignored: both of those are wire fields,
-	/// and a bar whose selection is stale answers [`Self::tool_in_hand`]
-	/// for the wrong hand.
+	/// Select a slot by index — the server's mirror of a selection that reaches it as an index
+	/// (`InputTick.active_slot`, `EditRequest.slot`) rather than as a keystroke. Out of range
+	/// clamps rather than being ignored: both of those are wire fields, and a bar whose selection
+	/// is stale answers [`Self::tool_in_hand`] for the wrong hand.
 	pub fn set_selected(&mut self, slot: usize) {
 		self.selected = slot.min(HOTBAR_SLOTS - 1);
 	}
