@@ -58,12 +58,8 @@ impl Pipeline {
 			self.edits.record(x, y, z, cell);
 			self.recorded.push((x, y, z, cell));
 		}
-		slot.mesh_gen += 1;
 		let center = self.center;
-		self.mesh_heap.push((
-			Reverse(dist2(ChunkPos::new(pos.x, 0, pos.z), center)),
-			(pos.x, pos.y, pos.z),
-		));
+		queue_mesh(slot, &mut self.mesh_heap, pos, center);
 		// Every neighbor whose padded shell can see the edited cell: the
 		// face across each touched border, plus the edge/corner diagonals
 		// where two or three borders meet (their AO / corner data reads
@@ -89,11 +85,7 @@ impl Pipeline {
 					if let Some(nslot) = self.store.get_mut(&np)
 						&& matches!(&nslot.state, ChunkState::Ready(d) if !is_air_chunk(d))
 					{
-						nslot.mesh_gen += 1;
-						self.mesh_heap.push((
-							Reverse(dist2(ChunkPos::new(np.x, 0, np.z), center)),
-							(np.x, np.y, np.z),
-						));
+						queue_mesh(nslot, &mut self.mesh_heap, np, center);
 					}
 				}
 			}
@@ -186,15 +178,13 @@ impl Pipeline {
 		let Some(slot) = self.store.get_mut(&pos) else {
 			return;
 		};
-		if !matches!(slot.state, ChunkState::Ready(_)) {
+		// Air like every other bump site: a sky chunk draws nothing whatever the reveal says, and
+		// a slot that can never mesh must not be left owing one.
+		if !matches!(&slot.state, ChunkState::Ready(d) if !is_air_chunk(d)) {
 			return;
 		}
-		slot.mesh_gen += 1;
 		let center = self.center;
-		self.mesh_heap.push((
-			Reverse(dist2(ChunkPos::new(pos.x, 0, pos.z), center)),
-			(pos.x, pos.y, pos.z),
-		));
+		queue_mesh(slot, &mut self.mesh_heap, pos, center);
 	}
 
 	/// True if the cell now holds `v` (freshly written or already there).

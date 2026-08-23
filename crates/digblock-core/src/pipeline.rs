@@ -140,6 +140,11 @@ pub struct Maintenance {
 	pub overlaid_water: Vec<(i32, i32, i32)>,
 }
 
+/// The mesh queue, ordered nearest-first by flat d² from the streaming centre. An entry names a
+/// SLOT and nothing else — `next_mesh_job` reads the live `mesh_gen` when it pops one, which is
+/// what lets [`queue_mesh`] keep at most one entry per slot.
+type MeshHeap = BinaryHeap<(Reverse<i64>, (i32, i32, i32))>;
+
 pub struct Pipeline {
 	seed: f64,
 	draw_dist: i32,
@@ -147,7 +152,7 @@ pub struct Pipeline {
 	exec: Executor,
 	/// Pending columns (x, z) — generation is per-column, not per-chunk.
 	gen_heap: BinaryHeap<(Reverse<i64>, (i32, i32))>,
-	mesh_heap: BinaryHeap<(Reverse<i64>, (i32, i32, i32))>,
+	mesh_heap: MeshHeap,
 	center: ChunkPos,
 	/// Authoritative edits waiting for their chunk to generate — see
 	/// `apply_authoritative`.
@@ -432,6 +437,30 @@ fn dist2(a: ChunkPos, b: ChunkPos) -> i64 {
 	dx * dx + dy * dy + dz * dz
 }
 
+/// Queue a re-mesh of one slot: bump its generation, and add a heap entry unless the slot already
+/// owes work and therefore already has one.
+///
+/// One entry per slot is enough because an entry names a SLOT and nothing else — `next_mesh_job`
+/// reads the live `mesh_gen` when it pops one, so a second entry can only be popped and thrown
+/// away. That is what keeps the heap bounded by the resident set rather than by the edit rate: a
+/// fluid cascade writes cells far faster than jobs drain, and each write dirties up to eight
+/// slots.
+///
+/// The skip is safe only because no refusal in `next_mesh_job` leaves a slot owing work: an
+/// evicted slot is gone, a `Generating` one is re-queued when it lands, and an air one settles its
+/// own counter. Break that and a slot can owe a mesh with no entry left to carry it — a chunk that
+/// never meshes again, which reads as a permanent hole rather than as a dropped frame.
+fn queue_mesh(slot: &mut ChunkSlot, heap: &mut MeshHeap, pos: ChunkPos, center: ChunkPos) {
+	let queued = slot.mesh_gen > slot.submitted_gen;
+	slot.mesh_gen += 1;
+	if !queued {
+		heap.push((
+			Reverse(dist2(ChunkPos::new(pos.x, 0, pos.z), center)),
+			(pos.x, pos.y, pos.z),
+		));
+	}
+}
+
 /// Authoritative edits held for one chunk column until it generates.
 type DeferredCells = FxHashMap<(i32, i32, i32), u16>;
 
@@ -671,11 +700,7 @@ impl Pipeline {
 		let center = self.center;
 		for (pos, slot) in self.store.iter_mut() {
 			if matches!(&slot.state, ChunkState::Ready(d) if !is_air_chunk(d)) {
-				slot.mesh_gen += 1;
-				self.mesh_heap.push((
-					Reverse(dist2(ChunkPos::new(pos.x, 0, pos.z), center)),
-					(pos.x, pos.y, pos.z),
-				));
+				queue_mesh(slot, &mut self.mesh_heap, *pos, center);
 			}
 		}
 	}

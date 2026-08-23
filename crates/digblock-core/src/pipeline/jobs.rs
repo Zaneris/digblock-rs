@@ -109,7 +109,6 @@ impl Pipeline {
 						self.gi_dirty.insert(ChunkPos::new(x, cy, z));
 					}
 					let c = self.center;
-					let d = dist2(ChunkPos::new(x, 0, z), c);
 					for (cy, data) in stack.into_iter().enumerate() {
 						let pos = ChunkPos::new(x, cy as i32, z);
 						out.generated += 1;
@@ -124,8 +123,7 @@ impl Pipeline {
 						if let Some(slot) = self.store.get_mut(&pos) {
 							slot.state = ChunkState::Ready(data);
 							if !air {
-								slot.mesh_gen += 1;
-								self.mesh_heap.push((Reverse(d), (pos.x, pos.y, pos.z)));
+								queue_mesh(slot, &mut self.mesh_heap, pos, c);
 							}
 						}
 						// Cross-border re-dirty: every Ready neighbour
@@ -403,7 +401,13 @@ impl Pipeline {
 			return None;
 		};
 		if is_air_chunk(data) {
-			return None; // sky chunk: nothing to mesh
+			// Nothing will ever mesh a sky chunk, so settle its counter instead of leaving it
+			// owing work: `queue_mesh` skips the push whenever work is already owed, and a slot
+			// owing a mesh with no entry to carry it never meshes again. No site should bump an
+			// air slot, which makes this a backstop rather than a path.
+			let slot = self.store.get_mut(&pos).expect("read immutably above");
+			slot.submitted_gen = slot.mesh_gen;
+			return None;
 		}
 		if slot.mesh_gen <= slot.submitted_gen {
 			return None; // an equal-or-newer job is already in flight

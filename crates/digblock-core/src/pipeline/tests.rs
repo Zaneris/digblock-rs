@@ -441,6 +441,80 @@ fn a_pool_that_loses_jobs_still_finishes_the_world() {
 	);
 }
 
+/// Every slot that owes a mesh has a heap entry to carry it.
+///
+/// `queue_mesh` skips the push whenever work is already owed, so this is the invariant the whole
+/// dedupe rests on: a slot that lost its only entry never meshes again, which reads as a permanent
+/// hole rather than as a dropped frame.
+fn assert_owed_slots_are_queued(p: &Pipeline) -> usize {
+	let queued: FxHashSet<ChunkPos> = p
+		.mesh_heap
+		.iter()
+		.map(|&(_, (x, y, z))| ChunkPos::new(x, y, z))
+		.collect();
+	let mut owed = 0;
+	for (pos, slot) in &p.store {
+		if slot.mesh_gen > slot.submitted_gen {
+			assert!(
+				queued.contains(pos),
+				"{pos:?} owes a mesh with no heap entry"
+			);
+			owed += 1;
+		}
+	}
+	owed
+}
+
+/// A burst of edits leaves ONE heap entry per slot, not one per edit — and every slot it dirtied
+/// still meshes. The two halves are the same property from both ends: the dedupe is only safe
+/// because nothing it skips was needed, so a test that checked the count alone could pass while
+/// stranding a chunk, and one that checked only the meshes could pass having deduped nothing.
+#[test]
+fn an_edit_burst_queues_each_slot_once_and_strands_none() {
+	let mut p = Pipeline::new(0.0, 4, 2);
+	let center = ChunkPos::new(0, 0, 0);
+	quiesce(&mut p, center);
+	assert!(p.mesh_heap.is_empty(), "a quiesced pipeline owes nothing");
+
+	// A run down one column plus both border walls, so the burst hits the self, face, edge and
+	// corner pushes — the sites that queue up to eight slots for a single cell.
+	let other = |cur: Option<BlockType>| match cur {
+		Some(BlockType::Stone) => BlockType::Dirt,
+		_ => BlockType::Stone,
+	};
+	let mut edits = 0u32;
+	let mut touched = FxHashSet::default();
+	for y in 0..16 {
+		for &(x, z) in &[(8, 8), (0, 8), (8, 0), (0, 0), (15, 15)] {
+			let new = other(p.block_at(x, y, z));
+			if p.set_block(x, y, z, new).is_some() {
+				edits += 1;
+				let (cx, cy, cz) = (x.div_euclid(16), y.div_euclid(16), z.div_euclid(16));
+				touched.insert(ChunkPos::new(cx, cy, cz));
+			}
+		}
+	}
+	assert!(edits > 16, "the burst has to be bigger than the slot count");
+
+	let owed = assert_owed_slots_are_queued(&p);
+	// The tight form, not a bound: one entry per owed slot is exactly what the dedupe promises,
+	// and `edits` is far larger — every extra push it skipped would show here.
+	assert_eq!(p.mesh_heap.len(), owed, "one entry per owed slot");
+	assert!(owed < edits as usize, "{owed} slots for {edits} edits");
+
+	// And nothing was stranded: every slot the burst dirtied comes back with a mesh.
+	let meshed = quiesce_meshed(&mut p, center);
+	let built: FxHashSet<ChunkPos> = meshed.iter().map(|m| m.pos).collect();
+	for pos in &touched {
+		assert!(built.contains(pos), "{pos:?} was dirtied and never meshed");
+	}
+	assert_eq!(
+		assert_owed_slots_are_queued(&p),
+		0,
+		"quiesced with work owed"
+	);
+}
+
 #[test]
 fn set_block_edits_and_bumps_border_neighbors() {
 	let mut p = Pipeline::new(0.0, 4, 2);
