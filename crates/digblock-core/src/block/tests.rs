@@ -615,20 +615,44 @@ fn an_essence_identifier_is_ascii_and_its_own() {
 	}
 }
 
-/// A draw is priced to be meant: every live node holds at least
-/// `NODE_HOLD_MULT` times as long as breaking out the spent face it
-/// leaves behind, so tapping a find is never cheaper than clearing what
-/// is left of it.
+/// The multiplier lives in the HOLD alone: a row is worth exactly what it costs unless it is
+/// stubborn, and a stubborn row costs `STUBBORN_HOLD_MULT` times its worth. Swept both ways,
+/// so the set stays exactly the faces a draw leaves, and counted — a table with no stubborn row
+/// in it would satisfy every assertion above and prove none of them.
 #[test]
-fn a_live_node_holds_a_multiple_of_its_spent_face() {
-	use crate::worldgen::nodes::{NODES, spent_block};
-	for node in NODES {
-		let hold = node.hardness_ticks().expect("a node is drawn");
-		let spent = spent_block(node).expect("a kind");
-		let left = spent.hardness_ticks().expect("a spent face is dug");
+fn a_drawn_face_costs_more_than_it_is_worth() {
+	use crate::worldgen::nodes::{NODES, drawn_kind};
+	let mut stubborn = 0;
+	for b in BlockType::ALL {
+		let p = &PROPS[b as usize];
+		if p.hardness_ticks == p.xp_ticks {
+			assert!(drawn_kind(b).is_none(), "{b:?} breaks at its worth");
+			continue;
+		}
+		stubborn += 1;
+		assert_eq!(p.hardness_ticks, p.xp_ticks * STUBBORN_HOLD_MULT, "{b:?}");
 		assert!(
-			hold >= left * NODE_HOLD_MULT,
-			"{node:?}: {hold} < {left} × mult"
+			drawn_kind(b).is_some(),
+			"{b:?} costs a multiple and is no drawn face"
+		);
+	}
+	assert_eq!(stubborn, NODES.len(), "one stubborn face per node kind");
+}
+
+/// What a break pays is the rock and never the essence: a drawn face is worth the host it
+/// stood in, so prying one out pays what quarrying that host pays. The find is paid for once,
+/// at the draw, through `skills::field_xp` — which is why lengthening the break could not be
+/// allowed to reach the award.
+#[test]
+fn a_drawn_face_pays_the_rock_it_stood_in() {
+	use crate::worldgen::nodes::{NODES, host_block, spent_block};
+	for node in NODES {
+		let face = spent_block(node).expect("a kind");
+		let host = host_block(node).expect("a kind");
+		assert_eq!(
+			crate::skills::dig_xp(face),
+			crate::skills::dig_xp(host),
+			"{face:?} against the {host:?} it stood in"
 		);
 	}
 }

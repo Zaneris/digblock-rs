@@ -429,6 +429,11 @@ mesh already shows it. The odds scale with `presence::RollingPeak` — the day's
   sweep, or a placed spent rock turns to stone for every visitor below its tier.
 - **One question answers every dig**: `nodes::dig_mode(...)`, asked identically by client prediction and the server. A
   draw is timed as the node, writes the kind's own spent face rather than air, pays both skills, and shows no crack.
+- **A drawn face costs more than it is worth.** The spent rock a draw leaves is the one shape of row where the hold and
+  the award part company: it holds `block::STUBBORN_HOLD_MULT` times the figure its row states, and pays the Mining XP
+  that figure alone implies — the host's. `dig_xp` reads `BlockProps::xp_ticks` for exactly that reason, and pointing it
+  back at `hardness_ticks` would pay a tidier for essence somebody else drew. The live node is NOT stubborn: it has no
+  break path (`NeedsSiphon`), so a multiplier there only lengthens the draw.
 - **A node is world geometry and never an item.** `is_slottable` is false for every live node — both the rule and the
   migration for saves written while a siphon handed ore over. The essence is deliberately NOT predicted (one `inv_delta`
   per `PendingEdit`, so the draw takes the standing rebase); the CELL is, so the find turns spent under the hand.

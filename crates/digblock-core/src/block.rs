@@ -172,10 +172,10 @@ blocks! {
 	///
 	/// All four `seams`: a revealed vein lights the room it opens into, from
 	/// the faces that open into it and no others (GI-DESIGN.md R31).
-	Emberore = 48 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::EMBERORE, tex::EMBERORE, tex::EMBERORE), 120 * NODE_HOLD_MULT, DigFamily::Rock), 2)), Material::Emberore),
-	Duskstone = 49 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::DUSKSTONE, tex::DUSKSTONE, tex::DUSKSTONE), 150 * NODE_HOLD_MULT, DigFamily::Rock), 4)), Material::Duskstone),
-	Glowvein = 50 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::GLOWVEIN, tex::GLOWVEIN, tex::GLOWVEIN), 190 * NODE_HOLD_MULT, DigFamily::Rock), 4)), Material::Glowvein),
-	Aetherock = 51 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::AETHEROCK, tex::AETHEROCK, tex::AETHEROCK), 240 * NODE_HOLD_MULT, DigFamily::Rock), 6)), Material::Aetherock),
+	Emberore = 48 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::EMBERORE, tex::EMBERORE, tex::EMBERORE), 120, DigFamily::Rock), 2)), Material::Emberore),
+	Duskstone = 49 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::DUSKSTONE, tex::DUSKSTONE, tex::DUSKSTONE), 150, DigFamily::Rock), 4)), Material::Duskstone),
+	Glowvein = 50 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::GLOWVEIN, tex::GLOWVEIN, tex::GLOWVEIN), 190, DigFamily::Rock), 4)), Material::Glowvein),
+	Aetherock = 51 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::AETHEROCK, tex::AETHEROCK, tex::AETHEROCK), 240, DigFamily::Rock), 6)), Material::Aetherock),
 	/// The generic grey tapped face the per-tier rocks at the end of this
 	/// table replaced. Kept, and unreachable: nothing writes it any more,
 	/// but journals and saves made before those rocks existed carry cells
@@ -274,10 +274,10 @@ blocks! {
 	/// reveal gate, so everyone sees it on your wall whatever they have
 	/// levelled into. Neither `glows` nor `seams`: what a siphon takes out
 	/// is exactly the light.
-	DepletedEmberore = 75 => mat(dig(props(RenderClass::Opaque, true, tex::DEPLETED_EMBERORE, tex::DEPLETED_EMBERORE, tex::DEPLETED_EMBERORE), 90, DigFamily::Rock), Material::DepletedEmberore),
-	DepletedDuskstone = 76 => mat(dig(props(RenderClass::Opaque, true, tex::DEPLETED_DUSKSTONE, tex::DEPLETED_DUSKSTONE, tex::DEPLETED_DUSKSTONE), 90, DigFamily::Rock), Material::DepletedDuskstone),
-	DepletedGlowvein = 77 => mat(dig(props(RenderClass::Opaque, true, tex::DEPLETED_GLOWVEIN, tex::DEPLETED_GLOWVEIN, tex::DEPLETED_GLOWVEIN), 90, DigFamily::Rock), Material::DepletedGlowvein),
-	DepletedAetherock = 78 => mat(dig(props(RenderClass::Opaque, true, tex::DEPLETED_AETHEROCK, tex::DEPLETED_AETHEROCK, tex::DEPLETED_AETHEROCK), 90, DigFamily::Rock), Material::DepletedAetherock),
+	DepletedEmberore = 75 => mat(stubborn(props(RenderClass::Opaque, true, tex::DEPLETED_EMBERORE, tex::DEPLETED_EMBERORE, tex::DEPLETED_EMBERORE), 90, DigFamily::Rock), Material::DepletedEmberore),
+	DepletedDuskstone = 76 => mat(stubborn(props(RenderClass::Opaque, true, tex::DEPLETED_DUSKSTONE, tex::DEPLETED_DUSKSTONE, tex::DEPLETED_DUSKSTONE), 90, DigFamily::Rock), Material::DepletedDuskstone),
+	DepletedGlowvein = 77 => mat(stubborn(props(RenderClass::Opaque, true, tex::DEPLETED_GLOWVEIN, tex::DEPLETED_GLOWVEIN, tex::DEPLETED_GLOWVEIN), 90, DigFamily::Rock), Material::DepletedGlowvein),
+	DepletedAetherock = 78 => mat(stubborn(props(RenderClass::Opaque, true, tex::DEPLETED_AETHEROCK, tex::DEPLETED_AETHEROCK, tex::DEPLETED_AETHEROCK), 90, DigFamily::Rock), Material::DepletedAetherock),
 	/// The three SURFACE nodes. Exactly the ore rows' standing in a different
 	/// host: worldgen still places Wood, Stone and Sand — a node is DERIVED
 	/// (`worldgen::nodes`), revealed by the mesh stamp at an ALCHEMY level,
@@ -289,18 +289,18 @@ blocks! {
 	/// for all three, a draw credits essence, and what you carry home is the
 	/// spent face below, which drops itself. Heartwood is the day-one node,
 	/// because the economy has to be able to begin.
-	Heartwood = 79 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::HEARTWOOD, tex::HEARTWOOD, tex::HEARTWOOD), 80 * NODE_HOLD_MULT, DigFamily::Wood), 2)), Material::Heartwood),
-	DrainedHeartwood = 80 => mat(dig(props(RenderClass::Opaque, true, tex::DRAINED_HEARTWOOD, tex::DRAINED_HEARTWOOD, tex::DRAINED_HEARTWOOD), 60, DigFamily::Wood), Material::DrainedHeartwood),
+	Heartwood = 79 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::HEARTWOOD, tex::HEARTWOOD, tex::HEARTWOOD), 80, DigFamily::Wood), 2)), Material::Heartwood),
+	DrainedHeartwood = 80 => mat(stubborn(props(RenderClass::Opaque, true, tex::DRAINED_HEARTWOOD, tex::DRAINED_HEARTWOOD, tex::DRAINED_HEARTWOOD), 60, DigFamily::Wood), Material::DrainedHeartwood),
 	/// Leystone rides the ore deposit stream as its SURFACE tier — the
 	/// shallow band the deep tiers vacate — and manifests in pristine
 	/// Stone exactly as they do; only its reveal keys on Alchemy.
-	Leystone = 81 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::LEYSTONE, tex::LEYSTONE, tex::LEYSTONE), 110 * NODE_HOLD_MULT, DigFamily::Rock), 3)), Material::Leystone),
-	SpentLeystone = 82 => mat(dig(props(RenderClass::Opaque, true, tex::SPENT_LEYSTONE, tex::SPENT_LEYSTONE, tex::SPENT_LEYSTONE), 90, DigFamily::Rock), Material::SpentLeystone),
+	Leystone = 81 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::LEYSTONE, tex::LEYSTONE, tex::LEYSTONE), 110, DigFamily::Rock), 3)), Material::Leystone),
+	SpentLeystone = 82 => mat(stubborn(props(RenderClass::Opaque, true, tex::SPENT_LEYSTONE, tex::SPENT_LEYSTONE, tex::SPENT_LEYSTONE), 90, DigFamily::Rock), Material::SpentLeystone),
 	/// Springstone manifests in the pristine sand bed of a lake or river
 	/// — the one node you dig through water to reach, which is what makes
 	/// water features destinations.
-	Springstone = 83 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::SPRINGSTONE, tex::SPRINGSTONE, tex::SPRINGSTONE), 60 * NODE_HOLD_MULT, DigFamily::Soft), 3)), Material::Springstone),
-	SpentSpringstone = 84 => mat(dig(props(RenderClass::Opaque, true, tex::SPENT_SPRINGSTONE, tex::SPENT_SPRINGSTONE, tex::SPENT_SPRINGSTONE), 25, DigFamily::Soft), Material::SpentSpringstone),
+	Springstone = 83 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::SPRINGSTONE, tex::SPRINGSTONE, tex::SPRINGSTONE), 60, DigFamily::Soft), 3)), Material::Springstone),
+	SpentSpringstone = 84 => mat(stubborn(props(RenderClass::Opaque, true, tex::SPENT_SPRINGSTONE, tex::SPENT_SPRINGSTONE, tex::SPENT_SPRINGSTONE), 25, DigFamily::Soft), Material::SpentSpringstone),
 	/// The stained panes — clean glass in a colour, and the colour is
 	/// what the light through them becomes (the tinted-transmission op).
 	RedGlass = 85 => mat(dig(translucent(crafted(props(RenderClass::Glass, true, tex::GLASS_RED, tex::GLASS_RED, tex::GLASS_RED))), 25, DigFamily::Soft), Material::RedGlass),
@@ -616,6 +616,11 @@ pub struct BlockProps {
 	/// collected. Shared client/server behavior — retuning is a
 	/// SIM_VERSION bump.
 	pub hardness_ticks: u16,
+	/// What a dig on this block is WORTH, in the ticks the hold is spent in and equal to
+	/// [`Self::hardness_ticks`] on every row but a [`stubborn`] one, which COSTS a multiple of
+	/// it. Read by [`crate::skills::dig_xp`] and nothing else, so lengthening a hold through
+	/// the multiplier cannot drag the award up with it.
+	pub xp_ticks: u16,
 	/// Inventory credit override for a completed dig, whoever put the block
 	/// there; `dig_drop()` falls back to the block itself when diggable.
 	pub drops: Option<BlockType>,
@@ -691,6 +696,7 @@ const fn props(class: RenderClass, collides: bool, side: u16, top: u16, bottom: 
 		tex_top: top,
 		tex_bottom: bottom,
 		hardness_ticks: 0,
+		xp_ticks: 0,
 		drops: None,
 		crumbles: None,
 		shape: None,
@@ -747,6 +753,24 @@ const fn crafted(mut p: BlockProps) -> BlockProps {
 /// hardness so a new diggable row can't forget it.
 const fn dig(mut p: BlockProps, ticks: u16, family: DigFamily) -> BlockProps {
 	p.hardness_ticks = ticks;
+	p.xp_ticks = ticks;
+	p.dig_family = family;
+	p
+}
+
+/// How much longer a stubborn row holds than it pays. Sized so clearing a tapped source is
+/// real work rather than a tap, and kept off the award side because the essence was the prize
+/// and is drawn exactly once — an award riding the hold would pay for it a second time, to
+/// whoever happened to tidy up.
+const STUBBORN_HOLD_MULT: u16 = 3;
+
+/// Diggable, and harder to break than it is worth: the hold costs [`STUBBORN_HOLD_MULT`] times
+/// `ticks` while [`BlockProps::xp_ticks`] stays `ticks`, so a retune of the multiplier moves no
+/// award. Every face a siphon draw leaves standing is one, and nothing else is
+/// (`a_drawn_face_costs_more_than_it_is_worth`).
+const fn stubborn(mut p: BlockProps, ticks: u16, family: DigFamily) -> BlockProps {
+	p.hardness_ticks = ticks * STUBBORN_HOLD_MULT;
+	p.xp_ticks = ticks;
 	p.dig_family = family;
 	p
 }
@@ -788,13 +812,6 @@ const fn emits(mut p: BlockProps, level: u8) -> BlockProps {
 	p
 }
 
-/// How much longer a live node holds than the figure its row states —
-/// every essence source, on top of its per-kind base. A draw is the only
-/// way essence enters the world and it is never undone, so the hold is
-/// priced to make a player mean it; the XP a draw pays is
-/// `skills::field_xp`, tabled per kind, and does NOT rise with this.
-const NODE_HOLD_MULT: u16 = 3;
-
 /// This block casts light at `level` from its exposed FACES rather than
 /// from the middle of its cell — see [`BlockProps::surface_light`]. A
 /// seam, not a lamp.
@@ -821,6 +838,7 @@ const fn water_props(amount: u8, source: bool, falling: bool) -> BlockProps {
 		tex_top: tex::WATER,
 		tex_bottom: tex::WATER,
 		hardness_ticks: 0,
+		xp_ticks: 0,
 		drops: None,
 		crumbles: None,
 		shape: None,
@@ -1123,6 +1141,14 @@ impl BlockType {
 	pub fn hardness_ticks(self) -> Option<u16> {
 		let h = self.props().hardness_ticks;
 		(h > 0).then_some(h)
+	}
+
+	/// What a dig on this block is WORTH, in the ticks a hold is spent in
+	/// — see [`BlockProps::xp_ticks`]. What it COSTS is
+	/// [`Self::hardness_ticks`], and on a `stubborn` row the two differ.
+	#[inline]
+	pub fn xp_ticks(self) -> u16 {
+		self.props().xp_ticks
 	}
 
 	/// THE dig-permission gate — hold length for digging this block at world height `y`, or None

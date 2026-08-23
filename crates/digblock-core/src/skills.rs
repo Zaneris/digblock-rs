@@ -309,8 +309,11 @@ pub fn dig_xp(block: BlockType) -> u64 {
 	if block.is_foliage() || block == BlockType::Torch || block.is_conjured() {
 		return 0;
 	}
+	// Diggability is the hold's question; the award is the block's WORTH, which is the hold on
+	// every row but a stubborn one. Reading the hold here would let `block::STUBBORN_HOLD_MULT`
+	// pay a drawn face for essence somebody else already drew.
 	match block.hardness_ticks() {
-		Some(h) => u64::from(h).div_ceil(24),
+		Some(_) => u64::from(block.xp_ticks()).div_ceil(24),
 		None => 0,
 	}
 }

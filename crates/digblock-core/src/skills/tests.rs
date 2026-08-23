@@ -310,31 +310,30 @@ fn an_abandoned_hold_bleeds_out_in_exactly_one_second() {
 	assert_eq!(dig_decayed(1, need, 1), 0);
 }
 
-/// §5.2's award: XP is fixed per action for life and rides hardness, so
-/// a harder block never pays less than a softer one. Asserted as that
-/// ordering plus the exemptions rather than as a table of quotients —
-/// `dig_xp` IS the hardness divided down, so the quotients only restate
-/// the division and every one of them moves when a hardness is retuned.
+/// §5.2's award: XP is fixed per action for life and rides what a block is WORTH, so one worth
+/// more never pays less. Asserted as that ordering plus the exemptions rather than as a table
+/// of quotients — `dig_xp` IS the worth divided down, so the quotients only restate the
+/// division and every one moves when a row is retuned. Over the worth and NOT the hold, which
+/// a `stubborn` row multiplies without earning a point for it.
 #[test]
-fn dig_xp_follows_the_hardness_table() {
+fn dig_xp_follows_what_a_block_is_worth() {
 	use BlockType as B;
 	let mut paid = 0;
 	for &a in &BlockType::ALL {
-		let Some(ha) = a.hardness_ticks() else {
-			continue;
-		};
-		if dig_xp(a) == 0 {
+		if a.hardness_ticks().is_none() || dig_xp(a) == 0 {
 			continue;
 		}
+		let wa = a.xp_ticks();
 		paid += 1;
 		for &b in &BlockType::ALL {
-			let Some(hb) = b.hardness_ticks() else {
+			if b.hardness_ticks().is_none() {
 				continue;
-			};
-			if dig_xp(b) > 0 && ha <= hb {
+			}
+			let wb = b.xp_ticks();
+			if dig_xp(b) > 0 && wa <= wb {
 				assert!(
 					dig_xp(a) <= dig_xp(b),
-					"{a:?} ({ha}) outpaid the harder {b:?} ({hb})"
+					"{a:?} ({wa}) outpaid the richer {b:?} ({wb})"
 				);
 			}
 		}

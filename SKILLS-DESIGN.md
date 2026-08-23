@@ -1059,6 +1059,13 @@ golden hashes untouched.
   currency; the variants carry the reagent names now too. Renaming them moved no byte — the discriminants are explicit
   and nothing serializes an essence by name — which is a different question from the indices, and the one-time balance
   reset settles neither.
+- **A drawn face is stubborn (2026-08-23).** The rock a draw leaves standing holds `block::STUBBORN_HOLD_MULT` times the
+  figure its row states, so clearing a tapped source is real work rather than an afterthought — while the Mining XP it
+  pays is the figure's own, which is the host's, unmoved. The award reads `BlockProps::xp_ticks` and never the hold,
+  because the find is paid for once, at the draw, through `skills::field_xp`; a break that rode the hold would pay for
+  that essence a second time, to whoever happened to tidy up. The draw itself is timed at the row's plain figure. An
+  earlier pass put the multiplier on the LIVE node instead, where it reached nothing but the extraction — a revealed
+  node has no break path at all (`DigMode::NeedsSiphon`), so its hold time and its draw time are the same number.
 - **Captures**: `DIG_NODE=<heartwood|leystone|springstone>` is `DIG_ORE`'s surface twin — pose at the nearest node with
   its reveal granted; leystone reuses the generalized ore chamber, and the surface kinds deliberately write nothing.
 
