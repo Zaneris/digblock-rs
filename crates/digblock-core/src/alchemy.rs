@@ -182,6 +182,22 @@ pub fn ward_price(level: u32) -> (Essence, u32) {
 	(Essence::Unda, BASE << rank)
 }
 
+/// The Causeway's fare: Unda, because it is the Ward's own glass — one
+/// substance, one price line, and the springstone faucet feeds both
+/// spells that write it. Climbs faster than
+/// [`crate::unlock::causeway_secs`] lengthens the road, which is what
+/// makes a rung sell uninterrupted distance rather than a discount on
+/// it; the top rung is the heaviest repeatable spend in the book.
+pub fn causeway_price(level: u32) -> (Essence, u32) {
+	const BASE: u32 = 12;
+	let fare = match level {
+		l if l >= crate::unlock::CAUSEWAY_VAST_AT => BASE * 9,
+		l if l >= crate::unlock::CAUSEWAY_LONG_AT => BASE * 3,
+		_ => BASE,
+	};
+	(Essence::Unda, fare)
+}
+
 /// Functional items' craft costs — priced BY HAND (§7.3), never by
 /// volume, because a torch's cost is a decision rather than a
 /// measurement. Cross-family costs live here on purpose: they are what

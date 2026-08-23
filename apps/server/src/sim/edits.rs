@@ -169,6 +169,11 @@ impl Sim {
 				(client.edit_tokens + EDIT_RATE_PER_SEC as f32 / TICK_RATE as f32).min(EDIT_BURST);
 			client.chat_tokens =
 				(client.chat_tokens + CHAT_RATE_PER_SEC as f32 / TICK_RATE as f32).min(CHAT_BURST);
+			// The road's own bucket — see `CAUSEWAY_RATE_PER_SEC` for why
+			// it cannot share the edit one.
+			client.causeway_tokens = (client.causeway_tokens
+				+ digblock_net::protocol::CAUSEWAY_RATE_PER_SEC as f32 / TICK_RATE as f32)
+				.min(digblock_net::protocol::CAUSEWAY_BURST);
 			// The spellbook's bucket. Refilled here with the others; spent
 			// in `handle_cast`, which is where a cast's real cost — the
 			// Ward's sphere derivation — is about to be paid.
@@ -267,8 +272,12 @@ impl Sim {
 			let Some(client) = self.clients.get_mut(&req.conn_id) else {
 				return;
 			};
-			let has_token = client.edit_tokens >= 1.0;
-			if client.live && has_token {
+			// A causeway plank spends its OWN bucket (below), never this
+			// one: sharing would let a running player's road starve their
+			// digging, and a starved plank is a fall.
+			let plank = req.kind == EditKind::CausewayStep;
+			let has_token = plank || client.edit_tokens >= 1.0;
+			if client.live && has_token && !plank {
 				client.edit_tokens -= 1.0;
 			}
 			// The declared slot's item (None for an out-of-range slot).
@@ -327,10 +336,21 @@ impl Sim {
 			return reject(RejectReason::ServerError);
 		}
 
+		// A causeway plank takes none of what follows — no ray, no reach,
+		// no slot, no stock. Its bound is the server's own copy of the
+		// caster's feet, and the trail it joins retires its own tail.
+		if req.kind == EditKind::CausewayStep {
+			if let Err(reason) = self.causeway_step(req.conn_id, req.cell, req.seq) {
+				reject(reason);
+			}
+			return;
+		}
+
 		let arc = matches!(req.kind, EditKind::PlaceArc { .. });
 		let place_cell = match req.kind {
 			EditKind::Dig | EditKind::Collect => None,
 			EditKind::Interact => unreachable!("routed to process_interact"),
+			EditKind::CausewayStep => unreachable!("returned above"),
 			EditKind::Place { block } | EditKind::PlaceArc { block } => {
 				// Strict: unknown ids, spare bits, and states the id's
 				// shape doesn't define are refused (`state_valid` is the
@@ -626,6 +646,7 @@ impl Sim {
 		// for pre-v10-shaped mistakes.
 		let slot_ok = match req.kind {
 			EditKind::Dig => true,
+			EditKind::CausewayStep => unreachable!("returned above"),
 			// The tool slot must hold the BUCKET — with §6's tool axis the
 			// slot is one of a roster, and only the bucket scoops. The
 			// Layout carrying a cycle precedes this edit on the reliable

@@ -25,6 +25,7 @@ pub mod knobs;
 
 mod actions;
 mod audio_step;
+mod causeway;
 mod frame;
 mod input;
 mod net_sync;
@@ -184,6 +185,17 @@ pub struct Engine {
 	/// Session-local on purpose — a buff is not a possession, so nothing
 	/// persists or syncs it, and a world swap puts it out.
 	wisp_left: f32,
+	/// Seconds the causeway keeps laying planks; zero = no road.
+	/// Session-local for the wisp's reason — but the PLANKS are ordinary
+	/// cells, so leaving a world takes the road up rather than dropping
+	/// it, and `causeway` is what remembers which cells are ours to take.
+	causeway_left: f32,
+	causeway: digblock_core::causeway::Trail,
+	/// The last spell SENT, so a `CastRefused` — which carries a reason
+	/// and never a spell — can be aimed at the prediction it actually
+	/// answers. Without it any refused cast takes the road up, and a
+	/// kindle you could not afford drops you off your own causeway.
+	last_cast: Option<CastTarget>,
 	/// In-progress cast channel, advanced at the same fixed rate. A
 	/// channel is stillness: any movement intent, dig hold, or surface
 	/// opening resets it — the decay mold is deliberately NOT borrowed
@@ -735,6 +747,9 @@ enum CastTarget {
 	/// The glass sphere about the head at completion
 	/// (`digblock_core::ward`).
 	Ward,
+	/// The road that lays itself under the feet for its span
+	/// (`digblock_core::causeway`).
+	Causeway,
 }
 
 impl CastTarget {
@@ -744,7 +759,9 @@ impl CastTarget {
 	fn teleports(self) -> bool {
 		match self {
 			CastTarget::Home | CastTarget::Waystone(_) => true,
-			CastTarget::Wisp | CastTarget::Kindle | CastTarget::Ward => false,
+			CastTarget::Wisp | CastTarget::Kindle | CastTarget::Ward | CastTarget::Causeway => {
+				false
+			}
 		}
 	}
 }
@@ -1187,3 +1204,6 @@ mod cast_tests;
 
 #[cfg(test)]
 mod ore_capture_tests;
+
+#[cfg(test)]
+mod causeway_tests;

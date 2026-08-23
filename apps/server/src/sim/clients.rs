@@ -71,6 +71,9 @@ impl Sim {
 	}
 
 	pub(super) fn drop_client(&mut self, conn_id: u64) {
+		// Before the record leaves: a road is retired by the trail that
+		// laid it, so one whose holder is gone would stand forever.
+		self.lift_causeway(conn_id);
 		if let Some(client) = self.clients.remove(&conn_id) {
 			log::info!("player {} ({}) left", client.id, client.name);
 			if let Some(hash) = client.identity {

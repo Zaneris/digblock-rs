@@ -428,6 +428,29 @@ pub const WARD_AT: u32 = 16;
 pub const WARD_WIDE_AT: u32 = 36;
 pub const WARD_VAST_AT: u32 = 52;
 
+/// How many seconds a causeway stands for a caster at this Arcana. Zero
+/// below the first rung IS "cannot cast", [`ward_radius`]'s convention.
+/// Each rung lengthens the road and ([`crate::alchemy::causeway_price`])
+/// raises its fare by MORE, so a longer causeway is never a cheaper
+/// second of one — the Ward's "never a free upgrade" rule, which a span
+/// that grew on its own would break.
+pub fn causeway_secs(level: u32) -> u32 {
+	match level {
+		l if l >= CAUSEWAY_VAST_AT => 60,
+		l if l >= CAUSEWAY_LONG_AT => 30,
+		l if l >= CAUSEWAY_AT => 15,
+		_ => 0,
+	}
+}
+
+/// The Causeway's three rungs. The first two trail a Ward rank, so the
+/// two glass spells alternate up the ladder — shelter, then passage —
+/// and the last takes the empty stretch before the far cold crowns the
+/// roster.
+pub const CAUSEWAY_AT: u32 = 20;
+pub const CAUSEWAY_LONG_AT: u32 = 40;
+pub const CAUSEWAY_VAST_AT: u32 = 58;
+
 /// Wisp's second rank: brighter AND whitened — level alone reads as
 /// more of the same hue, never as brighter (the carried-light lesson).
 pub const WISP_BRIGHT_AT: u32 = 38;
@@ -729,6 +752,7 @@ pub fn opens(skill: Skill, level: u32) -> bool {
 					|| level == KINDLE_AT
 					|| arc_cells(level) != arc_cells(level - 1)
 					|| ward_radius(level) != ward_radius(level - 1)
+					|| causeway_secs(level) != causeway_secs(level - 1)
 					|| teleport_cooldown_secs(level) != teleport_cooldown_secs(level - 1)
 					|| channel_ticks(level) != channel_ticks(level - 1)
 					|| wisp_light(level) != wisp_light(level - 1)

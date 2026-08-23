@@ -949,6 +949,12 @@ impl NetClient {
 		self.send_msg(&ClientMsg::CastBreak);
 	}
 
+	/// Take the causeway up before its span runs out. No refund — the
+	/// fare bought the span, not the seconds spent.
+	pub fn send_causeway_end(&mut self) {
+		self.send_msg(&ClientMsg::CausewayEnd);
+	}
+
 	/// Tell the server the draw distance changed (settings slider), so
 	/// the edit/player sync radius follows without a reconnect.
 	pub fn send_set_draw_dist(&mut self, draw_dist: i32) {

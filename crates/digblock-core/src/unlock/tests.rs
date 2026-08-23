@@ -591,23 +591,27 @@ fn unlock_levels_are_the_threshold_levels() {
 			14,
 			WARD_AT,
 			TELEPORT_SWIFT_AT,
+			CAUSEWAY_AT,
 			22,
 			ARC_AT,
 			CHANNEL_QUICK_AT,
 			34,
 			WARD_WIDE_AT,
 			WISP_BRIGHT_AT,
+			CAUSEWAY_LONG_AT,
 			42,
 			ARC_WIDE_AT,
 			50,
 			WARD_VAST_AT,
 			KINDLE_CHEAP_AT,
 			TELEPORT_SWIFTER_AT,
+			CAUSEWAY_VAST_AT,
 			60
 		],
 		"seven ports rising by remoteness, the two swift-return rungs, the \
-			 ward's three spheres and the channel quickening between them — \
-			 the far cold port crowns the content top"
+			 two glass spells alternating — a ward's sphere, then a \
+			 causeway's road — and the channel quickening between them; the \
+			 far cold port crowns the content top"
 	);
 	// The first level is where everyone starts — you never level up into
 	// it, and the slabs sitting at that unlock must not say otherwise.

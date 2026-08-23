@@ -58,6 +58,10 @@ impl Engine {
 		self.ward_climbs.clear();
 		self.arc_on = false;
 		self.wisp_left = 0.0;
+		// Forgotten, never lifted: the pipeline may already be the next
+		// world's, and the planks would land in it.
+		self.causeway_left = 0.0;
+		self.causeway.take();
 		self.target = None;
 		self.fluid = digblock_core::fluid::FluidSim::new();
 		self.flow_accum = 0.0;

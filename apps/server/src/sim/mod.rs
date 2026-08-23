@@ -12,6 +12,7 @@
 //! client.
 
 mod admin;
+mod causeway;
 mod clients;
 mod edits;
 mod handshake;
@@ -376,6 +377,13 @@ struct Client {
 	/// alone — the light itself is per-viewer GI, computed client-side.
 	/// Session-local, exactly like the client's own copy.
 	wisp_until: Option<u32>,
+	/// The tick this client's causeway runs out, and the planks standing
+	/// under it. Session-local like the wisp — the PLANKS are journaled
+	/// cells everyone reads, but only the holder of the trail can retire
+	/// them, so a departure takes the road up.
+	causeway_until: Option<u32>,
+	causeway: digblock_core::causeway::Trail,
+	causeway_tokens: f32,
 }
 
 impl Client {
@@ -510,6 +518,13 @@ pub struct Sim {
 	/// plan fixed as the channel began; the climb lasts the channel and
 	/// UNWINDS if the caster breaks it, moves, or leaves.
 	closings: Vec<WardClosing>,
+	/// Causeway planks whose removal could not land — an unloaded column
+	/// or an unhealthy journal. Held by the SIM because the trail that
+	/// knew about them is already gone with its caster, and this is the
+	/// one write here that must eventually LAND rather than be skipped
+	/// the way fluid's and the sweeps' are: skipped, the glass stands for
+	/// good. Retried each tick (`causeway::OWED_CAP` bounds the leak).
+	owed_planks: std::collections::VecDeque<digblock_core::causeway::Cell>,
 }
 
 /// One ward climbing about a channelling caster: the cells still to
@@ -628,6 +643,7 @@ impl Sim {
 			presence: digblock_core::presence::RollingPeak::day(),
 			kindled: Vec::new(),
 			closings: Vec::new(),
+			owed_planks: std::collections::VecDeque::new(),
 		})
 	}
 
@@ -680,6 +696,7 @@ impl Sim {
 		// with the list a joiner is handed.
 		let tick = self.tick;
 		self.kindled.retain(|k| k.until > tick);
+		self.pump_causeways();
 		self.tick += 1;
 		if self.tick.is_multiple_of(SNAPSHOT_DIVISOR) {
 			self.send_snapshots();
@@ -943,6 +960,7 @@ impl Sim {
 				ClientMsg::ReturnToSpawn => self.handle_return_to_spawn(conn_id),
 				ClientMsg::Cast(kind) => self.handle_cast(conn_id, kind),
 				ClientMsg::CastBreak => self.break_ward(conn_id),
+				ClientMsg::CausewayEnd => self.lift_causeway(conn_id),
 				// Inline like chat: sync radius is read fresh each tick, so the
 				// change applies from the next sync pass.
 				//

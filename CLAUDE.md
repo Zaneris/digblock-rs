@@ -325,10 +325,15 @@ physics contracts are documented at the code in `shapes.rs` and `player.rs`; the
 
 Three skills (Mining, Alchemy, Arcana), designed in `SKILLS-DESIGN.md` and — for Arcana — `MAGIC-DESIGN.md`. Everything
 shared lives in `digblock-core/src/skills.rs`. **A `conjured` block row (`Wardglass`) is the one diggable thing that
-credits nothing, pays no XP and claims no slot** — the Ward writes hundreds of them for one fare, so any of the three
-would make a spell a faucet; every clause of that sentence, diggability included, is swept by
-`a_conjured_row_pays_nothing_and_is_still_diggable`, and `ward::plan` derives every cell on both ends and lands all or
-nothing, the Arc's rule:
+credits nothing, pays no XP and claims no slot** — the Ward writes hundreds of them for one fare and the Causeway keeps
+writing them for as long as its span runs, so any of the three would make a spell a faucet; every clause of that
+sentence, diggability included, is swept by `a_conjured_row_pays_nothing_and_is_still_diggable`. The two spells that
+write it hold the SAME glass on OPPOSITE trust models, and the difference is the thing to keep straight: `ward::plan`
+derives every cell on both ends and lands all or nothing, the Arc's rule, so the wire carries no cells at all; the
+**Causeway's client NAMES each plank**, because one is owed the tick the feet leave support and a round trip is several
+ticks. What makes that safe is not the server's check but `causeway::TRAIL` — the head retires the tail, so a crafted
+client's standing footprint is a fixed few cells whatever it claims. **Do not "fix" the asymmetry by deriving the
+road**: a derived plank arrives after the fall:
 
 - The `Skill` enum is `repr(u8)` and **append-only** — the index is a wire/persistence format. Storage is XP-only `u64`
   totals; level is always derived. The XP curve is a **pinned integer table**, never `powf`.

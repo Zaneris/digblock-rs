@@ -187,7 +187,10 @@ impl Player {
 	/// identical); shaped cells also scan one layer up — a stair's own
 	/// cell contains the feet mid-ramp, and its bottom edge sits exactly
 	/// at the layer boundary.
-	fn grounded(&self, cell_at: &dyn Fn(i32, i32, i32) -> Option<u16>) -> bool {
+	/// Public because the Causeway asks it: a plank is owed exactly when
+	/// the feet have no support, and both ends must ask the ONE probe
+	/// rather than each deciding what "falling" means.
+	pub fn grounded(&self, cell_at: &dyn Fn(i32, i32, i32) -> Option<u16>) -> bool {
 		if self.out.y > 0.0 {
 			return false;
 		}

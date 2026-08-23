@@ -28,6 +28,7 @@ pub(crate) enum Spell {
 	Wisp,
 	Kindle,
 	Ward,
+	Causeway,
 }
 
 /// One line the game speaks. Arguments stay TYPED and separate — never

@@ -175,6 +175,10 @@ fn arcana_teasers() -> Vec<(u32, &'static str)> {
 			unlock::TELEPORT_SWIFT_AT,
 			"swift return — home comes back sooner",
 		),
+		(
+			unlock::CAUSEWAY_AT,
+			"the causeway — glass carries your step over nothing",
+		),
 		(port_at(K::Savanna), "the savanna waystone"),
 		(
 			unlock::ARC_AT,
@@ -193,12 +197,17 @@ fn arcana_teasers() -> Vec<(u32, &'static str)> {
 			unlock::WISP_BRIGHT_AT,
 			"the wisp burns brighter, and longer",
 		),
+		(unlock::CAUSEWAY_LONG_AT, "the causeway carries you further"),
 		(port_at(K::Beach), "the shore waystone"),
 		(unlock::ARC_WIDE_AT, "the arc reaches five"),
 		(port_at(K::Mountain), "the mountain waystone"),
 		(unlock::WARD_VAST_AT, "the vast ward — further out again"),
 		(unlock::KINDLE_CHEAP_AT, "kindle costs less"),
 		(unlock::TELEPORT_SWIFTER_AT, "swifter return"),
+		(
+			unlock::CAUSEWAY_VAST_AT,
+			"the causeway carries you further again",
+		),
 		(port_at(K::Snow), "the far cold waystone — the last port"),
 	]
 }

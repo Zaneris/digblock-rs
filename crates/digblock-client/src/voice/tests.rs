@@ -188,9 +188,15 @@ fn samples() -> Vec<Msg> {
 	// a spell whose sentence duplicates another's is the bug this pair
 	// of variants exists to end. The match is what keeps the list
 	// complete, `admin_samples`' trick.
-	for s in [Spell::Waystone, Spell::Wisp, Spell::Kindle, Spell::Ward] {
+	for s in [
+		Spell::Waystone,
+		Spell::Wisp,
+		Spell::Kindle,
+		Spell::Ward,
+		Spell::Causeway,
+	] {
 		match s {
-			Spell::Waystone | Spell::Wisp | Spell::Kindle | Spell::Ward => {}
+			Spell::Waystone | Spell::Wisp | Spell::Kindle | Spell::Ward | Spell::Causeway => {}
 		}
 		all.push(Msg::SpellLocked(s));
 		all.push(Msg::SpellFareShort(s));
