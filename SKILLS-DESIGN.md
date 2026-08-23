@@ -1059,6 +1059,13 @@ golden hashes untouched.
   currency; the variants carry the reagent names now too. Renaming them moved no byte — the discriminants are explicit
   and nothing serializes an essence by name — which is a different question from the indices, and the one-time balance
   reset settles neither.
+- **A draw pays double (2026-08-23).** Every pair in `skills::field_xp` doubled — both cuts, every kind — so the
+  orderings the table encodes are untouched and only its scale moved: the headline still follows the skill that revealed
+  the find, and both skills still pay at the rock face. Finding is the act the game means to reward and a draw is the
+  only moment that pays for having found, which is the whole reason the split is TABLED rather than derived from
+  hardness: a lever here moves what a find is worth relative to quarrying, and drifts nothing. No version gate rides on
+  it either — XP is server-computed and reaches the client as a TOTAL, so the two ends never compute this table against
+  each other.
 - **A drawn face is stubborn (2026-08-23).** The rock a draw leaves standing holds `block::STUBBORN_HOLD_MULT` times the
   figure its row states, so clearing a tapped source is real work rather than an afterthought — while the Mining XP it
   pays is the figure's own, which is the host's, unmoved. The award reads `BlockProps::xp_ticks` and never the hold,
