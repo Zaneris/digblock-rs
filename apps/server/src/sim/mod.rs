@@ -245,6 +245,12 @@ struct Residency {
 	/// front is what releases the arrival hold.
 	resync_queue: std::collections::VecDeque<(i32, i32)>,
 
+	/// Standing kindled lights owed to this client, drained beside the
+	/// columns by `pump_join_sync`. A join used to send these inline in
+	/// the handshake, which put an unbounded backlog in front of the one
+	/// send whose refusal drops the joiner.
+	kindled_queue: std::collections::VecDeque<Kindled>,
+
 	/// Ticks until this client's next background re-sync.
 	resync_countdown: u32,
 
@@ -298,6 +304,13 @@ struct Client {
 	drift: Vec3,
 	edit_tokens: f32,
 	chat_tokens: f32,
+	/// The cast bucket, spent by every `Cast` ATTEMPT — refused ones
+	/// included, since validation is the expensive half: the Ward's
+	/// derives a whole sphere and scans every player against it before
+	/// anything can be refused. A bucket that only charged for success
+	/// would leave that work unbounded, and the reliable stream's own
+	/// budget admits far more messages a second than a spellbook can.
+	cast_tokens: f32,
 	/// THE bench bucket, in TICKS: refilled one per tick, capped at
 	/// `bench_burst_ticks(level)` (two whole blocks' worth, or one
 	/// costliest op where that is more — an op no bucket can hold is an op
@@ -481,6 +494,10 @@ pub struct Sim {
 	/// Clock-scheduled sweeps near active players. Empty until something
 	/// registers a rule; the tick costs one `is_none` while it is.
 	world_jobs: digblock_core::worldjob::Scheduler,
+	/// Seconds this world had already lived when the process opened it —
+	/// the sweep clock's epoch, and nothing else's. See
+	/// [`worldjobs::world_epoch_secs`].
+	world_epoch_secs: f64,
 	/// Peak live head-count over the trailing game day — what the
 	/// regrowth sweep scales its odds by.
 	presence: digblock_core::presence::RollingPeak,
@@ -500,6 +517,12 @@ pub struct Sim {
 /// breaks the channel — stillness is the channel's contract on the
 /// client, and the server holds its own copy), and the fare to hand
 /// back on an unwind.
+///
+/// `plan_len` and `span` are here because the wire carries the climb's
+/// PROGRESS rather than its cells: every client re-derives the same plan
+/// from `head` and `radius`, so how far the sphere got is a prefix
+/// length, and that is a question about the plan the closing consumed
+/// rather than about the cells it managed to write.
 struct WardClosing {
 	conn_id: u64,
 	by: PlayerId,
@@ -508,10 +531,24 @@ struct WardClosing {
 	from: Vec3,
 	essence: digblock_core::block::Essence,
 	fare: u32,
+	plan_len: usize,
+	span: u32,
 	closing: digblock_core::ward::Closing,
 }
 
+impl WardClosing {
+	/// How much of the plan has been handed to the world: a PREFIX
+	/// length in `ward::plan`'s own order, which is the one currency both
+	/// ends share. Not the number of cells written — the two differ
+	/// wherever a landing was declined, and a client cannot derive that.
+	fn landed(&self) -> u32 {
+		let n = digblock_core::ward::landed_by(self.plan_len, self.closing.step(), self.span);
+		u32::try_from(n).unwrap_or(u32::MAX)
+	}
+}
+
 /// One standing kindled light: where, and the tick it burns until.
+#[derive(Clone, Copy)]
 struct Kindled {
 	cell: [i32; 3],
 	until: u32,
@@ -585,6 +622,9 @@ impl Sim {
 			admin_accounts: FxHashSet::default(),
 			tod_offset_secs: 0.0,
 			world_jobs: digblock_core::worldjob::Scheduler::new(),
+			// After `Journal::open`, which is what creates the directory
+			// on a world's first boot.
+			world_epoch_secs: worldjobs::world_epoch_secs(data_dir),
 			presence: digblock_core::presence::RollingPeak::day(),
 			kindled: Vec::new(),
 			closings: Vec::new(),

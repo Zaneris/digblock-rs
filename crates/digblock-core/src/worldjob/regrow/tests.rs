@@ -48,7 +48,7 @@ fn find_heartwood() -> (i32, i32, i32) {
 				continue;
 			};
 			for y in t.y0..=t.y1 {
-				if node_at((x, y, z), SEED) == Some(BlockType::Heartwood) {
+				if node_at(BlockType::Wood, (x, y, z), SEED) == Some(BlockType::Heartwood) {
 					return (x, y, z);
 				}
 			}
@@ -61,39 +61,105 @@ fn run(slot: u64, players: u32) -> Run {
 	Run { slot, players }
 }
 
+/// The odds climb with the head-count, stop climbing, and never reach
+/// certainty — a find that came back every night would not be a find.
 #[test]
 fn the_chance_climbs_with_the_head_count_and_caps() {
+	// Nobody online, nothing comes back: the sweep needs a player near
+	// the face to run at all, so an empty world's rate is the one rate
+	// that has to be zero.
 	assert_eq!(chance_percent(0), 0);
-	assert_eq!(chance_percent(1), PERCENT_PER_PLAYER);
-	let mut prev = 0;
-	let mut capped = 0;
-	for players in 0..64 {
+	let mut prev = chance_percent(0);
+	let (mut climbed, mut capped) = (0, 0);
+	for players in 1..64 {
 		let c = chance_percent(players);
 		assert!(c >= prev, "{players} players: {c} < {prev}");
-		assert!(c <= MAX_PERCENT);
-		if c == MAX_PERCENT {
-			capped += 1;
-		}
+		climbed += u32::from(c > prev);
+		capped += u32::from(c == MAX_PERCENT);
 		prev = c;
 	}
+	assert!(climbed > 1, "the head-count never moves the odds");
 	assert!(capped > 1, "the cap is never reached in the sampled range");
-	assert_eq!(chance_percent(u32::MAX), MAX_PERCENT);
+	assert_eq!(chance_percent(u32::MAX), MAX_PERCENT, "the cap is a cap");
 }
 
+/// Slots rolled per cell where a hit is wanted. At the capped odds a
+/// face the rule accepts cannot go unhit this many times by chance.
+const ROLLS: u64 = 200;
+
+/// The scope and the rule name one set of faces: every kind's draw
+/// leaves one the sweep is offered, the scope holds nothing else, and at
+/// a real find's coordinates the rule accepts that kind's face alone —
+/// swept over every block, so a face the scope offers and the rule
+/// refuses is caught as surely as one it never sees.
 #[test]
-fn the_scope_is_every_spent_face_and_no_host() {
-	let scope = NodeRegrow.scope();
-	let want: FxHashSet<u16> = NODES
-		.iter()
-		.filter_map(|&n| spent_block(n))
-		.map(|b| b as u16)
-		.collect();
-	let got: FxHashSet<u16> = scope.blocks.iter().map(|&b| b as u16).collect();
-	assert_eq!(got, want);
-	assert_eq!(got.len(), NODES.len(), "two kinds share a spent face");
-	for &b in scope.blocks {
-		assert!(!node_host(b), "{b:?} hosts nodes");
+fn the_scope_and_the_rule_name_one_set_of_faces() {
+	let scope = NodeRegrow.scope().blocks;
+	let mut kinds = 0;
+	for &n in &NODES {
+		let face = spent_block(n).expect("a node with no spent face");
+		assert_eq!(
+			scope.iter().filter(|&&b| b == face).count(),
+			1,
+			"a draw on {n:?} leaves {face:?}, which the sweep is not offered exactly once"
+		);
+		assert!(
+			!node_host(face) && !face.is_node_block(),
+			"{face:?} may not be swept at all"
+		);
+		kinds += 1;
 	}
+	assert_eq!(
+		scope.len(),
+		kinds,
+		"the scope names a face no draw leaves, or two kinds share one"
+	);
+
+	let at = find_heartwood();
+	let mine = spent_block(BlockType::Heartwood).expect("the heart's own face");
+	for b in BlockType::ALL {
+		let mut w = Sparse::default();
+		w.record(at, b);
+		let ever = (0..ROLLS).any(|slot| {
+			NodeRegrow
+				.apply(at, &w, SEED, run(slot, u32::MAX))
+				.is_some()
+		});
+		assert_eq!(ever, b == mine, "{b:?} standing where a heart was");
+	}
+}
+
+/// Reopening a world must not hand the finds straight back. The host's
+/// clock restarts at zero, so the slot standing at load is one an
+/// earlier session may already have drawn from — the sweep anchors there
+/// and waits for the next boundary instead. Driven across that whole
+/// span at the capped odds, then one tick past it.
+#[test]
+fn a_reload_draws_nothing_before_the_next_slot() {
+	let at = find_heartwood();
+	let mut w = Sparse::default();
+	w.record(at, BlockType::DrainedHeartwood);
+	let mut s = Scheduler::new();
+	for job in jobs() {
+		s.register(job);
+	}
+	// The clock the load-time slot ends at: one whole day past the
+	// schedule's own offset into it.
+	let boundary = f64::from(DAY_SECS) * (1.0 + f64::from(NodeRegrow.schedule().offset));
+	const SAMPLES: u32 = 200;
+	for step in 0..SAMPLES {
+		let secs = boundary * f64::from(step) / f64::from(SAMPLES);
+		assert!(
+			s.tick(secs, SEED, &[at], u32::MAX, &w).is_empty(),
+			"a find came back at {secs}s, before the first boundary"
+		);
+		assert!(s.sweeping().is_none(), "a sweep started at {secs}s");
+	}
+	s.tick(boundary, SEED, &[at], u32::MAX, &w);
+	assert!(
+		s.sweeping().is_some(),
+		"the sweep never came due after the boundary"
+	);
 }
 
 #[test]

@@ -188,13 +188,7 @@ fn main() {
 	// Registered here rather than in Sim::new so the test harness's
 	// hand-dressed worlds stay free of production rules; the rule itself
 	// still gets its own end-to-end test against a real Sim.
-	for job in digblock_core::worldjob::grass::jobs() {
-		sim.register_world_job(job);
-	}
-	for job in digblock_core::worldjob::leaves::jobs() {
-		sim.register_world_job(job);
-	}
-	for job in digblock_core::worldjob::regrow::jobs() {
+	for job in digblock_core::worldjob::production() {
 		sim.register_world_job(job);
 	}
 	// Resolve every admin to an account id before the first player can

@@ -11,9 +11,12 @@ pub enum DebugScreen {
 	Menu,
 	Inventory,
 	Alchemy,
-	/// The same two pages with the cursor parked on their first tile, so
-	/// the name it shows on hover is photographable — a tooltip is
-	/// otherwise invisible to every capture and every sweep.
+	/// The same two pages with the cursor parked on something that HAS a
+	/// name: the inventory's first BAR slot — the page names the bar it is
+	/// drawn over as well as its own grid, and the bar is the branch a
+	/// capture could not otherwise reach — and the alchemy page's first
+	/// family tile. A tooltip is invisible to every capture and every
+	/// sweep without one of these.
 	InventoryHover,
 	AlchemyHover,
 	/// Not a screen: stock the inventory and open NOTHING, so the
@@ -57,11 +60,17 @@ pub enum DebugScreen {
 	/// The spellbook, with Arcana XP stocked past the first rung so a
 	/// passed threshold and the next teaser both photograph.
 	Spellbook,
+	/// The same page with the cursor on its first FARE chip — the only
+	/// thing on it that carries a name, the essence a cast is priced in.
+	/// Same reason as [`Self::InventoryHover`].
+	SpellbookHover,
 }
 
 impl DebugScreen {
-	/// Parse the launcher's DIG_SCREEN value. Unknown names are `None`
-	/// rather than an error: this is a dev knob, not a wire format.
+	/// Parse the launcher's DIG_SCREEN value. `None` is an unknown name,
+	/// which [`knobs::apply`](super::knobs::apply) turns into the loud
+	/// exit every other bad knob value gets: a capture that quietly ran
+	/// with no screen open photographs the wrong thing.
 	pub fn parse(s: &str) -> Option<Self> {
 		match s.trim().to_ascii_lowercase().as_str() {
 			"menu" => Some(Self::Menu),
@@ -80,6 +89,7 @@ impl DebugScreen {
 			"transmute" => Some(Self::Transmute),
 			"transmuting" => Some(Self::Transmuting),
 			"spellbook" => Some(Self::Spellbook),
+			"spellbook-hover" => Some(Self::SpellbookHover),
 			_ => None,
 		}
 	}

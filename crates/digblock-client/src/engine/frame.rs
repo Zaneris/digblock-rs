@@ -219,6 +219,18 @@ impl Engine {
 				self.ui
 					.alch_screen
 					.handle_input(&ev, &self.ui.ui_hits, &view);
+			} else if self.ui.spellbook.is_open() {
+				let ports = self.known_ports();
+				let view = crate::ui::screens::spellbook::SpellView::build(
+					&self.skills,
+					self.save.teleport_cooldown.ceil() as u32,
+					&ports,
+					&self.inventory,
+					self.arc_on,
+				);
+				self.ui.spellbook.handle_input(&ev, &self.ui.ui_hits, &view);
+			} else if self.ui.char_screen.is_open() {
+				self.ui.char_screen.handle_input(&ev);
 			}
 		}
 		self.ui.ui_dl.clear();
@@ -285,7 +297,9 @@ impl Engine {
 					&self.skills,
 					self.camera.pos.y.floor() as i32,
 				);
-				self.ui.char_screen.build(&mut ui, size, &view, daylight);
+				self.ui
+					.char_screen
+					.build(&mut ui, size, &view, &hotbar_view, daylight);
 			} else if self.ui.spellbook.is_open() {
 				let view = crate::ui::screens::spellbook::SpellView::build(
 					&self.skills,
@@ -294,7 +308,9 @@ impl Engine {
 					&self.inventory,
 					self.arc_on,
 				);
-				self.ui.spellbook.build(&mut ui, size, &view, daylight);
+				self.ui
+					.spellbook
+					.build(&mut ui, size, &view, &hotbar_view, daylight);
 			} else {
 				crate::ui::hud::crosshair(ui.dl, size, ui.style.scale);
 			}
@@ -388,37 +404,16 @@ impl Engine {
 			.take()
 			.map(ms_since)
 			.unwrap_or_default();
-		// Pack the teleport light: live bursts, plus the channel aura for
-		// as long as its envelope still shows. DIG_CAST poses the channel
-		// at a fixed progress — standing in a hold is the one thing a
-		// headless run cannot do (the DIG_SIPHON rule).
+		// Pack the teleport light. Filled in PRIORITY order, because the
+		// upload truncates at `MAX_FX` by position: the caster's own
+		// channel aura first (it is the only thing on screen that says a
+		// channel is running), then the live bursts, then the standing
+		// orbs out of their own reserved share. Additive blending makes
+		// the order free to be a policy rather than a look.
 		self.vfx.fx_scratch.clear();
-		for fx in &self.vfx.casts {
-			self.vfx.fx_scratch.push(crate::teleport::instance(
-				fx.pos.to_array(),
-				fx.mode,
-				fx.age,
-				1.0,
-				fx.seed,
-			));
-		}
-		// The kindled orbs, culled by distance like the markers: an
-		// additive speck at range costs a draw and shows nothing. Their
-		// age drives the fade-in; the last seconds of the countdown are
-		// the envelope, so a light dims out rather than blinks.
-		for k in &self.vfx.kindled {
-			let origin = digblock_core::kindle::origin(k.cell);
-			if origin.distance(self.camera.pos) > crate::teleport::KINDLED_RADIUS {
-				continue;
-			}
-			self.vfx.fx_scratch.push(crate::teleport::instance(
-				origin.to_array(),
-				crate::teleport::Mode::Kindled,
-				k.age,
-				(k.left / crate::teleport::FADE_OUT_SECS).min(1.0),
-				f32::from(k.key),
-			));
-		}
+		// DIG_CAST poses the channel at a fixed progress — standing in a
+		// hold is the one thing a headless run cannot do (the DIG_SIPHON
+		// rule).
 		if self.vfx.channel_env > 0.0 {
 			let progress = self.config.debug_cast.unwrap_or_else(|| {
 				self.cast.as_ref().map_or(1.0, |c| {
@@ -436,6 +431,55 @@ impl Engine {
 				progress,
 				self.vfx.channel_env,
 				3.7,
+			));
+		}
+		for fx in &self.vfx.casts {
+			self.vfx.fx_scratch.push(crate::teleport::instance(
+				fx.pos.to_array(),
+				fx.mode,
+				fx.age,
+				1.0,
+				fx.seed,
+			));
+		}
+		// The kindled orbs. Culled far like the markers (an additive
+		// speck at range costs a draw and shows nothing) and ramped down
+		// NEAR, or the one standing in your own cell fills the screen.
+		// Their age drives the fade-in; the last seconds of the countdown
+		// are the envelope, so a light dims out rather than blinks. Only
+		// the nearest `MAX_KINDLED_FX` are uploaded — see there.
+		let cam = self.camera.pos;
+		// One answer per orb, asked twice — to rank the share and to fill
+		// it — so a light cannot be ranked on one rule and drawn by
+		// another. Zero envelope is "does not draw", which also parks it
+		// at the back of the ranking rather than spending a slot.
+		let shown = |k: &KindledLight| {
+			let origin = digblock_core::kindle::origin(k.cell);
+			let dist = origin.distance(cam);
+			let env = if dist > crate::teleport::KINDLED_RADIUS {
+				0.0
+			} else {
+				crate::teleport::near_fade(dist)
+					* (k.left / crate::teleport::FADE_OUT_SECS).min(1.0)
+			};
+			(origin, dist, env)
+		};
+		let (picked, n) = crate::teleport::nearest_orbs(self.vfx.kindled.iter().map(|k| {
+			let (_, dist, env) = shown(k);
+			if env > 0.0 { dist } else { f32::INFINITY }
+		}));
+		for &i in &picked[..n] {
+			let k = &self.vfx.kindled[i as usize];
+			let (origin, _, envelope) = shown(k);
+			if envelope <= 0.0 {
+				continue;
+			}
+			self.vfx.fx_scratch.push(crate::teleport::instance(
+				origin.to_array(),
+				crate::teleport::Mode::Kindled,
+				k.age,
+				envelope,
+				f32::from(k.key),
 			));
 		}
 		// The standing markers, culled here on the CPU (reused scratch).

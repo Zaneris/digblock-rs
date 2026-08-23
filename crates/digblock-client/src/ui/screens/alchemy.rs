@@ -57,6 +57,7 @@ pub enum BenchJob {
 	Craft(BlockType, u32),
 }
 
+const BULK_PLAIN: u32 = 1;
 const BULK_SHIFT: u32 = 10;
 const BULK_CTRL: u32 = 200;
 
@@ -66,6 +67,12 @@ const BTN_W: f32 = 152.0;
 const BTN_H: f32 = 34.0;
 /// Gap between an icon/slot and the text that describes it.
 const ICON_TEXT_GAP: f32 = 12.0;
+/// Room the detail strip keeps beside its price before the tail takes a
+/// row of its own. A tail cut down to its elision mark says less than a
+/// tail standing on its own line, and on a phone the price fills the row
+/// it is on. Measured against the WIDEST price rather than the drawn
+/// one, so the strip's height is not in the holdings' hands.
+const TAIL_MIN_W: f32 = 64.0;
 /// What a tile the level has not opened yet wears. Locked tiles dim
 /// rather than hide, and stay interactive — the screen teaches by letting
 /// you ask and answering, which is the whole reason a locked tile is
@@ -591,13 +598,7 @@ impl AlchScreen {
 		// The bar is drawn after us at the window's scale; naming its
 		// slots from here is what keeps the name at THIS frame's glyph.
 		if hover.is_none() {
-			let (cx, cy) = self.cursor;
-			for (i, slot) in bar.slots.iter().enumerate() {
-				let rect = hud::bar_slot_rect(&bar_grid, i, window_scale);
-				if rect.contains(cx, cy) {
-					hover = slot.name().map(|n| (rect, n));
-				}
-			}
+			hover = hud::hovered_bar_slot(size, window_scale, bar, self.cursor);
 		}
 		if let Some((anchor, name)) = hover {
 			widgets::tooltip(ui.dl, &ui.style, size, anchor, &name);
@@ -656,11 +657,86 @@ impl AlchScreen {
 		})
 	}
 
+	/// Every price the page could be asked to show at this level, as the
+	/// strip itself would draw it. One derivation, so the run the panel is
+	/// MEASURED against and the run the strip EMITS cannot drift — the
+	/// same discipline `holdings_chips` keeps for the readout.
+	fn visible_prices(view: &AlchView) -> impl Iterator<Item = Vec<Chip>> + '_ {
+		let next = next_unlock_level(view.level);
+		families()
+			.iter()
+			.flat_map(|f| f.members.iter().copied())
+			.filter(move |&m| member_visible(m, view.level, next))
+			.map(move |m| cost_chips(view, m, !unlock::can_craft(m, view.level)))
+	}
+
+	/// The strip's span for the price: what is left of a `row_w`-wide row
+	/// once the member's icon and the TRANSMUTE button have taken their
+	/// ends of it. The price is BOUNDED by this — drawn to infinity it ran
+	/// under the button, chips and digits both.
+	fn price_span(style: &Style, row_w: f32) -> f32 {
+		(row_w - Self::strip_furniture_w(style)).max(0.0)
+	}
+
+	/// Everything on the strip that is not the price: the row's insets,
+	/// the member icon, the gaps either side of the price, and the
+	/// button.
+	fn strip_furniture_w(style: &Style) -> f32 {
+		let s = style.scale;
+		2.0 * scale::text_pad_x(s) + ROW_ICON * s + 2.0 * ICON_TEXT_GAP * s + BTN_W * s
+	}
+
+	/// The strip's height: the shared action row, or as many
+	/// [`theme::ROW_H`] rows as the WIDEST price the page can show wraps
+	/// onto in a `row_w`-wide panel, plus one for the tail once a price
+	/// wraps at all — a panel that narrow has no room left beside the
+	/// last chip, and the tail is how the strip says ALREADY OWNED.
+	///
+	/// The widest rather than the selected member, and a reserve keyed on
+	/// the WIDEST price rather than on the tail actually being drawn, so
+	/// neither picking a costlier member nor crafting one moves the page
+	/// — the same argument `member_rows_h` makes for the member grid.
+	fn strip_h(style: &Style, view: &AlchView, row_w: f32) -> f32 {
+		let s = style.scale;
+		let (price_h, tight) = Self::price_block(style, view, row_w);
+		let reserve = if tight { theme::ROW_H * s } else { 0.0 };
+		(price_h + reserve).max(theme::ACTION_ROW_H * s)
+	}
+
+	/// How the WIDEST price the page can show lays out in a `row_w`-wide
+	/// panel: the height of the wrapped run, and whether its last row
+	/// leaves less than [`TAIL_MIN_W`] beside it — the one question that
+	/// decides where the tail goes, asked identically by the measure and
+	/// by the emit so the row the tail lands on always exists.
+	fn price_block(style: &Style, view: &AlchView, row_w: f32) -> (f32, bool) {
+		let span = Self::price_span(style, row_w);
+		let (mut h, mut tight) = (0.0f32, false);
+		for chips in Self::visible_prices(view) {
+			let placed = widgets::chip_layout(style, 0.0, 0.0, span, &chips);
+			let Some(last) = placed.last() else { continue };
+			h = h.max(last.y + last.h);
+			tight |= span - (last.x + last.w) < TAIL_MIN_W * style.scale;
+		}
+		(h, tight)
+	}
+
 	fn content_w(&self, style: &Style, view: &AlchView) -> f32 {
 		// The inventory grid's own width, which is also what every other
 		// screen measures against — the page keeps its column.
 		let spec = Self::grid_spec_at(style, (0.0, 0.0));
 		let grid = spec.extent(GRID_SLOTS).0;
+		// The panel measures every row it draws, the strip included: its
+		// price is TEXT between two fixed-width things, so asking for the
+		// unwrapped run keeps it on one row wherever the window allows.
+		// The grid is the wider ask for today's catalog, which is exactly
+		// why this term has to be here rather than assumed — a costlier
+		// price or a wider button must widen the panel, not wrap under the
+		// button. Where the window forbids it, `strip_h` gives the wrapped
+		// run its rows.
+		let price = Self::visible_prices(view)
+			.map(|chips| widgets::chips_w(style, &chips))
+			.fold(0.0, f32::max);
+		let strip = Self::strip_furniture_w(style) + price;
 		// ...but the readout's numbers are TEXT, and text does not shrink
 		// with the panel: `glyph_px` floors, so the bottom rungs of the
 		// fit ladder take a quarter off every box while the digits stay
@@ -669,6 +745,7 @@ impl AlchScreen {
 		// not, `holdings_rows` wraps it rather than letting it spill.
 		let holdings = Self::holdings_chips(view);
 		grid.max(2.0 * scale::text_pad_x(style.scale) + widgets::chips_w(style, &holdings))
+			.max(strip)
 	}
 
 	/// The tallest member row any family lays out (wrapped at the grid's
@@ -688,7 +765,7 @@ impl AlchScreen {
 			+ theme::ROW_GAP * s
 			+ Self::member_rows_h(style)
 			+ theme::SECTION_GAP * s
-			+ theme::ACTION_ROW_H * s
+			+ Self::strip_h(style, view, row_w)
 			+ theme::ROW_GAP * s
 			+ theme::ROW_H * s;
 		Self::header_h(style, view, row_w) + transmute
@@ -894,9 +971,8 @@ impl AlchScreen {
 		// the holdings cannot cover in the short ink), a tail for the one
 		// case a chip cannot say, and the page's one TRANSMUTE button.
 		// Locked reads dim with its level. Its NAME is on hover like every
-		// other tile's — a name in the strip was what used to push the
-		// price off the end of it.
-		let strip_h = theme::ACTION_ROW_H * s;
+		// other tile's, so the strip has room for every line of the price.
+		let strip_h = Self::strip_h(&ui.style, view, row_w);
 		let strip = Rect::new(row_x, y, row_w, strip_h);
 		// With nothing picked there is no item to price and nothing for
 		// the button to do, so the strip says what to do instead — and
@@ -917,7 +993,6 @@ impl AlchScreen {
 		let family = &families()[f];
 		let member = self.member.min(family.members.len() - 1);
 		let item = family.members[member];
-		let need = unlock::craft(item).unwrap_or(u32::MAX);
 		let locked = !unlock::can_craft(item, view.level);
 		let batches = view.affordable(item);
 		let (kind, tint) = hud::item_icon(HotbarItem::Block(item), false);
@@ -945,48 +1020,53 @@ impl AlchScreen {
 		);
 		let text_x = strip.x + text_pad + ROW_ICON * s + ICON_TEXT_GAP * s;
 		let costs = cost_chips(view, item, locked);
-		let rects = widgets::chips(
-			ui.dl,
-			&ui.style,
-			Layer::Content,
-			text_x,
-			strip.y + (strip_h - theme::ROW_H * s) / 2.0,
-			f32::INFINITY,
-			&costs,
-		);
+		let tail = strip_tail(view, item);
+		// The price is BOUNDED by what is left between the icon and the
+		// button — drawn to infinity it ran chips and digits under the
+		// button — and the tail goes wherever is left after it: beside the
+		// last chip where that fits, else on the row `strip_h` reserved
+		// under a wrapped price. Laid out before anything is emitted,
+		// because the block's height decides where the block starts.
+		let span = Self::price_span(&ui.style, row_w);
+		let row_h = theme::ROW_H * s;
+		let placed = widgets::chip_layout(&ui.style, text_x, 0.0, span, &costs);
+		let price_h = placed.last().map_or(0.0, |r| r.y + r.h);
+		let beside_x = placed
+			.last()
+			.map_or(text_x, |r| r.x + r.w + theme::CHIP_SEP * s);
+		let beside = btn.x - ICON_TEXT_GAP * s - beside_x;
+		// The reserved row, or none: `strip_h` asked the same question of
+		// the same prices, so the row this lands on always exists.
+		let own_row = tail.is_some() && Self::price_block(&ui.style, view, row_w).1;
+		let block_h = price_h + if own_row { row_h } else { 0.0 };
+		let top = strip.y + (strip_h - block_h) / 2.0;
+		let rects = widgets::chips(ui.dl, &ui.style, Layer::Content, text_x, top, span, &costs);
 		for (chip, rect) in costs.iter().zip(&rects) {
 			if rect.contains(cx, cy) {
 				*hover = Some((*rect, chip_name(chip)));
 			}
 		}
-		// The case is decided once, in `strip_reason`; this only chooses
-		// words for it — and a shortfall has no words, because the chip
-		// drawn short already said which line and by how much.
-		let tail = if locked {
-			Some(format!("LV {need}"))
-		} else {
-			match strip_reason(view, item) {
-				StripReason::AtCap { tool: true } => Some("ALREADY OWNED".to_string()),
-				StripReason::AtCap { tool: false } => Some("ALREADY CHARGED".to_string()),
-				StripReason::Short { .. } => None,
-				StripReason::NothingToCharge => Some("NOTHING TO CHARGE".to_string()),
-				StripReason::Affords(n) => Some(format!("×{n}")),
-			}
-		};
+		// The price is the line that may not be dropped; the tail is the
+		// one that gives way, which is what `elide` is for — and it gives
+		// way to NOTHING rather than to an empty text command.
 		if let Some(tail) = tail {
-			let tail_x = rects
-				.last()
-				.map_or(text_x, |r| r.x + r.w + theme::CHIP_SEP * s);
-			let avail = btn.x - ICON_TEXT_GAP * s - tail_x;
-			widgets::label(
-				ui.dl,
-				Layer::Content,
-				tail_x,
-				strip.y + (strip_h - glyph) / 2.0,
-				glyph,
-				if locked { DIM } else { WHITE },
-				&elide(&ui.style, &tail, avail),
-			);
+			let last_y = rects.last().map_or(top, |r| r.y);
+			let (tail_x, tail_y, avail) = if own_row {
+				(text_x, last_y + row_h, span)
+			} else {
+				(beside_x, last_y, beside)
+			};
+			if let Some(tail) = elide(&ui.style, &tail, avail) {
+				widgets::label(
+					ui.dl,
+					Layer::Content,
+					tail_x,
+					tail_y + (row_h - glyph) / 2.0,
+					glyph,
+					if locked { DIM } else { WHITE },
+					&tail,
+				);
+			}
 		}
 		// While a batch runs the one button is its STOP.
 		let running = self.crafting;
@@ -1018,7 +1098,7 @@ impl AlchScreen {
 			Rect::new(row_x, y, row_w, theme::ROW_H * s),
 			widgets::RowContent {
 				text: queued.as_deref().unwrap_or(&format!(
-					"CLICK 1   ·   SHIFT {BULK_SHIFT}   ·   CTRL {BULK_CTRL}"
+					"CLICK {BULK_PLAIN}   ·   SHIFT {BULK_SHIFT}   ·   CTRL {BULK_CTRL}"
 				)),
 				right: None,
 				bar: queued.is_some().then(|| self.progress.clamp(0.0, 1.0)),
@@ -1099,7 +1179,7 @@ impl AlchScreen {
 						} else if self.shift {
 							BULK_SHIFT
 						} else {
-							1
+							BULK_PLAIN
 						};
 						// QUEUED, not sent: `tick` drips one `Craft` per
 						// interval out of this, so a bulk batch is that many
@@ -1125,6 +1205,24 @@ impl AlchScreen {
 			}
 			_ => None,
 		}
+	}
+}
+
+/// The one line the strip says that a chip cannot — `None` for a
+/// shortfall, because the chip drawn short already named the line and the
+/// amount. The case is decided in [`strip_reason`]; this only chooses
+/// words for it, and it is the screen's own label rather than a `voice`
+/// sentence.
+fn strip_tail(view: &AlchView, item: BlockType) -> Option<String> {
+	if !unlock::can_craft(item, view.level) {
+		return Some(format!("LV {}", unlock::craft(item).unwrap_or(u32::MAX)));
+	}
+	match strip_reason(view, item) {
+		StripReason::AtCap { tool: true } => Some("ALREADY OWNED".to_string()),
+		StripReason::AtCap { tool: false } => Some("ALREADY CHARGED".to_string()),
+		StripReason::Short { .. } => None,
+		StripReason::NothingToCharge => Some("NOTHING TO CHARGE".to_string()),
+		StripReason::Affords(n) => Some(format!("×{n}")),
 	}
 }
 
@@ -1157,19 +1255,21 @@ fn lock_badge(ui: &mut Ui<'_, InvId>, slot: Rect, level: u32) {
 }
 
 /// Cut `text` to fit `max_w`, marking the cut — there is no clipping.
-fn elide(style: &Style, text: &str, max_w: f32) -> String {
+/// `None` when not even the mark fits: a caller must draw nothing rather
+/// than an empty run, which is a text command with no pixels in it.
+fn elide(style: &Style, text: &str, max_w: f32) -> Option<String> {
 	if style.measure(text) <= max_w {
-		return text.into();
+		return Some(text.into());
 	}
 	let mut out: String = text.into();
 	while !out.is_empty() {
 		out.pop();
 		let candidate = format!("{}...", out.trim_end());
 		if style.measure(&candidate) <= max_w {
-			return candidate;
+			return Some(candidate);
 		}
 	}
-	String::new()
+	None
 }
 
 #[cfg(test)]

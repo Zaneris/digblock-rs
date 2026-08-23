@@ -31,9 +31,27 @@ export function serve({ dir = BUNDLE, port = 0 } = {}) {
 		// Chrome asks for one on every navigation; a 404 in the console
 		// would read as trouble to the driver's filter.
 		if (url.pathname === "/favicon.ico") return res.writeHead(204).end();
-		let file = path.join(dir, decodeURIComponent(url.pathname));
+		// A lone `%` throws out of decodeURIComponent, and an uncaught
+		// throw here would take the whole bundle server down mid-suite —
+		// every later test then fails on a connection error instead of
+		// its own cause.
+		let decoded;
+		try {
+			decoded = decodeURIComponent(url.pathname);
+		} catch {
+			return res.writeHead(400).end("bad request");
+		}
+		let file = path.join(dir, decoded);
 		if (url.pathname.endsWith("/")) file = path.join(file, "index.html");
-		if (!file.startsWith(dir) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
+		// `relative`, not `startsWith`: the URL parser normalises a plain
+		// `..` away, but `%2f` survives it, and a prefix test would then
+		// serve a SIBLING directory whose name starts with the bundle's.
+		const inside = path.relative(dir, file);
+		if (inside.startsWith("..") || path.isAbsolute(inside)) {
+			res.writeHead(404).end("not found");
+			return;
+		}
+		if (!fs.existsSync(file) || fs.statSync(file).isDirectory()) {
 			res.writeHead(404).end("not found");
 			return;
 		}

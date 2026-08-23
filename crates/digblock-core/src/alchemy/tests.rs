@@ -144,11 +144,12 @@ fn nothing_the_world_hands_you_can_be_transmuted() {
 }
 
 /// **The essence tool costs no essence, ever** — and neither does the
-/// vessel that precedes it. Every essence in the game is a siphon
+/// vessel that follows it. Every essence in the game is a siphon
 /// draw, so an essence-priced siphon is a currency that cannot be
-/// bootstrapped; the bucket sits at the level everyone starts at, on
-/// the same footing. Both are priced in FEEDSTOCK a fresh player can
-/// chop, and their essence splits are pinned EMPTY.
+/// bootstrapped; the bucket opens a few rungs later and keeps the
+/// feedstock-only price anyway, because its rung is meant to be its
+/// whole gate. Both are priced in FEEDSTOCK a fresh player can chop,
+/// and their essence splits are pinned EMPTY.
 #[test]
 fn the_essence_tool_costs_no_essence() {
 	for b in [BlockType::EssenceSiphon, BlockType::Bucket] {

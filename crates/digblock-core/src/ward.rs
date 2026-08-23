@@ -31,6 +31,14 @@ const FACES: [Cell; 6] = [
 	(0, 0, -1),
 ];
 
+/// The widest sphere anything may ask for, ladder or debug knob. Every
+/// castable rank ([`crate::unlock::ward_radius`]) sits well inside it —
+/// held by `the_cap_clears_every_castable_rank` — and the cap is what
+/// keeps an arbitrary caller honest: [`inside`] SQUARES the radius, so a
+/// large enough one overflows, and the scan is cubic in it, so a merely
+/// big one hangs the frame that asked.
+pub const MAX_RADIUS: i32 = 24;
+
 fn inside(head: Cell, r: i32, c: Cell) -> bool {
 	let (dx, dy, dz) = (c.0 - head.0, c.1 - head.1, c.2 - head.2);
 	dx * dx + dy * dy + dz * dz <= r * r
@@ -42,15 +50,26 @@ fn neighbours(c: Cell) -> impl Iterator<Item = Cell> {
 		.map(move |d| (c.0 + d.0, c.1 + d.1, c.2 + d.2))
 }
 
+/// Whether a cell exists at all. A reader answers `None` both for a
+/// column it has not loaded and for a `y` outside the world, and the two
+/// deserve opposite answers here: the first refuses the cast, the second
+/// is simply not there to write. Derived from the one place that defines
+/// the vertical bound rather than restating it.
+fn in_world(c: Cell) -> bool {
+	crate::chunk::split_world(c.0, c.1, c.2).is_some()
+}
+
 /// The sphere's two sets: the SHELL — every cell within the radius that
 /// shares a face with one beyond it — and the INTERIOR, everything
 /// within the radius the shell does not claim. Defining the shell as the
 /// interior's face-boundary is what makes it both sealed (no face path
 /// leaves the interior without crossing it) and as thin as a sealed
-/// shell can be (every shell cell touches the outside, so none is
-/// redundant). Both are emitted in scan order, so the two ends agree on
-/// sequence as well as membership.
+/// shell can be (every shell cell touches the outside, so none of it
+/// lies deeper than the surface's own rind). Both are emitted in scan order, so the two ends agree on
+/// sequence as well as membership. The radius is clamped to
+/// [`MAX_RADIUS`] here, the one gate every caller comes through.
 pub fn sets(head: Cell, r: i32) -> (Vec<Cell>, Vec<Cell>) {
+	let r = r.clamp(0, MAX_RADIUS);
 	let (mut shell, mut interior) = (Vec::new(), Vec::new());
 	for x in head.0 - r..=head.0 + r {
 		for y in head.1 - r..=head.1 + r {
@@ -72,7 +91,8 @@ pub fn sets(head: Cell, r: i32) -> (Vec<Cell>, Vec<Cell>) {
 
 /// Why a plan could not be drawn up. A cell the reader cannot answer for
 /// is refused outright rather than skipped: skipping would leave a hole
-/// exactly where the world was not loaded.
+/// exactly where the world was not loaded. A cell OUTSIDE the world is
+/// the other case entirely — see [`in_world`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refusal {
 	Unloaded,
@@ -85,9 +105,19 @@ pub enum Refusal {
 /// sphere cast on the ground is a dome fused to it. `read` answers with
 /// the cell's CURRENT value, `None` for one not loaded.
 ///
+/// A cell beyond the world's own vertical bounds is SKIPPED rather than
+/// refused, which is what lets the spell be cast where it is wanted most
+/// — the whole deep band within a radius of the floor, which otherwise
+/// refuses every rank whose sphere reaches under bedrock. Safe where
+/// skipping an unloaded cell is not: the floor is [`BEDROCK_Y`], which
+/// the shell already spares as terrain, so a sphere the world clips is
+/// still sealed.
+///
 /// Order: by height from the floor up, and within a layer by angle about
 /// the caster, so the closing is a spiral climbing the sphere and the
 /// last cell to land is at the crown.
+///
+/// [`BEDROCK_Y`]: crate::block::BEDROCK_Y
 pub fn plan(
 	head: Cell,
 	r: i32,
@@ -96,6 +126,9 @@ pub fn plan(
 	let (shell, interior) = sets(head, r);
 	let mut out = Vec::new();
 	for c in shell {
+		if !in_world(c) {
+			continue;
+		}
 		let v = read(c).ok_or(Refusal::Unloaded)?;
 		let b = BlockType::from_id(cell_id(v));
 		if b == BlockType::Air || b.is_water() {
@@ -103,6 +136,9 @@ pub fn plan(
 		}
 	}
 	for c in interior {
+		if !in_world(c) {
+			continue;
+		}
 		let v = read(c).ok_or(Refusal::Unloaded)?;
 		if BlockType::from_id(cell_id(v)).is_water() {
 			out.push((c, make_cell(BlockType::Air, 0)));
@@ -117,11 +153,18 @@ pub fn plan(
 }
 
 /// Where a cell falls in the closing: its layer, then its bearing from
-/// the caster — total over distinct cells, so the sort is a pure
-/// function of the plan and both ends land the same sequence.
-fn closing_key(head: Cell, c: Cell) -> (i32, f32) {
-	let (dx, dz) = ((c.0 - head.0) as f32, (c.2 - head.2) as f32);
-	(c.1, dz.atan2(dx))
+/// the caster, then its distance out along that bearing.
+///
+/// TOTAL over distinct cells, and the third term is what makes it so: a
+/// layer's ring is several cells thick once interior drains join the
+/// shell, and a bearing alone ties every cell standing along one — so
+/// the order would fall back on whatever sequence the scan happened to
+/// enumerate. Angle and radius together name an integer offset uniquely,
+/// so the sort is a pure function of the SET and both ends land the same
+/// sequence however they built it.
+fn closing_key(head: Cell, c: Cell) -> (i32, f32, i32) {
+	let (dx, dz) = (c.0 - head.0, c.2 - head.2);
+	(c.1, (dz as f32).atan2(dx as f32), dx * dx + dz * dz)
 }
 
 /// How many of `total` cells have landed after `step` of a `span`-tick
@@ -197,7 +240,10 @@ mod tests {
 	use crate::unlock;
 	use std::collections::HashSet;
 
-	const HEAD: Cell = (3, -7, 11);
+	/// A head well clear of both world bounds, so a sphere about it is
+	/// entirely inside the world — the floor case is
+	/// [`a_sphere_clipped_by_the_world_floor_still_casts`]'s alone.
+	const HEAD: Cell = (3, 70, 11);
 
 	/// Every radius the ladder can cast at — derived from the unlock
 	/// table so a retune sweeps the new sizes.
@@ -211,31 +257,131 @@ mod tests {
 		out
 	}
 
-	/// The shell is sealed and thin at every castable radius: no interior
-	/// cell has a face neighbour outside the sphere, and every shell cell
-	/// has one — so nothing leaks and nothing is redundant. Counted, since
-	/// an empty set satisfies both.
+	/// A dense cube of flags about a head, one cell wider than the sphere
+	/// in every direction — the flood fill's scratch, and the blocked set
+	/// it reads. Dense because the sweep below runs one fill per shell
+	/// cell and a hash lookup per neighbour would make that minutes.
+	struct Cube {
+		head: Cell,
+		r: i32,
+		flags: Vec<bool>,
+	}
+
+	impl Cube {
+		fn new(head: Cell, r: i32) -> Self {
+			let n = (2 * r + 3) as usize;
+			Self {
+				head,
+				r,
+				flags: vec![false; n * n * n],
+			}
+		}
+
+		fn idx(&self, c: Cell) -> Option<usize> {
+			let n = 2 * self.r + 3;
+			let (x, y, z) = (
+				c.0 - self.head.0 + self.r + 1,
+				c.1 - self.head.1 + self.r + 1,
+				c.2 - self.head.2 + self.r + 1,
+			);
+			let ok = [x, y, z].iter().all(|v| (0..n).contains(v));
+			ok.then(|| ((z * n + y) * n + x) as usize)
+		}
+
+		fn get(&self, c: Cell) -> bool {
+			self.idx(c).is_some_and(|i| self.flags[i])
+		}
+
+		fn set(&mut self, c: Cell) {
+			if let Some(i) = self.idx(c) {
+				self.flags[i] = true;
+			}
+		}
+	}
+
+	/// Whether water starting at the head could ever reach beyond the
+	/// radius, crossing faces and stopping at `blocked`.
+	///
+	/// This is the definition of sealed that owes nothing to [`sets`]:
+	/// it asks the sphere the question fluid asks, instead of re-running
+	/// the predicate that built it. A cell one step outside the radius
+	/// is still inside the cube, so the fill can never leave it.
+	fn escapes(head: Cell, r: i32, blocked: &Cube) -> bool {
+		let mut seen = Cube::new(head, r);
+		let mut stack = vec![head];
+		seen.set(head);
+		while let Some(c) = stack.pop() {
+			if !inside(head, r, c) {
+				return true;
+			}
+			for n in neighbours(c) {
+				if blocked.get(n) || seen.get(n) {
+					continue;
+				}
+				seen.set(n);
+				stack.push(n);
+			}
+		}
+		false
+	}
+
+	fn shell_cube(head: Cell, r: i32, shell: &[Cell]) -> Cube {
+		let mut cube = Cube::new(head, r);
+		for &c in shell {
+			cube.set(c);
+		}
+		cube
+	}
+
+	/// The shell is a SEALED surface confined to ONE rind, and every pane
+	/// that faces the inside is load-bearing. Three statements, none of
+	/// which re-runs the predicate `sets` classified by — which is the
+	/// only way a shell with a hole in it could pass:
+	///
+	/// - Sealed, as fluid asks it: a face fill from the head, blocked
+	///   only by the shell, never reaches past the radius.
+	/// - Thin, as geometry asks it: every shell cell lies in the
+	///   outermost rind, so nothing an interior cell could have been is
+	///   in there. (A shell built on the 18-neighbourhood, say, reaches
+	///   deeper and fails here.)
+	/// - Minimal: knock out a pane the interior touches and the fill gets
+	///   through. Only those — a shell cell walled off from the interior
+	///   by other shell cells holds nothing in, it only keeps the sphere
+	///   whole to look at.
 	#[test]
-	fn the_shell_is_sealed_and_one_cell_thin() {
+	fn the_shell_seals_one_rind_and_every_facing_pane_holds() {
 		for r in radii() {
 			let (shell, interior) = sets(HEAD, r);
-			let shell_set: HashSet<Cell> = shell.iter().copied().collect();
 			assert!(shell.len() > 6 && interior.len() > 6, "r={r}");
+			assert!(
+				!escapes(HEAD, r, &shell_cube(HEAD, r, &shell)),
+				"r={r}: the shell leaks"
+			);
+			let shell_set: HashSet<Cell> = shell.iter().copied().collect();
 			for &c in &interior {
-				for n in neighbours(c) {
-					assert!(
-						inside(HEAD, r, n),
-						"r={r}: interior {c:?} faces the outside through {n:?}"
-					);
-				}
 				assert!(!shell_set.contains(&c), "r={r}: {c:?} in both sets");
 			}
 			for &c in &shell {
+				let (dx, dy, dz) = (c.0 - HEAD.0, c.1 - HEAD.1, c.2 - HEAD.2);
+				let d2 = dx * dx + dy * dy + dz * dz;
 				assert!(
-					neighbours(c).any(|n| !inside(HEAD, r, n)),
-					"r={r}: shell {c:?} touches nothing outside"
+					d2 > (r - 1) * (r - 1) && d2 <= r * r,
+					"r={r}: shell {c:?} sits {d2} from the head, off the rind"
 				);
 			}
+			let inner: HashSet<Cell> = interior.iter().copied().collect();
+			let mut facing = 0;
+			for &gap in shell
+				.iter()
+				.filter(|&&c| neighbours(c).any(|n| inner.contains(&n)))
+			{
+				let mut holed = shell_cube(HEAD, r, &shell);
+				let i = holed.idx(gap).expect("a shell cell is in its own cube");
+				holed.flags[i] = false;
+				assert!(escapes(HEAD, r, &holed), "r={r}: {gap:?} held nothing in");
+				facing += 1;
+			}
+			assert!(facing > 6, "r={r}: the sweep found no facing pane");
 		}
 	}
 
@@ -330,6 +476,89 @@ mod tests {
 				"r={r}"
 			);
 		}
+	}
+
+	/// A flooded sphere is where the closing key's ties lived: every
+	/// interior cell drains, so a layer carries several cells on one
+	/// bearing and a key of layer-and-bearing alone could not tell them
+	/// apart. No two consecutive entries share a key, so the SET decides
+	/// the sequence and both ends land the same one however their scan
+	/// enumerated it. Counted, since a plan of shell cells alone would
+	/// prove nothing.
+	#[test]
+	fn a_flooded_sphere_orders_by_a_key_that_never_ties() {
+		for r in radii() {
+			let writes = plan(HEAD, r, |_| Some(make_cell(BlockType::Water, 0))).unwrap();
+			let (shell, interior) = sets(HEAD, r);
+			assert_eq!(
+				writes.len(),
+				shell.len() + interior.len(),
+				"r={r}: water glasses the shell and drains the rest"
+			);
+			for w in writes.windows(2) {
+				let (a, b) = (closing_key(HEAD, w[0].0), closing_key(HEAD, w[1].0));
+				assert!(
+					a < b,
+					"r={r}: {:?} and {:?} do not order ({a:?} vs {b:?})",
+					w[0].0,
+					w[1].0
+				);
+			}
+		}
+	}
+
+	/// The spell where it is wanted most: a caster within a radius of
+	/// bedrock. Cells under the floor are not there to write, so the
+	/// plan skips them and the cast succeeds — and the sphere is still
+	/// sealed, because the floor the world clipped it against is the
+	/// undiggable one. Refusing instead shut the widest rank out of the
+	/// whole deep band.
+	#[test]
+	fn a_sphere_clipped_by_the_world_floor_still_casts() {
+		use crate::block::BEDROCK_Y;
+		for r in radii() {
+			// Head one cell above the floor: all but a sliver of the
+			// sphere hangs below the world.
+			let head = (0, BEDROCK_Y + 1, 0);
+			// Bedrock at the floor, air above it, nothing below — exactly
+			// what a real reader answers.
+			let world = |c: Cell| match c.1 {
+				y if y < BEDROCK_Y => None,
+				y if y == BEDROCK_Y => Some(make_cell(BlockType::Stone, 0)),
+				_ => Some(make_cell(BlockType::Air, 0)),
+			};
+			let writes = plan(head, r, world).expect("the floor is not an unloaded column");
+			assert!(writes.len() > 10, "r={r}: the dome is worth casting");
+			assert!(
+				writes.iter().all(|&(c, _)| c.1 > BEDROCK_Y),
+				"r={r}: nothing is written at or under the floor"
+			);
+			// Sealed: the shell plus the floor stops a fill from the head.
+			let (shell, _) = sets(head, r);
+			let mut blocked = shell_cube(head, r, &shell);
+			for x in head.0 - r..=head.0 + r {
+				for z in head.2 - r..=head.2 + r {
+					blocked.set((x, BEDROCK_Y, z));
+				}
+			}
+			assert!(!escapes(head, r, &blocked), "r={r}: the dome leaks");
+		}
+	}
+
+	/// The cap is a bound on the arbitrary, never on the ladder: every
+	/// castable rank fits inside it, and a radius past it is clamped
+	/// rather than squared into an overflow or scanned for minutes.
+	#[test]
+	fn the_cap_clears_every_castable_rank() {
+		let widest = *radii().last().expect("the ladder has ranks");
+		assert!(MAX_RADIUS >= widest, "the ladder outgrew the cap");
+		let capped = sets(HEAD, MAX_RADIUS);
+		assert_eq!(sets(HEAD, i32::MAX), capped, "a huge radius is the cap");
+		assert_eq!(sets(HEAD, MAX_RADIUS + 1), capped);
+		// A radius of nothing is the head cell alone, all shell — and a
+		// negative one cannot ask for less than that.
+		assert_eq!(sets(HEAD, -5), sets(HEAD, 0));
+		assert_eq!(sets(HEAD, 0), (vec![HEAD], Vec::new()));
 	}
 
 	/// A closing lands every cell exactly once, in plan order, and all

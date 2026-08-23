@@ -273,16 +273,23 @@ fn landmarks_always_carry_a_heart_and_most_trees_do_not() {
 	assert!(without > with, "most trees are plain wood");
 }
 
-/// A spring stands only in the bed of standing water, and only in the
-/// bed cell itself.
+/// A spring stands under standing water, in the bed SURFACE cell and
+/// nowhere else in its column — which is what puts the find under water
+/// rather than in the sand beside it. Which waters carry one at all is
+/// the shoreline test's question, below.
 #[test]
-fn springs_stand_only_in_fresh_beds() {
+fn a_spring_stands_in_the_bed_cell_and_nowhere_else_in_its_column() {
 	let (x, y, z) = find_springstone(SEED);
 	let s = crate::worldgen::column_shape(x, z, SEED);
-	assert!(matches!(s.surface, SurfaceKind::Lake | SurfaceKind::River));
 	assert!(s.water > s.height, "under standing water");
-	assert!(!springstone_at(x, y - 1, z, SEED), "not below the bed");
-	assert!(!springstone_at(x, y + 1, z, SEED), "not in the water");
+	assert_eq!(y, s.height, "the bed surface cell");
+	for probe in 0..=s.water + 1 {
+		assert_eq!(
+			springstone_at(x, probe, z, SEED),
+			probe == y,
+			"({x},{probe},{z})"
+		);
+	}
 }
 
 /// The ocean carries springs only in its shoreline shallows, and more
@@ -372,31 +379,65 @@ fn a_stored_live_face_is_revealed_to_anyone() {
 	}
 }
 
-/// `node_at` is the placement half of `revealed`: wherever the pristine
-/// host reveals a node at full level, the position alone names the same
-/// kind — and where the host reveals nothing, neither does the position.
+/// `node_at` routes on the HOST, and the host is whatever the world
+/// really holds.
+///
+/// Walked over real [`crate::worldgen::build_column`] output rather than
+/// cells the test plants itself, because planting the host the test
+/// already chose is exactly what cannot see this: the three streams
+/// overlap the terrain, so a trunk column's heart span answers
+/// "heartwood" at coordinates the tree grew LEAVES in, and a host-blind
+/// query would let a spent face carried there and placed become a node
+/// site. Both counts are asserted, so neither half can pass by finding
+/// nothing.
 #[test]
-fn node_at_agrees_with_the_host_reveal() {
+fn node_at_routes_on_the_host_the_world_really_holds() {
+	use crate::chunk::{CHUNK_SIZE, WORLD_VCHUNK, cell_id};
+	let n = CHUNK_SIZE as i32;
 	let hw = find_heartwood(SEED);
-	let sp = find_springstone(SEED);
-	let mut checked = 0;
-	for (host, at) in [(BlockType::Wood, hw), (BlockType::Sand, sp)] {
-		for dy in -3..=3 {
-			let at = (at.0, at.1 + dy, at.2);
-			let want = revealed(make_cell(host, 0), at, SEED, maxed(), false);
-			assert_eq!(node_at(at, SEED), want, "{at:?}");
-			checked += 1;
+	let (cx, cz) = (hw.0.div_euclid(n), hw.2.div_euclid(n));
+	// The three hosts, asked blind — the query this function used to be.
+	let hosts = [BlockType::Stone, BlockType::Wood, BlockType::Sand];
+	let (mut sited, mut overlapping) = (0, 0);
+	let column = crate::worldgen::build_column(cx, cz, SEED);
+	assert_eq!(column.len(), WORLD_VCHUNK as usize, "a whole column");
+	for (cy, chunk) in column.iter().enumerate() {
+		for ly in 0..CHUNK_SIZE {
+			for lz in 0..CHUNK_SIZE {
+				for lx in 0..CHUNK_SIZE {
+					let at = (
+						cx * n + lx as i32,
+						cy as i32 * n + ly as i32,
+						cz * n + lz as i32,
+					);
+					let block = BlockType::try_from_id(cell_id(chunk.get_cell(lx, ly, lz)))
+						.expect("worldgen writes real blocks");
+					match node_at(block, at, SEED) {
+						// Routed: the kind named must be one this very
+						// host carries, or `host_block` and `node_at`
+						// have come apart.
+						Some(node) => {
+							assert_eq!(host_block(node), Some(block), "{at:?} {node:?}");
+							sited += 1;
+						}
+						// Not this host — and if any OTHER host's stream
+						// would have answered here, this is a cell a
+						// blind query manufactures a site in.
+						None => {
+							overlapping += u32::from(
+								hosts
+									.iter()
+									.any(|&h| h != block && node_at(h, at, SEED).is_some()),
+							);
+						}
+					}
+				}
+			}
 		}
 	}
-	let d = ore::deposits_near((-256, 0, -256), (256, ore::MAX_DEPOSIT_Y, 256), SEED)
-		.into_iter()
-		.next()
-		.expect("a deposit in the sampled world");
-	for y in d.y - ore::MAX_RADIUS - 1..=d.y + ore::MAX_RADIUS + 1 {
-		let at = (d.x, y, d.z);
-		let want = revealed(make_cell(BlockType::Stone, 0), at, SEED, maxed(), false);
-		assert_eq!(node_at(at, SEED), want, "{at:?}");
-		checked += 1;
-	}
-	assert!(checked > 0);
+	assert!(sited > 0, "no node stands in the sampled column at all");
+	assert!(
+		overlapping > 0,
+		"no cell in the sampled column holds a non-host over a live stream"
+	);
 }

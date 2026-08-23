@@ -856,16 +856,34 @@ pub enum ServerMsg {
 		cell: [i32; 3],
 		secs_left: u16,
 	},
-	/// A Ward SEALED: `radius` blocks about `head`, cast by `by` — sent to
-	/// everyone, the caster included, after the crown cell's
-	/// `EditApplied`. The cells climbed as ordinary edits through the
-	/// channel; this names the instant the sphere closed, which is the
-	/// chime and the caster's wash, and which no client could tell from
-	/// an unwind about to begin. Appended in v34.
-	Warded {
+	/// A Ward's channel BEGAN: a sphere of `radius` about `head`, cast by
+	/// `by`, climbing over `span` ticks. The CELLS never travel — both
+	/// ends derive them from the head and the radius (`ward::plan`) and
+	/// climb them in its order — so one frame stands for the hundreds of
+	/// edits a sphere is, whatever the rank. Sent to everyone: a client
+	/// too far away to hold the cells still learns of the cast, and reads
+	/// the sphere back out of the journal when it arrives there.
+	/// Appended in v35.
+	WardWinding {
 		by: PlayerId,
 		head: [i32; 3],
 		radius: u8,
+		span: u32,
+	},
+	/// A Ward's channel ENDED: `landed` cells of that same plan had been
+	/// handed to the world, and `sealed` says whether the sphere closed
+	/// about its caster or came apart again.
+	///
+	/// The count is what makes a break mid-climb exact — both ends take
+	/// the first `landed` of the plan in its own order — and `sealed` is
+	/// carried rather than inferred from `landed`, so the chime answers to
+	/// the server's own word. Appended in v35.
+	WardEnded {
+		by: PlayerId,
+		head: [i32; 3],
+		radius: u8,
+		landed: u32,
+		sealed: bool,
 	},
 }
 

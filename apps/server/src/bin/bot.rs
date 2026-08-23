@@ -339,7 +339,8 @@ fn run_bot(
 				| NetEvent::Waystones { .. }
 				| NetEvent::CastRefused { .. }
 				| NetEvent::Kindled { .. }
-				| NetEvent::Warded { .. }
+				| NetEvent::WardWinding { .. }
+				| NetEvent::WardEnded { .. }
 				| NetEvent::AreaReady => {}
 			}
 		}

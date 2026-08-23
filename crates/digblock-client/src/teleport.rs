@@ -16,9 +16,37 @@ use digblock_platform::Gpu;
 /// (a departure and an arrival per jump, short-lived — [`LIFE`]), and
 /// the kindled orbs within [`KINDLED_RADIUS`].
 pub(crate) const MAX_FX: usize = 24;
+/// How many of [`MAX_FX`] the standing orbs may claim, the rest being
+/// RESERVED for the channel aura and the live bursts.
+///
+/// [`prepare`] truncates in FILL order, and kindling has no cooldown
+/// while a light stands for [`digblock_core::kindle::SECS`] — so a
+/// player lighting a mine shaft walks past a full list inside a minute,
+/// and from then on every cast they start would show no channel aura at
+/// all, the one thing on screen that says a channel is running. Orbs
+/// compete for their own share by DISTANCE ([`nearest_orbs`]), because
+/// the far cull is per-orb while the cap is by position: without it one
+/// sixty blocks behind evicts one two blocks ahead.
+///
+/// [`prepare`]: Teleport::prepare
+pub(crate) const MAX_KINDLED_FX: usize = 12;
 /// Beyond this many blocks a kindled orb is not uploaded at all — the
 /// marker's rule; its LIGHT still reaches the GI list at any range.
 pub(crate) const KINDLED_RADIUS: f32 = 64.0;
+/// The kindled orb's near ramp, in blocks: nothing at all inside
+/// [`KINDLED_NEAR_DARK`], full weight from [`KINDLED_NEAR_FULL`] out.
+///
+/// A light stands in the cell its caster's EYE was in, so their own orb
+/// sits a fifth of a block away as often as not — and a camera-facing
+/// additive quad that close straddles the near plane and paints most of
+/// the screen near-white until they walk out of the cell. The dark
+/// distance must therefore cover the whole host cell: half a cell's
+/// diagonal is the farthest an eye can be from its own cell's centre,
+/// which is what `an_orb_in_your_own_cell_never_draws` pins. Nothing is
+/// lost by not drawing it — the LIGHT is a separate entry in the GI
+/// list and reaches the room either way.
+pub(crate) const KINDLED_NEAR_DARK: f32 = 1.0;
+pub(crate) const KINDLED_NEAR_FULL: f32 = 2.0;
 /// Motes per effect — keep in sync with teleport.wgsl `MOTES`, held by
 /// [`the_teleport_mote_count_matches_the_shader`]. Particle 0 is the
 /// column of light, so the draw call is one quad longer.
@@ -72,6 +100,40 @@ pub(crate) fn instance(
 	[
 		origin[0], origin[1], origin[2], m, t, envelope, seed, 0.0, TINT[0], TINT[1], TINT[2], 0.0,
 	]
+}
+
+/// How much of a kindled orb draws at this distance from the camera —
+/// the near ramp [`KINDLED_NEAR_DARK`] describes, folded into the
+/// instance's envelope so the sprite dissolves as the camera closes on
+/// it rather than popping at a boundary.
+pub(crate) fn near_fade(dist: f32) -> f32 {
+	((dist - KINDLED_NEAR_DARK) / (KINDLED_NEAR_FULL - KINDLED_NEAR_DARK)).clamp(0.0, 1.0)
+}
+
+/// The indices of the [`MAX_KINDLED_FX`] nearest orbs, nearest first, out
+/// of one distance per standing light, in list order.
+///
+/// A fixed-size insertion rather than a sort: the standing-light list is
+/// world state and belongs to nobody's camera, so selecting from it must
+/// not reorder it, and a frame must not allocate to draw. Ties keep list
+/// order, which makes the pick a pure function of the input.
+pub(crate) fn nearest_orbs(d2: impl Iterator<Item = f32>) -> ([u32; MAX_KINDLED_FX], usize) {
+	let mut key = [f32::INFINITY; MAX_KINDLED_FX];
+	let mut idx = [0u32; MAX_KINDLED_FX];
+	let mut n = 0usize;
+	for (i, d) in d2.enumerate() {
+		if n == MAX_KINDLED_FX && d >= key[n - 1] {
+			continue;
+		}
+		let at = key[..n].iter().position(|&k| d < k).unwrap_or(n);
+		let end = n.min(MAX_KINDLED_FX - 1);
+		key.copy_within(at..end, at + 1);
+		idx.copy_within(at..end, at + 1);
+		key[at] = d;
+		idx[at] = i as u32;
+		n = (n + 1).min(MAX_KINDLED_FX);
+	}
+	(idx, n)
 }
 
 pub(crate) struct Teleport {
@@ -158,8 +220,9 @@ impl Teleport {
 		}
 	}
 
-	/// Upload this frame's live effects (engine-owned; over the cap the
-	/// oldest simply don't draw). Returns the instance count.
+	/// Upload this frame's live effects (engine-owned). Truncation is by
+	/// FILL order, which is why the caller fills by priority — see
+	/// [`MAX_KINDLED_FX`]. Returns the instance count.
 	pub(crate) fn prepare(&self, gpu: &Gpu, fx: &[FxInstance]) -> u32 {
 		let n = fx.len().min(MAX_FX);
 		if n > 0 {
@@ -206,6 +269,71 @@ mod tests {
 			digblock_assets::shader::TELEPORT.contains(&decl),
 			"teleport.wgsl must declare `{decl}`"
 		);
+	}
+
+	/// The caster's own orb never draws. Their light stands in the cell
+	/// their EYE occupies, and the farthest an eye can be from that
+	/// cell's own centre is half a cell's diagonal — derived here rather
+	/// than written down, so a wider ramp is free and a narrower one
+	/// fails. Inside that, the billboard straddles the near plane and
+	/// covers the screen.
+	#[test]
+	fn an_orb_in_your_own_cell_never_draws() {
+		let half_diagonal = glam::Vec3::splat(0.5).length();
+		assert_eq!(near_fade(half_diagonal), 0.0, "the far corner of the cell");
+		assert_eq!(near_fade(0.0), 0.0, "and standing on it");
+		// Outside, it opens up monotonically and reaches full weight.
+		let mut prev = 0.0;
+		let mut steps = 0;
+		let mut d = 0.0;
+		while d < KINDLED_NEAR_FULL * 2.0 {
+			let f = near_fade(d);
+			assert!(f >= prev, "the ramp went back down at {d}");
+			assert!((0.0..=1.0).contains(&f), "{f} at {d}");
+			prev = f;
+			d += 0.05;
+			steps += 1;
+		}
+		assert!(steps > 10, "the sweep proved nothing");
+		assert_eq!(near_fade(KINDLED_NEAR_FULL), 1.0);
+		assert_eq!(near_fade(KINDLED_RADIUS), 1.0, "and stays there");
+	}
+
+	/// Orbs claim their own share of the list and claim it by DISTANCE,
+	/// so a mine shaft's worth of standing lights can neither evict the
+	/// channel aura nor let a far orb push out a near one.
+	#[test]
+	fn the_orb_budget_keeps_the_nearest_and_leaves_room() {
+		const {
+			assert!(
+				MAX_KINDLED_FX < MAX_FX,
+				"the reserve has to leave something behind"
+			)
+		};
+		// Farthest first, so a pick that ignored distance would keep
+		// exactly the wrong ones.
+		let n = MAX_KINDLED_FX * 3;
+		let d2: Vec<f32> = (0..n).map(|i| (n - i) as f32).collect();
+		let (idx, kept) = nearest_orbs(d2.iter().copied());
+		assert_eq!(kept, MAX_KINDLED_FX, "the share is spent");
+		for w in idx[..kept].windows(2) {
+			assert!(
+				d2[w[0] as usize] <= d2[w[1] as usize],
+				"the pick is not nearest-first"
+			);
+		}
+		let worst = d2[idx[kept - 1] as usize];
+		let dropped = (0..n).filter(|i| !idx[..kept].contains(&(*i as u32)));
+		for i in dropped {
+			assert!(d2[i] >= worst, "a nearer orb was dropped for a farther");
+		}
+		// Fewer than the share: everything draws, still nearest-first.
+		let few = [4.0f32, 1.0, 9.0];
+		let (idx, kept) = nearest_orbs(few.iter().copied());
+		assert_eq!(kept, few.len());
+		assert_eq!(&idx[..kept], &[1, 0, 2]);
+		// And nothing standing is nothing picked.
+		assert_eq!(nearest_orbs(std::iter::empty()).1, 0);
 	}
 
 	/// The lanes the vertex shader reads by name.

@@ -112,9 +112,16 @@ async fn boot() -> Result<(), JsValue> {
 	let frames: Option<u64> = param(&params, "frames");
 	// Dev builds, or a run that ends itself — the desktop `--tod` rule. In
 	// multiplayer the server dictates the world clock, and `just web`
-	// builds release, so an open-ended page ignores ?tod=.
-	if cfg!(debug_assertions) || frames.is_some() {
-		config.tod = param(&params, "tod");
+	// builds release, so an open-ended page cannot honour ?tod=. It
+	// REFUSES rather than dropping it, as the desktop does: a frozen sun
+	// silently ignored photographs the wrong hour and says nothing.
+	let tod: Option<f32> = param(&params, "tod");
+	if tod.is_some() {
+		assert!(
+			cfg!(debug_assertions) || frames.is_some(),
+			"?tod needs a dev build, or ?frames (a capture run that quits on its own)"
+		);
+		config.tod = tod;
 	}
 	// The capture harness, same fields the desktop CLI drives. This is the
 	// only way to compare the two platforms honestly: the scripted pose is
@@ -564,10 +571,15 @@ const PAGE_PARAMS: &[&str] = &[
 /// silent-wrong-scene failure every other parse here refuses; and the
 /// harness that drives this page passes its flags through by name, so
 /// this is where its typos are caught. The sign-in residue (`code`,
-/// `state`) is consumed before this runs.
+/// `state`) is tolerated rather than assumed gone: `take_callback`
+/// scrubs the URL only once it has matched a pending request, so a
+/// callback that lands without one — another tab, cleared storage, a
+/// pasted URL — must still boot instead of reading as a typo.
 fn reject_unknown_params(params: &web_sys::UrlSearchParams) {
 	let known = |k: &str| {
-		PAGE_PARAMS.contains(&k) || digblock_client::knobs::ALL.iter().any(|n| n.name == k)
+		PAGE_PARAMS.contains(&k)
+			|| auth::CALLBACK_PARAMS.contains(&k)
+			|| digblock_client::knobs::ALL.iter().any(|n| n.name == k)
 	};
 	let unknown: Vec<String> = js_sys::try_iter(&params.keys())
 		.ok()

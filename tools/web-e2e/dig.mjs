@@ -9,8 +9,10 @@
 //   node tools/web-e2e/dig.mjs --play --seed 1 --keys k --settle 1500 --screenshot k.png --console
 //   node tools/web-e2e/dig.mjs --headed --play --seed 1          (leave the window up)
 import fs from "node:fs";
+import path from "node:path";
 import process from "node:process";
-import { serve } from "./lib/serve.mjs";
+import { spawnSync } from "node:child_process";
+import { REPO, serve } from "./lib/serve.mjs";
 import { boot, launch, normalize, query, stats } from "./lib/digblock.mjs";
 
 // Desktop spelling → page spelling, for the flags whose names differ.
@@ -26,7 +28,25 @@ const RENAME = {
 	"no-ssr": null, // handled below
 };
 
-const HELP = `dig.mjs — drive the web build like \`just run\`
+// The scene roster, printed by the launcher that DEFINES it: the desktop
+// reads `knobs::ALL` for its `--knobs` listing, so a knob added in Rust
+// shows up here with no edit. The list used to be hand-copied into HELP
+// and had already drifted by two names when a reviewer found it. Any
+// built profile will do — the table is compiled in, not configured.
+function knobs() {
+	for (const profile of ["debug", "release", "profiling"]) {
+		const bin = path.join(REPO, "target", profile, "digblock");
+		if (!fs.existsSync(bin)) continue;
+		const r = spawnSync(bin, ["--knobs"], { encoding: "utf8" });
+		if (r.status === 0 && r.stdout.trim()) {
+			return r.stdout.trimEnd().split("\n").map((l) => `  ${l}`).join("\n");
+		}
+	}
+	return "  (none listed: the roster is digblock_client::knobs::ALL — `just run --knobs`\n"
+		+ "   prints it, and this shows that listing once the desktop client is built)";
+}
+
+const HELP = () => `dig.mjs — drive the web build like \`just run\`
 
 Harness flags (never reach the page):
   --screenshot FILE   photograph the canvas when the run ends (needs --frames) or after --settle
@@ -38,7 +58,9 @@ Harness flags (never reach the page):
   --dpr N             backing scale (default 1; 2 is a Retina laptop)
   --mobile            touch device: coarse pointer + the mobile defaults (also sets ?mobile)
   --headed            show the window and leave it open until Ctrl-C
-  --native            no viewport/DPR emulation: the real window on the real display
+  --native            no viewport/DPR emulation: the browser's own window at its own
+                      ratio (headless that is Chrome's default window at 1x — pair it
+                      with --headed for a real display's)
   --console           echo every console line as it arrives
   --timeout MS        first-frame deadline (default 60000)
   --url ORIGIN        use a server already running instead of serving target/web
@@ -49,11 +71,9 @@ Page flags, desktop spelling accepted (translated to the query):
   --workers N  --ui-scale F  --max-lights N  --render-scale F  --gi-scale N  --ssr/--no-ssr
   --overlay  --bench  --fly N  --warp N  --walk  --mute  --play  --capture
   --join --master-url URL --dev-signin SUBJECT  --nodatagrams
-Every DIG_* scene and lever, as --name [value]:
-  --screen alchemy  --vault  --vaultdark  --ore 2  --node leystone  --mining 5  --crack 40
-  --siphon 50  --cast 50  --torches 3  --torchesfar 8  --torcheswall  --stub wsun,wssr
-  --giiters 4,2  --gi window  --playerbox torch  --confetti  --shapes  --doors  --roof
-  --tunnel  --dive  --river  --spikelog  --chunkslots N
+Every DIG_* scene and lever, as --name [value] (the desktop's own --knobs listing,
+so this cannot drift from the table both launchers read):
+${knobs()}
 An unknown --name is passed through and the page refuses it (check the console).
 `;
 
@@ -64,23 +84,36 @@ function parse(argv) {
 	for (let i = 0; i < argv.length; i++) {
 		const a = argv[i];
 		if (!a.startsWith("--")) throw new Error(`unexpected argument ${a}`);
-		const name = a.slice(2);
-		const next = () => { if (i + 1 >= argv.length || argv[i + 1].startsWith("--")) throw new Error(`--${name} wants a value`); return argv[++i]; };
-		const peekValue = () => i + 1 < argv.length && !argv[i + 1].startsWith("--");
+		// `--name=value` as well as `--name value`. Splitting here rather
+		// than letting the whole token fall through to the passthrough arm
+		// is what stops `--frames=90` reaching the page as a knob spelled
+		// "frames=90": the page would accept `?frames=90` and the harness
+		// would never learn the run ends, so it photographs frame one of an
+		// interactive page and exits 0.
+		const eq = a.indexOf("=");
+		const name = eq === -1 ? a.slice(2) : a.slice(2, eq);
+		let inline = eq === -1 ? null : a.slice(eq + 1);
+		const next = () => {
+			if (inline !== null) { const v = inline; inline = null; return v; }
+			if (i + 1 >= argv.length || argv[i + 1].startsWith("--")) throw new Error(`--${name} wants a value`);
+			return argv[++i];
+		};
+		const num = () => { const v = next(); const n = Number(v); if (!Number.isFinite(n)) throw new Error(`--${name} wants a number, got ${v}`); return n; };
+		const peekValue = () => inline !== null || (i + 1 < argv.length && !argv[i + 1].startsWith("--"));
 		switch (name) {
-			case "help": case "h": console.log(HELP); process.exit(0);
+			case "help": case "h": console.log(HELP()); process.exit(0);
 			case "screenshot": h.screenshot = next(); break;
-			case "frames": h.frames = Number(next()); break;
-			case "settle": h.settle = Number(next()); break;
+			case "frames": h.frames = num(); break;
+			case "settle": h.settle = num(); break;
 			case "keys": h.keys.push(next()); break;
-			case "click": h.click = next().split(",").map(Number); break;
+			case "click": { const v = next(); h.click = v.split(",").map(Number); if (h.click.length !== 2 || !h.click.every(Number.isFinite)) throw new Error("--click wants X,Y"); break; }
 			case "size": { const m = next().match(/^(\d+)x(\d+)$/); if (!m) throw new Error("--size wants WxH"); h.size = [+m[1], +m[2]]; break; }
-			case "dpr": h.dpr = Number(next()); break;
+			case "dpr": h.dpr = num(); break;
 			case "mobile": h.mobile = true; q.mobile = true; break;
 			case "headed": h.headed = true; break;
 			case "native": h.native = true; break;
 			case "console": h.console = true; break;
-			case "timeout": h.timeout = Number(next()); break;
+			case "timeout": h.timeout = num(); break;
 			case "url": h.url = next(); break;
 			case "stats": h.stats = true; break;
 			case "pos": q.pos = [next(), next(), next()].join(","); break;
@@ -91,6 +124,7 @@ function parse(argv) {
 				q[key] = peekValue() ? next() : true;
 			}
 		}
+		if (inline !== null) throw new Error(`--${name} takes no value`);
 	}
 	if (h.frames != null) q.frames = h.frames;
 	if (h.settle == null) h.settle = h.keys.length || h.click ? 1500 : 0;

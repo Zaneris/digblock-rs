@@ -69,6 +69,8 @@ fn main() {
 	//   --fixed-dt S (step the world by exactly S per frame — what makes
 	//            a capture comparable ACROSS BUILDS at all)
 	//   DIG_STUB=<terms> (remove shading terms to attribute a frame)
+	//   --knobs (list every DIG_* scene and lever and exit; a DIG_* the
+	//            list does not name is fatal, as a bad value is)
 	//   --no-vsync --workers N --draw-dist N (workload knobs / profiling)
 	let mut frames: Option<u32> = None;
 	// Multiplayer goes through the master server exclusively: it lists
@@ -97,6 +99,21 @@ fn main() {
 	let mut args = std::env::args().skip(1);
 	while let Some(arg) = args.next() {
 		match arg.as_str() {
+			// The scene roster, printed from the table that defines it.
+			// The web harness shows THIS listing in its own `--help`
+			// (tools/web-e2e/dig.mjs) instead of keeping a copy, which is
+			// what stops the two drifting; `Kind` is what spells a value
+			// knob with its placeholder and a flag without one.
+			"--knobs" => {
+				for k in digblock_client::knobs::ALL {
+					let spelling = match k.kind {
+						digblock_client::knobs::Kind::Flag => format!("--{}", k.name),
+						digblock_client::knobs::Kind::Value => format!("--{} <value>", k.name),
+					};
+					println!("{spelling:<22} {:<18} {}", k.env, k.help);
+				}
+				return;
+			}
 			"--master-url" => {
 				master_url = Some(parse_or_die::<String>("--master-url", args.next()));
 			}
@@ -323,6 +340,36 @@ fn main() {
 		std::env::var_os(k.env).map(|v| v.to_string_lossy().into_owned())
 	}) {
 		eprintln!("{e}");
+		std::process::exit(2);
+	}
+	// The other half of that rule, and the one the environment needs: the
+	// page refuses a `?key` it does not know, but reading the table out of
+	// the environment can only MISS a misspelled variable, so `DIG_VUALT=1`
+	// used to photograph open terrain and exit 0 — the silent wrong scene
+	// this module exists to prevent, arriving through the launcher that
+	// takes its scenes by name. Tolerated beside the table: this launcher's
+	// own three, and DIG_CHROME, which the shader gate and the web harness
+	// read and a developer therefore keeps exported.
+	const OWN_ENV: &[&str] = &[
+		"DIG_MASTER_URL",
+		"DIG_IDENTITY_FILE",
+		"DIG_SESSION_FILE",
+		"DIG_CHROME",
+	];
+	let unknown: Vec<String> = std::env::vars_os()
+		.map(|(k, _)| k.to_string_lossy().into_owned())
+		.filter(|k| {
+			k.starts_with("DIG_")
+				&& !OWN_ENV.contains(&k.as_str())
+				&& !digblock_client::knobs::ALL.iter().any(|n| n.env == k)
+		})
+		.collect();
+	if !unknown.is_empty() {
+		eprintln!(
+			"unknown DIG_* variable(s): {} — known: {}, and every scene `--knobs` lists",
+			unknown.join(", "),
+			OWN_ENV.join(", ")
+		);
 		std::process::exit(2);
 	}
 

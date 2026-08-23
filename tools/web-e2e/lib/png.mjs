@@ -77,6 +77,28 @@ export function stats(png, { region } = {}) {
 	return { mean: sum / n, darkShare: dark / n, colours: seen.size, pixels: n };
 }
 
+/** Mean absolute luminance step between horizontally adjacent pixels: how
+ *  much block-scale STRUCTURE a region carries. The sky is a smooth
+ *  gradient and answers near zero however bright it is, terrain is
+ *  textured and answers several levels — which is the difference between
+ *  "something rendered" and "the terrain rendered". */
+export function detail(png, { region } = {}) {
+	const { width, height, rgba } = png;
+	const [x0, y0, x1, y1] = region ?? [0, 0, width, height];
+	const lum = (x, y) => {
+		const o = (y * width + x) * 4;
+		return 0.2126 * rgba[o] + 0.7152 * rgba[o + 1] + 0.0722 * rgba[o + 2];
+	};
+	let sum = 0, n = 0;
+	for (let y = y0; y < y1; y++) {
+		for (let x = x0; x < x1 - 1; x++) {
+			sum += Math.abs(lum(x, y) - lum(x + 1, y));
+			n++;
+		}
+	}
+	return n ? sum / n : 0;
+}
+
 /** Mean absolute per-channel difference between two same-sized captures. */
 export function diff(a, b) {
 	if (a.width !== b.width || a.height !== b.height) throw new Error("size mismatch");

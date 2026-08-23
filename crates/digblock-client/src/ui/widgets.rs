@@ -243,11 +243,21 @@ pub fn chip_layout(style: &Style, x: f32, y: f32, max_w: f32, chips: &[Chip]) ->
 	out
 }
 
+/// The box `chips` occupies inside a `max_w` budget, as
+/// [`chip_layout`] places them. The measure a caller with a FIXED span
+/// needs: how tall the run becomes once it wraps, which is the height
+/// the row holding it has to reserve.
+pub fn chips_extent(style: &Style, max_w: f32, chips: &[Chip]) -> (f32, f32) {
+	chip_layout(style, 0.0, 0.0, max_w, chips)
+		.iter()
+		.fold((0.0f32, 0.0f32), |(w, h), r| {
+			(w.max(r.x + r.w), h.max(r.y + r.h))
+		})
+}
+
 /// Width of `chips` in one unwrapped run — what a panel sizes itself by.
 pub fn chips_w(style: &Style, chips: &[Chip]) -> f32 {
-	chip_layout(style, 0.0, 0.0, f32::INFINITY, chips)
-		.last()
-		.map_or(0.0, |r| r.x + r.w)
+	chips_extent(style, f32::INFINITY, chips).0
 }
 
 /// Draw `chips` as [`chip_layout`] places them: the icon on
@@ -291,6 +301,11 @@ pub fn chips(
 /// frame's one text size, above its anchor, inside the window, and below
 /// the anchor when above would leave the window. The screen that knows
 /// what is hovered emits it LAST, so it covers what it names.
+///
+/// A name WIDER than the window is a real case (the longest block name at
+/// the scale cap outgrows a phone held upright): the box pins to the left
+/// edge and its tail runs off the right, because the start of a name is
+/// what identifies it and there is no smaller text size to fall back on.
 pub fn tooltip(dl: &mut DrawList, style: &Style, size: (u32, u32), anchor: Rect, name: &str) {
 	let text = name.to_uppercase();
 	let glyph = style.glyph;
@@ -298,7 +313,11 @@ pub fn tooltip(dl: &mut DrawList, style: &Style, size: (u32, u32), anchor: Rect,
 	let h = crate::font::face(style.face).line_h(glyph);
 	let gap = super::theme::TOOLTIP_GAP * style.scale;
 	let (sw, sh) = (size.0 as f32, size.1 as f32);
-	let x = (anchor.x + (anchor.w - w) / 2.0).clamp(0.0, (sw - w).max(0.0));
+	let x = if w >= sw {
+		0.0
+	} else {
+		(anchor.x + (anchor.w - w) / 2.0).clamp(0.0, sw - w)
+	};
 	let above = anchor.y - gap - h;
 	let y = if above >= 0.0 {
 		above
@@ -355,7 +374,19 @@ pub fn row(dl: &mut DrawList, style: &Style, layer: Layer, rect: Rect, c: RowCon
 	let pad_x = scale::text_pad_x(style.scale);
 	let text_y = rect.y + (rect.h - glyph) / 2.0;
 	if c.highlight {
-		dl.quad(layer, rect, ROW_HILIGHT);
+		// The wash has to sit UNDER the row's own icon: a chip draws its
+		// icon in `Layer::Icons`, which the whole of `Layer::Content`
+		// covers, so a wash on the caller's layer greys the icon and
+		// leaves its number crisp — one row reading as two states.
+		// [`slot`] and [`button`] wash on `Layer::Backdrop` for the same
+		// reason. A row with no icon keeps the caller's layer, because a
+		// caller may draw its own panel there (`menu.rs` does) and a wash
+		// beneath that panel would not be seen at all.
+		let wash = match c.right {
+			Some(RowRight::Chip(_)) => Layer::Backdrop,
+			_ => layer,
+		};
+		dl.quad(wash, rect, ROW_HILIGHT);
 	}
 	dl.text(layer, rect.x + pad_x, text_y, glyph, c.color, c.text);
 	if c.caret {
@@ -630,37 +661,95 @@ mod tests {
 	}
 
 	/// Whatever it is anchored to, the name stays inside the window — a
-	/// tooltip off the top flips below, one off a side slides in.
+	/// tooltip off the top flips below, one off a side slides in — and the
+	/// TEXT rides with the box instead of being clamped on its own.
+	///
+	/// Swept over every name a tooltip can carry (blocks and essences,
+	/// which is the whole vocabulary) at the scales the screen sweeps use,
+	/// in windows short and narrow enough for the clamp to bite. The
+	/// widest name at the scale cap is WIDER than a phone held upright,
+	/// and that case is decided rather than clamped: the box pins to the
+	/// left edge and its tail runs off the right.
 	#[test]
 	fn a_tooltip_never_leaves_the_window() {
-		let style = Style::new(1.0);
-		let size = (300u32, 200u32);
-		let (w, h) = (size.0 as f32, size.1 as f32);
-		let corners = [
-			Rect::new(0.0, 0.0, 20.0, 20.0),
-			Rect::new(w - 20.0, 0.0, 20.0, 20.0),
-			Rect::new(0.0, h - 20.0, 20.0, 20.0),
-			Rect::new(w - 20.0, h - 20.0, 20.0, 20.0),
-		];
+		use digblock_core::block::{BlockType, Essence};
+		let names: Vec<String> = BlockType::ALL
+			.iter()
+			.map(|b| b.name())
+			.chain(Essence::ALL.iter().map(|e| e.name().to_string()))
+			.collect();
 		let mut checked = 0;
-		for anchor in corners {
-			let mut dl = DrawList::default();
-			tooltip(&mut dl, &style, size, anchor, "Sandstone Stairs");
-			let (cmds, _) = dl.cmds(Layer::Ghost);
-			for c in cmds {
-				if let Cmd::Quad { rect, .. } = c {
-					assert!(
-						rect.x >= 0.0 && rect.x + rect.w <= w,
-						"{anchor:?}: {rect:?}"
-					);
-					assert!(
-						rect.y >= 0.0 && rect.y + rect.h <= h,
-						"{anchor:?}: {rect:?}"
-					);
-					checked += 1;
+		let mut overflowed = 0;
+		for size in [(300u32, 200u32), (640, 1136), (1280, 800)] {
+			let (sw, sh) = (size.0 as f32, size.1 as f32);
+			for &s in &[0.7f32, 0.75, 1.0, 1.7, 1.75, 2.5, scale::UI_SCALE_CAP] {
+				let style = Style::new(s);
+				let corners = [
+					Rect::new(0.0, 0.0, 20.0, 20.0),
+					Rect::new(sw - 20.0, 0.0, 20.0, 20.0),
+					Rect::new(0.0, sh - 20.0, 20.0, 20.0),
+					Rect::new(sw - 20.0, sh - 20.0, 20.0, 20.0),
+				];
+				for name in &names {
+					for anchor in corners {
+						let mut dl = DrawList::default();
+						tooltip(&mut dl, &style, size, anchor, name);
+						let (cmds, arena) = dl.cmds(Layer::Ghost);
+						let (mut boxes, mut texts) = (Vec::new(), Vec::new());
+						for c in cmds {
+							match c {
+								Cmd::Quad { rect, .. } => boxes.push(*rect),
+								Cmd::Text {
+									x, y, px, range, ..
+								} => texts.push((
+									*x,
+									*y,
+									*px,
+									&arena[range.0 as usize..range.1 as usize],
+								)),
+								_ => panic!("a tooltip is a box and a name"),
+							}
+						}
+						let rect = match boxes[..] {
+							[r] => r,
+							_ => panic!("one box per name"),
+						};
+						let (tx, ty, px, text) = match texts[..] {
+							[t] => t,
+							_ => panic!("one name per box"),
+						};
+						let where_ = format!("{name:?} at {size:?}/{s} on {anchor:?}");
+						assert_eq!(text, name.to_uppercase(), "{where_}");
+						// Vertically the box always fits: it flips below
+						// its anchor rather than leaving the window.
+						assert!(rect.y >= 0.0 && rect.y + rect.h <= sh, "{where_}: {rect:?}");
+						// The text rides INSIDE the box, at the frame's own
+						// size — never clamped independently of it.
+						assert_eq!(px, style.glyph, "{where_}");
+						assert_eq!(tx, rect.x + scale::text_pad_x(s), "{where_}");
+						assert!(ty >= rect.y && ty + px <= rect.y + rect.h, "{where_}");
+						assert!(
+							tx + style.measure(text) <= rect.x + rect.w + 0.01,
+							"{where_}: the name outgrew its box"
+						);
+						if rect.w <= sw {
+							assert!(rect.x >= 0.0 && rect.x + rect.w <= sw, "{where_}: {rect:?}");
+						} else {
+							// Wider than the window: pinned left, tail off
+							// the right — the decided case, not a clamp
+							// degenerating.
+							assert_eq!(rect.x, 0.0, "{where_}: not pinned left");
+							overflowed += 1;
+						}
+						checked += 1;
+					}
 				}
 			}
 		}
-		assert_eq!(checked, corners.len(), "one box per anchor");
+		assert_eq!(checked, names.len() * 4 * 7 * 3, "every name, every pose");
+		assert!(
+			overflowed > 0,
+			"no name outgrew any window — the wider-than-window case is untested"
+		);
 	}
 }

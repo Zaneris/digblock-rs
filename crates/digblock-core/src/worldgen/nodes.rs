@@ -87,9 +87,8 @@ pub fn reveal_met(node: BlockType, levels: Levels) -> bool {
 /// coordinate has ever been written. Both gates matter and neither is
 /// redundant: the host-id test is what makes a spent node stay spent, and
 /// the edit test is what stops someone placing the host back into the
-/// coordinate to regrow it. The host id also routes the query — only a
-/// Stone cell can hold a deposit, only a Wood cell heartwood, only a Sand
-/// cell a spring — so the wrong-host case costs one integer compare.
+/// coordinate to regrow it. The host id is also what [`node_at`] routes
+/// on, which is why the two questions cannot disagree.
 ///
 /// A cell holding a live face OUTRIGHT — a regrown node — is found by
 /// anyone, ahead of both gates: it is stored, so every client's mesh
@@ -102,39 +101,63 @@ pub fn revealed(
 	levels: Levels,
 	edited: bool,
 ) -> Option<BlockType> {
-	let id = crate::chunk::cell_id(cell);
-	if let Some(stored) = BlockType::try_from_id(id).filter(|b| b.is_node_block()) {
-		return Some(stored);
+	let block = BlockType::try_from_id(crate::chunk::cell_id(cell))?;
+	if block.is_node_block() {
+		return Some(block);
 	}
 	if edited {
 		return None;
 	}
-	let node = if id == BlockType::Stone as u16 {
-		ore::ore_at(at.0, at.1, at.2, seed)?
-	} else if id == BlockType::Wood as u16 {
-		heartwood_at(at.0, at.1, at.2, seed).then_some(BlockType::Heartwood)?
-	} else if id == BlockType::Sand as u16 {
-		springstone_at(at.0, at.1, at.2, seed).then_some(BlockType::Springstone)?
-	} else {
-		return None;
-	};
+	let node = node_at(block, at, seed)?;
 	reveal_met(node, levels).then_some(node)
 }
 
-/// The node worldgen puts at this coordinate, asked of the position
-/// ALONE — no host, no edit bit, no level. The placement half of
-/// [`revealed`], for a caller that already knows the cell is not its
-/// pristine host: the regrowth sweep, deciding whether a spent face
-/// stands where its find was, or somewhere a player carried it to.
-pub fn node_at(at: (i32, i32, i32), seed: f64) -> Option<BlockType> {
+/// The node worldgen puts at this coordinate IN THIS HOST — no edit bit
+/// and no level, but the same routing [`revealed`] does, because it is
+/// the routing: `revealed` asks this and then applies the two gates.
+///
+/// The host is load-bearing rather than a shortcut. Asked of the position
+/// alone the three streams overlap: a trunk's heart span is a heartwood
+/// answer at coordinates where the tree grew LEAVES, or nothing at all.
+/// The regrowth sweep is the caller that notices — it asks whether a
+/// spent face stands where its find was, and a host-blind answer would
+/// let one carried in and placed manufacture a node site.
+pub fn node_at(host: BlockType, at: (i32, i32, i32), seed: f64) -> Option<BlockType> {
 	let (x, y, z) = at;
-	if heartwood_at(x, y, z, seed) {
-		return Some(BlockType::Heartwood);
+	match host {
+		BlockType::Stone => ore::ore_at(x, y, z, seed),
+		BlockType::Wood => heartwood_at(x, y, z, seed).then_some(BlockType::Heartwood),
+		BlockType::Sand => springstone_at(x, y, z, seed).then_some(BlockType::Springstone),
+		_ => None,
 	}
-	if springstone_at(x, y, z, seed) {
-		return Some(BlockType::Springstone);
-	}
-	ore::ore_at(x, y, z, seed)
+}
+
+/// The pristine host a node of this kind manifests in — the id
+/// [`node_at`] routes on, inverted for a caller holding the KIND and
+/// asking where it could stand. Total on [`NODES`].
+///
+/// Leystone's host is Stone and not soil: it rides the ore deposit
+/// stream as its surface tier and only its reveal is on the other
+/// ladder.
+#[inline]
+pub fn host_block(node: BlockType) -> Option<BlockType> {
+	Some(match node {
+		BlockType::Emberore
+		| BlockType::Duskstone
+		| BlockType::Glowvein
+		| BlockType::Aetherock
+		| BlockType::Leystone => BlockType::Stone,
+		BlockType::Heartwood => BlockType::Wood,
+		BlockType::Springstone => BlockType::Sand,
+		_ => return None,
+	})
+}
+
+/// The kind whose draw left `face` standing — [`spent_block`]'s inverse,
+/// found over [`NODES`] rather than tabled a second time, so the two can
+/// never name different sets.
+pub fn drawn_kind(face: BlockType) -> Option<BlockType> {
+	NODES.into_iter().find(|&n| spent_block(n) == Some(face))
 }
 
 /// What a dig on one cell actually IS, for this player with this tool in

@@ -43,23 +43,41 @@ mod tests {
 	use super::*;
 	use crate::chunk::make_cell;
 
-	/// A light kindles exactly where a head fits: every block a player
-	/// can stand inside hosts one, every block that stops a player does
-	/// not, and an unloaded cell never does — counted, because a sweep
-	/// that found no host of either kind proved nothing.
+	/// A light never stands inside geometry. The arbiter is the placement
+	/// contract every other writer answers to
+	/// ([`crate::player::placement_blocked`]), asked of a head in the
+	/// middle of the cell — not the field this function happens to read,
+	/// which is the same answer written twice.
+	///
+	/// One DIRECTION, deliberately: a hosting cell is always one a head
+	/// could occupy, but the converse is not owed. `hosts` is stricter
+	/// than the capsule wherever a shape leaves head-room (a head fits
+	/// under a table), and stricter can only refuse a cast — never light
+	/// the inside of a rock. Counted, or a `hosts` that always said no
+	/// would pass.
 	#[test]
-	fn a_light_kindles_wherever_a_head_fits() {
-		let (mut hosts_n, mut refuses_n) = (0, 0);
+	fn a_light_never_kindles_inside_geometry() {
+		let cell = (4, 9, -2);
+		let eye = origin(cell);
+		let (mut fits, mut blocked_n) = (0, 0);
 		for b in BlockType::ALL {
-			let cell = Some(make_cell(b, 0));
-			assert_eq!(hosts(cell), !b.props().collides, "{b:?}");
-			if hosts(cell) {
-				hosts_n += 1;
+			let v = make_cell(b, 0);
+			let blocked = crate::player::placement_blocked(eye, cell, v);
+			assert!(
+				!(hosts(Some(v)) && blocked),
+				"{b:?} would light the inside of itself"
+			);
+			if blocked {
+				blocked_n += 1;
 			} else {
-				refuses_n += 1;
+				fits += 1;
 			}
 		}
-		assert!(hosts_n > 0 && refuses_n > 0, "the sweep saw one kind only");
+		assert!(fits > 0 && blocked_n > 0, "the sweep saw one kind only");
+		// The two the spell actually rests on: standing in the open, and
+		// swimming. Named because the doc promises them.
+		assert!(hosts(Some(make_cell(BlockType::Air, 0))));
+		assert!(hosts(Some(make_cell(BlockType::Water, 0))));
 		assert!(!hosts(None), "nowhere is not somewhere");
 	}
 

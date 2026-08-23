@@ -245,7 +245,9 @@ impl Engine {
 		}
 		// Character screen open: read-only, so the only inputs it eats
 		// are the ones that close it (C/Escape, consumed like the
-		// others') and the held-state hygiene on focus loss.
+		// others'), the held-state hygiene on focus loss, and the cursor
+		// — the page is drawn over the hotbar and names the slot under
+		// the pointer, so it has to be told where the pointer is.
 		if self.ui.char_screen.is_open() {
 			match event {
 				InputEvent::FocusLost | InputEvent::PointerLockLost => {
@@ -257,7 +259,7 @@ impl Engine {
 					key: Key::C | Key::Escape,
 					pressed: true,
 				} => self.ui.char_screen.close(),
-				_ => {}
+				_ => self.ui.char_screen.handle_input(&event),
 			}
 			return;
 		}

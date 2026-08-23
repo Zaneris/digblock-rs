@@ -17,7 +17,7 @@ use glam::{Vec2, Vec3};
 use crate::camera::FlyCamera;
 use crate::renderer::{FrameScene, FrameUniforms, RenderConfig, Renderer};
 use crate::ui::screens::inventory::InvAction;
-use crate::voice::Msg;
+use crate::voice::{Msg, Spell};
 
 mod config;
 pub use config::{DebugScreen, EngineConfig, parse_held_item};
@@ -272,18 +272,40 @@ pub struct Engine {
 	/// DIG_WARD=<r>: a sphere still waiting for every cell it would touch
 	/// to be resident. `None` = landed or disabled.
 	debug_ward_pending: Option<i32>,
-	/// A ward climbing about us OFFLINE (a cast's, or DIG_WARD's), stepped
-	/// with the sim ticks beside the channel it rides, so the glass
-	/// climbs at the server's own pace and unwinds on the same break.
-	ward_closing: Option<OfflineWard>,
+	/// Every ward climbing in this world — ours and each remote's, one
+	/// per caster — stepped with the sim ticks, so every sphere's glass
+	/// climbs at its own caster's pace and unwinds on their own break.
+	ward_climbs: Vec<WardClimb>,
 }
 
-/// The offline ward's climb and what an unwind hands back: the fare
-/// (`None` for DIG_WARD, which paid nothing).
-struct OfflineWard {
+/// One ward mid-climb: whose it is, the plan it is walking, how far
+/// through that plan this end has got, and what an unwind hands back.
+struct WardClimb {
+	/// The caster. `None` where no player ids exist at all — offline,
+	/// where a climb can only be ours — so one comparison against
+	/// `NetSession::my_player_id` answers "is this mine" on both sides
+	/// of the wire.
+	by: Option<digblock_net::protocol::PlayerId>,
 	closing: digblock_core::ward::Closing,
 	head: (i32, i32, i32),
+	/// How much of the plan this end has handed to the world: a PREFIX
+	/// length in the plan's own order, which is the currency
+	/// `ServerMsg::WardEnded` quotes its own count in — neither end can
+	/// derive which cells the other declined.
+	prefix: usize,
+	/// What an unwind refunds. Only an offline cast carries one: online
+	/// the refund is the server's `InventoryFull`, and DIG_WARD paid
+	/// nothing — so a refund can never answer for somebody else's
+	/// sphere.
 	fare: Option<(digblock_core::block::Essence, u32)>,
+}
+
+impl WardClimb {
+	/// Ours? See [`WardClimb::by`] for why one comparison covers both
+	/// offline play and a connected world.
+	fn own(&self, me: Option<digblock_net::protocol::PlayerId>) -> bool {
+		self.by == me
+	}
 }
 
 /// Client-side hold-to-dig progress (mirrors the server's `DigState`;

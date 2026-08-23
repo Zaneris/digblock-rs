@@ -8,7 +8,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { chromium } from "@playwright/test";
-import { decode, stats, diff } from "./png.mjs";
+import { decode, stats, diff, detail } from "./png.mjs";
 
 /** Chrome, with WebGPU on. Headless Chrome ships WebGPU behind the same
  *  flag shadercheck uses; the blocklist override is for the CI-class GPUs
@@ -66,12 +66,15 @@ const INIT = () => {
 
 // Chromium's DPR emulation is only skin deep: `devicePixelRatio` reports
 // the emulated ratio, but a ResizeObserver's `devicePixelContentBoxSize`
-// keeps answering in real device pixels — and that is the box winit sizes
-// the canvas from, so an emulated 2× page rendered into a 1× backing and
-// stretched it, which photographs as a UI twice too big. A real Retina
-// window does not do this (`--native` shows 2400×1616 at 2×). Derive the
-// device box from the CSS box and the ratio the page believes, which is
-// what a real display would have reported.
+// keeps answering in the HOST display's device pixels — and that is the
+// box winit sizes the canvas from, so the two disagree by the ratio
+// between them in whichever direction they differ: an emulated 2× page on
+// a 1× host renders into a 1× backing and stretches it, and an emulated 1×
+// page on a Retina host gets a backing twice what its scale factor says.
+// Either way the UI is drawn for the wrong surface. A window with no
+// emulation over it does not do this (`--native --headed` shows
+// 2400×1616 at 2×). Derive the device box from the CSS box and the ratio
+// the page believes, which is what a real display would have reported.
 const HONEST_DPR = () => {
 	const proto = ResizeObserverEntry.prototype;
 	const desc = Object.getOwnPropertyDescriptor(proto, "devicePixelContentBoxSize");
@@ -112,14 +115,36 @@ export class Dig {
 		return this.page.evaluate(() => window.__dig);
 	}
 
+	/** What the page can still say about a stall. Every startup stage can
+	 *  HANG rather than fail, and both ends already know which one: the
+	 *  lifecycle events say how far the platform got, and the loading
+	 *  overlay's own watchdog writes the stalled stage (and the navigation
+	 *  type) into `#status`. Without them a wasm fetch that never
+	 *  returned, an adapter that never resolved and a first frame that
+	 *  never presented all read as the same generic timeout. */
+	async #diagnose() {
+		return this.page
+			.evaluate(() => {
+				const d = globalThis.__dig ?? {};
+				const events = (d.events ?? []).map((e) => `${e.name}@${Math.round(e.t)}ms`);
+				// The overlay removes `#status` once the first frame lands,
+				// so text here is the page still loading — including the
+				// watchdog's "Still …" once a stage has stopped moving.
+				return { gpuReady: !!d.gpuReady, events, status: document.getElementById("status")?.textContent ?? null };
+			})
+			.catch(() => null);
+	}
+
 	async #wait(pred, what, timeout) {
 		const t0 = Date.now();
 		for (;;) {
 			const s = await this.state().catch(() => null);
-			if (s?.fatal) throw this.failure(`the page reported a fatal error: ${s.fatal}`);
-			if (this.errors.length) throw this.failure(`the page threw: ${this.errors.join("; ")}`);
+			if (s?.fatal) throw this.failure(`the page reported a fatal error: ${s.fatal}`, await this.#diagnose());
+			if (this.errors.length) throw this.failure(`the page threw: ${this.errors.join("; ")}`, await this.#diagnose());
 			if (s && pred(s)) return s;
-			if (Date.now() - t0 > timeout) throw this.failure(`timed out after ${timeout} ms waiting for ${what}`);
+			if (Date.now() - t0 > timeout) {
+				throw this.failure(`timed out after ${timeout} ms waiting for ${what}`, await this.#diagnose());
+			}
 			await this.page.waitForTimeout(50);
 		}
 	}
@@ -134,10 +159,18 @@ export class Dig {
 		return this.#wait((s) => s.exited, "digblock-exit (is ?frames= set?)", timeout);
 	}
 
-	/** An Error carrying the console's tail, so a failure quotes the engine. */
-	failure(msg) {
+	/** An Error carrying the stalled stage and the console's tail, so a
+	 *  failure names where the boot stopped and quotes the engine. */
+	failure(msg, diag = null) {
+		const lines = [msg];
+		if (diag) {
+			const reached = diag.events.length ? diag.events.join(" → ") : "no lifecycle event";
+			lines.push(`  reached: ${reached}${diag.gpuReady ? "" : " (the GPU never reported ready)"}`);
+			if (diag.status) lines.push(`  the loading overlay says: ${JSON.stringify(diag.status)}`);
+		}
+		lines.push(`  url: ${this.url}`);
 		const tail = this.console.slice(-15).map((l) => `  [${l.type}] ${l.text}`).join("\n");
-		return new Error(`${msg}\n  url: ${this.url}\n${tail || "  (no console output)"}`);
+		return new Error(`${lines.join("\n")}\n${tail || "  (no console output)"}`);
 	}
 
 	/** Every console line of the engine's periodic metrics report, parsed:
@@ -183,22 +216,39 @@ export class Dig {
  */
 export async function boot(browser, origin, params = {}, { size = [1280, 800], dpr = 1, mobile = false, native = false, timeout = 60_000 } = {}) {
 	// `native` drops Playwright's viewport/DPR emulation: the page gets the
-	// real window and the real display's devicePixelRatio — the only way
-	// to tell an emulation artifact from a bug in how the page sizes itself.
+	// browser's own window and whatever devicePixelRatio it really has —
+	// the only way to tell an emulation artifact from a bug in how the page
+	// sizes itself. Headless that window is Chrome's default one at 1×, so
+	// a question about a REAL display's ratio wants `--headed` as well.
 	const context = await browser.newContext(native ? { viewport: null } : {
 		viewport: { width: size[0], height: size[1] },
 		deviceScaleFactor: dpr,
 		hasTouch: mobile,
 		isMobile: mobile,
 	});
-	const page = await context.newPage();
-	await page.addInitScript(INIT);
-	if (!native && dpr !== 1) await page.addInitScript(HONEST_DPR);
-	const url = origin + "/" + (typeof params === "string" ? params : query(normalize(params)));
-	const dig = new Dig(page, url);
-	await page.goto(url);
-	await dig.firstFrame(timeout);
-	return dig;
+	try {
+		const page = await context.newPage();
+		await page.addInitScript(INIT);
+		// Emulation on, at any ratio: the correction keys on the emulation,
+		// not on the ratio asked for. `--dpr 1` on a Retina host is the
+		// same bug mirrored — the page believes 1× while the device box
+		// still answers in the display's real pixels — and where the two
+		// already agree the correction is the identity.
+		if (!native) await page.addInitScript(HONEST_DPR);
+		const url = origin + "/" + (typeof params === "string" ? params : query(normalize(params)));
+		const dig = new Dig(page, url);
+		await page.goto(url);
+		await dig.firstFrame(timeout);
+		return dig;
+	} catch (e) {
+		// The suite runs ONE worker because the browser holds the GPU
+		// (playwright.config.mjs), and the fixture can only track a context
+		// this function RETURNED — so a boot that throws with its page left
+		// open leaves it rendering for the rest of the run, and one real
+		// timeout cascades into flakes that look unrelated to it.
+		await context.close().catch(() => {});
+		throw e;
+	}
 }
 
-export { decode, stats, diff };
+export { decode, stats, diff, detail };

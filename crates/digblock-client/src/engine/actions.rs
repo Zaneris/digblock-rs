@@ -274,26 +274,65 @@ impl Engine {
 	}
 
 	/// The channel broke with a Ward climbing under it: the server
-	/// unwinds on our word (and on its own, if we moved); offline the
-	/// climb's own record is put back crown-first, only where the glass
-	/// is still ours, and the fare returns.
+	/// unwinds on our word (and on its own, if we moved); this end puts
+	/// its own climb's record back crown-first, only where the glass is
+	/// still ours, and the fare returns.
 	fn break_ward(&mut self) {
 		if let Some(net) = self.session.client.as_mut()
 			&& net.ready()
 		{
 			net.send_cast_break();
 		}
-		let Some(ward) = self.ward_closing.take() else {
-			return;
-		};
-		for (c, written, prev) in ward.closing.unwind() {
+		// OUR channel broke, so OUR sphere comes down. A remote's is
+		// standing in this same world on its own caster's clock, and
+		// walking away from our own cast is nothing to it.
+		let me = self.session.my_player_id;
+		if let Some(i) = self.ward_climbs.iter().position(|w| w.own(me)) {
+			let climb = self.ward_climbs.remove(i);
+			self.unwind_climb(climb);
+		}
+	}
+
+	/// Take every climb this world holds back down without telling
+	/// anyone — ours and each remote's, since the world under all of
+	/// them is the one going away.
+	///
+	/// Separate from [`Self::break_ward`] because leaving the WORLD is
+	/// not a broken channel: there is nobody left to send `CastBreak`
+	/// to, and only OUR climb would be the one to break. Doing neither
+	/// is what left half a sphere of glass in a saved world with the
+	/// fare spent; every path that puts this world down calls it while
+	/// that world is still the one under the cells.
+	pub(super) fn abandon_ward(&mut self) {
+		for climb in std::mem::take(&mut self.ward_climbs) {
+			self.unwind_climb(climb);
+		}
+	}
+
+	/// One climb taken back down: the glass comes down crown-first, only
+	/// where it is still ours — somebody who dug a pane out mid-climb
+	/// keeps their hole — and the climb's fare returns. Restored from
+	/// the climb's OWN RECORD, never from a re-derived plan: a plan
+	/// drawn against a standing sphere names precisely the cells that
+	/// are missing from it, so re-deriving resurrects what was dug.
+	pub(super) fn unwind_climb(&mut self, climb: WardClimb) {
+		for (c, written, prev) in climb.closing.unwind() {
 			if self.pipeline.cell_at(c.0, c.1, c.2) == Some(written) {
-				self.pipeline.set_cell(c.0, c.1, c.2, prev);
+				self.write_ward_cell(c, prev);
 			}
 		}
-		if let Some((essence, fare)) = ward.fare {
+		if let Some((essence, fare)) = climb.fare {
 			self.inventory.add_sub(essence, fare);
 		}
+	}
+
+	/// Our own climb, if one stands. Every answer that belongs to the
+	/// LOCAL player — the offline award, the refund, the channel's
+	/// stillness hold — asks this rather than "is anything climbing",
+	/// because a remote's sphere is climbing in our world too.
+	pub(super) fn own_ward(&self) -> Option<&WardClimb> {
+		let me = self.session.my_player_id;
+		self.ward_climbs.iter().find(|w| w.own(me))
 	}
 
 	/// Arm the shared teleport clock at the caster's own window. Every
@@ -304,13 +343,39 @@ impl Engine {
 		self.save.teleport_cooldown = digblock_core::unlock::teleport_cooldown_secs(level) as f32;
 	}
 
+	/// How long a Ward's channel is held past its own length while the
+	/// caster waits for the seal — the bound on [`Self::ward_seal_grace`].
+	pub(super) const WARD_SEAL_GRACE_SECS: f32 = 0.6;
+
+	/// Ticks past its own length that a channel keeps guarding stillness.
+	///
+	/// The Ward alone, and only online. `Cast(Ward)` goes out as the
+	/// channel BEGINS, so the server's span starts one upstream latency
+	/// later and ends that much after the caster's own bar fills — and
+	/// until it does, the server is still enforcing its own stillness and
+	/// unwinds the WHOLE sphere, with no refusal and no word, for a
+	/// caster who has walked off. So the channel outlives its length,
+	/// guarding stillness and nothing else, until the seal takes the
+	/// climb away or this bound runs out. Offline the seal IS this end's
+	/// own last tick, so there is nothing to wait for.
+	fn ward_seal_grace(&self, target: CastTarget) -> u32 {
+		let waiting = target == CastTarget::Ward
+			&& self.own_ward().is_some()
+			&& self.session.client.as_ref().is_some_and(|n| n.ready());
+		if waiting {
+			(Self::WARD_SEAL_GRACE_SECS / digblock_core::player::TICK) as u32
+		} else {
+			0
+		}
+	}
+
 	/// One fixed-rate step of the cast channel. A channel is STILLNESS:
 	/// any movement intent, a dig hold, or a surface opening resets it
 	/// outright — the decay mold is a dig's, deliberately not borrowed.
 	pub(super) fn step_cast(&mut self) {
-		if self.cast.is_none() {
+		let Some(&CastState { target, ticks }) = self.cast.as_ref() else {
 			return;
-		}
+		};
 		let keys = &self.input.keys;
 		let moving = keys.w
 			|| keys.a || keys.s
@@ -323,32 +388,40 @@ impl Engine {
 			|| self.ui.char_screen.is_open()
 			|| self.ui.spellbook.is_open()
 			|| self.ui.chat.is_open();
+		let need = digblock_core::unlock::channel_ticks(
+			self.skills.level(digblock_core::skills::Skill::Arcana),
+		);
 		if moving || surface || self.dig_active() {
-			let target = self.cast.take().map(|c| c.target);
+			self.cast = None;
 			self.emit(crate::audio::AudioCmd::LoopStop {
 				id: crate::audio::LOOP_CAST,
 			});
-			if target == Some(CastTarget::Ward) {
+			if target == CastTarget::Ward {
+				// Past the channel's own length with nothing climbing,
+				// the sphere has already sealed — the seal arrives
+				// through the ward machinery, not the channel's — so
+				// walking away now breaks nothing and says nothing.
+				if ticks >= need && self.own_ward().is_none() {
+					return;
+				}
 				self.break_ward();
 			}
 			self.push_feed(Msg::CastInterrupted);
 			return;
 		}
-		let need = digblock_core::unlock::channel_ticks(
-			self.skills.level(digblock_core::skills::Skill::Arcana),
-		);
-		let done = {
+		let ticks = {
 			let cast = self.cast.as_mut().expect("checked above");
 			cast.ticks += 1;
-			(cast.ticks >= need).then_some(cast.target)
+			cast.ticks
 		};
-		if let Some(target) = done {
-			self.cast = None;
-			self.emit(crate::audio::AudioCmd::LoopStop {
-				id: crate::audio::LOOP_CAST,
-			});
-			self.complete_cast(target);
+		if ticks < need + self.ward_seal_grace(target) {
+			return;
 		}
+		self.cast = None;
+		self.emit(crate::audio::AudioCmd::LoopStop {
+			id: crate::audio::LOOP_CAST,
+		});
+		self.complete_cast(target);
 	}
 
 	/// The ports this world offers: online, exactly the sites its server
@@ -383,18 +456,18 @@ impl Engine {
 			return;
 		};
 		if self.skills.level(Skill::Arcana) < level {
-			self.push_feed(Msg::WaystoneLocked);
+			self.push_feed(Msg::SpellLocked(Spell::Waystone));
 			return;
 		}
 		let Some(eye) = self.save.offline_waystones.site(idx) else {
 			// This seed never made such a place — a port to nowhere.
-			self.push_feed(Msg::WaystoneLocked);
+			self.push_feed(Msg::SpellLocked(Spell::Waystone));
 			return;
 		};
 		let (essence, fare) =
 			digblock_core::alchemy::cast_price(kind).expect("a laddered kind has a fare");
 		if !self.inventory.try_take_sub(essence, fare) {
-			self.push_feed(Msg::CastCantPay);
+			self.push_feed(Msg::SpellFareShort(Spell::Waystone));
 			return;
 		}
 		let region = digblock_core::spawn::lock_region(eye);
@@ -410,7 +483,7 @@ impl Engine {
 		}
 		self.apply_teleport(eye, Vec3::ZERO);
 		// Offline arm ONLY — the shared path never awards.
-		self.award_xp_offline(Skill::Arcana, digblock_core::skills::cast_xp(fare));
+		self.award_xp_offline(Skill::Arcana, digblock_core::skills::cast_xp(essence, fare));
 	}
 
 	/// A completed channel fires its spell. The teleport that answers —
@@ -469,11 +542,14 @@ impl Engine {
 					}
 					_ => {
 						if !self.inventory.try_take_sub(essence, fare) {
-							self.push_feed(Msg::CastCantPay);
+							self.push_feed(Msg::SpellFareShort(Spell::Wisp));
 							return;
 						}
 						self.wisp_left = digblock_core::unlock::wisp_secs(level) as f32;
-						self.award_xp_offline(Skill::Arcana, digblock_core::skills::cast_xp(fare));
+						self.award_xp_offline(
+							Skill::Arcana,
+							digblock_core::skills::cast_xp(essence, fare),
+						);
 					}
 				}
 			}
@@ -489,14 +565,23 @@ impl Engine {
 				}
 			}
 			CastTarget::Ward => {
-				// The climb began with the channel (`begin_ward`) and
-				// the seal is the climb's own last tick; online the
-				// server declares it with `Warded`, and the XP rides
-				// `XpGain`. Offline the award is the only thing left.
-				if self.ward_closing.is_some() {
-					let level = self.skills.level(Skill::Arcana);
-					let (_, fare) = digblock_core::alchemy::ward_price(level);
-					self.award_xp_offline(Skill::Arcana, digblock_core::skills::cast_xp(fare));
+				// The climb began with the channel (`begin_ward`) and the
+				// seal is the climb's own last tick; online the server
+				// declares both ends of it — `WardWinding` stands the
+				// sphere up, `WardEnded` closes or unwinds it — and the
+				// XP rides `XpGain`. Offline the award is the only thing
+				// left.
+				// OUR OWN climb's STORED fare, and not a fresh
+				// `ward_price`: the debit and the refund both spend this
+				// one, and the server pays out of its own `WardClosing`.
+				// Recomputing would pay a rung the cast never charged if
+				// Arcana rose mid-channel, and reading whichever climb
+				// stands first would pay us for a stranger's sphere.
+				if let Some((essence, fare)) = self.own_ward().and_then(|w| w.fare) {
+					self.award_xp_offline(
+						Skill::Arcana,
+						digblock_core::skills::cast_xp(essence, fare),
+					);
 				}
 			}
 		}
@@ -522,21 +607,24 @@ impl Engine {
 		use digblock_core::skills::Skill;
 		let level = self.skills.level(Skill::Arcana);
 		if level < digblock_core::unlock::KINDLE_AT {
-			self.push_feed(Msg::WaystoneLocked);
+			self.push_feed(Msg::SpellLocked(Spell::Kindle));
 			return;
 		}
-		let cell = digblock_core::kindle::host_cell(self.player.pos);
+		// `body_pos`, not `player.pos`: fly leaves the simulated body
+		// behind, and a flying caster's light must stand where they
+		// actually are rather than where they last walked.
+		let cell = digblock_core::kindle::host_cell(self.body_pos());
 		if !digblock_core::kindle::hosts(self.pipeline.cell_at(cell.0, cell.1, cell.2)) {
 			self.push_feed(Msg::CastBadTarget);
 			return;
 		}
 		let (essence, fare) = digblock_core::alchemy::kindle_price(level);
 		if !self.inventory.try_take_sub(essence, fare) {
-			self.push_feed(Msg::CastCantPay);
+			self.push_feed(Msg::SpellFareShort(Spell::Kindle));
 			return;
 		}
 		self.kindle_light(cell, digblock_core::kindle::SECS as f32);
-		self.award_xp_offline(Skill::Arcana, digblock_core::skills::cast_xp(fare));
+		self.award_xp_offline(Skill::Arcana, digblock_core::skills::cast_xp(essence, fare));
 	}
 
 	/// The offline arm of the Ward's START: the same rung, plan, player
@@ -548,14 +636,17 @@ impl Engine {
 		let level = self.skills.level(Skill::Arcana);
 		let r = digblock_core::unlock::ward_radius(level);
 		if r == 0 {
-			self.push_feed(Msg::WaystoneLocked);
+			self.push_feed(Msg::SpellLocked(Spell::Ward));
 			return false;
 		}
-		if self.ward_closing.is_some() {
+		if self.own_ward().is_some() {
 			self.push_feed(Msg::CastBadTarget);
 			return false;
 		}
-		let head = digblock_core::kindle::host_cell(self.player.pos);
+		// The HEAD is the same position the shell is scanned against
+		// (`body_pos`), or a flying caster's sphere closes around where
+		// they last stood while the scan clears them where they are.
+		let head = digblock_core::kindle::host_cell(self.body_pos());
 		let Ok(writes) =
 			digblock_core::ward::plan(head, r, |c| self.pipeline.cell_at(c.0, c.1, c.2))
 		else {
@@ -573,50 +664,100 @@ impl Engine {
 		writes.retain(|&(c, _)| !digblock_core::protect::immutable(c.0, c.1, c.2, &self.protected));
 		let (essence, fare) = digblock_core::alchemy::ward_price(level);
 		if !self.inventory.try_take_sub(essence, fare) {
-			self.push_feed(Msg::CastCantPay);
+			self.push_feed(Msg::SpellFareShort(Spell::Ward));
 			return false;
 		}
-		self.ward_closing = Some(OfflineWard {
+		self.ward_climbs.push(WardClimb {
+			by: self.session.my_player_id,
 			closing: digblock_core::ward::Closing::new(
 				writes,
 				digblock_core::unlock::channel_ticks(level),
 			),
 			head,
+			prefix: 0,
 			fare: Some((essence, fare)),
 		});
 		true
 	}
 
-	/// One sim tick of a ward climbing offline: the tick's cells go
-	/// through the pipeline's own write path, the server's pace, each
-	/// recorded with what it replaced so a break can put it back. A cell
-	/// we have since stepped into is left unwritten — a hole where
-	/// somebody stood, the server's rule too. The tick the climb ends is
-	/// the seal. DIG_WARD_AGE holds the climb at its age so a capture
-	/// can photograph the bowl.
-	pub(super) fn step_ward_closing(&mut self) {
-		let body = self.body_pos();
-		let Some(ward) = self.ward_closing.as_mut() else {
-			return;
-		};
-		if let Some(age) = self.config.debug_ward_age
-			&& ward.closing.step() as f32 * digblock_core::player::TICK >= age
-		{
+	/// One sim tick of every ward climbing — ours and each remote's,
+	/// each at its own caster's pace, so hundreds of edits ride one
+	/// frame from the wire. The tick a climb ends is its seal.
+	/// DIG_WARD_AGE holds a climb at its age so a capture can
+	/// photograph the bowl.
+	pub(super) fn step_ward_climbs(&mut self) {
+		if self.ward_climbs.is_empty() {
 			return;
 		}
-		for (c, v) in ward.closing.land() {
+		let me = self.session.my_player_id;
+		// Taken out for the walk: landing a cell wants the whole engine,
+		// and a climb removed from the list is not a borrow of it.
+		let mut climbs = std::mem::take(&mut self.ward_climbs);
+		let mut i = 0;
+		while i < climbs.len() {
+			if let Some(age) = self.config.debug_ward_age
+				&& climbs[i].closing.step() as f32 * digblock_core::player::TICK >= age
+			{
+				i += 1;
+				continue;
+			}
+			self.land_ward_tick(&mut climbs[i]);
+			if climbs[i].closing.done() {
+				let climb = climbs.remove(i);
+				self.ward_sealed(climb.head, climb.own(me));
+				continue;
+			}
+			i += 1;
+		}
+		self.ward_climbs = climbs;
+	}
+
+	/// One tick's worth of a climb handed to the world and recorded with
+	/// what it replaced, so a break can put it back. A cell somebody has
+	/// stepped into is left unwritten — a hole where a player stood, the
+	/// server's rule too — and so is one this end cannot read, which the
+	/// journal carries instead. Neither is recorded, so no unwind claims
+	/// a cell this end never wrote.
+	fn land_ward_tick(&mut self, climb: &mut WardClimb) {
+		let body = self.body_pos();
+		let cells = climb.closing.land();
+		climb.prefix += cells.len();
+		for (c, v) in cells {
 			if digblock_core::player::placement_blocked(body, c, v) {
 				continue;
 			}
-			if let Some(prev) = self.pipeline.cell_at(c.0, c.1, c.2) {
-				ward.closing.record(c, v, prev);
-				self.pipeline.set_cell(c.0, c.1, c.2, v);
-			}
+			let Some(prev) = self.pipeline.cell_at(c.0, c.1, c.2) else {
+				continue;
+			};
+			climb.closing.record(c, v, prev);
+			self.write_ward_cell(c, v);
 		}
-		if ward.closing.done() {
-			let head = ward.head;
-			self.ward_closing = None;
-			self.ward_sealed(head, true);
+	}
+
+	/// Walk a climb forward to a plan PREFIX — the server's own count of
+	/// what it handed the world, and the truth about a sphere whose
+	/// local clock is a round trip out of step either way. Behind it,
+	/// the rest lands here too; at or past it, the record already holds
+	/// everything the server ever wrote. A tick-sized step can overshoot
+	/// the count by one tick's cells — only a break can leave those
+	/// standing, and a break takes the whole record back down.
+	pub(super) fn land_ward_to(&mut self, climb: &mut WardClimb, prefix: usize) {
+		while climb.prefix < prefix && !climb.closing.done() {
+			self.land_ward_tick(climb);
+		}
+	}
+
+	/// Hand one of a ward's cells to the world through the arm that owns
+	/// this world's edits: offline `set_cell`, the local write funnel a
+	/// save's overlay is recorded from; online `apply_authoritative`,
+	/// the path every journalled edit takes. Online `set_cell` records
+	/// nothing, so a sphere written that way is gone from the overlay
+	/// mirroring the journal and vanishes on the first hard eviction.
+	pub(super) fn write_ward_cell(&mut self, c: digblock_core::ward::Cell, v: u16) {
+		if self.session.client.is_some() {
+			self.apply_remote_edit(c, v);
+		} else {
+			self.pipeline.set_cell(c.0, c.1, c.2, v);
 		}
 	}
 

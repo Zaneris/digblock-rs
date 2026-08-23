@@ -270,6 +270,13 @@ impl Sim {
 			.map_or(0, |c| c.inventory.sub_count(e))
 	}
 
+	/// Standing kindled lights — the world-wide list every joiner is
+	/// handed a copy of, and the thing the cap bounds.
+	#[cfg(test)]
+	pub(crate) fn test_kindled_len(&self) -> usize {
+		self.kindled.len()
+	}
+
 	// ---- events -------------------------------------------------------
 
 	/// Whether a scheduled sweep is mid-slice.

@@ -107,22 +107,16 @@ pub fn craft_cost(ideal: u32, level: u32) -> u32 {
 	(ideal * waste_permille(level)).div_ceil(1000)
 }
 
-/// Functional items' craft costs — priced BY HAND (§7.3), never by
-/// volume, because a torch's cost is a decision rather than a
-/// measurement. Cross-family costs live here on purpose: they are what
-/// make the essences feel like an economy instead of parallel currencies.
-///
-/// The LEVELS these open at are not here — every threshold in the game
-/// lives in [`crate::unlock`], and `unlock::functional` is this list's
-/// twin (pinned to it, so an item cannot have a price without a level or
-/// the other way round). An item may ALSO cost feedstock blocks
-/// ([`functional_feedstock`]); the two vessels cost ONLY that.
 /// A waystone passage's price, hand-tabled in [`functional_ideal`]'s
 /// spirit: the fare rises with the port's remoteness WITHIN an essence,
 /// and the essence climbs the ladder with the port — the lowland ports
 /// in the day-one Vitae, then Terra, the cold and the shore in Unda, the
 /// mountain in Ferrum and the far cold in Aether, so the spine spends
-/// every faucet the other ladders open rather than one. Each essence's
+/// every faucet the other ladders open rather than one. The far cold's
+/// fare is the smallest figure in the table, because Aether is the
+/// essence nothing can transmute into — and `skills::cast_xp` weighs a
+/// unit of it accordingly, so the scarcest fare still pays the most
+/// Arcana of any passage rather than the least. Each essence's
 /// node reveals before the first port priced in it opens (the
 /// payability pin, `the_port_tables_are_twins_and_the_fare_is_payable`). `None`
 /// is a kind with no port, exactly [`crate::unlock::waystone`]'s set —
@@ -139,7 +133,7 @@ pub fn cast_price(kind: crate::worldgen::SurfaceKind) -> Option<(Essence, u32)> 
 		K::Taiga => (Essence::Unda, 16),
 		K::Beach => (Essence::Unda, 20),
 		K::Mountain => (Essence::Ferrum, 24),
-		K::Snow => (Essence::Aether, 6),
+		K::Snow => (Essence::Aether, 1),
 		K::Ocean | K::River | K::Lake | K::Marsh | K::GravelShore | K::Scree => return None,
 	})
 }
@@ -174,10 +168,10 @@ pub fn kindle_price(level: u32) -> (Essence, u32) {
 }
 
 /// The Ward's fare: Unda, the water essence, for the spell that drives
-/// water out — and the one sink that essence has beyond a bed and a
-/// snowdrift. Doubles with each rank, as the sphere's shell roughly
-/// does (`unlock::ward_radius`), so a wider ward is never a free
-/// upgrade.
+/// water out — shared with the cold and shore ports ([`cast_price`]), so
+/// the springstone node feeds both halves of the ladder rather than one
+/// spell. Doubles with each rank, as the sphere's shell roughly does
+/// (`unlock::ward_radius`), so a wider ward is never a free upgrade.
 pub fn ward_price(level: u32) -> (Essence, u32) {
 	const BASE: u32 = 12;
 	let rank = match level {
@@ -188,6 +182,16 @@ pub fn ward_price(level: u32) -> (Essence, u32) {
 	(Essence::Unda, BASE << rank)
 }
 
+/// Functional items' craft costs — priced BY HAND (§7.3), never by
+/// volume, because a torch's cost is a decision rather than a
+/// measurement. Cross-family costs live here on purpose: they are what
+/// make the essences feel like an economy instead of parallel currencies.
+///
+/// The LEVELS these open at are not here — every threshold in the game
+/// lives in [`crate::unlock`], and `unlock::functional` is this list's
+/// twin (pinned to it, so an item cannot have a price without a level or
+/// the other way round). An item may ALSO cost feedstock blocks
+/// ([`functional_feedstock`]); the two vessels cost ONLY that.
 pub fn functional_ideal(b: BlockType) -> Option<&'static [(Essence, u32)]> {
 	use BlockType as B;
 	use Essence as E;
@@ -224,9 +228,9 @@ pub fn functional_ideal(b: BlockType) -> Option<&'static [(Essence, u32)]> {
 /// - **The siphon may never cost essence.** Every essence in the game is a
 ///   siphon draw, so an essence-priced siphon deadlocks the whole currency
 ///   (`the_essence_tool_costs_no_essence`).
-/// - **The bucket is the same deadlock one step out**: it sits at the level
-///   everyone starts at, before the first draw, so its price has to be
-///   something a fresh player can go and chop.
+/// - **The bucket's RUNG is its whole gate.** It opens past the siphon
+///   ([`crate::unlock::functional`]), so the deadlock does not carry it;
+///   an essence price would toll the same door twice.
 ///
 /// Wood for both — "dig your way to the trees, fell a few, make your tools" IS
 /// the opening loop.

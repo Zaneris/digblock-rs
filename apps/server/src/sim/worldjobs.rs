@@ -39,12 +39,38 @@ impl CellSource for SweepWorld<'_> {
 	}
 }
 
+/// Seconds this world had already lived when the process opened it.
+///
+/// The sweep clock has to be the WORLD's age: a rolled job salts its draw
+/// with the slot index, so a clock that restarts at zero on every boot
+/// re-offers one slot's draw forever — the same finds come back and the
+/// sites that lost that roll keep losing it. The data directory's own
+/// creation is the world's birth and costs no format change to read.
+/// Where the filesystem will not say when that was, the wall clock
+/// stands in: not an age, but it has the one property this needs, which
+/// is that it does not restart.
+pub(super) fn world_epoch_secs(data_dir: &Path) -> f64 {
+	let now = std::time::SystemTime::now();
+	let elapsed = match std::fs::metadata(data_dir).and_then(|m| m.created()) {
+		Ok(born) => now.duration_since(born),
+		Err(_) => now.duration_since(std::time::UNIX_EPOCH),
+	};
+	elapsed.map(|d| d.as_secs_f64()).unwrap_or(0.0)
+}
+
 impl Sim {
 	/// Register a rule to run on the clock. Panics on a scope that could
 	/// destroy node reveals — loudly at boot, because the quiet failure is
 	/// unrecoverable.
 	pub fn register_world_job(&mut self, job: Box<dyn WorldJob>) {
 		self.world_jobs.register(job);
+	}
+
+	/// The clock the scheduled sweeps run on: this world's age, which the
+	/// session's own elapsed time only adds to. `/time` moves it with the
+	/// sky, since the sweeps are the game day's.
+	pub(super) fn sweep_secs(&self) -> f64 {
+		self.world_epoch_secs + f64::from(self.tick) / f64::from(TICK_RATE) + self.tod_offset_secs
 	}
 
 	pub(super) fn step_world_jobs(&mut self) {
@@ -57,7 +83,7 @@ impl Sim {
 				(p.x.floor() as i32, p.y.floor() as i32, p.z.floor() as i32)
 			})
 			.collect();
-		let secs = f64::from(self.tick) / f64::from(TICK_RATE) + self.tod_offset_secs;
+		let secs = self.sweep_secs();
 		// Fed ahead of the journal gate below: the head-count is a fact
 		// about the day whether or not the world can be written to.
 		self.presence.observe(secs, eyes.len() as u32);

@@ -14,8 +14,9 @@
 
 use super::*;
 
-/// Whether a knob is a switch or carries a value. The harness that
-/// drives the web build reads this to decide how to spell a flag.
+/// Whether a knob is a switch or carries a value — what the desktop's
+/// `--knobs` listing spells with a value placeholder, so the harness
+/// that shows that listing offers the shape the page will accept.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
 	Flag,
@@ -30,7 +31,8 @@ pub struct Knob {
 	/// The desktop's environment variable.
 	pub env: &'static str,
 	pub kind: Kind,
-	/// One line for `--help` and the harness's usage text.
+	/// One line for the desktop's `--knobs` listing, which is also the
+	/// web harness's usage text for the scenes.
 	pub help: &'static str,
 }
 
@@ -156,8 +158,9 @@ pub const CHUNK_SLOTS: Knob = value(
 	"override the chunk slot count",
 );
 
-/// Every knob, in the order the usage text lists them. Both launchers
-/// iterate this for their help, and the web harness mirrors it.
+/// Every knob, in the order the usage text lists them. The desktop
+/// prints this table for `--knobs` and refuses a `DIG_*` variable
+/// outside it; the web page refuses a `?key` outside it.
 pub const ALL: &[Knob] = &[
 	SCREEN,
 	PLAYERBOX,
@@ -190,7 +193,7 @@ pub const ALL: &[Knob] = &[
 
 /// The known spellings of a `screen` value, for the error a typo raises.
 const SCREEN_NAMES: &str = "menu|inventory|inventory-hover|alchemy|alchemy-hover|transmute|transmuting|\
-	skills|spellbook|hand|bucket|bucket-full|torch|siphon|pick|sigil";
+	skills|spellbook|spellbook-hover|hand|bucket|bucket-full|torch|siphon|pick|sigil";
 
 /// Read every knob through `get` and write what it means into `config`.
 ///
@@ -433,6 +436,34 @@ mod tests {
 				.expect_err(knob.name);
 			assert!(err.contains(knob.name), "{err}");
 		}
+	}
+
+	/// The list a typo's error prints is prose sitting beside a match
+	/// arm, and the two drift the moment a screen is added — so every
+	/// spelling it offers has to BE one, and no two may name the same
+	/// screen, or the help is telling a player about a page twice and
+	/// about another one never.
+	///
+	/// The other direction — a variant nobody can spell — is held where
+	/// it can fail to COMPILE: `screens`'s `fixture_of` matches
+	/// exhaustively over [`DebugScreen`].
+	#[test]
+	fn every_screen_the_error_offers_can_be_asked_for() {
+		let mut seen = std::collections::HashSet::new();
+		for name in SCREEN_NAMES.split('|') {
+			let name = name.trim();
+			let screen = DebugScreen::parse(name)
+				.unwrap_or_else(|| panic!("{name:?} is offered but does not parse"));
+			assert!(
+				seen.insert(format!("{screen:?}")),
+				"{name:?} names a screen the list already offers"
+			);
+		}
+		assert_eq!(
+			seen.len(),
+			SCREEN_NAMES.split('|').count(),
+			"every offered spelling reached a screen of its own"
+		);
 	}
 
 	#[test]

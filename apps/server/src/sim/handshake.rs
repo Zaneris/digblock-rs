@@ -27,7 +27,7 @@ impl Sim {
 		let Some(record) = self.player_store.claim_legacy(legacy, account) else {
 			return;
 		};
-		let kindled = self.kindled_msgs();
+		let kindled: Vec<Kindled> = self.kindled.clone();
 		let Some(client) = self.clients.get_mut(&conn_id) else {
 			return;
 		};
@@ -71,9 +71,10 @@ impl Sim {
 				entries: self.waystone_store.sites().to_vec(),
 			},
 		);
-		for msg in &kindled {
-			send_frame(&out, msg);
-		}
+		// The standing lights go back on the queue the join pump drains,
+		// not into this burst: the backlog is world-sized and this send
+		// is the one whose refusal drops the client.
+		client.residency.kindled_queue.extend(kindled);
 		send_frame(
 			&out,
 			&admin::server_reply(digblock_net::messages::AdminReply::LegacyCharacterClaimed),
@@ -229,6 +230,13 @@ impl Sim {
 		let sync_queue: std::collections::VecDeque<(i32, i32)> = cols.into();
 		let sync_queue_set: FxHashSet<(i32, i32)> = sync_queue.iter().copied().collect();
 		let queued = sync_queue.len();
+		// The lights still burning: a joiner cannot derive them and the
+		// caster may be long gone, so every one is owed — QUEUED beside
+		// the columns rather than sent inline, for the same reason they
+		// are. A world's worth of lights in the handshake is a join this
+		// server cannot complete.
+		let kindled_queue: std::collections::VecDeque<Kindled> =
+			self.kindled.iter().copied().collect();
 		// `JournalDone` carries no ordering obligation the client acts on
 		// (it ignores the message), and the inventory and layout below do
 		// not depend on the columns — so the handshake completes now and
@@ -274,11 +282,6 @@ impl Sim {
 				entries: self.waystone_store.sites().to_vec(),
 			},
 		);
-		// The lights still burning: a joiner cannot derive them, and the
-		// caster may be long gone.
-		for msg in self.kindled_msgs() {
-			ok &= send_frame(&out, &msg);
-		}
 		if !ok {
 			// The handshake itself no longer competes with the column
 			// stream for queue space, so this is now a genuinely broken
@@ -340,6 +343,7 @@ impl Sim {
 				drift: Vec3::ZERO,
 				edit_tokens: EDIT_BURST,
 				chat_tokens: CHAT_BURST,
+				cast_tokens: spawn::CAST_BURST,
 				bench_tokens: digblock_core::alchemy::bench_burst_ticks(
 					record.skills.level(digblock_core::skills::Skill::Alchemy),
 				),
@@ -348,6 +352,7 @@ impl Sim {
 					synced_columns: FxHashSet::default(),
 					sync_queue,
 					sync_queue_set,
+					kindled_queue,
 					resync_queue: std::collections::VecDeque::new(),
 					resync_countdown: 0,
 					needs_sync_scan: false,

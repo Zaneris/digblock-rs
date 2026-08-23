@@ -164,7 +164,7 @@ pub mod tex {
 		GLASS_GREEN,
 		GLASS_BLUE,
 		GLASS_AMBER,
-		// Conjured light (Wisplight) wears the aetherlamp's face.
+		// The conjured-light row wears the aetherlamp's face.
 		AETHERLAMP,
 		ESSENCE_VITAE,
 		ESSENCE_TERRA,

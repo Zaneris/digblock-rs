@@ -204,8 +204,8 @@ fn a_transmute_batch_drips_instead_of_paying_at_once() {
 	press(&mut r, go);
 	assert_eq!(
 		r.screen.crafting,
-		Some((B::WoodSlab, 10)),
-		"SHIFT queues 10"
+		Some((B::WoodSlab, BULK_SHIFT)),
+		"SHIFT queues its own multiplier"
 	);
 
 	// Half a cycle pays nothing.
@@ -218,7 +218,7 @@ fn a_transmute_batch_drips_instead_of_paying_at_once() {
 	assert_eq!(r.screen.tick(pace * 0.6, &r.view), one);
 	assert_eq!(
 		r.screen.crafting,
-		Some((B::WoodSlab, 9)),
+		Some((B::WoodSlab, BULK_SHIFT - 1)),
 		"one off the queue"
 	);
 
@@ -241,7 +241,7 @@ fn a_transmute_batch_drips_instead_of_paying_at_once() {
 	assert!(r.screen.busy(), "the bench works with the screen closed");
 	assert_eq!(
 		r.screen.job(),
-		Some(BenchJob::Craft(B::WoodSlab, 9)),
+		Some(BenchJob::Craft(B::WoodSlab, BULK_SHIFT - 1)),
 		"the HUD tell knows the job"
 	);
 	assert_eq!(r.screen.tick(pace * 1.1, &r.view), one);
@@ -463,48 +463,236 @@ fn the_vessels_craft_from_timber_alone() {
 /// The bug this page's chips exist to fix: with a name and a price
 /// sharing one line, the price was dropped whenever the line did not
 /// fit, and half the catalog's did not. Now every visible member shows
-/// every line of its price, at every rung the fit ladder reaches.
+/// every line of its price, at every rung the fit ladder reaches — and
+/// it shows it BESIDE the button rather than under it.
+///
+/// Swept at the phone windows `the_essence_readout_never_spills_out_of_its_panel`
+/// uses, which is the regime the desktop window never reaches: the panel
+/// is clamped to the window there, so the price has to be bounded by the
+/// space before the button and the strip has to reserve the rows a
+/// bounded run wraps onto. Drawn to infinity, the widest price put two
+/// chip icons and their digits inside the button.
 #[test]
 fn the_strip_never_drops_a_price() {
-	let mut examined = 0;
-	for scale in [1.0f32, 1.75, 2.5] {
-		let mut r = rig_at(99, |inv| {
-			for b in B::ALL {
+	// Two purses, because the tail is a different line in each: rich and
+	// owning no tool, so every offer stands and reads "×N"; and rich with
+	// the whole tool roster already made and the bucket charged, which is
+	// the strip's longest word — the one the narrow panel dropped.
+	let stock = |tools: bool| {
+		let mut inv = Inventory::default();
+		for b in B::ALL {
+			if tools || !b.is_tool() {
 				inv.add(b, 999);
 			}
-			for e in Essence::ALL {
-				inv.add_sub(e, 99_999);
-			}
-		});
-		r.style = Style::new(scale);
-		for (fi, f) in families().iter().enumerate() {
-			for (mi, &item) in f.members.iter().enumerate() {
-				r.screen.family = Some(fi);
-				r.screen.member = mi;
-				rebuild(&mut r);
-				let want = alchemy::craft_feedstock(item).len()
-					+ alchemy::craft_ideal(item)
-						.expect("a member is craftable")
-						.len();
-				let chips = strip_chips(&r, item);
-				assert_eq!(chips.len(), want, "{item:?} prices {want} lines");
-				// Each line's number is drawn, in the row's ink, with its
-				// icon beside it: count the chip numbers the strip shows.
-				let texts = texts_on(&r, Layer::Content);
-				for c in &chips {
-					assert!(
-						texts
-							.iter()
-							.any(|(_, _, _, ink, t)| *t == c.n.to_string() && *ink == c.ink),
-						"{item:?} at {scale}: a {} line is not drawn",
-						chip_name(c)
+		}
+		if tools {
+			inv.add(B::Water, 1);
+		}
+		for e in Essence::ALL {
+			inv.add_sub(e, 99_999);
+		}
+		AlchView::build(&inv, &skills_at(99))
+	};
+	let (mut examined, mut tails) = (0, 0);
+	for view in [stock(false), stock(true)] {
+		for (size, scale) in [
+			((1280u32, 800u32), 1.0f32),
+			((1280, 800), 1.75),
+			((1280, 800), 2.5),
+			((844, 390), 2.25),
+			((844, 390), 3.0),
+			((667, 375), 3.0),
+			((932, 430), 3.0),
+			((390, 844), 3.0),
+			// The two the reviewer photographed the overrun in: an ordinary
+			// phone viewport at an ordinary interface-scale preference.
+			((640, 1136), 2.25),
+			((750, 1334), 2.25),
+		] {
+			for (fi, f) in families().iter().enumerate() {
+				for (mi, &item) in f.members.iter().enumerate() {
+					let mut screen = AlchScreen::default();
+					screen.open();
+					screen.family = Some(fi);
+					screen.member = mi;
+					let mut dl = DrawList::default();
+					let mut hits: HitMap<InvId> = HitMap::default();
+					screen.build(
+						&mut Ui {
+							dl: &mut dl,
+							hits: &mut hits,
+							style: Style::new(scale),
+						},
+						size,
+						&view,
+						&empty_bar(),
+						1.0,
 					);
+					let at = format!("{item:?} at {size:?}/{scale}");
+					let want = alchemy::craft_feedstock(item).len()
+						+ alchemy::craft_ideal(item)
+							.expect("a member is craftable")
+							.len();
+					let chips = cost_chips(&view, item, !unlock::can_craft(item, view.level));
+					assert_eq!(chips.len(), want, "{at}: prices {want} lines");
+					// Each line's number is drawn, in the row's ink, with its
+					// icon beside it.
+					let (cmds, arena) = dl.cmds(Layer::Content);
+					// Every run as the box it occupies, measured at the
+					// command's OWN face and size — the page may be drawing a
+					// rung down from the scale this loop set.
+					let texts: Vec<(Rect, u32, &str)> = cmds
+						.iter()
+						.filter_map(|c| match c {
+							crate::ui::draw::Cmd::Text {
+								face,
+								x,
+								y,
+								px,
+								color,
+								range,
+							} => {
+								let t = &arena[range.0 as usize..range.1 as usize];
+								let w = crate::font::face(*face).measure(t, *px);
+								Some((Rect::new(*x, *y, w, *px), *color, t))
+							}
+							_ => None,
+						})
+						.collect();
+					for c in &chips {
+						assert!(
+							texts
+								.iter()
+								.any(|&(_, ink, t)| t == c.n.to_string() && ink == c.ink),
+							"{at}: a {} line is not drawn",
+							chip_name(c)
+						);
+					}
+					// The page as it was actually drawn: the fit ladder may
+					// have stepped a rung below the scale this loop set, and
+					// every measure below has to be taken at that one.
+					let fitted = Style::new(
+						hits.rect_of(InvId::Family(0)).expect("a family tile").w / hud::SLOT_PX,
+					);
+					let row_w = panel_of(&dl).w - 2.0 * theme::PAD * fitted.scale;
+					// …and every price line fits BESIDE the button. Nothing
+					// but the button's own label may be inside it: an icon
+					// there is a chip drawn over the control, and a second
+					// text there is a price digit under the word TRANSMUTE.
+					// Found by its backdrop rather than its hit rect, because
+					// a closed offer registers no hit and is exactly the state
+					// whose tail is longest.
+					let btn = dl
+						.cmds(Layer::Backdrop)
+						.0
+						.iter()
+						.find_map(|c| match c {
+							crate::ui::draw::Cmd::Quad { rect, color }
+								if *color == widgets::SLOT_BG
+									&& (rect.w - BTN_W * fitted.scale).abs() < 0.01 =>
+							{
+								Some(*rect)
+							}
+							_ => None,
+						})
+						.unwrap_or_else(|| panic!("{at}: no button"));
+					// The legend row is the last thing the page writes, so its
+					// top is the floor everything above it has to stay off:
+					// a price that wraps must take rows the strip RESERVED,
+					// not the row under the button.
+					let legend_y = texts.last().expect("the legend row").0.y;
+					for r in icon_rects(&dl) {
+						assert!(!intrudes(btn, r), "{at}: an icon inside the button: {r:?}");
+						assert!(
+							r.y + r.h <= legend_y + 0.01,
+							"{at}: an icon reaches the legend row: {r:?}"
+						);
+					}
+					let inside: Vec<&str> = texts
+						.iter()
+						.filter(|&&(r, _, _)| intrudes(btn, r))
+						.map(|&(_, _, t)| t)
+						.collect();
+					assert_eq!(inside.len(), 1, "{at}: {inside:?} share the button");
+					// A zero-length run is a text command with no pixels in
+					// it — what the tail elided to once the price overran.
+					assert!(
+						texts.iter().all(|&(_, _, t)| !t.is_empty()),
+						"{at}: an empty text command"
+					);
+					// The tail says the one thing a chip cannot, so it has to
+					// SURVIVE the narrow panel too: beside the last chip where
+					// that fits, on the row the strip reserved where it does
+					// not. It went missing wherever a wrapped price filled its
+					// row, which is every phone the page runs on.
+					//
+					// Asked only where there is a strip to say it in: nothing
+					// can be promised room that does not exist, and a panel
+					// narrower than the button alone has none.
+					if AlchScreen::price_span(&fitted, row_w) > 0.0
+						&& let Some(tail) = strip_tail(&view, item)
+					{
+						// In full, or cut with its mark — never dropped. A
+						// panel too narrow for the whole word still has to
+						// show that there is one.
+						assert!(
+							texts.iter().any(|&(_, _, t)| {
+								t == tail
+									|| t.strip_suffix("...").is_some_and(|head| {
+										!head.is_empty() && tail.starts_with(head)
+									})
+							}),
+							"{at}: the strip never says {tail:?}"
+						);
+						tails += 1;
+					}
+					examined += 1;
 				}
-				examined += 1;
 			}
 		}
 	}
-	assert!(examined > 20, "the catalog has shrunk");
+	assert!(examined > 400, "the sweep has shrunk: {examined}");
+	assert!(tails > 200, "too few strips said anything: {tails}");
+}
+
+/// The panel backdrop the page drew.
+fn panel_of(dl: &DrawList) -> Rect {
+	dl.cmds(Layer::Backdrop)
+		.0
+		.iter()
+		.find_map(|c| match c {
+			crate::ui::draw::Cmd::Quad { rect, color } if *color == theme::PANEL_BG => Some(*rect),
+			_ => None,
+		})
+		.expect("panel quad")
+}
+
+/// Every icon the page draws, as the box it occupies — flat chips and
+/// the projected faces of a cube alike.
+fn icon_rects(dl: &DrawList) -> Vec<Rect> {
+	dl.cmds(Layer::Icons)
+		.0
+		.iter()
+		.map(|c| match c {
+			crate::ui::draw::Cmd::Icon { rect, .. } => *rect,
+			crate::ui::draw::Cmd::IconQuad { corners, .. } => {
+				let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+				for p in corners {
+					x0 = x0.min(p[0]);
+					y0 = y0.min(p[1]);
+					x1 = x1.max(p[0]);
+					y1 = y1.max(p[1]);
+				}
+				Rect::new(x0, y0, x1 - x0, y1 - y0)
+			}
+			_ => Rect::default(),
+		})
+		.collect()
+}
+
+/// Do these two boxes share any pixel?
+fn intrudes(a: Rect, b: Rect) -> bool {
+	a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
 }
 
 /// The panel bottom-anchors above the hotbar, and a short window at a
@@ -529,17 +717,7 @@ fn panel_sits_above_the_hotbar_and_fits_short_windows() {
 		};
 		screen.build(&mut ui, size, &view, &empty_bar(), 1.0);
 		let bar_top = hud::row_grid(size, scale).origin.1;
-		let panel = dl
-			.cmds(Layer::Backdrop)
-			.0
-			.iter()
-			.find_map(|c| match c {
-				crate::ui::draw::Cmd::Quad { rect, color } if *color == theme::PANEL_BG => {
-					Some(*rect)
-				}
-				_ => None,
-			})
-			.expect("panel quad");
+		let panel = panel_of(&dl);
 		assert!(panel.y >= 0.0, "panel top on screen at {size:?}/{scale}");
 		assert!(
 			panel.y + panel.h <= bar_top + 0.5,
@@ -588,17 +766,7 @@ fn the_essence_readout_never_spills_out_of_its_panel() {
 			style: Style::new(scale),
 		};
 		screen.build(&mut ui, size, &view, &empty_bar(), 1.0);
-		let panel = dl
-			.cmds(Layer::Backdrop)
-			.0
-			.iter()
-			.find_map(|c| match c {
-				crate::ui::draw::Cmd::Quad { rect, color } if *color == theme::PANEL_BG => {
-					Some(*rect)
-				}
-				_ => None,
-			})
-			.expect("panel quad");
+		let panel = panel_of(&dl);
 		// The readout is the run of essence chips: each icon, and the
 		// number sharing its row top. Measured at the command's OWN face
 		// and px — the page draws at the fitted scale, not the window
@@ -950,17 +1118,59 @@ fn every_tile_and_chip_names_itself_on_hover() {
 	);
 }
 
-/// The legend under the button names the multipliers the keys really
-/// apply — a literal here went stale once.
+/// The keys queue the batch the legend names — pressed, not merely
+/// interpolated. The old test formatted the very constants the row
+/// interpolates, so it could only fail if the row were deleted, and it
+/// never sent a Ctrl or a Shift: nothing anywhere pinned that CTRL
+/// queues [`BULK_CTRL`], which was retuned under exactly that cover.
 #[test]
-fn the_legend_names_the_real_multipliers() {
-	let mut r = rig_at(1, |_| {});
-	// The legend describes the button, and waits with it for a pick.
-	let tools = center(r.hits.rect_of(family(&r, "Tools")).unwrap());
-	press(&mut r, tools);
+fn the_modifier_keys_queue_the_batch_the_legend_names() {
+	// Deep enough that the holdings are never the ceiling: the clamp to
+	// what you can afford is a different rule with its own test, and a
+	// batch cut short by it would measure the stock, not the key.
+	let mut r = rig_at(20, |inv| {
+		inv.add(B::Wood, 100_000);
+		inv.add_sub(Essence::Vitae, 1_000_000);
+	});
+	let slabs = center(r.hits.rect_of(family(&r, "Slabs")).unwrap());
+	press(&mut r, slabs);
 	rebuild(&mut r);
+	let item = families()[r.screen.family.expect("a family")].members[r.screen.member];
+	assert!(
+		r.view.affordable(item) > BULK_CTRL,
+		"the holdings clamp would be what is measured"
+	);
+	let modifier = |r: &mut Rig, key: Option<Key>, pressed: bool| {
+		if let Some(key) = key {
+			feed(r, &InputEvent::Key { key, pressed });
+		}
+	};
+	let mut queued = Vec::new();
+	for (key, want) in [
+		(None, BULK_PLAIN),
+		(Some(Key::Shift), BULK_SHIFT),
+		(Some(Key::Ctrl), BULK_CTRL),
+	] {
+		modifier(&mut r, key, true);
+		let go = center(r.hits.rect_of(InvId::CraftGo).unwrap());
+		press(&mut r, go);
+		let (batched, count) = r.screen.crafting.expect("the press queues a batch");
+		assert_eq!((batched, count), (item, want), "{key:?} queued {count}");
+		queued.push(count);
+		// The second press is the STOP, so the next modifier starts idle.
+		rebuild(&mut r);
+		press(&mut r, go);
+		assert_eq!(r.screen.crafting, None);
+		modifier(&mut r, key, false);
+		rebuild(&mut r);
+	}
+	// …and the row under the button says those same numbers, so the page
+	// is not advertising a multiplier the keys do not apply.
 	let text = text_of(&r);
-	for want in [format!("SHIFT {BULK_SHIFT}"), format!("CTRL {BULK_CTRL}")] {
-		assert!(text.contains(&want), "{want} missing from {text}");
+	for count in queued {
+		assert!(
+			text.contains(&count.to_string()),
+			"the legend never mentions {count}: {text}"
+		);
 	}
 }

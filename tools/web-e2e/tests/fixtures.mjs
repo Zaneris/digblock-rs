@@ -2,7 +2,7 @@
 // browser is shared across a file; each `dig()` call is a fresh context,
 // so nothing a test saved to localStorage leaks into the next.
 import { test as base, expect } from "@playwright/test";
-import { boot, launch, stats, diff } from "../lib/digblock.mjs";
+import { boot, launch, stats, diff, detail } from "../lib/digblock.mjs";
 
 export const test = base.extend({
 	browser: [async ({}, use) => {
@@ -28,7 +28,7 @@ export const test = base.extend({
 	},
 });
 
-export { expect, stats, diff };
+export { expect, stats, diff, detail };
 
 /** The canvas is showing SOMETHING: not black, not one flat colour. */
 export function expectRendered(png, what = "the frame") {

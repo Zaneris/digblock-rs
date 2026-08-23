@@ -316,63 +316,71 @@ fn only_the_scoped_block_is_offered() {
 	assert!(writes.is_empty(), "Rubble is not in the scope");
 }
 
+/// A scope holding one of these blocks, alongside an innocent one so the
+/// guard cannot be passing on the scope's LENGTH.
+struct Bad(&'static [BlockType], Candidates);
+
+impl WorldJob for Bad {
+	fn name(&self) -> &'static str {
+		"bad"
+	}
+	fn schedule(&self) -> Schedule {
+		Schedule {
+			per_day: 1,
+			offset: 0.0,
+		}
+	}
+	fn scope(&self) -> Scope {
+		Scope {
+			blocks: self.0,
+			radius_chunks: 0,
+			y: (0, 0),
+			candidates: self.1,
+		}
+	}
+	fn apply(&self, _: (i32, i32, i32), _: &dyn CellSource, _: f64, _: Run) -> Option<u16> {
+		None
+	}
+}
+
 /// THE anti-dupe guard. A journal write sets the cell's monotone edited
 /// bit, and `nodes::revealed` reads that bit as spent — so a sweep over a
 /// node's host would destroy every reveal in a band around every player,
-/// irreversibly. The registry refuses rather than trusting the author.
+/// irreversibly. A LIVE FACE is worse still: it is the reveal itself,
+/// stored. The registry refuses rather than trusting the author.
+///
+/// Swept over every block rather than over a roster somebody wrote down,
+/// which is what makes a new host or a new node kind land here.
 #[test]
-fn a_node_host_scope_is_refused_at_registration() {
+fn a_node_scope_is_refused_at_registration() {
+	let mut refused = 0;
 	for candidates in [
 		Candidates::Band,
 		Candidates::Frontier {
 			surface_shell: true,
 		},
 	] {
-		for host in [BlockType::Stone, BlockType::Wood, BlockType::Sand] {
-			refused(host, candidates);
+		for b in BlockType::ALL {
+			let blocks: &'static [BlockType] = Box::leak(Box::new([BlockType::Dirt, b]));
+			let r = std::panic::catch_unwind(move || {
+				Scheduler::new().register(Box::new(Bad(blocks, candidates)));
+			});
+			let banned = node_host(b) || b.is_node_block();
+			assert_eq!(r.is_err(), banned, "{b:?} with {candidates:?}");
+			refused += u32::from(banned);
 		}
 	}
-
-	fn refused(host: BlockType, candidates: Candidates) {
-		struct Bad(BlockType, Candidates);
-		impl WorldJob for Bad {
-			fn name(&self) -> &'static str {
-				"bad"
-			}
-			fn schedule(&self) -> Schedule {
-				Schedule {
-					per_day: 1,
-					offset: 0.0,
-				}
-			}
-			fn scope(&self) -> Scope {
-				Scope {
-					blocks: match self.0 {
-						BlockType::Stone => &[BlockType::Stone],
-						BlockType::Wood => &[BlockType::Dirt, BlockType::Wood],
-						_ => &[BlockType::Sand],
-					},
-					radius_chunks: 0,
-					y: (0, 0),
-					candidates: self.1,
-				}
-			}
-			fn apply(&self, _: (i32, i32, i32), _: &dyn CellSource, _: f64, _: Run) -> Option<u16> {
-				None
-			}
-		}
-		let r = std::panic::catch_unwind(move || {
-			Scheduler::new().register(Box::new(Bad(host, candidates)));
-		});
-		assert!(r.is_err(), "{host:?} is a node host and must be refused");
-	}
+	assert!(refused > 1, "nothing was refused — the guard is not wired");
 }
 
 /// `node_host` and `nodes::revealed` must name the same set, or the guard
-/// above is guarding the wrong thing. Asserted as a biconditional over a
-/// scanned region: every host REVEALS somewhere in it, and nothing else
-/// reveals anywhere in it — so dropping a host from `node_host` fails on
-/// the block's own witnesses, and adding one fails on their absence.
+/// above is guarding the wrong thing. Asserted over a scanned region, and
+/// in three answers rather than two: a host reveals in SOME of it, a
+/// stored live face in ALL of it, and everything else in none. So
+/// dropping a host from `node_host` fails on the block's own witnesses,
+/// adding one fails on their absence, and the face half says why it is
+/// the graver of the two — a sweep over a host spends the reveals
+/// worldgen seeded, a sweep over a face spends every cell it touches.
 ///
 /// The candidates are cells a node could plausibly occupy (spring beds,
 /// trunk spans, an underground stripe), located by the column helpers so
@@ -404,20 +412,189 @@ fn a_node_host_is_never_sweepable() {
 			candidates.extend((1..100).map(|y| (x, y, z)));
 		}
 	}
+	let all = candidates.len();
+	assert!(all > 0, "the scan found nowhere a node could stand");
 	for b in BlockType::ALL {
 		let cell = crate::chunk::make_cell(b, 0);
 		let witnesses = candidates
 			.iter()
 			.filter(|&&at| nodes::revealed(cell, at, SEED, levels, false).is_some())
 			.count();
-		// A live face stored outright reveals itself anywhere; the
-		// scheduler refuses it for the same reason it refuses a host.
-		assert_eq!(
-			witnesses > 0,
-			node_host(b) || b.is_node_block(),
-			"{b:?}: node_host and revealed disagree ({witnesses} witnesses)"
-		);
+		if b.is_node_block() {
+			// A stored live face IS the reveal, so it is found wherever
+			// it stands rather than where a stream seeded it — which is
+			// why a sweep over one would spend every cell it touched,
+			// and why the registry refuses it as flatly as a host.
+			assert_eq!(
+				witnesses, all,
+				"{b:?} is a live face but revealed in {witnesses} of {all}"
+			);
+		} else if node_host(b) {
+			// A host reveals where its stream put a node: some of the
+			// scanned cells, and never all of them.
+			assert!(
+				0 < witnesses && witnesses < all,
+				"{b:?} hosts nodes but revealed in {witnesses} of {all}"
+			);
+		} else {
+			assert_eq!(witnesses, 0, "{b:?} reveals but is neither host nor face");
+		}
 	}
+}
+
+/// A job that files the [`Run`] of every sweep it is given, so a test can
+/// see what the scheduler decided rather than only what it wrote.
+struct Spy {
+	rolled: bool,
+	runs: std::sync::Arc<std::sync::Mutex<Vec<Run>>>,
+}
+
+impl WorldJob for Spy {
+	fn name(&self) -> &'static str {
+		"spy"
+	}
+	fn schedule(&self) -> Schedule {
+		Schedule {
+			per_day: 1,
+			offset: 0.0,
+		}
+	}
+	fn rolled(&self) -> bool {
+		self.rolled
+	}
+	fn scope(&self) -> Scope {
+		Scope {
+			blocks: &[BlockType::Dirt],
+			radius_chunks: 0,
+			y: (0, 0),
+			candidates: Candidates::Band,
+		}
+	}
+	fn apply(&self, _: (i32, i32, i32), _: &dyn CellSource, _: f64, run: Run) -> Option<u16> {
+		// One entry per SWEEP, not per cell: every cell of one sweep
+		// carries the same `Run`, which is the snapshot under test.
+		let mut runs = self.runs.lock().expect("spy runs");
+		if runs.last() != Some(&run) {
+			runs.push(run);
+		}
+		None
+	}
+}
+
+impl Spy {
+	fn boxed(
+		rolled: bool,
+	) -> (
+		Box<dyn WorldJob>,
+		std::sync::Arc<std::sync::Mutex<Vec<Run>>>,
+	) {
+		let runs = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+		(
+			Box::new(Spy {
+				rolled,
+				runs: runs.clone(),
+			}),
+			runs,
+		)
+	}
+}
+
+/// Sweep whatever is due at `secs` to completion.
+fn sweep_at(s: &mut Scheduler, secs: f64, players: u32, world: &dyn CellSource) {
+	for _ in 0..64 {
+		s.tick(secs, SEED, &[(0, 0, 0)], players, world);
+	}
+}
+
+/// The head-count the host observes is the head-count the rule reads:
+/// `Scheduler::tick`'s argument reaches [`Run::players`] unchanged and
+/// per sweep, so a rule that scales by how busy a world has been is
+/// reading the world rather than a constant. The slots are checked with
+/// it, because a `Run` that never advanced would satisfy the first half
+/// on its own.
+#[test]
+fn the_head_count_and_the_slot_reach_every_apply() {
+	let (job, runs) = Spy::boxed(false);
+	let mut s = Scheduler::new();
+	s.register(job);
+	let w = Slab::of(BlockType::Dirt);
+	let counts = [1u32, 7, 0, 40];
+	for (day, &players) in counts.iter().enumerate() {
+		sweep_at(&mut s, f64::from(DAY_SECS) * day as f64, players, &w);
+	}
+	let seen = runs.lock().expect("spy runs").clone();
+	assert_eq!(
+		seen.iter().map(|r| r.players).collect::<Vec<_>>(),
+		counts.to_vec(),
+		"the head-count did not reach the rule"
+	);
+	assert!(
+		seen.windows(2).all(|w| w[1].slot > w[0].slot),
+		"the slot did not advance across sweeps: {seen:?}"
+	);
+}
+
+/// A ROLLED job anchors to the slot standing when it first sees the
+/// clock and sweeps at the next one. The hosts restart that clock at
+/// zero on every world entry and every server boot, so without the
+/// anchor the load-time slot — and the draw it seeds — is replayed every
+/// session. A settled rule is deliberately not anchored: replaying its
+/// slot is a no-op, and waiting would cost it a whole slot of spread.
+#[test]
+fn a_rolled_job_skips_the_slot_it_loads_into() {
+	let w = Slab::of(BlockType::Dirt);
+	for rolled in [false, true] {
+		let (job, runs) = Spy::boxed(rolled);
+		let mut s = Scheduler::new();
+		s.register(job);
+		// The load, and the whole of the slot standing at it.
+		sweep_at(&mut s, 0.0, 1, &w);
+		assert_eq!(
+			runs.lock().expect("spy runs").is_empty(),
+			rolled,
+			"rolled={rolled}: the load-time slot"
+		);
+		// The next boundary: both kinds sweep, and neither repeats.
+		sweep_at(&mut s, f64::from(DAY_SECS), 1, &w);
+		let slots: Vec<u64> = runs
+			.lock()
+			.expect("spy runs")
+			.iter()
+			.map(|r| r.slot)
+			.collect();
+		let want: Vec<u64> = if rolled { vec![1] } else { vec![0, 1] };
+		assert_eq!(slots, want, "rolled={rolled}");
+	}
+}
+
+/// Every rule the game runs, in one list both hosts register from.
+///
+/// A pin rather than a derived check, because nothing in Rust can
+/// enumerate the modules that define rules — and the bug it names is the
+/// one no test of a rule can see: a job nothing registers never runs in
+/// production however well its own behaviour is covered. Building the
+/// real roster is also the standing check that no production scope can
+/// destroy a node reveal, since `register` refuses one.
+#[test]
+fn the_production_roster_is_pinned() {
+	const RULES: [&str; 6] = [
+		"grass-9am",
+		"grass-noon",
+		"grass-3pm",
+		"leaf-decay",
+		"node-regrow",
+		"conjured-light-fade",
+	];
+	let mut s = Scheduler::new();
+	let mut names: Vec<&'static str> = Vec::new();
+	for job in production() {
+		names.push(job.name());
+		s.register(job);
+	}
+	names.sort_unstable();
+	let mut want = RULES.to_vec();
+	want.sort_unstable();
+	assert_eq!(names, want, "a rule joined or left the production roster");
 }
 
 /// The cube shell at exactly Chebyshev distance `d` from `c` — "ring N"

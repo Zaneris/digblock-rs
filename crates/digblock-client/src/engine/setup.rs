@@ -180,7 +180,7 @@ impl Engine {
 				arrival_hold: None,
 			},
 			debug_ward_pending: config.debug_ward,
-			ward_closing: None,
+			ward_climbs: Vec::new(),
 			debug_shapes_pending: {
 				let mut plan = if config.debug_shapes {
 					debug_shapes_plan(spawn)
@@ -489,7 +489,7 @@ impl Engine {
 					engine.skills.add_xp(Skill::Alchemy, 30_000);
 					engine.ui.char_screen.open();
 				}
-				DebugScreen::Spellbook => {
+				DebugScreen::Spellbook | DebugScreen::SpellbookHover => {
 					// Past the first rung, so a passed threshold and the
 					// next teaser both photograph. XP derived from the
 					// rung it must pass, never a magic total.
@@ -500,7 +500,30 @@ impl Engine {
 							digblock_core::unlock::TELEPORT_SWIFT_AT + 1,
 						),
 					);
+					// Funded, so the fares read as offers rather than as a
+					// page of shortfalls — the short ink is a state worth
+					// photographing, but not the only one.
+					for e in digblock_core::block::Essence::ALL {
+						engine.inventory.add_sub(e, 5_000);
+					}
 					engine.ui.spellbook.open();
+					if screen == DebugScreen::SpellbookHover {
+						// The slot comes from the page's own roster rather
+						// than from a number written down here: `fares`
+						// lists the rows that price themselves in essence,
+						// in the order the page lays them out, so the
+						// first is whatever the first priced spell is.
+						let view = crate::ui::screens::spellbook::SpellView::build(
+							&engine.skills,
+							0,
+							&engine.known_ports(),
+							&engine.inventory,
+							engine.arc_on,
+						);
+						if let Some(&(slot, _)) = view.fares().first() {
+							engine.ui.debug_hover = Some(crate::ui::InvId::SpellFare(slot));
+						}
+					}
 				}
 			}
 		}
@@ -519,13 +542,7 @@ impl Engine {
 		// The same production rules the server registers, from the same
 		// constructor — offline is not allowed to fork them. They only run
 		// in local worlds; hosted, the results arrive as ordinary edits.
-		for job in digblock_core::worldjob::grass::jobs() {
-			engine.register_world_job(job);
-		}
-		for job in digblock_core::worldjob::leaves::jobs() {
-			engine.register_world_job(job);
-		}
-		for job in digblock_core::worldjob::regrow::jobs() {
+		for job in digblock_core::worldjob::production() {
 			engine.register_world_job(job);
 		}
 		engine

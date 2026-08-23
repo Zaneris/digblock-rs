@@ -7,7 +7,7 @@
 //! the game answering your hand; the rest is the game telling you
 //! something happened.
 
-use super::Msg;
+use super::{Msg, Spell};
 use digblock_core::block::Essence;
 use digblock_net::messages::{AdminReply, AdminUsage, NoPlayer};
 use digblock_net::protocol::PlayerId;
@@ -30,8 +30,16 @@ pub(super) fn line(msg: &Msg) -> String {
 		Msg::NeedsSiphon => "this vein needs an essence siphon".into(),
 		Msg::DigRefusedByServer => "the server refused that dig".into(),
 		Msg::CastInterrupted => "the channel breaks".into(),
-		Msg::WaystoneLocked => "that waystone is beyond your arcana".into(),
-		Msg::CastCantPay => "you cannot pay the passage".into(),
+		Msg::SpellLocked(s) => format!("{} is beyond your arcana", spell(*s)),
+		// The waystone's fare is a PASSAGE — you are buying the journey,
+		// not the spell — and the conjurings are not, so the sentence
+		// splits on the argument rather than papering over it.
+		Msg::SpellFareShort(Spell::Waystone) => "you cannot pay the passage".into(),
+		Msg::SpellFareShort(s) => format!("you cannot pay for {}", spell(*s)),
+		// Spell-blind on purpose: the wire says only that the server
+		// refused. Naming a spell here would name the wrong one.
+		Msg::WaystoneLocked => "that casting is beyond your arcana".into(),
+		Msg::CastCantPay => "you cannot pay that fare".into(),
 		Msg::CastBadTarget => "nothing can be conjured here".into(),
 
 		Msg::LevelUp { skill, level } => format!("{} is now level {level}.", skill.name()),
@@ -56,6 +64,18 @@ pub(super) fn line(msg: &Msg) -> String {
 		Msg::Chat { name, text } => format!("{name}: {text}"),
 		Msg::CommandHint { usage, desc } => format!("{usage} - {desc}"),
 		Msg::Admin(reply) => admin(reply),
+	}
+}
+
+/// What to call a spell inside a refusal — a noun phrase the sentences
+/// above drop in, so each of them reads as one line rather than as a
+/// template with a name stapled on.
+fn spell(s: Spell) -> &'static str {
+	match s {
+		Spell::Waystone => "that waystone",
+		Spell::Wisp => "the wisp",
+		Spell::Kindle => "conjured light",
+		Spell::Ward => "the ward",
 	}
 }
 

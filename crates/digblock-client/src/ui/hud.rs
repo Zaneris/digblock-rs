@@ -200,6 +200,28 @@ pub fn bar_slot_rect(grid: &GridSpec, i: usize, scale: f32) -> super::Rect {
 	rect
 }
 
+/// The bar slot the cursor is over, and its name — `None` over an empty
+/// slot, a bare tool slot, or nothing at all.
+///
+/// A PAGE asks this, never the bar: the bar draws after every screen at
+/// the WINDOW's scale, while a page that has stepped the fit ladder is a
+/// rung smaller, and a frame has exactly one text size. So the page that
+/// is open names the bar's slots at its own glyph, and this is the one
+/// place that rule is written down — CLAUDE.md states it as "bar slots
+/// included".
+pub fn hovered_bar_slot(
+	size: (u32, u32),
+	window_scale: f32,
+	view: &HotbarView,
+	cursor: (f32, f32),
+) -> Option<(super::Rect, String)> {
+	let grid = row_grid(size, window_scale);
+	(0..HOTBAR_SLOTS)
+		.map(|i| (bar_slot_rect(&grid, i, window_scale), view.slots[i]))
+		.find(|(r, _)| r.contains(cursor.0, cursor.1))
+		.and_then(|(r, slot)| slot.name().map(|n| (r, n)))
+}
+
 /// Emit the hotbar: slot widgets (backdrops, icons, selection border,
 /// hit rects under `id_of(i)`) plus stack counts, drawn at the frame's
 /// text size like the rest of the UI.

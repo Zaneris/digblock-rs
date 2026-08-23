@@ -312,7 +312,7 @@ blocks! {
 	// clock). Never worldgen, never an item, never written to the world.
 	// Walk-through on purpose — it is light, not matter. Lamp mold
 	// (`emits(glows(...))`), never `seams`, which is the node rows' alone.
-	Wisplight = 89 => emits(glows(props(RenderClass::Opaque, false, tex::WISPLIGHT, tex::WISPLIGHT, tex::WISPLIGHT)), 13),
+	ConjuredLight = 89 => emits(glows(props(RenderClass::Opaque, false, tex::CONJURED_LIGHT, tex::CONJURED_LIGHT, tex::CONJURED_LIGHT)), 13),
 	// The Ward's pane — the one block a spell writes (`ward`). Conjured:
 	// digs to nothing and claims no slot, or a sphere would be a faucet
 	// of panes; no material, so it sits in no grid and at no bench.
@@ -1007,7 +1007,7 @@ pub mod tex {
 	/// Conjured light wears the aetherlamp's face — the LAYERS entry
 	/// references the same PNG, so the spell needs no texture of its own
 	/// until somebody authors one.
-	pub const WISPLIGHT: u16 = 51;
+	pub const CONJURED_LIGHT: u16 = 51;
 	/// The essence chips — UI sprites in the materials array, worn by no
 	/// block row. They ride this array because the icon pipeline samples
 	/// nothing else; [`super::Essence::icon_tex`] is the only reader.

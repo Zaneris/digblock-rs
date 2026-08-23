@@ -10,6 +10,7 @@ use digblock_core::unlock;
 use digblock_core::worldgen::SurfaceKind;
 use digblock_platform::input::{InputEvent, MouseButton};
 
+use crate::hotbar::HotbarView;
 use crate::ui::draw::Layer;
 use crate::ui::widgets::{self, DIM, Style, Ui, WHITE};
 use crate::ui::{HitMap, InvId, Rect, hud, theme};
@@ -102,6 +103,25 @@ pub struct SpellView {
 }
 
 impl SpellView {
+	/// The rows priced in essence, by slot — what a capture or a sweep
+	/// parks its cursor on ([`crate::ui::InvId::SpellFare`]) to
+	/// photograph a fare's name, paired with the essence that name is.
+	/// Derived from the rows the page actually built, so a roster that
+	/// grows a priced spell grows this with it.
+	pub fn fares(&self) -> Vec<(u8, digblock_core::block::Essence)> {
+		self.rows
+			.iter()
+			.filter_map(|row| match row {
+				Row::Spell {
+					id: InvId::Spell(slot),
+					state: State::Fare { essence, .. },
+					..
+				} => Some((*slot, *essence)),
+				_ => None,
+			})
+			.collect()
+	}
+
 	/// `cooldown_secs` is the engine's live TELEPORT countdown — one
 	/// clock over Return Home and every port — ceiling-rounded by the
 	/// caller (a "0s" row that is not yet ready would be a lie).
@@ -234,8 +254,10 @@ impl SpellView {
 
 /// The Arcana rungs this page teases, in ladder order. The spellbook
 /// speaks of what CASTING gains; the character screen's teasers stay the
-/// fanfare surface, and the two share only the unlock tables.
-fn next_rung(level: u32) -> Option<(u32, &'static str)> {
+/// fanfare surface, and the two share only the unlock tables — pinned by
+/// `screens::the_two_arcana_teaser_surfaces_share_no_prose`, since a rung
+/// worded the same on both makes one reword a two-file edit.
+pub(super) fn next_rung(level: u32) -> Option<(u32, &'static str)> {
 	[
 		(unlock::WARD_AT, "a ward of glass closes about you"),
 		(unlock::TELEPORT_SWIFT_AT, "home comes back sooner"),
@@ -387,19 +409,27 @@ impl SpellScreen {
 			InputEvent::MouseButton {
 				button: MouseButton::Left,
 				pressed: true,
-			} => match hits.hit(self.cursor.0, self.cursor.1)? {
-				InvId::Spell(0) if view.teleport_ready => Some(SpellAction::CastHome),
-				InvId::Spell(SLOT_WISP) if view.wisp_ready => Some(SpellAction::CastWisp),
-				InvId::Spell(SLOT_KINDLE) if view.kindle_ready => Some(SpellAction::CastKindle),
-				InvId::Spell(SLOT_WARD) if view.ward_ready => Some(SpellAction::CastWard),
-				InvId::Spell(SLOT_ARC) if view.arc_shown => Some(SpellAction::ToggleArc),
-				InvId::Spell(slot) => view
-					.castable
-					.iter()
-					.find(|&&(s, _)| s == slot)
-					.map(|&(_, idx)| SpellAction::CastWaystone(idx)),
-				_ => None,
-			},
+			} => {
+				// A fare chip belongs to its row: the separate id exists
+				// so the page can NAME the essence from the geometry that
+				// drew it, not so the price can be clicked at on its own.
+				let slot = match hits.hit(self.cursor.0, self.cursor.1)? {
+					InvId::Spell(slot) | InvId::SpellFare(slot) => slot,
+					_ => return None,
+				};
+				match slot {
+					0 if view.teleport_ready => Some(SpellAction::CastHome),
+					SLOT_WISP if view.wisp_ready => Some(SpellAction::CastWisp),
+					SLOT_KINDLE if view.kindle_ready => Some(SpellAction::CastKindle),
+					SLOT_WARD if view.ward_ready => Some(SpellAction::CastWard),
+					SLOT_ARC if view.arc_shown => Some(SpellAction::ToggleArc),
+					slot => view
+						.castable
+						.iter()
+						.find(|&&(s, _)| s == slot)
+						.map(|&(_, idx)| SpellAction::CastWaystone(idx)),
+				}
+			}
 			_ => None,
 		}
 	}
@@ -407,7 +437,14 @@ impl SpellScreen {
 	/// Emit the page: the shared dim, the shared panel, the rows. The
 	/// character screen's two-pass shape — a handful of rows can't
 	/// outgrow any window the game runs in, so no fit ladder.
-	pub fn build(&self, ui: &mut Ui<'_, InvId>, size: (u32, u32), view: &SpellView, daylight: f32) {
+	pub fn build(
+		&self,
+		ui: &mut Ui<'_, InvId>,
+		size: (u32, u32),
+		view: &SpellView,
+		bar: &HotbarView,
+		daylight: f32,
+	) {
 		let s = ui.style.scale;
 		ui.dl.quad(
 			Layer::Backdrop,
@@ -460,6 +497,7 @@ impl SpellScreen {
 				} => {
 					let hovered = *ready && rect.contains(self.cursor.0, self.cursor.1);
 					let color = if *ready { WHITE } else { DIM };
+					let mut fare_rect = None;
 					let right = match state {
 						State::Text(t) => widgets::RowRight::Text(t, color),
 						fare => {
@@ -475,6 +513,7 @@ impl SpellScreen {
 								w,
 								theme::ROW_H * s,
 							);
+							fare_rect = Some(chip_rect);
 							if let (hud::IconKind::Essence(e), true) =
 								(chip.kind, chip_rect.contains(self.cursor.0, self.cursor.1))
 							{
@@ -500,11 +539,26 @@ impl SpellScreen {
 					if *ready {
 						ui.hits.push(rect, *id);
 					}
+					// After the row, so the chip wins the hit test — and
+					// whether or not the row is castable, because the name
+					// it shows is worth having either way.
+					if let (Some(chip), InvId::Spell(slot)) = (fare_rect, *id) {
+						ui.hits.push(chip, InvId::SpellFare(slot));
+					}
 				}
 			}
+		}
+		// The bar is drawn after us and this page has no fit ladder, so
+		// `s` IS the window's scale — but the naming still belongs here,
+		// so every page over the bar answers a hover the same way.
+		if hover.is_none() {
+			hover = hud::hovered_bar_slot(size, s, bar, self.cursor);
 		}
 		if let Some((anchor, name)) = hover {
 			widgets::tooltip(ui.dl, &ui.style, size, anchor, &name);
 		}
 	}
 }
+
+#[cfg(test)]
+mod tests;

@@ -183,6 +183,18 @@ fn samples() -> Vec<Msg> {
 			desc: "ban by IP".into(),
 		},
 	];
+	// Both spell-named refusals at every spell: the distinctness the
+	// caller asserts is what proves the argument reaches the words, and
+	// a spell whose sentence duplicates another's is the bug this pair
+	// of variants exists to end. The match is what keeps the list
+	// complete, `admin_samples`' trick.
+	for s in [Spell::Waystone, Spell::Wisp, Spell::Kindle, Spell::Ward] {
+		match s {
+			Spell::Waystone | Spell::Wisp | Spell::Kindle | Spell::Ward => {}
+		}
+		all.push(Msg::SpellLocked(s));
+		all.push(Msg::SpellFareShort(s));
+	}
 	for m in &all {
 		match m {
 			Msg::DigRefused(_)
@@ -191,6 +203,8 @@ fn samples() -> Vec<Msg> {
 			| Msg::NeedsSiphon
 			| Msg::DigRefusedByServer
 			| Msg::CastInterrupted
+			| Msg::SpellLocked(_)
+			| Msg::SpellFareShort(_)
 			| Msg::WaystoneLocked
 			| Msg::CastCantPay
 			| Msg::CastBadTarget

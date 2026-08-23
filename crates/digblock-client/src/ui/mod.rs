@@ -62,6 +62,12 @@ pub enum InvId {
 	CraftGo,
 	/// Spellbook: one spell row (index into the roster the page built).
 	Spell(u8),
+	/// Spellbook: the fare chip inside spell row `Spell(n)`. Its own id
+	/// because the chip is what a tooltip NAMES, and a name has to come
+	/// from the same geometry pass that drew it — a capture or a sweep
+	/// parks on this rect, and a click on it acts on the row it belongs
+	/// to.
+	SpellFare(u8),
 }
 
 /// Pixel-space rectangle, y-down from the top-left (the overlay's

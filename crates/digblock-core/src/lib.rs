@@ -45,14 +45,16 @@ pub use chunk::{CHUNK_SIZE, ChunkData, ChunkPos};
 
 /// Version of the behavior client and server execute INDEPENDENTLY and
 /// must agree on bit-for-bit: `Player::tick` physics (prediction and the
-/// adoption envelope replay the same code) and worldgen (terrain is never
+/// adoption envelope replay the same code), worldgen (terrain is never
 /// sent — join sync is seed + edits, so divergent worldgen means silently
-/// different worlds). Exchanged in the Hello/Welcome handshake; a mismatch
-/// is refused.
+/// different worlds), and the tables both ends time a dig against
+/// (`BlockProps::hardness_ticks` and the node layer derived over
+/// worldgen). Exchanged in the Hello/Welcome handshake; a mismatch is
+/// refused.
 ///
-/// Bump on ANY behavior change to player physics or worldgen output. The
+/// Bump on ANY behavior change to those. The
 /// golden tests (`player::tests::golden_trajectory_pins_sim_version`,
 /// `worldgen_golden_hash_pins_sim_version`) fail when behavior drifts and
 /// name this constant in their message. `git log -S SIM_VERSION` is the
 /// history of what each bump was for.
-pub const SIM_VERSION: u16 = 21;
+pub const SIM_VERSION: u16 = 22;

@@ -259,15 +259,7 @@ impl InvScreen {
 				.map(|i| (spec.rect(i), grid.get(i)))
 				.find(|(r, _)| r.contains(cx, cy))
 				.and_then(|(r, b)| b.map(|b| (r, b.name())));
-			let over_bar = || {
-				bar_view
-					.slots
-					.iter()
-					.enumerate()
-					.map(|(i, v)| (hud::bar_slot_rect(&bar, i, window_scale), v))
-					.find(|(r, _)| r.contains(cx, cy))
-					.and_then(|(r, v)| v.name().map(|n| (r, n)))
-			};
+			let over_bar = || hud::hovered_bar_slot(size, window_scale, bar_view, (cx, cy));
 			if let Some((anchor, name)) = over_grid.or_else(over_bar) {
 				widgets::tooltip(ui.dl, &ui.style, size, anchor, &name);
 			}
@@ -309,7 +301,11 @@ impl InvScreen {
 					},
 					// Alchemy and spellbook ids never appear while this
 					// screen is open.
-					InvId::Craft(_) | InvId::Family(_) | InvId::CraftGo | InvId::Spell(_) => {
+					InvId::Craft(_)
+					| InvId::Family(_)
+					| InvId::CraftGo
+					| InvId::Spell(_)
+					| InvId::SpellFare(_) => {
 						return None;
 					}
 				};

@@ -11,6 +11,7 @@
 //! STARTS; players move, and a set that shifts mid-sweep gives uneven
 //! coverage.
 
+pub mod conjured_light;
 pub mod grass;
 pub mod leaves;
 pub mod regrow;
@@ -58,6 +59,13 @@ impl Schedule {
 
 	/// The slot standing at `secs`, as an index that strictly increases
 	/// with time. Comparing two of these is the whole of "is it due yet".
+	///
+	/// `secs` must be the WORLD's age, not the session's: the index is
+	/// also what a rolled job salts its draw with ([`Run::slot`]), so a
+	/// host whose clock restarts at zero re-offers the same slot — and
+	/// therefore the same draw — every time it loads. Neither host does
+	/// this yet; [`WorldJob::rolled`] is what keeps that from being a
+	/// faucet in the meantime.
 	pub fn slot(&self, secs: f64) -> u64 {
 		let days = secs / f64::from(DAY_SECS) - f64::from(self.offset);
 		(days * f64::from(self.per_day)).floor().max(0.0) as u64
@@ -139,7 +147,9 @@ pub trait CellSource {
 pub struct Run {
 	/// The slot index driving this sweep: seed any randomness from
 	/// `(world seed, cell, slot)` rather than a live RNG, so a sweep is
-	/// reproducible from the journal.
+	/// reproducible from the journal. A job that does seed a draw from it
+	/// must say so ([`WorldJob::rolled`]) — the index only advances while
+	/// the host's clock does.
 	pub slot: u64,
 	/// The most players this world held at once over the game day before
 	/// the sweep — a [`crate::presence::RollingPeak`] the host feeds. A
@@ -153,6 +163,21 @@ pub trait WorldJob: Send {
 	fn name(&self) -> &'static str;
 	fn schedule(&self) -> Schedule;
 	fn scope(&self) -> Scope;
+
+	/// Does [`Self::apply`] seed a random DRAW from [`Run::slot`]?
+	///
+	/// The hosts' clocks restart at zero on every world entry and every
+	/// server boot, so the slot standing at load is one an earlier
+	/// session may already have swept. Replaying it is free for a settled
+	/// rule — the dirt it would turn to grass is already grass — and a
+	/// faucet for a rolled one, because the same slot re-rolls the same
+	/// cells: draw, quit, reopen, and the same finds are handed back.
+	/// A rolled job is ANCHORED to the slot it first sees and waits for
+	/// the next boundary instead, which costs one slot of latency after a
+	/// load and is the only defence until a host's clock survives one.
+	fn rolled(&self) -> bool {
+		false
+	}
 
 	/// The cell this one becomes, or `None` to leave it alone.
 	fn apply(
@@ -169,6 +194,9 @@ struct Registered {
 	/// The last slot a sweep was STARTED for. Advancing it at the start is
 	/// what caps catch-up at one run: a world reopened after a month runs
 	/// one sweep, not thirty.
+	///
+	/// `None` means the job has not seen the clock yet, which is not the
+	/// same as being overdue — see [`WorldJob::rolled`].
 	last_run: Option<u64>,
 }
 
@@ -285,6 +313,13 @@ impl Scheduler {
 		for (i, r) in self.jobs.iter_mut().enumerate() {
 			let slot = r.job.schedule().slot(secs);
 			if r.last_run.is_some_and(|last| last >= slot) {
+				continue;
+			}
+			if r.last_run.is_none() && r.job.rolled() {
+				// First sight of the clock: anchor here and sweep at the
+				// next boundary, so a reload cannot re-roll the slot the
+				// session before it already drew from.
+				r.last_run = Some(slot);
 				continue;
 			}
 			// Set on START, never on completion: a job whose sweep is
@@ -451,6 +486,19 @@ fn judge_frontier_column(
 		offer(job, scope, world, seed, run, at, pending);
 	}
 	offered
+}
+
+/// Every rule the game actually runs. Both arms register from this one
+/// list — the server at boot and the engine when it opens a local world —
+/// so a rule cannot reach one of them and miss the other, and the roster
+/// is somewhere a test can read it (`the_production_roster_is_pinned`).
+pub fn production() -> Vec<Box<dyn WorldJob>> {
+	let mut jobs: Vec<Box<dyn WorldJob>> = Vec::new();
+	jobs.extend(grass::jobs());
+	jobs.extend(leaves::jobs());
+	jobs.extend(regrow::jobs());
+	jobs.extend(conjured_light::jobs());
+	jobs
 }
 
 /// Every world column within `radius_chunks` of any eye, deduplicated.

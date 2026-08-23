@@ -44,16 +44,21 @@ impl Engine {
 		// — the same plan, at the channel's own pace, with no channel or
 		// fare behind it.
 		if let Some(r) = self.debug_ward_pending {
-			let head = digblock_core::kindle::host_cell(self.player.pos);
+			// `body_pos`: a capture flown into place leaves `player.pos`
+			// behind, and the sphere has to close about the camera it is
+			// being photographed from.
+			let head = digblock_core::kindle::host_cell(self.body_pos());
 			if let Ok(writes) =
 				digblock_core::ward::plan(head, r, |c| self.pipeline.cell_at(c.0, c.1, c.2))
 			{
 				let span = digblock_core::unlock::channel_ticks(
 					self.skills.level(digblock_core::skills::Skill::Arcana),
 				);
-				self.ward_closing = Some(OfflineWard {
+				self.ward_climbs.push(WardClimb {
+					by: self.session.my_player_id,
 					closing: digblock_core::ward::Closing::new(writes, span),
 					head,
+					prefix: 0,
 					fare: None,
 				});
 				self.debug_ward_pending = None;
@@ -322,7 +327,7 @@ impl Engine {
 			self.dig_accum -= TICK;
 			self.step_dig();
 			self.step_cast();
-			self.step_ward_closing();
+			self.step_ward_climbs();
 		}
 		// The siphon's stream reads the state those ticks just left, so it
 		// ages after them and on the FRAME clock rather than the sim one:

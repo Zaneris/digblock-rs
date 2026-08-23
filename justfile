@@ -381,11 +381,27 @@ web-shot *ARGS:
 	node tools/web-e2e/dig.mjs {{ARGS}}
 
 # The browser smoke suite: boots, renders, poses scenes, refuses typos,
-# opens a screen on a keypress. FILTER narrows by test title.
+# opens a screen on a keypress. FILTER is a regex over the test TITLE, the
+# thing the run prints and a reader has in hand: Playwright's bare
+# positional matches the FILE PATH instead, so a title matched no file and
+# the run errored out. An empty one matches everything, which is the
+# no-argument default. The decoder test runs first: it costs a second, and
+# every assertion downstream reads its frames through it.
+#
+# The browser smoke suite; `just web-e2e <title>` for one test.
 web-e2e FILTER="":
+	just web-unit
 	just web-e2e-setup
 	just build-web
-	cd tools/web-e2e && npx playwright test {{FILTER}}
+	cd tools/web-e2e && npx playwright test -g "{{FILTER}}"
+
+# The harness's own unit test: the hand-written PNG decoder that every
+# browser assertion reads a frame through. A decode bug there makes the
+# suite MORE likely to pass, which is why it is pinned separately.
+#
+# The web harness's PNG decoder — plain node, no Chrome and no bundle.
+web-unit:
+	cd tools/web-e2e && node --test lib/png.test.mjs
 
 # `npm ci` once; the browser is the installed Chrome (no download), the
 # same one check-shaders needs. DIG_CHROME overrides, as there.
@@ -434,13 +450,17 @@ check:
 test *ARGS:
 	cargo test --workspace --no-fail-fast {{ARGS}}
 
-# The web half needs Chrome, the other two need Docker.
+# `check` needs Docker; both web halves need Chrome, and the suite a
+# wasm-bindgen bundle. The browser suite goes last because it is the
+# slowest and the only one that renders anything — but it goes IN, because
+# the web client is the priority platform and nothing else here runs it.
 #
-# Every gate in one word, so "am I done" is not three remembered commands.
+# Every gate in one word, so "am I done" is not four remembered commands.
 gate:
 	just check
 	just check-ios
 	just check-web
+	just web-e2e
 
 # Fast "is iOS still green" gate — no Xcode required.
 check-ios:

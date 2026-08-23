@@ -132,6 +132,54 @@ fn only_the_worlds_own_rock_crumbles() {
 	}
 }
 
+/// A conjured row pays a dig NOTHING, and is dug all the same.
+///
+/// One cast writes a whole sphere of them, so each of the four answers a
+/// dig can hand back has to be empty — drop, credit, XP, slot — and any
+/// one of them alone turns a fare into a mint. Diggability is the clause
+/// pulling the other way, pinned here beside them: a shell nobody can
+/// break is a cage. Enforced in four modules, and each clause is
+/// invisible to the sweep nearest it, which is why they are gathered.
+#[test]
+fn a_conjured_row_pays_nothing_and_is_still_diggable() {
+	use crate::skills::{DEPTH_XP_TO, MAX_LEVEL, dig_award, dig_xp};
+	let mut conjured = 0;
+	for &b in &BlockType::ALL {
+		if !b.is_conjured() {
+			continue;
+		}
+		conjured += 1;
+		assert!(
+			b.hardness_ticks().is_some(),
+			"{b:?} cannot be dug — a conjured shell is a cage"
+		);
+		assert_eq!(b.dig_drop(), None, "{b:?} hands a dig something back");
+		for level in 1..=MAX_LEVEL {
+			for edited in [false, true] {
+				assert_eq!(
+					b.dig_credit(edited, level),
+					None,
+					"{b:?} credits a dig at {level} (edited: {edited})"
+				);
+			}
+		}
+		assert_eq!(dig_xp(b), 0, "{b:?} is worth Mining XP");
+		// And nothing downstream of the table re-earns it: the widest
+		// swing at the deepest cell is the most one press can be worth.
+		let swing = crate::unlock::pick_cells(MAX_LEVEL) as u32;
+		assert_eq!(
+			dig_award(b, None, swing, DEPTH_XP_TO),
+			(0, 0),
+			"{b:?} pays for a swing of {swing}"
+		);
+		assert!(!b.is_slottable(), "{b:?} claims a slot");
+	}
+	assert!(
+		conjured > 0,
+		"no conjured row in the table — this sweep proved nothing"
+	);
+}
+
 /// A block's dig family is a decision, never a builder default — but it
 /// is a decision per SUBSTANCE, not per piece. So the roster names one
 /// row for each material and each block that has no material at all,
@@ -373,7 +421,7 @@ fn material_roster_is_pinned() {
 			B::MastersSigil,
 			// Conjured light: a LUT row for the arcane emitters, never a
 			// cell, so it is neither substance nor priced item.
-			B::Wisplight,
+			B::ConjuredLight,
 			// Conjured matter: a spell's write, never a grid cell — it
 			// has no recipe and no price, only a fare.
 			B::Wardglass,
@@ -591,10 +639,10 @@ fn an_essence_identifier_is_ascii_and_its_own() {
 	}
 }
 
-/// A draw is priced to be meant: every live node holds a whole multiple
-/// of `NODE_HOLD_MULT` times its row's base, and at least that multiple
-/// of breaking out the spent face it leaves behind — so tapping a find is
-/// never cheaper than clearing what is left of it.
+/// A draw is priced to be meant: every live node holds at least
+/// `NODE_HOLD_MULT` times as long as breaking out the spent face it
+/// leaves behind, so tapping a find is never cheaper than clearing what
+/// is left of it.
 #[test]
 fn a_live_node_holds_a_multiple_of_its_spent_face() {
 	use crate::worldgen::nodes::{NODES, spent_block};
@@ -602,7 +650,6 @@ fn a_live_node_holds_a_multiple_of_its_spent_face() {
 		let hold = node.hardness_ticks().expect("a node is drawn");
 		let spent = spent_block(node).expect("a kind");
 		let left = spent.hardness_ticks().expect("a spent face is dug");
-		assert_eq!(hold % NODE_HOLD_MULT, 0, "{node:?}");
 		assert!(
 			hold >= left * NODE_HOLD_MULT,
 			"{node:?}: {hold} < {left} × mult"
@@ -615,7 +662,6 @@ fn a_live_node_holds_a_multiple_of_its_spent_face() {
 /// pointing at a chip would texture terrain with a UI sprite.
 #[test]
 fn every_essence_icon_layer_is_its_own_and_never_a_face() {
-	let mut seen = 0;
 	for (i, &e) in Essence::ALL.iter().enumerate() {
 		let layer = e.icon_tex();
 		assert!(layer < tex::COUNT, "{e:?} chip is outside the array");
@@ -630,9 +676,7 @@ fn every_essence_icon_layer_is_its_own_and_never_a_face() {
 				"{b:?} wears {e:?}'s chip"
 			);
 		}
-		seen += 1;
 	}
-	assert_eq!(seen, Essence::COUNT);
 }
 
 /// A surface node (the Alchemy-revealed kind) wears the palette of the

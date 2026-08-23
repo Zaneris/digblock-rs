@@ -202,12 +202,23 @@ pub enum NetEvent {
 		cell: [i32; 3],
 		secs_left: u16,
 	},
-	/// A Ward SEALED — anyone's, our own included — `radius` blocks
-	/// about `head`.
-	Warded {
+	/// A Ward's channel BEGAN — anyone's, our own included: a sphere of
+	/// `radius` about `head`, climbing over `span` ticks. The cells are
+	/// derived from the sphere, never sent.
+	WardWinding {
 		by: PlayerId,
 		head: [i32; 3],
 		radius: u8,
+		span: u32,
+	},
+	/// A Ward's channel ENDED with `landed` cells of its plan handed to
+	/// the world — `sealed` says whether they stayed.
+	WardEnded {
+		by: PlayerId,
+		head: [i32; 3],
+		radius: u8,
+		landed: u32,
+		sealed: bool,
 	},
 	Disconnected {
 		reason: String,
@@ -750,9 +761,30 @@ impl NetClient {
 			ServerMsg::Kindled { cell, secs_left } => {
 				out.push(NetEvent::Kindled { cell, secs_left });
 			}
-			ServerMsg::Warded { by, head, radius } => {
-				out.push(NetEvent::Warded { by, head, radius });
-			}
+			ServerMsg::WardWinding {
+				by,
+				head,
+				radius,
+				span,
+			} => out.push(NetEvent::WardWinding {
+				by,
+				head,
+				radius,
+				span,
+			}),
+			ServerMsg::WardEnded {
+				by,
+				head,
+				radius,
+				landed,
+				sealed,
+			} => out.push(NetEvent::WardEnded {
+				by,
+				head,
+				radius,
+				landed,
+				sealed,
+			}),
 			ServerMsg::InventoryFull { counts } => {
 				// Raw pairs through to the engine — `Inventory::from_wire`
 				// does the strict decode (unknown ids dropped, flagged

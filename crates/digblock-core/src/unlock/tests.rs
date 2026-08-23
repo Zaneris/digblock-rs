@@ -310,13 +310,72 @@ fn craft_only_blocks_are_gated_until_they_can_be_made() {
 	assert_eq!(pickup(B::Rubble), 1);
 	// Every gated block really is craft-only, and every craft-only block
 	// really is gated at its own recipe's level — the two tables cannot
-	// drift apart.
+	// drift apart. The surface nodes are the one thing `pickup` walls for
+	// another reason entirely, and
+	// `no_node_opens_before_the_level_that_reveals_it` owns those.
+	let mut nodes = 0;
 	for &b in &BlockType::ALL {
+		if alchemy_reveal(b).is_some() {
+			assert!(b.is_node_block(), "{b:?} has a reveal but is not a node");
+			nodes += 1;
+			continue;
+		}
 		match b.dig_drop().filter(|d| d.is_crafted_only()) {
 			Some(d) => assert_eq!(Some(pickup(b)), craft(d), "{b:?} drops craft-only {d:?}"),
 			None => assert_eq!(pickup(b), 1, "{b:?} is not craft-only"),
 		}
 	}
+	assert!(nodes > 0, "the surface-node arm never fired");
+}
+
+/// A node standing in a cell OUTRIGHT — one the regrowth sweep wrote
+/// back, or one somebody placed — is ordinary chunk data every visitor's
+/// mesh shows at any level, because `nodes::revealed` answers a stored
+/// face ahead of both reveal ladders. The dig gates are therefore the
+/// only thing between an arrival and a levelled player's finds:
+/// `dig_blocked` must refuse a node to anyone one level short on the
+/// ladder that reveals it, and must not refuse it at that level.
+///
+/// Swept over the whole roster on whichever ladder owns each kind, so a
+/// node added with no gate fails here instead of becoming a faucet.
+#[test]
+fn no_node_opens_before_the_level_that_reveals_it() {
+	let at = |skill: Skill, level: u32| {
+		let mut s = SkillSet::default();
+		for other in Skill::ALL {
+			let l = if other == skill { level } else { MAX_LEVEL };
+			s.set_total(other, total_xp_for(l));
+		}
+		s
+	};
+	let (mut visited, mut gated) = (0, 0);
+	for &n in &crate::worldgen::nodes::NODES {
+		let (skill, need) = match (reveal(n), alchemy_reveal(n)) {
+			(Some(l), None) => (Skill::Mining, l),
+			(None, Some(l)) => (Skill::Alchemy, l),
+			_ => panic!("{n:?} answers to both reveal tables, or to neither"),
+		};
+		visited += 1;
+		// At the reveal, with the other ladder no obstacle: a gate ABOVE
+		// the reveal would show a find nobody can take.
+		assert_eq!(
+			dig_blocked(n, &at(skill, need)),
+			None,
+			"{n:?} is refused at the level that reveals it"
+		);
+		if need == 1 {
+			continue;
+		}
+		let short = dig_blocked(n, &at(skill, need - 1))
+			.unwrap_or_else(|| panic!("{n:?} draws one level below its reveal"));
+		assert_eq!((short.skill, short.level), (skill, need), "{n:?}");
+		gated += 1;
+	}
+	assert_eq!(visited, crate::worldgen::nodes::NODES.len());
+	assert!(
+		gated > 1,
+		"no node was tested one level short of its reveal"
+	);
 }
 
 /// A craft-only block is one the bench alone produces, so it must have
@@ -613,6 +672,22 @@ fn the_port_tables_are_twins_and_the_fare_is_payable() {
 	}
 	let essences: std::collections::HashSet<u8> = ports.iter().map(|p| p.1 as u8).collect();
 	assert!(essences.len() > 1, "the spine spends more than one faucet");
+	// Units are not comparable across the ladder, so the fare alone cannot
+	// order the ports once they climb it — the AWARD is what has to rise
+	// with remoteness, or the far cold port pays less Arcana than the
+	// lowland one it is fifty levels past.
+	for w in ports.windows(2) {
+		let (a, b) = (
+			crate::skills::cast_xp(w[0].1, w[0].2),
+			crate::skills::cast_xp(w[1].1, w[1].2),
+		);
+		assert!(
+			a < b,
+			"the {:?} port pays {a} and the farther {:?} one {b}",
+			w[0].1,
+			w[1].1
+		);
+	}
 	for &(level, e, _) in &ports {
 		let found = essence_findable_at(e).expect("every fare essence has a faucet");
 		assert!(
