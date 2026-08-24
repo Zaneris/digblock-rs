@@ -1,4 +1,5 @@
 use super::*;
+use crate::worldgen::Seed;
 use crate::worldgen::column_shape;
 
 /// The altitude presieve may only reject columns no family would have
@@ -7,7 +8,7 @@ use crate::worldgen::column_shape;
 /// five-evaluation path does.
 #[test]
 fn presieve_only_rejects_barren_columns() {
-	let seed = 1234.5678;
+	let seed = Seed::current(1234.5678);
 	let mut rejected = 0u32;
 	for x in (-8192..8192).step_by(37) {
 		for z in (-8192..8192).step_by(41) {
@@ -32,7 +33,7 @@ fn presieve_only_rejects_barren_columns() {
 /// leaking candidates into each other.
 #[test]
 fn memo_hits_match_misses() {
-	let seeds = [42.0f64, 1234.5678, -7.0];
+	let seeds = [42.0, 1234.5678, -7.0].map(Seed::current);
 	for _ in 0..3 {
 		for seed in seeds {
 			for cell_z in -24..24 {
@@ -63,7 +64,7 @@ fn memo_hits_match_misses() {
 
 #[test]
 fn candidates_are_deterministic_and_shared_across_the_apron() {
-	let seed = 1234.5678;
+	let seed = Seed::current(1234.5678);
 	let a = structures_near(0, 0, seed);
 	let b = structures_near(0, 0, seed);
 	assert_eq!(a, b, "deterministic");
@@ -81,7 +82,7 @@ fn candidates_are_deterministic_and_shared_across_the_apron() {
 /// top() under-reports, and `decorate_chunk`'s per-chunk skip drops a trunk root if base() over-.
 #[test]
 fn structures_respect_apron_and_their_exact_y_span() {
-	let seed = 1234.5678;
+	let seed = Seed::current(1234.5678);
 	let mut seen = 0u32;
 	for ccz in -16..16 {
 		for ccx in -16..16 {
@@ -183,7 +184,7 @@ fn boulder_and_bush_shapes() {
 /// tree-valid footprints.
 #[test]
 fn placements_match_surface_rules() {
-	let seed = 42.0;
+	let seed = Seed::current(42.0);
 	let (mut boulders, mut bushes) = (0u32, 0u32);
 	for cz in -128..128 {
 		for cx in -128..128 {
@@ -206,7 +207,7 @@ fn placements_match_surface_rules() {
 
 #[test]
 fn landmarks_exist() {
-	let seed = 1234.5678;
+	let seed = Seed::current(1234.5678);
 	let mut found = 0u32;
 	for cz in -96..96 {
 		for cx in -96..96 {
@@ -272,7 +273,7 @@ fn assert_sane(t: &Tree) {
 /// by `conifer_and_acacia_shapes` on synthetic trees instead.
 #[test]
 fn trees_have_sane_shape() {
-	let seed = 42.0;
+	let seed = Seed::current(42.0);
 	let mut broadleaf = [false; 3];
 	for cz in -128..128 {
 		for cx in -128..128 {
@@ -351,12 +352,13 @@ fn landmark_fallback_only_adds() {
 		(77.0, 607, 566),
 		(77.0, 734, 566),
 	];
-	for &(seed, x, z) in KEPT {
+	for &(value, x, z) in KEPT {
+		let seed = Seed::current(value);
 		let t = trunk_at(x, z, seed)
-			.unwrap_or_else(|| panic!("({x},{z}) at seed {seed} lost its landmark"));
+			.unwrap_or_else(|| panic!("({x},{z}) at seed {value} lost its landmark"));
 		assert!(
 			t.landmark,
-			"({x},{z}) at seed {seed} is no longer a landmark"
+			"({x},{z}) at seed {value} is no longer a landmark"
 		);
 		assert_eq!(t.anchor, (x, z), "the landmark at ({x},{z}) moved");
 	}
@@ -364,7 +366,8 @@ fn landmark_fallback_only_adds() {
 	// And the fallback must actually add: the same region holds strictly
 	// more landmarks than the single roll placed there. Two seeds keep
 	// the sweep cheap; the mechanism is seed-blind.
-	for (seed, single_roll_count) in [(42.0, 4usize), (999.25, 2)] {
+	for (value, single_roll_count) in [(42.0, 4usize), (999.25, 2)] {
+		let seed = Seed::current(value);
 		let mut anchors = std::collections::HashSet::new();
 		for x in -768..768 {
 			for z in -768..768 {
@@ -377,7 +380,7 @@ fn landmark_fallback_only_adds() {
 		}
 		assert!(
 			anchors.len() > single_roll_count,
-			"seed {seed}: fallback added nothing ({} landmarks)",
+			"seed {value}: fallback added nothing ({} landmarks)",
 			anchors.len()
 		);
 	}
@@ -392,7 +395,7 @@ fn a_structure_emits_into_a_chunk_exactly_when_its_span_reaches_it() {
 	let n = CHUNK_SIZE as i32;
 	let mut checked = 0u32;
 	let mut nonempty = 0u32;
-	for seed in [42.0f64, 1234.5678, -7.25, 99991.0] {
+	for seed in [42.0, 1234.5678, -7.25, 99991.0].map(Seed::current) {
 		for ccz in -6..6 {
 			for ccx in -6..6 {
 				for s in structures_near(ccx * 16, ccz * 16, seed) {
@@ -401,7 +404,7 @@ fn a_structure_emits_into_a_chunk_exactly_when_its_span_reaches_it() {
 						let skip = s.top() <= py || s.base() >= py + n;
 						let mut hit = false;
 						s.for_each_block(|_, y, _, _| hit |= (py..py + n).contains(&y));
-						assert_eq!(!skip, hit, "seed {seed} chunk y {cy} for {s:?}");
+						assert_eq!(!skip, hit, "seed {seed:?} chunk y {cy} for {s:?}");
 						checked += 1;
 						nonempty += u32::from(hit);
 					}

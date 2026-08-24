@@ -1,4 +1,5 @@
 use super::*;
+use digblock_core::worldgen::Seed;
 use digblock_core::worldjob::{Candidates, CellSource, Run, Schedule, Scope, WorldJob};
 
 /// Dirt to grass, once a day, in the player's own chunk — the same rule
@@ -23,7 +24,7 @@ impl WorldJob for GrassSpread {
 			candidates: Candidates::Band,
 		}
 	}
-	fn apply(&self, _: (i32, i32, i32), _: &dyn CellSource, _: f64, _: Run) -> Option<u16> {
+	fn apply(&self, _: (i32, i32, i32), _: &dyn CellSource, _: Seed, _: Run) -> Option<u16> {
 		Some(BlockType::Grass as u16)
 	}
 }
@@ -136,7 +137,7 @@ fn leaving_a_world_abandons_the_sweep_in_flight() {
 				candidates: Candidates::Band,
 			}
 		}
-		fn apply(&self, _: (i32, i32, i32), _: &dyn CellSource, _: f64, _: Run) -> Option<u16> {
+		fn apply(&self, _: (i32, i32, i32), _: &dyn CellSource, _: Seed, _: Run) -> Option<u16> {
 			Some(BlockType::Grass as u16)
 		}
 	}
@@ -216,7 +217,7 @@ fn a_local_world_sweeps_with_one_player() {
 				candidates: Candidates::Band,
 			}
 		}
-		fn apply(&self, _: (i32, i32, i32), _: &dyn CellSource, _: f64, run: Run) -> Option<u16> {
+		fn apply(&self, _: (i32, i32, i32), _: &dyn CellSource, _: Seed, run: Run) -> Option<u16> {
 			SEEN.store(run.players, Ordering::Relaxed);
 			Some(BlockType::Grass as u16)
 		}

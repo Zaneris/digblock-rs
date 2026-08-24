@@ -4,7 +4,7 @@ use crate::sun::DAY_SECS;
 use crate::worldjob::{Scheduler, node_host};
 use rustc_hash::{FxHashMap, FxHashSet};
 
-const SEED: f64 = 42.0;
+const SEED: Seed = Seed::current(42.0);
 
 /// Sparse world: every unnamed cell is Air, every named cell is an edit.
 #[derive(Default)]

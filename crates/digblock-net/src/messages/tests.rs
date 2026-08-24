@@ -96,6 +96,7 @@ fn round_trip_all_variants() {
 			build: "0.1.0".into(),
 			tod: 45.0,
 			spawn_look: [1.0, 0.0, 0.0],
+			terrain: digblock_core::worldgen::TerrainVersion::CURRENT.to_wire(),
 		},
 		ServerMsg::TimeOfDay { tod: -12.5 },
 		ServerMsg::JournalColumn {
@@ -441,17 +442,19 @@ fn golden_handshake_and_snapshot_encoding() {
 		build: "b".into(),
 		tod: 80.0,
 		spawn_look: [0.0, 0.0, 0.0],
+		terrain: digblock_core::worldgen::TerrainVersion::CURRENT.to_wire(),
 	};
 	assert_eq!(
 		postcard::to_stdvec(&welcome).unwrap(),
 		// variant tag, protocol, seed (le f64), player id, spawn,
 		// server tick, snapshot divisor, the raw token bytes,
-		// sim_version, build, then tod (le f32, appended in v7) and
-		// spawn_look (appended in v13)
+		// sim_version, build, then tod (le f32, appended in v7),
+		// spawn_look (appended in v13) and the world's generator
+		// (varint, appended in v37 — the raise MIN_PROTOCOL moved for)
 		vec![
 			1, 2, 0, 0, 0, 0, 0, 0, 0, 64, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, 3, 2, 2, 2, 2,
 			2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 98, 0, 0, 160, 66, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-			0, 0, 0
+			0, 0, 0, 1
 		]
 	);
 

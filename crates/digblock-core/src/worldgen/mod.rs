@@ -21,7 +21,6 @@ pub mod ore;
 mod rivers;
 mod terrain;
 
-pub use caves::carved;
 pub use classify::{
 	ColumnShape, DIRT_DEPTH, SNOW_LINE, STONE_SURFACE, SurfaceKind, SurfaceProps, TEMP_ALT_SHIFT,
 	TreeDensity, TreeSpecies,
@@ -36,17 +35,110 @@ use crate::decoration::{decorate_chunk, structures_near};
 use classify::column_block;
 use terrain::fields;
 
+/// Every terrain generator that has ever shipped, in shipping order, and NONE is ever removed. A
+/// world records one when it is created and keeps it for as long as it exists, so a terrain change
+/// adds a row here instead of moving the one existing worlds are standing on — which is the whole
+/// of why a terrain change no longer ends them (COMPAT-DESIGN.md §5.3).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[repr(u16)]
+pub enum TerrainVersion {
+	#[default]
+	V1 = 1,
+}
+
+impl TerrainVersion {
+	/// What a world created now is stamped with.
+	pub const CURRENT: Self = Self::V1;
+	/// Every generator this build carries, for the pin that each one owes a golden.
+	pub const ALL: [Self; 1] = [Self::V1];
+
+	pub const fn to_wire(self) -> u16 {
+		self as u16
+	}
+
+	/// `None` for a generator this build does not carry — the only thing a worldgen mismatch can
+	/// mean now, and it means the CLIENT is too old rather than the world being unreachable. Zero
+	/// decodes as the first generator rather than failing: it is what a journal header written
+	/// before the slot existed already holds, and the first generator is what wrote it.
+	pub fn from_wire(v: u16) -> Option<Self> {
+		match v {
+			0 | 1 => Some(Self::V1),
+			_ => None,
+		}
+	}
+}
+
+/// A world's identity: the number AND the generator that reads it. A bare `f64` was always half an
+/// answer — one number under two generators is two different worlds — so the pair travels together
+/// wherever terrain is asked, and is RECORDED at creation rather than assumed to be current.
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub struct Seed {
+	pub value: f64,
+	pub version: TerrainVersion,
+}
+
+impl Seed {
+	pub const fn new(value: f64, version: TerrainVersion) -> Self {
+		Self { value, version }
+	}
+
+	/// A world being created now. Every other `Seed` comes from a recorded version — a journal
+	/// header, a save, or the server's `Welcome` — so this is the only place CURRENT is assumed.
+	pub const fn current(value: f64) -> Self {
+		Self::new(value, TerrainVersion::CURRENT)
+	}
+}
+
+// ---- the seam -------------------------------------------------------
+//
+// The three producers that ARE a generator. A new `TerrainVersion` row makes each match
+// non-exhaustive, so the compiler names exactly what a new generator has to supply and nothing
+// downstream of `ColumnShape` is asked to care. Version-specific code never learns its own number:
+// the arm picks the module, the module takes a plain `f64`.
+
+fn fields_of(p: &TerrainParams, x: i32, z: i32, seed: Seed) -> terrain::Fields {
+	match seed.version {
+		TerrainVersion::V1 => fields(p, x, z, seed.value),
+	}
+}
+
+fn classify_of(
+	f: &terrain::Fields,
+	n: [terrain::Fields; 4],
+	x: i32,
+	z: i32,
+	seed: Seed,
+) -> ColumnShape {
+	match seed.version {
+		TerrainVersion::V1 => classify::classify(f, n, x, z, seed.value),
+	}
+}
+
+fn cave_of(x: i32, z: i32, seed: Seed) -> caves::CaveColumn {
+	match seed.version {
+		TerrainVersion::V1 => caves::CaveColumn::new(x, z, seed.value),
+	}
+}
+
+/// Whether the cave field has removed this cell. Decoration asks it directly (a trunk may not
+/// root over a void), which is why it dispatches rather than being re-exported.
+pub fn carved(x: i32, y: i32, z: i32, seed: Seed) -> bool {
+	match seed.version {
+		TerrainVersion::V1 => caves::carved(x, y, z, seed.value),
+	}
+}
+
 /// The per-column terrain function: control fields → base + modulated
 /// detail → height and surface kind.
-pub fn column_shape(x: i32, z: i32, seed: f64) -> ColumnShape {
+pub fn column_shape(x: i32, z: i32, seed: Seed) -> ColumnShape {
 	let p = &TerrainParams::DEFAULT;
-	classify::classify(
-		&fields(p, x, z, seed),
+	classify_of(
+		&fields_of(p, x, z, seed),
 		[
-			fields(p, x - 1, z, seed),
-			fields(p, x + 1, z, seed),
-			fields(p, x, z - 1, seed),
-			fields(p, x, z + 1, seed),
+			fields_of(p, x - 1, z, seed),
+			fields_of(p, x + 1, z, seed),
+			fields_of(p, x, z - 1, seed),
+			fields_of(p, x, z + 1, seed),
 		],
 		x,
 		z,
@@ -54,7 +146,7 @@ pub fn column_shape(x: i32, z: i32, seed: f64) -> ColumnShape {
 	)
 }
 
-pub fn terrain_height(x: i32, z: i32, seed: f64) -> i32 {
+pub fn terrain_height(x: i32, z: i32, seed: Seed) -> i32 {
 	column_shape(x, z, seed).height
 }
 
@@ -63,7 +155,7 @@ pub fn terrain_height(x: i32, z: i32, seed: f64) -> i32 {
 /// included, since the carve removes cells rather than moving them — lies inside;
 /// `subsoil_span_bounds_every_pristine_dirt_cell` walks built columns to pin that, so a deeper
 /// soil layer fails a test instead of silently escaping callers that scan this span.
-pub fn subsoil_span(x: i32, z: i32, seed: f64) -> (i32, i32) {
+pub fn subsoil_span(x: i32, z: i32, seed: Seed) -> (i32, i32) {
 	let h = terrain_height(x, z, seed);
 	(h - DIRT_DEPTH + 1, h)
 }
@@ -72,19 +164,19 @@ pub fn subsoil_span(x: i32, z: i32, seed: f64) -> (i32, i32) {
 /// instead of five. Classification only ever LOWERS the discretized height, so a centre height at
 /// or below `min_height` proves the column's is too. Survivors pay nothing extra: the centre field
 /// is evaluated once either way. `Some` is bit-identical to `column_shape`.
-pub fn column_shape_above(x: i32, z: i32, seed: f64, min_height: i32) -> Option<ColumnShape> {
+pub fn column_shape_above(x: i32, z: i32, seed: Seed, min_height: i32) -> Option<ColumnShape> {
 	let p = &TerrainParams::DEFAULT;
-	let f = fields(p, x, z, seed);
+	let f = fields_of(p, x, z, seed);
 	if (f.h.floor() as i32) <= min_height {
 		return None;
 	}
-	Some(classify::classify(
+	Some(classify_of(
 		&f,
 		[
-			fields(p, x - 1, z, seed),
-			fields(p, x + 1, z, seed),
-			fields(p, x, z - 1, seed),
-			fields(p, x, z + 1, seed),
+			fields_of(p, x - 1, z, seed),
+			fields_of(p, x + 1, z, seed),
+			fields_of(p, x, z - 1, seed),
+			fields_of(p, x, z + 1, seed),
 		],
 		x,
 		z,
@@ -97,21 +189,21 @@ pub fn column_shape_above(x: i32, z: i32, seed: f64, min_height: i32) -> Option<
 /// [`column_shapes`] does for a chunk — past a couple of columns per side
 /// that beats calling `column_shape` per column, and it is bit-identical
 /// to doing so.
-pub fn column_shapes_in(x0: i32, x1: i32, z0: i32, z1: i32, seed: f64) -> Vec<ColumnShape> {
+pub fn column_shapes_in(x0: i32, x1: i32, z0: i32, z1: i32, seed: Seed) -> Vec<ColumnShape> {
 	let p = &TerrainParams::DEFAULT;
 	let (w, d) = ((x1 - x0 + 1) as usize, (z1 - z0 + 1) as usize);
 	let stride = w + 2;
 	let mut grid = Vec::with_capacity(stride * (d + 2));
 	for gz in 0..d + 2 {
 		for gx in 0..stride {
-			grid.push(fields(p, x0 + gx as i32 - 1, z0 + gz as i32 - 1, seed));
+			grid.push(fields_of(p, x0 + gx as i32 - 1, z0 + gz as i32 - 1, seed));
 		}
 	}
 	let mut out = Vec::with_capacity(w * d);
 	for z in 0..d {
 		for x in 0..w {
 			let g = (z + 1) * stride + x + 1;
-			out.push(classify::classify(
+			out.push(classify_of(
 				&grid[g],
 				[grid[g - 1], grid[g + 1], grid[g - stride], grid[g + stride]],
 				x0 + x as i32,
@@ -130,14 +222,14 @@ type ShapeMap = [[ColumnShape; CHUNK_SIZE]; CHUNK_SIZE];
 /// against their neighbors' heights without re-deriving them — several
 /// times cheaper than asking `column_shape` per column, and bit-identical
 /// to it (same f64 inputs to the same functions).
-fn column_shapes(cx: i32, cz: i32, seed: f64) -> ShapeMap {
+fn column_shapes(cx: i32, cz: i32, seed: Seed) -> ShapeMap {
 	let p = &TerrainParams::DEFAULT;
 	const PAD: usize = CHUNK_SIZE + 2;
 	let (px, pz) = (cx * CHUNK_SIZE as i32, cz * CHUNK_SIZE as i32);
 	let mut grid = [[terrain::Fields::default(); PAD]; PAD];
 	for (gz, row) in grid.iter_mut().enumerate() {
 		for (gx, f) in row.iter_mut().enumerate() {
-			*f = fields(p, gx as i32 - 1 + px, gz as i32 - 1 + pz, seed);
+			*f = fields_of(p, gx as i32 - 1 + px, gz as i32 - 1 + pz, seed);
 		}
 	}
 	let mut shapes = [[ColumnShape {
@@ -149,7 +241,7 @@ fn column_shapes(cx: i32, cz: i32, seed: f64) -> ShapeMap {
 	for (z, row) in shapes.iter_mut().enumerate() {
 		for (x, s) in row.iter_mut().enumerate() {
 			let (gx, gz) = (x + 1, z + 1);
-			*s = classify::classify(
+			*s = classify_of(
 				&grid[gz][gx],
 				[
 					grid[gz][gx - 1],
@@ -217,7 +309,7 @@ fn carve_column(
 }
 
 /// Build one chunk: fill → carve → decorate.
-pub fn build_chunk(pos: ChunkPos, seed: f64) -> ChunkData {
+pub fn build_chunk(pos: ChunkPos, seed: Seed) -> ChunkData {
 	let n = CHUNK_SIZE as i32;
 	let shapes = column_shapes(pos.x, pos.z, seed);
 	let mut data = ChunkData::default();
@@ -227,7 +319,7 @@ pub fn build_chunk(pos: ChunkPos, seed: f64) -> ChunkData {
 			if shape.height <= shape.water {
 				continue;
 			}
-			let mut cave = caves::CaveColumn::new(x as i32 + pos.x * n, z as i32 + pos.z * n, seed);
+			let mut cave = cave_of(x as i32 + pos.x * n, z as i32 + pos.z * n, seed);
 			carve_column(&mut data, pos.y * n, x, z, shape, &mut cave);
 		}
 	}
@@ -240,7 +332,7 @@ pub fn build_chunk(pos: ChunkPos, seed: f64) -> ChunkData {
 /// carving each column in a single walk across the whole stack. Chunks
 /// entirely above the terrain and the sea resolve to the shared AIR_CHUNK
 /// sentinel — no fill, no allocation, recognized by pointer downstream.
-pub fn build_column(cx: i32, cz: i32, seed: f64) -> Vec<Arc<ChunkData>> {
+pub fn build_column(cx: i32, cz: i32, seed: Seed) -> Vec<Arc<ChunkData>> {
 	let n = CHUNK_SIZE as i32;
 	let shapes = column_shapes(cx, cz, seed);
 	// A column's solid+liquid content reaches to height, its local water
@@ -272,7 +364,7 @@ pub fn build_column(cx: i32, cz: i32, seed: f64) -> Vec<Arc<ChunkData>> {
 			if shape.height <= shape.water {
 				continue;
 			}
-			let mut cave = caves::CaveColumn::new(x as i32 + cx * n, z as i32 + cz * n, seed);
+			let mut cave = cave_of(x as i32 + cx * n, z as i32 + cz * n, seed);
 			for (cy, data) in stack.iter_mut().enumerate() {
 				carve_column(data, cy as i32 * n, x, z, shape, &mut cave);
 			}

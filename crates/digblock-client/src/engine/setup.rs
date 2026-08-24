@@ -3,6 +3,7 @@
 //! them, which is what makes bench and screenshot runs hermetic.
 
 use super::*;
+use digblock_core::worldgen::Seed;
 
 impl Engine {
 	pub fn new(config: EngineConfig) -> Self {
@@ -17,12 +18,15 @@ impl Engine {
 		// Clock-derived instead of `rand`: good enough for a default world
 		// seed, and it keeps getrandom (and its wasm backend cfg) out of
 		// the dependency tree.
-		let seed = config.seed.unwrap_or_else(|| {
+		// A world starting here is a world being MADE, so it is stamped with the current
+		// generator. Every other `Seed` the engine holds arrives recorded — from a save's
+		// header, or from the server's `Welcome`.
+		let seed = Seed::current(config.seed.unwrap_or_else(|| {
 			let nanos = web_time::SystemTime::now()
 				.duration_since(web_time::UNIX_EPOCH)
 				.map_or(0, |d| d.subsec_nanos());
 			nanos as f64 / u32::MAX as f64 * 10000.0
-		});
+		}));
 		let far = far_plane(config.draw_dist);
 		// Even the ephemeral backdrop world gets an overlay: local edits
 		// must survive chunk eviction within a session, saved or not.
@@ -36,7 +40,7 @@ impl Engine {
 		// is a REQUEST the launcher may not be able to honour, and a pool
 		// is attached later (and reports zero until its workers answer).
 		log::info!(
-			"world seed: {seed} | {} chunk workers",
+			"world seed: {seed:?} | {} chunk workers",
 			pipeline.worker_count()
 		);
 		let sun = config.tod.map_or_else(Sun::new, Sun::with_tod);

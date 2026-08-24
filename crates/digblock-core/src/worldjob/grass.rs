@@ -19,6 +19,7 @@ use crate::raycast;
 use crate::shapes;
 use crate::sun::{Sun, TOD_START};
 use crate::worldgen;
+use crate::worldgen::Seed;
 
 /// The clock hours a spread runs at — all in daylight, spanning enough of
 /// the morning-to-afternoon arc that east- and west-facing slopes each
@@ -127,7 +128,7 @@ fn open_above(world: &dyn CellSource, x: i32, y: i32, z: i32) -> bool {
 /// or below the column's height. Only its opacity is ever read, and the
 /// closure lives here in core, so both arms judge unloaded terrain
 /// identically by construction.
-fn synth(x: i32, y: i32, z: i32, seed: f64) -> u16 {
+fn synth(x: i32, y: i32, z: i32, seed: Seed) -> u16 {
 	if y <= worldgen::terrain_height(x, z, seed) {
 		BlockType::Stone as u16
 	} else {
@@ -169,7 +170,7 @@ impl WorldJob for GrassSpread {
 		&self,
 		(x, y, z): (i32, i32, i32),
 		world: &dyn CellSource,
-		seed: f64,
+		seed: Seed,
 		run: Run,
 	) -> Option<u16> {
 		// Cheapest gate first: the cell above must be empty.
@@ -216,7 +217,7 @@ impl WorldJob for GrassSpread {
 		// The sun ray, cast from the center of the empty cell above (an
 		// origin inside a stopping cell is an instant hit). Jittered per
 		// (seed, cell, run) — see JITTER_TOD_DEG.
-		let bits = worldgen::ore::mix(x, y, z, seed.to_bits(), JITTER_SALT ^ run.slot);
+		let bits = worldgen::ore::mix(x, y, z, seed.value.to_bits(), JITTER_SALT ^ run.slot);
 		let dtod = signed_unit(bits) * JITTER_TOD_DEG;
 		let dz = signed_unit(bits >> u16::BITS) * JITTER_Z;
 		let mut dir = -Sun::with_tod(self.tod + dtod).sun_dir();

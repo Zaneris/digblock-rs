@@ -14,6 +14,7 @@
 //! DIRTY-REGION SET is tracked here. Quota failures degrade to in-memory play
 //! with a one-time status the menu surfaces.
 
+use digblock_core::worldgen::{Seed, TerrainVersion};
 use digblock_persist::journal::{
 	JournalError, JournalIndex, REGION_COLS, merge_snapshot, region_of_block, region_snapshot_bytes,
 };
@@ -35,6 +36,11 @@ struct MetaEntry {
 	name: String,
 	/// Seed as exact bit pattern (hex) — the fs store's convention.
 	seed_bits: String,
+	/// Which generator made this world; absent (0) in saves from before worlds recorded one, and
+	/// zero IS the first generator, so an old save reads as what actually made it. The journal
+	/// header carries the same answer and the merge checks the two agree.
+	#[serde(default)]
+	terrain: u16,
 	created_ms: u64,
 	last_played_ms: u64,
 }
@@ -57,7 +63,7 @@ struct StateFile {
 
 struct Active {
 	id: String,
-	seed: f64,
+	seed: Seed,
 	/// Regions edited since their shard was last written. A region is
 	/// cleared only once its bytes are committed, so a refused write
 	/// retries rather than silently dropping the edits.
@@ -222,7 +228,7 @@ impl LocalStorageWorldStore {
 
 	/// Read every shard of a save into one index, migrating a pre-sharding
 	/// single blob if it is still there.
-	fn load_index(&mut self, id: &str, seed: f64) -> Result<JournalIndex, JournalError> {
+	fn load_index(&mut self, id: &str, seed: Seed) -> Result<JournalIndex, JournalError> {
 		let mut index = JournalIndex::default();
 		let mut found = false;
 		for key in self.keys_with_prefix(&Self::region_prefix(id)) {
@@ -301,27 +307,30 @@ impl WorldStore for LocalStorageWorldStore {
 			.read_index()
 			.into_iter()
 			.map(|e| {
-				let seed = u64::from_str_radix(&e.seed_bits, 16)
+				let value = u64::from_str_radix(&e.seed_bits, 16)
 					.map(f64::from_bits)
 					.unwrap_or(0.0);
-				// Absent blob (never entered) = compatible; a mismatched
-				// header version = listed but refused. One shard is enough
-				// to judge: they share a header.
+				let known = TerrainVersion::from_wire(e.terrain);
+				let seed = Seed::new(value, known.unwrap_or(TerrainVersion::CURRENT));
+				// Absent blob (never entered) = compatible; a stale record format, or a generator
+				// this build does not carry, is listed but refused. One shard is enough to judge:
+				// they share a header.
 				let probe = self
 					.keys_with_prefix(&Self::region_prefix(&e.id))
 					.into_iter()
 					.next()
 					.unwrap_or_else(|| Self::legacy_journal_key(&e.id));
-				let compatible = match self.read_blob(&probe) {
-					None => true,
-					Some(bytes) => {
-						let mut sink = JournalIndex::default();
-						!matches!(
-							merge_snapshot(&bytes, seed, &mut sink),
-							Err(JournalError::WrongVersion(_))
-						)
-					}
-				};
+				let compatible = known.is_some()
+					&& match self.read_blob(&probe) {
+						None => true,
+						Some(bytes) => {
+							let mut sink = JournalIndex::default();
+							!matches!(
+								merge_snapshot(&bytes, seed, &mut sink),
+								Err(JournalError::WrongVersion(_))
+							)
+						}
+					};
 				WorldMeta {
 					id: e.id,
 					name: e.name,
@@ -336,7 +345,7 @@ impl WorldStore for LocalStorageWorldStore {
 		out
 	}
 
-	fn create_world(&mut self, name: &str, seed: f64) -> Result<WorldMeta, String> {
+	fn create_world(&mut self, name: &str, seed: Seed) -> Result<WorldMeta, String> {
 		self.id_counter += 1;
 		let id = format!(
 			"{:016x}",
@@ -347,7 +356,8 @@ impl WorldStore for LocalStorageWorldStore {
 		index.push(MetaEntry {
 			id: id.clone(),
 			name: name.to_string(),
-			seed_bits: format!("{:016x}", seed.to_bits()),
+			seed_bits: format!("{:016x}", seed.value.to_bits()),
+			terrain: seed.version.to_wire(),
 			created_ms: now,
 			last_played_ms: now,
 		});
@@ -390,9 +400,14 @@ impl WorldStore for LocalStorageWorldStore {
 			.into_iter()
 			.find(|e| e.id == id)
 			.ok_or("save metadata missing")?;
-		let seed = u64::from_str_radix(&entry.seed_bits, 16)
+		let value = u64::from_str_radix(&entry.seed_bits, 16)
 			.map(f64::from_bits)
 			.map_err(|_| "save metadata unreadable".to_string())?;
+		// Refused here rather than at the merge, so the message names the real reason: the world
+		// is intact and this build simply cannot generate the terrain its edits are anchored in.
+		let seed = TerrainVersion::from_wire(entry.terrain)
+			.map(|v| Seed::new(value, v))
+			.ok_or("save was made by a newer world generator")?;
 		let edits = match self.load_index(id, seed) {
 			Ok(index) => index.iter_edits().collect(),
 			Err(JournalError::WrongVersion(v)) => {

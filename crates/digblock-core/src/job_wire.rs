@@ -72,6 +72,16 @@ impl<'a> Reader<'a> {
 		Some(ChunkPos::new(self.i32()?, self.i32()?, self.i32()?))
 	}
 
+	/// A generator this build does not carry fails the DECODE, so a worker never silently
+	/// generates the wrong terrain for a column the main thread asked about.
+	fn seed(&mut self) -> Option<crate::worldgen::Seed> {
+		let value = self.f64()?;
+		Some(crate::worldgen::Seed::new(
+			value,
+			crate::worldgen::TerrainVersion::from_wire(self.u16()?)?,
+		))
+	}
+
 	/// A length-prefixed run, rejected before allocating if the buffer
 	/// couldn't possibly hold it — a bad length must not become a
 	/// multi-gigabyte reservation.
@@ -119,12 +129,12 @@ impl Job {
 	/// size is fixed, so the buffer is sized exactly once.
 	fn encoded_hint(&self) -> usize {
 		match self {
-			Job::Generate { .. } => 17,
+			Job::Generate { .. } => 19,
 			// The node stamp is a flag byte when absent, and otherwise
 			// seed + origin + both levels + the host mask + count + two
 			// bytes an edited cell.
 			Job::Mesh { input, .. } => {
-				let nodes = input.nodes.as_ref().map_or(1, |o| 34 + o.edited.len() * 2);
+				let nodes = input.nodes.as_ref().map_or(1, |o| 36 + o.edited.len() * 2);
 				26 + nodes + PADDED_VOLUME * 2
 			}
 		}
@@ -137,7 +147,8 @@ impl Job {
 				out.push(TAG_GENERATE);
 				out.extend_from_slice(&x.to_le_bytes());
 				out.extend_from_slice(&z.to_le_bytes());
-				out.extend_from_slice(&seed.to_le_bytes());
+				out.extend_from_slice(&seed.value.to_le_bytes());
+				out.extend_from_slice(&seed.version.to_wire().to_le_bytes());
 			}
 			Job::Mesh {
 				pos,
@@ -164,7 +175,8 @@ impl Job {
 					None => out.push(0),
 					Some(o) => {
 						out.push(1);
-						out.extend_from_slice(&o.seed.to_le_bytes());
+						out.extend_from_slice(&o.seed.value.to_le_bytes());
+						out.extend_from_slice(&o.seed.version.to_wire().to_le_bytes());
 						out.extend_from_slice(&o.origin.0.to_le_bytes());
 						out.extend_from_slice(&o.origin.1.to_le_bytes());
 						out.extend_from_slice(&o.origin.2.to_le_bytes());
@@ -199,7 +211,7 @@ impl Job {
 			TAG_GENERATE => Some(Job::Generate {
 				x: r.i32()?,
 				z: r.i32()?,
-				seed: r.f64()?,
+				seed: r.seed()?,
 			}),
 			TAG_MESH => {
 				let pos = r.pos()?;
@@ -212,7 +224,7 @@ impl Job {
 				let nodes = match r.u8()? {
 					0 => None,
 					1 => {
-						let seed = r.f64()?;
+						let seed = r.seed()?;
 						let origin = (r.i32()?, r.i32()?, r.i32()?);
 						let levels = crate::worldgen::nodes::Levels {
 							mining: r.u32()?,
@@ -375,6 +387,7 @@ fn is_air(d: &Arc<ChunkData>) -> bool {
 mod tests {
 	use super::*;
 	use crate::pipeline::run_job;
+	use crate::worldgen::Seed;
 
 	fn mesh_job() -> Job {
 		let mut blocks = Box::new([0u16; PADDED_VOLUME]);
@@ -412,7 +425,7 @@ mod tests {
 			generation,
 			input: Box::new(MeshInput {
 				nodes: Some(NodeStamp {
-					seed: -8123.5,
+					seed: Seed::current(-8123.5),
 					origin: (-32, 64, 4096),
 					levels: crate::worldgen::nodes::Levels {
 						mining: 47,
@@ -438,7 +451,7 @@ mod tests {
 			panic!("decode");
 		};
 		let nodes = input.nodes.expect("the stamp survived the crossing");
-		assert_eq!(nodes.seed, -8123.5);
+		assert_eq!(nodes.seed, Seed::current(-8123.5));
 		assert_eq!(nodes.origin, (-32, 64, 4096));
 		assert_eq!(
 			(nodes.levels.mining, nodes.levels.alchemy),
@@ -484,12 +497,12 @@ mod tests {
 		let j = Job::Generate {
 			x: -17,
 			z: 4021,
-			seed: 1234.5678,
+			seed: Seed::current(1234.5678),
 		};
 		let Some(Job::Generate { x, z, seed }) = Job::decode(&j.encode()) else {
 			panic!("decode");
 		};
-		assert_eq!((x, z, seed), (-17, 4021, 1234.5678));
+		assert_eq!((x, z, seed), (-17, 4021, Seed::current(1234.5678)));
 	}
 
 	#[test]
@@ -525,7 +538,7 @@ mod tests {
 		let result = run_job(Job::Generate {
 			x: 0,
 			z: 0,
-			seed: 42.0,
+			seed: Seed::current(42.0),
 		});
 		let JobResult::Generated { stack: before, .. } = &result else {
 			panic!("generate")
@@ -556,7 +569,7 @@ mod tests {
 		let JobResult::Generated { stack, .. } = run_job(Job::Generate {
 			x: 0,
 			z: 0,
-			seed: 42.0,
+			seed: Seed::current(42.0),
 		}) else {
 			panic!("generate")
 		};

@@ -48,7 +48,7 @@ fn the_gi_window_admits_exactly_one_period_per_axis() {
 /// `gi_recenter` has no window to be inside of.
 #[test]
 fn nothing_is_uploadable_before_the_window_is_centered() {
-	let p = Pipeline::new(0.0, 4, 0);
+	let p = Pipeline::new(Seed::current(0.0), 4, 0);
 	assert!(!p.gi_uploadable(ChunkPos::new(0, 0, 0), 8));
 }
 
@@ -60,7 +60,7 @@ fn nothing_is_uploadable_before_the_window_is_centered() {
 #[test]
 fn recentering_redirties_exactly_the_columns_that_entered() {
 	let w = 4;
-	let mut p = Pipeline::new(0.0, 6, 0);
+	let mut p = Pipeline::new(Seed::current(0.0), 6, 0);
 	quiesce(&mut p, ChunkPos::new(0, 0, 0));
 
 	p.gi_recenter(ChunkPos::new(0, 0, 0), w);
@@ -90,7 +90,7 @@ fn recentering_redirties_exactly_the_columns_that_entered() {
 /// one chunk must not re-upload the window every frame.
 #[test]
 fn recentering_onto_the_same_chunk_dirties_nothing() {
-	let mut p = Pipeline::new(0.0, 4, 0);
+	let mut p = Pipeline::new(Seed::current(0.0), 4, 0);
 	quiesce(&mut p, ChunkPos::new(0, 0, 0));
 	p.gi_recenter(ChunkPos::new(0, 0, 0), 8);
 	let _ = p.take_gi_dirty();
@@ -103,7 +103,7 @@ fn recentering_onto_the_same_chunk_dirties_nothing() {
 /// invalidation so relight starts without waiting for the sweep.
 #[test]
 fn an_edit_dirties_its_own_column_and_queues_a_probe_invalidation() {
-	let mut p = Pipeline::new(0.0, 4, 0);
+	let mut p = Pipeline::new(Seed::current(0.0), 4, 0);
 	let center = ChunkPos::new(0, 0, 0);
 	quiesce(&mut p, center);
 	p.gi_recenter(center, 8);

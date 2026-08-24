@@ -2,7 +2,7 @@ use super::*;
 use crate::worldjob::Run;
 use rustc_hash::FxHashMap;
 
-const SEED: f64 = 7.0;
+const SEED: Seed = Seed::current(7.0);
 
 /// A hand-built pocket of cells. `airy` answers Air everywhere unset, so
 /// rays stay inside the pocket; `sealed` answers `None` there, so a ray

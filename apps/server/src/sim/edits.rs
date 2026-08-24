@@ -745,7 +745,7 @@ impl Sim {
 				let mining = client.skills.level(digblock_core::skills::Skill::Mining);
 				let alchemy = client.skills.level(digblock_core::skills::Skill::Alchemy);
 				for (e, n) in
-					digblock_core::alchemy::field_yield(ore, alchemy, mining, req.cell, seed)
+					digblock_core::alchemy::field_yield(ore, alchemy, mining, req.cell, seed.value)
 				{
 					client.inventory.add_sub(e, n);
 				}

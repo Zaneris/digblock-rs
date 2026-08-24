@@ -545,6 +545,12 @@ pub enum ServerMsg {
 		/// spawn facing describes spawn, not wherever you logged out.
 		/// Appended in v13.
 		spawn_look: [f32; 3],
+		/// Which generator made this world, NOT which one the server
+		/// prefers: `seed` alone is half a world, and the pair is what
+		/// both ends must generate from. A client that does not carry it
+		/// refuses the join — the only thing worldgen can refuse for now.
+		/// Appended in v37, which is why the floor moved with it.
+		terrain: u16,
 	},
 	/// Join/late sync: last-write-wins final cell states for one column.
 	JournalColumn {

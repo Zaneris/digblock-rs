@@ -13,6 +13,7 @@ use crate::block::BlockType;
 use glam::{Vec2, Vec3};
 
 mod collision;
+use crate::worldgen::Seed;
 use collision::*;
 pub use collision::{ascend_clear, occupied_cells, overlaps_solid, placement_blocked};
 
@@ -122,7 +123,7 @@ const MOUNT_RATE: f32 = WALK_SPEED;
 /// Eye spawn position from the seed alone — see [`crate::spawn::anchor`],
 /// which owns the walk. Kept here as the name the rest of the engine has
 /// always called; use [`crate::spawn::resolve`] when player edits matter.
-pub fn spawn(seed: f64) -> Vec3 {
+pub fn spawn(seed: Seed) -> Vec3 {
 	crate::spawn::anchor(seed)
 }
 

@@ -169,7 +169,7 @@ impl Sim {
 			&out,
 			&ServerMsg::Welcome {
 				protocol: PROTOCOL_VERSION,
-				seed: self.store.seed(),
+				seed: self.store.seed().value,
 				player_id: id,
 				spawn: spawn.to_array(),
 				server_tick: self.tick,
@@ -181,6 +181,7 @@ impl Sim {
 				build: env!("CARGO_PKG_VERSION").into(),
 				tod: self.current_tod(),
 				spawn_look: spawn_look.to_array(),
+				terrain: self.store.seed().version.to_wire(),
 			},
 		);
 

@@ -2,6 +2,7 @@ use super::classify::{column_block, holds_water};
 use super::terrain::{TerrainParams, fields, spline};
 use super::*;
 use crate::chunk::WORLD_VBLOCK;
+use crate::worldgen::Seed;
 
 const P: &TerrainParams = &TerrainParams::DEFAULT;
 
@@ -22,7 +23,7 @@ fn spline_is_monotonic_and_anchored() {
 
 #[test]
 fn heights_stay_in_bounds() {
-	let seed = 77.7;
+	let seed = Seed::current(77.7);
 	for x in (-2048..2048).step_by(61) {
 		for z in (-2048..2048).step_by(67) {
 			let h = terrain_height(x, z, seed);
@@ -37,7 +38,7 @@ fn heights_stay_in_bounds() {
 /// probes (trees, spawn) agreeing about the world.
 #[test]
 fn classification_paths_agree() {
-	let seed = 1234.5678;
+	let seed = Seed::current(1234.5678);
 	for &(cx, cz) in &[(0, 0), (-3, 7), (40, 40), (-17, -29)] {
 		let shapes = column_shapes(cx, cz, seed);
 		for (z, row) in shapes.iter().enumerate() {
@@ -56,7 +57,7 @@ fn classification_paths_agree() {
 /// channels (water above bed), and never hold water below sea level.
 #[test]
 fn rivers_exist_inland() {
-	let seed = 1234.5678;
+	let seed = Seed::current(1234.5678);
 	let mut inland = 0u32;
 	for x in (-4096..4096).step_by(13) {
 		for z in (-4096..4096).step_by(11) {
@@ -78,18 +79,18 @@ fn rivers_exist_inland() {
 /// the highest adjacent pool — the sheet that connects the cascade.
 #[test]
 fn falls_connect_pool_steps() {
-	let seed = 1234.5678;
+	let seed = Seed::current(1234.5678);
 	let mut found = 0u32;
 	'scan: for x in (-2048..2048).step_by(4) {
 		for z in (-2048..2048).step_by(4) {
-			let f = fields(P, x, z, seed);
+			let f = fields(P, x, z, seed.value);
 			if !holds_water(&f) {
 				continue;
 			}
 			let wl = f.water.floor() as i32;
 			let top = [(x - 1, z), (x + 1, z), (x, z - 1), (x, z + 1)]
 				.iter()
-				.map(|&(nx, nz)| fields(P, nx, nz, seed))
+				.map(|&(nx, nz)| fields(P, nx, nz, seed.value))
 				.filter(holds_water)
 				.map(|n| n.water.floor() as i32)
 				.max()
@@ -118,7 +119,7 @@ fn falls_connect_pool_steps() {
 /// snow surfaces exist somewhere in a mountain sample.
 #[test]
 fn snow_implies_altitude() {
-	let seed = 1234.5678;
+	let seed = Seed::current(1234.5678);
 	let mut seen = 0u32;
 	for x in (-4096..4096).step_by(17) {
 		for z in (-4096..4096).step_by(19) {
@@ -142,7 +143,7 @@ fn snow_implies_altitude() {
 /// of blocks wide, so a coarse scan suffices.
 #[test]
 fn climate_varies_snow_line() {
-	let seed = 1234.5678;
+	let seed = Seed::current(1234.5678);
 	let (mut cold_snow, mut warm_bare) = (false, false);
 	for x in (-16384..16384).step_by(128) {
 		for z in (-16384..16384).step_by(128) {
@@ -185,7 +186,7 @@ fn terrace_tread_is_continuous_and_bounded() {
 /// (quantized level steps, exactly like river pools).
 #[test]
 fn lakes_exist_and_are_contained() {
-	let seed = 1234.5678;
+	let seed = Seed::current(1234.5678);
 	let mut found = 0u32;
 	for x in (-8192..8192).step_by(32) {
 		for z in (-8192..8192).step_by(32) {
@@ -218,7 +219,7 @@ fn lakes_exist_and_are_contained() {
 /// break up rock faces.
 #[test]
 fn strata_and_scree_exist() {
-	let seed = 1234.5678;
+	let seed = Seed::current(1234.5678);
 	let (mut sandy, mut scree) = (false, false);
 	for x in (-8192..8192).step_by(37) {
 		for z in (-8192..8192).step_by(41) {
@@ -255,7 +256,7 @@ fn strata_and_scree_exist() {
 /// those until both kinds turn up.
 #[test]
 fn coastal_and_wet_kinds_exist() {
-	let seed = 1234.5678;
+	let seed = Seed::current(1234.5678);
 	let (mut marsh, mut gravel) = (false, false);
 	'outer: for x in (-8192..8192).step_by(64) {
 		for z in (-8192..8192).step_by(64) {
@@ -285,7 +286,7 @@ fn coastal_and_wet_kinds_exist() {
 /// biome present.
 #[test]
 fn regions_are_present_and_balanced() {
-	let seed = 1234.5678;
+	let seed = Seed::current(1234.5678);
 	let (mut ocean, mut beach, mut plains, mut mountain) = (0u32, 0u32, 0u32, 0u32);
 	let (mut forest, mut savanna, mut taiga) = (0u32, 0u32, 0u32);
 	let mut total = 0u32;
@@ -331,7 +332,7 @@ fn subsoil_span_bounds_every_pristine_dirt_cell() {
 	// The frontier sweep's surface shell scans exactly this span, so a
 	// Dirt cell outside it is a cell no scheduled rule can ever reach —
 	// cave-exposed dirt would silently stop greening over.
-	let seed = 11.0;
+	let seed = Seed::current(11.0);
 	let n = CHUNK_SIZE as i32;
 	let (mut dirt, mut exposed) = (0u32, 0u32);
 	for cx in -4..4 {

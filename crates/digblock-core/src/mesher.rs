@@ -20,6 +20,7 @@ mod water;
 use water::{FallLayers, WaterState, emit_water_face};
 
 use crate::dir::{DIRS, Dir};
+use crate::worldgen::Seed;
 
 /// Padded snapshot edge: the chunk plus a one-block shell from its
 /// neighbors.
@@ -56,7 +57,7 @@ pub struct MeshInput {
 /// Everything the reveal needs, gathered on the main thread (which is the
 /// only place that knows what has been edited) and carried to the worker.
 pub struct NodeStamp {
-	pub seed: f64,
+	pub seed: Seed,
 	/// World position of the padded array's low corner — the shell cell,
 	/// not the chunk's own origin.
 	pub origin: (i32, i32, i32),
@@ -227,8 +228,11 @@ impl MeshInput {
 			// deposits here would let a later one stamp a cell the dig path says belongs to the
 			// first, and a node you can see and cannot extract is the worst outcome here.
 			let mut claimed: Vec<u16> = Vec::new();
-			for d in ore::deposits_near((ox, oy, oz), (ox + span, oy + span, oz + span), stamp.seed)
-			{
+			for d in ore::deposits_near(
+				(ox, oy, oz),
+				(ox + span, oy + span, oz + span),
+				stamp.seed.value,
+			) {
 				for y in inside(d.y - ore::MAX_RADIUS, oy)..=inside(d.y + ore::MAX_RADIUS, oy) {
 					for z in inside(d.z - ore::MAX_RADIUS, oz)..=inside(d.z + ore::MAX_RADIUS, oz) {
 						for x in

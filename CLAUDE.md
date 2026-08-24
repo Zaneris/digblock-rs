@@ -54,8 +54,8 @@ that last is worse than a tautology, because it advertises a guarantee nobody wr
 fooled: sweep every row instead of spot-checking, assert an ordering or a round-trip instead of a value, and where a
 sweep could pass vacuously, count what it examined and assert the count. Exempt, because the value IS the contract and
 nothing in Rust can derive it: wire and save-format goldens, WGSL mirrors, RFC vectors, and the derived-output pins that
-catch a curve changing SHAPE (`xp_curve_table_is_pinned`, the taper goldens, `worldgen_golden_hash_pins_sim_version`). A
-pin earns its place by naming a bug a derived test would miss.
+catch a curve changing SHAPE (`xp_curve_table_is_pinned`, the taper goldens, `a_shipped_generator_never_moves`). A pin
+earns its place by naming a bug a derived test would miss.
 
 **Comments carry invariants, not history.** Say what breaks if the reader changes this, and what alternative was
 rejected — in a sentence, not a story. `crates/digblock-core/src/stream_budget.rs` is the house style. Do not write: the
@@ -483,11 +483,17 @@ Four reach outside lighting, so they can catch you when you weren't editing ligh
 
 ## Worldgen & the chunk pipeline
 
-Everything is a pure function of `(x, z, seed)` — column content never depends on generation order. Structures are a
-decoration pass using pure apron evaluation, so every chunk within `STRUCTURE_APRON` computes identical structures
-independently and they span borders with no pipeline state; trunk roots are the single exception to decoration's
-write-into-Air-only rule. Sky chunks resolve to the shared `AIR_CHUNK` sentinel Arc — never meshed, **recognized by
-POINTER**, which is why `job_wire`'s air flag exists.
+Everything is a pure function of `(x, z, seed)`, where a `worldgen::Seed` is the NUMBER AND THE GENERATOR — one number
+under two generators is two different worlds. **Every generator that has ever shipped is kept and none is ever
+removed**: a world records one at creation (journal header, `meta.json`, and `Welcome`) and keeps it, so a terrain
+change adds a `TerrainVersion` row rather than moving the one existing worlds stand on. Four `match seed.version` arms
+in `worldgen/mod.rs` ARE the seam — a new row makes each non-exhaustive, so the compiler names what a new generator owes
+— and `ColumnShape` is the frozen interface every generator must fill, which is what lets decoration and the node layer
+stay CURRENT and keep reaching old worlds. Column content never depends on generation order. Structures are a decoration
+pass using pure apron evaluation, so every chunk within `STRUCTURE_APRON` computes identical structures independently
+and they span borders with no pipeline state; trunk roots are the single exception to decoration's write-into-Air-only
+rule. Sky chunks resolve to the shared `AIR_CHUNK` sentinel Arc — never meshed, **recognized by POINTER**, which is why
+`job_wire`'s air flag exists.
 
 The main thread owns the chunk store and scheduling; workers run pure functions over immutable snapshots — a mesh job
 gets a padded copy with a one-block shell from every neighbour. Staleness rides generation counters: results whose
@@ -616,9 +622,10 @@ Two colour targets are mandatory: water samples the scene it blends over, so its
 
 Persistence is a launcher-injected `SettingsStore`; precedence is CLI/query > saved > platform default, and
 non-interactive runs skip load AND save so captures stay hermetic. `Settings` is serde-free; each launcher owns a
-mirror. Named local worlds live in `crates/digblock-persist`: the journal (shared `VERSION` — a worldgen retune stales
-server volumes and client saves together; the one exception is a provably ADDITIVE decoration change, which rides a
-`PROTOCOL_VERSION` bump with saves kept — `landmark_fallback_only_adds` is the shape of the proof) plus the `WorldStore`
+mirror. Named local worlds live in `crates/digblock-persist`: the journal (shared `VERSION`, which now means the RECORD
+FORMAT alone — a terrain change adds a `worldgen::TerrainVersion` instead, and the world's header names which generator
+made it, so terrain can change with every save kept; a decoration change still rides a `PROTOCOL_VERSION` bump on the
+strength of being provably ADDITIVE, and `landmark_fallback_only_adds` is the shape of that proof) plus the `WorldStore`
 trait. Web uses localStorage **not IndexedDB**, because `flush` must run inside synchronous `on_suspend`. Client saves
 are **refused, never archived** on a version mismatch.
 

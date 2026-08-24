@@ -2,11 +2,12 @@ use super::*;
 use crate::chunk::CHUNK_SIZE;
 use crate::decoration::{Structure, structures_near};
 use crate::sun::DAY_SECS;
+use crate::worldgen::Seed;
 use crate::worldjob::Run;
 use crate::worldjob::Scheduler;
 use rustc_hash::FxHashMap;
 
-const SEED: f64 = 7.0;
+const SEED: Seed = Seed::current(7.0);
 const AT: (i32, i32, i32) = (0, 64, 0);
 
 /// A hand-built pocket of cells. `airy` answers Air everywhere unset;
@@ -47,7 +48,7 @@ impl CellSource for Pocket {
 /// mesher cares about and the anchor walk does not.)
 struct Grown {
 	cells: FxHashMap<(i32, i32, i32), u16>,
-	seed: f64,
+	seed: Seed,
 }
 
 impl CellSource for Grown {
@@ -64,7 +65,7 @@ impl CellSource for Grown {
 
 /// Kinds of structure that contributed at least one leaf, in
 /// [tree, landmark, bush] order.
-fn grow(px: i32, pz: i32, seed: f64) -> (Grown, Vec<(i32, i32, i32)>, [bool; 3]) {
+fn grow(px: i32, pz: i32, seed: Seed) -> (Grown, Vec<(i32, i32, i32)>, [bool; 3]) {
 	let mut cells = FxHashMap::default();
 	let mut leaves = Vec::new();
 	let mut kinds = [false; 3];
@@ -92,7 +93,7 @@ fn grow(px: i32, pz: i32, seed: f64) -> (Grown, Vec<(i32, i32, i32)>, [bool; 3])
 /// Hunt outward from the origin for a region holding a landmark. The
 /// step ties to `structures_near`'s footprint (a chunk plus the apron on
 /// each side), so the rings tile the plane with no gap.
-fn find_landmark(seed: f64) -> Option<(i32, i32)> {
+fn find_landmark(seed: Seed) -> Option<(i32, i32)> {
 	let step = CHUNK_SIZE as i32 + 2 * crate::decoration::STRUCTURE_APRON;
 	for ring in 0..64i32 {
 		for cz in -ring..=ring {

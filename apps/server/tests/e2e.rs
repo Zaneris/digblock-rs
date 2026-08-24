@@ -339,7 +339,7 @@ impl Drop for TestServer {
 struct TestClient {
 	client: NetClient,
 	events: Vec<NetEvent>,
-	seed: f64,
+	seed: digblock_core::worldgen::Seed,
 	spawn: Vec3,
 	welcomed: bool,
 	edits: FxHashMap<(i32, i32, i32), BlockType>,
@@ -382,7 +382,7 @@ impl TestClient {
 				},
 			),
 			events: Vec::new(),
-			seed: 0.0,
+			seed: digblock_core::worldgen::Seed::current(0.0),
 			spawn: Vec3::ZERO,
 			welcomed: false,
 			edits: FxHashMap::default(),

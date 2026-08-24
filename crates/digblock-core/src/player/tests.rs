@@ -1,4 +1,5 @@
 use super::*;
+use crate::worldgen::Seed;
 
 /// Test spawn: in the air above the flat_world ground.
 const TEST_SPAWN: Vec3 = Vec3::new(0.5, 35.0, 0.5);
@@ -44,7 +45,7 @@ fn spawn_positions_are_pinned() {
 		(31337.0, Vec3::new(112.5, 146.5, -47.5)),
 		(8675309.0, Vec3::new(96.5, 132.5, -95.5)),
 	] {
-		assert_eq!(spawn(seed), want, "seed {seed}");
+		assert_eq!(spawn(Seed::current(seed)), want, "seed {seed}");
 	}
 }
 

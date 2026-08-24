@@ -1,4 +1,5 @@
 use super::*;
+use digblock_core::worldgen::Seed;
 use digblock_net::messages::ServerMsg;
 use digblock_net::protocol::{PROTOCOL_VERSION, encode_preamble};
 use digblock_net::transport::NetTransport;
@@ -22,6 +23,7 @@ fn welcome() -> ServerMsg {
 		build: "test".into(),
 		tod: 0.0,
 		spawn_look: [0.0, 0.0, 0.0],
+		terrain: digblock_core::worldgen::TerrainVersion::CURRENT.to_wire(),
 	}
 }
 
@@ -44,7 +46,8 @@ fn welcome_arms_the_arrival_hold_and_area_ready_releases_it() {
 	server_end.send_reliable(&frame(&welcome()));
 	engine.update(Duration::from_millis(16));
 	assert_eq!(
-		engine.seed, 11.0,
+		engine.seed,
+		Seed::current(11.0),
 		"the Welcome was actually processed, not swallowed"
 	);
 	assert!(

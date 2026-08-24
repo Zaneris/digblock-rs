@@ -14,6 +14,7 @@ use std::thread::LocalKey;
 
 use crate::block::BlockType;
 use crate::chunk::{CHUNK_SIZE, ChunkData, ChunkPos, WORLD_VBLOCK};
+use crate::worldgen::Seed;
 use crate::worldgen::{
 	ColumnShape, SEA_LEVEL, TreeDensity, TreeSpecies, carved, column_shape_above,
 };
@@ -85,8 +86,8 @@ pub struct Tree {
 
 /// Deterministic position hash (splitmix64 over cell coords + seed bits),
 /// salted per structure family so streams stay independent.
-fn hash(cx: i32, cz: i32, seed: f64, salt: u64) -> u64 {
-	let mut h = (u64::from(cx as u32) << 32 | u64::from(cz as u32)) ^ seed.to_bits() ^ salt;
+fn hash(cx: i32, cz: i32, seed: Seed, salt: u64) -> u64 {
+	let mut h = (u64::from(cx as u32) << 32 | u64::from(cz as u32)) ^ seed.value.to_bits() ^ salt;
 	h ^= h >> 30;
 	h = h.wrapping_mul(0xbf58_476d_1ce4_e5b9);
 	h ^= h >> 27;
@@ -111,7 +112,7 @@ fn jroll(salt: u16, dx: i32, dz: i32, dy: i32) -> bool {
 /// band. Nothing grows or piles there: every surface a structure family accepts classifies strictly
 /// above the band, since at or below it a column is ocean, river, lake, or shore. Rejecting on
 /// altitude costs one field evaluation where a classification costs five.
-fn candidate_column(x: i32, z: i32, seed: f64) -> Option<ColumnShape> {
+fn candidate_column(x: i32, z: i32, seed: Seed) -> Option<ColumnShape> {
 	column_shape_above(x, z, seed, SEA_LEVEL + 1)
 }
 
@@ -119,7 +120,7 @@ fn candidate_column(x: i32, z: i32, seed: f64) -> Option<ColumnShape> {
 /// the terrain: the surface's `SurfaceProps` row decides density and
 /// species; the candidate must not be a cave mouth and needs headroom
 /// below the world ceiling.
-fn cell_tree(cell_x: i32, cell_z: i32, seed: f64) -> Option<Tree> {
+fn cell_tree(cell_x: i32, cell_z: i32, seed: Seed) -> Option<Tree> {
 	let h = hash(cell_x, cell_z, seed, TREE_SALT);
 	if h % 100 >= MAX_TREE_DENSITY_PCT {
 		return None; // no surface is denser — skip the column_shape cost
@@ -276,7 +277,7 @@ impl Structure {
 /// landmark that stood before the fallback existed still stands at its exact spot — which is what
 /// lets the fallback ride a protocol bump with saves kept (`landmark_fallback_only_adds` is the
 /// proof). The scan runs only where that attempt fails, so it can only ADD trees.
-fn cell_landmark(cell_x: i32, cell_z: i32, seed: f64) -> Option<Landmark> {
+fn cell_landmark(cell_x: i32, cell_z: i32, seed: Seed) -> Option<Landmark> {
 	let h = hash(cell_x, cell_z, seed, LANDMARK_SALT);
 	if h % 1000 >= LANDMARK_PCT {
 		return None;
@@ -309,7 +310,7 @@ fn cell_landmark(cell_x: i32, cell_z: i32, seed: f64) -> Option<Landmark> {
 /// the CELL's roll — trunk height and salt ride it, not the position,
 /// so a fallback tree is the same tree the first position would have
 /// grown.
-fn landmark_at(x: i32, z: i32, h: u64, seed: f64) -> Option<Landmark> {
+fn landmark_at(x: i32, z: i32, h: u64, seed: Seed) -> Option<Landmark> {
 	let mut hmin = i32::MAX;
 	let mut hmax = i32::MIN;
 	for (dx, dz) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
@@ -384,7 +385,7 @@ impl Landmark {
 
 /// The boulder candidate (if any) of one fine-grid cell: rock surfaces
 /// only (`props().boulders`), dry, uncarved.
-fn cell_boulder(cell_x: i32, cell_z: i32, seed: f64) -> Option<Boulder> {
+fn cell_boulder(cell_x: i32, cell_z: i32, seed: Seed) -> Option<Boulder> {
 	let h = hash(cell_x, cell_z, seed, BOULDER_SALT);
 	if h % 100 >= BOULDER_PCT {
 		return None;
@@ -429,7 +430,7 @@ impl Boulder {
 /// The bush candidate (if any) of one fine-grid cell: grassy tree-valid
 /// ground, uncarved. The caller skips bushes in cells that already grew
 /// a tree.
-fn cell_bush(cell_x: i32, cell_z: i32, seed: f64) -> Option<Bush> {
+fn cell_bush(cell_x: i32, cell_z: i32, seed: Seed) -> Option<Bush> {
 	let h = hash(cell_x, cell_z, seed, BUSH_SALT);
 	if h % 100 >= BUSH_PCT {
 		return None;
@@ -480,7 +481,7 @@ struct CellCandidates {
 	bush: Option<Bush>,
 }
 
-fn cell_candidates(cell_x: i32, cell_z: i32, seed: f64) -> CellCandidates {
+fn cell_candidates(cell_x: i32, cell_z: i32, seed: Seed) -> CellCandidates {
 	let tree = cell_tree(cell_x, cell_z, seed);
 	let boulder = cell_boulder(cell_x, cell_z, seed);
 	let bush = match tree {
@@ -523,10 +524,10 @@ fn memoized<T: Copy + Default>(
 	memo: &'static LocalKey<RefCell<CellMemo<T>>>,
 	cell_x: i32,
 	cell_z: i32,
-	seed: f64,
+	seed: Seed,
 	miss: impl FnOnce() -> T,
 ) -> T {
-	let key = (cell_x, cell_z, seed.to_bits());
+	let key = (cell_x, cell_z, seed.value.to_bits());
 	let slot = (cell_x as usize & 15) | (cell_z as usize & 15) << 4;
 	let hit = memo.with_borrow(|m| (m.keys[slot] == Some(key)).then(|| m.vals[slot]));
 	if let Some(v) = hit {
@@ -552,7 +553,7 @@ thread_local! {
 /// first (coarse grid, row-major), then per fine cell: tree → boulder →
 /// bush (bushes skip cells that grew a tree). This order is part of the
 /// determinism contract — `decorate_chunk` is first-writer-wins.
-pub fn structures_near(px: i32, pz: i32, seed: f64) -> Vec<Structure> {
+pub fn structures_near(px: i32, pz: i32, seed: Seed) -> Vec<Structure> {
 	let n = CHUNK_SIZE as i32;
 	structures_in(px, px + n - 1, pz, pz + n - 1, seed)
 }
@@ -560,7 +561,7 @@ pub fn structures_near(px: i32, pz: i32, seed: f64) -> Vec<Structure> {
 /// All valid structures whose candidate cell is within `STRUCTURE_APRON`
 /// of the inclusive column footprint [x0, x1] × [z0, z1]. Same
 /// candidate-order contract as `structures_near`.
-fn structures_in(x0: i32, x1: i32, z0: i32, z1: i32, seed: f64) -> Vec<Structure> {
+fn structures_in(x0: i32, x1: i32, z0: i32, z1: i32, seed: Seed) -> Vec<Structure> {
 	let (x0, x1) = (x0 - STRUCTURE_APRON, x1 + STRUCTURE_APRON);
 	let (z0, z1) = (z0 - STRUCTURE_APRON, z1 + STRUCTURE_APRON);
 	let mut out = Vec::new();
@@ -614,7 +615,7 @@ pub struct TrunkInfo {
 /// the answer is the one whose wood actually stands there. A pure function of `(x, z, seed)`;
 /// callers needing the CELL to really hold wood — a canopy may have covered a trunk cell, a cliff
 /// may have left it unwritten — must check the live cell themselves, the `ore::revealed` shape.
-pub fn trunk_at(x: i32, z: i32, seed: f64) -> Option<TrunkInfo> {
+pub fn trunk_at(x: i32, z: i32, seed: Seed) -> Option<TrunkInfo> {
 	for cell_z in (z - 1).div_euclid(LANDMARK_CELL)..=z.div_euclid(LANDMARK_CELL) {
 		for cell_x in (x - 1).div_euclid(LANDMARK_CELL)..=x.div_euclid(LANDMARK_CELL) {
 			let l = memoized(&LANDMARK_MEMO, cell_x, cell_z, seed, || {
@@ -651,7 +652,7 @@ pub fn trunk_at(x: i32, z: i32, seed: f64) -> Option<TrunkInfo> {
 /// Pristine terrain never reaches a spawn candidate's capsule cells;
 /// decoration (trees, boulders, bushes, landmarks) can, and this is how
 /// the walk avoids it.
-pub fn box_obstructed(x0: i32, x1: i32, y0: i32, y1: i32, z0: i32, z1: i32, seed: f64) -> bool {
+pub fn box_obstructed(x0: i32, x1: i32, y0: i32, y1: i32, z0: i32, z1: i32, seed: Seed) -> bool {
 	structures_in(x0, x1, z0, z1, seed).iter().any(|s| {
 		let mut hit = false;
 		s.for_each_block(|bx, by, bz, _| {

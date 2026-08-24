@@ -1,14 +1,15 @@
 # Compatibility — joining a server that has not updated (design document)
 
-Status: **C1 (§7) is BUILT; everything else here is design only.** It came out of the 2026-08-23 question of what
-happens once dedicated servers are run by people who did not ship the release. They are still refused — C1 changed only
-how honestly — and every way of changing that carries a cost worth choosing deliberately rather than discovering. Where
-this document names a constant or a function that does not exist yet, the name is a proposal; where it names one that
-does (`MIN_PROTOCOL`, `dig_grace`, `landmark_fallback_only_adds`), the reference is to shipped code and the claim about
-it has been checked.
+Status: **C1 (§7) and C2 (§5.3) are BUILT; everything else here is design only.** It came out of the 2026-08-23 question
+of what happens once dedicated servers are run by people who did not ship the release, and turned on a sharper one a day
+later: the reason a server will not upgrade is usually not sloth but that upgrading takes the world. Every way of
+changing either carries a cost worth choosing deliberately rather than discovering. Where this document names a constant
+or a function that does not exist yet, the name is a proposal; where it names one that does (`MIN_PROTOCOL`,
+`dig_grace`, `landmark_fallback_only_adds`), the reference is to shipped code and the claim about it has been checked.
 
-The staging (§8) is ordered so each slice ships alone, and the one that shipped buys no compatibility at all — it makes
-the failure legible, which everything after it depends on.
+The staging (§8) is ordered so each slice ships alone. The first buys no compatibility at all — it makes the failure
+legible, which everything after it depends on. The second removes the reason worlds are lost, which is a better lever
+than supporting the servers that refuse to lose them.
 
 ## 1. What a join is gated on today
 
@@ -34,6 +35,12 @@ Three properties of the shipped code decide what is cheap here and what is not, 
 And there is already one precedent for the whole idea: `AlchemyOp::Convert` is a retired verb **kept decodable and
 refused**, answered with the standing rebase so an out-of-date client at least resyncs. That is what an append-only
 wire's graceful degradation looks like, and there is exactly one of it.
+
+One gate is not on the wire at all, and it is the one that decides whether a server operator ever upgrades:
+`journal::VERSION`. A bump means the server **renames the world aside at boot and starts fresh**, announced by a single
+`log::warn!` — the operator learns from a log line, or from their players. Client saves share the constant and REFUSE
+instead. The destructive default is on the side carrying everyone's world, which is backwards, and it is why §5.3 is the
+part of this document that matters most.
 
 ## 2. Why the floor keeps rising
 
@@ -151,7 +158,7 @@ not require refusing a join.**
 `WORLDGEN_VERSION` and `PHYSICS_VERSION` gate on equality; (3) and (4) leave the gate entirely.
 
 The obvious objection is that three constants are three chances to bump the wrong one. The answer is that neither of the
-two that matter is bumped by judgment: `worldgen_golden_hash_pins_sim_version` and the three
+two that matter is bumped by judgment: `a_shipped_generator_never_moves` and the three
 `golden_*_trajectory_pins_sim_version` tests already fail on drift and already name the constant in their message.
 Splitting it is mostly re-pointing goldens that exist and deleting a gate.
 
@@ -174,49 +181,117 @@ so the received one simply becomes what multiplayer reads while the local one st
 Sequence it after §5.1. The split is what makes the window exist; this is what makes dig timing CORRECT inside it rather
 than merely tolerated.
 
-### 5.3 Freeze worldgen after 1.0
+### 5.3 Pin the generator per world, and support every one forever
 
-The zero-tolerance axis has to stop moving or no window is possible at all. After 1.0, worldgen changes are **provably
-additive only** — and the proof already has a shape: `landmark_fallback_only_adds` pins a change that can only ADD,
-which is why a decoration change can ride a protocol bump with saves kept.
+Freezing terrain after 1.0 was this document's first answer and it is not available: terrain has to change again, and
+today a change takes the operator's world. So the generator becomes per-world state — a world records which one made it,
+keeps it for as long as it exists, and a terrain change writes a NEW generator rather than moving the one worlds are
+standing on.
 
-This is a product decision wearing an engineering hat, and it should be made rather than discovered: it means never
-retuning terrain on a live world again. The alternative is not "retune freely" — it is "retune, and strand every
-existing world and every server still on the old build", which is what happens today.
+**The seam already exists and is narrower than it looks.** `decoration.rs` and `worldgen/nodes.rs` reach terrain through
+exactly one function — `column_shape`, returning a `ColumnShape` — and neither touches terrain internals. So there are
+three tiers, and they are already the shape of the code:
 
-### 5.4 Rejected: N generators in the client
+- **Terrain — pinned per world.** The producers of a `ColumnShape`: `terrain.rs`, `classify.rs`, `caves.rs`,
+  `rivers.rs`, `lakes.rs`. The only code whose change ends a world, and the only code copied per version.
+- **Decoration — current, additive only.** `landmark_fallback_only_adds` is already that rule, and it is what lets a
+  decoration change reach an old world instead of stranding it.
+- **Nodes and ore — current.** Already retroactive by design, so a world made under the first generator still grows
+  tomorrow's node kinds.
 
-Ship `worldgen::v23::build_column` beside `v24`, selected by what the server advertises. Recorded so it stays rejected:
-worldgen is not one function. Terrain, caves, rivers, lakes, classification, decoration and the node layer would each be
-versioned alongside it, with goldens for each, forever — and the mesher, the reveal pass and the node anti-dupe all read
-the results. The cost is out of proportion to everything else here, and §5.3 buys the same outcome by not needing it.
+That third tier is what makes this worth doing rather than a museum: an old world keeps receiving new content. It keeps
+its landscape, not its content set.
+
+**Portability is DERIVED, not declared.** A downstream feature is a pure function of a `ColumnShape`, so it runs under
+every generator able to produce the shape it needs — and one keyed on something a later generator introduced simply
+never fires under the older ones, because they never produce it. A new `SurfaceKind` variant is the clean case: an older
+generator never emits it, so the match arm IS the gate and no roster of "features added since" has to be kept or
+audited. The exception worth naming is a feature that would be WRONG rather than merely absent in old terrain — one
+balanced against a later generator's distribution — and that one names a floor by hand, the way the catalog's
+hand-priced functional items do.
+
+Which features reach which generators should be observable rather than hoped for: a sweep over the supported generators
+against the feature roster, reporting where each one fires, so "old worlds get some of the new" is something a reader
+can check instead of a claim.
+
+**The journal header already has room for it.** The layout is magic, then the format version, then two bytes written as
+zero and read by nobody, then the seed. Those two are a generator slot that costs no format bump — an existing file
+reads zero, which IS the generator that made it. Every world alive today opens untouched, which is the acceptance test
+for the whole change.
+
+Two consequences fall out. `journal::VERSION` collapses back to meaning only what its name says — the record format
+changed — instead of the two things its comment currently admits to ("stored edits cannot be trusted against the current
+worldgen OR record layout"), which is the split §5.1 asks for, reached by removing the reason rather than by policy. And
+a generator mismatch can then only ever mean "this client is too old", never "this world is gone": the world is data the
+server hands over, not a version both sides have to have been compiled with.
+
+### 5.4 What that costs, and the three answers it replaces
+
+Three costs, to be taken deliberately rather than discovered:
+
+- **A frozen generator's bugs are frozen too.** A cave that eats a spawn pad under the first generator is there for as
+  long as worlds made under it exist; fixing it makes the next one. That is inherent to the promise, not a wrinkle in
+  it.
+- **`ColumnShape` becomes a frozen interface.** Every generator must fill the same struct, so the real promise is that
+  terrain SHAPE can change forever as long as what a column IS does not. A new `SurfaceKind` variant is free (older
+  generators never emit it, and the downstream matches force somebody to answer it). A new FIELD is not: older
+  generators would supply a default forever. That is the seam that bites in five years, and it is worth a comment at the
+  struct rather than a surprise.
+- **It does not cover physics.** `Player::tick` is the other zero-tolerance axis, and pinning it per world would be
+  worse than the disease — an old world would never get a movement fix. Physics changes still refuse a join. They are
+  rarer, and they are usually fixes everyone wants.
+
+And three alternatives, recorded so they stay recorded:
+
+- *Freeze terrain after 1.0.* This document's first answer. It works only if terrain never has to change again, and
+  reduces to "retune and strand every world" the first time it does.
+- *Persist generated terrain instead of regenerating it.* Minecraft's answer, and the reason 1.18 left cliff walls at
+  old chunk borders. Not available here: join sync is seed plus edits, and terrain never crossing the wire is
+  load-bearing for streaming, the worker pool and the frame budget. Pinning the generator is the version of that idea
+  this architecture can hold.
+- *Version the whole worldgen pipeline.* The original rejection, and still right: decoration and the node layer stay
+  current, so only the `ColumnShape` producers are copied and the copies are dead code that never changes again — the
+  cheapest kind to own.
 
 ## 6. Sidestepping the whole problem, on web
 
-The web deploy already produces exactly what a version-matched client needs, for reasons that had nothing to do with
-compatibility: `just build-web` content-stamps each glue/wasm pair, every pair is immutable by name, and only
-`index.html` knows the stamps. The master already stores each server's protocol and sim version. Sessions live in
-`localStorage` and survive a reload; the sign-in residue that must not is per-tab in `sessionStorage` by design.
+The web deploy already produces most of what a version-matched client needs, for reasons that had nothing to do with
+compatibility: `just build-web` content-stamps each glue/wasm pair, every pair is immutable by name, only `index.html`
+knows the stamps, and `_headers` already serves `/pkg/*` as immutable for a year. **Retaining old pairs therefore costs
+bytes and nothing else** — no cache semantics change, because the pairs were already permanent by construction.
 
-So: the master maps a version pair to a bundle, and a web client that picks a known-good older server reloads into the
-bundle that was tested against it, carrying the join intent in the query. The page already refuses an unknown `?key`, so
-that intent is one more `PAGE_PARAMS` entry rather than a new mechanism.
+**It has to stay on one origin.** Production is a custom domain with a CDN in front of Pages, and a Pages deployment
+carries its own `pages.dev` host — a DIFFERENT origin, where `localStorage` does not follow. Switching there would drop
+the session and the sign-in state and land the player at a sign-in page, which is most of the appeal gone. So the
+version goes in the PATH: keep the last few stamped pairs in the deploy and publish a versioned entry beside the live
+root pointing at each. Everything stays on one origin, session and PKCE carry across the switch with no auth work, and a
+versioned index is immutable by name, so it caches hard where the root index cannot.
+
+**The mapping needs no master change.** The client derives the entry from the versions the row already carries; a small
+static manifest listing each retained build's window and path is enough, and the client runs the same predicate against
+a candidate build's constants that `compat` runs against its own. Naming replaces a lookup, which is the lesson the
+bundle stamping already encodes. A path that is not there 404s, and the row falls back to the refusal §7 already shows.
 
 What this buys is unusual — not a negotiated window but **the exact pair that was tested together**, at arbitrary
-version distance, with no protocol work at all. On the priority platform it dissolves §4 and §5 entirely.
+version distance, with no protocol work at all.
 
 What it costs:
 
-- A mapping the master owns and a deploy step that maintains it, plus a retention policy for old bundles. The artifacts
-  are immutable and cheap; the policy is the real decision.
-- One page reload mid-menu, which on a cold mobile load is not instant. The loading overlay's staged watchdog already
-  covers the honest version of that.
-- The player runs an old client on that server, so client-side fixes do not reach them, and "which build am I on"
-  becomes a question the game has to answer on screen.
-- The master becomes load-bearing for something it is not today. Join already fails closed against a master outage; this
-  would make the SERVER LIST version-aware, which is a wider dependency than the one that exists.
+- **Every retained build is a frozen client that can never be patched.** A crash or security fix does not reach it,
+  which argues for two or three, not an archive.
+- **The master's client API becomes a compatibility surface.** A retained bundle still talks to the CURRENT master, so
+  `Contracts.cs` needs the append-only discipline the wire has, for as long as bundles are kept. Nothing enforces that
+  today, and the history says it matters: `JoinRequest` losing its display name was a SECURITY fix, exactly the change
+  that would break an old bundle. The rule has to be written down — the master may break a retained build only when
+  security requires it, and then that build is dropped rather than kept limping.
+- **Never switch silently.** The row offers it, the game shows which build it is on, and a marker guards against a stale
+  manifest ping-ponging the page. A player who cannot say which build they are running cannot file a usable report.
 - Desktop gets nothing without a launcher that downloads matching builds, and iOS cannot do it at all. That asymmetry is
   acceptable only because §3 says which platform matters.
+
+**Sequence it last.** At the rate the behaviour gate moves today this would pin a frozen bundle almost every release.
+§5.1 and §5.3 either make it cheap — few enough distinct blocking versions that two or three retained builds cover a
+long window — or make it unnecessary, and which one is not knowable until they land.
 
 ## 7. Telling the truth, which ships first regardless — BUILT
 
@@ -245,16 +320,20 @@ in the game.
 Each stage stands alone and none of them presumes the next.
 
 - **C1 — the honest list (§7). SHIPPED.**
-- **C2 — split the behaviour gate (§5.1) and freeze worldgen (§5.3).** The decision with the most leverage here, and
-  mostly a re-pointing of goldens that already exist.
-- **C3 — additive-only discipline with its shape golden (§4.1), plus the reserved-discriminant test (§4.5).** Mechanical
+- **C2 — the generator pinned per world (§5.3). SHIPPED**, with one generator in it. Built before the change that forces
+  a second, so the seam was exercised while nothing was standing on it.
+- **C3 — split the behaviour gate (§5.1).** What is left of `SIM_VERSION` once worldgen is per-world state: physics on
+  its own equality gate, the tables out of the gate entirely. Mostly a re-pointing of goldens that exist.
+- **C4 — additive-only discipline with its shape golden (§4.1), plus the reserved-discriminant test (§4.5).** Mechanical
   and cheap, and the second is the only guard on this list against a silent wrong answer.
-- **C4 — the feature set in `Welcome` (§4.4).** Shaped in at the next deliberate floor raise, lit up per feature as
+- **C5 — the feature set in `Welcome` (§4.4).** Shaped in at the next deliberate floor raise, lit up per feature as
   features need to degrade.
-- **C5 — tables as join-sync data (§5.2)**, when a mispredicted dig bar against an old server is a complaint rather than
+- **C6 — tables as join-sync data (§5.2)**, when a mispredicted dig bar against an old server is a complaint rather than
   a theory.
-- **C6 — version-matched web delivery (§6)**, if a genuinely wide window is wanted without paying for it in protocol
-  complexity.
+- **C7 — version-matched web delivery (§6)**, last, for the reason §6 closes with.
+
+One thing belongs beside C2 and is not compatibility work: the boot-time archive should REFUSE and say so rather than
+renaming the world aside on a warn line (§1). C2 removes the common reason it fires; it does not make firing safe.
 
 §4.2's envelope is deliberately unplaced. It is the right answer if field-append keeps being what raises the floor after
 C3 lands, and the wrong one if C3 alone holds — a question the next year of bumps answers, not this document.
@@ -264,14 +343,15 @@ C3 lands, and the wrong one if C3 alone holds — a question the next year of bu
 1. **A window is a test matrix.** Two supported versions means two server builds in the e2e suite and a peer-version
    axis through the loopback tests. The expensive part is not the code that speaks the old version, it is the CI that
    proves it still does. A staging that widens the window without widening the suite is widening the surface for free,
-   and nothing is free.
+   and nothing is free. The same applies to generators: each retained one owes a golden, and the pin that matters is the
+   one saying every SUPPORTED generator has one.
 2. **Behaviour skew is invisible exactly where it is worst.** A protocol mismatch fails loudly; a table skew shows up as
    a dig bar that lies. §5.2 fixes the timing half. The unlock half — a button greyed one level off — has no mechanical
    fix, so the client must be able to say WHY it disagrees rather than merely disagreeing, which is `voice` work and
    belongs with C5.
-3. **The journal and the save format ride along.** `digblock-persist`'s `VERSION` is shared by server volumes and client
-   saves, and a worldgen retune stales both together. §5.3's freeze is what keeps that from becoming a second
-   compatibility axis; without it an old server's world is unreadable by anything, which no amount of wire work reaches.
+3. **A generator can be retired only when no world uses one** — which, for a self-hosted game, is never. The promise in
+   §5.3 is unbounded by construction, and the only lever is how cheap each retained copy is to own. Keeping the copies
+   to the `ColumnShape` producers is that lever, and `ColumnShape` staying frozen is what keeps the lever working.
 4. **An old server is a security surface.** Supporting a version range means supporting the anti-cheat that shipped with
    it. `dig_grace`, `EDIT_POS_TOLERANCE` and the adoption envelope's bias detection are all server-side, so an old
    server is exactly as strict as it was — which is that operator's business. What must not happen is a NEWER server
@@ -283,8 +363,11 @@ C3 lands, and the wrong one if C3 alone holds — a question the next year of bu
 
 ## 10. What is NOT in this design
 
-- **Any leniency about worldgen or physics.** Both stay exact-match under §5.1. A "close enough" world is the one
-  failure mode with no observable symptom until two players describe different terrain to each other.
+- **Any leniency about which generator made a world.** A world is generated by exactly the one it recorded, and a client
+  that lacks it is refused. Physics stays exact-match too. A "close enough" world is the one failure mode with no
+  observable symptom until two players describe different terrain to each other.
+- **Pinning physics per world.** §5.4 names why: an old world would never get a movement fix, which is worse than the
+  refusal it would avoid.
 - **Sending terrain.** Join sync is seed plus edits, and every streaming, worker and budget decision downstream assumes
   it.
 - **A self-describing protocol.** Postcard's compactness is load-bearing on the datagram path; the answer to evolution

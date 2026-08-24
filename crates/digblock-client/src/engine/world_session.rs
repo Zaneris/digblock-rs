@@ -3,12 +3,13 @@
 //! under the player is replaced.
 
 use super::*;
+use digblock_core::worldgen::Seed;
 
 impl Engine {
 	/// Welcome handshake: replace the locally-seeded world with the
 	/// server's. Cheap at startup — nothing meaningful has streamed yet.
-	pub(super) fn swap_world(&mut self, seed: f64, spawn: Vec3) {
-		log::info!("joining server world: seed {seed}");
+	pub(super) fn swap_world(&mut self, seed: Seed, spawn: Vec3) {
+		log::info!("joining server world: seed {seed:?}");
 		self.close_local_save();
 		self.session.player_names.clear();
 		self.push_feed(crate::voice::Msg::Connected);
@@ -229,7 +230,7 @@ impl Engine {
 		let nanos = web_time::SystemTime::now()
 			.duration_since(web_time::UNIX_EPOCH)
 			.map_or(0, |d| d.subsec_nanos());
-		let seed = nanos as f64 / u32::MAX as f64 * 10000.0;
+		let seed = Seed::current(nanos as f64 / u32::MAX as f64 * 10000.0);
 		self.seed = seed;
 		let spawn = digblock_core::player::spawn(seed);
 		self.save.spawn_pos = spawn;
@@ -259,7 +260,7 @@ impl Engine {
 	/// last position and view.
 	pub(super) fn enter_local_world(&mut self, save: digblock_persist::WorldSave) {
 		log::info!(
-			"entering local world '{}' (seed {})",
+			"entering local world '{}' (seed {:?})",
 			save.meta.name,
 			save.meta.seed
 		);
@@ -386,7 +387,8 @@ impl Engine {
 					let nanos = web_time::SystemTime::now()
 						.duration_since(web_time::UNIX_EPOCH)
 						.map_or(0, |d| d.subsec_nanos());
-					nanos as f64 / u32::MAX as f64 * 10000.0
+					// A world created here is created NOW, under the current generator.
+					Seed::current(nanos as f64 / u32::MAX as f64 * 10000.0)
 				};
 				let opened = self.save.world_store.as_mut().map(|store| {
 					store

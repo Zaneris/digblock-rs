@@ -35,6 +35,7 @@ use digblock_core::hotbar::Hotbar;
 use digblock_core::inv_grid::{InvGrid, reconcile_layout};
 use digblock_core::inventory::Inventory;
 use digblock_core::player::{self, Player, PlayerIntent, PlayerState};
+use digblock_core::worldgen::{Seed, TerrainVersion};
 use digblock_net::codec;
 use digblock_net::messages::{
 	ClientMsg, InputBatch, InputTick, RejectReason, RemoteState, SelfState, ServerMsg,
@@ -542,12 +543,21 @@ struct Kindled {
 }
 
 impl Sim {
+	/// `seed` is the operator's number; the GENERATOR comes from the world already on disk, so
+	/// restarting a server onto a newer build regenerates the same terrain rather than a new
+	/// world under the same edits. A world this build cannot generate fails the boot — the
+	/// journal names a generator that is not here, and any other would replace what it anchors.
 	pub fn new(
 		seed: f64,
 		data_dir: &Path,
 		sim_radius: i32,
 		workers: usize,
 	) -> std::io::Result<Self> {
+		let recorded = crate::journal::world_terrain(data_dir, seed)?;
+		let seed = Seed::new(seed, recorded.unwrap_or(TerrainVersion::CURRENT));
+		if recorded.is_none() {
+			log::info!("new world: seed {seed:?}");
+		}
 		let store = ChunkStore::new(seed, workers);
 		let mut sim = Self::with_store(seed, data_dir, sim_radius, store, player::spawn(seed))?;
 		sim.spawn_search = true;
@@ -560,7 +570,7 @@ impl Sim {
 	/// it) so sim tests never pay real worldgen.
 	#[doc(hidden)]
 	pub fn new_with_source(
-		seed: f64,
+		seed: Seed,
 		data_dir: &Path,
 		sim_radius: i32,
 		workers: usize,
@@ -572,7 +582,7 @@ impl Sim {
 	}
 
 	fn with_store(
-		seed: f64,
+		seed: Seed,
 		data_dir: &Path,
 		sim_radius: i32,
 		store: ChunkStore,

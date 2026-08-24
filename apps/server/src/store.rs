@@ -13,6 +13,7 @@ use digblock_core::block::BlockType;
 use digblock_core::chunk::{BlockWorld, CHUNK_SIZE, ChunkData, WORLD_VCHUNK, split_world};
 use digblock_core::fluid::FluidWorld;
 use digblock_core::protect::Region;
+use digblock_core::worldgen::Seed;
 use digblock_core::worldgen::build_column;
 use digblock_net::messages::BlockEdit;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -36,7 +37,7 @@ pub struct ReadyColumn {
 }
 
 pub struct ChunkStore {
-	seed: f64,
+	seed: Seed,
 	columns: FxHashMap<(i32, i32), Vec<Arc<ChunkData>>>,
 	pending: FxHashSet<(i32, i32)>,
 	/// Scratch for [`ChunkStore::set_residency`]'s keep set, kept between
@@ -48,7 +49,7 @@ pub struct ChunkStore {
 }
 
 impl ChunkStore {
-	pub fn new(seed: f64, workers: usize) -> Self {
+	pub fn new(seed: Seed, workers: usize) -> Self {
 		Self::new_with_source(
 			seed,
 			workers,
@@ -56,7 +57,7 @@ impl ChunkStore {
 		)
 	}
 
-	pub fn new_with_source(seed: f64, workers: usize, source: ColumnSource) -> Self {
+	pub fn new_with_source(seed: Seed, workers: usize, source: ColumnSource) -> Self {
 		let (job_tx, job_rx) = unbounded::<(i32, i32)>();
 		let (result_tx, result_rx) = unbounded::<ColumnResult>();
 		let workers = (0..workers.max(1))
@@ -88,7 +89,7 @@ impl ChunkStore {
 		}
 	}
 
-	pub fn seed(&self) -> f64 {
+	pub fn seed(&self) -> Seed {
 		self.seed
 	}
 
@@ -290,7 +291,7 @@ mod tests {
 	#[test]
 	fn two_center_residency_and_eviction() {
 		let journal = JournalIndex::default();
-		let mut store = ChunkStore::new(42.0, 2);
+		let mut store = ChunkStore::new(digblock_core::worldgen::Seed::current(42.0), 2);
 		store.set_residency(&[(0, 0), (40, 0)], 2);
 		let per_disc = 13; // r=2 disc: 1 + 4 + 8
 		drain_until(&mut store, &journal, per_disc * 2);
@@ -307,7 +308,7 @@ mod tests {
 	#[test]
 	fn journal_overlay_survives_evict_and_regen() {
 		let mut journal = JournalIndex::default();
-		let mut store = ChunkStore::new(42.0, 2);
+		let mut store = ChunkStore::new(digblock_core::worldgen::Seed::current(42.0), 2);
 		store.set_residency(&[(0, 0)], 1);
 		drain_until(&mut store, &journal, 5);
 
@@ -345,7 +346,7 @@ mod tests {
 	#[test]
 	fn store_world_records_landed_writes_only() {
 		let journal = JournalIndex::default();
-		let mut store = ChunkStore::new(42.0, 2);
+		let mut store = ChunkStore::new(digblock_core::worldgen::Seed::current(42.0), 2);
 		store.set_residency(&[(0, 0)], 1);
 		drain_until(&mut store, &journal, 5);
 
@@ -386,7 +387,7 @@ mod tests {
 			z: 4,
 			block: BlockType::Stone as u16,
 		});
-		let mut store = ChunkStore::new(42.0, 2);
+		let mut store = ChunkStore::new(digblock_core::worldgen::Seed::current(42.0), 2);
 		store.set_residency(&[(0, 0)], 1);
 		let deadline = Instant::now() + Duration::from_secs(30);
 		let mut water = Vec::new();

@@ -3,9 +3,10 @@
 //! journal rather than recording the client's guesses.
 
 use super::*;
+use crate::worldgen::Seed;
 
 impl Pipeline {
-	pub fn new(seed: f64, draw_dist: i32, workers: usize) -> Self {
+	pub fn new(seed: Seed, draw_dist: i32, workers: usize) -> Self {
 		Self::build(seed, draw_dist, workers, None)
 	}
 
@@ -13,7 +14,7 @@ impl Pipeline {
 	/// pass the saved world's edits (empty for a fresh world) so even the
 	/// spawn columns generate already-overlaid. Multiplayer keeps `new`.
 	pub fn with_overlay(
-		seed: f64,
+		seed: Seed,
 		draw_dist: i32,
 		workers: usize,
 		overlay: crate::overlay::EditOverlay,
@@ -22,7 +23,7 @@ impl Pipeline {
 	}
 
 	pub(super) fn build(
-		seed: f64,
+		seed: Seed,
 		draw_dist: i32,
 		workers: usize,
 		overlay: Option<crate::overlay::EditOverlay>,

@@ -169,7 +169,7 @@ impl Engine {
 				yaw_deg: self.camera.yaw_deg,
 				pitch_deg: self.camera.pitch_deg,
 				tod_deg: self.sun.tod,
-				seed: self.seed,
+				seed: self.seed.value,
 			};
 			Some(stats)
 		} else {

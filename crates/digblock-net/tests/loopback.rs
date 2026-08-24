@@ -267,13 +267,14 @@ fn full_frame_handshake_edits_snapshot() {
 		build: "test".into(),
 		tod: 45.0,
 		spawn_look: [0.0; 3],
+		terrain: digblock_core::worldgen::TerrainVersion::CURRENT.to_wire(),
 	});
 	events.clear();
 	client.poll(&mut events, 0.016);
 	assert_matches!(
 		events.first(),
 		Some(NetEvent::Welcome { seed, player_id: 1, tod, .. })
-			if *seed == 42.0 && *tod == 45.0
+			if seed.value == 42.0 && *tod == 45.0
 	);
 	assert!(client.ready());
 	assert_eq!(client.predictor.current_tick(), 600 + CLIENT_TICK_LEAD);
@@ -399,6 +400,7 @@ fn authoritative_broadcast_cancels_pending_revert() {
 		build: "test".into(),
 		tod: 80.0,
 		spawn_look: [0.0; 3],
+		terrain: digblock_core::worldgen::TerrainVersion::CURRENT.to_wire(),
 	});
 	client.poll(&mut events, 0.016);
 
@@ -475,6 +477,7 @@ fn own_ack_defers_the_racing_predictions_delta() {
 		build: "test".into(),
 		tod: 80.0,
 		spawn_look: [0.0; 3],
+		terrain: digblock_core::worldgen::TerrainVersion::CURRENT.to_wire(),
 	});
 	client.poll(&mut events, 0.016);
 
@@ -567,6 +570,7 @@ fn inventory_full_maps_to_event() {
 		build: "test".into(),
 		tod: 80.0,
 		spawn_look: [0.0; 3],
+		terrain: digblock_core::worldgen::TerrainVersion::CURRENT.to_wire(),
 	});
 	server.send(&ServerMsg::InventoryFull {
 		counts: vec![(BlockType::Dirt as u16, 5), (9999, 3)],
@@ -610,6 +614,7 @@ fn inventory_rebase_uses_the_deltas_in_flight_at_decode_time() {
 		build: "test".into(),
 		tod: 80.0,
 		spawn_look: [0.0; 3],
+		terrain: digblock_core::worldgen::TerrainVersion::CURRENT.to_wire(),
 	});
 	events.clear();
 	client.poll(&mut events, 0.016);
@@ -682,6 +687,7 @@ fn teleport_and_admin_commands_map_to_events() {
 		build: "test".into(),
 		tod: 80.0,
 		spawn_look: [0.0; 3],
+		terrain: digblock_core::worldgen::TerrainVersion::CURRENT.to_wire(),
 	});
 	server.send(&ServerMsg::Teleported {
 		pos: [100.5, 60.5, -40.5],
@@ -753,6 +759,7 @@ fn input_redundancy_survives_datagram_loss() {
 		build: "test".into(),
 		tod: 80.0,
 		spawn_look: [0.0; 3],
+		terrain: digblock_core::worldgen::TerrainVersion::CURRENT.to_wire(),
 	});
 	client.poll(&mut events, 0.016);
 
@@ -825,6 +832,7 @@ fn incompatible_server_version_is_refused_locally() {
 		build: "test".into(),
 		tod: 80.0,
 		spawn_look: [0.0; 3],
+		terrain: digblock_core::worldgen::TerrainVersion::CURRENT.to_wire(),
 	});
 	events.clear();
 	client.poll(&mut events, 0.016);
@@ -855,6 +863,7 @@ fn sim_version_mismatch_is_refused() {
 		build: "newer".into(),
 		tod: 80.0,
 		spawn_look: [0.0; 3],
+		terrain: digblock_core::worldgen::TerrainVersion::CURRENT.to_wire(),
 	});
 	events.clear();
 	client.poll(&mut events, 0.016);
@@ -886,6 +895,7 @@ fn input_sends_are_throttled_to_the_stride() {
 		build: "test".into(),
 		tod: 80.0,
 		spawn_look: [0.0; 3],
+		terrain: digblock_core::worldgen::TerrainVersion::CURRENT.to_wire(),
 	});
 	client.poll(&mut events, 0.016);
 	server.pump();
@@ -946,6 +956,7 @@ fn a_large_journal_sync_is_spread_across_polls() {
 		build: "test".into(),
 		tod: 80.0,
 		spawn_look: [0.0; 3],
+		terrain: digblock_core::worldgen::TerrainVersion::CURRENT.to_wire(),
 	});
 
 	// Many columns of many cells each, all arriving at once.
@@ -1023,6 +1034,7 @@ fn a_post_welcome_disconnect_surfaces_once_after_queued_bytes() {
 		build: "test".into(),
 		tod: 80.0,
 		spawn_look: [0.0; 3],
+		terrain: digblock_core::worldgen::TerrainVersion::CURRENT.to_wire(),
 	});
 	events.clear();
 	client.poll(&mut events, 0.016);
@@ -1082,6 +1094,7 @@ fn a_silent_server_eventually_disconnects_the_client() {
 		build: "test".into(),
 		tod: 80.0,
 		spawn_look: [0.0; 3],
+		terrain: digblock_core::worldgen::TerrainVersion::CURRENT.to_wire(),
 	});
 	events.clear();
 	client.poll(&mut events, 0.016);
@@ -1137,6 +1150,7 @@ fn ongoing_traffic_keeps_the_liveness_deadline_from_firing() {
 		build: "test".into(),
 		tod: 80.0,
 		spawn_look: [0.0; 3],
+		terrain: digblock_core::worldgen::TerrainVersion::CURRENT.to_wire(),
 	});
 	events.clear();
 	client.poll(&mut events, 0.016);
@@ -1186,6 +1200,7 @@ fn rtt_is_measured_on_the_input_ack_loop() {
 		build: "test".into(),
 		tod: 80.0,
 		spawn_look: [0.0; 3],
+		terrain: digblock_core::worldgen::TerrainVersion::CURRENT.to_wire(),
 	});
 	events.clear();
 	client.poll(&mut events, 0.016);
@@ -1323,6 +1338,7 @@ fn traffic_counters_produce_a_per_second_rate() {
 		build: "test".into(),
 		tod: 80.0,
 		spawn_look: [0.0; 3],
+		terrain: digblock_core::worldgen::TerrainVersion::CURRENT.to_wire(),
 	});
 	events.clear();
 	client.poll(&mut events, 0.016);
