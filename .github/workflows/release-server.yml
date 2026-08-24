@@ -3,10 +3,11 @@
 #     binary only, env-driven config) for linux/amd64 + linux/arm64
 #     (Raspberry Pi 4/5 on a 64-bit OS), pushed to GHCR as :<version>
 #     and :latest
-#   - standalone binaries for Linux (x86_64 and aarch64, fully static
-#     musl) and Windows (x86_64) for hosts without Docker
 #   - a GitHub Release carrying the deploy kit (compose.yml with the
-#     config inline + README) plus those binaries
+#     config inline + README)
+#   - (disabled for now) standalone binaries for Linux (x86_64 and
+#     aarch64, fully static musl) and Windows (x86_64) for hosts
+#     without Docker — see the commented-out `binaries` job
 #
 # On-demand only: Actions → release-server → Run workflow, enter a
 # version like 0.1.0. One-time: after the first run, make the
@@ -132,76 +133,79 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  binaries:
-    needs: bump
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-musl
-            artifact: digblock-server-linux-x86_64
-          # aarch64 (Raspberry Pi 4/5 on a 64-bit OS) cross-compiles via
-          # `cross` — Docker-based, uses the host rustup toolchain, so
-          # the target must still be rustup-added.
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-musl
-            artifact: digblock-server-linux-aarch64
-            cross: true
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            artifact: digblock-server-windows-x86_64.exe
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.bump.outputs.sha }}
+  # Standalone binaries are OFF for now — only the Docker image ships.
+  # Uncomment this job, the `binaries` entry in release.needs, the
+  # download-artifact step and the `dist/*` upload to bring them back.
+#  binaries:
+#    needs: bump
+#    strategy:
+#      matrix:
+#        include:
+#          - os: ubuntu-latest
+#            target: x86_64-unknown-linux-musl
+#            artifact: digblock-server-linux-x86_64
+#          # aarch64 (Raspberry Pi 4/5 on a 64-bit OS) cross-compiles via
+#          # `cross` — Docker-based, uses the host rustup toolchain, so
+#          # the target must still be rustup-added.
+#          - os: ubuntu-latest
+#            target: aarch64-unknown-linux-musl
+#            artifact: digblock-server-linux-aarch64
+#            cross: true
+#          - os: windows-latest
+#            target: x86_64-pc-windows-msvc
+#            artifact: digblock-server-windows-x86_64.exe
+#    runs-on: ${{ matrix.os }}
+#    steps:
+#      - uses: actions/checkout@v7
+#        with:
+#          ref: ${{ needs.bump.outputs.sha }}
 
-      - name: Add target
-        run: rustup target add ${{ matrix.target }}
+#      - name: Add target
+#        run: rustup target add ${{ matrix.target }}
 
-      - name: Install musl toolchain
-        if: matrix.target == 'x86_64-unknown-linux-musl'
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
+#      - name: Install musl toolchain
+#        if: matrix.target == 'x86_64-unknown-linux-musl'
+#        run: sudo apt-get update && sudo apt-get install -y musl-tools
 
-      - name: Install cross
-        if: matrix.cross
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cross
+#      - name: Install cross
+#        if: matrix.cross
+#        uses: taiki-e/install-action@v2
+#        with:
+#          tool: cross
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.target }}
+#      - uses: Swatinem/rust-cache@v2
+#        with:
+#          key: ${{ matrix.target }}
 
-      - name: Build
-        run: ${{ matrix.cross && 'cross' || 'cargo' }} build --release -p digblock-server --bin digblock-server --target ${{ matrix.target }}
+#      - name: Build
+#        run: ${{ matrix.cross && 'cross' || 'cargo' }} build --release -p digblock-server --bin digblock-server --target ${{ matrix.target }}
 
-      - name: Stage artifact
-        shell: bash
-        run: |
-          mkdir dist
-          src=target/${{ matrix.target }}/release/digblock-server
-          [ -f "$src.exe" ] && src="$src.exe"
-          cp "$src" "dist/${{ matrix.artifact }}"
+#      - name: Stage artifact
+#        shell: bash
+#        run: |
+#          mkdir dist
+#          src=target/${{ matrix.target }}/release/digblock-server
+#          [ -f "$src.exe" ] && src="$src.exe"
+#          cp "$src" "dist/${{ matrix.artifact }}"
 
-      - uses: actions/upload-artifact@v7
-        with:
-          name: ${{ matrix.artifact }}
-          path: dist/${{ matrix.artifact }}
+#      - uses: actions/upload-artifact@v7
+#        with:
+#          name: ${{ matrix.artifact }}
+#          path: dist/${{ matrix.artifact }}
 
   release:
-    needs: [bump, image, binaries]
+    needs: [bump, image]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ needs.bump.outputs.sha }}
 
-      - uses: actions/download-artifact@v8
-        with:
-          path: dist
-          pattern: digblock-server-*
-          merge-multiple: true
+      # - uses: actions/download-artifact@v8
+      #   with:
+      #     path: dist
+      #     pattern: digblock-server-*
+      #     merge-multiple: true
 
       - name: Publish GitHub Release
         env:
@@ -209,7 +213,6 @@ jobs:
         run: |
           gh release create "server-v${{ inputs.version }}" \
             deploy/compose.yml deploy/README.md \
-            dist/* \
             --target "${{ needs.bump.outputs.sha }}" \
             --title "Dedicated server v${{ inputs.version }}" \
             --notes "$(cat <<'EOF'
@@ -222,12 +225,6 @@ jobs:
           curl -LO ${{ github.server_url }}/${{ github.repository }}/releases/download/server-v${{ inputs.version }}/compose.yml
           # edit compose.yml: set DIGBLOCK_SERVER_NAME (the rest is optional)
           docker compose up -d
-          ```
-
-          **Without Docker**: grab the standalone binary for your platform below (Linux x86_64/aarch64, Windows x86_64) and run it directly, e.g.
-
-          ```sh
-          ./digblock-server-linux-x86_64 --server-name "My World"
           ```
 
           You're listed at the public IP you register from; `--advertise-host` overrides it with a DNS name. Set `DIGBLOCK_ADMIN_IDS` (or `--admin`) to a player's account id — they copy it from the game's Account screen — for in-game admin chat commands: `/tp`, `/ban`, `/ban-list`, `/unban`. A display name works too and is resolved to an id when the server starts.
