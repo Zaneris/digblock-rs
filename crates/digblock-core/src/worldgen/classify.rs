@@ -302,14 +302,11 @@ pub struct ColumnShape {
 	/// World y of the local water surface: SEA_LEVEL in the ocean, above
 	/// it inside river channels. Water fills `height+1..=water`.
 	pub water: i32,
-	/// The y span over which some neighbour holds water, inclusive and
-	/// empty as `(MAX, MIN)` — this column's cells inside it are that
-	/// pool's wall, and the carve leaves them alone. A cave BELOW the
-	/// span is nobody's wall and still runs, which is the whole reason
-	/// this is a span and not a ceiling. Read raw, which can only name a
-	/// wall no longer needed (a neighbour containment drained): a cave
-	/// stopping short of a dry channel costs nothing, a cave through a
-	/// live one is the hole containment exists to close.
+	/// The y span over which some neighbour holds water — its raw pool, or
+	/// the puddle its roll dips it into — inclusive and empty as `(MAX,
+	/// MIN)`: this column's cells inside it are that water's wall and the
+	/// carve leaves them alone. A span, not a ceiling, so a cave BELOW it
+	/// still runs; read wide, since a spare wall costs one carve cell.
 	pub wall: (i32, i32),
 }
 
@@ -338,17 +335,88 @@ pub(super) fn height_ceiling(f: &Fields) -> i32 {
 pub(super) fn classify(f: &Fields, nbrs: [Fields; 4], x: i32, z: i32, seed: f64) -> ColumnShape {
 	let [nxm, nxp, nzm, nzp] = &nbrs;
 	let height = f.h.floor() as i32;
-	let o = seed + SURF_DITHER_OFF;
-	let dith = noise2(
-		o + f64::from(x) * SURF_DITHER_FREQ,
-		o + f64::from(z) * SURF_DITHER_FREQ,
-	);
 	// Central-difference rise per block, the max of both axes — from the
 	// pre-river surfaces, so channels don't read as cliffs.
 	let slope = (nxp.h_pre - nxm.h_pre)
 		.abs()
 		.max((nzp.h_pre - nzm.h_pre).abs())
 		* 0.5;
+	let surface = surface_kind(f, slope, x, z, seed);
+	let water = f.water.floor() as i32;
+	let wall = nbrs
+		.iter()
+		.filter(|n| holds_water(n))
+		.fold((i32::MAX, i32::MIN), |(lo, hi), n| {
+			(
+				lo.min(n.h.floor() as i32 + 1),
+				hi.max(n.water.floor() as i32),
+			)
+		});
+	let (height, water) = contain(f, &nbrs, wall, height, water);
+	// Marsh puddles: scattered columns dip one block and fill with water
+	// flush to the marsh grade. Two gates, and both are containment: no
+	// neighbour may hold a pool — which is also what keeps `contain`'s
+	// reading of a marsh neighbour honest, since a column that could dip
+	// is never beside one asking — and every neighbour's grade must reach
+	// the level filled. That second gate reads raw heights on purpose: a
+	// neighbour dipping from the same grade fills to it, and one standing
+	// above it walls the cell, so the undipped height answers both without
+	// asking whether the neighbour is marsh at all.
+	let (height, water) = if surface == SurfaceKind::Marsh
+		&& !nbrs.iter().any(holds_water)
+		&& nbrs.iter().all(|n| n.h.floor() as i32 >= height)
+		&& puddle_roll(x, z, seed)
+	{
+		(height - 1, height)
+	} else {
+		(height, water)
+	};
+	// A neighbour's puddle is walled AFTER containment, because the bank
+	// rule reads `wall` and would lift toward a column that only might dip.
+	// A puddle's gate already makes every neighbour's ground reach its
+	// level; what the wall does is keep the carve from taking that ground.
+	let wall = nbrs
+		.iter()
+		.zip([(-1, 0), (1, 0), (0, -1), (0, 1)])
+		.filter(|(n, (dx, dz))| !holds_water(n) && could_puddle(n, x + dx, z + dz, seed))
+		.fold(wall, |(lo, hi), (n, _)| {
+			let level = n.h.floor() as i32;
+			(lo.min(level), hi.max(level))
+		});
+	ColumnShape {
+		height,
+		surface,
+		water,
+		wall,
+	}
+}
+
+/// Whether the puddle roll dips this column — one noise, shared so the
+/// column and its neighbours cannot roll differently.
+fn puddle_roll(x: i32, z: i32, seed: f64) -> bool {
+	let po = seed + PUDDLE_OFF;
+	noise2(
+		po + f64::from(x) * PUDDLE_FREQ,
+		po + f64::from(z) * PUDDLE_FREQ,
+	) > 0.55
+}
+
+/// Whether a column might be a puddle, from its own fields alone — what a
+/// NEIGHBOUR can know of it. Slope is the one input a neighbour cannot
+/// see, and a column read as flat claims at least the puddle it gets, so
+/// every real puddle is walled and a false one spares a carve cell.
+fn could_puddle(f: &Fields, x: i32, z: i32, seed: f64) -> bool {
+	surface_kind(f, 0.0, x, z, seed) == SurfaceKind::Marsh && puddle_roll(x, z, seed)
+}
+
+/// The surface kind of a column from its fields and its rise per block.
+fn surface_kind(f: &Fields, slope: f64, x: i32, z: i32, seed: f64) -> SurfaceKind {
+	let height = f.h.floor() as i32;
+	let o = seed + SURF_DITHER_OFF;
+	let dith = noise2(
+		o + f64::from(x) * SURF_DITHER_FREQ,
+		o + f64::from(z) * SURF_DITHER_FREQ,
+	);
 	// Dithered altitude for the stone/snow lines (pre-river surface),
 	// both shifted in lockstep by regional temperature so the rock band
 	// between them survives at every latitude-equivalent.
@@ -369,7 +437,7 @@ pub(super) fn classify(f: &Fields, nbrs: [Fields; 4], x: i32, z: i32, seed: f64)
 		}
 		SurfaceKind::Mountain
 	};
-	let surface = if height < SEA_LEVEL {
+	if height < SEA_LEVEL {
 		SurfaceKind::Ocean
 	} else if water > height {
 		if f.lake {
@@ -408,48 +476,6 @@ pub(super) fn classify(f: &Fields, nbrs: [Fields; 4], x: i32, z: i32, seed: f64)
 		SurfaceKind::Forest
 	} else {
 		SurfaceKind::Plains
-	};
-	let wall = nbrs
-		.iter()
-		.filter(|n| holds_water(n))
-		.fold((i32::MAX, i32::MIN), |(lo, hi), n| {
-			(
-				lo.min(n.h.floor() as i32 + 1),
-				hi.max(n.water.floor() as i32),
-			)
-		});
-	let (height, water) = contain(f, &nbrs, wall, height, water);
-	// Marsh puddles: scattered columns dip one block and fill with water
-	// flush to the marsh grade. Two gates, and both are containment: no
-	// neighbour may hold a pool — which is also what keeps `contain`'s
-	// reading of a marsh neighbour honest, since a column that could dip
-	// is never beside one asking — and every neighbour's grade must reach
-	// the level filled. That second gate reads raw heights on purpose: a
-	// neighbour dipping from the same grade fills to it, and one standing
-	// above it walls the cell, so the undipped height answers both without
-	// asking whether the neighbour is marsh at all.
-	let (height, water) = if surface == SurfaceKind::Marsh
-		&& !nbrs.iter().any(holds_water)
-		&& nbrs.iter().all(|n| n.h.floor() as i32 >= height)
-	{
-		let po = seed + PUDDLE_OFF;
-		if noise2(
-			po + f64::from(x) * PUDDLE_FREQ,
-			po + f64::from(z) * PUDDLE_FREQ,
-		) > 0.55
-		{
-			(height - 1, height)
-		} else {
-			(height, water)
-		}
-	} else {
-		(height, water)
-	};
-	ColumnShape {
-		height,
-		surface,
-		water,
-		wall,
 	}
 }
 

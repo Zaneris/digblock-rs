@@ -441,4 +441,54 @@ mod tests {
 			"no settled cell in the sample stood above its chunk's terrain"
 		);
 	}
+
+	/// The containment invariant with the carve in view: no water worldgen
+	/// emits stands beside carved air, a weir's lip excepted. What fails it
+	/// is a marsh puddle whose neighbours never learned of the dip, left on
+	/// a pillar where a cave breaches the marsh grade — so the sample must
+	/// hold such a puddle, walled: a cell the cave field carves and is kept.
+	#[test]
+	fn no_worldgen_water_stands_against_a_carve() {
+		let n = CHUNK_SIZE as i32;
+		let mut water = 0u64;
+		let mut kept = 0u64;
+		for cx in 100..115 {
+			for cz in 88..100 {
+				let slab = Slab::new(cx, cz, SEED, TRAVEL);
+				for (z, row) in slab.chunk_shapes().iter().enumerate() {
+					for (x, s) in row.iter().enumerate() {
+						let (wx, wz) = (cx * n + x as i32, cz * n + z as i32);
+						let lip = s.water == s.height + 1
+							&& fluid::SIDES.iter().any(|(dx, dz)| {
+								let nb = slab.shapes[slab.at(wx + dx, wz + dz).unwrap()];
+								nb.height.max(nb.water) < s.water
+							});
+						if lip {
+							continue;
+						}
+						for y in s.height + 1..=s.water {
+							water += 1;
+							for (dx, dz) in fluid::SIDES {
+								let (nx, nz) = (wx + dx, wz + dz);
+								let beside = slab.pristine(nx, y, nz).unwrap();
+								assert!(
+									beside.is_water() || beside.props().collides,
+									"water at ({wx},{y},{wz}) stands against {beside:?}"
+								);
+								if beside.props().collides && super::super::carved(nx, y, nz, SEED)
+								{
+									kept += 1;
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+		assert!(water > 1000, "only {water} water cells swept");
+		assert!(
+			kept > 0,
+			"no wall in the sample stood where the cave field carves"
+		);
+	}
 }

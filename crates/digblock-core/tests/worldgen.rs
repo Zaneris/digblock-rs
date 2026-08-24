@@ -434,7 +434,7 @@ fn worldgen_never_places_a_crafted_block() {
 /// identically forever. A hash moves in place only for a change small enough that every world on
 /// its row is to wear it — ridden by a `SIM_VERSION` bump, so two builds cannot disagree about one
 /// world. The count assert catches a row shipped unpinned, the one way this stops covering `ALL`.
-const TERRAIN_GOLDENS: &[(TerrainVersion, u64)] = &[(TerrainVersion::V1, 16191328047752925684)];
+const TERRAIN_GOLDENS: &[(TerrainVersion, u64)] = &[(TerrainVersion::V1, 2130581501045034260)];
 
 #[test]
 fn a_shipped_generator_never_moves() {
@@ -450,9 +450,10 @@ fn a_shipped_generator_never_moves() {
 			.unwrap_or_else(|| panic!("{version:?} has no golden"));
 		// FNV-1a over the raw block bytes of a spread of columns (spawn area,
 		// ocean, mountains — chosen to touch every generation path). The last
-		// two are the settle's: (11, -17) carries the sample's densest run of
-		// weirs, and (38, -17) the cascade the walk's re-resolution moves the
-		// most — without them the pin cannot see a cascade change at all.
+		// three are water's: (11, -17) carries the sample's densest run of
+		// weirs, (38, -17) the cascade the walk's re-resolution moves the
+		// most, and (7, -35) the marsh puddles a cave breaches — without them
+		// the pin cannot see a cascade or a puddle's wall change at all.
 		let mut hash: u64 = 0xcbf29ce484222325;
 		for &(cx, cz) in &[
 			(0, 0),
@@ -462,6 +463,7 @@ fn a_shipped_generator_never_moves() {
 			(40, -33),
 			(11, -17),
 			(38, -17),
+			(7, -35),
 		] {
 			for chunk in digblock_core::worldgen::build_column(cx, cz, Seed::new(42.0, version)) {
 				for &b in chunk.blocks.iter() {
