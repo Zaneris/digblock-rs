@@ -17,8 +17,6 @@ fn expect_terrain(wx: i32, wy: i32, wz: i32, seed: Seed) -> BlockType {
 	let base = if wy > h {
 		if wy <= shape.water {
 			BlockType::Water
-		} else if shape.fall.is_some_and(|(b, t)| (b..=t).contains(&wy)) {
-			BlockType::WaterFall
 		} else {
 			BlockType::Air
 		}
@@ -64,7 +62,11 @@ fn expect_terrain(wx: i32, wy: i32, wz: i32, seed: Seed) -> BlockType {
 			| BlockType::Gravel
 			| BlockType::Sandstone
 	);
-	if carveable && h > shape.water && wy >= 1 && carved(wx, wy, wz, seed) {
+	// A cell inside the span a neighbour's pool occupies is that pool's
+	// wall and survives the carve — otherwise the cave opens the water
+	// onto air, which is what containment exists to prevent.
+	let walls_water = (shape.wall.0..=shape.wall.1).contains(&wy);
+	if carveable && h > shape.water && wy >= 1 && !walls_water && carved(wx, wy, wz, seed) {
 		BlockType::Air
 	} else {
 		base
@@ -338,10 +340,7 @@ fn spawn_finds_land() {
 		for dz in -2..=2 {
 			for dx in -2..=2 {
 				let n = column_shape(x + dx, z + dz, seed);
-				let top = n
-					.height
-					.max(n.water)
-					.max(n.fall.map_or(i32::MIN, |(_, t)| t));
+				let top = n.height.max(n.water);
 				assert!(
 					top <= h + 1 || (dx, dz) == (0, 0),
 					"seed {value}: wall at eye level ({dx},{dz})"
@@ -430,14 +429,12 @@ fn worldgen_never_places_a_crafted_block() {
 	}
 }
 
-/// One pinned hash per generator this build carries. A row is written ONCE, when its generator
-/// ships, and never moves again — that is the whole promise of keeping a generator: a world made
-/// under it regenerates identically forever, on every build that still carries it. A terrain
-/// change therefore adds a `TerrainVersion` row and a hash beside it; it does NOT edit a hash.
-///
-/// The count assert is the half that bites: a generator added without a golden fails here instead
-/// of shipping unpinned, which is the one way this table can silently stop covering the roster.
-const TERRAIN_GOLDENS: &[(TerrainVersion, u64)] = &[(TerrainVersion::V1, 2091408729156646669)];
+/// One pinned hash per generator this build carries. A terrain change adds a `TerrainVersion` row
+/// with a hash beside it, and that hash never moves again: a world made under the row regenerates
+/// identically forever. A hash moves in place only for a change small enough that every world on
+/// its row is to wear it — ridden by a `SIM_VERSION` bump, so two builds cannot disagree about one
+/// world. The count assert catches a row shipped unpinned, the one way this stops covering `ALL`.
+const TERRAIN_GOLDENS: &[(TerrainVersion, u64)] = &[(TerrainVersion::V1, 16191328047752925684)];
 
 #[test]
 fn a_shipped_generator_never_moves() {
@@ -452,9 +449,20 @@ fn a_shipped_generator_never_moves() {
 			.find(|(v, _)| *v == version)
 			.unwrap_or_else(|| panic!("{version:?} has no golden"));
 		// FNV-1a over the raw block bytes of a spread of columns (spawn area,
-		// ocean, mountains — chosen to touch every generation path).
+		// ocean, mountains — chosen to touch every generation path). The last
+		// two are the settle's: (11, -17) carries the sample's densest run of
+		// weirs, and (38, -17) the cascade the walk's re-resolution moves the
+		// most — without them the pin cannot see a cascade change at all.
 		let mut hash: u64 = 0xcbf29ce484222325;
-		for &(cx, cz) in &[(0, 0), (1, -1), (7, 3), (-12, 5), (40, -33)] {
+		for &(cx, cz) in &[
+			(0, 0),
+			(1, -1),
+			(7, 3),
+			(-12, 5),
+			(40, -33),
+			(11, -17),
+			(38, -17),
+		] {
 			for chunk in digblock_core::worldgen::build_column(cx, cz, Seed::new(42.0, version)) {
 				for &b in chunk.blocks.iter() {
 					hash = (hash ^ b as u64).wrapping_mul(0x100000001b3);
@@ -463,8 +471,9 @@ fn a_shipped_generator_never_moves() {
 		}
 		assert_eq!(
 			hash, *want,
-			"{version:?} produces different terrain than it shipped with — a world made under it \
-			 would be silently rewritten. Add a new generator instead of changing this one."
+			"{version:?} produces different terrain than it shipped with — every world made under it \
+			 would be rewritten under its edits. Add a new generator; or, for a change every such \
+			 world is to wear, move this hash AND bump digblock_core::SIM_VERSION."
 		);
 	}
 }

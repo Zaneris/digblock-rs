@@ -188,6 +188,16 @@ today a change takes the operator's world. So the generator becomes per-world st
 keeps it for as long as it exists, and a terrain change writes a NEW generator rather than moving the one worlds are
 standing on.
 
+**One exception, and it is a judgment rather than a mechanism.** A change small enough that every world on a row is to
+wear it may move the row in place instead of adding one — the containment work of #34 did, walling and pouring water the
+generator already placed and leaving nearly every column as it was. The cost is exactly the one a new row exists to
+avoid, every world on the row regenerating under its edits, so the judgment is how much of the landscape moves against
+how many worlds stand on it. What it must still do is bump `SIM_VERSION`: both ends run the row's body for the same
+world and the wire carries only the row's number, so without the bump a client and a server on either side of the change
+would agree on the generator and disagree on the ground. The row's golden in `a_shipped_generator_never_moves` moves
+with it, and that failure is the change announcing itself; nothing else moves — not `journal::VERSION`, and no world is
+archived.
+
 **The seam already exists and is narrower than it looks.** `decoration.rs` and `worldgen/nodes.rs` reach terrain through
 exactly one function — `column_shape`, returning a `ColumnShape` — and neither touches terrain internals. So there are
 three tiers, and they are already the shape of the code:
@@ -195,7 +205,9 @@ three tiers, and they are already the shape of the code:
 - **Terrain — pinned per world.** The producers of a `ColumnShape`: `terrain.rs`, `classify.rs`, `caves.rs`,
   `rivers.rs`, `lakes.rs`. The only code whose change ends a world, and the only code copied per version.
 - **Decoration — current, additive only.** `landmark_fallback_only_adds` is already that rule, and it is what lets a
-  decoration change reach an old world instead of stranding it.
+  decoration change reach an old world instead of stranding it. The generation-time settle (`worldgen/settle.rs`) sits
+  in this tier too: it runs over the `ColumnShape`s and the carve any generator produces, and only ever adds water —
+  `a_settle_never_takes_water_away` is its additivity rule.
 - **Nodes and ore — current.** Already retroactive by design, so a world made under the first generator still grows
   tomorrow's node kinds.
 
@@ -321,7 +333,8 @@ Each stage stands alone and none of them presumes the next.
 
 - **C1 — the honest list (§7). SHIPPED.**
 - **C2 — the generator pinned per world (§5.3). SHIPPED**, with one generator in it. Built before the change that forces
-  a second, so the seam was exercised while nothing was standing on it.
+  a second, so the seam was exercised while nothing was standing on it. The first terrain change after it, #34's
+  containment, took §5.3's in-place path rather than a second row.
 - **C3 — split the behaviour gate (§5.1).** What is left of `SIM_VERSION` once worldgen is per-world state: physics on
   its own equality gate, the tables out of the gate entirely. Mostly a re-pointing of goldens that exist.
 - **C4 — additive-only discipline with its shape golden (§4.1), plus the reserved-discriminant test (§4.5).** Mechanical

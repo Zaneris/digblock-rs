@@ -19,6 +19,7 @@ mod lakes;
 pub mod nodes;
 pub mod ore;
 mod rivers;
+mod settle;
 mod terrain;
 
 pub use classify::{
@@ -91,10 +92,11 @@ impl Seed {
 
 // ---- the seam -------------------------------------------------------
 //
-// The three producers that ARE a generator. A new `TerrainVersion` row makes each match
-// non-exhaustive, so the compiler names exactly what a new generator has to supply and nothing
-// downstream of `ColumnShape` is asked to care. Version-specific code never learns its own number:
-// the arm picks the module, the module takes a plain `f64`.
+// The producers that ARE a generator, and the classifier's bound on its own answer. A new
+// `TerrainVersion` row makes each match non-exhaustive, so the compiler names exactly what a new
+// generator has to supply and nothing downstream of `ColumnShape` is asked to care.
+// Version-specific code never learns its own number: the arm picks the module, the module takes a
+// plain `f64`.
 
 fn fields_of(p: &TerrainParams, x: i32, z: i32, seed: Seed) -> terrain::Fields {
 	match seed.version {
@@ -125,6 +127,14 @@ fn cave_of(x: i32, z: i32, seed: Seed) -> caves::CaveColumn {
 pub fn carved(x: i32, y: i32, z: i32, seed: Seed) -> bool {
 	match seed.version {
 		TerrainVersion::V1 => caves::carved(x, y, z, seed.value),
+	}
+}
+
+/// The highest surface `classify_of` could return for these fields. The classifier's own bound,
+/// so it is dispatched with the classifier rather than derived here from one version's internals.
+fn height_ceiling_of(f: &terrain::Fields, seed: Seed) -> i32 {
+	match seed.version {
+		TerrainVersion::V1 => classify::height_ceiling(f),
 	}
 }
 
@@ -161,13 +171,14 @@ pub fn subsoil_span(x: i32, z: i32, seed: Seed) -> (i32, i32) {
 }
 
 /// [`column_shape`], but rejecting on altitude from the centre field alone — one evaluation
-/// instead of five. Classification only ever LOWERS the discretized height, so a centre height at
-/// or below `min_height` proves the column's is too. Survivors pay nothing extra: the centre field
-/// is evaluated once either way. `Some` is bit-identical to `column_shape`.
+/// instead of five. Containment can RAISE a column, so the reject tests the ceiling of what
+/// classification could return rather than the raw height — a bound that lives in the centre field
+/// alone, which is why `BANK_LIFT` may not grow into a neighbour's business. Survivors pay nothing
+/// extra: the centre field is evaluated once either way. `Some` is bit-identical to `column_shape`.
 pub fn column_shape_above(x: i32, z: i32, seed: Seed, min_height: i32) -> Option<ColumnShape> {
 	let p = &TerrainParams::DEFAULT;
 	let f = fields_of(p, x, z, seed);
-	if (f.h.floor() as i32) <= min_height {
+	if height_ceiling_of(&f, seed) <= min_height {
 		return None;
 	}
 	Some(classify_of(
@@ -215,7 +226,7 @@ pub fn column_shapes_in(x0: i32, x1: i32, z0: i32, z1: i32, seed: Seed) -> Vec<C
 	out
 }
 
-type ShapeMap = [[ColumnShape; CHUNK_SIZE]; CHUNK_SIZE];
+pub(super) type ShapeMap = [[ColumnShape; CHUNK_SIZE]; CHUNK_SIZE];
 
 /// Column shapes for a chunk, indexed `[z][x]`. Evaluates the fields once
 /// per column of a one-column-padded grid so interior columns classify
@@ -236,7 +247,7 @@ fn column_shapes(cx: i32, cz: i32, seed: Seed) -> ShapeMap {
 		height: 0,
 		surface: SurfaceKind::Plains,
 		water: SEA_LEVEL,
-		fall: None,
+		wall: (i32::MAX, i32::MIN),
 	}; CHUNK_SIZE]; CHUNK_SIZE];
 	for (z, row) in shapes.iter_mut().enumerate() {
 		for (x, s) in row.iter_mut().enumerate() {
@@ -286,8 +297,7 @@ fn carve_column(
 	cave: &mut caves::CaveColumn,
 ) {
 	// The carveable band of this column inside this chunk: below the
-	// surface, above bedrock, and dry — standing water at a cave mouth
-	// would leave a wall.
+	// surface and above bedrock.
 	let lo = caves::CAVE_FLOOR.max(py);
 	let hi = shape.height.min(py + CHUNK_SIZE as i32 - 1);
 	if lo > hi {
@@ -297,6 +307,14 @@ fn carve_column(
 	while carved != 0 {
 		let wy = lo + carved.trailing_zeros() as i32;
 		carved &= carved - 1;
+		// Containment's bound: worldgen walls its water with ground, and
+		// a cave mouth taking that ground away opens the pool onto air
+		// again — the wall has to survive the carve or it was never
+		// there. Only the span a neighbour's pool actually occupies is a
+		// wall, so caves still run beneath every river.
+		if (shape.wall.0..=shape.wall.1).contains(&wy) {
+			continue;
+		}
 		// Carveability is block data (blocks! rows), so a new surface or
 		// subsoil block opens cave mouths without an edit here. Surface
 		// blocks (grass, snow) are carveable so a mouth opens through them
@@ -327,25 +345,27 @@ pub fn build_chunk(pos: ChunkPos, seed: Seed) -> ChunkData {
 	data
 }
 
-/// Generate the full vertical chunk stack of a column in one call,
-/// computing the chunk's shape map once instead of once per chunk and
-/// carving each column in a single walk across the whole stack. Chunks
-/// entirely above the terrain and the sea resolve to the shared AIR_CHUNK
-/// sentinel — no fill, no allocation, recognized by pointer downstream.
+/// Generate the full vertical chunk stack of a column in one call: one
+/// field grid under the settle's whole apron, the chunk's shapes sliced
+/// from it, each column carved in a single walk across the stack. Chunks
+/// above the terrain, the sea and the settled water resolve to the shared
+/// AIR_CHUNK sentinel — no fill, no allocation, recognized by pointer.
 pub fn build_column(cx: i32, cz: i32, seed: Seed) -> Vec<Arc<ChunkData>> {
 	let n = CHUNK_SIZE as i32;
-	let shapes = column_shapes(cx, cz, seed);
-	// A column's solid+liquid content reaches to height, its local water
-	// surface (river water can sit above carved terrain), or the top of
-	// its falling-water sheet.
+	let slab = settle::Slab::new(cx, cz, seed, settle::TRAVEL);
+	let shapes = slab.chunk_shapes();
+	// The settle reads its own view of the carve, so it can run before the
+	// stack exists — and must, because the stack's height depends on it.
+	let water = settle::relax(&slab, settle::TRAVEL);
+	// A column's solid+liquid content reaches to its height or its local
+	// water surface, whichever is higher — river water can sit above
+	// carved terrain — or to water a neighbour's lip poured in, which can
+	// stand above anything this chunk's own columns reach.
 	let max_h = shapes
 		.iter()
 		.flatten()
-		.map(|s| {
-			s.height
-				.max(s.water)
-				.max(s.fall.map_or(i32::MIN, |(_, t)| t))
-		})
+		.map(|s| s.height.max(s.water))
+		.chain(water.keys().filter(|&&k| slab.in_chunk(k)).map(|k| k.1))
 		.max()
 		.expect("non-empty shape map");
 	let structures = structures_near(cx * n, cz * n, seed);
@@ -370,6 +390,9 @@ pub fn build_column(cx: i32, cz: i32, seed: Seed) -> Vec<Arc<ChunkData>> {
 			}
 		}
 	}
+	// Before decoration: a trunk writes into air, so whatever the fall
+	// took stays water.
+	settle::apply(&mut stack, &slab, &water);
 	let mut out: Vec<Arc<ChunkData>> = stack
 		.into_iter()
 		.enumerate()

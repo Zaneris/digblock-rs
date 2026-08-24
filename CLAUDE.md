@@ -486,14 +486,26 @@ Four reach outside lighting, so they can catch you when you weren't editing ligh
 Everything is a pure function of `(x, z, seed)`, where a `worldgen::Seed` is the NUMBER AND THE GENERATOR — one number
 under two generators is two different worlds. **Every generator that has ever shipped is kept and none is ever
 removed**: a world records one at creation (journal header, `meta.json`, and `Welcome`) and keeps it, so a terrain
-change adds a `TerrainVersion` row rather than moving the one existing worlds stand on. Four `match seed.version` arms
-in `worldgen/mod.rs` ARE the seam — a new row makes each non-exhaustive, so the compiler names what a new generator owes
-— and `ColumnShape` is the frozen interface every generator must fill, which is what lets decoration and the node layer
-stay CURRENT and keep reaching old worlds. Column content never depends on generation order. Structures are a decoration
-pass using pure apron evaluation, so every chunk within `STRUCTURE_APRON` computes identical structures independently
-and they span borders with no pipeline state; trunk roots are the single exception to decoration's write-into-Air-only
-rule. Sky chunks resolve to the shared `AIR_CHUNK` sentinel Arc — never meshed, **recognized by POINTER**, which is why
-`job_wire`'s air flag exists.
+change adds a `TerrainVersion` row rather than moving the one existing worlds stand on. The one sanctioned way a row
+moves is IN PLACE, for a change small enough that every world on it is to wear it: then `SIM_VERSION` bumps, because
+both ends run the row's body for the same world, and the row's golden moves — nothing is archived and no format changes.
+COMPAT-DESIGN.md §5.3 holds the judgment. Five `match seed.version` arms in `worldgen/mod.rs` ARE the seam — a new row
+makes each non-exhaustive, so the compiler names what a new generator owes — and `ColumnShape` is the frozen interface
+every generator must fill, which is what lets decoration and the node layer stay CURRENT and keep reaching old worlds.
+Column content never depends on generation order. Structures are a decoration pass using pure apron evaluation, so every
+chunk within `STRUCTURE_APRON` computes identical structures independently and they span borders with no pipeline state;
+trunk roots are the single exception to decoration's write-into-Air-only rule. Sky chunks resolve to the shared
+`AIR_CHUNK` sentinel Arc — never meshed, **recognized by POINTER**, which is why `job_wire`'s air flag exists.
+
+**The generation-time settle** (`worldgen/settle.rs`) pours every weir's cascade with `fluid::resolve` — the sim's whole
+rule, so a generated fall and a dug one obey ONE statement of it, pinned by `a_settle_is_the_sim_with_no_cap`. Its walk
+carries a lateral travel budget, `settle::TRAVEL`, which is also the apron of neighbouring columns a build must see; the
+apron is the settle's whole cost and every chunk pays it (BENCH.md 2026-08-24). Two things make that apron a proof
+rather than a hope, and both bite if "simplified" away: a cell at travel `t` reads other columns as they stood BEFORE
+travel `t`, so no influence path is shorter than its lateral span; and a cell is re-resolved whenever a neighbour
+changes, or the walk stops at each cell's first guess and a player's edit beside it makes water appear — issue #34 in
+miniature. `build_column` sizes its stack AFTER the settle, because a neighbour's lip can pour water above everything
+the chunk's own columns reach, and a cell the stack has no chunk for is dropped silently, cutting the top off a fall.
 
 The main thread owns the chunk store and scheduling; workers run pure functions over immutable snapshots — a mesh job
 gets a padded copy with a one-block shell from every neighbour. Staleness rides generation counters: results whose

@@ -1,5 +1,42 @@
 # Bench baseline & hotspot analysis
 
+## 2026-08-24 — the worldgen water settle: the apron is the cost, and every chunk pays it
+
+`worldgen::settle` pours each weir's cascade with the fluid sim's own rule over an apron of `settle::TRAVEL` columns, so
+a fall is water the sim placed rather than a sheet the generator painted (issue #34). The apron is the price, and this
+entry is where it goes. Regimes are decided by the settle itself over a 60x40-chunk region at seed 1234.5678: **wet**
+has a weir within the apron (9.6% of chunks), **damp** has water but no weir (21.7%), **dry** has neither (68.8%). 100
+stacks per regime after a 4-stack warmup.
+
+| regime | `build_column`, settle as first landed | `build_column`, now | of which the apron's shapes | of which the walk |
+| ------ | -------------------------------------- | ------------------- | --------------------------- | ----------------- |
+| wet    | 1.24 ms                                | 1.11 ms             | 0.49 ms                     | 0.21 ms           |
+| damp   | 0.77 ms                                | 0.62 ms             | 0.46 ms                     | ~0                |
+| dry    | 1.31–1.45 ms                           | 1.09 ms             | 0.48 ms                     | 0                 |
+
+**The apron's field grid is the whole cost, and 90% of chunks pay it to learn there is nothing to do.** `fields()` is
+0.49 µs a column and the grid is `(16 + 2·TRAVEL + 2)²` of them. The walk is a fifth of that and runs only where a weir
+is in reach. There is no cheaper way to know whether a column holds water — the river and lake carves sit at the end of
+the field pipeline, after base, roughness, erosion and the ridge — so the reject costs what the work costs. The "now"
+column is the field grid evaluated once and sliced for the chunk's own shapes (it was evaluated twice) and the walk
+rewritten to re-resolve a cell whenever a neighbour changes, which cost nothing net.
+
+**`TRAVEL` is a dial with a flat tail, not a knee.** An earlier draft of this entry sized it from a "p99 reach of one
+column"; that measured the wrong thing. Interior settle writes by chain cost over 169 wet chunks: 47678 at cost 1 (the
+free fall straight off the lip), then 3445, 2152, 1643, 1412, 1362, 1219, 868 — and 72% of the tail is `WaterFall`,
+cascades still falling down stepped ground. Raising the cap to 16 moves cells in 59 of those 169 chunks; lowering it to
+4 moves cells in 88 (8% of interior writes), and the field grid shrinks from 1156 to 676, about 0.24 ms off every chunk.
+Either side of 8 is a taste decision with those numbers attached.
+
+Levers not taken: the temperature and vegetation fields are not needed under the apron (~15% of the grid); an L1 diamond
+instead of a square apron (~12%); a per-worker memo of `Fields`, the only lever that beats the scan since neighbouring
+builds evaluate each field ~4.5 times, with a hit rate that depends on job order across workers and was not measured.
+
+Streaming is time-budgeted per frame (`STREAM_BUDGET_MS`), so this shows up as slower column arrival rather than a hitch
+— but the web client has the fewest workers and the priority claim, so it feels it first.
+
+All numbers: Apple M2 Max, release build, `cargo test --release`, 2026-08-24.
+
 ## 2026-08-21 — a temporal reservoir (ReSTIR DI) cannot beat the accumulator it feeds (R37, reverted)
 
 The measurement that refuted R27's deferred fix — full reasoning in GI-DESIGN.md R37; this entry holds the numbers.

@@ -302,10 +302,15 @@ pub struct ColumnShape {
 	/// World y of the local water surface: SEA_LEVEL in the ocean, above
 	/// it inside river channels. Water fills `height+1..=water`.
 	pub water: i32,
-	/// Falling-water span `(bottom, top)` inclusive, filled with
-	/// `WaterFall` above this column's pool where a neighboring pool sits
-	/// higher — the sheet that visually connects stepped river pools.
-	pub fall: Option<(i32, i32)>,
+	/// The y span over which some neighbour holds water, inclusive and
+	/// empty as `(MAX, MIN)` — this column's cells inside it are that
+	/// pool's wall, and the carve leaves them alone. A cave BELOW the
+	/// span is nobody's wall and still runs, which is the whole reason
+	/// this is a span and not a ceiling. Read raw, which can only name a
+	/// wall no longer needed (a neighbour containment drained): a cave
+	/// stopping short of a dry channel costs nothing, a cave through a
+	/// live one is the hole containment exists to close.
+	pub wall: (i32, i32),
 }
 
 /// Whether a column holds standing water (its water surface sits above
@@ -313,6 +318,16 @@ pub struct ColumnShape {
 #[inline]
 pub(super) fn holds_water(f: &Fields) -> bool {
 	f.water > f.h
+}
+
+/// The highest surface [`classify`] could return for these fields, from
+/// the centre field alone — `contain` raises, and this is the bound it
+/// raises within. `column_shape_above` rejects against this rather than
+/// the raw height; `containment_stays_inside_the_reject_bound` is what
+/// keeps the two honest.
+#[inline]
+pub(super) fn height_ceiling(f: &Fields) -> i32 {
+	(f.h.floor() as i32 + BANK_LIFT).max(f.water.floor() as i32)
 }
 
 /// Discretize fields + neighbor fields into a ColumnShape. Both call paths (per-column and
@@ -394,11 +409,29 @@ pub(super) fn classify(f: &Fields, nbrs: [Fields; 4], x: i32, z: i32, seed: f64)
 	} else {
 		SurfaceKind::Plains
 	};
+	let wall = nbrs
+		.iter()
+		.filter(|n| holds_water(n))
+		.fold((i32::MAX, i32::MIN), |(lo, hi), n| {
+			(
+				lo.min(n.h.floor() as i32 + 1),
+				hi.max(n.water.floor() as i32),
+			)
+		});
+	let (height, water) = contain(f, &nbrs, wall, height, water);
 	// Marsh puddles: scattered columns dip one block and fill with water
-	// flush to the marsh grade. The carve gate (height > water) goes
-	// false under pools, and `fall` below reads raw Fields, so pools
-	// never cascade.
-	let (height, water) = if surface == SurfaceKind::Marsh {
+	// flush to the marsh grade. Two gates, and both are containment: no
+	// neighbour may hold a pool — which is also what keeps `contain`'s
+	// reading of a marsh neighbour honest, since a column that could dip
+	// is never beside one asking — and every neighbour's grade must reach
+	// the level filled. That second gate reads raw heights on purpose: a
+	// neighbour dipping from the same grade fills to it, and one standing
+	// above it walls the cell, so the undipped height answers both without
+	// asking whether the neighbour is marsh at all.
+	let (height, water) = if surface == SurfaceKind::Marsh
+		&& !nbrs.iter().any(holds_water)
+		&& nbrs.iter().all(|n| n.h.floor() as i32 >= height)
+	{
 		let po = seed + PUDDLE_OFF;
 		if noise2(
 			po + f64::from(x) * PUDDLE_FREQ,
@@ -412,26 +445,65 @@ pub(super) fn classify(f: &Fields, nbrs: [Fields; 4], x: i32, z: i32, seed: f64)
 	} else {
 		(height, water)
 	};
-	// Falling water above this column's pool wherever a neighboring pool
-	// sits higher — quantized river levels descend in steps, and the fall
-	// sheet is what connects them. Only in-channel columns fall (dry
-	// banks whose terrain happens to sit below a neighbor pool don't).
-	let fall = if holds_water(f) {
-		nbrs.iter()
-			.filter(|n| holds_water(n))
-			.map(|n| n.water.floor() as i32)
-			.max()
-			.filter(|&top| top > water)
-			.map(|top| (water + 1, top))
-	} else {
-		None
-	};
 	ColumnShape {
 		height,
 		surface,
 		water,
-		fall,
+		wall,
 	}
+}
+
+/// How far a bank may be lifted to wall the pool beside it. Load-bearing
+/// beyond taste: every raise here is bounded by the column's OWN fields —
+/// this much above its height, or up to its own water line — which is
+/// what lets [`super::column_shape_above`] reject on the centre field
+/// alone. Widen it and that rejection needs the neighbours too.
+const BANK_LIFT: i32 = 1;
+
+/// Lateral containment: worldgen emits water at the fluid sim's fixpoint,
+/// so a pool never stands against air that would pour once an edit
+/// scheduled it. Two rules, both decided from this column's own fields
+/// and its four neighbours' — one pass, no iteration, because each only
+/// ever RAISES ground and a raise cannot expose anything new.
+///
+/// One exception is deliberate: a weir's lip IS left open, so the settle
+/// pass pours a real fall through it instead of worldgen painting a
+/// sheet no player could build.
+fn contain(
+	f: &Fields,
+	nbrs: &[Fields; 4],
+	wall: (i32, i32),
+	height: i32,
+	water: i32,
+) -> (i32, i32) {
+	// What each neighbour covers this column to: its pool if it holds
+	// one, else its ground plus whatever lift the bank rule will give it.
+	// A neighbour lifts to at most OUR level, so `>= water` is exact.
+	let covers = |n: &Fields| {
+		if holds_water(n) {
+			n.water.floor() as i32
+		} else {
+			n.h.floor() as i32 + BANK_LIFT
+		}
+	};
+	if !holds_water(f) {
+		// Bank: stand up to the highest pool leaning on us, no further.
+		return match wall.1 {
+			t if t > height => ((height + BANK_LIFT).min(t), water),
+			_ => (height, water),
+		};
+	}
+	// Anything we cannot be walled against — a pool below us, or ground
+	// that falls away — makes our edge a weir: one block deep on solid
+	// ground, which is the one shape that CAN spill. The sim's spread rule
+	// reads the FEEDING cell's floor, so a pool deeper than one block
+	// never pours sideways at all, and the drop below the lip is
+	// irrelevant to the rule — a river ending at a cliff shallows and
+	// pours over exactly as one stepping into the pool below does.
+	if nbrs.iter().any(|n| covers(n) < water) {
+		return (water - 1, water);
+	}
+	(height, water)
 }
 
 /// One cell of the column rules: the surface block, DIRT_DEPTH of
@@ -443,8 +515,6 @@ pub(super) fn column_block(wy: i32, shape: ColumnShape) -> BlockType {
 	if wy > h {
 		if wy <= shape.water {
 			BlockType::Water
-		} else if shape.fall.is_some_and(|(b, t)| (b..=t).contains(&wy)) {
-			BlockType::WaterFall
 		} else {
 			BlockType::Air
 		}

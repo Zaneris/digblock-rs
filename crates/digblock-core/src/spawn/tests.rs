@@ -183,7 +183,7 @@ fn every_anchor_stands_on_level_ground_under_open_sky() {
 				n.height
 			);
 			assert!(
-				n.water <= n.height && n.fall.is_none(),
+				n.water <= n.height,
 				"seed {seed:?}: column ({dx},{dz}) of the disc holds water"
 			);
 			assert!(
