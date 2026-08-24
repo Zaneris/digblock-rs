@@ -14,6 +14,7 @@ use std::sync::mpsc;
 
 use crate::auth::{self, Session};
 use digblock_client::{AccountView, MenuCommand, MenuResponse, MenuServices, ServerEntry};
+use digblock_net::protocol::Compat;
 use serde::Deserialize as _;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
@@ -36,6 +37,10 @@ struct ListServer {
 	players: u32,
 	#[serde(deserialize_with = "lenient_count")]
 	max_players: u32,
+	#[serde(default, deserialize_with = "lenient_version")]
+	protocol_version: u16,
+	#[serde(default, deserialize_with = "lenient_version")]
+	sim_version: u16,
 }
 
 /// A player count, clamped rather than rejected. The master types these as `int`, so a server can
@@ -45,6 +50,14 @@ struct ListServer {
 fn lenient_count<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
 	let n = i64::deserialize(d)?;
 	Ok(n.clamp(0, u32::MAX as i64) as u32)
+}
+
+/// A version, clamped rather than rejected — `lenient_count`'s argument, plus one of its own: an
+/// unreadable version must read as INCOMPATIBLE rather than as ours, and both the `0` a master
+/// predating the field would leave and a clamped ceiling do.
+fn lenient_version<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u16, D::Error> {
+	let n = i64::deserialize(d)?;
+	Ok(n.clamp(0, u16::MAX as i64) as u16)
 }
 
 #[derive(serde::Deserialize)]
@@ -113,6 +126,9 @@ async fn run(
 						.map(|servers| {
 							servers
 								.iter()
+								// The join would refuse this row, so its
+								// latency is not worth a handshake.
+								.filter(|s| s.compat() == Compat::Joinable)
 								.map(|s| (s.id.clone(), s.url.clone(), s.cert_hash.clone()))
 								.collect()
 						})
@@ -218,6 +234,8 @@ async fn fetch_servers(master_url: &str) -> Result<Vec<ServerEntry>, String> {
 			cert_hash: s.cert_hash,
 			players: s.players,
 			max_players: s.max_players,
+			protocol_version: s.protocol_version,
+			sim_version: s.sim_version,
 		})
 		.collect())
 }

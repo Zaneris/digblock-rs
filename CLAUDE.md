@@ -18,6 +18,8 @@ a decision or rebuilding something:
   supersedes the earlier economy sections where they disagree.
 - `AUTH-DESIGN.md` — accounts, sign-in, the master's trust model, the pre-account character migration (§6), a "what is
   NOT built" list, and §5's standing record of the seven trust-model findings.
+- `COMPAT-DESIGN.md` — the two version gates, why the floor keeps rising, and the options for letting a client join a
+  server that has not updated. Read it before raising `MIN_PROTOCOL` or `SIM_VERSION`. §7 is built; the rest is design.
 - `DELVE-DESIGN.md`, `SOCIAL-DESIGN.md` — design-only, not built.
 
 ## Four writing rules

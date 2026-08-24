@@ -9,7 +9,7 @@ use crate::predict::{Predictor, Reconciled};
 use crate::protocol::{
 	CLIENT_TICK_LEAD, CONNECT_TIMEOUT_SECS, HANDSHAKE_TIMEOUT_SECS, INPUT_SEND_STRIDE,
 	MIN_PROTOCOL, PREAMBLE_LEN, PROTOCOL_VERSION, PlayerId, RECV_TIMEOUT_SECS, decode_preamble,
-	encode_preamble, sanitize_name,
+	encode_preamble, protocol_supported, sanitize_name, sim_supported,
 };
 use crate::remote::{RemotePlayers, RemoteSnap};
 use crate::transport::{ConnStatus, NetTransport, TransportEvent};
@@ -488,7 +488,7 @@ impl NetClient {
 			return None;
 		};
 		self.server_protocol = Some(version);
-		if !(MIN_PROTOCOL..=PROTOCOL_VERSION).contains(&version) {
+		if !protocol_supported(version) {
 			// Newer servers may still Refuse us politely after this; going
 			// through Refused locally keeps one code path either way.
 			self.failed = true;
@@ -572,7 +572,7 @@ impl NetClient {
 				tod,
 				spawn_look,
 			} => {
-				if sim_version != digblock_core::SIM_VERSION {
+				if !sim_supported(sim_version) {
 					self.failed = true;
 					out.push(NetEvent::Refused {
 						reason: format!(

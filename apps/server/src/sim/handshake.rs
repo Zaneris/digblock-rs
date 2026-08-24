@@ -108,14 +108,14 @@ impl Sim {
 		}
 		// Redundant with the net-layer preamble gate, but the sim is also
 		// driven directly (tests, future transports) — keep it authoritative.
-		if !(MIN_PROTOCOL..=PROTOCOL_VERSION).contains(&protocol) {
+		if !protocol_supported(protocol) {
 			refuse(
 				&out,
 				format!("protocol {protocol}, server supports {MIN_PROTOCOL}..={PROTOCOL_VERSION}"),
 			);
 			return;
 		}
-		if sim_version != digblock_core::SIM_VERSION {
+		if !sim_supported(sim_version) {
 			refuse(
 				&out,
 				format!(
