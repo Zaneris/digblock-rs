@@ -49,4 +49,4 @@ pub use chunk::{CHUNK_SIZE, ChunkData, ChunkPos};
 /// divergent worldgen means silently different worlds), and the tables both ends time a dig
 /// against. Exchanged in the Hello/Welcome handshake; a mismatch is refused. Bump on ANY behavior
 /// change to those — the golden tests fail on drift and name this constant in their message.
-pub const SIM_VERSION: u16 = 23;
+pub const SIM_VERSION: u16 = 24;

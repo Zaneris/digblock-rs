@@ -119,10 +119,9 @@ fn pristine_floor(x: i32, z: i32, seed: f64) -> Option<i32> {
 		if n.height != h {
 			return None;
 		}
-		// No standing water and no cascade sheet over any of it — `water`
-		// is the local water surface, above `height` only where water
-		// actually stands.
-		if n.water > n.height || n.fall.is_some() {
+		// No standing water over any of it — `water` is the local water
+		// surface, above `height` only where water actually stands.
+		if n.water > n.height {
 			return None;
 		}
 	}

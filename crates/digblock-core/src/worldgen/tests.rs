@@ -1,4 +1,4 @@
-use super::classify::{column_block, holds_water};
+use super::classify::{column_block, height_ceiling, holds_water};
 use super::terrain::{TerrainParams, fields, spline};
 use super::*;
 use crate::chunk::WORLD_VBLOCK;
@@ -53,31 +53,53 @@ fn classification_paths_agree() {
 }
 
 /// Rivers exist inland (water level above the sea's), sit in carved
-/// channels (water above bed), and never hold water below sea level.
+/// channels, and never hold water below sea level. Containment may take
+/// a channel column's water away where no bank could wall it — the bed
+/// then stands at exactly the level it used to hold — but it must only
+/// NARROW the river: the drained columns stay a small minority of the
+/// channel, or the fix has quietly drained the rivers it was contained
+/// to keep.
 #[test]
 fn rivers_exist_inland() {
 	let seed = 1234.5678;
 	let mut inland = 0u32;
+	let mut wet = 0u32;
+	let mut drained = 0u32;
 	for x in (-4096..4096).step_by(13) {
 		for z in (-4096..4096).step_by(11) {
 			let s = column_shape(x, z, seed);
 			assert!(s.water >= SEA_LEVEL, "water never below sea at ({x},{z})");
 			if s.surface == SurfaceKind::River {
-				assert!(s.water > s.height, "river holds water at ({x},{z})");
-				if s.water > SEA_LEVEL {
-					inland += 1;
+				assert!(
+					s.water >= s.height,
+					"river bed under its level at ({x},{z})"
+				);
+				if s.water > s.height {
+					wet += 1;
+					if s.water > SEA_LEVEL {
+						inland += 1;
+					}
+				} else {
+					drained += 1;
 				}
 			}
 		}
 	}
 	assert!(inland > 0, "sample contains inland river columns");
+	assert!(
+		drained * 10 < wet,
+		"containment drained {drained} river columns against {wet} still wet"
+	);
 }
 
-/// Wherever a river pool steps down (quantized levels), the lower
-/// column carries a WaterFall span from just above its own pool up to
-/// the highest adjacent pool — the sheet that connects the cascade.
+/// Wherever a pool steps down, the upper pool's edge is a weir: one
+/// block of water standing on solid ground, which is the only shape the
+/// fluid sim will spill sideways — `update`'s spread rule reads the
+/// FEEDING cell's floor, so a pool deeper than one block never pours at
+/// all. Everything below the lip is ground, so exactly one cell per weir
+/// column faces the drop, and that cell is what the settle pours through.
 #[test]
-fn falls_connect_pool_steps() {
+fn a_pool_step_ends_in_a_weir() {
 	let seed = 1234.5678;
 	let mut found = 0u32;
 	'scan: for x in (-2048..2048).step_by(4) {
@@ -87,26 +109,27 @@ fn falls_connect_pool_steps() {
 				continue;
 			}
 			let wl = f.water.floor() as i32;
-			let top = [(x - 1, z), (x + 1, z), (x, z - 1), (x, z + 1)]
+			let below = [(x - 1, z), (x + 1, z), (x, z - 1), (x, z + 1)]
 				.iter()
 				.map(|&(nx, nz)| fields(P, nx, nz, seed))
 				.filter(holds_water)
-				.map(|n| n.water.floor() as i32)
-				.max()
-				.unwrap_or(i32::MIN);
+				.any(|n| (n.water.floor() as i32) < wl);
 			let s = column_shape(x, z, seed);
-			if top > wl {
-				assert_eq!(s.fall, Some((wl + 1, top)), "at ({x},{z})");
-				// The blocks of the span really are falling water.
-				assert_eq!(column_block(wl + 1, s), BlockType::WaterFall);
-				assert_eq!(column_block(top, s), BlockType::WaterFall);
-				assert_eq!(column_block(wl, s), BlockType::Water);
-				found += 1;
-				if found >= 5 {
-					break 'scan;
-				}
-			} else {
-				assert_eq!(s.fall, None, "no step, no fall at ({x},{z})");
+			// A column drained by a low BANK reports no water at all; the
+			// weir rule speaks only for the ones that kept theirs.
+			if !below || s.water <= s.height {
+				continue;
+			}
+			assert_eq!(s.water, wl, "the weir keeps its pool's level at ({x},{z})");
+			assert_eq!(s.height, wl - 1, "one block deep at ({x},{z})");
+			assert_eq!(column_block(wl, s), BlockType::Water);
+			assert!(
+				column_block(wl - 1, s).props().collides,
+				"a weir stands on solid ground at ({x},{z})"
+			);
+			found += 1;
+			if found >= 5 {
+				break 'scan;
 			}
 		}
 	}
@@ -178,40 +201,108 @@ fn terrace_tread_is_continuous_and_bounded() {
 	}
 }
 
-/// Lakes exist, hold their water above the terrain, keep bounded
-/// beds, and every water cell is laterally contained: each of the four
-/// neighbor columns covers it with water, solid ground within a bank's
-/// height (the fill rule's own bound), or a connecting fall sheet
-/// (quantized level steps, exactly like river pools).
+/// Lakes exist, hold their water above the terrain, and keep bounded beds.
 #[test]
-fn lakes_exist_and_are_contained() {
+fn lakes_exist_and_hold_bounded_beds() {
 	let seed = 1234.5678;
 	let mut found = 0u32;
 	for x in (-8192..8192).step_by(32) {
 		for z in (-8192..8192).step_by(32) {
 			let s = column_shape(x, z, seed);
-			if s.surface != SurfaceKind::Lake {
+			if s.surface != SurfaceKind::Lake || s.water <= s.height {
 				continue;
 			}
 			found += 1;
-			assert!(s.water > s.height, "lake holds water at ({x},{z})");
 			assert!(s.water >= SEA_LEVEL, "lake level above sea at ({x},{z})");
 			assert!(s.height >= s.water - 7, "bounded bed at ({x},{z})");
-			for (nx, nz) in [(x - 1, z), (x + 1, z), (x, z - 1), (x, z + 1)] {
-				let n = column_shape(nx, nz, seed);
-				for wy in (s.height + 1)..=s.water {
-					let covered = wy <= n.water
-						|| wy <= n.height + 2
-						|| n.fall.is_some_and(|(b, t)| (b..=t).contains(&wy));
-					assert!(covered, "water wall at ({x},{z}) wy={wy} vs ({nx},{nz})");
-				}
-			}
 			if found >= 200 {
 				return;
 			}
 		}
 	}
 	assert!(found > 0, "sample contains lakes");
+}
+
+/// THE containment invariant: every water cell worldgen emits is walled
+/// by water or ground on all four sides, with one deliberate exception —
+/// a weir's lip, the cell the settle pours through. Swept over every
+/// water-holding column rather than one surface kind, and with no
+/// tolerance: a bank's-height slop is exactly the hole this used to pass.
+#[test]
+fn worldgen_water_is_walled_but_for_its_weirs() {
+	let seed = 1234.5678;
+	let mut water = 0u64;
+	let mut weirs = 0u64;
+	for x in (-1024..1024).step_by(3) {
+		for z in (-1024..1024).step_by(3) {
+			let s = column_shape(x, z, seed);
+			if s.water <= s.height {
+				continue;
+			}
+			water += 1;
+			let nbrs: Vec<ColumnShape> = [(x - 1, z), (x + 1, z), (x, z - 1), (x, z + 1)]
+				.iter()
+				.map(|&(nx, nz)| column_shape(nx, nz, seed))
+				.collect();
+			// A weir is one deep and spills from its lip alone; every other
+			// water column is walled through its whole span. What fails to
+			// cover us may be a lower pool OR ground that falls away — a
+			// river ending at a cliff pours over it just the same.
+			let lip =
+				s.height + 1 == s.water && nbrs.iter().any(|n| n.height.max(n.water) < s.water);
+			if lip {
+				weirs += 1;
+				continue;
+			}
+			for wy in (s.height + 1)..=s.water {
+				for n in &nbrs {
+					assert!(
+						wy <= n.height || wy <= n.water,
+						"water at ({x},{wy},{z}) stands against air"
+					);
+				}
+			}
+		}
+	}
+	// Neither half may pass by examining nothing, and the exemption may
+	// not swallow the sweep: a weir is an edge, so it stays a sliver of
+	// the water. Without this the test passes by calling everything a lip.
+	assert!(water > 10_000, "only {water} water columns sampled");
+	assert!(weirs > 0, "the sample contains no weir");
+	assert!(
+		weirs * 20 < water,
+		"{weirs} of {water} water columns claim the weir exemption"
+	);
+}
+
+/// `contain` may raise a column, and `column_shape_above` rejects on the
+/// centre field alone — so every raise has to stay inside the ceiling
+/// that reject computes, or decoration and spawn silently lose columns.
+#[test]
+fn containment_stays_inside_the_reject_bound() {
+	let seed = 1234.5678;
+	let mut raised = 0u32;
+	for x in (-2048..2048).step_by(7) {
+		for z in (-2048..2048).step_by(7) {
+			let f = fields(P, x, z, seed);
+			let s = column_shape(x, z, seed);
+			let ceiling = height_ceiling(&f);
+			assert!(
+				s.height <= ceiling,
+				"({x},{z}) classified to {} over a ceiling of {ceiling}",
+				s.height
+			);
+			// And the reject must agree with the real thing at the bound.
+			assert!(
+				super::column_shape_above(x, z, seed, ceiling - 1).is_some(),
+				"({x},{z}) rejected at its own ceiling"
+			);
+			if s.height > f.h.floor() as i32 {
+				raised += 1;
+			}
+		}
+	}
+	assert!(raised > 0, "the sample contains no raised column");
 }
 
 /// The sandstone stratum sits under sandy floors, and scree patches

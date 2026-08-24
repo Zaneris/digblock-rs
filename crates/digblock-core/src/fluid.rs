@@ -6,10 +6,10 @@
 //! Two rules read as bugs and are not: regen admits Air as well as flow, or a
 //! deep-water hole never heals; and water over air or water never spreads
 //! sideways, sources included, so a bucket emptied against a wall pours down
-//! it and only the landing spreads. Worldgen water is emitted converged and
-//! only edits schedule cells — which is also why disturbing a worldgen fall
-//! sheet drains it rather than re-forming it, while a player-built cascade
-//! holds.
+//! it and only the landing spreads. That second rule is why a pool deeper than
+//! one block cannot pour at all, and so why worldgen ends a stepped pool in a
+//! one-block WEIR — see `worldgen::classify::contain`, which owes this module
+//! a world already at its fixpoint, since only edits ever schedule a cell.
 
 use std::collections::VecDeque;
 
@@ -41,7 +41,9 @@ pub struct FluidSim {
 	queued: FxHashSet<(i32, i32, i32)>,
 }
 
-const SIDES: [(i32, i32); 4] = [(-1, 0), (1, 0), (0, -1), (0, 1)];
+/// The four lateral steps water spreads along, in the order the rule
+/// reads them.
+pub const SIDES: [(i32, i32); 4] = [(-1, 0), (1, 0), (0, -1), (0, 1)];
 
 /// Horizontal spread falloff: each step HALVES the feeding amount, much
 /// steeper than Minecraft's m − 1 — water runs a few blocks rather than
@@ -116,35 +118,8 @@ impl FluidSim {
 	}
 
 	fn update(&mut self, world: &mut impl FluidWorld, x: i32, y: i32, z: i32) {
-		let Some(cur) = world.get(x, y, z) else {
-			return; // unloaded: drop, the region will re-schedule on edit
-		};
-		// Only empty and in-transit water cells recompute; sources are
-		// infinite by definition and solids are not fluid business.
-		if cur.is_fluid_source() || cur.props().collides {
+		let (Some(cur), Some(wanted)) = (world.get(x, y, z), resolve(world, x, y, z)) else {
 			return;
-		}
-		let wanted = if regenerates(world, x, y, z, cur) {
-			BlockType::Water
-		} else if world.get(x, y + 1, z).is_some_and(|b| b.is_water()) {
-			BlockType::WaterFall
-		} else {
-			let mut m = 0u8;
-			for (dx, dz) in SIDES {
-				let (nx, nz) = (x + dx, z + dz);
-				let Some(a) = world.get(nx, y, nz).and_then(BlockType::water_amount) else {
-					continue;
-				};
-				if a > m && world.get(nx, y - 1, nz).is_some_and(|b| b.props().collides) {
-					m = a;
-				}
-			}
-			let next = falloff(m);
-			if next > 0 {
-				BlockType::water_flow(next)
-			} else {
-				BlockType::Air
-			}
 		};
 		if wanted != cur && world.set(x, y, z, wanted) {
 			for (dx, dz) in SIDES {
@@ -154,6 +129,43 @@ impl FluidSim {
 			self.schedule(x, y + 1, z);
 		}
 	}
+}
+
+/// What this cell should hold, from its neighbours alone — the whole flow
+/// rule with none of the scheduling. `None` where the cell is not fluid
+/// business: unloaded, a solid, or a source (infinite by definition).
+///
+/// Split out because worldgen's settle drives the same rule over a queue
+/// that carries a travel budget instead of this module's. A generated
+/// cascade and a dug one must obey ONE rule, and a second statement of it
+/// is the thing that would drift.
+pub fn resolve(world: &impl FluidWorld, x: i32, y: i32, z: i32) -> Option<BlockType> {
+	let cur = world.get(x, y, z)?;
+	if cur.is_fluid_source() || cur.props().collides {
+		return None;
+	}
+	Some(if regenerates(world, x, y, z, cur) {
+		BlockType::Water
+	} else if world.get(x, y + 1, z).is_some_and(|b| b.is_water()) {
+		BlockType::WaterFall
+	} else {
+		let mut m = 0u8;
+		for (dx, dz) in SIDES {
+			let (nx, nz) = (x + dx, z + dz);
+			let Some(a) = world.get(nx, y, nz).and_then(BlockType::water_amount) else {
+				continue;
+			};
+			if a > m && world.get(nx, y - 1, nz).is_some_and(|b| b.props().collides) {
+				m = a;
+			}
+		}
+		let next = falloff(m);
+		if next > 0 {
+			BlockType::water_flow(next)
+		} else {
+			BlockType::Air
+		}
+	})
 }
 
 #[cfg(test)]

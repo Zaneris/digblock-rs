@@ -487,6 +487,16 @@ independently and they span borders with no pipeline state; trunk roots are the 
 write-into-Air-only rule. Sky chunks resolve to the shared `AIR_CHUNK` sentinel Arc — never meshed, **recognized by
 POINTER**, which is why `job_wire`'s air flag exists.
 
+**The generation-time settle** (`worldgen/settle.rs`) pours every weir's cascade with `fluid::resolve` — the sim's whole
+rule, so a generated fall and a dug one obey ONE statement of it, pinned by `a_settle_is_the_sim_with_no_cap`. Its walk
+carries a lateral travel budget, `settle::TRAVEL`, which is also the apron of neighbouring columns a build must see; the
+apron is the settle's whole cost and every chunk pays it (BENCH.md 2026-08-24). Two things make that apron a proof
+rather than a hope, and both bite if "simplified" away: a cell at travel `t` reads other columns as they stood BEFORE
+travel `t`, so no influence path is shorter than its lateral span; and a cell is re-resolved whenever a neighbour
+changes, or the walk stops at each cell's first guess and a player's edit beside it makes water appear — issue #34 in
+miniature. `build_column` sizes its stack AFTER the settle, because a neighbour's lip can pour water above everything
+the chunk's own columns reach, and a cell the stack has no chunk for is dropped silently, cutting the top off a fall.
+
 The main thread owns the chunk store and scheduling; workers run pure functions over immutable snapshots — a mesh job
 gets a padded copy with a one-block shell from every neighbour. Staleness rides generation counters: results whose
 `generation` doesn't match are dropped. Edits go through `set_block`/`set_cell` (copy-on-write, bumping only neighbours

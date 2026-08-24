@@ -16,8 +16,6 @@ fn expect_terrain(wx: i32, wy: i32, wz: i32, seed: f64) -> BlockType {
 	let base = if wy > h {
 		if wy <= shape.water {
 			BlockType::Water
-		} else if shape.fall.is_some_and(|(b, t)| (b..=t).contains(&wy)) {
-			BlockType::WaterFall
 		} else {
 			BlockType::Air
 		}
@@ -63,7 +61,11 @@ fn expect_terrain(wx: i32, wy: i32, wz: i32, seed: f64) -> BlockType {
 			| BlockType::Gravel
 			| BlockType::Sandstone
 	);
-	if carveable && h > shape.water && wy >= 1 && carved(wx, wy, wz, seed) {
+	// A cell inside the span a neighbour's pool occupies is that pool's
+	// wall and survives the carve — otherwise the cave opens the water
+	// onto air, which is what containment exists to prevent.
+	let walls_water = (shape.wall.0..=shape.wall.1).contains(&wy);
+	if carveable && h > shape.water && wy >= 1 && !walls_water && carved(wx, wy, wz, seed) {
 		BlockType::Air
 	} else {
 		base
@@ -336,10 +338,7 @@ fn spawn_finds_land() {
 		for dz in -2..=2 {
 			for dx in -2..=2 {
 				let n = column_shape(x + dx, z + dz, seed);
-				let top = n
-					.height
-					.max(n.water)
-					.max(n.fall.map_or(i32::MIN, |(_, t)| t));
+				let top = n.height.max(n.water);
 				assert!(
 					top <= h + 1 || (dx, dz) == (0, 0),
 					"seed {seed}: wall at eye level ({dx},{dz})"
@@ -435,9 +434,20 @@ fn worldgen_never_places_a_crafted_block() {
 #[test]
 fn worldgen_golden_hash_pins_sim_version() {
 	// FNV-1a over the raw block bytes of a spread of columns (spawn area,
-	// ocean, mountains — chosen to touch every generation path).
+	// ocean, mountains — chosen to touch every generation path). The last
+	// two are the settle's: (11, -17) carries the sample's densest run of
+	// weirs, and (38, -17) the cascade the walk's re-resolution moves the
+	// most — without them the pin cannot see a cascade change at all.
 	let mut hash: u64 = 0xcbf29ce484222325;
-	for &(cx, cz) in &[(0, 0), (1, -1), (7, 3), (-12, 5), (40, -33)] {
+	for &(cx, cz) in &[
+		(0, 0),
+		(1, -1),
+		(7, 3),
+		(-12, 5),
+		(40, -33),
+		(11, -17),
+		(38, -17),
+	] {
 		for chunk in digblock_core::worldgen::build_column(cx, cz, 42.0) {
 			for &b in chunk.blocks.iter() {
 				hash = (hash ^ b as u64).wrapping_mul(0x100000001b3);
@@ -445,7 +455,7 @@ fn worldgen_golden_hash_pins_sim_version() {
 		}
 	}
 	assert_eq!(
-		hash, 2091408729156646669,
+		hash, 16191328047752925684,
 		"worldgen output changed — update this hash AND bump digblock_core::SIM_VERSION"
 	);
 }
