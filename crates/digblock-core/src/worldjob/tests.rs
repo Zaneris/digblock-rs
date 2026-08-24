@@ -1,8 +1,9 @@
 use super::*;
 use crate::block::BlockType;
+use crate::worldgen::Seed;
 use rustc_hash::{FxHashMap, FxHashSet};
 
-const SEED: f64 = 42.0;
+const SEED: Seed = Seed::current(42.0);
 
 /// A flat slab of Dirt with one Grass cap, so a job has something to find.
 struct Slab {
@@ -98,7 +99,7 @@ impl WorldJob for Sprout {
 		&self,
 		_at: (i32, i32, i32),
 		_world: &dyn CellSource,
-		_seed: f64,
+		_seed: Seed,
 		_run: Run,
 	) -> Option<u16> {
 		Some(BlockType::Grass as u16)
@@ -338,7 +339,7 @@ impl WorldJob for Bad {
 			candidates: self.1,
 		}
 	}
-	fn apply(&self, _: (i32, i32, i32), _: &dyn CellSource, _: f64, _: Run) -> Option<u16> {
+	fn apply(&self, _: (i32, i32, i32), _: &dyn CellSource, _: Seed, _: Run) -> Option<u16> {
 		None
 	}
 }
@@ -457,7 +458,7 @@ impl WorldJob for Spy {
 			candidates: Candidates::Band,
 		}
 	}
-	fn apply(&self, _: (i32, i32, i32), _: &dyn CellSource, _: f64, run: Run) -> Option<u16> {
+	fn apply(&self, _: (i32, i32, i32), _: &dyn CellSource, _: Seed, run: Run) -> Option<u16> {
 		// One entry per SWEEP, not per cell: every cell of one sweep
 		// carries the same `Run`, which is the snapshot under test.
 		let mut runs = self.runs.lock().expect("spy runs");
@@ -648,7 +649,7 @@ impl WorldJob for Creep {
 			},
 		}
 	}
-	fn apply(&self, at: (i32, i32, i32), world: &dyn CellSource, _: f64, _: Run) -> Option<u16> {
+	fn apply(&self, at: (i32, i32, i32), world: &dyn CellSource, _: Seed, _: Run) -> Option<u16> {
 		ring(at, 1)
 			.into_iter()
 			.any(|(x, y, z)| {

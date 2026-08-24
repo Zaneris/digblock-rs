@@ -19,6 +19,7 @@ pub mod regrow;
 use crate::block::BlockType;
 use crate::chunk::{CHUNK_SIZE, cell_id};
 use crate::sun::DAY_SECS;
+use crate::worldgen::Seed;
 use rustc_hash::FxHashSet;
 
 /// One cell a sweep decided to change, and what it becomes.
@@ -159,7 +160,7 @@ pub trait WorldJob: Send {
 		&self,
 		at: (i32, i32, i32),
 		world: &dyn CellSource,
-		seed: f64,
+		seed: Seed,
 		run: Run,
 	) -> Option<u16>;
 }
@@ -248,7 +249,7 @@ impl Scheduler {
 	pub fn tick(
 		&mut self,
 		secs: f64,
-		seed: f64,
+		seed: Seed,
 		eyes: &[(i32, i32, i32)],
 		players: u32,
 		world: &dyn CellSource,
@@ -313,7 +314,7 @@ impl Scheduler {
 		}
 	}
 
-	fn slice(&mut self, seed: f64, world: &dyn CellSource) -> Vec<Write> {
+	fn slice(&mut self, seed: Seed, world: &dyn CellSource) -> Vec<Write> {
 		let Some(sweep) = self.active.as_mut() else {
 			return Vec::new();
 		};
@@ -390,7 +391,7 @@ fn offer(
 	job: &dyn WorldJob,
 	scope: &Scope,
 	world: &dyn CellSource,
-	seed: f64,
+	seed: Seed,
 	run: Run,
 	at: (i32, i32, i32),
 	out: &mut Vec<Write>,
@@ -415,7 +416,7 @@ fn judge_frontier_column(
 	job: &dyn WorldJob,
 	scope: &Scope,
 	world: &dyn CellSource,
-	seed: f64,
+	seed: Seed,
 	run: Run,
 	(cx, cz): (i32, i32),
 	surface_shell: bool,

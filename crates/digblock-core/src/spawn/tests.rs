@@ -1,8 +1,9 @@
 use super::*;
 use crate::block::BlockType;
+use crate::worldgen::Seed;
 use std::collections::HashMap;
 
-const SEED: f64 = 7.0;
+const SEED: Seed = Seed::current(7.0);
 
 /// An overlay backed by an explicit cell map.
 fn overlay(cells: HashMap<(i32, i32, i32), u16>) -> impl Fn(i32, i32, i32) -> Option<u16> {
@@ -14,11 +15,11 @@ fn overlay(cells: HashMap<(i32, i32, i32), u16>) -> impl Fn(i32, i32, i32) -> Op
 /// this drifts, spawn silently moves for every world at once.
 #[test]
 fn resolve_with_no_edits_is_the_anchor() {
-	for seed in [1.0, 7.0, 42.0, 1234.5] {
+	for seed in [1.0, 7.0, 42.0, 1234.5].map(Seed::current) {
 		assert_eq!(
 			resolve(anchor(seed), seed, no_edits()),
 			anchor(seed),
-			"seed {seed}"
+			"seed {seed:?}"
 		);
 	}
 }
@@ -159,14 +160,16 @@ fn lock_region_covers_what_the_test_reads() {
 fn every_anchor_stands_on_level_ground_under_open_sky() {
 	for seed in [
 		1.0, 3.0, 7.0, 42.0, 99.25, 555.0, 1234.5, 31337.0, 8675309.0,
-	] {
+	]
+	.map(Seed::current)
+	{
 		let a = anchor(seed);
 		let (x, h, z) = (
 			a.x.floor() as i32,
 			a.y.floor() as i32 - 2,
 			a.z.floor() as i32,
 		);
-		assert!(h >= SPAWN_FLOOR, "seed {seed}: spawn below sea level");
+		assert!(h >= SPAWN_FLOOR, "seed {seed:?}: spawn below sea level");
 		let near = column_shapes_in(x - CLEAR, x + CLEAR, z - CLEAR, z + CLEAR, seed);
 		for (i, n) in near.iter().enumerate() {
 			let (dx, dz) = (
@@ -175,17 +178,17 @@ fn every_anchor_stands_on_level_ground_under_open_sky() {
 			);
 			assert_eq!(
 				n.height, h,
-				"seed {seed}: column ({dx},{dz}) of the disc sits at {}, not {h} \
+				"seed {seed:?}: column ({dx},{dz}) of the disc sits at {}, not {h} \
 					 — spawn is on a step or a ledge",
 				n.height
 			);
 			assert!(
 				n.water <= n.height,
-				"seed {seed}: column ({dx},{dz}) of the disc holds water"
+				"seed {seed:?}: column ({dx},{dz}) of the disc holds water"
 			);
 			assert!(
 				!carved(x + dx, h, z + dz, seed),
-				"seed {seed}: column ({dx},{dz}) of the disc is a cave mouth"
+				"seed {seed:?}: column ({dx},{dz}) of the disc is a cave mouth"
 			);
 		}
 		assert!(
@@ -198,7 +201,7 @@ fn every_anchor_stands_on_level_ground_under_open_sky() {
 				z + CLEAR,
 				seed
 			),
-			"seed {seed}: decoration intrudes into the spawn cylinder"
+			"seed {seed:?}: decoration intrudes into the spawn cylinder"
 		);
 	}
 }
@@ -208,7 +211,7 @@ fn every_anchor_stands_on_level_ground_under_open_sky() {
 /// not where it started, so checking anchors alone would miss it.
 #[test]
 fn a_relocated_spawn_is_also_level_ground() {
-	for seed in [1.0, 7.0, 42.0, 555.0, 1234.5] {
+	for seed in [1.0, 7.0, 42.0, 555.0, 1234.5].map(Seed::current) {
 		let a = anchor(seed);
 		let (ax, az) = (a.x.floor() as i32, a.z.floor() as i32);
 		let h = a.y.floor() as i32 - 2;
@@ -216,10 +219,13 @@ fn a_relocated_spawn_is_also_level_ground() {
 		let mut cells = HashMap::new();
 		cells.insert((ax, h, az), BlockType::Air as u16);
 		let moved = resolve(a, seed, &overlay(cells));
-		assert_ne!(moved, a, "seed {seed}: spawn did not relocate");
+		assert_ne!(moved, a, "seed {seed:?}: spawn did not relocate");
 		let (mx, mz) = (moved.x.floor() as i32, moved.z.floor() as i32);
 		let mh = moved.y.floor() as i32 - 2;
-		assert!(mh >= SPAWN_FLOOR, "seed {seed}: relocated below sea level");
+		assert!(
+			mh >= SPAWN_FLOOR,
+			"seed {seed:?}: relocated below sea level"
+		);
 		let near = column_shapes_in(mx - CLEAR, mx + CLEAR, mz - CLEAR, mz + CLEAR, seed);
 		for (i, n) in near.iter().enumerate() {
 			let (dx, dz) = (
@@ -228,7 +234,7 @@ fn a_relocated_spawn_is_also_level_ground() {
 			);
 			assert_eq!(
 				n.height, mh,
-				"seed {seed}: relocated onto a step/ledge — disc column \
+				"seed {seed:?}: relocated onto a step/ledge — disc column \
 					 ({dx},{dz}) sits at {}, not {mh}",
 				n.height
 			);

@@ -1,8 +1,9 @@
 use super::*;
 use crate::chunk::make_cell;
+use crate::worldgen::Seed;
 use crate::worldgen::SurfaceKind;
 
-const SEED: f64 = 42.0;
+const SEED: Seed = Seed::current(42.0);
 
 fn maxed() -> Levels {
 	Levels {
@@ -14,7 +15,7 @@ fn maxed() -> Levels {
 /// Find one manifest cell of each surface kind by walking the world —
 /// walked rather than named, so a retune of a rate or a band moves the
 /// tests with it.
-fn find_heartwood(seed: f64) -> (i32, i32, i32) {
+fn find_heartwood(seed: Seed) -> (i32, i32, i32) {
 	for cz in -64..64 {
 		for cx in -64..64 {
 			for x in cx * 8..cx * 8 + 8 {
@@ -34,7 +35,7 @@ fn find_heartwood(seed: f64) -> (i32, i32, i32) {
 	panic!("no heartwood in the sampled world");
 }
 
-fn find_springstone(seed: f64) -> (i32, i32, i32) {
+fn find_springstone(seed: Seed) -> (i32, i32, i32) {
 	for x in (-2048..2048).step_by(3) {
 		for z in (-2048..2048).step_by(3) {
 			let s = crate::worldgen::column_shape(x, z, seed);
@@ -61,7 +62,8 @@ fn surface_placement_is_pure() {
 	}
 	// A different seed is a different world: the exact cells found in
 	// one seed are astronomically unlikely to all recur in another.
-	let moved = heartwood_at(hw.0, hw.1, hw.2, 7.5) && springstone_at(sp.0, sp.1, sp.2, 7.5);
+	let moved = heartwood_at(hw.0, hw.1, hw.2, Seed::current(7.5))
+		&& springstone_at(sp.0, sp.1, sp.2, Seed::current(7.5));
 	assert!(!moved, "the seed reaches the surface nodes");
 }
 

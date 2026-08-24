@@ -1115,7 +1115,11 @@ impl Engine {
 					let mining = self.skills.level(digblock_core::skills::Skill::Mining);
 					let alchemy = self.skills.level(digblock_core::skills::Skill::Alchemy);
 					for (e, n) in digblock_core::alchemy::field_yield(
-						ore, alchemy, mining, hit.cell, self.seed,
+						ore,
+						alchemy,
+						mining,
+						hit.cell,
+						self.seed.value,
 					) {
 						self.inventory.add_sub(e, n);
 						self.toast(crate::ui::hud::ToastLabel::Essence(e), u64::from(n));

@@ -12,6 +12,7 @@
 
 use crate::decoration::box_obstructed;
 use crate::protect::{Region, Sphere};
+use crate::worldgen::Seed;
 use crate::worldgen::{SEA_LEVEL, carved, column_shape_above, column_shapes_in};
 use glam::Vec3;
 
@@ -103,7 +104,7 @@ pub fn lock_region(eye: Vec3) -> Region {
 /// exactly `h`, so the player stands on solid ground `CLEAR` blocks in every direction with a
 /// genuinely empty cylinder above it. Permitting neighbours at `h + 1`, or saying nothing about
 /// neighbours below `h`, spawns a player walled in at head height or on the lip of a drop.
-fn pristine_floor(x: i32, z: i32, seed: f64) -> Option<i32> {
+fn pristine_floor(x: i32, z: i32, seed: Seed) -> Option<i32> {
 	// The dry-land gate goes first, as the presieve it can be: an
 	// ocean-heavy seed walks thousands of candidates and essentially all
 	// of them are sea.
@@ -221,7 +222,7 @@ pub fn stands_clear(eye: Vec3, cell: &dyn Fn(i32, i32, i32) -> Option<u16>) -> b
 }
 
 /// Whether column `(x, z)` is a valid spawn given the current edits.
-fn accepts(x: i32, z: i32, seed: f64, edits: Edits) -> Option<i32> {
+fn accepts(x: i32, z: i32, seed: Seed, edits: Edits) -> Option<i32> {
 	let h = pristine_floor(x, z, seed)?;
 	(h >= SPAWN_FLOOR && edits_clear(x, z, h, edits)).then_some(h)
 }
@@ -231,7 +232,7 @@ fn accepts(x: i32, z: i32, seed: f64, edits: Edits) -> Option<i32> {
 /// [`resolve`] hands back the anchor unchanged when it exhausts its
 /// search, so a caller that must not act on a bad answer — locking the
 /// region, say — asks this before committing.
-pub fn valid(eye: Vec3, seed: f64, edits: Edits) -> bool {
+pub fn valid(eye: Vec3, seed: Seed, edits: Edits) -> bool {
 	let (x, h, z) = column(eye);
 	accepts(x, z, seed, edits) == Some(h)
 }
@@ -251,7 +252,7 @@ fn ring(d: i32, step: i32) -> impl Iterator<Item = (i32, i32)> {
 /// everything players have built or dug. Walks expanding square rings until a column clears the
 /// beach line, so spawning tracks the terrain instead of hardcoding a height — and never drops the
 /// player into the ocean.
-pub fn anchor(seed: f64) -> Vec3 {
+pub fn anchor(seed: Seed) -> Vec3 {
 	anchor_walk(&|x, z| pristine_floor(x, z, seed))
 		// Pathological seed: no clear land anywhere the walk reaches —
 		// tread water.
@@ -276,7 +277,7 @@ pub(crate) fn anchor_walk(accept: &dyn Fn(i32, i32) -> Option<i32>) -> Option<Ve
 
 /// [`pristine_floor`], for sibling modules building accepts over it —
 /// the clearance rule itself stays private.
-pub(crate) fn pristine_pad(x: i32, z: i32, seed: f64) -> Option<i32> {
+pub(crate) fn pristine_pad(x: i32, z: i32, seed: Seed) -> Option<i32> {
 	pristine_floor(x, z, seed)
 }
 
@@ -285,7 +286,7 @@ pub(crate) fn pristine_pad(x: i32, z: i32, seed: f64) -> Option<i32> {
 /// ring walk crosses a continent and callers resolve on every join. Cheap in the common case, with
 /// the outward search running only once the anchor is genuinely broken; a caller holding a
 /// protected spawn region can skip this entirely, since an unmodifiable region stays valid.
-pub fn resolve(a: Vec3, seed: f64, edits: Edits) -> Vec3 {
+pub fn resolve(a: Vec3, seed: Seed, edits: Edits) -> Vec3 {
 	let (ax, az) = (a.x.floor() as i32, a.z.floor() as i32);
 	if let Some(h) = accepts(ax, az, seed, edits) {
 		return eye(ax, h, az);

@@ -31,6 +31,17 @@ fn entry(id: &str, name: &str) -> ServerEntry {
 		cert_hash: "aa".repeat(32),
 		players: 1,
 		max_players: 255,
+		protocol_version: digblock_net::protocol::PROTOCOL_VERSION,
+		sim_version: digblock_core::SIM_VERSION,
+	}
+}
+
+/// The same server, one behaviour version ahead of this build — the shape
+/// of a client that has not caught up with the server it is looking at.
+fn ahead(id: &str, name: &str) -> ServerEntry {
+	ServerEntry {
+		sim_version: digblock_core::SIM_VERSION + 1,
+		..entry(id, name)
 	}
 }
 
@@ -1371,4 +1382,97 @@ fn a_touch_page_can_always_be_backed_out_of() {
 			"{page}: wrong answer for the back button"
 		);
 	});
+}
+
+/// A server the handshake would refuse stays on the list — a self-hoster's
+/// players have to be able to see it is there — and stops being an offer:
+/// its verdict takes the ping column, selection skips it, and Enter lands
+/// on the next row that can actually be joined.
+#[test]
+fn an_incompatible_server_is_listed_but_never_offered() {
+	let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
+	menu.set_services_available();
+	open_browser(&mut menu);
+	let _ = menu.take_commands();
+	menu.on_response(MenuResponse::ServerList(Ok(vec![
+		ahead("s1", "Stale"),
+		entry("s2", "Current"),
+	])));
+	let view = menu.view(SIZE, 1.0, false);
+	let row = view
+		.rows
+		.iter()
+		.find(|r| r.text.contains("Stale"))
+		.expect("the row is still listed");
+	let why = compat_label(Compat::PeerNewer).expect("a refused row has a word for it");
+	assert_matches!(&row.right, Some((label, _)) if label == why);
+	assert!(row.id.is_none(), "and cannot be clicked");
+
+	// Enter without arrowing: the first SELECTABLE row is the second one.
+	menu.handle_key(Key::Enter);
+	match menu.take_commands().as_slice() {
+		[MenuCommand::Join { server_id }] => assert_eq!(server_id, "s2"),
+		other => panic!("expected a join of the compatible row, got {other:?}"),
+	}
+}
+
+/// The scripted path (`--join`) reaches `JoinRow` without going through
+/// `acts`, so the refusal lives in the action too — and says so, rather
+/// than spending a one-time token and a QUIC connect to be told.
+#[test]
+fn a_scripted_join_of_an_incompatible_server_spends_nothing() {
+	let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
+	menu.set_services_available();
+	open_browser(&mut menu);
+	let _ = menu.take_commands();
+	menu.on_response(MenuResponse::ServerList(Ok(vec![ahead("s1", "Stale")])));
+	menu.activate(Act::JoinRow(0));
+	assert!(
+		menu.take_commands().is_empty(),
+		"no token is minted for a server the handshake would refuse"
+	);
+	let view = menu.view(SIZE, 1.0, false);
+	let why = compat_label(Compat::PeerNewer).expect("a refused row has a word for it");
+	assert!(
+		view.rows
+			.iter()
+			.any(|r| r.text.contains("Stale") && r.text.contains(why)),
+		"and the status line names the server and the reason"
+	);
+}
+
+/// The verdict reads the row's OWN two fields, and each one independently
+/// closes the gate: a `compat` that passed either field twice would still
+/// answer correctly on the version pairs where both agree, and this is the
+/// table where they do not. The window itself is pinned in `digblock-net`;
+/// what is pinned here is the wiring.
+#[test]
+fn each_version_field_can_refuse_a_row_on_its_own() {
+	use digblock_net::protocol::{MIN_PROTOCOL, PROTOCOL_VERSION};
+	let sim = digblock_core::SIM_VERSION;
+	let cases = [
+		(PROTOCOL_VERSION, sim, true),
+		(MIN_PROTOCOL, sim, true),
+		(MIN_PROTOCOL.saturating_sub(1), sim, false),
+		(PROTOCOL_VERSION + 1, sim, false),
+		(PROTOCOL_VERSION, sim.saturating_sub(1), false),
+		(PROTOCOL_VERSION, sim + 1, false),
+	];
+	let mut refused = 0;
+	for (protocol, sim_version, joinable) in cases {
+		let e = ServerEntry {
+			protocol_version: protocol,
+			sim_version,
+			..entry("s1", "Alpha")
+		};
+		assert_eq!(
+			e.compat() == Compat::Joinable,
+			joinable,
+			"protocol {protocol}, sim {sim_version}"
+		);
+		refused += u32::from(!joinable);
+	}
+	// Two per gate, or a saturating edge quietly turned a case into a
+	// duplicate of one that passes.
+	assert_eq!(refused, 4);
 }

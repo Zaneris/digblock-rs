@@ -14,6 +14,7 @@
 
 use crate::block::BlockType;
 use crate::spawn::{CLEAR, LOCK_RADIUS};
+use crate::worldgen::Seed;
 use crate::worldgen::SurfaceKind;
 use glam::Vec3;
 
@@ -49,7 +50,7 @@ const _: () =
 /// placed before any of them. Rungs resolve LAZILY and in order for the same answer, since a
 /// rung's site depends only on the rungs below it, so a prefix is exact.
 pub struct Roster {
-	seed: f64,
+	seed: Seed,
 	/// Every pad standing so far, spawn's included — the exclusion set.
 	/// Empty until the first rung resolves: constructing a roster must
 	/// stay free, since a world swap builds one whether or not anybody
@@ -64,7 +65,7 @@ pub struct Roster {
 }
 
 impl Roster {
-	pub fn new(seed: f64) -> Self {
+	pub fn new(seed: Seed) -> Self {
 		let mut pending: Vec<(u8, SurfaceKind, u32)> = SurfaceKind::ALL
 			.iter()
 			.enumerate()
@@ -131,13 +132,13 @@ impl Roster {
 
 /// Every waystone this seed offers, as `(SurfaceKind` index, eye)` pairs
 /// in kind order — [`Roster::all`] for a caller with nothing to cache.
-pub fn sites(seed: f64) -> Vec<(u8, Vec3)> {
+pub fn sites(seed: Seed) -> Vec<(u8, Vec3)> {
 	Roster::new(seed).all()
 }
 
 /// The nearest column to the origin that classifies as `kind`, passes
 /// every spawn clearance rule, and clears every pad in `taken`.
-fn anchor(kind: SurfaceKind, seed: f64, taken: &[Vec3]) -> Option<Vec3> {
+fn anchor(kind: SurfaceKind, seed: Seed, taken: &[Vec3]) -> Option<Vec3> {
 	crate::spawn::anchor_walk(&|x, z| {
 		// Cheapest gate first — the classify and the pad walk both read
 		// terrain, and an excluded column can be rejected on arithmetic.
@@ -201,7 +202,7 @@ mod tests {
 	use super::*;
 	use crate::protect::Region;
 
-	const SEED: f64 = 4242.0;
+	const SEED: Seed = Seed::current(4242.0);
 
 	fn eye_at(x: i32, h: i32, z: i32) -> Vec3 {
 		Vec3::new(x as f32 + 0.5, h as f32 + 2.5, z as f32 + 0.5)

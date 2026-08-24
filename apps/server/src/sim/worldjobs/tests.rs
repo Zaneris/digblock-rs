@@ -1,6 +1,7 @@
 use super::super::harness::*;
 use super::*;
 use digblock_core::block::BlockType;
+use digblock_core::worldgen::Seed;
 use digblock_core::worldjob::{Candidates, CellSource, Run, Schedule, Scope, WorldJob};
 
 /// Caps the flat world's Stone floor with Dirt, so a job has a legal
@@ -41,7 +42,7 @@ impl WorldJob for Sprout {
 			candidates: Candidates::Band,
 		}
 	}
-	fn apply(&self, _: (i32, i32, i32), _: &dyn CellSource, _: f64, _: Run) -> Option<u16> {
+	fn apply(&self, _: (i32, i32, i32), _: &dyn CellSource, _: Seed, _: Run) -> Option<u16> {
 		Some(BlockType::Grass as u16)
 	}
 }
@@ -266,7 +267,7 @@ impl WorldJob for Spy {
 			candidates: Candidates::Band,
 		}
 	}
-	fn apply(&self, _: (i32, i32, i32), _: &dyn CellSource, _: f64, run: Run) -> Option<u16> {
+	fn apply(&self, _: (i32, i32, i32), _: &dyn CellSource, _: Seed, run: Run) -> Option<u16> {
 		self.seen
 			.store(run.players, std::sync::atomic::Ordering::Relaxed);
 		None

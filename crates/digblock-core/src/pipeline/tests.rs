@@ -257,10 +257,10 @@ fn mesh_census(meshed: &[MeshOutput]) -> Vec<(ChunkPos, u64)> {
 #[test]
 fn an_external_pool_builds_the_same_world_as_inline() {
 	let center = ChunkPos::new(0, 0, 0);
-	let mut inline = Pipeline::new(42.0, 3, 0);
+	let mut inline = Pipeline::new(Seed::current(42.0), 3, 0);
 	let inline_meshes = quiesce_meshed(&mut inline, center);
 
-	let mut pooled = Pipeline::new(42.0, 3, 0);
+	let mut pooled = Pipeline::new(Seed::current(42.0), 3, 0);
 	let (d, stats) = ImmediateDispatch::new(64);
 	pooled.set_dispatch(Box::new(d));
 	let pooled_meshes = quiesce_meshed(&mut pooled, center);
@@ -283,13 +283,13 @@ fn an_external_pool_builds_the_same_world_as_inline() {
 #[test]
 fn an_unready_pool_runs_jobs_inline() {
 	let center = ChunkPos::new(0, 0, 0);
-	let mut p = Pipeline::new(42.0, 3, 0);
+	let mut p = Pipeline::new(Seed::current(42.0), 3, 0);
 	let (mut d, stats) = ImmediateDispatch::new(64);
 	d.ready = false;
 	p.set_dispatch(Box::new(d));
 	quiesce(&mut p, center);
 
-	let mut control = Pipeline::new(42.0, 3, 0);
+	let mut control = Pipeline::new(Seed::current(42.0), 3, 0);
 	quiesce(&mut control, center);
 	assert_eq!(
 		world_census(&p),
@@ -308,14 +308,14 @@ fn an_unready_pool_runs_jobs_inline() {
 #[test]
 fn a_saturated_pool_still_finishes_the_world() {
 	let center = ChunkPos::new(0, 0, 0);
-	let mut p = Pipeline::new(42.0, 3, 0);
+	let mut p = Pipeline::new(Seed::current(42.0), 3, 0);
 	// One outstanding result at a time — every submit past the first
 	// bounces until the drain catches up.
 	let (d, stats) = ImmediateDispatch::new(1);
 	p.set_dispatch(Box::new(d));
 	quiesce(&mut p, center);
 
-	let mut control = Pipeline::new(42.0, 3, 0);
+	let mut control = Pipeline::new(Seed::current(42.0), 3, 0);
 	quiesce(&mut control, center);
 	assert_eq!(world_census(&p), world_census(&control));
 	assert!(
@@ -331,7 +331,7 @@ fn a_saturated_pool_still_finishes_the_world() {
 #[test]
 fn taking_the_pool_back_resets_it() {
 	let center = ChunkPos::new(0, 0, 0);
-	let mut p = Pipeline::new(42.0, 3, 0);
+	let mut p = Pipeline::new(Seed::current(42.0), 3, 0);
 	let (d, stats) = ImmediateDispatch::new(64);
 	p.set_dispatch(Box::new(d));
 	// One maintain is enough to have work outstanding.
@@ -352,7 +352,7 @@ fn taking_the_pool_back_resets_it() {
 
 	// And the fallback still builds the world.
 	quiesce(&mut p, center);
-	let mut control = Pipeline::new(42.0, 3, 0);
+	let mut control = Pipeline::new(Seed::current(42.0), 3, 0);
 	quiesce(&mut control, center);
 	assert_eq!(world_census(&p), world_census(&control));
 }
@@ -364,7 +364,7 @@ fn taking_the_pool_back_resets_it() {
 #[test]
 fn a_pre_reset_reply_never_reaches_the_next_world() {
 	let center = ChunkPos::new(0, 0, 0);
-	let mut p = Pipeline::new(42.0, 3, 0);
+	let mut p = Pipeline::new(Seed::current(42.0), 3, 0);
 	let (d, held) = HoldBackDispatch::new(64);
 	p.set_dispatch(Box::new(d));
 	// Hand the pool a batch of the FIRST world's columns, unanswered.
@@ -376,7 +376,7 @@ fn a_pre_reset_reply_never_reaches_the_next_world() {
 
 	// World change: the pool crosses over, its backlog does not.
 	let taken = p.take_dispatch().expect("a pool was attached");
-	let mut next = Pipeline::new(7.0, 3, 0);
+	let mut next = Pipeline::new(Seed::current(7.0), 3, 0);
 	next.set_dispatch(taken);
 	// Every one of those held jobs now finishes — real, decodable
 	// results for real columns, from the wrong seed — and the new
@@ -389,7 +389,7 @@ fn a_pre_reset_reply_never_reaches_the_next_world() {
 		}
 	}
 
-	let mut control = Pipeline::new(7.0, 3, 0);
+	let mut control = Pipeline::new(Seed::current(7.0), 3, 0);
 	quiesce(&mut control, center);
 	assert_eq!(
 		world_census(&next),
@@ -406,7 +406,7 @@ fn a_pre_reset_reply_never_reaches_the_next_world() {
 #[test]
 fn a_pool_that_loses_jobs_still_finishes_the_world() {
 	let center = ChunkPos::new(0, 0, 0);
-	let mut p = Pipeline::new(42.0, 3, 0);
+	let mut p = Pipeline::new(Seed::current(42.0), 3, 0);
 	let (d, held) = HoldBackDispatch::new(8);
 	p.set_dispatch(Box::new(d));
 
@@ -432,7 +432,7 @@ fn a_pool_that_loses_jobs_still_finishes_the_world() {
 	}
 	assert!(killed > 0, "no job was ever lost — the test proved nothing");
 
-	let mut control = Pipeline::new(42.0, 3, 0);
+	let mut control = Pipeline::new(Seed::current(42.0), 3, 0);
 	quiesce(&mut control, center);
 	assert_eq!(
 		world_census(&p),
@@ -471,7 +471,7 @@ fn assert_owed_slots_are_queued(p: &Pipeline) -> usize {
 /// stranding a chunk, and one that checked only the meshes could pass having deduped nothing.
 #[test]
 fn an_edit_burst_queues_each_slot_once_and_strands_none() {
-	let mut p = Pipeline::new(0.0, 4, 2);
+	let mut p = Pipeline::new(Seed::current(0.0), 4, 2);
 	let center = ChunkPos::new(0, 0, 0);
 	quiesce(&mut p, center);
 	assert!(p.mesh_heap.is_empty(), "a quiesced pipeline owes nothing");
@@ -517,7 +517,7 @@ fn an_edit_burst_queues_each_slot_once_and_strands_none() {
 
 #[test]
 fn set_block_edits_and_bumps_border_neighbors() {
-	let mut p = Pipeline::new(0.0, 4, 2);
+	let mut p = Pipeline::new(Seed::current(0.0), 4, 2);
 	let center = ChunkPos::new(0, 0, 0);
 	quiesce(&mut p, center);
 
@@ -606,7 +606,7 @@ fn crossing_a_reveal_threshold_asks_for_a_sweep_and_nothing_else_does() {
 		.filter_map(|&o| crate::unlock::alchemy_reveal(o))
 		.collect();
 	let at = |mining, alchemy| Levels { mining, alchemy };
-	let mut p = Pipeline::new(0.0, 4, 0);
+	let mut p = Pipeline::new(Seed::current(0.0), 4, 0);
 	p.set_levels(at(1, 1));
 	for level in 2..=crate::skills::MAX_LEVEL {
 		assert_eq!(
@@ -628,7 +628,7 @@ fn crossing_a_reveal_threshold_asks_for_a_sweep_and_nothing_else_does() {
 	assert!(!p.set_levels(max));
 	// And a single jump over every threshold on both axes sweeps
 	// exactly once.
-	let mut q = Pipeline::new(0.0, 4, 0);
+	let mut q = Pipeline::new(Seed::current(0.0), 4, 0);
 	assert!(q.set_levels(max));
 	assert!(!q.set_levels(max));
 	// Losing levels (a fresh world, a rejoin as somebody else) crosses
@@ -641,7 +641,12 @@ fn crossing_a_reveal_threshold_asks_for_a_sweep_and_nothing_else_does() {
 /// re-applies it when it regenerates.
 #[test]
 fn overlay_survives_evict_and_regen() {
-	let mut p = Pipeline::with_overlay(0.0, 4, 2, crate::overlay::EditOverlay::default());
+	let mut p = Pipeline::with_overlay(
+		Seed::current(0.0),
+		4,
+		2,
+		crate::overlay::EditOverlay::default(),
+	);
 	let center = ChunkPos::new(0, 0, 0);
 	quiesce(&mut p, center);
 
@@ -673,7 +678,7 @@ fn overlay_survives_evict_and_regen() {
 /// the client's residency. A local write is still not recorded, so a rejection marks nothing.
 #[test]
 fn authoritative_edits_survive_evict_and_regen_without_an_overlay() {
-	let mut p = Pipeline::new(0.0, 4, 2);
+	let mut p = Pipeline::new(Seed::current(0.0), 4, 2);
 	let center = ChunkPos::new(0, 0, 0);
 	quiesce(&mut p, center);
 
@@ -717,7 +722,7 @@ fn authoritative_edits_survive_evict_and_regen_without_an_overlay() {
 /// generation of its columns (a loaded save's spawn area).
 #[test]
 fn overlay_at_construction_applies_to_first_generation() {
-	let mut probe = Pipeline::new(0.0, 4, 2);
+	let mut probe = Pipeline::new(Seed::current(0.0), 4, 2);
 	quiesce(&mut probe, ChunkPos::new(0, 0, 0));
 	let old = probe.block_at(8, 8, 8).expect("ready");
 	let new = if old == BlockType::Stone {
@@ -728,7 +733,7 @@ fn overlay_at_construction_applies_to_first_generation() {
 
 	let mut overlay = crate::overlay::EditOverlay::default();
 	overlay.record(8, 8, 8, new as u16);
-	let mut p = Pipeline::with_overlay(0.0, 4, 2, overlay);
+	let mut p = Pipeline::with_overlay(Seed::current(0.0), 4, 2, overlay);
 	quiesce(&mut p, ChunkPos::new(0, 0, 0));
 	assert_eq!(p.block_at(8, 8, 8), Some(new));
 }
@@ -738,7 +743,12 @@ fn overlay_at_construction_applies_to_first_generation() {
 /// `is_air_chunk`, so the chunk stores, meshes, and renders it.
 #[test]
 fn overlay_into_sky_chunk_defeats_air_classification() {
-	let mut p = Pipeline::with_overlay(0.0, 4, 2, crate::overlay::EditOverlay::default());
+	let mut p = Pipeline::with_overlay(
+		Seed::current(0.0),
+		4,
+		2,
+		crate::overlay::EditOverlay::default(),
+	);
 	let center = ChunkPos::new(0, 0, 0);
 	quiesce(&mut p, center);
 
@@ -775,7 +785,7 @@ fn overlay_reports_restored_water_only() {
 	let mut overlay = crate::overlay::EditOverlay::default();
 	overlay.record(8, 200, 8, BlockType::Water as u16);
 	overlay.record(9, 200, 8, BlockType::Stone as u16);
-	let mut p = Pipeline::with_overlay(0.0, 4, 2, overlay);
+	let mut p = Pipeline::with_overlay(Seed::current(0.0), 4, 2, overlay);
 	let mut water = Vec::new();
 	for _ in 0..2000 {
 		let m = p.maintain(ChunkPos::new(0, 0, 0), usize::MAX, None, None);
@@ -791,7 +801,7 @@ fn overlay_reports_restored_water_only() {
 /// Without an overlay (multiplayer), nothing records.
 #[test]
 fn no_overlay_records_nothing() {
-	let mut p = Pipeline::new(0.0, 4, 2);
+	let mut p = Pipeline::new(Seed::current(0.0), 4, 2);
 	quiesce(&mut p, ChunkPos::new(0, 0, 0));
 	let old = p.block_at(8, 8, 8).unwrap();
 	let new = if old == BlockType::Stone {
@@ -811,7 +821,7 @@ fn no_overlay_records_nothing() {
 /// pristine on the server, and the two ends answer `ore::dig_mode` differently about it forever.
 #[test]
 fn a_rejected_prediction_leaves_the_cell_untouched() {
-	let mut p = Pipeline::new(0.0, 4, 2);
+	let mut p = Pipeline::new(Seed::current(0.0), 4, 2);
 	quiesce(&mut p, ChunkPos::new(0, 0, 0));
 	let old = p.cell_at(8, 8, 8).unwrap();
 	let new = if crate::chunk::cell_id(old) == BlockType::Stone as u16 {
@@ -841,7 +851,7 @@ fn a_rejected_prediction_leaves_the_cell_untouched() {
 /// glittering in a chunk whose dig path already calls it spent stone.
 #[test]
 fn a_no_op_authoritative_write_still_remeshes_once() {
-	let mut p = Pipeline::new(0.0, 4, 2);
+	let mut p = Pipeline::new(Seed::current(0.0), 4, 2);
 	let center = ChunkPos::new(0, 0, 0);
 	quiesce(&mut p, center);
 	let pos = ChunkPos::new(0, 0, 0);
@@ -876,7 +886,7 @@ fn a_no_op_authoritative_write_still_remeshes_once() {
 #[test]
 fn incremental_scan_holds_the_residency_invariant() {
 	const R: i32 = 5;
-	let mut p = Pipeline::new(0.0, R, 2);
+	let mut p = Pipeline::new(Seed::current(0.0), R, 2);
 	// A path that moves on both axes, diagonally, and doubles back.
 	let path = [
 		(0, 0),
@@ -916,7 +926,7 @@ fn incremental_scan_holds_the_residency_invariant() {
 /// boundary used to evict a crescent and immediately regenerate it.
 #[test]
 fn boundary_pacing_does_not_regenerate() {
-	let mut p = Pipeline::new(0.0, 5, 2);
+	let mut p = Pipeline::new(Seed::current(0.0), 5, 2);
 	let a = ChunkPos::new(0, 0, 0);
 	let b = ChunkPos::new(1, 0, 0);
 	quiesce(&mut p, a);
@@ -970,7 +980,7 @@ fn row_half_width_matches_the_disc_predicate() {
 
 #[test]
 fn set_draw_dist_rescans_both_ways() {
-	let mut p = Pipeline::new(0.0, 6, 2);
+	let mut p = Pipeline::new(Seed::current(0.0), 6, 2);
 	let center = ChunkPos::new(0, 0, 0);
 	quiesce(&mut p, center);
 	let full = p.resident();
@@ -1002,7 +1012,7 @@ fn set_draw_dist_rescans_both_ways() {
 
 #[test]
 fn set_block_cow_preserves_snapshots() {
-	let mut p = Pipeline::new(0.0, 4, 2);
+	let mut p = Pipeline::new(Seed::current(0.0), 4, 2);
 	let center = ChunkPos::new(0, 0, 0);
 	quiesce(&mut p, center);
 	let pos = ChunkPos::new(0, 0, 0);
@@ -1023,7 +1033,7 @@ fn set_block_cow_preserves_snapshots() {
 
 #[test]
 fn set_block_into_sky_chunk_cows_the_sentinel() {
-	let mut p = Pipeline::new(0.0, 4, 2);
+	let mut p = Pipeline::new(Seed::current(0.0), 4, 2);
 	let center = ChunkPos::new(0, 0, 0);
 	quiesce(&mut p, center);
 	// Top of the world is far above any terrain: a sentinel sky chunk.
@@ -1052,7 +1062,7 @@ fn set_block_into_sky_chunk_cows_the_sentinel() {
 
 #[test]
 fn edited_chunk_remeshes_at_new_gen() {
-	let mut p = Pipeline::new(0.0, 4, 2);
+	let mut p = Pipeline::new(Seed::current(0.0), 4, 2);
 	let center = ChunkPos::new(0, 0, 0);
 	quiesce(&mut p, center);
 	let new = if p.block_at(8, 8, 8) == Some(BlockType::Stone) {
@@ -1084,7 +1094,7 @@ fn edited_chunk_remeshes_at_new_gen() {
 /// meshes, no leaks.
 #[test]
 fn streaming_converges() {
-	let mut p = Pipeline::new(0.0, 6, 2);
+	let mut p = Pipeline::new(Seed::current(0.0), 6, 2);
 	let mut uploaded: FxHashMap<ChunkPos, u64> = FxHashMap::default();
 	let mut gen_jobs = JobTiming::default();
 	let mut mesh_jobs = JobTiming::default();
@@ -1156,7 +1166,7 @@ fn streaming_converges() {
 /// the old engine-side retry map is gone, this is the Pipeline's job.
 #[test]
 fn authoritative_edit_races_generation() {
-	let mut p = Pipeline::new(0.0, 4, 2);
+	let mut p = Pipeline::new(Seed::current(0.0), 4, 2);
 	// Before any maintain(): every chunk is ungenerated.
 	assert_eq!(
 		p.apply_authoritative(8, 8, 8, BlockType::Sand as u16),
@@ -1193,8 +1203,8 @@ fn authoritative_edit_races_generation() {
 #[test]
 fn inline_executor_matches_worker_pool() {
 	let center = ChunkPos::new(0, 0, 0);
-	let mut inline = Pipeline::new(7.5, 4, 0);
-	let mut pool = Pipeline::new(7.5, 4, 2);
+	let mut inline = Pipeline::new(Seed::current(7.5), 4, 0);
+	let mut pool = Pipeline::new(Seed::current(7.5), 4, 2);
 	quiesce(&mut inline, center);
 	quiesce(&mut pool, center);
 
@@ -1229,7 +1239,7 @@ fn inline_executor_matches_worker_pool() {
 fn inline_drain_progresses_past_expired_deadline() {
 	for allowance in [None, Some(std::time::Duration::ZERO)] {
 		let center = ChunkPos::new(0, 0, 0);
-		let mut p = Pipeline::new(7.5, 12, 0);
+		let mut p = Pipeline::new(Seed::current(7.5), 12, 0);
 		for _ in 0..3 {
 			let expired = web_time::Instant::now() - std::time::Duration::from_millis(1);
 			p.maintain(center, usize::MAX, Some(expired), allowance);
@@ -1247,7 +1257,7 @@ fn inline_drain_progresses_past_expired_deadline() {
 #[test]
 fn inline_allowance_none_matches_legacy() {
 	let center = ChunkPos::new(0, 0, 0);
-	let mut p = Pipeline::new(7.5, 4, 0);
+	let mut p = Pipeline::new(Seed::current(7.5), 4, 0);
 	let mut meshed_batches = 0;
 	for _ in 0..2000 {
 		let m = p.maintain(center, usize::MAX, None, None);
@@ -1271,11 +1281,11 @@ fn inline_allowance_none_matches_legacy() {
 #[test]
 fn inline_allowance_extends_batch() {
 	let center = ChunkPos::new(0, 0, 0);
-	let mut floor = Pipeline::new(7.5, 4, 0);
+	let mut floor = Pipeline::new(Seed::current(7.5), 4, 0);
 	let m = floor.maintain(center, usize::MAX, None, None);
 	assert_eq!(m.gen_jobs.count, 1, "floor batch: exactly one Generate");
 
-	let mut wide = Pipeline::new(7.5, 4, 0);
+	let mut wide = Pipeline::new(Seed::current(7.5), 4, 0);
 	let allowance = std::time::Duration::from_secs(60);
 	let m = wide.maintain(center, usize::MAX, None, Some(allowance));
 	assert!(
@@ -1291,7 +1301,7 @@ fn inline_allowance_extends_batch() {
 #[test]
 fn stream_urgency_tracks_nearest_pending() {
 	let center = ChunkPos::new(0, 0, 0);
-	let mut p = Pipeline::new(7.5, 8, 0);
+	let mut p = Pipeline::new(Seed::current(7.5), 8, 0);
 	assert_eq!(p.stream_urgency(), 0.0, "no pending work before the scan");
 	p.maintain(center, usize::MAX, None, None);
 	assert_eq!(
@@ -1310,7 +1320,7 @@ fn stream_urgency_tracks_nearest_pending() {
 #[test]
 fn urgency_counts_work_that_is_in_the_pool() {
 	let center = ChunkPos::new(0, 0, 0);
-	let mut p = Pipeline::new(7.5, 8, 0);
+	let mut p = Pipeline::new(Seed::current(7.5), 8, 0);
 	// Deep enough to swallow the whole first scan, and holding: after
 	// this call the heaps are empty and every job is outstanding.
 	let (d, held) = HoldBackDispatch::new(1 << 16);

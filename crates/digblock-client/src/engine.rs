@@ -1,3 +1,4 @@
+use digblock_core::worldgen::Seed;
 use std::collections::VecDeque;
 use std::time::Duration;
 
@@ -157,7 +158,7 @@ const FEED_DRIP_SECS: f32 = 0.5;
 pub struct Engine {
 	config: EngineConfig,
 	/// Resolved world seed (config.seed or a random one).
-	seed: f64,
+	seed: Seed,
 	renderer: Option<Renderer>,
 	pipeline: Pipeline,
 	camera: FlyCamera,

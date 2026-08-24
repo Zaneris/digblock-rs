@@ -1,4 +1,5 @@
 use super::*;
+use digblock_core::worldgen::Seed;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -25,7 +26,7 @@ impl digblock_persist::WorldStore for MockStore {
 	fn create_world(
 		&mut self,
 		name: &str,
-		seed: f64,
+		seed: Seed,
 	) -> Result<digblock_persist::WorldMeta, String> {
 		Ok(digblock_persist::WorldMeta {
 			id: "w1".into(),
@@ -42,7 +43,7 @@ impl digblock_persist::WorldStore for MockStore {
 			meta: digblock_persist::WorldMeta {
 				id: id.into(),
 				name: "W".into(),
-				seed: 7.0,
+				seed: Seed::current(7.0),
 				created_ms: 0,
 				last_played_ms: 0,
 				compatible: true,
@@ -106,7 +107,7 @@ fn create_enter_edits_and_snapshots_flow_to_store() {
 
 	engine.handle_world_intent(crate::menu::WorldIntent::Create { name: "W".into() });
 	assert!(engine.save.in_local_save, "entered the created world");
-	assert_eq!(engine.seed, 7.0, "world seed from the save");
+	assert_eq!(engine.seed, Seed::current(7.0), "world seed from the save");
 	assert_eq!(
 		engine.player.pos.to_array(),
 		[1.5, 140.0, 2.5],
@@ -271,7 +272,7 @@ fn walk_sim_holds_until_player_column_generates() {
 /// Echoes `create_world`'s seed back through `open_world` with a
 /// pristine save, the way real stores do — Create must then keep the
 /// backdrop pipeline (same seed, no edits) instead of regenerating.
-struct EchoStore(f64);
+struct EchoStore(Seed);
 
 impl digblock_persist::WorldStore for EchoStore {
 	fn list_worlds(&mut self) -> Vec<digblock_persist::WorldMeta> {
@@ -280,7 +281,7 @@ impl digblock_persist::WorldStore for EchoStore {
 	fn create_world(
 		&mut self,
 		name: &str,
-		seed: f64,
+		seed: Seed,
 	) -> Result<digblock_persist::WorldMeta, String> {
 		self.0 = seed;
 		Ok(digblock_persist::WorldMeta {
@@ -334,10 +335,10 @@ fn create_reuses_streamed_backdrop_world() {
 	config.workers = 0;
 	config.seed = Some(3.0);
 	let mut engine = Engine::new(config);
-	engine.set_world_store(Box::new(EchoStore(0.0)));
+	engine.set_world_store(Box::new(EchoStore(Seed::current(0.0))));
 
 	// Stream the backdrop in around its spawn, like the menu does.
-	let spawn = digblock_core::player::spawn(3.0);
+	let spawn = digblock_core::player::spawn(Seed::current(3.0));
 	let center = digblock_core::chunk::ChunkPos::new(
 		spawn.x.floor() as i32 / 16,
 		0,
@@ -363,7 +364,11 @@ fn create_reuses_streamed_backdrop_world() {
 
 	engine.handle_world_intent(crate::menu::WorldIntent::Create { name: "W".into() });
 	assert!(engine.save.in_local_save);
-	assert_eq!(engine.seed, 3.0, "create adopted the backdrop seed");
+	assert_eq!(
+		engine.seed,
+		Seed::current(3.0),
+		"create adopted the backdrop seed"
+	);
 	// Retained pipeline: the spawn column is queryable with no
 	// further maintain — the player stands instead of waiting.
 	assert!(

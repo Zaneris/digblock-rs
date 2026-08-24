@@ -9,6 +9,7 @@
 use crate::journal::{Journal, world_version};
 use crate::{PlayerPersist, WorldMeta, WorldSave, WorldStore};
 use digblock_core::overlay::EditOverlay;
+use digblock_core::worldgen::{Seed, TerrainVersion};
 use digblock_net::messages::BlockEdit;
 use digblock_net::protocol::SERVER_ID;
 use std::path::{Path, PathBuf};
@@ -23,6 +24,12 @@ struct MetaFile {
 	/// Seed as exact bit pattern (hex) — JSON float round-trips are not
 	/// worth trusting with the terrain's identity.
 	seed_bits: String,
+	/// Which generator made this world. Absent (0) in saves from before worlds recorded one, and
+	/// zero IS the first generator — so an old save reads as what actually made it, with no
+	/// migration. The journal header carries the same answer and `Journal::open` checks the two
+	/// agree, which is what keeps this copy honest.
+	#[serde(default)]
+	terrain: u16,
 	created_ms: u64,
 	last_played_ms: u64,
 }
@@ -106,11 +113,16 @@ impl FsWorldStore {
 		active.last_state_write = Instant::now();
 	}
 
-	fn read_meta(dir: &Path) -> Option<(MetaFile, f64)> {
+	/// The world's identity, or `None` when the file cannot be read at all. A generator this build
+	/// does not carry is `Some` with no `Seed`: the world is intact and listed, and only play is
+	/// refused — losing the row would hide a world whose files are perfectly fine.
+	fn read_meta(dir: &Path) -> Option<(MetaFile, f64, Option<Seed>)> {
 		let text = std::fs::read_to_string(dir.join("meta.json")).ok()?;
 		let meta: MetaFile = serde_json::from_str(&text).ok()?;
 		let bits = u64::from_str_radix(&meta.seed_bits, 16).ok()?;
-		Some((meta, f64::from_bits(bits)))
+		let value = f64::from_bits(bits);
+		let seed = TerrainVersion::from_wire(meta.terrain).map(|v| Seed::new(value, v));
+		Some((meta, value, seed))
 	}
 
 	fn write_meta(dir: &Path, meta: &MetaFile) -> std::io::Result<()> {
@@ -137,16 +149,16 @@ impl WorldStore for FsWorldStore {
 			if !dir.is_dir() {
 				continue;
 			}
-			let Some((meta, seed)) = Self::read_meta(&dir) else {
+			let Some((meta, value, seed)) = Self::read_meta(&dir) else {
 				continue;
 			};
-			// A missing journal (created, never entered) is compatible;
-			// a version-mismatched one is listed but refused for play.
-			let compatible = matches!(world_version(&dir, seed), Ok(None));
+			// A missing journal (created, never entered) is compatible; a stale RECORD FORMAT or a
+			// generator this build does not carry is listed but refused for play.
+			let compatible = seed.is_some() && matches!(world_version(&dir, value), Ok(None));
 			out.push(WorldMeta {
 				id: entry.file_name().to_string_lossy().into_owned(),
 				name: meta.name,
-				seed,
+				seed: seed.unwrap_or(Seed::current(value)),
 				created_ms: meta.created_ms,
 				last_played_ms: meta.last_played_ms,
 				compatible,
@@ -157,14 +169,15 @@ impl WorldStore for FsWorldStore {
 		out
 	}
 
-	fn create_world(&mut self, name: &str, seed: f64) -> Result<WorldMeta, String> {
+	fn create_world(&mut self, name: &str, seed: Seed) -> Result<WorldMeta, String> {
 		let id = self.fresh_id();
 		let dir = self.root.join(&id);
 		std::fs::create_dir_all(&dir).map_err(|e| format!("create failed: {e}"))?;
 		let now = now_ms();
 		let meta = MetaFile {
 			name: name.to_string(),
-			seed_bits: format!("{:016x}", seed.to_bits()),
+			seed_bits: format!("{:016x}", seed.value.to_bits()),
+			terrain: seed.version.to_wire(),
 			created_ms: now,
 			last_played_ms: now,
 		};
@@ -192,14 +205,19 @@ impl WorldStore for FsWorldStore {
 	fn open_world(&mut self, id: &str) -> Result<WorldSave, String> {
 		self.close_world();
 		let dir = self.root.join(id);
-		let Some((mut meta, seed)) = Self::read_meta(&dir) else {
+		let Some((mut meta, value, seed)) = Self::read_meta(&dir) else {
 			return Err("save metadata unreadable".into());
+		};
+		// A generator this build does not carry is refused here rather than at the journal, so the
+		// message names the real reason: the world is intact, this build cannot regenerate it.
+		let Some(seed) = seed else {
+			return Err("save was made by a newer world generator".into());
 		};
 		// Refuse incompatible saves BEFORE Journal::open, whose archive-
 		// and-start-fresh policy is right for a server volume and wrong
 		// for a named user save. (A pre-shard save is NOT incompatible —
 		// `Journal::open` migrates it in place.)
-		match world_version(&dir, seed) {
+		match world_version(&dir, value) {
 			Ok(None) => {}
 			Ok(Some(v)) => return Err(format!("save is from an old version (v{v})")),
 			Err(e) => return Err(format!("save unreadable: {e}")),
@@ -319,11 +337,11 @@ mod tests {
 	fn create_list_open_delete_roundtrip() {
 		let (mut s, root) = store("crud");
 		assert!(s.list_worlds().is_empty());
-		let meta = s.create_world("Home", 42.0).unwrap();
+		let meta = s.create_world("Home", Seed::current(42.0)).unwrap();
 		let list = s.list_worlds();
 		assert_eq!(list.len(), 1);
 		assert_eq!(list[0].name, "Home");
-		assert_eq!(list[0].seed, 42.0);
+		assert_eq!(list[0].seed, Seed::current(42.0));
 		assert!(list[0].compatible, "journal-less save is compatible");
 
 		// Enter, edit, save player state, close.
@@ -380,8 +398,8 @@ mod tests {
 	#[test]
 	fn two_worlds_are_distinct() {
 		let (mut s, root) = store("two");
-		let a = s.create_world("A", 1.0).unwrap();
-		let b = s.create_world("B", 2.0).unwrap();
+		let a = s.create_world("A", Seed::current(1.0)).unwrap();
+		let b = s.create_world("B", Seed::current(2.0)).unwrap();
 		assert_ne!(a.id, b.id);
 		s.open_world(&a.id).unwrap();
 		s.append_edit(1, 100, 1, 7);
@@ -396,7 +414,7 @@ mod tests {
 	#[test]
 	fn incompatible_save_listed_but_refused() {
 		let (mut s, root) = store("oldver");
-		let meta = s.create_world("Old", 3.0).unwrap();
+		let meta = s.create_world("Old", Seed::current(3.0)).unwrap();
 		// Enter once so the journal exists, then rewrite the header
 		// version of the region shard the edit landed in.
 		s.open_world(&meta.id).unwrap();
@@ -426,7 +444,7 @@ mod tests {
 	#[test]
 	fn legacy_single_file_save_migrates_on_open() {
 		let (mut s, root) = store("legacyshard");
-		let meta = s.create_world("Old", 3.0).unwrap();
+		let meta = s.create_world("Old", Seed::current(3.0)).unwrap();
 		let dir = root.join(&meta.id);
 		// Hand-write the pre-shard layout: one whole-world journal file.
 		let mut index = crate::journal::JournalIndex::default();
@@ -439,7 +457,11 @@ mod tests {
 			});
 		}
 		let legacy = dir.join(format!("world-{:016x}.journal", 3.0f64.to_bits()));
-		std::fs::write(&legacy, crate::journal::snapshot_bytes(3.0, &index)).unwrap();
+		std::fs::write(
+			&legacy,
+			crate::journal::snapshot_bytes(Seed::current(3.0), &index),
+		)
+		.unwrap();
 
 		assert!(
 			s.list_worlds()[0].compatible,
@@ -462,7 +484,7 @@ mod tests {
 	#[test]
 	fn corrupt_state_json_degrades_to_empty() {
 		let (mut s, root) = store("badstate");
-		let meta = s.create_world("W", 5.0).unwrap();
+		let meta = s.create_world("W", Seed::current(5.0)).unwrap();
 		s.open_world(&meta.id).unwrap();
 		s.append_edit(0, 100, 0, 1);
 		s.close_world();
@@ -479,7 +501,7 @@ mod tests {
 	#[test]
 	fn legacy_state_json_without_hotbar_parses() {
 		let (mut s, root) = store("legacy");
-		let meta = s.create_world("W", 6.0).unwrap();
+		let meta = s.create_world("W", Seed::current(6.0)).unwrap();
 		s.open_world(&meta.id).unwrap();
 		s.append_edit(0, 100, 0, 1);
 		s.close_world();

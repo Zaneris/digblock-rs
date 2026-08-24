@@ -735,7 +735,8 @@ fn a_revealed_vein_needs_the_siphon_and_pays_two_skills() {
 	// Cell and seed included: part of a draw is derived from the vein
 	// itself (`ore::traces_aether`), so asking without them would be
 	// asking a different question than the server answered.
-	let want = digblock_core::alchemy::field_yield(ore, alchemy, mining, cell, sim.store.seed());
+	let want =
+		digblock_core::alchemy::field_yield(ore, alchemy, mining, cell, sim.store.seed().value);
 	assert!(!want.is_empty(), "a vein has to be worth drawing");
 	for (e, n) in want {
 		assert_eq!(sim.test_sub_count(1, e), n, "{e:?} from the draw");

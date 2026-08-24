@@ -12,6 +12,7 @@
 use super::{Candidates, CellSource, Run, Schedule, Scope, WorldJob};
 use crate::block::BlockType;
 use crate::chunk::{WORLD_VBLOCK, cell_id};
+use crate::worldgen::Seed;
 use crate::worldgen::nodes::{NODES, drawn_kind, host_block, node_at, spent_block};
 use crate::worldgen::ore;
 
@@ -89,7 +90,7 @@ impl WorldJob for NodeRegrow {
 		&self,
 		at: (i32, i32, i32),
 		world: &dyn CellSource,
-		seed: f64,
+		seed: Seed,
 		run: Run,
 	) -> Option<u16> {
 		let cell = world.cell_at(at.0, at.1, at.2)?;
@@ -103,7 +104,13 @@ impl WorldJob for NodeRegrow {
 		if node_at(host_block(node)?, at, seed) != Some(node) {
 			return None;
 		}
-		let roll = ore::mix(at.0, at.1, at.2, seed.to_bits(), REGROW_SALT ^ run.slot) % ROLL_OF;
+		let roll = ore::mix(
+			at.0,
+			at.1,
+			at.2,
+			seed.value.to_bits(),
+			REGROW_SALT ^ run.slot,
+		) % ROLL_OF;
 		(roll < u64::from(chance_percent(run.players))).then_some(node as u16)
 	}
 }

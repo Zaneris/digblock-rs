@@ -151,7 +151,7 @@ impl Engine {
 						cam.y.floor() as i32,
 						cam.z.floor() as i32,
 					),
-					self.seed,
+					self.seed.value,
 					mining,
 				)
 			})

@@ -9,7 +9,7 @@ use digblock_net::codec::{self, FrameReader};
 use digblock_net::messages::{ClientMsg, Datagram, ServerMsg};
 use digblock_net::protocol::{
 	MAX_CLIENT_FRAME, MIN_PROTOCOL, PREAMBLE_LEN, PROTOCOL_VERSION, TICK_RATE, decode_preamble,
-	encode_preamble,
+	encode_preamble, protocol_supported,
 };
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
@@ -371,7 +371,7 @@ async fn lobby(
 	{
 		return None;
 	}
-	if !(MIN_PROTOCOL..=PROTOCOL_VERSION).contains(&client_protocol) {
+	if !protocol_supported(client_protocol) {
 		send_refused(
 			&mut send,
 			format!(

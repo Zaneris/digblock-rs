@@ -80,7 +80,7 @@ impl Pipeline {
 		// `deposits_near` is the expensive half and asks worldgen, so it
 		// waits until a host has actually been seen.
 		let hosts = crate::mesher::NodeHosts {
-			deposits: stone && !ore::deposits_near(origin, far, self.seed).is_empty(),
+			deposits: stone && !ore::deposits_near(origin, far, self.seed.value).is_empty(),
 			heartwood: wood,
 			springs: sand,
 		};

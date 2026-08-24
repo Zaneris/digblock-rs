@@ -108,14 +108,14 @@ impl Sim {
 		}
 		// Redundant with the net-layer preamble gate, but the sim is also
 		// driven directly (tests, future transports) — keep it authoritative.
-		if !(MIN_PROTOCOL..=PROTOCOL_VERSION).contains(&protocol) {
+		if !protocol_supported(protocol) {
 			refuse(
 				&out,
 				format!("protocol {protocol}, server supports {MIN_PROTOCOL}..={PROTOCOL_VERSION}"),
 			);
 			return;
 		}
-		if sim_version != digblock_core::SIM_VERSION {
+		if !sim_supported(sim_version) {
 			refuse(
 				&out,
 				format!(
@@ -169,7 +169,7 @@ impl Sim {
 			&out,
 			&ServerMsg::Welcome {
 				protocol: PROTOCOL_VERSION,
-				seed: self.store.seed(),
+				seed: self.store.seed().value,
 				player_id: id,
 				spawn: spawn.to_array(),
 				server_tick: self.tick,
@@ -181,6 +181,7 @@ impl Sim {
 				build: env!("CARGO_PKG_VERSION").into(),
 				tod: self.current_tod(),
 				spawn_look: spawn_look.to_array(),
+				terrain: self.store.seed().version.to_wire(),
 			},
 		);
 

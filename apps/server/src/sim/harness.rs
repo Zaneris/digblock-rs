@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc::{Receiver, channel};
 
-pub(crate) const SEED: f64 = 42.0;
+pub(crate) const SEED: digblock_core::worldgen::Seed = digblock_core::worldgen::Seed::current(42.0);
 
 pub(crate) fn temp_dir(tag: &str) -> PathBuf {
 	// Unique per CALL, not per tag. Two tests sharing a tag land on one directory — the pid
@@ -120,7 +120,7 @@ pub(crate) fn a_vein_under_spawn() -> ((i32, i32, i32), Vec3, digblock_core::Blo
 	let y = FLAT_GROUND_TOP as i32;
 	for z in -80..80 {
 		for x in -80..80 {
-			if let Some(ore) = digblock_core::worldgen::ore::ore_at(x, y, z, SEED) {
+			if let Some(ore) = digblock_core::worldgen::ore::ore_at(x, y, z, SEED.value) {
 				let eye = Vec3::new(x as f32 + 0.5, FLAT_SPAWN.y, z as f32 + 0.5);
 				return ((x, y, z), eye, ore);
 			}

@@ -247,7 +247,7 @@ fn run_bot(
 	);
 
 	let mut player: Option<Player> = None;
-	let mut seed = 0.0f64;
+	let mut seed = digblock_core::worldgen::Seed::current(0.0);
 	let mut result = BotResult::default();
 	let mut events = Vec::new();
 	let mut next_edit_in = if edit_rate > 0.0 { 2.0 } else { f32::INFINITY };
@@ -259,7 +259,7 @@ fn run_bot(
 
 	// Terrain-only world model: enough for plausible claims and digs.
 	// (No caves/trees/edits — off claims are simply not adopted.)
-	let block_at = move |seed: f64| {
+	let block_at = move |seed: digblock_core::worldgen::Seed| {
 		move |x: i32, y: i32, z: i32| -> Option<u16> {
 			Some(if y <= terrain_height(x, z, seed) {
 				BlockType::Stone as u16

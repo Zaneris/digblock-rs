@@ -45,8 +45,8 @@ pub use block::BlockType;
 pub use chunk::{CHUNK_SIZE, ChunkData, ChunkPos};
 
 /// Version of the behavior client and server execute INDEPENDENTLY and must agree on bit-for-bit:
-/// `Player::tick` physics, worldgen (terrain is never sent — join sync is seed + edits, so
-/// divergent worldgen means silently different worlds), and the tables both ends time a dig
-/// against. Exchanged in the Hello/Welcome handshake; a mismatch is refused. Bump on ANY behavior
-/// change to those — the golden tests fail on drift and name this constant in their message.
+/// `Player::tick` physics, the dig tables, and the BODY of every terrain generator this build
+/// carries. Exchanged in the Hello/Welcome handshake; a mismatch is refused, and the golden tests
+/// name this constant when they fail. A NEW `worldgen::TerrainVersion` row needs no bump — a world
+/// names its generator — but editing a row in place does (COMPAT-DESIGN.md §5.3).
 pub const SIM_VERSION: u16 = 24;

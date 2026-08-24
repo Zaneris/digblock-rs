@@ -15,6 +15,7 @@
 //! ever an item ([`BlockType::is_slottable`]), so [`revealed`] finds a stored one at any level.
 
 use crate::block::BlockType;
+use crate::worldgen::Seed;
 use crate::worldgen::ore;
 
 /// Every live node face. The four Mining tiers first, then the three
@@ -73,7 +74,7 @@ pub fn reveal_met(node: BlockType, levels: Levels) -> bool {
 pub fn revealed(
 	cell: u16,
 	at: (i32, i32, i32),
-	seed: f64,
+	seed: Seed,
 	levels: Levels,
 	edited: bool,
 ) -> Option<BlockType> {
@@ -93,10 +94,10 @@ pub fn revealed(
 /// shortcut: asked of the position alone the three streams overlap, and the regrowth sweep is the
 /// caller that notices — it asks whether a spent face stands where its find was, and a host-blind
 /// answer would let one carried in and placed manufacture a node site.
-pub fn node_at(host: BlockType, at: (i32, i32, i32), seed: f64) -> Option<BlockType> {
+pub fn node_at(host: BlockType, at: (i32, i32, i32), seed: Seed) -> Option<BlockType> {
 	let (x, y, z) = at;
 	match host {
-		BlockType::Stone => ore::ore_at(x, y, z, seed),
+		BlockType::Stone => ore::ore_at(x, y, z, seed.value),
 		BlockType::Wood => heartwood_at(x, y, z, seed).then_some(BlockType::Heartwood),
 		BlockType::Sand => springstone_at(x, y, z, seed).then_some(BlockType::Springstone),
 		_ => None,
@@ -145,7 +146,7 @@ pub enum DigMode {
 pub fn dig_mode(
 	cell: u16,
 	at: (i32, i32, i32),
-	seed: f64,
+	seed: Seed,
 	levels: Levels,
 	edited: bool,
 	// Named for the question the callers ask, which is `tool_in_hand`
@@ -217,15 +218,20 @@ const HEART_CELLS: i32 = 2;
 /// HAS a heart is one salted roll on its anchor column, so every cell of one trunk agrees. A
 /// landmark skips the roll but gets no BIGGER heart — its reward is its four trunk columns and the
 /// certainty. Callers still need the live cell to hold Wood and be unedited ([`revealed`] checks).
-pub fn heartwood_at(x: i32, y: i32, z: i32, seed: f64) -> bool {
+pub fn heartwood_at(x: i32, y: i32, z: i32, seed: Seed) -> bool {
 	let Some(t) = crate::decoration::trunk_at(x, z, seed) else {
 		return false;
 	};
 	let heart = (t.y0 + 1)..=(t.y0 + HEART_CELLS).min(t.y1);
 	heart.contains(&y)
 		&& (t.landmark
-			|| ore::mix(t.anchor.0, 0, t.anchor.1, seed.to_bits(), HEARTWOOD_SALT) % 100
-				< HEARTWOOD_IN_100)
+			|| ore::mix(
+				t.anchor.0,
+				0,
+				t.anchor.1,
+				seed.value.to_bits(),
+				HEARTWOOD_SALT,
+			) % 100 < HEARTWOOD_IN_100)
 }
 
 /// Salt for the springstone stream.
@@ -255,7 +261,7 @@ const SHORE_DEPTH: i32 = 3;
 /// ([`crate::worldgen::column_shape`]); only the cells that pass pay for the classification. Lake
 /// and river beds at the full rate, the ocean's shoreline shallows at the rarer one, never the
 /// open floor or a marsh puddle, and only the bed surface cell — which puts the find under water.
-pub fn springstone_at(x: i32, y: i32, z: i32, seed: f64) -> bool {
+pub fn springstone_at(x: i32, y: i32, z: i32, seed: Seed) -> bool {
 	springstone_bed(x, z, seed) == Some(y)
 }
 
@@ -264,8 +270,8 @@ pub fn springstone_at(x: i32, y: i32, z: i32, seed: f64) -> bool {
 /// (the `DIG_NODE` capture scene) would otherwise evaluate [`crate::worldgen::column_shape`] just
 /// to learn the height to ask about and pay for it a second time in here. Sharing one answer also
 /// keeps the rate test genuinely first: the hash rejects all but a small share of columns.
-pub fn springstone_bed(x: i32, z: i32, seed: f64) -> Option<i32> {
-	let roll = ore::mix(x, 0, z, seed.to_bits(), SPRING_SALT) & 0xFF;
+pub fn springstone_bed(x: i32, z: i32, seed: Seed) -> Option<i32> {
+	let roll = ore::mix(x, 0, z, seed.value.to_bits(), SPRING_SALT) & 0xFF;
 	if roll >= SPRING_IN_256 {
 		return None;
 	}

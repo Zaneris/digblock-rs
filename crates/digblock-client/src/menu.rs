@@ -10,6 +10,7 @@ use crate::settings::{
 	DRAW_MAX, DRAW_MIN, DRAW_STEP, GI_SCALE_DIVISORS, LIGHT_CAP_MAX, LIGHT_CAP_MIN, LIGHT_CAP_STEP,
 	Settings, UI_SCALE_MAX, UI_SCALE_MIN, UI_SCALE_STEP, VOL_MAX, VOL_STEP,
 };
+use digblock_net::protocol::Compat;
 use digblock_net::transport::NetTransport;
 use digblock_platform::{InputEvent, Key, MouseButton};
 
@@ -22,6 +23,20 @@ pub struct ServerEntry {
 	pub cert_hash: String,
 	pub players: u32,
 	pub max_players: u32,
+	/// What the master holds for this server, read through
+	/// [`digblock_net::protocol::compat`] before a join is offered — the
+	/// list must not promise what the handshake would refuse.
+	pub protocol_version: u16,
+	pub sim_version: u16,
+}
+
+impl ServerEntry {
+	/// Asked by `acts`, by the row that draws it, and by each launcher
+	/// before it spends a probe — so nothing offers what the handshake
+	/// would refuse.
+	pub fn compat(&self) -> Compat {
+		digblock_net::protocol::compat(self.protocol_version, self.sim_version)
+	}
 }
 
 /// Who the player is signed in as, as far as anything drawable is concerned.
@@ -1318,17 +1333,25 @@ impl Menu {
 			// means we are signed in and named, because Act::OpenMultiplayer
 			// walks those stages first.
 			Act::JoinRow(i) => {
-				let Some(Screen::Browser(prev)) = self.screen.take() else {
+				let Some(Screen::Browser(mut prev)) = self.screen.take() else {
 					return;
 				};
-				let Some((server_id, server_name)) = prev
+				let Some((server_id, server_name, compat)) = prev
 					.rows
 					.get(i)
-					.map(|r| (r.entry.id.clone(), r.entry.name.clone()))
+					.map(|r| (r.entry.id.clone(), r.entry.name.clone(), r.entry.compat()))
 				else {
 					self.screen = Some(Screen::Browser(prev));
 					return;
 				};
+				// `acts` does not offer such a row, so this is the scripted
+				// path (`--join`): say so rather than spending a one-time
+				// token and a QUIC connect on a refusal.
+				if let Some(why) = compat_label(compat) {
+					prev.status = Some(format!("{server_name}: {why}"));
+					self.screen = Some(Screen::Browser(prev));
+					return;
+				}
 				self.pending_cmds.push(MenuCommand::Join { server_id });
 				self.screen = Some(Screen::Connecting {
 					prev,
@@ -1389,8 +1412,12 @@ impl Menu {
 				acts.push((RowId::RootItem(4), Act::OpenSettings));
 			}
 			Some(Screen::Browser(b)) => {
-				for i in 0..b.rows.len() {
-					acts.push((RowId::Server(i), Act::JoinRow(i)));
+				// A row the handshake would refuse stays listed and stops
+				// being an offer: selection skips it, a click on it is dead.
+				for (i, row) in b.rows.iter().enumerate() {
+					if row.entry.compat() == Compat::Joinable {
+						acts.push((RowId::Server(i), Act::JoinRow(i)));
+					}
 				}
 				acts.push((RowId::Refresh, Act::Refresh));
 			}
@@ -1507,6 +1534,17 @@ fn snap_range(v: f32, dir: i32, min: f32, max: f32, step: f32) -> f32 {
 
 fn snap_vol(v: f32, dir: i32) -> f32 {
 	snap_range(v, dir, 0.0, VOL_MAX, VOL_STEP)
+}
+
+/// The right column's word for a row the handshake would refuse, and the
+/// status line's when a scripted join names one. A menu label, so it lives
+/// with the layout; `None` is a row that draws its ping instead.
+fn compat_label(c: Compat) -> Option<&'static str> {
+	match c {
+		Compat::Joinable => None,
+		Compat::PeerOlder => Some("server too old"),
+		Compat::PeerNewer => Some("client too old"),
+	}
 }
 
 /// Player-facing name for a GI divisor. Named for the PICTURE rather than

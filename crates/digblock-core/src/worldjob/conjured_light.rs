@@ -56,7 +56,7 @@ impl WorldJob for ConjuredLightFade {
 		&self,
 		_at: (i32, i32, i32),
 		_world: &dyn CellSource,
-		_seed: f64,
+		_seed: crate::worldgen::Seed,
 		_run: Run,
 	) -> Option<u16> {
 		// Unconditional: a cell holding one of these is an orphan by

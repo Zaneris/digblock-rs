@@ -539,7 +539,7 @@ mod tests {
 	/// The table's rows hang together, asserted as the rules that make them coherent rather than
 	/// as a copy of their values: what a kind is made of decides its band, whether it grows trees
 	/// decides whether you can stand on it. The values are already pinned to the BYTE by
-	/// `worldgen_golden_hash_pins_sim_version` and re-derived by `tests/worldgen.rs`. The `match`
+	/// `a_shipped_generator_never_moves` and re-derived by `tests/worldgen.rs`. The `match`
 	/// stays exhaustive on purpose: a new kind is a compile error, not a silently untested row.
 	#[test]
 	fn surface_props_are_pinned() {

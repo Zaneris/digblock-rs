@@ -1,5 +1,6 @@
 use super::*;
 use crate::block::BlockType as B;
+use crate::worldgen::Seed;
 
 fn solo(block: B) -> ChunkData {
 	let mut d = ChunkData::default();
@@ -30,7 +31,7 @@ fn isolated(d: &ChunkData) -> MeshInput {
 #[test]
 fn the_reveal_stamp_and_the_dig_path_agree() {
 	use crate::worldgen::nodes::{self, Levels};
-	let seed = 42.0;
+	let seed = Seed::current(42.0);
 	let span = PADDED as i32 - 1;
 	let max = crate::skills::MAX_LEVEL;
 	// Every host a node can manifest in, each filling a whole box.
@@ -126,7 +127,7 @@ fn the_reveal_stamp_and_the_dig_path_agree() {
 #[test]
 fn the_reveal_stamp_leaves_everything_else_alone() {
 	use crate::worldgen::{nodes::Levels, ore};
-	let seed = 42.0;
+	let seed = Seed::current(42.0);
 	let origin = (-24, 1, -4);
 	let others = [
 		B::Air as u16,
@@ -168,7 +169,7 @@ fn the_reveal_stamp_leaves_everything_else_alone() {
 					origin.0 + lx as i32,
 					origin.1 + ly as i32,
 					origin.2 + lz as i32,
-					seed,
+					seed.value,
 				)
 				.is_some()
 			})

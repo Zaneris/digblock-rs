@@ -8,6 +8,7 @@
 //! a second, or a level a fresh player does not have.
 
 use digblock_core::BlockType;
+use digblock_core::worldgen::Seed;
 use glam::Vec3;
 
 /// Stair/door placement facing from the look direction: the dominant
@@ -178,7 +179,7 @@ pub(super) const ORE_CHAMBER_R: i32 = 5;
 /// cell never showing ore (the anti-dupe), so a naive hollow deletes what is being photographed.
 pub(super) fn debug_ore_plan(
 	spawn: Vec3,
-	seed: f64,
+	seed: Seed,
 	want: BlockType,
 ) -> (Vec3, Vec<(i32, i32, i32, u16)>) {
 	use digblock_core::worldgen::{self, ore};
@@ -203,7 +204,11 @@ pub(super) fn debug_ore_plan(
 		d.y + R < worldgen::column_shape(d.x, d.z, seed).height
 	};
 	let mut best: Option<(i64, ore::Deposit)> = None;
-	for d in ore::deposits_near((sx - 320, 1, sz - 320), (sx + 320, 200, sz + 320), seed) {
+	for d in ore::deposits_near(
+		(sx - 320, 1, sz - 320),
+		(sx + 320, 200, sz + 320),
+		seed.value,
+	) {
 		if d.ore != want || !buried(&d) {
 			continue;
 		}
@@ -225,7 +230,9 @@ pub(super) fn debug_ore_plan(
 	for y in (d.y - R)..=(d.y + R) {
 		for z in (d.z - R)..=(d.z + R) {
 			for x in (d.x - R)..=(d.x + R) {
-				if y <= digblock_core::block::BEDROCK_Y || ore::ore_at(x, y, z, seed).is_some() {
+				if y <= digblock_core::block::BEDROCK_Y
+					|| ore::ore_at(x, y, z, seed.value).is_some()
+				{
 					continue;
 				}
 				plan.push((x, y, z, BlockType::Air as u16));
@@ -240,7 +247,7 @@ pub(super) fn debug_ore_plan(
 	let floor = (d.y - 2).max(digblock_core::block::BEDROCK_Y + 1);
 	for z in (d.z - R)..=(d.z + R) {
 		for x in (d.x - R)..=(d.x + R) {
-			if ore::ore_at(x, floor, z, seed).is_some() {
+			if ore::ore_at(x, floor, z, seed.value).is_some() {
 				continue;
 			}
 			plan.push((x, floor, z, BlockType::Stone as u16));
@@ -279,7 +286,7 @@ pub fn parse_node_kind(v: &str) -> Option<BlockType> {
 /// exactly as photographable as the world makes it, which is the point of the capture.
 pub(super) fn debug_node_plan(
 	spawn: Vec3,
-	seed: f64,
+	seed: Seed,
 	node: BlockType,
 ) -> (Vec3, Vec<(i32, i32, i32, u16)>) {
 	use digblock_core::worldgen::nodes;

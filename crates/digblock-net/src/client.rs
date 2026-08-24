@@ -9,7 +9,7 @@ use crate::predict::{Predictor, Reconciled};
 use crate::protocol::{
 	CLIENT_TICK_LEAD, CONNECT_TIMEOUT_SECS, HANDSHAKE_TIMEOUT_SECS, INPUT_SEND_STRIDE,
 	MIN_PROTOCOL, PREAMBLE_LEN, PROTOCOL_VERSION, PlayerId, RECV_TIMEOUT_SECS, decode_preamble,
-	encode_preamble, sanitize_name,
+	encode_preamble, protocol_supported, sanitize_name, sim_supported,
 };
 use crate::remote::{RemotePlayers, RemoteSnap};
 use crate::transport::{ConnStatus, NetTransport, TransportEvent};
@@ -41,7 +41,7 @@ pub struct NetClientConfig {
 pub enum NetEvent {
 	/// Handshake complete: rebuild the world around the server's seed.
 	Welcome {
-		seed: f64,
+		seed: digblock_core::worldgen::Seed,
 		player_id: PlayerId,
 		spawn: Vec3,
 		server_tick: u32,
@@ -488,7 +488,7 @@ impl NetClient {
 			return None;
 		};
 		self.server_protocol = Some(version);
-		if !(MIN_PROTOCOL..=PROTOCOL_VERSION).contains(&version) {
+		if !protocol_supported(version) {
 			// Newer servers may still Refuse us politely after this; going
 			// through Refused locally keeps one code path either way.
 			self.failed = true;
@@ -571,8 +571,22 @@ impl NetClient {
 				build,
 				tod,
 				spawn_look,
+				terrain,
 			} => {
-				if sim_version != digblock_core::SIM_VERSION {
+				// The world names its generator and this build either carries it or does not. A
+				// refusal here is the client being too old — the world is intact and somebody
+				// else can reach it, which is why the reason says so rather than blaming the seed.
+				let Some(terrain) = digblock_core::worldgen::TerrainVersion::from_wire(terrain)
+				else {
+					self.failed = true;
+					out.push(NetEvent::Refused {
+						reason: format!(
+							"server world uses terrain {terrain} (build {build}); this client does not carry it — update"
+						),
+					});
+					return;
+				};
+				if !sim_supported(sim_version) {
 					self.failed = true;
 					out.push(NetEvent::Refused {
 						reason: format!(
@@ -594,7 +608,7 @@ impl NetClient {
 				self.predictor = Predictor::new(server_tick + CLIENT_TICK_LEAD);
 				self.last_input_send_tick = 0;
 				out.push(NetEvent::Welcome {
-					seed,
+					seed: digblock_core::worldgen::Seed::new(seed, terrain),
 					player_id,
 					spawn,
 					server_tick,

@@ -12,6 +12,7 @@
 
 use crate::auth::{self, Session};
 use digblock_client::{AccountView, MenuCommand, MenuResponse, MenuServices, ServerEntry};
+use digblock_net::protocol::Compat;
 use serde::Deserialize as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -42,6 +43,10 @@ struct ListServer {
 	players: u32,
 	#[serde(deserialize_with = "lenient_count")]
 	max_players: u32,
+	#[serde(default, deserialize_with = "lenient_version")]
+	protocol_version: u16,
+	#[serde(default, deserialize_with = "lenient_version")]
+	sim_version: u16,
 }
 
 /// A player count, clamped rather than rejected.
@@ -52,6 +57,14 @@ struct ListServer {
 fn lenient_count<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u32, D::Error> {
 	let n = i64::deserialize(d)?;
 	Ok(n.clamp(0, u32::MAX as i64) as u32)
+}
+
+/// A version, clamped rather than rejected — `lenient_count`'s argument, plus one of its own: an
+/// unreadable version must read as INCOMPATIBLE rather than as ours, and both the `0` a master
+/// predating the field would leave and a clamped ceiling do.
+fn lenient_version<'de, D: serde::Deserializer<'de>>(d: D) -> Result<u16, D::Error> {
+	let n = i64::deserialize(d)?;
+	Ok(n.clamp(0, u16::MAX as i64) as u16)
 }
 
 #[derive(serde::Deserialize)]
@@ -112,6 +125,10 @@ fn run(
 					.map(|servers| {
 						servers
 							.iter()
+							// Same argument as the missing-pin skip below:
+							// the join would refuse this row, so its
+							// latency is not worth a connection.
+							.filter(|s| s.compat() == Compat::Joinable)
 							.map(|s| (s.id.clone(), s.url.clone(), s.cert_hash.clone()))
 							.collect()
 					})
@@ -259,6 +276,8 @@ fn fetch_servers(master_url: &str) -> Result<Vec<ServerEntry>, String> {
 			cert_hash: s.cert_hash,
 			players: s.players,
 			max_players: s.max_players,
+			protocol_version: s.protocol_version,
+			sim_version: s.sim_version,
 		})
 		.collect())
 }
@@ -397,5 +416,37 @@ mod tests {
 			"players":99999999999,"maxPlayers":8}]}"#;
 		let list: ListResponse = serde_json::from_str(big).unwrap();
 		assert_eq!(list.servers[0].players, u32::MAX);
+	}
+
+	/// The version fields, whose failure mode is the opposite of a count's:
+	/// a row that cannot be read must land OUTSIDE the window rather than
+	/// inside it. Both ways in are covered — a master predating the fields
+	/// leaves them absent, and a `u16` cast without the clamp WRAPS, which
+	/// is what the third row is: a number chosen to come out as this
+	/// build's own protocol version if the clamp is ever dropped.
+	#[test]
+	fn an_unreadable_version_reads_as_incompatible_rather_than_as_ours() {
+		use digblock_net::protocol::{Compat, PROTOCOL_VERSION, compat};
+		let wraps_onto_us = u16::MAX as i64 + 1 + PROTOCOL_VERSION as i64;
+		let json = format!(
+			r#"{{"servers":[
+			{{"id":"a1","name":"Old","url":"u","certHash":"c","players":0,"maxPlayers":8}},
+			{{"id":"a2","name":"Now","url":"u","certHash":"c","players":0,"maxPlayers":8,
+			 "protocolVersion":{PROTOCOL_VERSION},"simVersion":7}},
+			{{"id":"a3","name":"Junk","url":"u","certHash":"c","players":0,"maxPlayers":8,
+			 "protocolVersion":{wraps_onto_us},"simVersion":-1}}]}}"#
+		);
+		let list: ListResponse = serde_json::from_str(&json).expect("the list still decodes");
+		// Absent: the row parses, and lands outside the window.
+		assert_eq!(list.servers[0].protocol_version, 0);
+		assert_ne!(compat(0, 0), Compat::Joinable);
+		// Present: both keys reach their field, which is the whole of what
+		// this parser owes the verdict.
+		assert_eq!(list.servers[1].protocol_version, PROTOCOL_VERSION);
+		assert_eq!(list.servers[1].sim_version, 7);
+		// Wrapped: clamped to the ceiling instead of onto us.
+		assert_ne!(list.servers[2].protocol_version, PROTOCOL_VERSION);
+		assert_eq!(list.servers[2].protocol_version, u16::MAX);
+		assert_eq!(list.servers[2].sim_version, 0);
 	}
 }

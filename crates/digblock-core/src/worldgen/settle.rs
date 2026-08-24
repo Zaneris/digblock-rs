@@ -19,7 +19,7 @@ use std::collections::VecDeque;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use super::classify::{ColumnShape, column_block};
-use super::{CHUNK_SIZE, ShapeMap, caves};
+use super::{CHUNK_SIZE, Seed, ShapeMap, caves};
 use crate::block::BlockType;
 use crate::chunk::{ChunkData, WORLD_VBLOCK};
 use crate::fluid::{self, FluidWorld};
@@ -44,11 +44,11 @@ pub(super) struct Slab {
 	z0: i32,
 	w: i32,
 	d: i32,
-	seed: f64,
+	seed: Seed,
 }
 
 impl Slab {
-	pub(super) fn new(cx: i32, cz: i32, seed: f64, apron: i32) -> Self {
+	pub(super) fn new(cx: i32, cz: i32, seed: Seed, apron: i32) -> Self {
 		let n = CHUNK_SIZE as i32;
 		let (x0, z0) = (cx * n - apron, cz * n - apron);
 		let (x1, z1) = (cx * n + n - 1 + apron, cz * n + n - 1 + apron);
@@ -274,7 +274,7 @@ mod tests {
 	use super::*;
 	use crate::fluid::FluidSim;
 
-	const SEED: f64 = 1234.5678;
+	const SEED: Seed = Seed::current(1234.5678);
 	const CHUNKS: (std::ops::Range<i32>, std::ops::Range<i32>) = (105..118, 76..88);
 
 	fn inside(slab: &Slab, m: FxHashMap<Pos, BlockType>) -> FxHashMap<Pos, BlockType> {

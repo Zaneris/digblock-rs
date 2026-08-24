@@ -313,6 +313,11 @@ impl Menu {
 					push(&mut specs, &mut y, RowSpec::dim("no servers online"));
 				}
 				for (i, row) in b.rows.iter().enumerate() {
+					// The verdict takes the ping's column and the row's own
+					// ink: a latency for a server that cannot be joined is
+					// answering a question nobody can ask. Same call `acts`
+					// makes, so what is drawn and what is offered agree.
+					let refused = compat_label(row.entry.compat());
 					let (ping, color) = match row.ping {
 						PingState::Pending => ("...".to_string(), C_DIM),
 						PingState::Failed => ("n/a".to_string(), C_RED),
@@ -342,14 +347,17 @@ impl Menu {
 						&mut specs,
 						&mut y,
 						RowSpec {
-							right: Some((ping, color)),
+							right: Some(match refused {
+								Some(why) => (why.to_string(), C_RED),
+								None => (ping, color),
+							}),
 							..RowSpec::new(
-								Some(RowId::Server(i)),
+								refused.is_none().then_some(RowId::Server(i)),
 								format!(
 									"{}  {}/{}",
 									row.entry.name, row.entry.players, row.entry.max_players
 								),
-								C_WHITE,
+								if refused.is_none() { C_WHITE } else { C_DIM },
 							)
 						},
 					);

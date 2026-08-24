@@ -182,20 +182,61 @@ fn ore_never_manifests_in_an_edited_cell() {
 		alchemy: crate::skills::MAX_LEVEL,
 	};
 	assert!(
-		revealed(stone, (x, y, z), seed, max, false).is_some(),
+		revealed(
+			stone,
+			(x, y, z),
+			crate::worldgen::Seed::current(seed),
+			max,
+			false
+		)
+		.is_some(),
 		"pristine"
 	);
 	// Somebody put stone back where the vein was.
-	assert_eq!(revealed(stone, (x, y, z), seed, max, true), None, "edited");
+	assert_eq!(
+		revealed(
+			stone,
+			(x, y, z),
+			crate::worldgen::Seed::current(seed),
+			max,
+			true
+		),
+		None,
+		"edited"
+	);
 	// And the tapped face itself never re-reads as ore.
 	let spent = BlockType::DepletedStone as u16;
-	assert_eq!(revealed(spent, (x, y, z), seed, max, false), None);
-	assert_eq!(revealed(spent, (x, y, z), seed, max, true), None);
+	assert_eq!(
+		revealed(
+			spent,
+			(x, y, z),
+			crate::worldgen::Seed::current(seed),
+			max,
+			false
+		),
+		None
+	);
+	assert_eq!(
+		revealed(
+			spent,
+			(x, y, z),
+			crate::worldgen::Seed::current(seed),
+			max,
+			true
+		),
+		None
+	);
 	// Nor does anything else standing in that coordinate (a live face
 	// stored outright is the regrown node, pinned in `nodes::tests`).
 	for b in [BlockType::Air, BlockType::Rubble] {
 		assert_eq!(
-			revealed(b as u16, (x, y, z), seed, max, false),
+			revealed(
+				b as u16,
+				(x, y, z),
+				crate::worldgen::Seed::current(seed),
+				max,
+				false
+			),
 			None,
 			"{b:?}"
 		);
@@ -206,7 +247,7 @@ fn ore_never_manifests_in_an_edited_cell() {
 		revealed(
 			make_cell(BlockType::StoneSlab, 1),
 			(x, y, z),
-			seed,
+			crate::worldgen::Seed::current(seed),
 			max,
 			false
 		),
@@ -241,8 +282,15 @@ fn a_tier_is_invisible_below_its_level() {
 			Some(ore),
 			"the centre is in the blob"
 		);
-		let at =
-			|mining, alchemy| revealed(stone, (x, y, z), seed, Levels { mining, alchemy }, false);
+		let at = |mining, alchemy| {
+			revealed(
+				stone,
+				(x, y, z),
+				crate::worldgen::Seed::current(seed),
+				Levels { mining, alchemy },
+				false,
+			)
+		};
 		assert_eq!(at(need - 1, crate::skills::MAX_LEVEL), None, "{ore:?}");
 		assert_eq!(at(need, 1), Some(ore), "{ore:?}");
 	}
@@ -253,7 +301,15 @@ fn a_tier_is_invisible_below_its_level() {
 		.expect("no leystone in the sampled world");
 	let (x, y, z) = (ley.x, ley.y, ley.z);
 	let need = crate::unlock::alchemy_reveal(BlockType::Leystone).expect("a surface node");
-	let at = |mining, alchemy| revealed(stone, (x, y, z), seed, Levels { mining, alchemy }, false);
+	let at = |mining, alchemy| {
+		revealed(
+			stone,
+			(x, y, z),
+			crate::worldgen::Seed::current(seed),
+			Levels { mining, alchemy },
+			false,
+		)
+	};
 	assert_eq!(at(crate::skills::MAX_LEVEL, need - 1), None, "leystone");
 	assert_eq!(at(1, need), Some(BlockType::Leystone), "leystone");
 }

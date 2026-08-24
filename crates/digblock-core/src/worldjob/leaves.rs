@@ -20,6 +20,7 @@ use crate::block::{BlockType, RenderClass};
 use crate::chunk::{WORLD_VBLOCK, cell_id};
 use crate::dir::{DIRS, Dir};
 use crate::worldgen;
+use crate::worldgen::Seed;
 
 /// Sweep cadence. Far denser than the grass spreads, because decay is
 /// the answer to a player's own cut — a canopy still standing hours
@@ -120,14 +121,14 @@ impl WorldJob for LeafDecay {
 		&self,
 		(x, y, z): (i32, i32, i32),
 		world: &dyn CellSource,
-		seed: f64,
+		seed: Seed,
 		run: Run,
 	) -> Option<u16> {
 		// `?` folds "unjudgeable" into "leave it alone".
 		if anchored(world, (x, y, z))? {
 			return None;
 		}
-		let bits = worldgen::ore::mix(x, y, z, seed.to_bits(), DECAY_SALT ^ run.slot);
+		let bits = worldgen::ore::mix(x, y, z, seed.value.to_bits(), DECAY_SALT ^ run.slot);
 		(bits % 1000 < DECAY_PERMILLE).then_some(BlockType::Air as u16)
 	}
 }

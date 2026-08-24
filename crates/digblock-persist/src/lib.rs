@@ -12,8 +12,9 @@ pub mod journal;
 #[cfg(not(target_arch = "wasm32"))]
 pub use fs_store::FsWorldStore;
 
-/// Re-exported for store impls that don't depend on core directly.
 pub use digblock_core::overlay::EditOverlay;
+/// Re-exported for store impls that don't depend on core directly.
+pub use digblock_core::worldgen::Seed;
 
 /// One saved world in the list.
 #[derive(Clone, Debug)]
@@ -21,12 +22,14 @@ pub struct WorldMeta {
 	/// Stable opaque key (directory / storage-key name).
 	pub id: String,
 	pub name: String,
-	pub seed: f64,
+	/// Number and generator both — the generator is read from the journal header, so a world
+	/// listed here regenerates exactly as it was made rather than as this build would make it.
+	pub seed: Seed,
 	pub created_ms: u64,
 	pub last_played_ms: u64,
-	/// False when the journal's format/worldgen version doesn't match:
-	/// listed (dim, delete-only) but refused for play — a version bump
-	/// must never silently wipe a named save.
+	/// False when the journal's RECORD FORMAT doesn't match, or it was made by a generator this
+	/// build does not carry: listed (dim, delete-only) but refused for play — a version bump must
+	/// never silently wipe a named save.
 	pub compatible: bool,
 }
 
@@ -88,7 +91,7 @@ pub struct WorldSave {
 /// mirroring every append; the file backend appends per-edit and ignores it.
 pub trait WorldStore {
 	fn list_worlds(&mut self) -> Vec<WorldMeta>;
-	fn create_world(&mut self, name: &str, seed: f64) -> Result<WorldMeta, String>;
+	fn create_world(&mut self, name: &str, seed: Seed) -> Result<WorldMeta, String>;
 	fn delete_world(&mut self, id: &str);
 	/// Open `id` and make it the active world (closing any previous).
 	fn open_world(&mut self, id: &str) -> Result<WorldSave, String>;

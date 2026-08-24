@@ -27,7 +27,7 @@ pub const DEFAULT_MASTER_URL: &str = "https://master.digblock.net";
 ///
 /// Bump on ANY change to a message's shape or meaning. Postcard encodes enum discriminants by
 /// declaration order, so variants and fields are APPEND-ONLY — never reorder, never remove.
-pub const PROTOCOL_VERSION: u16 = 36;
+pub const PROTOCOL_VERSION: u16 = 37;
 
 /// Chunk-column radius around an arrival — a join or a teleport — whose journaled columns must
 /// reach the client before it may render or simulate. A small radius is the bounded choice: at
@@ -47,7 +47,44 @@ pub const AREA_SYNC_TIMEOUT_SECS: f32 = 5.0;
 /// break raise this floor — a field removed from or added INSIDE an existing variant runs an
 /// older decoder off the frame, and a peer that decodes fine but whose buttons no longer buy
 /// anything. Refusing the handshake is the honest answer to both.
-pub const MIN_PROTOCOL: u16 = 36;
+pub const MIN_PROTOCOL: u16 = 37;
+
+/// Whether a peer speaking `protocol` sits inside this build's window. THE protocol gate: the
+/// preamble check, the sim's own handshake and the menu's pre-dial verdict all ask this, so a
+/// listed server cannot promise a join the handshake then refuses.
+pub fn protocol_supported(peer: u16) -> bool {
+	(MIN_PROTOCOL..=PROTOCOL_VERSION).contains(&peer)
+}
+
+/// Whether a peer runs the behaviour this build runs. Equality, because there is no window to
+/// widen: terrain is never sent, so divergent worldgen is silently different worlds.
+pub fn sim_supported(peer: u16) -> bool {
+	peer == digblock_core::SIM_VERSION
+}
+
+/// What a peer's advertised versions mean for a join — answerable from the master's server list,
+/// before a token is spent or anything is dialed.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Compat {
+	/// Exactly the pair both handshake gates accept.
+	Joinable,
+	/// Behind on at least one gate: the PEER is the side that has to update.
+	PeerOlder,
+	/// Ahead on at least one gate, so this build is the side that has to update.
+	PeerNewer,
+}
+
+/// Ahead on EITHER gate reads [`Compat::PeerNewer`], because the side that must update is the one
+/// lacking something — a peer both ahead and behind is a build that never shipped.
+pub fn compat(protocol: u16, sim: u16) -> Compat {
+	if protocol_supported(protocol) && sim_supported(sim) {
+		Compat::Joinable
+	} else if protocol > PROTOCOL_VERSION || sim > digblock_core::SIM_VERSION {
+		Compat::PeerNewer
+	} else {
+		Compat::PeerOlder
+	}
+}
 
 // ---- handshake preamble ----------------------------------------------
 //
@@ -722,5 +759,57 @@ mod tests {
 				.all(|c| is_name_char(c) && is_text_char(c))
 		);
 		assert!(!is_name_char('é') && is_text_char('é'));
+	}
+
+	/// The window is inhabited and contains US: a build that cannot join its own version has
+	/// inverted the floor, and every version between the floor and the ceiling is joinable when
+	/// the behaviour matches. Swept rather than spot-checked, with the count asserted so a
+	/// collapsed range cannot pass vacuously.
+	#[test]
+	fn the_window_is_inhabited_and_holds_this_build() {
+		let sim = digblock_core::SIM_VERSION;
+		assert_eq!(compat(PROTOCOL_VERSION, sim), Compat::Joinable);
+		let mut seen = 0;
+		for peer in MIN_PROTOCOL..=PROTOCOL_VERSION {
+			assert_eq!(compat(peer, sim), Compat::Joinable, "protocol {peer}");
+			assert!(protocol_supported(peer));
+			seen += 1;
+		}
+		assert_eq!(seen, PROTOCOL_VERSION - MIN_PROTOCOL + 1);
+	}
+
+	/// Which side has to update, on each gate independently. Derived from the constants at both
+	/// edges, so raising a floor or bumping either version moves the test with the code.
+	#[test]
+	fn a_peer_outside_the_window_names_the_side_that_must_update() {
+		let sim = digblock_core::SIM_VERSION;
+		if let Some(below) = MIN_PROTOCOL.checked_sub(1) {
+			assert_eq!(compat(below, sim), Compat::PeerOlder);
+		}
+		if let Some(above) = PROTOCOL_VERSION.checked_add(1) {
+			assert_eq!(compat(above, sim), Compat::PeerNewer);
+		}
+		if let Some(below) = sim.checked_sub(1) {
+			assert_eq!(compat(PROTOCOL_VERSION, below), Compat::PeerOlder);
+			assert!(!sim_supported(below));
+		}
+		if let Some(above) = sim.checked_add(1) {
+			assert_eq!(compat(PROTOCOL_VERSION, above), Compat::PeerNewer);
+			assert!(!sim_supported(above));
+		}
+	}
+
+	/// Ahead on either gate outranks behind on the other: the side lacking something is the side
+	/// that updates, and answering `PeerOlder` there would send a player to hassle an operator
+	/// whose server is the newer of the two.
+	#[test]
+	fn ahead_on_one_gate_outranks_behind_on_the_other() {
+		let sim = digblock_core::SIM_VERSION;
+		let (Some(old_proto), Some(new_sim)) = (MIN_PROTOCOL.checked_sub(1), sim.checked_add(1))
+		else {
+			return;
+		};
+		assert_eq!(compat(old_proto, new_sim), Compat::PeerNewer);
+		assert_eq!(compat(PROTOCOL_VERSION + 1, sim - 1), Compat::PeerNewer);
 	}
 }

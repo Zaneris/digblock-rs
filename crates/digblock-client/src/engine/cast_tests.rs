@@ -445,6 +445,7 @@ fn connected() -> (Engine, Box<dyn digblock_net::transport::NetTransport>) {
 			build: "test".into(),
 			tod: 0.0,
 			spawn_look: [0.0, 0.0, 0.0],
+			terrain: digblock_core::worldgen::TerrainVersion::CURRENT.to_wire(),
 		},
 		&mut frame,
 	)

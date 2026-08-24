@@ -88,7 +88,7 @@ impl CaveColumn {
 /// judge "surface not carved" without building the chunk). One-shot
 /// probes skip `CaveColumn` — priming its per-cell cache costs more than
 /// the two evaluations it would save.
-pub fn carved(x: i32, y: i32, z: i32, seed: f64) -> bool {
+pub(super) fn carved(x: i32, y: i32, z: i32, seed: f64) -> bool {
 	let band = |off: f64, freq_y: f64, threshold: f64| {
 		let o = seed + off;
 		let n = noise3(

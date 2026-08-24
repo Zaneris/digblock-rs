@@ -9,7 +9,7 @@ fn honest_claims_adopted_and_echoed() {
 	// adoption over real terrain, so the injected-source shortcut can
 	// never hide a worldgen-facing regression.
 	let dir = temp_dir("honest");
-	let mut sim = Sim::new(SEED, &dir, 1, 2).unwrap();
+	let mut sim = Sim::new(SEED.value, &dir, 1, 2).unwrap();
 	let mut c = connect(&mut sim, 1);
 	wait_live(&mut sim, 1);
 

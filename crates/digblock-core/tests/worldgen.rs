@@ -1,3 +1,4 @@
+use digblock_core::worldgen::{Seed, TerrainVersion};
 use std::collections::HashMap;
 
 use digblock_core::chunk::{WORLD_VBLOCK, WORLD_VCHUNK};
@@ -10,7 +11,7 @@ use digblock_core::{BlockType, CHUNK_SIZE, ChunkData, ChunkPos};
 /// The terrain-only expectation (no trees), re-implemented from the
 /// column rules over the public per-column shape. Validates fill_chunk's
 /// cell indexing and per-chunk assembly, not the shape function itself.
-fn expect_terrain(wx: i32, wy: i32, wz: i32, seed: f64) -> BlockType {
+fn expect_terrain(wx: i32, wy: i32, wz: i32, seed: Seed) -> BlockType {
 	let shape = column_shape(wx, wz, seed);
 	let h = shape.height;
 	let base = if wy > h {
@@ -79,7 +80,7 @@ fn expect_terrain(wx: i32, wy: i32, wz: i32, seed: f64) -> BlockType {
 /// indexing and per-chunk assembly across the stack.
 #[test]
 fn column_rules() {
-	let seed = 1234.5678;
+	let seed = Seed::current(1234.5678);
 	let mut caves_seen = false;
 	let mut trees_seen = false;
 	// Fixed samples cover interesting positions; the scan adds a chunk
@@ -156,7 +157,7 @@ fn column_rules() {
 /// apron evaluation.
 #[test]
 fn structures_span_chunk_borders_seamlessly() {
-	let seed = 1234.5678;
+	let seed = Seed::current(1234.5678);
 	let mut cache: HashMap<ChunkPos, ChunkData> = HashMap::new();
 	// Wide scan: regions are province-sized, so a small patch near the
 	// origin can be all ocean or all mountain at a given seed.
@@ -223,7 +224,7 @@ fn structures_span_chunk_borders_seamlessly() {
 /// underwater carving anywhere).
 #[test]
 fn caves_respect_floor_and_oceans() {
-	let seed = 1234.5678;
+	let seed = Seed::current(1234.5678);
 	for cx in -8..8 {
 		for cz in -8..8 {
 			let bottom = build_chunk(ChunkPos::new(cx, 0, cz), seed);
@@ -281,7 +282,7 @@ fn caves_respect_floor_and_oceans() {
 /// river water never floats over air.
 #[test]
 fn river_water_never_floats() {
-	let seed = 1234.5678;
+	let seed = Seed::current(1234.5678);
 	let mut found = None;
 	'outer: for x in (-2048..2048).step_by(5) {
 		for z in (-2048..2048).step_by(7) {
@@ -326,13 +327,14 @@ fn river_water_never_floats() {
 /// for a spread of seeds.
 #[test]
 fn spawn_finds_land() {
-	for seed in [0.0, 1.0, 1234.5678, 4242.0, 9999.9] {
+	for value in [0.0, 1.0, 1234.5678, 4242.0, 9999.9] {
+		let seed = Seed::current(value);
 		let s = digblock_core::player::spawn(seed);
 		let (x, z) = (s.x.floor() as i32, s.z.floor() as i32);
 		let shape = column_shape(x, z, seed);
 		let h = shape.height;
-		assert!(h > SEA_LEVEL + 1, "seed {seed}: spawn over land (h={h})");
-		assert!(shape.water <= h, "seed {seed}: spawn not in a river");
+		assert!(h > SEA_LEVEL + 1, "seed {value}: spawn over land (h={h})");
+		assert!(shape.water <= h, "seed {value}: spawn not in a river");
 		assert!((s.y - (h as f32 + 2.5)).abs() < 0.001, "eye above surface");
 		assert!(!carved(x, h, z, seed), "spawn surface is not a cave mouth");
 		for dz in -2..=2 {
@@ -341,7 +343,7 @@ fn spawn_finds_land() {
 				let top = n.height.max(n.water);
 				assert!(
 					top <= h + 1 || (dx, dz) == (0, 0),
-					"seed {seed}: wall at eye level ({dx},{dz})"
+					"seed {value}: wall at eye level ({dx},{dz})"
 				);
 			}
 		}
@@ -355,7 +357,7 @@ fn spawn_finds_land() {
 				z + 2,
 				seed
 			),
-			"seed {seed}: decoration block in the spawn clearing"
+			"seed {value}: decoration block in the spawn clearing"
 		);
 	}
 }
@@ -366,7 +368,7 @@ fn spawn_finds_land() {
 /// fraction of below-surface land cells over a larger sample.
 #[test]
 fn cave_slice_dump() {
-	let seed = 0.0;
+	let seed = Seed::current(0.0);
 	let z = 0;
 	let mut out = String::new();
 	for wy in (40..=190).rev().step_by(2) {
@@ -411,14 +413,15 @@ fn cave_slice_dump() {
 /// columns touching every generation path: ocean, mountains, caves, rivers, decorated surface.
 #[test]
 fn worldgen_never_places_a_crafted_block() {
-	for seed in [42.0, 7.5, -300.25] {
+	for value in [42.0, 7.5, -300.25] {
+		let seed = Seed::current(value);
 		for &(cx, cz) in &[(0, 0), (1, -1), (7, 3), (-12, 5), (40, -33)] {
 			for chunk in digblock_core::worldgen::build_column(cx, cz, seed) {
 				for &cell in chunk.blocks.iter() {
 					let b = BlockType::from_id(digblock_core::chunk::cell_id(cell));
 					assert!(
 						!b.is_crafted_only(),
-						"worldgen placed craft-only {b:?} at seed {seed} chunk ({cx},{cz})"
+						"worldgen placed craft-only {b:?} at seed {value} chunk ({cx},{cz})"
 					);
 				}
 			}
@@ -426,36 +429,72 @@ fn worldgen_never_places_a_crafted_block() {
 	}
 }
 
-/// Pins worldgen output to the bit. If this fails, a given seed now
-/// produces different terrain: update the hash AND bump
-/// `digblock_core::SIM_VERSION` — terrain is never sent over the wire
-/// (join sync is seed + edits), so client and server worldgen must agree
-/// exactly or every multiplayer world silently diverges.
+/// One pinned hash per generator this build carries. A terrain change adds a `TerrainVersion` row
+/// with a hash beside it, and that hash never moves again: a world made under the row regenerates
+/// identically forever. A hash moves in place only for a change small enough that every world on
+/// its row is to wear it — ridden by a `SIM_VERSION` bump, so two builds cannot disagree about one
+/// world. The count assert catches a row shipped unpinned, the one way this stops covering `ALL`.
+const TERRAIN_GOLDENS: &[(TerrainVersion, u64)] = &[(TerrainVersion::V1, 16191328047752925684)];
+
 #[test]
-fn worldgen_golden_hash_pins_sim_version() {
-	// FNV-1a over the raw block bytes of a spread of columns (spawn area,
-	// ocean, mountains — chosen to touch every generation path). The last
-	// two are the settle's: (11, -17) carries the sample's densest run of
-	// weirs, and (38, -17) the cascade the walk's re-resolution moves the
-	// most — without them the pin cannot see a cascade change at all.
-	let mut hash: u64 = 0xcbf29ce484222325;
-	for &(cx, cz) in &[
-		(0, 0),
-		(1, -1),
-		(7, 3),
-		(-12, 5),
-		(40, -33),
-		(11, -17),
-		(38, -17),
-	] {
-		for chunk in digblock_core::worldgen::build_column(cx, cz, 42.0) {
-			for &b in chunk.blocks.iter() {
-				hash = (hash ^ b as u64).wrapping_mul(0x100000001b3);
+fn a_shipped_generator_never_moves() {
+	assert_eq!(
+		TERRAIN_GOLDENS.len(),
+		TerrainVersion::ALL.len(),
+		"every supported generator owes a golden — add the new row rather than editing one"
+	);
+	for version in TerrainVersion::ALL {
+		let (_, want) = TERRAIN_GOLDENS
+			.iter()
+			.find(|(v, _)| *v == version)
+			.unwrap_or_else(|| panic!("{version:?} has no golden"));
+		// FNV-1a over the raw block bytes of a spread of columns (spawn area,
+		// ocean, mountains — chosen to touch every generation path). The last
+		// two are the settle's: (11, -17) carries the sample's densest run of
+		// weirs, and (38, -17) the cascade the walk's re-resolution moves the
+		// most — without them the pin cannot see a cascade change at all.
+		let mut hash: u64 = 0xcbf29ce484222325;
+		for &(cx, cz) in &[
+			(0, 0),
+			(1, -1),
+			(7, 3),
+			(-12, 5),
+			(40, -33),
+			(11, -17),
+			(38, -17),
+		] {
+			for chunk in digblock_core::worldgen::build_column(cx, cz, Seed::new(42.0, version)) {
+				for &b in chunk.blocks.iter() {
+					hash = (hash ^ b as u64).wrapping_mul(0x100000001b3);
+				}
 			}
 		}
+		assert_eq!(
+			hash, *want,
+			"{version:?} produces different terrain than it shipped with — every world made under it \
+			 would be rewritten under its edits. Add a new generator; or, for a change every such \
+			 world is to wear, move this hash AND bump digblock_core::SIM_VERSION."
+		);
 	}
-	assert_eq!(
-		hash, 16191328047752925684,
-		"worldgen output changed — update this hash AND bump digblock_core::SIM_VERSION"
-	);
+}
+
+/// A generator this build does not carry is refused rather than mistaken for one it does, and the
+/// number a header written before the slot existed holds decodes as the FIRST generator — which
+/// is what makes the field free of a format bump and every existing world open untouched.
+#[test]
+fn an_unknown_generator_is_refused_and_an_absent_one_is_the_first() {
+	assert_eq!(TerrainVersion::from_wire(0), Some(TerrainVersion::V1));
+	let highest = TerrainVersion::ALL
+		.iter()
+		.map(|v| v.to_wire())
+		.max()
+		.expect("the roster is never empty");
+	assert_eq!(TerrainVersion::from_wire(highest + 1), None);
+	for version in TerrainVersion::ALL {
+		assert_eq!(
+			TerrainVersion::from_wire(version.to_wire()),
+			Some(version),
+			"{version:?} does not survive the wire"
+		);
+	}
 }

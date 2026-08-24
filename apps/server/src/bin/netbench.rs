@@ -763,7 +763,7 @@ fn run_link(link: Link, secs: f64, edits: bool) -> LinkResult {
 	// generates fast and identically every run, so a difference between
 	// two runs is a difference in the netcode.
 	let mut sim = Sim::new_with_source(
-		42.0,
+		digblock_core::worldgen::Seed::current(42.0),
 		&dir,
 		6,
 		2,

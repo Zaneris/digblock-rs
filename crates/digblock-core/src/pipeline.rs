@@ -26,6 +26,7 @@ mod gi;
 mod jobs;
 mod mesh_input;
 mod residency;
+use crate::worldgen::Seed;
 
 pub struct MeshOutput {
 	pub pos: ChunkPos,
@@ -35,7 +36,7 @@ pub struct MeshOutput {
 
 pub enum Job {
 	/// Generate column (x, z)'s whole chunk stack. Not sliced; BENCH.md 2026-08-14 says why not.
-	Generate { x: i32, z: i32, seed: f64 },
+	Generate { x: i32, z: i32, seed: Seed },
 	Mesh {
 		pos: ChunkPos,
 		generation: u64,
@@ -146,7 +147,7 @@ pub struct Maintenance {
 type MeshHeap = BinaryHeap<(Reverse<i64>, (i32, i32, i32))>;
 
 pub struct Pipeline {
-	seed: f64,
+	seed: Seed,
 	draw_dist: i32,
 	store: FxHashMap<ChunkPos, ChunkSlot>,
 	exec: Executor,
