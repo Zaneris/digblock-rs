@@ -1158,10 +1158,11 @@ full world column (an up-ray always reaches sky; the window never scrolls vertic
 memory live in `gi.rs`: desktop widest, web narrower, iOS narrower still. GI-class mapping is a pure function in
 `digblock-core` (headless-tested): air has its own class, water is translucent, `emits`/`glows` blocks map to emissive
 classes. Shaped cells were "opaque, the same v1 approximation fluid makes" until R16: they now classify per (id, state)
-into synthetic PARTIAL classes from `SHAPE_CLASS_BASE` up, each carrying a two-box cover of the shape's collision boxes
-(box 0 = the first collision box exactly, box 1 = the AABB union of the rest — over-blocks only, never under, worst case
-the old full cell), and a state with no collision at all (an open door) classifies as air, which is what lets light
-through a doorway. A chunk re-uploads as one `write_texture`; scrolling uploads only entering slabs.
+into synthetic PARTIAL classes from `SHAPE_CLASS_BASE` up, each carrying a two-box cover of the shape's LIGHT boxes
+(`shapes::light_boxes` — its collision boxes, except that a fixture a body walks through, the torch, still stands in the
+light's way; box 0 = the first box exactly, box 1 = the AABB union of the rest — over-blocks only, never under, worst
+case the old full cell), and a state with no light boxes at all (an open door) classifies as air, which is what lets
+light through a doorway. A chunk re-uploads as one `write_texture`; scrolling uploads only entering slabs.
 
 **Material LUT** — one storage-buffer row per GI class: albedo rgb, the opacity class (air / water / opaque / partial)
 and the cast-light level in the first words, the partial class's two packed sub-boxes (in twelfths, zero meaning no box)

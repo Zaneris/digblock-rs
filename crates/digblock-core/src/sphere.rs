@@ -94,20 +94,21 @@ pub enum Refusal {
 }
 
 /// What a sphere may be built of, DERIVED so a reshaped row moves on its own: a block the bar
-/// can hold, that a body cannot pass (a shell is a wall), that is a material's plain block or a
-/// thing rather than a worked FORM (a slab, stair or door is oriented by its placer against a
-/// face, and the sphere has none to offer), and whose whole object at rest fits ONE cell by
-/// `shapes::object_bounds` — the test a door fails today and a two-cell bed would fail tomorrow.
+/// can hold, that a body cannot walk through (`shapes::passable` — a shell is a wall, and a torch
+/// is not), that is a material's plain block or a thing rather than a worked FORM (a slab, stair
+/// or door is oriented by its placer against a face, and the sphere has none to offer), and whose
+/// whole object at rest fits ONE cell by `shapes::object_bounds` — the test a door fails today.
 pub fn accepts(b: BlockType) -> bool {
 	use crate::block::ShapeFamily;
-	use crate::shapes::{GRID, object_bounds};
-	if b == BlockType::Air || !b.is_slottable() || !b.props().collides {
+	use crate::shapes::{GRID, object_bounds, passable};
+	let at_rest = make_cell(b, 0);
+	if b == BlockType::Air || !b.is_slottable() || passable(at_rest) {
 		return false;
 	}
 	if !matches!(b.shape_family(), Some(ShapeFamily::Block) | None) {
 		return false;
 	}
-	let (_, bounds) = object_bounds((0, 0, 0), make_cell(b, 0));
+	let (_, bounds) = object_bounds((0, 0, 0), at_rest);
 	bounds.is_none_or(|bx| bx.max.iter().all(|&m| m <= GRID))
 }
 
@@ -464,12 +465,12 @@ mod tests {
 
 	/// What the shell may be made of, asked of every block and checked against the properties
 	/// the answer derives from rather than a list: every accepted block is one the bar holds, one a
-	/// body cannot pass, never a worked form, and one whose object at rest stays inside its cell —
-	/// so the two-cell door fails on geometry, and a piece that grows a second cell would too.
-	/// Counted both ways, so a predicate that answered one way for everything could not pass.
+	/// body cannot walk through, never a worked form, and one whose object at rest stays inside its
+	/// cell — so the torch fails on its empty collision, the two-cell door on geometry, and a piece
+	/// that grows a second cell would too. Counted both ways, so one answer for all could not pass.
 	#[test]
 	fn a_sphere_is_built_of_one_cell_walls_the_bar_can_hold() {
-		use crate::shapes::{GRID, object_bounds};
+		use crate::shapes::{GRID, object_bounds, passable};
 		let (mut yes, mut no) = (0, 0);
 		for b in BlockType::ALL {
 			if accepts(b) {
@@ -477,7 +478,10 @@ mod tests {
 					b.is_slottable(),
 					"{b:?} is accepted but the bar cannot hold it"
 				);
-				assert!(b.props().collides, "{b:?} is a wall a body walks through");
+				assert!(
+					!passable(make_cell(b, 0)),
+					"{b:?} is a wall a body walks through"
+				);
 				assert!(
 					!b.is_door() && !b.is_slab() && !b.is_stair(),
 					"{b:?} is a worked form"
@@ -496,6 +500,7 @@ mod tests {
 		assert!(accepts(BlockType::Stone), "plain matter builds");
 		assert!(accepts(BlockType::Chair), "furniture stands in one cell");
 		assert!(!accepts(BlockType::LumberDoor), "a door is two cells");
+		assert!(!accepts(BlockType::Torch), "a torch is walked through");
 		assert!(!accepts(BlockType::Water), "the bar never holds water");
 		assert!(
 			!accepts(BlockType::Wardglass),
