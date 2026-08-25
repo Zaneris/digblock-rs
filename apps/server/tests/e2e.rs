@@ -97,6 +97,13 @@ impl MasterProc {
 				&name,
 				"-p",
 				&format!("127.0.0.1:{port}:5200"),
+				// The image declares `VOLUME /data`, and a run that mounts
+				// nothing there mints an anonymous volume per boot that a
+				// forced `rm` leaves behind — thousands, over a week of
+				// suites. A tmpfs shadows the declaration: nothing is
+				// minted, and a throwaway master's SQLite lives in RAM.
+				"--mount",
+				"type=tmpfs,destination=/data",
 				"-e",
 				"Master__Probe__TimeoutSeconds=3",
 				// Everything in this rig is on a private address, and the
@@ -137,8 +144,10 @@ impl MasterProc {
 	}
 
 	fn kill(&mut self) {
+		// `-v`: a forced rm supersedes `--rm`'s own cleanup, and without
+		// it any anonymous volume the image grows stays behind.
 		let _ = std::process::Command::new("docker")
-			.args(["rm", "-f", &self.name])
+			.args(["rm", "-f", "-v", &self.name])
 			.stdout(std::process::Stdio::null())
 			.stderr(std::process::Stdio::null())
 			.status();
