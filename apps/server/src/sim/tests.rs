@@ -139,6 +139,7 @@ fn version_mismatch_refused_and_closed() {
 				out: tx,
 				addr: test_addr(9),
 				account: AccountId::NONE,
+				skills: Default::default(),
 			},
 			SimEvent::Msg {
 				conn_id: 9,
@@ -201,6 +202,7 @@ fn lobby_without_hello_times_out() {
 		out: tx,
 		addr: test_addr(7),
 		account: AccountId::NONE,
+		skills: Default::default(),
 	}]);
 	// One tick short of the deadline: still in the lobby, no Close.
 	for _ in 0..super::HELLO_TIMEOUT_TICKS - 1 {
@@ -334,6 +336,7 @@ fn hostile_names_are_sanitized() {
 			out: tx,
 			addr: test_addr(5),
 			account: AccountId::NONE,
+			skills: Default::default(),
 		},
 		SimEvent::Msg {
 			conn_id: 5,
@@ -3138,6 +3141,7 @@ fn chat_before_hello_is_ignored() {
 			out: tx,
 			addr: test_addr(9),
 			account: AccountId::NONE,
+			skills: Default::default(),
 		},
 		SimEvent::Msg {
 			conn_id: 9,

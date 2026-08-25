@@ -57,17 +57,19 @@ use digblock_net::protocol::DEFAULT_MASTER_URL;
 const USAGE: &str = "usage: digblock-server [--advertise-host HOST] \
 	 [--master-url URL] [--advertise-port N] [--server-name S] [--port N] \
 	 [--seed F] [--data-dir P] [--sim-radius N] [--workers N] [--admin ID-OR-NAME] \
-	 [--max-conns-per-ip N]\n\
+	 [--max-conns-per-ip N] [--local-skills]\n\
 	 (--advertise-host defaults to the address the master observes registering — your public \
 	 IP; set it for a DNS name or multi-homed hosts. --master-url defaults to \
 	 https://master.digblock.net. --admin grants a player chat commands (/help /ban \
 	 /ban-list /unban /tp) — give an account id, which a player can copy from the game's \
 	 Account screen, or a display name, which is resolved to one at boot; repeat for \
 	 several admins. --max-conns-per-ip caps live connections from one address; \
-	 raise it for a local soak, where every bot shares one. Env fallbacks: \
+	 raise it for a local soak, where every bot shares one. --local-skills keeps this \
+	 server's skill ladder its own: by default a joiner arrives at the levels the master's \
+	 board holds for their account. Env fallbacks: \
 	 DIGBLOCK_MASTER_URL, DIGBLOCK_ADVERTISE_HOST, DIGBLOCK_ADVERTISE_PORT, \
 	 DIGBLOCK_SERVER_NAME, DIGBLOCK_SEED, DIGBLOCK_MAX_CONNS_PER_IP, DIGBLOCK_ADMIN_IDS \
-	 (comma-separated))";
+	 (comma-separated), DIGBLOCK_LOCAL_SKILLS)";
 
 fn main() {
 	env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -105,6 +107,11 @@ fn main() {
 		.filter(|s| !s.is_empty())
 		.map(|v| parse_or_die("DIGBLOCK_MAX_CONNS_PER_IP", Some(v)))
 		.unwrap_or(net::DEFAULT_MAX_CONNECTIONS_PER_IP);
+	// A switch, not a value: set to anything but empty, "0" or "false"
+	// and this server's ladder stands alone.
+	let mut local_skills = std::env::var("DIGBLOCK_LOCAL_SKILLS")
+		.ok()
+		.is_some_and(|v| !matches!(v.trim(), "" | "0" | "false"));
 	// Account ids or display names; names are resolved once at boot.
 	let mut admins: Vec<String> = std::env::var("DIGBLOCK_ADMIN_IDS")
 		.unwrap_or_default()
@@ -129,6 +136,7 @@ fn main() {
 				advertise_port = Some(parse_or_die("--advertise-port", args.next()));
 			}
 			"--server-name" => server_name = parse_or_die("--server-name", args.next()),
+			"--local-skills" => local_skills = true,
 			"--max-conns-per-ip" => {
 				max_conns_per_ip = parse_or_die("--max-conns-per-ip", args.next());
 			}
@@ -205,6 +213,10 @@ fn main() {
 		log::info!("admin: {id} ({spec})");
 	}
 	sim.set_admin_accounts(admin_accounts);
+	sim.set_pull_skills(!local_skills);
+	if local_skills {
+		log::info!("skills are local to this server; the master's copy is not pulled at join");
+	}
 	// The board's outbox: every stored record now, every change of
 	// skills from here on. Whether any of it is sent is the master's call
 	// at registration.

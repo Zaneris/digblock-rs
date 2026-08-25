@@ -42,6 +42,13 @@ where the screens use pictures, never a word — so a player reads whether play 
 Reading is public. A signed attestation scheme was considered and declined: not worth its complexity at this player
 count, and the list is the honest statement of who is trusted.
 
+**And the pull.** The board is not only a mirror: `/api/tokens/verify` answers with the account's totals as the board
+holds them, and every server — trusted or not, since only the WRITE is gated — folds them into its own record at join
+with `SkillSet::merge_from`, max and never rewinding. So a character is one character on every server, and a server that
+could not write the board cannot feed an inflated ladder to the ones that can. `--local-skills`
+(`DIGBLOCK_LOCAL_SKILLS`, `LOCAL_SKILLS` in the compose file) opts a server out, for a self-hosted world that wants a
+ladder of its own.
+
 In-game, the character screen grows one line per skill — your rank, when known — because the number on the board is the
 number that makes the C screen's totals mean something. Opening the screen asks the master (`MenuCommand::FetchRanks`);
 the answer is the engine's, not a menu page's, and a board the account is not on says nothing rather than "unranked".

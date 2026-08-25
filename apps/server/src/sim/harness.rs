@@ -268,6 +268,7 @@ pub(crate) fn try_connect_as(
 			out: tx,
 			addr: test_addr(conn_id),
 			account,
+			skills: Default::default(),
 		},
 		SimEvent::Msg {
 			conn_id,

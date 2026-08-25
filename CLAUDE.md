@@ -380,7 +380,10 @@ at registration whether it is on it (`RegisterOk.reportsSkills`). Totals leave t
 the chokepoints. The master derives levels from a COPY of the XP curve (`apps/master/Hiscores/Skills.cs`);
 `the_masters_curve_mirrors_ours` reads that file and fails when the two drift. `MASTERY_AT` is the top of the content
 ladder for all three skills: the crests (`unlock::crest`) open there on THEIR skill, which is why `can_craft` takes the
-whole `SkillSet`, and `Skill::mastery_bits` rides every snapshot for the nameplate glyphs.
+whole `SkillSet`, and `Skill::mastery_bits` rides every snapshot for the nameplate glyphs. **Any server pulls**:
+`/api/tokens/verify` carries the board's totals and the handshake folds them in with `merge_from` (max, never
+rewinding), so a character is one character everywhere and an untrusted server can only READ the ladder;
+`--local-skills` opts a server out.
 
 ## Alchemy & the economy
 

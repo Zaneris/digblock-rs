@@ -68,8 +68,11 @@ public sealed record VerifyRequest(string? Token);
 
 /// <summary>What the game server learns about a joining player. The account
 /// id is the persistence key on the far side (inventories, skills, admin,
-/// bans); the name is display only.</summary>
-public sealed record VerifyResponse(string DisplayName, Guid AccountId);
+/// bans); the name is display only. <c>Skills</c> is the board's copy of the
+/// account's totals, which every server folds into its own record at join
+/// (monotone, so nothing rewinds) — the pull half of account-wide skills;
+/// only trusted servers write the copy. Appended; an older server ignores it.</summary>
+public sealed record VerifyResponse(string DisplayName, Guid AccountId, SkillXp[] Skills);
 
 // ---- hiscores --------------------------------------------------------------
 // The server half is mirrored by apps/server/src/master.rs, the client half

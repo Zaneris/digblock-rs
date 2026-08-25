@@ -90,6 +90,10 @@ pub enum SimEvent {
 		/// change it. `AccountId::NONE` only in tests and the offline
 		/// harness, which have no master to ask.
 		account: AccountId,
+		/// The board's copy of the account's totals, from the same answer.
+		/// Folded into the record at the handshake unless this server
+		/// keeps its skills local; empty where there is no master.
+		skills: digblock_core::skills::SkillSet,
 	},
 	Msg {
 		conn_id: u64,
@@ -436,7 +440,16 @@ pub struct Sim {
 	/// Connections that have not completed the Hello handshake, with the
 	/// tick they arrived (reaped after HELLO_TIMEOUT_TICKS) and the account
 	/// the master vouched for at admission.
-	lobby: FxHashMap<u64, (OutTx, u32, std::net::SocketAddr, AccountId)>,
+	lobby: FxHashMap<
+		u64,
+		(
+			OutTx,
+			u32,
+			std::net::SocketAddr,
+			AccountId,
+			digblock_core::skills::SkillSet,
+		),
+	>,
 	/// Client actions (edits + dig starts/cancels) queued this tick,
 	/// processed in wire order by `process_edits`.
 	action_queue: Vec<edits::ClientAction>,
@@ -475,6 +488,10 @@ pub struct Sim {
 	/// authorization decision, and it keys on the one identifier the master
 	/// vouches for.
 	admin_accounts: FxHashSet<AccountId>,
+	/// Fold the master's copy of a joiner's skills into the record at
+	/// join — the default, so a character is one character everywhere.
+	/// Off, this server's ladder stands alone (`--local-skills`).
+	pull_skills: bool,
 	/// Seconds added to the tick clock by `/time` — same lifetime and
 	/// persistence policy as the tick counter it offsets (none).
 	tod_offset_secs: f64,
@@ -617,6 +634,7 @@ impl Sim {
 			ban_store,
 			waystone_store,
 			admin_accounts: FxHashSet::default(),
+			pull_skills: true,
 			tod_offset_secs: 0.0,
 			world_jobs: digblock_core::worldjob::Scheduler::new(),
 			// After `Journal::open`, which is what creates the directory
@@ -636,6 +654,11 @@ impl Sim {
 	/// connection at once.
 	pub fn set_admin_accounts(&mut self, accounts: impl IntoIterator<Item = AccountId>) {
 		self.admin_accounts = accounts.into_iter().filter(|a| !a.is_none()).collect();
+	}
+
+	/// Whether a join folds in the board's copy of the account's skills.
+	pub fn set_pull_skills(&mut self, on: bool) {
+		self.pull_skills = on;
 	}
 
 	fn is_admin(&self, account: AccountId) -> bool {
@@ -790,8 +813,10 @@ impl Sim {
 				out,
 				addr,
 				account,
+				skills,
 			} => {
-				self.lobby.insert(conn_id, (out, self.tick, addr, account));
+				self.lobby
+					.insert(conn_id, (out, self.tick, addr, account, skills));
 			}
 			SimEvent::Msg { conn_id, msg } => match msg {
 				ClientMsg::Hello {

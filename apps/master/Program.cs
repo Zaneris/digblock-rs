@@ -354,7 +354,9 @@ app.MapDelete("/api/servers/{id:guid}", (Guid id, HttpContext http, ServerRegist
     return Results.NoContent();
 });
 
-app.MapPost("/api/tokens/verify", (VerifyRequest req, HttpContext http, ServerRegistry registry, TokenStore tokens) =>
+app.MapPost("/api/tokens/verify", async (
+    VerifyRequest req, HttpContext http, ServerRegistry registry, TokenStore tokens,
+    MasterDb db, CancellationToken ct) =>
 {
     // The bearer key identifies which server is asking; a token minted for a
     // different server never verifies. Unknown / expired / consumed / wrong
@@ -364,7 +366,14 @@ app.MapPost("/api/tokens/verify", (VerifyRequest req, HttpContext http, ServerRe
         return Results.Unauthorized();
     if (string.IsNullOrEmpty(req.Token) || !tokens.TryConsume(req.Token, entry.Id, out var consumed))
         return Results.NotFound();
-    return Results.Ok(new VerifyResponse(consumed.DisplayName, consumed.AccountId));
+    // The account's totals ride along: any server may PULL them, trusted or
+    // not — only the write is gated — so a character is one character on
+    // every server rather than a fresh level 1 on each.
+    var skills = await db.SkillTotals
+        .Where(t => t.AccountId == consumed.AccountId)
+        .Select(t => new SkillXp(t.Skill, t.Xp))
+        .ToArrayAsync(ct);
+    return Results.Ok(new VerifyResponse(consumed.DisplayName, consumed.AccountId, skills));
 }).RequireRateLimiting(RateLimits.Verify);
 
 // ---- game client endpoints -------------------------------------------------

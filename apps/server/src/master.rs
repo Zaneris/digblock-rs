@@ -158,7 +158,7 @@ struct SkillReportRow {
 	skills: Vec<SkillXpBody>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 struct SkillXpBody {
 	skill: u8,
 	/// The master stores a signed 64-bit total; a saturated `u64` would
@@ -194,12 +194,19 @@ struct VerifyOkBody {
 	/// admin, bans — and it arrives HERE rather than in the client's Hello
 	/// precisely so the client cannot choose it.
 	account_id: String,
+	/// The board's copy of the account's totals; absent on a master
+	/// predating the board, which reads as nothing to fold in.
+	#[serde(default)]
+	skills: Vec<SkillXpBody>,
 }
 
 /// What a verified token vouches for.
 pub struct VerifiedJoin {
 	pub display_name: String,
 	pub account: AccountId,
+	/// The account's totals as the board holds them — what this server
+	/// folds into its own record at join, unless it keeps skills local.
+	pub skills: SkillSet,
 }
 
 // ---- blocking HTTP (callers use spawn_blocking) ---------------------------
@@ -290,9 +297,15 @@ pub fn verify_token(
 			let account = AccountId::parse(&ok.account_id).ok_or_else(|| {
 				VerifyError::Unavailable(format!("master sent a bad account id: {}", ok.account_id))
 			})?;
+			let pairs: Vec<(u8, u64)> = ok
+				.skills
+				.iter()
+				.map(|s| (s.skill, s.xp.max(0) as u64))
+				.collect();
 			Ok(VerifiedJoin {
 				display_name: ok.display_name,
 				account,
+				skills: SkillSet::from_wire(&pairs),
 			})
 		}
 		401 | 404 => Err(VerifyError::Denied),

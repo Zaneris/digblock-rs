@@ -191,6 +191,12 @@ fn mint_token_with(master_url: &str, session: &str) -> ([u8; 16], String) {
 	let server_id = list["servers"][0]["id"]
 		.as_str()
 		.expect("a registered server in the list");
+	mint_token_for(master_url, session, server_id)
+}
+
+/// A token for ONE listed server — tokens are scoped to the server they
+/// were minted for, so a rig with several servers up names which.
+fn mint_token_for(master_url: &str, session: &str, server_id: &str) -> ([u8; 16], String) {
 	// No displayName: the master reads it off the authenticated account.
 	let mut res = ureq::post(format!("{master_url}/api/join"))
 		.header("authorization", &format!("Bearer {session}"))
@@ -256,6 +262,12 @@ impl TestServer {
 		Self::start_with_legacy(tag, master_url, registered, None)
 	}
 
+	/// As `start`, with `--local-skills`: the board's copy of a joiner's
+	/// skills is not folded in.
+	fn start_local_skills(tag: &str, master_url: &str) -> Self {
+		Self::start_with(tag, master_url, true, None, false)
+	}
+
 	/// As `start`, but the data dir already holds a pre-account character — a server that ran
 	/// before accounts and is now being upgraded. It has to be planted HERE, between wiping the
 	/// dir and opening the sim: the store reads its file once at open and rewrites the whole
@@ -266,6 +278,16 @@ impl TestServer {
 		master_url: &str,
 		registered: bool,
 		legacy: Option<([u8; 16], BlockType, u32)>,
+	) -> Self {
+		Self::start_with(tag, master_url, registered, legacy, true)
+	}
+
+	fn start_with(
+		tag: &str,
+		master_url: &str,
+		registered: bool,
+		legacy: Option<([u8; 16], BlockType, u32)>,
+		pull_skills: bool,
 	) -> Self {
 		let rt = tokio::runtime::Builder::new_multi_thread()
 			.enable_all()
@@ -284,7 +306,8 @@ impl TestServer {
 		// the default seed's spawn disc is bare Stone, which SIM v12's
 		// rock gate refuses (a real design consequence — a stone-spawn
 		// player levels on leaves/soil off the disc first).
-		let sim = Sim::new(7.0, &data_dir, 2, 2).unwrap();
+		let mut sim = Sim::new(7.0, &data_dir, 2, 2).unwrap();
+		sim.set_pull_skills(pull_skills);
 		let (event_tx, event_rx) = unbounded();
 		let running = Arc::new(AtomicBool::new(true));
 		let players = Arc::new(AtomicUsize::new(0));
@@ -373,6 +396,8 @@ struct TestClient {
 	inventories: Vec<Vec<(u16, u32)>>,
 	/// (from, text) chat lines, sender echoes included.
 	chats: Vec<(u8, String)>,
+	/// The latest `Skills` frame — join sync's, or a correction's.
+	skills: Option<digblock_core::skills::SkillSet>,
 }
 
 impl TestClient {
@@ -409,6 +434,7 @@ impl TestClient {
 			joined_names: Vec::new(),
 			inventories: Vec::new(),
 			chats: Vec::new(),
+			skills: None,
 		}
 	}
 
@@ -476,13 +502,15 @@ impl TestClient {
 				NetEvent::PlayerLeft { .. } => {}
 				NetEvent::Inventory { counts, .. } => self.inventories.push(counts),
 				NetEvent::Chat { from, text } => self.chats.push((from, text)),
+				NetEvent::Skills { xp } => {
+					self.skills = Some(digblock_core::skills::SkillSet::from_wire(&xp));
+				}
 				// No e2e case requests a teleport; unexpected = loud.
 				NetEvent::Teleported { pos, .. } => panic!("unrequested teleport to {pos}"),
 				NetEvent::TimeOfDay { .. }
 				| NetEvent::AdminCommands { .. }
 				| NetEvent::AdminReply(_)
 				| NetEvent::Layout { .. }
-				| NetEvent::Skills { .. }
 				| NetEvent::XpGain { .. }
 				| NetEvent::LevelUp { .. }
 				| NetEvent::Waystones { .. }
@@ -1769,5 +1797,59 @@ fn an_untrusted_servers_skill_report_is_refused() {
 	assert_eq!(
 		board["total"], 0,
 		"nothing an untrusted server says is ranked"
+	);
+}
+
+/// The pull half: a character is one character on every server. What a trusted server reported
+/// arrives with the account at ANY server's join — the untrusted one included, since only the
+/// write is gated — folded in without rewinding what that server already held; and a server run
+/// with `--local-skills` keeps its own ladder and folds in nothing.
+#[test]
+fn a_joiner_arrives_at_the_levels_the_board_holds() {
+	use digblock_core::skills::Skill;
+	use digblock_net::protocol::AccountId;
+	use digblock_server::master::{ReportOutcome, report_skills};
+	let master = MasterProc::spawn_trusting();
+	let trusted = TestServer::start("pullsrc", &master.url, true);
+	let reg = trusted.master_state.registration().expect("registered");
+	let (session, id, _) = dev_sign_in(&master.url, "pullA");
+	let account = AccountId::parse(&id).unwrap();
+	assert_eq!(
+		report_skills(
+			&master.url,
+			&reg,
+			&[(account, skills_at(Skill::Mining, 30))]
+		)
+		.unwrap(),
+		ReportOutcome::Accepted
+	);
+
+	// A second server, never played on: the join sync's Skills frame
+	// already carries the board's copy.
+	let other = TestServer::start("pulldst", &master.url, true);
+	let other_id = other.master_state.registration().unwrap().server_id;
+	let (token, _) = mint_token_for(&master.url, &session, &other_id);
+	let mut a = TestClient::connect(&other.url, "whatever", token);
+	a.wait("welcome", |c| c.welcomed);
+	a.wait("the board's skills", |c| c.skills.is_some());
+	assert_eq!(
+		a.skills.as_ref().unwrap().level(Skill::Mining),
+		30,
+		"a character carried over arrives at its level, not the first"
+	);
+	drop(a);
+
+	// Local skills: the same join on a server that keeps its own ladder
+	// starts from nothing.
+	let local = TestServer::start_local_skills("pulllocal", &master.url);
+	let local_id = local.master_state.registration().unwrap().server_id;
+	let (token, _) = mint_token_for(&master.url, &session, &local_id);
+	let mut a = TestClient::connect(&local.url, "whatever", token);
+	a.wait("welcome", |c| c.welcomed);
+	a.wait("this server's skills", |c| c.skills.is_some());
+	assert_eq!(
+		a.skills.as_ref().unwrap().level(Skill::Mining),
+		1,
+		"--local-skills: the board's copy is not folded in"
 	);
 }
