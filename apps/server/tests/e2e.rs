@@ -1472,13 +1472,13 @@ fn client_probe_reports_a_round_trip_not_a_handshake() {
 			let _ = tx.send(ms);
 		},
 	);
-	let ms = rx
+	let ping = rx
 		.recv_timeout(Duration::from_secs(10))
 		.expect("probe called back")
 		.expect("probe reached the server");
 	assert!(
-		ms < 100,
-		"loopback round trip read as {ms} ms — that is quinn's 333 ms initial \
+		!ping.estimated && ping.ms < 100,
+		"loopback round trip read as {ping:?} — that is quinn's 333 ms initial \
 		 default or a handshake time, not a measurement"
 	);
 }

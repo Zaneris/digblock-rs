@@ -10,6 +10,7 @@ use crate::settings::{
 	DRAW_MAX, DRAW_MIN, DRAW_STEP, GI_SCALE_DIVISORS, LIGHT_CAP_MAX, LIGHT_CAP_MIN, LIGHT_CAP_STEP,
 	Settings, UI_SCALE_MAX, UI_SCALE_MIN, UI_SCALE_STEP, VOL_MAX, VOL_STEP,
 };
+use digblock_net::probe::Ping;
 use digblock_net::protocol::Compat;
 use digblock_net::transport::NetTransport;
 use digblock_platform::{InputEvent, Key, MouseButton};
@@ -105,7 +106,7 @@ pub enum MenuResponse {
 	/// Client-side reachability probe result; None = failed/timed out.
 	Ping {
 		server_id: String,
-		ms: Option<u32>,
+		ping: Option<Ping>,
 	},
 	/// Ready-to-use transport plus the minted token for Hello.
 	Connect {
@@ -171,7 +172,7 @@ const WORLD_NAME_MAX: usize = 16;
 enum PingState {
 	Pending,
 	Failed,
-	Ms(u32),
+	Ms(Ping),
 }
 
 struct BrowserRow {
@@ -769,12 +770,12 @@ impl Menu {
 					}
 				}
 			}
-			MenuResponse::Ping { server_id, ms } => {
+			MenuResponse::Ping { server_id, ping } => {
 				if let Some(Screen::Browser(b)) = &mut self.screen
 					&& let Some(row) = b.rows.iter_mut().find(|r| r.entry.id == server_id)
 				{
-					row.ping = match ms {
-						Some(ms) => PingState::Ms(ms),
+					row.ping = match ping {
+						Some(ping) => PingState::Ms(ping),
 						None => PingState::Failed,
 					};
 				}

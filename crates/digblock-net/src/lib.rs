@@ -11,6 +11,7 @@ pub mod loopback;
 pub mod messages;
 pub mod pkce;
 pub mod predict;
+pub mod probe;
 pub mod protocol;
 pub mod remote;
 pub mod transport;

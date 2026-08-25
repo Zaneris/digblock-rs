@@ -1,5 +1,30 @@
 # Bench baseline & hotspot analysis
 
+## 2026-08-25 — the server browser's ping on web: an opening time is three round trips
+
+Chrome has no `WebTransport.getStats` (absent in 151), so the browser probe's only figure is how long `ready` took — and
+that is the number the web server list has been showing. Measured against the compose rig's server behind netem
+(`tc netem delay N` on the container's egress, so the added RTT is N; Docker Desktop, macOS, HeadlessChrome 151, five
+samples each, quinn's `Connection::rtt` on the native side as the true round trip):
+
+| netem delay | true RTT (quinn) | native `connect()` | Chrome `ready`, fresh context | Chrome `ready`, resumed |
+| ----------- | ---------------- | ------------------ | ----------------------------- | ----------------------- |
+| none        | 2–3 ms           | 6–10 ms            | 3.4–4.5 ms                    | 4.0–5.3 ms              |
+| 25 ms       | 29–32 ms         | 85–93 ms           | 84–88 ms                      | 84–92 ms                |
+| 50 ms       | 54–56 ms         | 164–171 ms         | 160–163 ms                    | 160–166 ms              |
+| 100 ms      | 104–107 ms       | 315–320 ms         | 315–319 ms                    | 313–319 ms              |
+| 250 ms      | 255–258 ms       | 765–772 ms         | 766–771 ms                    | 761–772 ms              |
+| 500 ms      | 505–508 ms       | 1516–1523 ms       | 1515–1519 ms                  | 1518–1521 ms            |
+| 1000 ms     | 1004–1005 ms     | 3009–3016 ms       | 3009–3017 ms                  | 3012–3018 ms            |
+
+**Opening a session costs exactly three round trips plus about 2 ms, at every latency, on both stacks, and a cached TLS
+session buys nothing** — the server issues a Retry (address validation), then the TLS handshake, then the HTTP/3
+extended CONNECT. The old note that the figure was "roughly double" an RTT undersold it. `probe::SESSION_ROUND_TRIPS` is
+this measurement; `Ping::from_handshake` divides by it and flags the result, and the browser row wears the mark. Under
+loss (`delay 50ms 10ms distribution normal loss 2%`) a lost handshake packet costs a whole PTO — Chrome `ready` samples
+of 132, 146, 171, 194 and 1195 ms against a 51–66 ms RTT — so an estimate can spike where a sampled RTT would not; a
+single probe per refresh cannot tell the two apart, and the mark is the honest answer.
+
 ## 2026-08-24 — the worldgen water settle: the apron is the cost, and every chunk pays it
 
 `worldgen::settle` pours each weir's cascade with the fluid sim's own rule over an apron of `settle::TRAVEL` columns, so

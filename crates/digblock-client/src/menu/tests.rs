@@ -204,7 +204,7 @@ fn panel_fits_every_row() {
 	)])));
 	menu.on_response(MenuResponse::Ping {
 		server_id: "s1".into(),
-		ms: Some(1234),
+		ping: Some(Ping::measured(1234)),
 	});
 	check(&menu);
 	// Settings: slider rows carry text plus a right-aligned bar.
@@ -308,7 +308,7 @@ fn browser_flow_join_and_fail_returns_with_status() {
 	])));
 	menu.on_response(MenuResponse::Ping {
 		server_id: "s2".into(),
-		ms: Some(34),
+		ping: Some(Ping::measured(34)),
 	});
 	let view = menu.view(SIZE, 1.0, false);
 	assert!(view.rows.iter().any(|r| r.text.contains("Alpha")));
@@ -317,6 +317,19 @@ fn browser_flow_join_and_fail_returns_with_status() {
 			.iter()
 			.any(|r| matches!(&r.right, Some((p, _)) if p == "34 ms"))
 	);
+	// An estimate wears the mark; a measurement does not — the same
+	// number must read differently by the flag alone.
+	menu.on_response(MenuResponse::Ping {
+		server_id: "s2".into(),
+		ping: Some(Ping::from_handshake(
+			34 * digblock_net::probe::SESSION_ROUND_TRIPS,
+		)),
+	});
+	let view = menu.view(SIZE, 1.0, false);
+	assert!(view.rows.iter().any(|r| matches!(
+		&r.right,
+		Some((p, _)) if p.starts_with(view::ESTIMATED_MARK) && p.ends_with("34 ms")
+	)));
 
 	// Join the second server.
 	menu.handle_key(Key::Down);

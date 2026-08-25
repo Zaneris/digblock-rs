@@ -13,6 +13,9 @@
 
 use super::*;
 
+/// Prefix on a ping the probe derived rather than sampled (`Ping::estimated`).
+pub(super) const ESTIMATED_MARK: &str = "~";
+
 /// The mark on a server row whose play counts toward the hiscores board: the sigil, the game's
 /// own trophy, drawn as the icon it is elsewhere rather than spelled — the same picture the
 /// inventory and the catalog use for it.
@@ -333,12 +336,13 @@ impl Menu {
 						// corrections stay small; red is bad-4g, where
 						// delivery falls off even with the input hold. They
 						// read as too lenient only if you remember them being
-						// fed handshake times, which were roughly double an
-						// RTT — the probe now reports the transport's own
-						// estimate, so these mean what they say. Don't
-						// "retune" them for the old input.
-						PingState::Ms(ms) => (
-							format!("{ms} ms"),
+						// fed handshake times, `SESSION_ROUND_TRIPS` of an
+						// RTT — the probe reports the transport's own
+						// estimate, or that time divided down and marked, so
+						// these mean what they say. Don't "retune" them for
+						// the old input.
+						PingState::Ms(Ping { ms, estimated }) => (
+							format!("{}{ms} ms", if estimated { ESTIMATED_MARK } else { "" }),
 							if ms < 60 {
 								C_GREEN
 							} else if ms < 150 {

@@ -187,8 +187,11 @@ fn run(
 							continue;
 						}
 					};
-					digblock_net_native::probe(&url, policy, Duration::from_secs(3), move |ms| {
-						let _ = resp_tx.send(MenuResponse::Ping { server_id: id, ms });
+					digblock_net_native::probe(&url, policy, Duration::from_secs(3), move |ping| {
+						let _ = resp_tx.send(MenuResponse::Ping {
+							server_id: id,
+							ping,
+						});
 					});
 				}
 			}

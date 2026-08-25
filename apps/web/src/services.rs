@@ -193,13 +193,16 @@ async fn run(
 						let Ok(hash) = digblock_net_web::parse_sha256_hex(&cert_hash) else {
 							let _ = resp_tx.send(MenuResponse::Ping {
 								server_id: id,
-								ms: None,
+								ping: None,
 							});
 							continue;
 						};
 						let resp_tx = resp_tx.clone();
-						digblock_net_web::probe(&url, hash, 3000, move |ms| {
-							let _ = resp_tx.send(MenuResponse::Ping { server_id: id, ms });
+						digblock_net_web::probe(&url, hash, 3000, move |ping| {
+							let _ = resp_tx.send(MenuResponse::Ping {
+								server_id: id,
+								ping,
+							});
 						});
 					}
 				}
