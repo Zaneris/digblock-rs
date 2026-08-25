@@ -202,11 +202,13 @@ pub(crate) struct FrameScene<'a> {
 }
 
 /// One name tag: screen-space anchor (pixels, tag centered on `x`),
-/// overlay 0xAABBGGRR color, and the display name.
+/// overlay 0xAABBGGRR color, the display name, and the mastery bits
+/// (`Skill::mastery_bits`) drawn as glyphs beside it.
 pub(crate) struct NameTag {
 	pub x: f32,
 	pub y: f32,
 	pub color: u32,
+	pub mastery: u8,
 	pub text: String,
 }
 

@@ -135,6 +135,7 @@ impl Engine {
 					x: 0.0,
 					y: 0.0,
 					color: 0,
+					mastery: 0,
 					text: String::new(),
 				});
 			}
@@ -142,6 +143,7 @@ impl Engine {
 			tag.x = (ndc.x * 0.5 + 0.5) * size.0 as f32;
 			tag.y = (1.0 - (ndc.y * 0.5 + 0.5)) * size.1 as f32;
 			tag.color = pack_rgb(player_color(d.id));
+			tag.mastery = d.mastery;
 			tag.text.clear();
 			match self.session.player_names.get(&d.id) {
 				Some(n) => tag.text.push_str(n),
@@ -297,6 +299,7 @@ impl Engine {
 				let view = crate::ui::screens::character::CharView::build(
 					&self.skills,
 					self.camera.pos.y.floor() as i32,
+					self.ranks.as_deref().unwrap_or(&[]),
 				);
 				self.ui
 					.char_screen

@@ -284,6 +284,10 @@ pub struct Engine {
 	/// Launcher-owned HTTP/probe services the menu talks to; None = no
 	/// master URL configured (Multiplayer shows as disabled).
 	services: Option<crate::menu::MenuServices>,
+	/// The account's standing on the master's boards, fetched each time
+	/// the character screen opens; `None` until an answer lands, and the
+	/// screen simply says nothing about rank.
+	ranks: Option<Vec<crate::menu::RankView>>,
 	/// Launcher-injected settings persistence hook, called with each
 	/// change batch; None (bench, drill, iOS) = settings don't persist.
 	settings_store: Option<crate::settings::SettingsStore>,

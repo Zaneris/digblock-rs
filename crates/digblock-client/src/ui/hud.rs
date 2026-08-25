@@ -39,6 +39,8 @@ pub enum IconKind {
 	Pick,
 	/// The Master's Sigil: a crystal set in a standing metal plate.
 	Sigil,
+	/// A skill's crest: the sigil's plate carrying that skill's emblem.
+	Crest(digblock_core::skills::Skill),
 	/// An essence: the one FLAT icon, since a count is not a thing in the world.
 	Essence(digblock_core::block::Essence),
 }
@@ -116,8 +118,18 @@ pub fn icon_block(kind: IconKind) -> Option<BlockType> {
 		IconKind::Siphon => Some(BlockType::EssenceSiphon),
 		IconKind::Pick => Some(BlockType::ResonantPick),
 		IconKind::Sigil => Some(BlockType::MastersSigil),
+		IconKind::Crest(s) => Some(crest_block(s)),
 		IconKind::Essence(_) => None,
 	}
+}
+
+/// The crest row for a skill — `unlock::crest`'s inverse, walked over the
+/// catalog so the two cannot name different rows.
+fn crest_block(skill: digblock_core::skills::Skill) -> BlockType {
+	BlockType::ALL
+		.into_iter()
+		.find(|&b| digblock_core::unlock::crest(b) == Some(skill))
+		.expect("every skill has a crest row")
 }
 
 /// Draw one item icon into `rect`. Every THING goes through the dimetric
@@ -240,6 +252,9 @@ pub fn tool_icon(tool: BlockType, bucket_full: bool) -> IconKind {
 		BlockType::EssenceSiphon => IconKind::Siphon,
 		BlockType::ResonantPick => IconKind::Pick,
 		BlockType::MastersSigil => IconKind::Sigil,
+		BlockType::MinersCrest | BlockType::AlchemistsCrest | BlockType::ArcanistsCrest => {
+			IconKind::Crest(digblock_core::unlock::crest(tool).expect("the three crest rows"))
+		}
 		// The bucket, and anything a future row forgets to author: a cube
 		// is wrong, but it is visibly wrong rather than invisible.
 		BlockType::Bucket => IconKind::WaterTool { full: bucket_full },

@@ -9,11 +9,14 @@
 //! HTTP contract (mirrors apps/master/Contracts.cs):
 //!   GET  /api/servers → { "servers": [{id, name, url, certHash, players, maxPlayers}] }
 //!   POST /api/join { serverId } → { token, expiresIn, url, certHash }
+//!   GET  /api/hiscores/me + Bearer session → { "ranks": [{skill, rank, level, xp}] }
 
 use std::sync::mpsc;
 
 use crate::auth::{self, Session};
-use digblock_client::{AccountView, MenuCommand, MenuResponse, MenuServices, ServerEntry};
+use digblock_client::{
+	AccountView, MenuCommand, MenuResponse, MenuServices, RankView, ServerEntry,
+};
 use digblock_net::protocol::Compat;
 use serde::Deserialize as _;
 use wasm_bindgen::JsCast;
@@ -66,6 +69,53 @@ struct JoinResponse {
 	token: String,
 	url: String,
 	cert_hash: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RanksResponse {
+	ranks: Vec<RankRow>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RankRow {
+	skill: String,
+	rank: u32,
+	level: u32,
+	xp: u64,
+}
+
+/// A board row as the screen wants it. A slug the client cannot name — a
+/// skill from a newer master — is dropped rather than failing the answer.
+fn rank_view(row: RankRow) -> Option<RankView> {
+	let skill = match row.skill.as_str() {
+		"overall" => None,
+		slug => Some(
+			digblock_core::skills::Skill::ALL
+				.into_iter()
+				.find(|s| s.name().eq_ignore_ascii_case(slug))?,
+		),
+	};
+	Some(RankView {
+		skill,
+		rank: row.rank,
+		level: row.level,
+		xp: row.xp,
+	})
+}
+
+/// Where the signed-in account stands on the master's boards.
+async fn fetch_ranks(master_url: &str, session: &str) -> Result<Vec<RankView>, String> {
+	let text = fetch_bearer(
+		"GET",
+		&format!("{master_url}/api/hiscores/me"),
+		None,
+		Some(session),
+	)
+	.await?;
+	let body: RanksResponse = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+	Ok(body.ranks.into_iter().filter_map(rank_view).collect())
 }
 
 /// Start the service task. Scripted joins are the menu's job
@@ -192,6 +242,13 @@ async fn run(
 						auth::store(s);
 					}
 					let _ = resp_tx.send(MenuResponse::NameSet(result));
+				}
+				MenuCommand::FetchRanks => {
+					let result = match &session {
+						Some(s) => fetch_ranks(&master_url, &s.token).await,
+						None => Err("not signed in".into()),
+					};
+					let _ = resp_tx.send(MenuResponse::Ranks(result));
 				}
 				MenuCommand::SignOut => {
 					if let Some(s) = session.take() {

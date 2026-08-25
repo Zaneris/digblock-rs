@@ -174,3 +174,26 @@ public sealed class ServerClaim
     public DateTimeOffset FirstSeenUtc { get; set; }
     public DateTimeOffset LastRegisteredUtc { get; set; }
 }
+
+/// <summary>One skill's XP total for one account, as last reported by a trusted game server. XP
+/// rather than level — the level is derived here with the same pinned curve the game uses
+/// (<see cref="Hiscores.Skills"/>), so a row is self-describing and a curve retune (which the
+/// game forbids) could not silently re-rank a stale row. Monotone: a report can only raise a
+/// total, matching the game's own <c>set_total</c>, so a stale server cannot rewind anyone.</summary>
+public sealed class SkillTotal
+{
+    public Guid AccountId { get; set; }
+    public Account Account { get; set; } = null!;
+
+    /// <summary>The <see cref="Hiscores.Skill"/> discriminant. Stored as the
+    /// integer, so unknown future skills are refused at the endpoint rather
+    /// than persisted as a number nothing can name.</summary>
+    public int Skill { get; set; }
+
+    public long Xp { get; set; }
+
+    /// <summary>Which registered server last raised it. Diagnostics only.</summary>
+    public Guid ServerId { get; set; }
+
+    public DateTimeOffset UpdatedUtc { get; set; }
+}

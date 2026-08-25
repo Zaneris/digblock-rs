@@ -461,7 +461,7 @@ impl Engine {
 					if pressed {
 						self.input.keys = HeldKeys::default();
 						self.input.dig_held = false;
-						self.ui.char_screen.open();
+						self.open_character_screen();
 					}
 				}
 				// Home: begin the Return Home channel (on cooldown the

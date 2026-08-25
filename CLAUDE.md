@@ -153,7 +153,7 @@ For `just run`:
   `DIG_CAST=<percent>` (poses the cast channel's aura at that progress with no hold behind it), `DIG_ORE=<tier 1..=4>`
   (hollows a chamber around the nearest deposit and grants its level — the carve must not touch the vein, or the
   anti-dupe deletes what is being photographed), `DIG_NODE=<heartwood|leystone|springstone>`,
-  `DIG_SCREEN=menu|inventory|inventory-hover|alchemy|alchemy-hover|transmute|transmuting|skills|spellbook|spellbook-hover|hand|bucket|bucket-full|torch|siphon|pick|sigil`
+  `DIG_SCREEN=menu|inventory|inventory-hover|alchemy|alchemy-hover|transmute|transmuting|skills|spellbook|spellbook-hover|hand|bucket|bucket-full|torch|siphon|pick|sigil|crest-mining|crest-alchemy|crest-arcana`
   (the pages are input-only and otherwise invisible to headless capture; the tool names cycle the roster, and screen
   stocking grants every tool since a fresh player owns none). The table's remaining rows are levers rather than scenes —
   `DIG_STUB` and `DIG_GI_ITERS` above, `DIG_SPIKELOG` below, plus `DIG_GI=<window|probes>` (paint the voxel window or
@@ -372,6 +372,15 @@ level that opens it, which is why the wire sends a reason and never a sentence.
 `process_cast` — and reaches the client as `ServerMsg::XpGain` carrying the new **TOTAL** (idempotent, reorder-safe).
 Join sync always sends `ServerMsg::Skills`, even empty, right after `Layout`. Offline play awards through the same core
 functions in the engine's offline arms only — **never award in the shared prediction path, or multiplayer double-pays.**
+
+**The hiscores board is written by trusted servers only** (SOCIAL-DESIGN.md §1): `Master:Hiscores:TrustedServers` is a
+hand-kept list of `host` or `host:port` entries, matched against the address a server is LISTED at, and a server learns
+at registration whether it is on it (`RegisterOk.reportsSkills`). Totals leave the server through
+`hiscores::SkillOutbox`, filled under `PlayerStore::put` — the one write every change of skills goes through — never at
+the chokepoints. The master derives levels from a COPY of the XP curve (`apps/master/Hiscores/Skills.cs`);
+`the_masters_curve_mirrors_ours` reads that file and fails when the two drift. `MASTERY_AT` is the top of the content
+ladder for all three skills: the crests (`unlock::crest`) open there on THEIR skill, which is why `can_craft` takes the
+whole `SkillSet`, and `Skill::mastery_bits` rides every snapshot for the nameplate glyphs.
 
 ## Alchemy & the economy
 

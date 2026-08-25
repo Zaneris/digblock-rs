@@ -10,6 +10,7 @@ use digblock_core::unlock;
 use digblock_platform::InputEvent;
 
 use crate::hotbar::HotbarView;
+use crate::menu::RankView;
 use crate::ui::draw::Layer;
 use crate::ui::widgets::{self, DIM, Style, Ui, WHITE};
 use crate::ui::{InvId, Rect, hud, theme};
@@ -25,7 +26,10 @@ impl CharView {
 	/// readout. A READOUT, not the rule: the award keys on the cell that
 	/// was dug, which is a block or two under the eye, so this says what
 	/// this depth is worth and never claims to price a particular swing.
-	pub fn build(skills: &SkillSet, eye_y: i32) -> Self {
+	/// `ranks` is the master's answer for this account, when there is one
+	/// — a board the account is not on says nothing rather than "unranked".
+	pub fn build(skills: &SkillSet, eye_y: i32, ranks: &[RankView]) -> Self {
+		let rank_of = |skill: Option<Skill>| ranks.iter().find(|r| r.skill == skill);
 		let mut rows = vec![Row::Title, Row::Space];
 		let mut total_level = 0;
 		for &skill in &Skill::ALL {
@@ -47,6 +51,9 @@ impl CharView {
 				frac,
 			});
 			rows.push(Row::Info(info));
+			if let Some(r) = rank_of(Some(skill)) {
+				rows.push(Row::Info(rank_line(r)));
+			}
 			if let Some((lvl, what)) = next_unlock(skill, level) {
 				rows.push(Row::Info(format!("next: LV {lvl} — {what}")));
 			}
@@ -60,8 +67,40 @@ impl CharView {
 			rows.push(Row::Space);
 		}
 		rows.push(Row::Info(format!("TOTAL LEVEL {total_level}")));
+		if let Some(r) = rank_of(None) {
+			rows.push(Row::Info(rank_line(r)));
+		}
 		Self { rows }
 	}
+}
+
+/// The board line under a skill (or the total): where this account stands. The number on the
+/// board is what makes the totals above it mean something (SOCIAL-DESIGN §1).
+fn rank_line(r: &RankView) -> String {
+	format!("hiscores: rank {}", group(u64::from(r.rank)))
+}
+
+/// What `DIG_SCREEN=skills` and the screen sweep show for the board lines, since neither run
+/// has a master to ask: a rank on every board, so every line the screen can draw is drawn.
+pub fn sample_ranks(skills: &SkillSet) -> Vec<RankView> {
+	let total = Skill::ALL.iter().map(|&s| skills.level(s)).sum();
+	let mut out: Vec<RankView> = Skill::ALL
+		.iter()
+		.enumerate()
+		.map(|(i, &s)| RankView {
+			skill: Some(s),
+			rank: 12 + i as u32 * 7,
+			level: skills.level(s),
+			xp: skills.xp(s),
+		})
+		.collect();
+	out.push(RankView {
+		skill: None,
+		rank: 9,
+		level: total,
+		xp: Skill::ALL.iter().map(|&s| skills.xp(s)).sum(),
+	});
+	out
 }
 
 /// The §8.2 teasers: what the next threshold above `level` opens. The prose is the screen's; every
@@ -104,7 +143,10 @@ fn mining_teasers() -> Vec<(u32, &'static str)> {
 		(unlock::mine(B::Crystal), "crystal opens"),
 		(unlock::PROSPECT_SHARP_AT, "the prospector's sense sharpens"),
 		(reveal_at(B::Aetherock), "aetherock reveals"),
-		(unlock::MASTERY_AT, "mastery: every vein gives one more"),
+		(
+			unlock::MASTERY_AT,
+			"mastery: every vein gives one more; the miner's crest",
+		),
 		(unlock::PICK_PLANE_AT, "the pick's full nine"),
 	]
 }
@@ -151,6 +193,10 @@ fn alch_teasers() -> Vec<(u32, &'static str)> {
 		(
 			unlock::WASTE_DIP_AT,
 			"the waste dip — your process tightens early",
+		),
+		(
+			item_at(B::AlchemistsCrest),
+			"the alchemist's crest — mastery",
 		),
 		(item_at(B::MastersSigil), "the master's sigil"),
 	]
@@ -205,7 +251,10 @@ fn arcana_teasers() -> Vec<(u32, &'static str)> {
 			unlock::CAUSEWAY_VAST_AT,
 			"the causeway carries you further again",
 		),
-		(port_at(K::Snow), "the far cold waystone — the last port"),
+		(
+			port_at(K::Snow),
+			"the far cold waystone — the last port; the arcanist's crest",
+		),
 	]
 }
 
@@ -466,7 +515,7 @@ mod tests {
 				style: Style::new(1.0),
 			},
 			SIZE,
-			&CharView::build(skills, eye_y),
+			&CharView::build(skills, eye_y, &[]),
 			&empty_bar(),
 			1.0,
 		);

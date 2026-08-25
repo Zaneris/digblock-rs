@@ -889,18 +889,38 @@ impl Overlay {
 	/// screen positions. No depth — tags read through walls, which keeps
 	/// them useful as a "someone is over there" cue.
 	fn push_nametags(&mut self, size: (u32, u32), tags: &[crate::renderer::NameTag]) {
+		use digblock_core::skills::Skill;
 		let (pad, glyph) = (PAD * self.scale, self.glyph);
 		// Sized to the LINE box, not the nominal one: accents reach above
 		// the box and descenders below it, so a backdrop the height of the
 		// box would clip the `g` in someone's name.
 		let back_h = font::ui().line_h(glyph).max(glyph);
 		let back_dy = (back_h - glyph) / 2.0;
+		// The mastery glyphs: one square per mastered skill after the name,
+		// in the skill's emblem colour — the same colour its crest wears
+		// and its essence chip is painted in, so the three read as one
+		// language. A square rather than a character, since the UI face
+		// promises no symbol glyphs.
+		let mark = (glyph * 0.5).round().max(2.0);
+		let mark_gap = (glyph * 0.2).round().max(1.0);
 		for tag in tags {
-			let w = font::ui().measure(&tag.text, glyph);
+			let marks = Skill::from_mastery(tag.mastery).count() as f32;
+			let text_w = font::ui().measure(&tag.text, glyph);
+			let w = text_w + marks * (mark + mark_gap);
 			let x = (tag.x - w / 2.0).clamp(0.0, (size.0 as f32 - w).max(0.0));
 			let y = tag.y.clamp(0.0, size.1 as f32 - glyph);
 			self.push_quad(x - pad / 2.0, y - back_dy, w + pad, back_h, 0x60000000);
 			self.push_text(font::FaceId::Ui, x, y, glyph, tag.color, &tag.text);
+			let mut mx = x + text_w + mark_gap;
+			for skill in Skill::from_mastery(tag.mastery) {
+				let (core, _) = skill.emblem().palette();
+				let color = 0xFF00_0000
+					| (u32::from(core[2]) << 16)
+					| (u32::from(core[1]) << 8)
+					| u32::from(core[0]);
+				self.push_quad(mx, y + (glyph - mark) / 2.0, mark, mark, color);
+				mx += mark + mark_gap;
+			}
 		}
 	}
 

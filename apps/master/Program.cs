@@ -5,6 +5,7 @@ using DigBlock.Master.Accounts;
 using DigBlock.Master.Auth;
 using DigBlock.Master.Data;
 using DigBlock.Master.Dev;
+using DigBlock.Master.Hiscores;
 using DigBlock.Master.Servers;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Data.Sqlite;
@@ -31,6 +32,8 @@ builder.Services.AddSingleton<AuthRequestStore>();
 builder.Services.AddSingleton<RegistrationBans>();
 builder.Services.AddScoped<AccountService>();
 builder.Services.AddScoped<ServerClaims>();
+builder.Services.AddSingleton<TrustedServers>();
+builder.Services.AddScoped<HiscoreService>();
 builder.Services.AddHostedService<HealthChecker>();
 builder.Services.AddDigBlockAuth(masterOptions);
 builder.Services.AddDigBlockRateLimits();
@@ -151,6 +154,7 @@ app.UseRateLimiter();
 
 app.MapAuthEndpoints();
 app.MapAccountEndpoints();
+app.MapHiscoreEndpoints();
 if (masterOptions.Dev.AuthEnabled)
 {
     app.MapDevEndpoints();
@@ -191,8 +195,8 @@ app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 //     that address, serving a certificate that needs the incumbent's key.
 app.MapPost("/api/servers/register", async (
     RegisterRequest req, HttpContext http, ServerRegistry registry, ServerClaims claims,
-    RegistrationBans bans, IReachabilityProbe probe, IOptions<MasterOptions> opts,
-    IHostEnvironment env, CancellationToken ct) =>
+    RegistrationBans bans, IReachabilityProbe probe, TrustedServers trusted,
+    IOptions<MasterOptions> opts, IHostEnvironment env, CancellationToken ct) =>
 {
     var source = http.Connection.RemoteIpAddress;
     if (source?.IsIPv4MappedToIPv6 == true)
@@ -308,9 +312,11 @@ app.MapPost("/api/servers/register", async (
         claim!.Id, claim.KeyHash, name, advertised, probeHost, req.Port, certHash,
         ServerRegistry.SanitizeCount(req.Players), ServerRegistry.SanitizeCount(req.MaxPlayers),
         req.ProtocolVersion, req.SimVersion);
+    var reportsSkills = trusted.IsTrusted(entry);
     app.Logger.LogInformation(
-        "registered {Name} at {Host}:{Port} as {Id}", entry.Name, advertised, req.Port, entry.Id);
-    return Results.Ok(new RegisterOk(true, entry.Id, key, observed));
+        "registered {Name} at {Host}:{Port} as {Id}{Trusted}",
+        entry.Name, advertised, req.Port, entry.Id, reportsSkills ? " (trusted: reports skills)" : "");
+    return Results.Ok(new RegisterOk(true, entry.Id, key, observed, reportsSkills));
 
     // The four reason codes stay — a self-hoster needs certMismatch apart
     // from timeout to debug a port forward, and ProbeTargets already removed

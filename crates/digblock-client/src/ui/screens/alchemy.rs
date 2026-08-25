@@ -71,6 +71,8 @@ const LOCKED_TINT: u32 = 0xFF58_5858;
 /// holdings, block counts — derived once so measure and emit agree.
 pub struct AlchView {
 	pub level: u32,
+	/// The whole set, since a crest's gate is a skill other than Alchemy.
+	pub skills: SkillSet,
 	/// Progress toward the next level, 0..=1 (full at the cap).
 	pub xp_frac: f32,
 	pub subs: [u32; Essence::COUNT],
@@ -209,6 +211,7 @@ impl AlchView {
 		}
 		Self {
 			level,
+			skills: skills_set.clone(),
 			xp_frac,
 			subs,
 			counts,
@@ -220,7 +223,7 @@ impl AlchView {
 	/// locked or unaffordable) — essence lines AND feedstock blocks, the
 	/// same two gates `apply_alchemy` runs.
 	pub fn affordable(&self, item: BlockType) -> u32 {
-		if !unlock::can_craft(item, self.level) {
+		if !unlock::can_craft(item, &self.skills) {
 			return 0;
 		}
 		let Some(ideal) = alchemy::craft_ideal(item) else {
@@ -322,6 +325,9 @@ const FUNCTIONAL_FAMILIES: [(&str, &[BlockType]); 3] = [
 			BlockType::Bucket,
 			BlockType::EssenceSiphon,
 			BlockType::ResonantPick,
+			BlockType::MinersCrest,
+			BlockType::ArcanistsCrest,
+			BlockType::AlchemistsCrest,
 			BlockType::MastersSigil,
 		],
 	),
@@ -634,7 +640,7 @@ impl AlchScreen {
 			.iter()
 			.flat_map(|f| f.members.iter().copied())
 			.filter(move |&m| member_visible(m, view.level, next))
-			.map(move |m| cost_chips(view, m, !unlock::can_craft(m, view.level)))
+			.map(move |m| cost_chips(view, m, !unlock::can_craft(m, &view.skills)))
 	}
 
 	/// The strip's span for the price: what is left of a `row_w`-wide row
@@ -825,7 +831,7 @@ impl AlchScreen {
 			if rect.contains(cx, cy) {
 				*hover = Some((rect, fam.name.to_string()));
 			}
-			let all_locked = visible.iter().all(|&m| !unlock::can_craft(m, view.level));
+			let all_locked = visible.iter().all(|&m| !unlock::can_craft(m, &view.skills));
 			// The tile trades one member for the next by shrinking the
 			// outgoing one away and growing the incoming one in, rather
 			// than cutting between them — rotating over the VISIBLE
@@ -880,7 +886,7 @@ impl AlchScreen {
 				if rect.contains(cx, cy) {
 					*hover = Some((rect, item.name()));
 				}
-				let locked = !unlock::can_craft(item, view.level);
+				let locked = !unlock::can_craft(item, &view.skills);
 				let (kind, tint) = hud::item_icon(HotbarItem::Block(item), false);
 				widgets::slot(
 					ui,
@@ -896,7 +902,11 @@ impl AlchScreen {
 					rect.contains(cx, cy),
 				);
 				if locked {
-					lock_badge(ui, rect, unlock::craft(item).unwrap_or(99));
+					lock_badge(
+						ui,
+						rect,
+						unlock::craft_gate(item).map_or(99, |(_, level)| level),
+					);
 				} else {
 					let batches = view.affordable(item);
 					if batches > 0 {
@@ -940,7 +950,7 @@ impl AlchScreen {
 		let family = &families()[f];
 		let member = self.member.min(family.members.len() - 1);
 		let item = family.members[member];
-		let locked = !unlock::can_craft(item, view.level);
+		let locked = !unlock::can_craft(item, &view.skills);
 		let batches = view.affordable(item);
 		let (kind, tint) = hud::item_icon(HotbarItem::Block(item), false);
 		let icon = Rect::new(
@@ -1098,7 +1108,7 @@ impl AlchScreen {
 							self.member = families()[i]
 								.members
 								.iter()
-								.position(|&m| unlock::can_craft(m, view.level))
+								.position(|&m| unlock::can_craft(m, &view.skills))
 								.unwrap_or(0);
 						}
 					}
@@ -1156,8 +1166,16 @@ impl AlchScreen {
 /// words for it, and it is the screen's own label rather than a `voice`
 /// sentence.
 fn strip_tail(view: &AlchView, item: BlockType) -> Option<String> {
-	if !unlock::can_craft(item, view.level) {
-		return Some(format!("LV {}", unlock::craft(item).unwrap_or(u32::MAX)));
+	if !unlock::can_craft(item, &view.skills) {
+		return Some(match unlock::craft_gate(item) {
+			// A crest names the skill it waits on; every other tile is
+			// the bench's own ladder and needs no name.
+			Some((skill, level)) if unlock::crest(item).is_some() => {
+				format!("{} LV {level}", skill.name().to_uppercase())
+			}
+			Some((_, level)) => format!("LV {level}"),
+			None => format!("LV {}", u32::MAX),
+		});
 	}
 	match strip_reason(view, item) {
 		StripReason::AtCap { tool: true } => Some("ALREADY OWNED".to_string()),

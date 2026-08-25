@@ -13,6 +13,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 ureq = { workspace = true }
 digblock-client.workspace = true
+digblock-core.workspace = true
 digblock-platform.workspace = true
 digblock-net.workspace = true
 digblock-net-native.workspace = true

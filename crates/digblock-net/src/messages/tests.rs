@@ -199,6 +199,7 @@ fn round_trip_all_variants() {
 			yaw: 1234,
 			held: 5,
 			fx: 7,
+			mastery: 0,
 		}],
 	});
 	let bytes = codec::encode_datagram(&d).unwrap();
@@ -305,6 +306,7 @@ fn a_full_snapshot_fits_one_datagram() {
 				// The widest varint a `held` can encode to.
 				held: u16::MAX,
 				fx: u8::MAX,
+				mastery: 0,
 			})
 			.collect(),
 	};
@@ -472,6 +474,7 @@ fn golden_handshake_and_snapshot_encoding() {
 			yaw: 0,
 			held: 4,
 			fx: 0,
+			mastery: 0,
 		}],
 	});
 	assert_eq!(
@@ -482,10 +485,11 @@ fn golden_handshake_and_snapshot_encoding() {
 		// Variant tag, server tick, acked tick; then me = Some tag +
 		// pos + vel as le f32s; then the vec length and the remote:
 		// id, pos, its velocity components as zigzag i16, yaw, held,
-		// and the packed effect byte (appended in v32).
+		// the packed effect byte (appended in v32) and the mastery bits
+		// (appended in v38).
 		vec![
 			1, 6, 5, 1, 0, 0, 128, 63, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-			1, 1, 0, 0, 128, 63, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0
+			1, 1, 0, 0, 128, 63, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0
 		]
 	);
 }

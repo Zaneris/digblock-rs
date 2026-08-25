@@ -1,6 +1,6 @@
 # The social mirror — hiscores, status, claims & trade (design document)
 
-Status: **DESIGN ONLY — nothing in this document is built.** It came out of the 2026-08-16 design review
+Status: **§1 and §2 are BUILT (2026-08-25); §3 and §4 are design.** It came out of the 2026-08-16 design review
 (SKILLS-DESIGN.md §13) as the answer to its sharpest finding: DigBlock's multiplayer is mechanically real and socially
 invisible. The progression mechanics are already RuneScape-shaped — the curve, threshold unlocks as events, XP from
 doing the thing, cross-skill handshakes — but RuneScape was never great combat math; it was a persistent world where
@@ -14,37 +14,55 @@ Ordering within this document is by value-per-engineering-cost, and it is delibe
 ## 1. Hiscores
 
 The master already owns accounts and display names; servers already persist per-account skill totals in
-`inventories.bin` and already speak HTTP to the master (`apps/server/src/master.rs`). The whole feature is:
+`inventories.bin` and already speak HTTP to the master (`apps/server/src/master.rs`). What shipped:
 
-- a batched XP-totals report riding the server's existing heartbeat (account id → per-skill totals; totals, not levels,
-  so the master derives levels with the same pinned curve and a stale row is self-describing);
-- one EF Core table beside the accounts (nothing above `Data/` may assume SQLite, as ever);
-- `GET /api/hiscores` (overall and per-skill, paged), mirrored in `Contracts.cs` and the three client fillers like every
-  other master endpoint;
-- and a web page beside the game. Web is the priority platform, so the hiscores page is not an afterthought — it is half
-  of RuneScape's social fabric reconstituted for the price of an endpoint.
+- **A batched XP-totals report on the heartbeat's cadence** (`POST /api/servers/{id}/skills`, one batch behind each
+  heartbeat that landed): account id → per-skill totals — totals, not levels, so the master derives levels with the same
+  pinned curve (`apps/master/Hiscores/Skills.cs`, held to `skills.rs` by `the_masters_curve_mirrors_ours`, which reads
+  the C# source) and a stale row is self-describing. Its own endpoint rather than a heartbeat field, so a refusal has a
+  status code the server can act on. The server side is `hiscores::SkillOutbox`, filled under `PlayerStore::put` — the
+  one write every change of skills already goes through — and seeded with every stored record at boot, so a board that
+  has never heard of a server catches up without anyone playing first. **Monotone**: a report can only raise a total,
+  the game's own `set_total` rule, so a server holding an older copy of a character cannot rewind the one that moved on.
+- **One EF Core table** (`SkillTotal`, keyed on account and skill) beside the accounts.
+- **`GET /api/hiscores`** (overall and per-skill, paged) and **`GET /api/hiscores/me`** (the session's own ranks),
+  mirrored in `Contracts.cs` and the two client fillers. The overall board sums levels, a skill never reported counting
+  at the first level — exactly how the game reads an empty total.
+- **A server-rendered page at `/hiscores`**, script-free in the sign-in pages' shell. Master-served rather than bundled
+  beside the wasm: the master owns the data, the CORS policy and the rate limits, and the web bundle's cache model is
+  built for immutable-by-name files, which a live board is not.
 
-**Trust, honestly:** any registered server could report inflated totals — token verification proves a server is real,
-not that its sim is honest. V1 scopes the *global* board to first-party servers, with per-server boards for everyone
-else; the boundary is presentation, not enforcement, and the doc says so rather than pretending otherwise. A signed
-attestation scheme is not worth its complexity at this player count.
+**Trust, by list.** Token verification proves a server is REAL, not that its sim is honest, and any registered server
+could report inflated totals — so the board takes reports from `Master:Hiscores:TrustedServers`, a hand-kept list of
+`host` or `host:port` entries matched against the address the server is LISTED at (which the probe verified), and from
+nobody else. Registration tells a server whether it is on the list (`RegisterOk.reportsSkills`), so an unlisted server
+never sends a report; one that did is refused with 403, and a refusal is final for that registration. Reading is public.
+A signed attestation scheme was considered and declined: not worth its complexity at this player count, and the list is
+the honest statement of who is trusted.
 
 In-game, the character screen grows one line per skill — your rank, when known — because the number on the board is the
-number that makes the C screen's totals mean something.
+number that makes the C screen's totals mean something. Opening the screen asks the master (`MenuCommand::FetchRanks`);
+the answer is the engine's, not a menu page's, and a board the account is not on says nothing rather than "unranked".
 
 ## 2. Status display
 
 **The Master's Sigil is already the pattern.** A held item that does nothing, costs everything, and shows in other
-players' hands through the real geometry pipeline — that is a skillcape, shipped. Generalize it:
+players' hands through the real geometry pipeline — that is a skillcape, shipped. Generalized:
 
-- **A mastery item per skill at its content cap**, in the sigil's mold: `is_tool`, capped at one, priced entirely in the
-  skill's own essences, cycling on tap-9, drawn in remotes' hands via `tool_icon`'s path. Zero new machinery; the cost
-  is art and two catalog rows. (The sigil keeps its place at the level cap above them — the one trophy in the tail, per
+- **The three crests** (`MinersCrest`, `AlchemistsCrest`, `ArcanistsCrest`), one per skill at `unlock::MASTERY_AT`, in
+  the sigil's mold: `is_tool`, capped at one, cycling on tap-9, drawn in remotes' hands via `tool_icon`'s path, geometry
+  the sigil's with the skill's emblem essence (`Skill::emblem`) set where the crystal sits. **Gated on the skill they
+  honour, not the bench**: `unlock::crest` names the skill and `unlock::can_craft` takes the whole `SkillSet`, so a
+  mastered miner with no Alchemy makes theirs and a level-99 alchemist cannot buy one. Priced entirely in the skill's
+  own essences, led by the emblem. The Miner's and Arcanist's sit on the catalog page from the first level, locked
+  behind their skill's badge — a teaser you can read the whole ladder — and the Alchemist's is the one new Alchemy
+  unlock, at the content top. (The sigil keeps its place at the level cap above them — the one trophy in the tail, per
   SKILLS-DESIGN §13.3.)
-- **A capped-skill glyph on the nameplate**: one flags byte appended to `RemoteState` (append-only wire evolution, as
-  ever), rendered beside the name tag at the same surface-size rules name tags already obey. The cheapest possible
-  "everyone can see it" channel, and horizontal-progression literature's whole lesson: cosmetic status extends the
-  ladder without inflating power.
+- **The mastery glyphs on the nameplate**: one byte appended to `RemoteState` (`Skill::mastery_bits`, protocol v38, the
+  `fx` precedent — a struct field is the one breaking append, so `MIN_PROTOCOL` rose with it), one square per mastered
+  skill after the name in the skill's emblem colour, at the surface-size rules name tags already obey. The cheapest
+  possible "everyone can see it" channel, and horizontal-progression literature's whole lesson: cosmetic status extends
+  the ladder without inflating power.
 
 ## 3. Claims — shared building as the endgame
 

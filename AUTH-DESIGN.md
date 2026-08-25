@@ -368,7 +368,11 @@ entirely rather than leave a permanent claim path open.
 - **No provider linking UI.** The schema supports several providers per account (that is why `ProviderLink` is a table
   and not two columns), but nothing exposes adding one.
 - **No account website.** The browser's whole job is the provider round trip. Choosing a name, reading your id, signing
-  out are in-game screens, which is why the master ships exactly two HTML pages.
+  out are in-game screens, which is why the master ships exactly two HTML pages a player can DO anything on; the
+  hiscores board (`/hiscores`, SOCIAL-DESIGN.md §1) is the third page and is read-only.
+- **No attestation of skill reports.** The board believes a hand-kept list of server addresses
+  (`Master:Hiscores:TrustedServers`) and nobody else — the registration key says WHICH server is reporting, the list
+  says whether its word counts. Anything stronger waits for a player count that makes it worth having.
 - **No global ban tooling.** `Account.Status` and `BanUntilUtc` exist and `/api/join` honours them; nothing sets them
   but a hand-edited row.
 - **No per-server pseudonymous ids.** See §1.1.

@@ -185,6 +185,10 @@ pub struct PlayerStore {
 	dirty: bool,
 	last_flush: Instant,
 	writer: StoreWriter,
+	/// Where a change of skills is also announced, when this server reports
+	/// to the board. `put` is the one write every such change goes through,
+	/// which is why the hook lives here and not at the award chokepoints.
+	outbox: Option<std::sync::Arc<crate::hiscores::SkillOutbox>>,
 }
 
 impl PlayerStore {
@@ -204,6 +208,7 @@ impl PlayerStore {
 			dirty: false,
 			last_flush: Instant::now(),
 			writer: StoreWriter::new(path.clone()),
+			outbox: None,
 		};
 		let bytes = match std::fs::read(&path) {
 			Ok(b) => b,
@@ -277,10 +282,28 @@ impl PlayerStore {
 		self.map.get(id).cloned().unwrap_or_default()
 	}
 
+	/// Report every stored record's skills now and every later change as
+	/// it lands. Called once at boot, so a board that has never heard of
+	/// this server catches up without anyone having to play first.
+	pub fn attach_outbox(&mut self, outbox: std::sync::Arc<crate::hiscores::SkillOutbox>) {
+		for (id, rec) in &self.map {
+			if rec.skills != SkillSet::default() {
+				outbox.push(*id, &rec.skills);
+			}
+		}
+		self.outbox = Some(outbox);
+	}
+
 	/// Write-through to memory; durable at the next flush. Touching a key
 	/// refreshes its LRU stamp, so an active player is never the eviction
 	/// candidate.
 	pub fn put(&mut self, id: IdentityKey, rec: PlayerRecord) {
+		if let Some(outbox) = &self.outbox
+			&& self.map.get(&id).is_none_or(|old| old.skills != rec.skills)
+			&& rec.skills != SkillSet::default()
+		{
+			outbox.push(id, &rec.skills);
+		}
 		self.clock += 1;
 		self.used.insert(id, self.clock);
 		self.map.insert(id, rec);

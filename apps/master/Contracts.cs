@@ -29,7 +29,11 @@ public sealed record RegisterRequest(
 /// <summary><c>ServerKey</c> is the registration key for this address: newly
 /// minted on a first claim, and otherwise the same key that was presented.
 /// A game server stores it and presents it on every later registration.</summary>
-public sealed record RegisterOk(bool Reachable, Guid ServerId, string ServerKey, string ObservedHost);
+/// <para><c>ReportsSkills</c> says whether this address is on the master's trusted list
+/// (Master:Hiscores:TrustedServers): only then are its skill reports accepted, so a server
+/// that is not listed never sends one. Appended; an older game server ignores it.</para>
+public sealed record RegisterOk(
+    bool Reachable, Guid ServerId, string ServerKey, string ObservedHost, bool ReportsSkills);
 
 /// <summary><c>Detail</c> is empty outside Development: it used to carry the
 /// raw exception text, which described the master's own network to an
@@ -64,6 +68,36 @@ public sealed record VerifyRequest(string? Token);
 /// id is the persistence key on the far side (inventories, skills, admin,
 /// bans); the name is display only.</summary>
 public sealed record VerifyResponse(string DisplayName, Guid AccountId);
+
+// ---- hiscores --------------------------------------------------------------
+// The server half is mirrored by apps/server/src/master.rs, the client half
+// by the two services fillers. SOCIAL-DESIGN.md §1.
+
+/// <summary>A trusted server's batch of XP totals (never levels — the master derives those with
+/// the pinned curve). One entry per account, only the skills that moved; a skill index the
+/// master does not know refuses the whole batch, so the roster is extended on both ends or
+/// neither.</summary>
+public sealed record SkillReport(SkillReportRow[] Players);
+
+public sealed record SkillReportRow(Guid AccountId, SkillXp[] Skills);
+
+public sealed record SkillXp(int Skill, long Xp);
+
+/// <summary>One page of one board. <c>Skill</c> is the slug asked for ("mining", …, or
+/// "overall"); <c>Total</c> is how many accounts the board holds, so a client can page.</summary>
+public sealed record HiscoresResponse(
+    string Skill, int Page, int PageSize, int Total, HiscoreRow[] Rows);
+
+/// <summary>On a skill board <c>Level</c>/<c>Xp</c> are that skill's; on the
+/// overall board they are the level sum and the XP sum.</summary>
+public sealed record HiscoreRow(int Rank, Guid AccountId, string DisplayName, int Level, long Xp);
+
+/// <summary>Where the caller's account stands, one row per board it appears on. A board the
+/// account has never been reported to is simply absent — "unranked" is the missing row, not
+/// a zero.</summary>
+public sealed record MyRanksResponse(RankRow[] Ranks);
+
+public sealed record RankRow(string Skill, int Rank, int Level, long Xp);
 
 // Music manifest entry (GET /api/music). Url is master-relative; the
 // clients' audio fillers resolve it against the master base URL. Set is

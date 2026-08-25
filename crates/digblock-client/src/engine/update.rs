@@ -5,6 +5,18 @@
 use super::*;
 
 impl Engine {
+	/// Open the character screen and ask the master where this account stands — every time,
+	/// since the board moves under you; the screen draws whatever answer it last had until the
+	/// new one lands. Signed out, or with no launcher services, the screen just opens.
+	pub(super) fn open_character_screen(&mut self) {
+		self.ui.char_screen.open();
+		if let Some(services) = &self.services
+			&& self.ui.menu.account().is_some()
+		{
+			let _ = services.cmd_tx.send(crate::menu::MenuCommand::FetchRanks);
+		}
+	}
+
 	pub(super) fn step(&mut self, dt: Duration) {
 		let t_update = web_time::Instant::now();
 		let dt = dt.as_secs_f32();
@@ -128,6 +140,13 @@ impl Engine {
 			.map(|s| s.resp_rx.try_iter().collect())
 			.unwrap_or_default();
 		for resp in responses {
+			if let crate::menu::MenuResponse::Ranks(result) = resp {
+				match result {
+					Ok(ranks) => self.ranks = Some(ranks),
+					Err(e) => log::info!("hiscores: {e}"),
+				}
+				continue;
+			}
 			if let Some((transport, token)) = self.ui.menu.on_response(resp) {
 				self.set_transport_with_token(transport, token);
 			}
@@ -182,7 +201,7 @@ impl Engine {
 			self.ui.alch_screen.open();
 		}
 		if self.ui.menu.take_character() {
-			self.ui.char_screen.open();
+			self.open_character_screen();
 		}
 		if self.ui.menu.take_spellbook() {
 			self.ui.spellbook.open();

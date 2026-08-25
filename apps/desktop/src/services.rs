@@ -9,9 +9,12 @@
 //! HTTP contract (mirrors apps/master/Contracts.cs):
 //!   GET  /api/servers → { "servers": [{id, name, url, certHash, …}] }
 //!   POST /api/join { serverId } + Bearer session → { token, url, certHash }
+//!   GET  /api/hiscores/me + Bearer session → { "ranks": [{skill, rank, level, xp}] }
 
 use crate::auth::{self, Session};
-use digblock_client::{AccountView, MenuCommand, MenuResponse, MenuServices, ServerEntry};
+use digblock_client::{
+	AccountView, MenuCommand, MenuResponse, MenuServices, RankView, ServerEntry,
+};
 use digblock_net::protocol::Compat;
 use serde::Deserialize as _;
 use std::sync::Arc;
@@ -73,6 +76,40 @@ struct JoinResponse {
 	token: String,
 	url: String,
 	cert_hash: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RanksResponse {
+	ranks: Vec<RankRow>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RankRow {
+	skill: String,
+	rank: u32,
+	level: u32,
+	xp: u64,
+}
+
+/// A board row as the screen wants it. A slug the client cannot name — a
+/// skill from a newer master — is dropped rather than failing the answer.
+fn rank_view(row: RankRow) -> Option<RankView> {
+	let skill = match row.skill.as_str() {
+		"overall" => None,
+		slug => Some(
+			digblock_core::skills::Skill::ALL
+				.into_iter()
+				.find(|s| s.name().eq_ignore_ascii_case(slug))?,
+		),
+	};
+	Some(RankView {
+		skill,
+		rank: row.rank,
+		level: row.level,
+		xp: row.xp,
+	})
 }
 
 pub(crate) fn start(master_url: String, session: Option<Session>) -> MenuServices {
@@ -233,6 +270,18 @@ fn run(
 				drop(guard);
 				let _ = resp_tx.send(MenuResponse::NameSet(result));
 			}
+			MenuCommand::FetchRanks => {
+				let token = session
+					.lock()
+					.expect("session mutex")
+					.as_ref()
+					.map(|s| s.token.clone());
+				let result = match token {
+					Some(token) => fetch_ranks(&master_url, &token),
+					None => Err("not signed in".into()),
+				};
+				let _ = resp_tx.send(MenuResponse::Ranks(result));
+			}
 			MenuCommand::SignOut => {
 				// Cancel any sign-in still waiting on a browser, or its
 				// eventual success would sign us straight back in.
@@ -280,6 +329,21 @@ fn fetch_servers(master_url: &str) -> Result<Vec<ServerEntry>, String> {
 			sim_version: s.sim_version,
 		})
 		.collect())
+}
+
+/// Where the signed-in account stands on the master's boards.
+fn fetch_ranks(master_url: &str, session: &str) -> Result<Vec<RankView>, String> {
+	let mut res = ureq::Agent::new_with_config(
+		ureq::Agent::config_builder()
+			.timeout_global(Some(Duration::from_secs(5)))
+			.build(),
+	)
+	.get(format!("{master_url}/api/hiscores/me"))
+	.header("authorization", &format!("Bearer {session}"))
+	.call()
+	.map_err(|e| e.to_string())?;
+	let body: RanksResponse = res.body_mut().read_json().map_err(|e| e.to_string())?;
+	Ok(body.ranks.into_iter().filter_map(rank_view).collect())
 }
 
 /// Mint a join token and dial the server.

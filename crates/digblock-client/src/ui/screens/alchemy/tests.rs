@@ -148,7 +148,7 @@ fn strip_chips(r: &Rig, item: B) -> Vec<Chip> {
 	cost_chips(
 		&r.view,
 		item,
-		!digblock_core::unlock::can_craft(item, r.view.level),
+		!digblock_core::unlock::can_craft(item, &r.view.skills),
 	)
 }
 
@@ -521,7 +521,7 @@ fn the_strip_never_drops_a_price() {
 						+ alchemy::craft_ideal(item)
 							.expect("a member is craftable")
 							.len();
-					let chips = cost_chips(&view, item, !unlock::can_craft(item, view.level));
+					let chips = cost_chips(&view, item, !unlock::can_craft(item, &view.skills));
 					assert_eq!(chips.len(), want, "{at}: prices {want} lines");
 					// Each line's number is drawn, in the row's ink, with its
 					// icon beside it.
@@ -887,14 +887,31 @@ fn the_page_hides_everything_past_the_next_unlock() {
 	}
 	// Inside TOOLS: the vessels show, the pick and the sigil do not —
 	// the sigil at the cap is exactly the tile a fresh player must
-	// not be stared down by.
+	// not be stared down by. The two crests gated on ANOTHER skill show
+	// from the first level on purpose: locked behind that skill's badge,
+	// they are the one teaser a player can read the whole ladder.
 	let tools = center(r.hits.rect_of(InvId::Family(idx("Tools"))).unwrap());
 	press(&mut r, tools);
 	rebuild(&mut r);
-	assert!(r.hits.rect_of(InvId::Craft(0)).is_some(), "the bucket");
-	assert!(r.hits.rect_of(InvId::Craft(1)).is_some(), "the siphon");
-	assert!(r.hits.rect_of(InvId::Craft(2)).is_none(), "the pick hides");
-	assert!(r.hits.rect_of(InvId::Craft(3)).is_none(), "the sigil hides");
+	let member = |b: B| {
+		let tools = &families()[idx("Tools") as usize].members;
+		InvId::Craft(tools.iter().position(|&m| m == b).expect("a tool") as u8)
+	};
+	for (b, shown) in [
+		(B::Bucket, true),
+		(B::EssenceSiphon, true),
+		(B::ResonantPick, false),
+		(B::MinersCrest, true),
+		(B::ArcanistsCrest, true),
+		(B::AlchemistsCrest, false),
+		(B::MastersSigil, false),
+	] {
+		assert_eq!(
+			r.hits.rect_of(member(b)).is_some(),
+			shown,
+			"{b:?} on a fresh page"
+		);
+	}
 
 	// Two things sharing the next level BOTH show: at the mason's
 	// unlock the next tier holds dark lumber and stone brick, and the

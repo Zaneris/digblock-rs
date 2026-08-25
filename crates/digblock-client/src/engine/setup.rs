@@ -170,6 +170,7 @@ impl Engine {
 			// Assume wet: whatever the spawn turns out to be, arriving
 			// there is not "entering the water".
 			services: None,
+			ranks: None,
 			settings_store: None,
 			clipboard: None,
 			save: SaveSession {
@@ -493,10 +494,14 @@ impl Engine {
 					}
 				}
 				DebugScreen::Skills => {
-					// Mid-curve totals: fractional bars, real XP lines.
+					// Mid-curve totals: fractional bars, real XP lines —
+					// and a rank on every board, since no master answers a
+					// capture.
 					use digblock_core::skills::Skill;
 					engine.skills.add_xp(Skill::Mining, 150_000);
 					engine.skills.add_xp(Skill::Alchemy, 30_000);
+					engine.ranks =
+						Some(crate::ui::screens::character::sample_ranks(&engine.skills));
 					engine.ui.char_screen.open();
 				}
 				DebugScreen::Spellbook | DebugScreen::SpellbookHover => {

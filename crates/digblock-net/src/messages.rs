@@ -230,6 +230,11 @@ pub struct RemoteState {
 	/// breaking postcard change, which is what the v32 `MIN_PROTOCOL` raise carries. Appended in
 	/// v32.
 	pub fx: u8,
+	/// Which skills this player has mastered, one bit each in `Skill` order
+	/// (`Skill::mastery_bits`), for the glyph beside their name tag — their skills are not in
+	/// the snapshot, and the nameplate is the one place another player reads them. Appended in
+	/// v38, the same breaking shape as `fx`, so `MIN_PROTOCOL` rose with it.
+	pub mastery: u8,
 }
 
 /// The remote-effect kinds [`RemoteState::fx`] can carry. Two bits.

@@ -48,6 +48,9 @@ services:
       Master__Dev__AuthEnabled: "true"
       Master__Probe__AllowPrivateTargets: "true"
       Master__Dev__ProbeHostOverride: "${PROBE_HOST:-}"
+      # The compose server is the one first-party server this stack has,
+      # so its skill totals reach the board.
+      Master__Hiscores__TrustedServers__0: "${ADVERTISE_HOST:-server}"
 
   server:
     build:

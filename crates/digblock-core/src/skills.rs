@@ -45,6 +45,42 @@ impl Skill {
 			Skill::Arcana => "Arcana",
 		}
 	}
+
+	/// The essence that stands for the skill wherever ONE colour has to: the nameplate's mastery
+	/// glyph, and the lead line of its crest's price. Mining's is what the ore tiers pay, Alchemy's
+	/// the day-one node's draw, and Arcana's the glass it writes — the one essence both of its
+	/// conjured-matter spells spend. Read from here so the glyph and the crest cannot disagree.
+	pub fn emblem(self) -> crate::block::Essence {
+		use crate::block::Essence;
+		match self {
+			Skill::Mining => Essence::Ferrum,
+			Skill::Alchemy => Essence::Vitae,
+			Skill::Arcana => Essence::Unda,
+		}
+	}
+
+	/// Has this skill reached the top of its CONTENT ladder? The nameplate glyph and the crests
+	/// both ask here rather than comparing against `unlock::MASTERY_AT` themselves.
+	pub fn mastered(self, skills: &SkillSet) -> bool {
+		skills.level(self) >= crate::unlock::MASTERY_AT
+	}
+
+	/// One bit per skill in `repr` order, set where [`Skill::mastered`] answers yes — the byte a
+	/// snapshot carries so a remote's nameplate can show it, decoded by [`Skill::from_mastery`].
+	pub fn mastery_bits(skills: &SkillSet) -> u8 {
+		Self::ALL
+			.iter()
+			.filter(|s| s.mastered(skills))
+			.fold(0, |bits, &s| bits | (1 << s as u8))
+	}
+
+	/// The skills a [`Skill::mastery_bits`] byte names. Bits past the roster are ignored: a newer
+	/// server's fourth skill is not a reason to draw a glyph this build cannot name.
+	pub fn from_mastery(bits: u8) -> impl Iterator<Item = Skill> {
+		Self::ALL
+			.into_iter()
+			.filter(move |&s| bits & (1 << s as u8) != 0)
+	}
 }
 
 pub const MAX_LEVEL: u32 = 99;

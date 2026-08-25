@@ -661,6 +661,13 @@ impl Sim {
 		self.clients.len()
 	}
 
+	/// Announce every change of skills to the board's outbox, starting
+	/// with what the store already holds. Wired by the launcher, not
+	/// `Sim::new`, so the test harness's worlds report to nobody.
+	pub fn attach_skill_outbox(&mut self, outbox: std::sync::Arc<crate::hiscores::SkillOutbox>) {
+		self.player_store.attach_outbox(outbox);
+	}
+
 	/// Run one tick with the events drained since the last one.
 	pub fn tick_once(&mut self, events: Vec<SimEvent>) {
 		self.reap_dead();

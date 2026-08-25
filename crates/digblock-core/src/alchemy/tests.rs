@@ -344,7 +344,7 @@ fn pace_tracks_what_a_craft_is_worth() {
 fn the_bucket_can_always_afford_the_costliest_op() {
 	for &b in &BlockType::ALL {
 		for level in 1..=crate::skills::MAX_LEVEL {
-			if crate::unlock::can_craft(b, level) {
+			if crate::unlock::recipe_open(b, level) {
 				let cost = craft_pace_ticks(b, level) as f32;
 				let burst = bench_burst_ticks(level);
 				assert!(
@@ -489,6 +489,12 @@ fn every_price_has_a_source_at_its_own_level() {
 	for &item in &BlockType::ALL {
 		let (Some(level), Some(price)) = (crate::unlock::craft(item), craft_ideal(item)) else {
 			continue;
+		};
+		// A crest opens where its SKILL masters, not where the bench
+		// admits it — that is the level its price must be payable at.
+		let level = match crate::unlock::crest(item) {
+			Some(_) => level.max(crate::unlock::MASTERY_AT),
+			None => level,
 		};
 		for &(essence, _) in &price {
 			let source = crate::worldgen::nodes::NODES.iter().copied().find(|&n| {

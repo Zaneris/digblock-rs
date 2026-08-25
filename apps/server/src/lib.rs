@@ -3,6 +3,7 @@
 //! digblock-core + digblock-net only — no GPU, no windowing.
 
 pub mod ban_store;
+pub mod hiscores;
 pub mod player_store;
 /// The journal moved to `digblock-persist` (shared with client local
 /// saves — one format, one VERSION); re-exported so `crate::journal::`

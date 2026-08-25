@@ -205,6 +205,11 @@ fn main() {
 		log::info!("admin: {id} ({spec})");
 	}
 	sim.set_admin_accounts(admin_accounts);
+	// The board's outbox: every stored record now, every change of
+	// skills from here on. Whether any of it is sent is the master's call
+	// at registration.
+	let outbox = Arc::new(digblock_server::hiscores::SkillOutbox::new());
+	sim.attach_skill_outbox(outbox.clone());
 	log::info!("world seed {seed}, data dir {}", data_dir.display());
 
 	let (event_tx, event_rx) = unbounded();
@@ -245,6 +250,7 @@ fn main() {
 			reregister.clone(),
 			players,
 			Some(key_path),
+			outbox,
 		));
 		// The pinned cert is short-lived; rotate it in-process so a
 		// long-running server never becomes unjoinable.

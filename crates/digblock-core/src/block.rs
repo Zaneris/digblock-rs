@@ -320,6 +320,13 @@ blocks! {
 	// renderer and the GI have (R35's bucket predicate). Soft and
 	// diggable by anyone, so nobody is walled in by a spell.
 	Wardglass = 90 => conjured(dig(translucent(props(RenderClass::Glass, true, tex::WARDGLASS, tex::WARDGLASS, tex::WARDGLASS)), 25, DigFamily::Soft)),
+	/// The three crests (SOCIAL-DESIGN §2): one held item per skill, in the sigil's mold — it does
+	/// nothing, caps at one, and shows in other players' hands. Each is gated on the skill it
+	/// honours reaching `unlock::MASTERY_AT` (`unlock::crest`), never on the bench alone, and priced
+	/// in that skill's own essences — so the thing on your hip says which ladder you climbed.
+	MinersCrest = 91 => props(RenderClass::None, false, 0, 0, 0),
+	AlchemistsCrest = 92 => props(RenderClass::None, false, 0, 0, 0),
+	ArcanistsCrest = 93 => props(RenderClass::None, false, 0, 0, 0),
 }
 
 /// The indestructible world floor: cells at this height can never be dug
@@ -1067,6 +1074,9 @@ impl BlockType {
 			BlockType::Lantern => "Lantern".into(),
 			BlockType::Aetherlamp => "Aetherlamp".into(),
 			BlockType::MastersSigil => "Master's Sigil".into(),
+			BlockType::MinersCrest => "Miner's Crest".into(),
+			BlockType::AlchemistsCrest => "Alchemist's Crest".into(),
+			BlockType::ArcanistsCrest => "Arcanist's Crest".into(),
 			BlockType::Wardglass => "Wardglass".into(),
 			_ => "?".into(),
 		}
@@ -1183,7 +1193,8 @@ impl BlockType {
 	/// wrote hands back what they put in it — which is what shuts the craft-and-extract loop on a
 	/// substance the world is made of. `edited` is whether that coordinate has ever been written,
 	/// read from the journal or its `EditOverlay` mirror for the same anti-dupe reason
-	/// [`crate::worldgen::nodes::revealed`] does. `alchemy` asks [`crate::unlock::can_craft`].
+	/// [`crate::worldgen::nodes::revealed`] does. `alchemy` asks [`crate::unlock::recipe_open`] — the
+	/// bench half alone, since nothing a crest gates is ever dug.
 	#[inline]
 	pub fn dig_credit(self, edited: bool, alchemy: u32) -> Option<BlockType> {
 		self.hardness_ticks()?;
@@ -1195,7 +1206,7 @@ impl BlockType {
 			return Some(d);
 		}
 		match p.crumbles {
-			Some(c) if !edited || !crate::unlock::can_craft(self, alchemy) => Some(c),
+			Some(c) if !edited || !crate::unlock::recipe_open(self, alchemy) => Some(c),
 			_ => Some(self),
 		}
 	}
@@ -1287,6 +1298,9 @@ impl BlockType {
 				| BlockType::EssenceSiphon
 				| BlockType::ResonantPick
 				| BlockType::MastersSigil
+				| BlockType::MinersCrest
+				| BlockType::AlchemistsCrest
+				| BlockType::ArcanistsCrest
 		)
 	}
 

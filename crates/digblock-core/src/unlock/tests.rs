@@ -555,9 +555,10 @@ fn unlock_levels_are_the_threshold_levels() {
 	assert_eq!(
 		alchemy,
 		vec![
-			5, 10, 12, 14, 15, 18, 21, 24, 27, 28, 30, 33, 36, 40, 50, 99
+			5, 10, 12, 14, 15, 18, 21, 24, 27, 28, 30, 33, 36, 40, 50, MASTERY_AT, 99
 		],
-		"the catalog tops at 50; 99 is the sigil alone — the tail is \
+		"the catalog tops at 50; the alchemist's crest crowns the content \
+			 ladder at mastery and 99 is the sigil alone — the tail is \
 			 expansion headroom. 5 and 12 carry the leystone and springstone \
 			 reveals beside their recipes; heartwood and the siphon sit at \
 			 the first level, which is never an unlock, and the old bonus \

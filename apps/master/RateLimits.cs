@@ -40,6 +40,10 @@ public static class RateLimits
     /// types (debounced).</summary>
     public const string Lookup = "lookup";
 
+    /// <summary>A trusted server reporting skill totals. Per server key; a
+    /// report rides each heartbeat, so this only catches a runaway.</summary>
+    public const string Report = "report";
+
     public static void AddDigBlockRateLimits(this IServiceCollection services)
     {
         services.AddRateLimiter(o =>
@@ -52,6 +56,7 @@ public static class RateLimits
             Fixed(o, Verify, 300, TimeSpan.FromMinutes(1), ByBearer);
             Fixed(o, Register, 60, TimeSpan.FromMinutes(5), ByAddress);
             Fixed(o, Lookup, 120, TimeSpan.FromMinutes(1), ByAddress);
+            Fixed(o, Report, 60, TimeSpan.FromMinutes(1), ByBearer);
         });
     }
 

@@ -52,6 +52,16 @@ pub struct AccountView {
 	pub name: Option<String>,
 }
 
+/// Where the signed-in account stands on one of the master's boards (`GET /api/hiscores/me`):
+/// `skill` is `None` for the overall board. A board the account is not on sends no row.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct RankView {
+	pub skill: Option<digblock_core::skills::Skill>,
+	pub rank: u32,
+	pub level: u32,
+	pub xp: u64,
+}
+
 /// Pages [`Menu::test_open`] can jump to.
 #[cfg(test)]
 #[derive(Clone, Copy)]
@@ -82,6 +92,8 @@ pub enum MenuCommand {
 		name: String,
 	},
 	SignOut,
+	/// Where the signed-in account ranks, for the character screen; answered with `Ranks`.
+	FetchRanks,
 }
 
 /// Launcher → menu results.
@@ -113,6 +125,9 @@ pub enum MenuResponse {
 	},
 	/// Answer to `SetName`: the claimed name, or why not.
 	NameSet(Result<String, String>),
+	/// Answer to `FetchRanks`. The ENGINE consumes this before the menu
+	/// sees it: the board is the character screen's, not a menu page's.
+	Ranks(Result<Vec<RankView>, String>),
 }
 
 /// The channel pair the launcher hands the engine. Keeps HTTP entirely out
@@ -787,6 +802,7 @@ impl Menu {
 				available,
 				reason,
 			} => self.name_answered(name, available, reason),
+			MenuResponse::Ranks(_) => {}
 			MenuResponse::NameSet(result) => {
 				let Some(Screen::ChooseName(n)) = &mut self.screen else {
 					return None;

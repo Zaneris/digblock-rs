@@ -3,11 +3,12 @@ using System.Text;
 
 namespace DigBlock.Master.Auth;
 
-/// <summary>The master's only HTML. Two pages: pick a provider, and say what went wrong.
-/// Everything else a player sees lives in the game client — there is no account website,
-/// deliberately, so the browser's whole job is the provider round trip and then getting out of the
-/// way. Self-contained by construction: inline styles, no scripts, no fonts, nothing fetched (the
-/// logomarks are inline SVG): a sign-in page needing a CDN breaks when the CDN does.</summary>
+/// <summary>The sign-in pages: pick a provider, and say what went wrong. Everything else a
+/// player DOES lives in the game client — there is no account website, deliberately, so the
+/// browser's whole job is the provider round trip and then getting out of the way; the one other
+/// page, the hiscores board (<see cref="Hiscores.HiscorePage"/>), is read-only and shares this
+/// shell. Self-contained by construction: inline styles, no scripts, no fonts, nothing fetched
+/// (the logomarks are inline SVG): a sign-in page needing a CDN breaks when the CDN does.</summary>
 public static class Pages
 {
     public static string Chooser(IReadOnlyList<(string Slug, string Label)> providers, string handle) =>
@@ -70,7 +71,10 @@ public static class Pages
     // The .google/.facebook/.microsoft metrics and palettes come from those providers' brand kits,
     // so the three buttons do NOT agree on height or radius — the correct outcome, not a layout
     // bug to tidy. Ours: the kit's LIGHT-button border, the dark one being invisible on this page.
-    private static string Shell(string title, string body) => $$"""
+    /// <summary>The page frame every master page shares. <paramref name="extraStyle"/> is a
+    /// page's own rules, appended after the shell's; <paramref name="wide"/> opens the column
+    /// for a table, the sign-in card being deliberately narrow.</summary>
+    public static string Shell(string title, string body, string extraStyle = "", bool wide = false) => $$"""
         <!doctype html>
         <html lang="en">
         <head>
@@ -83,7 +87,7 @@ public static class Pages
         body { margin: 0; min-height: 100vh; display: grid; place-items: center;
                background: #101010; color: #f0f0f0;
                font: 16px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
-        main { width: min(28rem, calc(100vw - 3rem)); padding: 2rem;
+        main { width: min({{(wide ? "40rem" : "28rem")}}, calc(100vw - 3rem)); padding: 2rem;
                background: #1b1b1b; border: 1px solid #2e2e2e; border-radius: 12px; }
         h1 { margin: 0 0 1rem; font-size: 1.35rem; }
         p { margin: 0 0 1rem; color: #c8c8c8; }
@@ -110,6 +114,7 @@ public static class Pages
         .btn.microsoft:hover { background: #3B3B3B; }
         .btn.microsoft svg { width: 21px; height: 21px; }
         .fine { margin: 1.25rem 0 0; font-size: .875rem; color: #909090; }
+        {{extraStyle}}
         </style>
         </head>
         <body><main><h1>{{Esc(title)}}</h1>{{body}}</main></body>

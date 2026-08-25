@@ -1,4 +1,14 @@
 use super::*;
+use crate::skills::{Skill, SkillSet};
+
+/// A set at `level` in every skill, so a gate on any of them reads the one figure.
+fn at(level: u32) -> SkillSet {
+	let mut s = SkillSet::default();
+	for skill in Skill::ALL {
+		s.set_total(skill, crate::skills::total_xp_for(level));
+	}
+	s
+}
 
 /// A price naming one key twice costs the SUM of its lines. Checking
 /// them one at a time against the whole balance is what
@@ -172,7 +182,7 @@ fn alchemy_craft_scales_with_level() {
 			item: BlockType::LumberDoor,
 			count: 1
 		},
-		99
+		&at(99)
 	));
 	assert!(apply_alchemy(
 		&mut inv,
@@ -180,7 +190,7 @@ fn alchemy_craft_scales_with_level() {
 			item: BlockType::WoodStairs,
 			count: 2
 		},
-		99
+		&at(99)
 	));
 	assert_eq!(inv.count(BlockType::LumberDoor), 2, "one cube, two leaves");
 	assert_eq!(inv.count(BlockType::WoodStairs), 2);
@@ -217,7 +227,7 @@ fn alchemy_craft_scales_with_level() {
 				item: BlockType::WoodSlab,
 				count: 1
 			},
-			1
+			&at(1)
 		),
 		"a novice's markup puts the catalyst out of reach"
 	);
@@ -228,7 +238,7 @@ fn alchemy_craft_scales_with_level() {
 			item: BlockType::WoodSlab,
 			count: 1
 		},
-		1
+		&at(1)
 	));
 	assert_eq!(low.count(BlockType::WoodSlab), 3, "a cube cuts three slabs");
 	assert_eq!(low.count(BlockType::Wood), 0);
@@ -242,7 +252,7 @@ fn alchemy_craft_scales_with_level() {
 			item: BlockType::StoneStairs,
 			count: 1
 		},
-		99
+		&at(99)
 	));
 	assert!(
 		!apply_alchemy(
@@ -251,7 +261,7 @@ fn alchemy_craft_scales_with_level() {
 				item: BlockType::Stone,
 				count: 1
 			},
-			14
+			&at(14)
 		),
 		"clean Stone is locked below the mason's unlock"
 	);
@@ -261,7 +271,7 @@ fn alchemy_craft_scales_with_level() {
 			item: BlockType::LumberDoor,
 			count: 0
 		},
-		99
+		&at(99)
 	));
 	assert!(!apply_alchemy(
 		&mut inv,
@@ -269,7 +279,7 @@ fn alchemy_craft_scales_with_level() {
 			item: BlockType::LumberDoor,
 			count: ALCHEMY_MAX_COUNT + 1
 		},
-		99
+		&at(99)
 	));
 	assert_eq!(inv, before, "failed ops never mutate");
 }
@@ -292,7 +302,7 @@ fn a_vessel_is_crafted_from_feedstock_alone() {
 				item: BlockType::EssenceSiphon,
 				count: 1
 			},
-			1
+			&at(1)
 		),
 		"one log short is short"
 	);
@@ -304,7 +314,7 @@ fn a_vessel_is_crafted_from_feedstock_alone() {
 			item: BlockType::EssenceSiphon,
 			count: 1
 		},
-		1
+		&at(1)
 	));
 	assert_eq!(
 		inv.count(BlockType::EssenceSiphon),
@@ -332,7 +342,7 @@ fn multi_essence_crafts_never_half_charge() {
 			item: BlockType::Torch,
 			count: 1
 		},
-		99
+		&at(99)
 	));
 	assert_eq!(inv, before, "no partial debit — the timber included");
 	inv.add_sub(Essence::Terra, 5);
@@ -342,7 +352,7 @@ fn multi_essence_crafts_never_half_charge() {
 			item: BlockType::Torch,
 			count: 1
 		},
-		99
+		&at(99)
 	));
 	assert_eq!(inv.count(BlockType::Torch), 1);
 	assert_eq!(inv.count(BlockType::Wood), 0, "the stick is spent");
@@ -374,7 +384,7 @@ fn the_bucket_charge_is_never_crafted() {
 			item: BlockType::Water,
 			count: 1
 		},
-		crate::skills::MAX_LEVEL
+		&at(crate::skills::MAX_LEVEL)
 	));
 	assert_eq!(inv, before, "nothing paid, nothing filled");
 }
@@ -401,7 +411,7 @@ fn a_tool_is_crafted_once_and_never_paid_for_twice() {
 				item: pick,
 				count: 10
 			},
-			99
+			&at(99)
 		),
 		"nine of the ten would vanish into the cap"
 	);
@@ -414,7 +424,7 @@ fn a_tool_is_crafted_once_and_never_paid_for_twice() {
 			item: pick,
 			count: 1
 		},
-		99
+		&at(99)
 	));
 	assert_eq!(inv.count(pick), 1);
 	let owned = held(&inv);
@@ -427,7 +437,7 @@ fn a_tool_is_crafted_once_and_never_paid_for_twice() {
 				item: pick,
 				count: 1
 			},
-			99
+			&at(99)
 		),
 		"a tool already owned has nowhere to go"
 	);

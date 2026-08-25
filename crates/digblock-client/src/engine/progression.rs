@@ -64,8 +64,7 @@ impl Engine {
 		match self.session.client.as_mut() {
 			Some(net) if net.ready() => net.send_alchemy(wire_op),
 			_ => {
-				let level = self.skills.level(digblock_core::skills::Skill::Alchemy);
-				if apply_alchemy(&mut self.inventory, core_op, level) {
+				if apply_alchemy(&mut self.inventory, core_op, &self.skills) {
 					self.hotbar.auto_assign(item);
 					self.award_xp_offline(
 						digblock_core::skills::Skill::Alchemy,

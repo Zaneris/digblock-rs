@@ -46,6 +46,23 @@ impl MasterProc {
 	/// container per test with the real QUIC probe on (short timeout so
 	/// probe-failure tests stay fast).
 	fn spawn() -> Self {
+		Self::spawn_with(&[])
+	}
+
+	/// The address every test server registers from, as the master lists
+	/// it — what a trusted-list entry has to name.
+	const SERVER_HOST: &str = "127.0.0.1";
+
+	/// As `spawn`, with this test server's address on the master's trusted
+	/// list, so its skill reports are believed.
+	fn spawn_trusting() -> Self {
+		Self::spawn_with(&[&format!(
+			"Master__Hiscores__TrustedServers__0={}",
+			Self::SERVER_HOST
+		)])
+	}
+
+	fn spawn_with(extra_env: &[&str]) -> Self {
 		static BUILD: std::sync::Once = std::sync::Once::new();
 		static NEXT: AtomicU32 = AtomicU32::new(0);
 		BUILD.call_once(|| {
@@ -98,8 +115,9 @@ impl MasterProc {
 				// address it was handed.
 				"-e",
 				&format!("Master__Dev__ProbeHostOverride={HOST_FROM_CONTAINER}"),
-				MASTER_IMAGE,
 			])
+			.args(extra_env.iter().flat_map(|e| ["-e", e]))
+			.arg(MASTER_IMAGE)
 			.stdout(std::process::Stdio::null())
 			.status()
 			.expect("docker run master");
@@ -317,7 +335,7 @@ impl TestServer {
 		MasterConfig {
 			url: master_url.to_string(),
 			server_name: name.to_string(),
-			advertise_host: Some("127.0.0.1".into()),
+			advertise_host: Some(MasterProc::SERVER_HOST.into()),
 			server_key: None,
 			advertise_port: self.port,
 		}
@@ -1587,4 +1605,162 @@ fn a_negative_player_count_cannot_break_the_server_list() {
 		"clamped at the master, not passed through: {raw}"
 	);
 	assert_eq!(entry["maxPlayers"].as_i64(), Some(0), "{raw}");
+}
+
+// ---- hiscores --------------------------------------------------------------
+
+/// A skill set at `level` in one skill, the way a server would report it.
+fn skills_at(skill: digblock_core::skills::Skill, level: u32) -> digblock_core::skills::SkillSet {
+	let mut s = digblock_core::skills::SkillSet::default();
+	s.set_total(skill, digblock_core::skills::total_xp_for(level));
+	s
+}
+
+fn get_json(url: &str, bearer: Option<&str>) -> (u16, serde_json::Value) {
+	let agent = ureq::Agent::new_with_config(
+		ureq::Agent::config_builder()
+			.http_status_as_error(false)
+			.build(),
+	);
+	let mut req = agent.get(url);
+	if let Some(b) = bearer {
+		req = req.header("authorization", &format!("Bearer {b}"));
+	}
+	let mut res = req.call().unwrap();
+	let status = res.status().as_u16();
+	let body = res
+		.body_mut()
+		.read_json()
+		.unwrap_or(serde_json::Value::Null);
+	(status, body)
+}
+
+/// The whole board, end to end: a trusted server's report lands, is ranked by the game's own
+/// curve, names the account the master holds the name for, answers the account's own rank, and
+/// renders as a page — and a later report can only RAISE a total, never rewind it.
+#[test]
+fn a_trusted_servers_skill_report_reaches_the_board() {
+	use digblock_core::skills::{Skill, level_for_xp, total_xp_for};
+	use digblock_net::protocol::AccountId;
+	use digblock_server::master::{ReportOutcome, report_skills};
+	let master = MasterProc::spawn_trusting();
+	let server = TestServer::start("board", &master.url, true);
+	let reg = server.master_state.registration().expect("registered");
+	assert!(
+		reg.reports_skills,
+		"the master's trusted list names this address, so registration says so"
+	);
+	let (session_a, id_a, name_a) = dev_sign_in(&master.url, "boardA");
+	let (_, id_b, name_b) = dev_sign_in(&master.url, "boardB");
+	let (a, b) = (
+		AccountId::parse(&id_a).unwrap(),
+		AccountId::parse(&id_b).unwrap(),
+	);
+	let rows = vec![
+		(a, skills_at(Skill::Mining, 30)),
+		(b, skills_at(Skill::Mining, 40)),
+	];
+	assert_eq!(
+		report_skills(&master.url, &reg, &rows).unwrap(),
+		ReportOutcome::Accepted
+	);
+
+	let (status, board) = get_json(&format!("{}/api/hiscores?skill=mining", master.url), None);
+	assert_eq!(status, 200);
+	assert_eq!(board["total"], 2);
+	let top = &board["rows"][0];
+	assert_eq!(top["rank"], 1);
+	assert_eq!(top["displayName"].as_str(), name_b.as_deref());
+	assert_eq!(top["level"], 40);
+	assert_eq!(top["xp"], total_xp_for(40));
+	assert_eq!(board["rows"][1]["displayName"].as_str(), name_a.as_deref());
+	// The overall board sums levels: two unreported skills sit at the
+	// first level each, exactly as the game reads an empty total.
+	let (_, overall) = get_json(&format!("{}/api/hiscores", master.url), None);
+	assert_eq!(overall["rows"][0]["level"], 40 + 1 + 1);
+	assert_eq!(overall["rows"][0]["xp"], total_xp_for(40));
+
+	let (status, me) = get_json(&format!("{}/api/hiscores/me", master.url), Some(&session_a));
+	assert_eq!(status, 200);
+	let ranks = me["ranks"].as_array().unwrap();
+	let mining = ranks
+		.iter()
+		.find(|r| r["skill"] == "mining")
+		.expect("a mining rank");
+	assert_eq!(mining["rank"], 2);
+	assert_eq!(mining["level"], level_for_xp(total_xp_for(30)));
+	assert!(
+		ranks.iter().all(|r| r["skill"] != "alchemy"),
+		"a skill never reported is absent, not ranked at zero"
+	);
+	let (status, _) = get_json(&format!("{}/api/hiscores/me", master.url), None);
+	assert_eq!(status, 401, "your own rank needs your session");
+
+	// Monotone: a stale, lower total is ignored; a higher one lands.
+	let rows = vec![(b, skills_at(Skill::Mining, 20))];
+	assert_eq!(
+		report_skills(&master.url, &reg, &rows).unwrap(),
+		ReportOutcome::Accepted
+	);
+	let (_, board) = get_json(&format!("{}/api/hiscores?skill=mining", master.url), None);
+	assert_eq!(
+		board["rows"][0]["level"], 40,
+		"a report cannot rewind a total"
+	);
+	let rows = vec![(a, skills_at(Skill::Mining, 45))];
+	report_skills(&master.url, &reg, &rows).unwrap();
+	let (_, board) = get_json(&format!("{}/api/hiscores?skill=mining", master.url), None);
+	assert_eq!(board["rows"][0]["displayName"].as_str(), name_a.as_deref());
+
+	// The page renders the same board, script-free.
+	let mut res = ureq::get(format!("{}/hiscores?skill=mining", master.url))
+		.call()
+		.unwrap();
+	let html = res.body_mut().read_to_string().unwrap();
+	assert!(html.contains(name_a.as_deref().unwrap()));
+	assert!(html.contains(name_b.as_deref().unwrap()));
+	assert!(!html.contains("<script"), "the page needs no script");
+
+	// An unknown skill index refuses the whole batch, so the roster is
+	// extended on both ends or neither.
+	let res = ureq::Agent::new_with_config(
+		ureq::Agent::config_builder()
+			.http_status_as_error(false)
+			.build(),
+	)
+	.post(format!(
+		"{}/api/servers/{}/skills",
+		master.url, reg.server_id
+	))
+	.header("authorization", &format!("Bearer {}", reg.server_key))
+	.send_json(serde_json::json!({
+		"players": [{ "accountId": id_a, "skills": [{ "skill": 200, "xp": 1 }] }]
+	}))
+	.unwrap();
+	assert_eq!(res.status().as_u16(), 400);
+}
+
+/// A server the master does not list is told so at registration, and a
+/// report from it — should one ever be sent — is refused rather than
+/// quietly believed.
+#[test]
+fn an_untrusted_servers_skill_report_is_refused() {
+	use digblock_core::skills::Skill;
+	use digblock_net::protocol::AccountId;
+	use digblock_server::master::{ReportOutcome, report_skills};
+	let master = MasterProc::spawn();
+	let server = TestServer::start("unboard", &master.url, true);
+	let reg = server.master_state.registration().expect("registered");
+	assert!(!reg.reports_skills);
+	let (_, id, _) = dev_sign_in(&master.url, "unboardA");
+	let rows = vec![(AccountId::parse(&id).unwrap(), skills_at(Skill::Mining, 30))];
+	assert_eq!(
+		report_skills(&master.url, &reg, &rows).unwrap(),
+		ReportOutcome::Refused
+	);
+	let (_, board) = get_json(&format!("{}/api/hiscores?skill=mining", master.url), None);
+	assert_eq!(
+		board["total"], 0,
+		"nothing an untrusted server says is ranked"
+	);
 }

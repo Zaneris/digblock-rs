@@ -197,6 +197,13 @@ pub fn functional_ideal(b: BlockType) -> Option<&'static [(Essence, u32)]> {
 		B::Lantern => &[(E::Ferrum, 8), (E::Terra, 6)],
 		B::Aetherlamp => &[(E::Ferrum, 12), (E::Aether, 3)],
 		B::MastersSigil => &[(E::Aether, 99)],
+		// The crests: each priced in the essences ITS skill draws, led by
+		// the skill's emblem (`Skill::emblem`), so a crest is paid for by
+		// the ladder it marks. One-offs like the sigil, so the figures are
+		// trophies rather than sinks.
+		B::MinersCrest => &[(E::Ferrum, 120), (E::Aether, 6)],
+		B::AlchemistsCrest => &[(E::Vitae, 90), (E::Terra, 60), (E::Unda, 30)],
+		B::ArcanistsCrest => &[(E::Unda, 120), (E::Aether, 6)],
 		// Furniture is a timber feedstock and a living catalyst — chosen,
 		// not measured: a chair is mostly air and still costs a chair.
 		B::Chair => &[(E::Vitae, 2)],
@@ -376,7 +383,7 @@ fn costliest_op_ticks(level: u32) -> u32 {
 			.map(|l| {
 				BlockType::ALL
 					.into_iter()
-					.filter(|&b| crate::unlock::can_craft(b, l))
+					.filter(|&b| crate::unlock::recipe_open(b, l))
 					.map(|b| craft_pace_ticks(b, l))
 					.max()
 					.unwrap_or(0)

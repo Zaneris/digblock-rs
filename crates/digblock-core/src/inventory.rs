@@ -253,19 +253,20 @@ fn totals<K: Copy + PartialEq>(lines: impl IntoIterator<Item = (K, u32)>) -> Vec
 }
 
 /// THE alchemy rule, shared verbatim by the server's validation and the offline engine
-/// (single-player must match multiplayer bit-for-bit). `level` is the actor's Alchemy level —
-/// costs key on it ([`crate::alchemy`]), and so does whether the op is open at all
-/// ([`crate::unlock`]). Returns false — inventory untouched — on any invalid, locked or
-/// unaffordable op.
+/// (single-player must match multiplayer bit-for-bit). `skills` is the actor's whole set: costs
+/// key on the Alchemy level ([`crate::alchemy`]), and whether the op is open at all
+/// ([`crate::unlock::can_craft`]) may ask another skill. Returns false — inventory untouched —
+/// on any invalid, locked or unaffordable op.
 #[must_use]
-pub fn apply_alchemy(inv: &mut Inventory, op: AlchemyOp, level: u32) -> bool {
+pub fn apply_alchemy(inv: &mut Inventory, op: AlchemyOp, skills: &crate::skills::SkillSet) -> bool {
 	use crate::{alchemy, unlock};
+	let level = skills.level(crate::skills::Skill::Alchemy);
 	match op {
 		AlchemyOp::Craft { item, count } => {
 			if !(1..=ALCHEMY_MAX_COUNT).contains(&count) {
 				return false;
 			}
-			if !unlock::can_craft(item, level) {
+			if !unlock::can_craft(item, skills) {
 				return false;
 			}
 			let ideal = alchemy::craft_ideal(item).expect("unlock implies a recipe");

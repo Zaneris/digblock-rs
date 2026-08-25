@@ -1055,7 +1055,7 @@ impl Sim {
 		// borrow ends, since the broadcast walks every client.
 		let mut crossed = None;
 		if let Some(core_op) = core_op
-			&& apply_alchemy(&mut client.inventory, core_op, level)
+			&& apply_alchemy(&mut client.inventory, core_op, &client.skills)
 		{
 			// Mirror the client's auto-assign of freshly crafted items
 			// (it reconciles on the InventoryFull rebase below).
