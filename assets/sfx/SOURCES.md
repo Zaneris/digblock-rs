@@ -162,10 +162,11 @@ drifted from its output says so; the older entries pin neither, and reproduce th
   oggenc -q 3 -o splash.ogg splash.wav
   ```
 
-- `ward_close.ogg` — the Ward SEALING, 2.0 s one-shot, heard flat by the caster and placed at the head for everyone
-  else. The climb itself has no recording: the glass rises through the cast channel, under the channel's own loop, and
-  this is the crown cell landing — a C-major bell chord (C6 G6 C7 E7) with two inharmonic partials for the glass, a
-  short high-passed noise "tss", and a soft 55 Hz thump underneath for weight, all decaying into silence.
+- `ward_close.ogg` — the Sphere SEALING (the file keeps the spell's old name), 2.0 s one-shot, heard flat by the caster
+  and placed at the head for everyone else. The climb itself has no recording: the glass rises through the cast channel,
+  under the channel's own loop, and this is the crown cell landing — a C-major bell chord (C6 G6 C7 E7) with two
+  inharmonic partials for the glass, a short high-passed noise "tss", and a soft 55 Hz thump underneath for weight, all
+  decaying into silence.
 
   ```sh
   ffmpeg -f lavfi -i "aevalsrc=exprs='\

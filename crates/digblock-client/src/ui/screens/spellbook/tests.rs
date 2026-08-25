@@ -139,7 +139,7 @@ fn ghost_texts(dl: &DrawList) -> Vec<String> {
 /// number beside it reads short exactly while the purse cannot cover it.
 #[test]
 fn a_fare_is_a_chip_the_purse_answers_for() {
-	let level = digblock_core::unlock::WARD_AT;
+	let level = digblock_core::unlock::SPHERE_AT;
 	let mut poor = rig_at(level, |_| {});
 	let dl = build(&mut poor);
 	let icons = essence_icons(&dl);
@@ -185,7 +185,7 @@ fn a_fare_is_a_chip_the_purse_answers_for() {
 /// no fixture behind it, so neither screen sweep ever saw one.
 #[test]
 fn hovering_a_fare_names_its_essence() {
-	let mut r = rig_at(digblock_core::unlock::WARD_AT, |inv| {
+	let mut r = rig_at(digblock_core::unlock::SPHERE_AT, |inv| {
 		for e in Essence::ALL {
 			inv.add_sub(e, 9_999);
 		}
@@ -218,7 +218,7 @@ fn hovering_a_fare_names_its_essence() {
 /// two states.
 #[test]
 fn the_hover_wash_sits_under_the_fare_icon() {
-	let mut r = rig_at(digblock_core::unlock::WARD_AT, |inv| {
+	let mut r = rig_at(digblock_core::unlock::SPHERE_AT, |inv| {
 		for e in Essence::ALL {
 			inv.add_sub(e, 9_999);
 		}
@@ -254,7 +254,7 @@ fn the_hover_wash_sits_under_the_fare_icon() {
 /// price into a dead patch over a castable spell.
 #[test]
 fn clicking_a_fare_casts_its_row() {
-	let mut r = rig_at(digblock_core::unlock::WARD_AT, |inv| {
+	let mut r = rig_at(digblock_core::unlock::SPHERE_AT, |inv| {
 		for e in Essence::ALL {
 			inv.add_sub(e, 9_999);
 		}

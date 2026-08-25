@@ -211,8 +211,8 @@ fn arcana_teasers() -> Vec<(u32, &'static str)> {
 		(unlock::KINDLE_AT, "kindle — conjured light in the world"),
 		(port_at(K::Forest), "the forest waystone"),
 		(
-			unlock::WARD_AT,
-			"the ward — a sphere of glass closes about you",
+			unlock::SPHERE_AT,
+			"the sphere — a shell of whatever you hold rises about you",
 		),
 		(
 			unlock::TELEPORT_SWIFT_AT,
@@ -233,8 +233,8 @@ fn arcana_teasers() -> Vec<(u32, &'static str)> {
 		),
 		(port_at(K::Taiga), "the taiga waystone"),
 		(
-			unlock::WARD_WIDE_AT,
-			"the wide ward — the glass stands further out",
+			unlock::SPHERE_WIDE_AT,
+			"the wide sphere — the shell stands further out",
 		),
 		(
 			unlock::WISP_BRIGHT_AT,
@@ -244,7 +244,10 @@ fn arcana_teasers() -> Vec<(u32, &'static str)> {
 		(port_at(K::Beach), "the shore waystone"),
 		(unlock::ARC_WIDE_AT, "the arc reaches five"),
 		(port_at(K::Mountain), "the mountain waystone"),
-		(unlock::WARD_VAST_AT, "the vast ward — further out again"),
+		(
+			unlock::SPHERE_VAST_AT,
+			"the vast sphere — further out again",
+		),
 		(unlock::KINDLE_CHEAP_AT, "kindle costs less"),
 		(unlock::TELEPORT_SWIFTER_AT, "swifter return"),
 		(

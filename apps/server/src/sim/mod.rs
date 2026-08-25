@@ -38,7 +38,7 @@ use digblock_core::player::{self, Player, PlayerIntent, PlayerState};
 use digblock_core::worldgen::{Seed, TerrainVersion};
 use digblock_net::codec;
 use digblock_net::messages::{
-	ClientMsg, InputBatch, InputTick, RejectReason, RemoteState, SelfState, ServerMsg,
+	BlockEdit, ClientMsg, InputBatch, InputTick, RejectReason, RemoteState, SelfState, ServerMsg,
 };
 use digblock_net::protocol::{
 	AccountId, CHAT_BURST, EDIT_BURST, MIN_PROTOCOL, NO_CLIENT_SEQ, PROTOCOL_VERSION, PlayerId,
@@ -295,7 +295,7 @@ struct Client {
 	edit_tokens: f32,
 	chat_tokens: f32,
 	/// The cast bucket, spent by every `Cast` ATTEMPT — refused ones
-	/// included, since validation is the expensive half: the Ward's
+	/// included, since validation is the expensive half: the Sphere's
 	/// derives a whole sphere and scans every player against it before
 	/// anything can be refused. A bucket that only charged for success
 	/// would leave that work unbounded, and the reliable stream's own
@@ -510,10 +510,10 @@ pub struct Sim {
 	/// server changes nothing about when it goes out. Not journaled: a
 	/// light is never a cell, and a restart may forget it.
 	kindled: Vec<Kindled>,
-	/// Every ward still climbing — at most one per caster. Fare paid and
+	/// Every sphere still climbing — at most one per caster. Bill paid and
 	/// plan fixed as the channel began; the climb lasts the channel and
 	/// UNWINDS if the caster breaks it, moves, or leaves.
-	closings: Vec<WardClosing>,
+	closings: Vec<SphereClosing>,
 	/// Causeway planks whose removal could not land — an unloaded column
 	/// or an unhealthy journal. Held by the SIM because the trail that
 	/// knew about them is already gone with its caster, and this is the
@@ -523,32 +523,80 @@ pub struct Sim {
 	owed_planks: std::collections::VecDeque<digblock_core::causeway::Cell>,
 }
 
-/// One ward climbing about a channelling caster: the cells still to land, who is paying, where
-/// they stood when it began (a step away breaks the channel — the client's contract, and the
-/// server holds its own copy), and the fare to hand back on an unwind. `plan_len` and `span` are
-/// here because the wire carries the climb's PROGRESS rather than its cells: every client
-/// re-derives the plan from `head` and `radius`, so how far the sphere got is a prefix length.
-struct WardClosing {
+/// One sphere climbing about a channelling caster: the cells still to land, who is paying, where
+/// they stood when it began (a step away breaks the channel, the client's contract), and the bill.
+/// `plan_len` and `span` are here because the wire carries the climb's PROGRESS, not its cells:
+/// every client re-derives the plan from `head`, `radius` and `block`. The blocks are paid whole as
+/// the channel begins and settled at its end: `debited` less `placed` is what the climb declined.
+struct SphereClosing {
 	conn_id: u64,
 	by: PlayerId,
 	head: (i32, i32, i32),
 	radius: i32,
 	from: Vec3,
+	block: digblock_core::block::BlockType,
 	essence: digblock_core::block::Essence,
 	fare: u32,
+	/// The wisp the seal lights, priced as the channel began.
+	wisp: (digblock_core::block::Essence, u32),
+	debited: u32,
+	placed: u32,
 	plan_len: usize,
 	span: u32,
-	closing: digblock_core::ward::Closing,
+	closing: digblock_core::sphere::Closing,
 }
 
-impl WardClosing {
+impl SphereClosing {
 	/// How much of the plan has been handed to the world: a PREFIX
-	/// length in `ward::plan`'s own order, which is the one currency both
+	/// length in `sphere::plan`'s own order, which is the one currency both
 	/// ends share. Not the number of cells written — the two differ
 	/// wherever a landing was declined, and a client cannot derive that.
 	fn landed(&self) -> u32 {
-		let n = digblock_core::ward::landed_by(self.plan_len, self.closing.step(), self.span);
+		let n = digblock_core::sphere::landed_by(self.plan_len, self.closing.step(), self.span);
 		u32::try_from(n).unwrap_or(u32::MAX)
+	}
+
+	/// The cell the shell is built of.
+	fn wall(&self) -> u16 {
+		digblock_core::chunk::make_cell(self.block, 0)
+	}
+
+	/// Both fares, as one bill.
+	fn fares(&self) -> [(digblock_core::block::Essence, u32); 2] {
+		[(self.essence, self.fare), self.wisp]
+	}
+}
+
+/// Every pane of conjured glass in the record is an orphan at boot: the Sphere used to be built of
+/// it and is not any more, and a road's planks come up before their caster is gone — so nothing
+/// legitimately holds one. Each is journaled back to air as an ordinary server edit, which is what
+/// a joiner, a resync and an evicted column read; the store holds nothing yet, so nothing else
+/// needs correcting. Runs every boot; one pass over the index once the record is clean.
+fn sweep_conjured_glass(journal: &mut Journal) {
+	use digblock_core::block::BlockType;
+	use digblock_core::chunk::cell_id;
+	let panes: Vec<(i32, i32, i32)> = journal
+		.index
+		.iter_edits()
+		.filter(|&(_, v)| BlockType::from_id(cell_id(v)).is_conjured())
+		.map(|(c, _)| c)
+		.collect();
+	for &(x, y, z) in &panes {
+		journal.append(
+			BlockEdit {
+				x,
+				y,
+				z,
+				block: BlockType::Air as u16,
+			},
+			SERVER_ID,
+		);
+	}
+	if !panes.is_empty() {
+		log::info!(
+			"swept {} panes of conjured glass out of the record",
+			panes.len()
+		);
 	}
 }
 
@@ -605,7 +653,8 @@ impl Sim {
 		store: ChunkStore,
 		spawn: Vec3,
 	) -> std::io::Result<Self> {
-		let journal = Journal::open(data_dir, seed)?;
+		let mut journal = Journal::open(data_dir, seed)?;
+		sweep_conjured_glass(&mut journal);
 		let player_store = PlayerStore::open(data_dir)?;
 		let ban_store = BanStore::open(data_dir)?;
 		let spawn_store = SpawnStore::open(data_dir)?;
@@ -968,7 +1017,7 @@ impl Sim {
 				// position when they run anyway).
 				ClientMsg::ReturnToSpawn => self.handle_return_to_spawn(conn_id),
 				ClientMsg::Cast(kind) => self.handle_cast(conn_id, kind),
-				ClientMsg::CastBreak => self.break_ward(conn_id),
+				ClientMsg::CastBreak => self.break_sphere(conn_id),
 				ClientMsg::CausewayEnd => self.lift_causeway(conn_id),
 				// Inline like chat: sync radius is read fresh each tick, so the
 				// change applies from the next sync pass.

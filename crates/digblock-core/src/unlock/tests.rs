@@ -576,27 +576,27 @@ fn unlock_levels_are_the_threshold_levels() {
 			6,
 			KINDLE_AT,
 			14,
-			WARD_AT,
+			SPHERE_AT,
 			TELEPORT_SWIFT_AT,
 			CAUSEWAY_AT,
 			22,
 			ARC_AT,
 			CHANNEL_QUICK_AT,
 			34,
-			WARD_WIDE_AT,
+			SPHERE_WIDE_AT,
 			WISP_BRIGHT_AT,
 			CAUSEWAY_LONG_AT,
 			42,
 			ARC_WIDE_AT,
 			50,
-			WARD_VAST_AT,
+			SPHERE_VAST_AT,
 			KINDLE_CHEAP_AT,
 			TELEPORT_SWIFTER_AT,
 			CAUSEWAY_VAST_AT,
 			60
 		],
 		"seven ports rising by remoteness, the two swift-return rungs, the \
-			 two glass spells alternating — a ward's sphere, then a \
+			 two cell-writing spells alternating — a sphere, then a \
 			 causeway's road — and the channel quickening between them; the \
 			 far cold port crowns the content top"
 	);
@@ -684,33 +684,33 @@ fn the_port_tables_are_twins_and_the_fare_is_payable() {
 	}
 }
 
-/// The ward's fare and its radius are one rung: the price steps exactly
+/// The sphere's fare and its radius are one rung: the price steps exactly
 /// where the sphere widens, in the same essence, doubling each time — a
-/// wider ward at the narrow fare would be a free upgrade. The first
+/// wider sphere at the narrow fare would be a free upgrade. The first
 /// rank is payable when it opens, in the essence that names it.
 #[test]
-fn the_ward_fare_doubles_with_its_radius() {
-	use crate::alchemy::ward_price;
+fn the_sphere_fare_doubles_with_its_radius() {
+	use crate::alchemy::sphere_price;
 	let mut steps = 0;
 	for l in 2..=MAX_LEVEL {
-		let (e0, f0) = ward_price(l - 1);
-		let (e1, f1) = ward_price(l);
+		let (e0, f0) = sphere_price(l - 1);
+		let (e1, f1) = sphere_price(l);
 		assert_eq!(e0, e1, "one essence at every rung");
-		let widens = ward_radius(l) != ward_radius(l - 1);
-		assert_eq!(f0 != f1, widens && l != WARD_AT, "level {l}");
-		if widens && l != WARD_AT {
+		let widens = sphere_radius(l) != sphere_radius(l - 1);
+		assert_eq!(f0 != f1, widens && l != SPHERE_AT, "level {l}");
+		if widens && l != SPHERE_AT {
 			assert_eq!(f1, f0 * 2, "level {l}");
 			steps += 1;
 		}
-		if l == WARD_AT {
-			assert_eq!(ward_radius(l - 1), 0, "nothing below the first rank");
+		if l == SPHERE_AT {
+			assert_eq!(sphere_radius(l - 1), 0, "nothing below the first rank");
 		}
 	}
 	assert!(steps > 0, "no step at all — the sweep proved nothing");
-	let (e, _) = ward_price(WARD_AT);
+	let (e, _) = sphere_price(SPHERE_AT);
 	assert!(
-		essence_findable_at(e).expect("a faucet") <= WARD_AT,
-		"the ward must be payable when it opens"
+		essence_findable_at(e).expect("a faucet") <= SPHERE_AT,
+		"the sphere must be payable when it opens"
 	);
 }
 

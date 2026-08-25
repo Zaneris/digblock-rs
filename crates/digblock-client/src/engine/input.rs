@@ -309,9 +309,9 @@ impl Engine {
 							self.ui.spellbook.close();
 							self.start_cast(CastTarget::Kindle);
 						}
-						Some(SpellAction::CastWard) => {
+						Some(SpellAction::CastSphere) => {
 							self.ui.spellbook.close();
-							self.start_cast(CastTarget::Ward);
+							self.start_cast(CastTarget::Sphere);
 						}
 						Some(SpellAction::ToggleCauseway) => {
 							self.ui.spellbook.close();

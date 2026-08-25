@@ -145,14 +145,14 @@ For `just run`:
   direction that catches one. `DIG_VAULT` (sealed stone vault + torch; `DIG_VAULT_DARK=1` drops the torch and implies
   it), `DIG_ROOF`, `DIG_TUNNEL` (sealed bore past the cascades' coverage — the unproven-daylight capture; pair with a
   low `--pos`, and the same run above `SEA_LEVEL` is the geometry-identical control), `DIG_DIVE`, `DIG_SHAPES`,
-  `DIG_RIVER` (flooded basin + `--pitch -35`, the only pose with a SHADED water surface on screen), `DIG_WARD=<radius>`
-  (a ward closing about spawn with no cast behind it, at the cast's own climb; `DIG_WARD_AGE=<secs>` holds the climb
-  that far in), `DIG_PLAYERBOX=<item>` (a fake remote holding a HELD-ITEM WIRE id, so the scene walks the real
-  `held_icon` decode), `DIG_MINING=<level>`, `DIG_TORCHES=<n>` / `DIG_TORCHES_FAR=<n>` / `DIG_TORCHES_WALL=1`,
-  `DIG_CONFETTI=1`, `DIG_CRACK=<percent>`, `DIG_SIPHON=<percent>` (rides `DIG_ORE`, fatal without it), `DIG_DOORS=1`,
-  `DIG_CAST=<percent>` (poses the cast channel's aura at that progress with no hold behind it), `DIG_ORE=<tier 1..=4>`
-  (hollows a chamber around the nearest deposit and grants its level — the carve must not touch the vein, or the
-  anti-dupe deletes what is being photographed), `DIG_NODE=<heartwood|leystone|springstone>`,
+  `DIG_RIVER` (flooded basin + `--pitch -35`, the only pose with a SHADED water surface on screen),
+  `DIG_SPHERE=<radius>` (a glass sphere closing about spawn with no cast behind it, at the cast's own climb;
+  `DIG_SPHERE_AGE=<secs>` holds the climb that far in), `DIG_PLAYERBOX=<item>` (a fake remote holding a HELD-ITEM WIRE
+  id, so the scene walks the real `held_icon` decode), `DIG_MINING=<level>`, `DIG_TORCHES=<n>` / `DIG_TORCHES_FAR=<n>` /
+  `DIG_TORCHES_WALL=1`, `DIG_CONFETTI=1`, `DIG_CRACK=<percent>`, `DIG_SIPHON=<percent>` (rides `DIG_ORE`, fatal without
+  it), `DIG_DOORS=1`, `DIG_CAST=<percent>` (poses the cast channel's aura at that progress with no hold behind it),
+  `DIG_ORE=<tier 1..=4>` (hollows a chamber around the nearest deposit and grants its level — the carve must not touch
+  the vein, or the anti-dupe deletes what is being photographed), `DIG_NODE=<heartwood|leystone|springstone>`,
   `DIG_SCREEN=menu|inventory|inventory-hover|alchemy|alchemy-hover|transmute|transmuting|skills|spellbook|spellbook-hover|hand|bucket|bucket-full|torch|siphon|pick|sigil|crest-mining|crest-alchemy|crest-arcana`
   (the pages are input-only and otherwise invisible to headless capture; the tool names cycle the roster, and screen
   stocking grants every tool since a fresh player owns none). The table's remaining rows are levers rather than scenes —
@@ -332,15 +332,19 @@ physics contracts are documented at the code in `shapes.rs` and `player.rs`; the
 
 Three skills (Mining, Alchemy, Arcana), designed in `SKILLS-DESIGN.md` and — for Arcana — `MAGIC-DESIGN.md`. Everything
 shared lives in `digblock-core/src/skills.rs`. **A `conjured` block row (`Wardglass`) is the one diggable thing that
-credits nothing, pays no XP and claims no slot** — the Ward writes hundreds of them for one fare and the Causeway keeps
-writing them for as long as its span runs, so any of the three would make a spell a faucet; every clause of that
-sentence, diggability included, is swept by `a_conjured_row_pays_nothing_and_is_still_diggable`. The two spells that
-write it hold the SAME glass on OPPOSITE trust models, and the difference is the thing to keep straight: `ward::plan`
-derives every cell on both ends and lands all or nothing, the Arc's rule, so the wire carries no cells at all; the
-**Causeway's client NAMES each plank**, because one is owed the tick the feet leave support and a round trip is several
-ticks. What makes that safe is not the server's check but `causeway::TRAIL` — the head retires the tail, so a crafted
-client's standing footprint is a fixed few cells whatever it claims. **Do not "fix" the asymmetry by deriving the
-road**: a derived plank arrives after the fall:
+credits nothing, pays no XP and claims no slot** — the Causeway keeps writing them for as long as its span runs, so any
+of the three would make the spell a faucet; every clause of that sentence, diggability included, is swept by
+`a_conjured_row_pays_nothing_and_is_still_diggable`. The Sphere writes NO conjured row: its shell is the caster's held
+block, billed out of their inventory (`sphere::blocks_needed`, plus its fare and the wisp its seal lights) and dug back
+like any placed block, with `sphere::accepts` deciding what a shell may be built of. A server boot sweeps every standing
+pane of conjured glass out of the journal — the old Ward's spheres, a crashed road's planks — since nothing legitimately
+holds one at boot. The two cell-writing spells sit on OPPOSITE trust models, and the difference is the thing to keep
+straight: `sphere::plan` derives every cell on both ends from the head, the radius and the DECLARED slot's block, and
+lands all or nothing, the Arc's rule, so the wire carries no cells at all; the **Causeway's client NAMES each plank**,
+because one is owed the tick the feet leave support and a round trip is several ticks. What makes that safe is not the
+server's check but `causeway::TRAIL` — the head retires the tail, so a crafted client's standing footprint is a fixed
+few cells whatever it claims. **Do not "fix" the asymmetry by deriving the road**: a derived plank arrives after the
+fall:
 
 - The `Skill` enum is `repr(u8)` and **append-only** — the index is a wire/persistence format. Storage is XP-only `u64`
   totals; level is always derived. The XP curve is a **pinned integer table**, never `powf`.

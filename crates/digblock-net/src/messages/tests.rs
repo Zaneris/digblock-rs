@@ -46,6 +46,8 @@ fn round_trip_all_variants() {
 			cell: [1, -2, 3],
 			face: 5,
 		}),
+		ClientMsg::Cast(CastKind::Sphere { slot: 3 }),
+		ClientMsg::CastBreak,
 		ClientMsg::EditRequest {
 			seq: 9,
 			tick: 1250,
@@ -173,6 +175,24 @@ fn round_trip_all_variants() {
 			player: 3,
 			skill: 1,
 			level: 42,
+		},
+		ServerMsg::CastRefused {
+			reason: CastRefusal::BlocksShort,
+		},
+		ServerMsg::SphereWinding {
+			by: 3,
+			head: [1, -2, 3],
+			radius: 6,
+			span: 120,
+			block: 5,
+		},
+		ServerMsg::SphereEnded {
+			by: 3,
+			head: [1, -2, 3],
+			radius: 6,
+			landed: 77,
+			sealed: false,
+			block: 5,
 		},
 	];
 	for m in msgs {

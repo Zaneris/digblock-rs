@@ -165,7 +165,7 @@ impl Sim {
 				.min(digblock_net::protocol::CAUSEWAY_BURST);
 			// The spellbook's bucket. Refilled here with the others; spent
 			// in `handle_cast`, which is where a cast's real cost — the
-			// Ward's sphere derivation — is about to be paid.
+			// Sphere's shell derivation — is about to be paid.
 			client.cast_tokens = (client.cast_tokens
 				+ super::spawn::CAST_RATE_PER_SEC as f32 / TICK_RATE as f32)
 				.min(super::spawn::CAST_BURST);
@@ -874,8 +874,8 @@ impl Sim {
 	}
 
 	/// The durable half of [`Self::apply_write`], for cells every client DERIVES rather than being
-	/// told: journal, enroll, schedule fluid — no `EditApplied`. The Ward owns this. Both ends draw
-	/// the same sphere from the same head and radius (`ward::plan`), so a per-cell broadcast would
+	/// told: journal, enroll, schedule fluid — no `EditApplied`. The Sphere owns this. Both ends
+	/// draw the same shell from the same head, radius and block (`sphere::plan`), so a per-cell broadcast would
 	/// be redundant, and a fan-out of hundreds of frames per cast against an outbound queue whose
 	/// refusal DROPS the peer. The journal still takes every cell, which is what a joiner reads.
 	pub(super) fn journal_write(

@@ -66,15 +66,15 @@ pub const SHAPES: Knob = flag(
 	"every shaped block laid out in a row",
 );
 pub const DOORS: Knob = flag("doors", "DIG_DOORS", "doors in every state");
-pub const WARD: Knob = value(
-	"ward",
-	"DIG_WARD",
-	"a ward of <radius> closing about spawn, with no cast behind it",
+pub const SPHERE: Knob = value(
+	"sphere",
+	"DIG_SPHERE",
+	"a glass sphere of <radius> closing about spawn, with no cast behind it",
 );
-pub const WARD_AGE: Knob = value(
-	"wardage",
-	"DIG_WARD_AGE",
-	"hold the ward's climb at <secs> in (rides DIG_WARD)",
+pub const SPHERE_AGE: Knob = value(
+	"sphereage",
+	"DIG_SPHERE_AGE",
+	"hold the sphere's climb at <secs> in (rides DIG_SPHERE)",
 );
 pub const VAULT: Knob = flag("vault", "DIG_VAULT", "a sealed stone vault with a torch");
 pub const VAULT_DARK: Knob = flag(
@@ -167,8 +167,8 @@ pub const ALL: &[Knob] = &[
 	CONFETTI,
 	SHAPES,
 	DOORS,
-	WARD,
-	WARD_AGE,
+	SPHERE,
+	SPHERE_AGE,
 	VAULT,
 	VAULT_DARK,
 	ROOF,
@@ -264,22 +264,22 @@ pub fn apply(
 			.map_err(|_| format!("{} wants a level, got {v:?}", MINING.name))?;
 	}
 	config.debug_crack = percent(&CRACK)?;
-	if let Some(r) = count(&WARD)? {
+	if let Some(r) = count(&SPHERE)? {
 		if r < 1 {
 			return Err(format!(
 				"{} wants a radius of at least one, got {r}",
-				WARD.name
+				SPHERE.name
 			));
 		}
-		config.debug_ward = Some(r);
+		config.debug_sphere = Some(r);
 	}
-	if let Some(v) = get(&WARD_AGE) {
-		if config.debug_ward.is_none() {
-			return Err(format!("{} rides {}", WARD_AGE.name, WARD.name));
+	if let Some(v) = get(&SPHERE_AGE) {
+		if config.debug_sphere.is_none() {
+			return Err(format!("{} rides {}", SPHERE_AGE.name, SPHERE.name));
 		}
-		config.debug_ward_age = Some(
+		config.debug_sphere_age = Some(
 			v.parse()
-				.map_err(|_| format!("{} wants seconds, got {v:?}", WARD_AGE.name))?,
+				.map_err(|_| format!("{} wants seconds, got {v:?}", SPHERE_AGE.name))?,
 		);
 	}
 	if let Some(n) = count(&TORCHES)? {

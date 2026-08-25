@@ -1,10 +1,10 @@
 //! The Causeway: a short trail of conjured glass laid under the caster's
 //! feet the moment they cross into air, and taken up behind them once
-//! [`TRAIL`] planks stand. The glass is [`BlockType::Wardglass`], the
-//! Ward's own `conjured` row, so a plank digs to nothing and the road is
-//! never a faucet of panes.
+//! [`TRAIL`] planks stand. The glass is [`BlockType::Wardglass`], a
+//! `conjured` row, so a plank digs to nothing and the road is never a
+//! faucet of panes.
 //!
-//! Unlike the Ward, the caster's client NAMES each cell rather than both
+//! Unlike the Sphere, the caster's client NAMES each cell rather than both
 //! ends deriving it: a plank is needed the tick the feet leave support,
 //! and a round trip is several ticks. What makes that assertion safe is
 //! the trail's fixed length — every plank laid retires another, so a
@@ -16,7 +16,7 @@ use crate::block::BlockType;
 use crate::chunk::cell_id;
 use glam::Vec3;
 
-pub use crate::ward::Cell;
+pub use crate::sphere::Cell;
 
 /// Planks a causeway holds up at once. The head retires the tail, so
 /// this is also the whole of what a caster can have standing — the
@@ -30,8 +30,8 @@ pub const TRAIL: usize = 5;
 /// the claim describes a tick already a round trip old.
 pub const CLAIM_SLACK: i32 = 2;
 
-/// What a plank may claim: air and standing water, exactly the Ward
-/// shell's rule, so the two glass spells answer one question. Water
+/// What a plank may claim: air and standing water, exactly the Sphere
+/// shell's rule, so the two cell-writing spells answer one question. Water
 /// included is what lets a causeway cross a lake.
 pub fn claims(cell: u16) -> bool {
 	let b = BlockType::from_id(cell_id(cell));
@@ -108,7 +108,7 @@ impl Trail {
 
 	/// Lay a plank, returning the one retired to make room. Only cells
 	/// this actually wrote ever enter the trail, which is what stops a
-	/// causeway taking up a pane it merely walked over — a Ward's shell
+	/// causeway taking up a pane it merely walked over — a Sphere's shell
 	/// is not air, so [`Trail::wants`] never names one.
 	pub fn lay(&mut self, c: Cell) -> Option<Cell> {
 		if self.holds(c) {

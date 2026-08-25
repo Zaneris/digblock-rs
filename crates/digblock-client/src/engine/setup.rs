@@ -184,8 +184,8 @@ impl Engine {
 				spawn_return_pending: false,
 				arrival_hold: None,
 			},
-			debug_ward_pending: config.debug_ward,
-			ward_climbs: Vec::new(),
+			debug_sphere_pending: config.debug_sphere,
+			sphere_climbs: Vec::new(),
 			debug_shapes_pending: {
 				let mut plan = if config.debug_shapes {
 					debug_shapes_plan(spawn)

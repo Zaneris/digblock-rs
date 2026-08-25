@@ -229,7 +229,7 @@ fn dig_families_are_pinned() {
 		(B::Glowvein, Rock),
 		(B::Aetherock, Rock),
 		// Conjured matter swings as the gentlest ground: anyone can dig
-		// their way out of a ward.
+		// their way out of a road.
 		(B::Wardglass, Soft),
 		(B::DepletedStone, Rock),
 		(B::DepletedEmberore, Rock),

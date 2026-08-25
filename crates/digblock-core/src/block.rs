@@ -313,10 +313,10 @@ blocks! {
 	// Walk-through on purpose — it is light, not matter. Lamp mold
 	// (`emits(glows(...))`), never `seams`, which is the node rows' alone.
 	ConjuredLight = 89 => emits(glows(props(RenderClass::Opaque, false, tex::CONJURED_LIGHT, tex::CONJURED_LIGHT, tex::CONJURED_LIGHT)), 13),
-	// The Ward's pane — the one block a spell writes (`ward`). Conjured:
-	// digs to nothing and claims no slot, or a sphere would be a faucet
-	// of panes; no material, so it sits in no grid and at no bench.
-	// Glass class on purpose: a ward is see-through in every sense the
+	// The Causeway's plank — the one block a spell conjures (`causeway`).
+	// Conjured: digs to nothing and claims no slot, or a road would be a
+	// faucet of panes; no material, so it sits in no grid and at no bench.
+	// Glass class on purpose: a plank is see-through in every sense the
 	// renderer and the GI have (R35's bucket predicate). Soft and
 	// diggable by anyone, so nobody is walled in by a spell.
 	Wardglass = 90 => conjured(dig(translucent(props(RenderClass::Glass, true, tex::WARDGLASS, tex::WARDGLASS, tex::WARDGLASS)), 25, DigFamily::Soft)),
@@ -945,7 +945,7 @@ pub mod tex {
 	pub const ESSENCE_UNDA: u16 = 54;
 	pub const ESSENCE_FERRUM: u16 = 55;
 	pub const ESSENCE_AETHER: u16 = 56;
-	/// The Ward's conjured pane.
+	/// The Causeway's conjured plank.
 	pub const WARDGLASS: u16 = 57;
 
 	/// Layers in the array, i.e. `digblock_assets::tex::LAYERS.len()`.
@@ -1244,7 +1244,7 @@ impl BlockType {
 	}
 
 	/// Spell-written matter — see [`BlockProps::conjured`]. Never an item,
-	/// never XP: a ward is cast for a fare and must pay nothing back.
+	/// never XP: a road is cast for a fare and must pay nothing back.
 	#[inline]
 	pub fn is_conjured(self) -> bool {
 		self.props().conjured
@@ -1326,6 +1326,16 @@ impl BlockType {
 	#[inline]
 	pub fn is_slab(self) -> bool {
 		matches!(self.props().shape, Some(ShapeKind::Slab))
+	}
+
+	/// A furnishing: a shaped thing that stands whole in ONE cell at its resting state, which is
+	/// what lets a spell stand one up without a placer's face to orient it against.
+	#[inline]
+	pub fn is_furniture(self) -> bool {
+		matches!(
+			self.props().shape,
+			Some(ShapeKind::Table | ShapeKind::Chair | ShapeKind::Bed)
+		)
 	}
 
 	/// The full block a slab stack completes into on its third grow: the

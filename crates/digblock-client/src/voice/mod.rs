@@ -12,6 +12,7 @@
 
 mod en;
 
+use digblock_core::block::BlockType;
 use digblock_core::skills::Skill;
 use digblock_core::unlock::Requirement;
 use digblock_net::messages::AdminReply;
@@ -77,7 +78,7 @@ impl Line {
 }
 
 /// Which spell a refusal answers. A refusal that cannot name its spell says the wrong thing about
-/// two spells out of three — the ward's fare refused as a waystone's passage, kindle's rung as a
+/// two spells out of three — the sphere's fare refused as a waystone's passage, kindle's rung as a
 /// locked port. So the spell is an ARGUMENT, and every caller that knows which one it cast passes
 /// it.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -85,7 +86,7 @@ pub(crate) enum Spell {
 	Waystone,
 	Wisp,
 	Kindle,
-	Ward,
+	Sphere,
 	Causeway,
 }
 
@@ -113,8 +114,14 @@ pub(crate) enum Msg {
 	/// The same two, as the SERVER refuses them — `CastRefusal` carries no spell to name.
 	WaystoneLocked,
 	CastCantPay,
-	/// A conjuring with no place to land: no cell for the light, or a ward closing on a player.
+	/// A conjuring with no place to land: no cell for the light, or a sphere closing on a player.
 	CastBadTarget,
+	/// The Sphere with nothing in hand to build it of.
+	SphereNoBlock,
+	/// The Sphere with a block no shell can be built of — named here, unnamed from the server's refusal.
+	SphereBadBlock(Option<BlockType>),
+	/// The Sphere with too few of the held block: (block, the shell's count, the stock), or none from the server.
+	SphereBlocksShort(Option<(BlockType, u32, u32)>),
 
 	// ---- progression ----
 	LevelUp {

@@ -201,7 +201,7 @@ pub mod sfx {
 	/// The level-up that OPENS something: a four-note fanfare on top of
 	/// the same tonic, so the two read as the same event, escalated.
 	pub const LEVEL_UNLOCK: &[u8] = include_bytes!("../../../assets/sfx/level_unlock.ogg");
-	/// The Ward sealing: a crystalline chord over a soft low thump, the
+	/// The Sphere sealing: a crystalline chord over a soft low thump, the
 	/// crown cell landing. The climb under it has no recording of its
 	/// own — it rides the cast channel's loop.
 	pub const WARD_CLOSE: &[u8] = include_bytes!("../../../assets/sfx/ward_close.ogg");

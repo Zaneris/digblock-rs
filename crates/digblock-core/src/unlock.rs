@@ -386,30 +386,30 @@ pub fn arc_cells(level: u32) -> usize {
 pub const ARC_AT: u32 = 26;
 pub const ARC_WIDE_AT: u32 = 46;
 
-/// The Ward's radius in cells for a caster at this Arcana — the sphere
-/// `ward::sets` draws about the head. Zero below the first rank IS
-/// "cannot cast". Three ranks, each a wider sphere and (`ward_price`) a
+/// The Sphere's radius in cells for a caster at this Arcana — the shell
+/// `sphere::sets` draws about the head. Zero below the first rank IS
+/// "cannot cast". Three ranks, each a wider sphere and (`sphere_price`) a
 /// steeper fare.
-pub fn ward_radius(level: u32) -> i32 {
+pub fn sphere_radius(level: u32) -> i32 {
 	match level {
-		l if l >= WARD_VAST_AT => 10,
-		l if l >= WARD_WIDE_AT => 8,
-		l if l >= WARD_AT => 6,
+		l if l >= SPHERE_VAST_AT => 10,
+		l if l >= SPHERE_WIDE_AT => 8,
+		l if l >= SPHERE_AT => 6,
 		_ => 0,
 	}
 }
 
-/// The Ward's three ranks: after the second port, the breather past the
+/// The Sphere's three ranks: after the second port, the breather past the
 /// wisp's brightening, and the deep rung between the mountain port and
 /// kindle's easing.
-pub const WARD_AT: u32 = 16;
-pub const WARD_WIDE_AT: u32 = 36;
-pub const WARD_VAST_AT: u32 = 52;
+pub const SPHERE_AT: u32 = 16;
+pub const SPHERE_WIDE_AT: u32 = 36;
+pub const SPHERE_VAST_AT: u32 = 52;
 
 /// How many seconds a causeway stands for a caster at this Arcana. Zero below the first rung IS
-/// "cannot cast", [`ward_radius`]'s convention. Each rung lengthens the road and
+/// "cannot cast", [`sphere_radius`]'s convention. Each rung lengthens the road and
 /// ([`crate::alchemy::causeway_price`]) raises its fare by MORE, so a longer causeway is never
-/// a cheaper second of one — the Ward's "never a free upgrade" rule.
+/// a cheaper second of one — the Sphere's "never a free upgrade" rule.
 pub fn causeway_secs(level: u32) -> u32 {
 	match level {
 		l if l >= CAUSEWAY_VAST_AT => 60,
@@ -419,8 +419,8 @@ pub fn causeway_secs(level: u32) -> u32 {
 	}
 }
 
-/// The Causeway's three rungs. The first two trail a Ward rank, so the
-/// two glass spells alternate up the ladder — shelter, then passage —
+/// The Causeway's three rungs. The first two trail a Sphere rank, so the
+/// two cell-writing spells alternate up the ladder — shelter, then passage —
 /// and the last takes the empty stretch before the far cold crowns the
 /// roster.
 pub const CAUSEWAY_AT: u32 = 20;
@@ -692,7 +692,7 @@ pub fn opens(skill: Skill, level: u32) -> bool {
 						.any(|&k| waystone(k) == Some(level))
 						|| level == KINDLE_AT
 						|| arc_cells(level) != arc_cells(level - 1)
-						|| ward_radius(level) != ward_radius(level - 1)
+						|| sphere_radius(level) != sphere_radius(level - 1)
 						|| causeway_secs(level) != causeway_secs(level - 1)
 						|| teleport_cooldown_secs(level) != teleport_cooldown_secs(level - 1)
 						|| channel_ticks(level) != channel_ticks(level - 1)

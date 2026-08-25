@@ -445,3 +445,34 @@ fn a_tool_is_crafted_once_and_never_paid_for_twice() {
 	assert_eq!(inv.count(pick), 1);
 	assert_eq!(inv.headroom(pick), 0, "the screen greys on this number");
 }
+
+/// Two fares in one essence are one question. Asked separately each passes on a purse that covers
+/// either alone, so the pair must be summed before anything is debited — and a refused pair leaves
+/// the purse untouched, while a paid one is refundable line by line.
+#[test]
+fn fares_are_paid_together_or_not_at_all() {
+	use crate::block::Essence as E;
+	let mut inv = Inventory::default();
+	inv.add_sub(E::Unda, 5);
+	inv.add_sub(E::Vitae, 2);
+	let pair = [(E::Unda, 3), (E::Unda, 3)];
+	assert!(
+		inv.can_pay(&pair[..1]) && inv.can_pay(&pair[1..]),
+		"each alone is affordable"
+	);
+	assert!(!inv.can_pay(&pair), "together they are not");
+	assert!(!inv.try_take_fares(&pair));
+	assert_eq!(inv.sub_count(E::Unda), 5, "a refusal debits nothing");
+	let mixed = [(E::Unda, 3), (E::Vitae, 2)];
+	assert!(inv.try_take_fares(&mixed));
+	assert_eq!((inv.sub_count(E::Unda), inv.sub_count(E::Vitae)), (2, 0));
+	inv.add_fares(&mixed);
+	assert_eq!(
+		(inv.sub_count(E::Unda), inv.sub_count(E::Vitae)),
+		(5, 2),
+		"the refund is exact"
+	);
+	// Short in the second essence alone: nothing of the first leaves either.
+	assert!(!inv.try_take_fares(&[(E::Unda, 1), (E::Vitae, 3)]));
+	assert_eq!(inv.sub_count(E::Unda), 5);
+}

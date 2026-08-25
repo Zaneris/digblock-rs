@@ -1,15 +1,15 @@
-//! The Ward: a one-cell-thick glass sphere conjured around the caster's
-//! HEAD, the spellbook's first spell that writes cells. The glass it
-//! writes is [`BlockType::Wardglass`], which digs to nothing — the
-//! sphere is spectacle, never a faucet of panes. Every cell is derived
-//! here from the head and the radius on BOTH ends, so the client names
-//! nothing the server does not re-derive; the plan is all or nothing,
-//! the Arc's rule, since a partial sphere would leave the two ends
-//! holding different sets.
+//! The Sphere: a one-cell-thick shell of the caster's HELD block conjured
+//! around their head, the spellbook's first spell that writes cells. The
+//! shell is built of real blocks paid out of the caster's inventory, so a
+//! dig hands them back as any placed block would. Every cell is derived
+//! here from the head, the radius and the block on BOTH ends, so the
+//! client names nothing but the block the server does not re-derive; the
+//! plan is all or nothing, the Arc's rule, since a partial sphere would
+//! leave the two ends holding different sets.
 //!
 //! The plan's ORDER is the spectacle: the cells land in plan order
 //! across the cast's own channel, floor to crown with each ring swept
-//! around, so the glass rises about the caster as they channel and seals
+//! around, so the shell rises about the caster as they channel and seals
 //! overhead the tick the channel completes — and an interrupted channel
 //! UNWINDS what had landed. Both ends run the same [`Closing`]; nothing
 //! is animated but the world itself.
@@ -32,7 +32,7 @@ const FACES: [Cell; 6] = [
 ];
 
 /// The widest sphere anything may ask for, ladder or debug knob. Every castable rank
-/// ([`crate::unlock::ward_radius`]) sits well inside it — held by
+/// ([`crate::unlock::sphere_radius`]) sits well inside it — held by
 /// `the_cap_clears_every_castable_rank` — and the cap is what keeps an arbitrary caller honest:
 /// [`inside`] SQUARES the radius, so a large enough one overflows, and the scan is cubic in it,
 /// so a merely big one hangs the frame that asked.
@@ -93,14 +93,27 @@ pub enum Refusal {
 	Unloaded,
 }
 
-/// The writes one cast performs, in the order they land: shell cells of air or water become
-/// wardglass, interior water becomes air, everything else stands. Water in the shell must be
-/// claimed too — a wave left standing is a hole. `read` answers the cell's CURRENT value, `None`
-/// for one not loaded; a cell past the world's vertical bounds is SKIPPED rather than refused,
-/// safe because the floor is bedrock, which the shell spares as terrain. Order: see `closing_key`.
+/// What a sphere may be built of: a block the bar can hold that fills ONE cell at its resting
+/// state. A door is two cells and a slab or stair is a shape the placer orients against a face,
+/// so a shell of either would be a shell of broken objects; a torch hangs from something. The
+/// furniture pieces stand in one cell facing wherever, so they pass. Asked on both ends — the
+/// server refuses a slot holding anything else, the client never offers one.
+pub fn accepts(b: BlockType) -> bool {
+	use crate::block::ShapeFamily;
+	b != BlockType::Air
+		&& b.is_slottable()
+		&& (b.shape_family() == Some(ShapeFamily::Block) || b.is_furniture())
+}
+
+/// The writes one cast performs, in the order they land (`closing_key`): shell cells of air or
+/// water become `block` at rest, interior water becomes air, everything else stands. Water in the
+/// shell must be claimed too — a wave left standing is a hole. `read` answers the cell's CURRENT
+/// value, `None` for one not loaded; a cell past the world's vertical bounds is SKIPPED rather than
+/// refused, safe because the floor is bedrock. The block is the caller's to check with [`accepts`].
 pub fn plan(
 	head: Cell,
 	r: i32,
+	block: BlockType,
 	read: impl Fn(Cell) -> Option<u16>,
 ) -> Result<Vec<(Cell, u16)>, Refusal> {
 	let (shell, interior) = sets(head, r);
@@ -112,7 +125,7 @@ pub fn plan(
 		let v = read(c).ok_or(Refusal::Unloaded)?;
 		let b = BlockType::from_id(cell_id(v));
 		if b == BlockType::Air || b.is_water() {
-			out.push((c, make_cell(BlockType::Wardglass, 0)));
+			out.push((c, make_cell(block, 0)));
 		}
 	}
 	for c in interior {
@@ -140,6 +153,14 @@ pub fn plan(
 fn closing_key(head: Cell, c: Cell) -> (i32, f32, i32) {
 	let (dx, dz) = (c.0 - head.0, c.2 - head.2);
 	(c.1, (dz as f32).atan2(dx as f32), dx * dx + dz * dz)
+}
+
+/// What a plan costs in blocks: the cells that stand `block` up, which is every write but the
+/// interior drains. The inventory pays this as the channel begins and takes back, at the end,
+/// whatever the climb declined to write or an unwind put down again.
+pub fn blocks_needed(writes: &[(Cell, u16)], block: BlockType) -> u32 {
+	let placed = make_cell(block, 0);
+	u32::try_from(writes.iter().filter(|w| w.1 == placed).count()).unwrap_or(u32::MAX)
 }
 
 /// How many of `total` cells have landed after `step` of a `span`-tick
@@ -199,9 +220,9 @@ impl Closing {
 	}
 
 	/// What an interrupt puts back: every recorded `(cell, written, prev)`
-	/// crown-first, so the glass recedes the way it rose. A caller
+	/// crown-first, so the shell recedes the way it rose. A caller
 	/// restores a cell only while it still holds `written` — somebody
-	/// who dug a pane out mid-climb keeps their hole.
+	/// who dug a block out mid-climb keeps their hole.
 	pub fn unwind(self) -> Vec<(Cell, u16, u16)> {
 		let mut landed = self.landed;
 		landed.reverse();
@@ -224,7 +245,7 @@ mod tests {
 	/// table so a retune sweeps the new sizes.
 	fn radii() -> Vec<i32> {
 		let mut out: Vec<i32> = (0..=100)
-			.map(unlock::ward_radius)
+			.map(unlock::sphere_radius)
 			.filter(|&r| r > 0)
 			.collect();
 		out.dedup();
@@ -347,7 +368,7 @@ mod tests {
 		}
 	}
 
-	/// The caster stands inside their own ward: the head cell and the
+	/// The caster stands inside their own sphere: the head cell and the
 	/// body below it are interior at every rank, and a wider rank holds
 	/// strictly more.
 	#[test]
@@ -362,12 +383,26 @@ mod tests {
 		}
 	}
 
+	/// The block the sweeps build with — the first one the predicate
+	/// admits, so a retune of the roster cannot leave them building
+	/// with something the spell refuses.
+	fn matter() -> BlockType {
+		BlockType::ALL
+			.iter()
+			.copied()
+			.find(|&b| accepts(b))
+			.expect("something can be built into a sphere")
+	}
+
 	/// The plan writes exactly what the rules say: air and water in the
-	/// shell turn to wardglass, water inside turns to air, and rock in
-	/// either place stands. Each rule is checked to have fired.
+	/// shell turn to the held block, water inside turns to air, and rock
+	/// in either place stands. Each rule is checked to have fired, and
+	/// the block count the inventory pays is exactly the cells stood up.
 	#[test]
-	fn the_plan_glasses_the_shell_and_drains_the_inside() {
+	fn the_plan_walls_the_shell_and_drains_the_inside() {
 		let r = radii()[0];
+		let block = matter();
+		let wall = make_cell(block, 0);
 		let (shell, interior) = sets(HEAD, r);
 		// Below the head's y is water, the head's own column is stone at
 		// the far +x edge, everything else air.
@@ -380,21 +415,21 @@ mod tests {
 				make_cell(BlockType::Air, 0)
 			})
 		};
-		let writes = plan(HEAD, r, world).unwrap();
+		let writes = plan(HEAD, r, block, world).unwrap();
 		let written: HashSet<Cell> = writes.iter().map(|w| w.0).collect();
-		let (mut glassed_air, mut glassed_water, mut drained, mut spared) = (0, 0, 0, 0);
+		let (mut walled_air, mut walled_water, mut drained, mut spared) = (0, 0, 0, 0);
 		for &c in &shell {
 			let v = world(c).unwrap();
 			let b = BlockType::from_id(cell_id(v));
 			let w = writes.iter().find(|w| w.0 == c).map(|w| w.1);
 			match b {
 				BlockType::Air => {
-					assert_eq!(w, Some(make_cell(BlockType::Wardglass, 0)), "{c:?}");
-					glassed_air += 1;
+					assert_eq!(w, Some(wall), "{c:?}");
+					walled_air += 1;
 				}
 				BlockType::Water => {
-					assert_eq!(w, Some(make_cell(BlockType::Wardglass, 0)), "{c:?}");
-					glassed_water += 1;
+					assert_eq!(w, Some(wall), "{c:?}");
+					walled_water += 1;
 				}
 				_ => {
 					assert_eq!(w, None, "{c:?}");
@@ -412,8 +447,45 @@ mod tests {
 				assert_eq!(w, None, "{c:?}");
 			}
 		}
-		assert!(glassed_air > 0 && glassed_water > 0 && drained > 0 && spared > 0);
+		assert!(walled_air > 0 && walled_water > 0 && drained > 0 && spared > 0);
 		assert_eq!(written.len(), writes.len(), "no cell written twice");
+		assert_eq!(
+			blocks_needed(&writes, block),
+			walled_air + walled_water,
+			"the bill is the cells stood up and not the drains"
+		);
+	}
+
+	/// What the shell may be made of, asked of every block: one cell at rest and a thing the bar
+	/// holds. The refusals are the shapes a shell would break — the two-cell door, the slab and
+	/// stair a placer orients, the hanging torch — and nothing the world hands out as matter is
+	/// missing from the accepted set. Counted both ways, so a predicate that answered one way
+	/// for everything could not pass.
+	#[test]
+	fn a_sphere_is_built_of_one_cell_blocks_the_bar_can_hold() {
+		let (mut yes, mut no) = (0, 0);
+		for b in BlockType::ALL {
+			let ok = accepts(b);
+			if ok {
+				assert!(
+					b.is_slottable(),
+					"{b:?} is accepted but the bar cannot hold it"
+				);
+				assert!(!b.is_door() && !b.is_slab() && !b.is_stair(), "{b:?}");
+				assert_ne!(b, BlockType::Torch, "a torch hangs from something");
+				yes += 1;
+			} else {
+				no += 1;
+			}
+		}
+		assert!(yes > 0 && no > 0, "the sweep saw one kind only");
+		assert!(accepts(BlockType::Stone), "plain matter builds");
+		assert!(accepts(BlockType::Chair), "furniture stands in one cell");
+		assert!(!accepts(BlockType::Water), "the bar never holds water");
+		assert!(
+			!accepts(BlockType::Wardglass),
+			"conjured glass is not an item"
+		);
 	}
 
 	/// The plan climbs: no cell lands below one that landed before it,
@@ -422,7 +494,7 @@ mod tests {
 	#[test]
 	fn the_closing_climbs_to_the_crown() {
 		for r in radii() {
-			let writes = plan(HEAD, r, |_| Some(make_cell(BlockType::Air, 0))).unwrap();
+			let writes = plan(HEAD, r, matter(), |_| Some(make_cell(BlockType::Air, 0))).unwrap();
 			assert!(writes.len() > 10, "r={r}");
 			for w in writes.windows(2) {
 				assert!(
@@ -448,12 +520,12 @@ mod tests {
 	#[test]
 	fn a_flooded_sphere_orders_by_a_key_that_never_ties() {
 		for r in radii() {
-			let writes = plan(HEAD, r, |_| Some(make_cell(BlockType::Water, 0))).unwrap();
+			let writes = plan(HEAD, r, matter(), |_| Some(make_cell(BlockType::Water, 0))).unwrap();
 			let (shell, interior) = sets(HEAD, r);
 			assert_eq!(
 				writes.len(),
 				shell.len() + interior.len(),
-				"r={r}: water glasses the shell and drains the rest"
+				"r={r}: water walls the shell and drains the rest"
 			);
 			for w in writes.windows(2) {
 				let (a, b) = (closing_key(HEAD, w[0].0), closing_key(HEAD, w[1].0));
@@ -485,7 +557,8 @@ mod tests {
 				y if y == BEDROCK_Y => Some(make_cell(BlockType::Stone, 0)),
 				_ => Some(make_cell(BlockType::Air, 0)),
 			};
-			let writes = plan(head, r, world).expect("the floor is not an unloaded column");
+			let writes =
+				plan(head, r, matter(), world).expect("the floor is not an unloaded column");
 			assert!(writes.len() > 10, "r={r}: the dome is worth casting");
 			assert!(
 				writes.iter().all(|&(c, _)| c.1 > BEDROCK_Y),
@@ -575,7 +648,7 @@ mod tests {
 		let r = radii()[0];
 		let hole = (HEAD.0, HEAD.1 + r, HEAD.2);
 		let world = |c: Cell| (c != hole).then_some(make_cell(BlockType::Air, 0));
-		assert_eq!(plan(HEAD, r, world), Err(Refusal::Unloaded));
-		assert!(plan(HEAD, r, |_| Some(make_cell(BlockType::Air, 0))).is_ok());
+		assert_eq!(plan(HEAD, r, matter(), world), Err(Refusal::Unloaded));
+		assert!(plan(HEAD, r, matter(), |_| Some(make_cell(BlockType::Air, 0))).is_ok());
 	}
 }

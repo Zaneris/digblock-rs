@@ -297,42 +297,57 @@ pub struct Engine {
 	/// asynchronously; each update retries what's left). Empty = done
 	/// or disabled.
 	debug_shapes_pending: Vec<(i32, i32, i32, u16)>,
-	/// DIG_WARD=<r>: a sphere still waiting for every cell it would touch
+	/// DIG_SPHERE=<r>: a sphere still waiting for every cell it would touch
 	/// to be resident. `None` = landed or disabled.
-	debug_ward_pending: Option<i32>,
-	/// Every ward climbing in this world — ours and each remote's, one
-	/// per caster — stepped with the sim ticks, so every sphere's glass
+	debug_sphere_pending: Option<i32>,
+	/// Every sphere climbing in this world — ours and each remote's, one
+	/// per caster — stepped with the sim ticks, so every sphere's shell
 	/// climbs at its own caster's pace and unwinds on their own break.
-	ward_climbs: Vec<WardClimb>,
+	sphere_climbs: Vec<SphereClimb>,
 }
 
-/// One ward mid-climb: whose it is, the plan it is walking, how far
+/// What an offline cast paid, settled at the seal — the blocks the climb declined come back —
+/// or handed back whole on an unwind. Online the server's `InventoryFull` is the settlement, so
+/// a connected climb carries none, and DIG_SPHERE paid nothing.
+struct SphereBill {
+	debited: u32,
+	fares: [(digblock_core::block::Essence, u32); 2],
+}
+
+/// One sphere mid-climb: whose it is, the plan it is walking, how far
 /// through that plan this end has got, and what an unwind hands back.
-struct WardClimb {
+struct SphereClimb {
 	/// The caster. `None` where no player ids exist at all — offline,
 	/// where a climb can only be ours — so one comparison against
 	/// `NetSession::my_player_id` answers "is this mine" on both sides
 	/// of the wire.
 	by: Option<digblock_net::protocol::PlayerId>,
-	closing: digblock_core::ward::Closing,
+	closing: digblock_core::sphere::Closing,
 	head: (i32, i32, i32),
+	/// The block the shell is built of — the caster's held block, carried by the wire for a
+	/// remote's climb since a stranger's hand is not in the snapshot.
+	block: digblock_core::block::BlockType,
 	/// How much of the plan this end has handed to the world: a PREFIX
 	/// length in the plan's own order, which is the currency
-	/// `ServerMsg::WardEnded` quotes its own count in — neither end can
+	/// `ServerMsg::SphereEnded` quotes its own count in — neither end can
 	/// derive which cells the other declined.
 	prefix: usize,
-	/// What an unwind refunds. Only an offline cast carries one: online
-	/// the refund is the server's `InventoryFull`, and DIG_WARD paid
-	/// nothing — so a refund can never answer for somebody else's
-	/// sphere.
-	fare: Option<(digblock_core::block::Essence, u32)>,
+	/// Cells of the shell this end actually wrote — what the bill settles against.
+	placed: u32,
+	/// Only an offline cast carries one, so a refund can never answer for somebody else's sphere.
+	bill: Option<SphereBill>,
 }
 
-impl WardClimb {
-	/// Ours? See [`WardClimb::by`] for why one comparison covers both
+impl SphereClimb {
+	/// Ours? See [`SphereClimb::by`] for why one comparison covers both
 	/// offline play and a connected world.
 	fn own(&self, me: Option<digblock_net::protocol::PlayerId>) -> bool {
 		self.by == me
+	}
+
+	/// The cell the shell is built of.
+	fn wall(&self) -> u16 {
+		digblock_core::chunk::make_cell(self.block, 0)
 	}
 }
 
@@ -773,8 +788,9 @@ enum CastTarget {
 	Wisp,
 	/// Conjured light in the cell the head is in at COMPLETION, on its own clock.
 	Kindle,
-	/// The glass sphere about the head at completion (`digblock_core::ward`).
-	Ward,
+	/// The shell of the held block about the head, climbing through the channel
+	/// (`digblock_core::sphere`).
+	Sphere,
 	/// The road that lays itself under the feet for its span (`digblock_core::causeway`).
 	Causeway,
 }
@@ -786,7 +802,7 @@ impl CastTarget {
 	fn teleports(self) -> bool {
 		match self {
 			CastTarget::Home | CastTarget::Waystone(_) => true,
-			CastTarget::Wisp | CastTarget::Kindle | CastTarget::Ward | CastTarget::Causeway => {
+			CastTarget::Wisp | CastTarget::Kindle | CastTarget::Sphere | CastTarget::Causeway => {
 				false
 			}
 		}

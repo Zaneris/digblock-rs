@@ -171,6 +171,40 @@ impl Inventory {
 		*c = c.saturating_add(n).min(MAX_STACK);
 	}
 
+	/// Can the purse cover every one of these fares AT ONCE? Summed per essence first, so two
+	/// fares in one essence are one question — checked separately, each would pass alone and the
+	/// second debit would fail after the first had gone through.
+	pub fn can_pay(&self, fares: &[(Essence, u32)]) -> bool {
+		Essence::ALL.iter().all(|&e| {
+			let owed: u32 = fares
+				.iter()
+				.filter(|f| f.0 == e)
+				.map(|f| f.1)
+				.fold(0, u32::saturating_add);
+			self.sub_count(e) >= owed
+		})
+	}
+
+	/// Debit every fare or none — [`Self::can_pay`] then the takes, which cannot fail after it.
+	#[must_use]
+	pub fn try_take_fares(&mut self, fares: &[(Essence, u32)]) -> bool {
+		if !self.can_pay(fares) {
+			return false;
+		}
+		for &(e, n) in fares {
+			let took = self.try_take_sub(e, n);
+			debug_assert!(took, "can_pay answered for this");
+		}
+		true
+	}
+
+	/// The refund of [`Self::try_take_fares`].
+	pub fn add_fares(&mut self, fares: &[(Essence, u32)]) {
+		for &(e, n) in fares {
+			self.add_sub(e, n);
+		}
+	}
+
 	/// Debit sub-material units if the stock covers it.
 	#[must_use]
 	pub fn try_take_sub(&mut self, m: Essence, n: u32) -> bool {

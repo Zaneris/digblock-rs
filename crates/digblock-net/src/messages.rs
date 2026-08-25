@@ -453,7 +453,7 @@ pub enum ClientMsg {
 	Unreliable(Vec<u8>),
 	/// A completed cast channel asking for its spell; the server validates unlock and price.
 	Cast(CastKind),
-	/// The caster broke their Ward channel; the server also unwinds on its own. Appended in v34.
+	/// The caster broke their Sphere channel; the server also unwinds on its own. Appended in v34.
 	CastBreak,
 	/// Take the road up now, before its span runs out. No refund: the fare bought the span.
 	CausewayEnd,
@@ -474,8 +474,10 @@ pub enum CastKind {
 	},
 	/// Appended in v33.
 	KindleHere,
-	/// The Ward: every cell derived on the server (`digblock_core::ward`), so nothing to trust.
-	Ward,
+	/// The Sphere: the DECLARED slot holding its block (an edit's rule), every cell server-derived. v39.
+	Sphere {
+		slot: u8,
+	},
 	/// The Causeway: begins the road; each plank follows as its own [`EditKind::CausewayStep`].
 	Causeway,
 }
@@ -490,6 +492,12 @@ pub enum CastRefusal {
 	CantPay,
 	/// A conjuring with no place to land: a head cell that cannot hold light, or a blocked shell.
 	BadTarget,
+	/// The Sphere's declared slot holds no block. Appended in v39, with the two below.
+	NoBlock,
+	/// The slot holds a block a sphere cannot be built of (`digblock_core::sphere::accepts`).
+	BadBlock,
+	/// Fewer of the block in hand than the shell needs. Refused BEFORE any debit.
+	BlocksShort,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
@@ -658,20 +666,22 @@ pub enum ServerMsg {
 		cell: [i32; 3],
 		secs_left: u16,
 	},
-	/// A Ward channel BEGAN: the CELLS never travel, both ends deriving them from head and radius.
-	WardWinding {
+	/// A Sphere channel BEGAN: the CELLS never travel, both ends deriving them from head, radius and block. v39.
+	SphereWinding {
 		by: PlayerId,
 		head: [i32; 3],
 		radius: u8,
 		span: u32,
+		block: u16,
 	},
-	/// A Ward's channel ENDED: `landed` cells of that plan reached the world; `sealed` is carried.
-	WardEnded {
+	/// A Sphere's channel ENDED: `landed` cells of that plan reached the world; `sealed` is carried.
+	SphereEnded {
 		by: PlayerId,
 		head: [i32; 3],
 		radius: u8,
 		landed: u32,
 		sealed: bool,
+		block: u16,
 	},
 }
 

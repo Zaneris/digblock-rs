@@ -148,39 +148,55 @@ actions returned rather than applied. Six spell families shipped; the rest are �
   list is what a joiner is handed). Nothing is predicted: the caster learns of their own light from the same broadcast
   as everyone else. The earlier block-plus-sweep form tied the lifetime to the world's day and the caster's vicinity;
   `CastKind::Kindle { cell, face }` is that form's retired verb, decodable and refused.
-- **The Ward** — a one-cell-thick sphere of glass closed about the caster's head, and the first spell that WRITES cells.
-  Every cell is derived on both ends from the head and the rank's radius (`ward::sets`: the shell is the interior's
-  face-boundary, which makes it sealed against fluid and as thin as a sealed shell can be), so `CastKind::Ward` carries
-  nothing. The shell claims air and water alike (a wave left standing is a hole) and leaves terrain in place, so a ward
-  cast on the ground is a dome fused to it; interior water turns to air. All or nothing, the Arc's rule — a player in
-  the shell or an unresident cell refuses the whole cast before any debit; a protected cell is simply not written, the
-  way a fluid write is refused at the cell, so the sphere closes around a locked pad exactly as water would. The glass
-  is `Wardglass`, a `conjured` row: diggable by anyone, so nobody is walled in, but a dig credits nothing and pays no XP
-  and no slot holds one — a sphere would otherwise be a faucet of panes. Three ranks (`unlock::ward_radius`), each a
-  wider sphere at a doubled fare. **The cells never travel.** `ward::plan` IS the shared rule — one head and one radius
-  give the same writes in the same order on both ends — so the wire carries only what identifies the sphere and how far
-  it got: `ServerMsg::WardWinding` as the channel begins and `ServerMsg::WardEnded` at the seal or the break, two frames
-  for a cast of any rank. The per-cell broadcast this replaced sent one `EditApplied` per pane, hundreds inside a single
-  tick against an outbound queue whose refusal DROPS the peer — which made a deliberately broken channel a free,
-  repeatable mass disconnect. The server still journals every cell it writes, and that is what a joiner, the resync
-  rotation and an evicted column all read, so nothing about arriving late changed. `landed` is a PLAN-PREFIX length
-  (`ward::landed_by`) and deliberately NOT a count of cells written: the two differ wherever a landing was declined, and
-  a client cannot derive which ones the server skipped, so the prefix is the one currency both ends share — and it is
-  what makes a break mid-climb exact. The closing is the GLASS, and it happens DURING the channel: the plan's order is
-  floor to crown with each ring swept around, and the cells land in that order across `unlock::channel_ticks` — the
-  caster's client and the offline engine through the same `ward::Closing`, the server through its own write path — so
-  the sphere rises about the caster while they stand still and seals overhead the tick the channel completes, with
-  nothing animated but the world. EVERY watcher runs that same climb, not just the caster: `WardWinding` names the head,
-  the radius and the span, which is the whole of what `ward::plan` needs, so a remote's sphere rises in place rather
-  than appearing whole — and `WardEnded`'s prefix reconciles whichever clock ran ahead. An interrupted channel UNWINDS:
-  the client sends `CastBreak` (and the server breaks it on its own if the caster moves or leaves), every pane still
-  standing comes back down crown-first through the same write path, and the fare — taken as the channel began — returns.
-  An unwind reads the climb's OWN record rather than re-deriving, since a plan drawn against a standing sphere names
-  precisely the cells missing from it. `WardEnded` is the SEAL as well: the one recording (`ward_close.ogg`) and the
-  caster's wash; a conjured cell landing makes no sound of its own. A cell somebody steps into mid-climb is left
-  unwritten — a hole where a player stood, the protected cells' honesty — and a pane somebody digs out mid-climb stays
-  dug through an unwind.
-- **The Causeway** — the Ward's glass again, laid one plank at a time under the feet the tick they leave support and
+- **The Sphere** — a one-cell-thick shell of the caster's HELD block closed about their head, and the first spell that
+  WRITES cells. Every cell is derived on both ends from the head, the rank's radius and the block (`sphere::sets`: the
+  shell is the interior's face-boundary, which makes it sealed against fluid and as thin as a sealed shell can be), so
+  `CastKind::Sphere` carries only the hotbar slot — DECLARED, like an edit's, because the input path is jitter-buffered
+  and the server's copy of the selection can lag the hand. The shell claims air and water alike (a wave left standing is
+  a hole) and leaves terrain in place, so a sphere cast on the ground is a dome fused to it; interior water turns to
+  air. All or nothing, the Arc's rule — a player in the shell or an unresident cell refuses the whole cast before any
+  debit; a protected cell is simply not written, the way a fluid write is refused at the cell, so the sphere closes
+  around a locked pad exactly as water would. **The shell is real matter, paid for**: the bill is
+  `sphere::blocks_needed` of the held block — the shell's air and water cells, never the terrain it fuses to — plus the
+  Unda fare plus the wisp's, taken together or not at all (`Inventory::try_take_fares`) as the channel begins, and
+  SETTLED at its end: a cell the climb declined (protection, a player who stepped in) is refunded at the seal, and an
+  unwind hands back the fares, the blocks never placed and every block it just took down — but not one somebody dug out
+  mid-climb, since the dig already paid them. A dig of a standing shell hands the block back like any placed block,
+  which is why the spell needs no conjured row of its own and why the world's own rules apply to what it builds: grass
+  smothers under grass, a shell of dirt greens. What it may be built OF is `sphere::accepts` — a block the bar can hold
+  that fills one cell at its resting state; doors (two cells), slabs and stairs (a placer orients them) and the torch
+  (it hangs) are refused, the furniture pieces pass — and the client's own gates speak the refusal by name
+  (`Msg::SphereNoBlock`, `SphereBadBlock`, `SphereBlocksShort`, the last with the count) where the wire's `CastRefusal`
+  reasons are spell-blind. **The seal lights the wisp** (`wisp_price`, `unlock::wisp_secs`), because most matter makes a
+  dark room: the fare is part of the bill and its XP part of the award. Three ranks (`unlock::sphere_radius`), each a
+  wider sphere at a doubled fare. **The cells never travel.** `sphere::plan` IS the shared rule — one head, one radius
+  and one block give the same writes in the same order on both ends — so the wire carries only what identifies the
+  sphere and how far it got: `ServerMsg::SphereWinding` as the channel begins and `ServerMsg::SphereEnded` at the seal
+  or the break, two frames for a cast of any rank (plus a rebase when the settlement returns something). The per-cell
+  broadcast this replaced sent one `EditApplied` per cell, hundreds inside a single tick against an outbound queue whose
+  refusal DROPS the peer — which made a deliberately broken channel a free, repeatable mass disconnect. The server still
+  journals every cell it writes, and that is what a joiner, the resync rotation and an evicted column all read, so
+  nothing about arriving late changed. `landed` is a PLAN-PREFIX length (`sphere::landed_by`) and deliberately NOT a
+  count of cells written: the two differ wherever a landing was declined, and a client cannot derive which ones the
+  server skipped, so the prefix is the one currency both ends share — and it is what makes a break mid-climb exact. The
+  closing is the SHELL, and it happens DURING the channel: the plan's order is floor to crown with each ring swept
+  around, and the cells land in that order across `unlock::channel_ticks` — the caster's client and the offline engine
+  through the same `sphere::Closing`, the server through its own write path — so the sphere rises about the caster while
+  they stand still and seals overhead the tick the channel completes, with nothing animated but the world. EVERY watcher
+  runs that same climb, not just the caster: `SphereWinding` names the head, the radius, the span and the block, which
+  is the whole of what `sphere::plan` needs, so a remote's sphere rises in place rather than appearing whole — and
+  `SphereEnded`'s prefix reconciles whichever clock ran ahead. An interrupted channel UNWINDS: the client sends
+  `CastBreak` (and the server breaks it on its own if the caster moves or leaves), every cell still standing comes back
+  down crown-first through the same write path, and the bill — taken as the channel began — returns. An unwind reads the
+  climb's OWN record rather than re-deriving, since a plan drawn against a standing sphere names precisely the cells
+  missing from it. `SphereEnded` is the SEAL as well: the one recording (`ward_close.ogg`, the file keeping the spell's
+  old name) and the caster's wash; a cell landing makes no sound of its own. A cell somebody steps into mid-climb is
+  left unwritten — a hole where a player stood, the protected cells' honesty — and a block somebody digs out mid-climb
+  stays dug through an unwind. **The spell was the Ward** and built its shell of `Wardglass`, a `conjured` row that digs
+  to nothing; the Causeway still writes that row, and a server boot sweeps every pane of it out of the journal
+  (`sweep_conjured_glass`), since at boot nothing legitimately holds one — the old spheres are gone, and a road's plank
+  left by a crash has no trail to retire it.
+- **The Causeway** — a trail of conjured glass laid one plank at a time under the feet the tick they leave support and
   taken up behind: `causeway::TRAIL` planks stand at once and the head retires the tail, so the road follows the caster
   and never accumulates. `Trail::wants` is the whole rule and its only input is `Player::grounded` — a supported player
   spends nothing, which is why standing still costs no planks and why no velocity or facing enters an answer the two
@@ -190,13 +206,13 @@ actions returned rather than applied. Six spell families shipped; the rest are �
   support is lost is the one tick whose answer is level with the ground, and a tick later the feet have sagged and the
   answer is a whole cell lower. Asked once a frame, the road descends a block per plank at every rate but one tick per
   frame, which is precisely the rate every capture path runs at. A plank claims air and standing water exactly as a
-  Ward's shell does (`a_plank_claims_exactly_what_a_ward_pane_claims`), which is what lets a road cross a lake. **A held
-  jump climbs it**, and that is intended rather than tolerated (`a_held_jump_climbs_the_road`): the rule is "the feet
-  have no support, so give them some", and a jump is the feet having no support. The only way to stop it would be a
+  Sphere's shell does (`a_plank_claims_exactly_what_a_sphere_pane_claims`), which is what lets a road cross a lake. **A
+  held jump climbs it**, and that is intended rather than tolerated (`a_held_jump_climbs_the_road`): the rule is "the
+  feet have no support, so give them some", and a jump is the feet having no support. The only way to stop it would be a
   predicate telling a fall from a jump — per-tick movement state the two ends would have to agree about, which is the
   surface §1 exists to avoid — so the Causeway is priced as the access spell it is rather than as a safety net.
 
-  **This is the one spell whose cells the caster's client NAMES.** The Ward derives both ends from one head and one
+  **This is the one spell whose cells the caster's client NAMES.** The Sphere derives both ends from one head and one
   radius; a road cannot, because a plank is owed the tick the feet leave support and a round trip is several ticks —
   server-authoritative planks arrive after the fall. So a plank rides the standing edit machinery as
   `EditKind::CausewayStep`: predicted locally under a seq, BOUNDED server-side by `causeway::claim_ok` against the
@@ -208,11 +224,11 @@ actions returned rather than applied. Six spell families shipped; the rest are �
 
   **Retirement is deliberately NOT predicted.** The server owns the tail and its removals arrive as ordinary
   `EditApplied`, so the two ends can never hold different roads; the client's trail is a dedup list, not a schedule. A
-  plank comes up only if it is still the glass the road laid — the Ward unwind's rule, so a pane somebody dug stays dug
-  — and only a plank actually WRITTEN joins the trail, which is what stops a road crossing a Ward's shell and taking one
-  of its panes with it. A departure takes the road up (`drop_client`), because a trail nobody holds can never retire
-  itself — and so does a teleport (`retire_road`, the span left running), because a removal can only be written to a
-  RESIDENT column and a road a world away is one nothing will ever be able to take up. A removal that still finds
+  plank comes up only if it is still the glass the road laid — the Sphere unwind's rule, so a pane somebody dug stays
+  dug — and only a plank actually WRITTEN joins the trail, which is what stops a road crossing a Sphere's shell and
+  taking one of its panes with it. A departure takes the road up (`drop_client`), because a trail nobody holds can never
+  retire itself — and so does a teleport (`retire_road`, the span left running), because a removal can only be written
+  to a RESIDENT column and a road a world away is one nothing will ever be able to take up. A removal that still finds
   nowhere to go is the sim's debt rather than the trail's, held in `owed_planks` and retried until the column comes
   back: it is the one write here that has to LAND eventually rather than be skipped the way fluid's and the sweeps' are,
   since skipping it leaves permanent journaled glass with nothing left that could remove it.
@@ -238,21 +254,21 @@ actions returned rather than applied. Six spell families shipped; the rest are �
 - **One governor per spell.** Home is cooldown-governed and free forever; everything else is price-governed with no
   cooldown — the channel is feel and interruption surface, not a governor. Underneath all of them the server keeps a
   per-client token bucket (`CAST_BURST`/`CAST_RATE_PER_SEC`) spent by every `Cast` ATTEMPT, refused ones included: a
-  ward's validation derives a whole sphere and scans every player against it BEFORE anything can be refused, so a bucket
-  that charged only for success would leave that work unbounded. It is an abuse ceiling, not a pacing knob — a channel
-  outlasts the whole burst, so no honest client reaches it, and running dry is silent.
+  sphere's validation derives a whole shell and scans every player against it BEFORE anything can be refused, so a
+  bucket that charged only for success would leave that work unbounded. It is an abuse ceiling, not a pacing knob — a
+  channel outlasts the whole burst, so no honest client reaches it, and running dry is silent.
 - Waystone fares are a hand table (`alchemy::cast_price`) that climbs the ESSENCES with the ladder: the lowland ports in
   Vitae, then Terra, the cold and the shore in Unda, the mountain in Ferrum and the far cold in Aether — so Arcana's
   spine spends every faucet the other two ladders open rather than one, and the payability pin asks each essence's own
   faucet. The AMOUNT rises with remoteness only WITHIN an essence; across them it cannot, and the far cold's is the
   smallest figure in the table. The wisp prices in Vitae (`wisp_price` — what a fresh player's first heartwood draws
   pay, the day-one bootstrap, doubling with the burn at `WISP_BRIGHT_AT`); kindle in Terra (`kindle_price`, cheapening
-  at `KINDLE_CHEAP_AT`); the ward in Unda (`ward_price`, doubling with each radius), the water essence for the spell
+  at `KINDLE_CHEAP_AT`); the sphere in Unda (`sphere_price`, doubling with each radius), the water essence for the spell
   that drives water out — shared with the cold and shore ports, so the one springstone faucet feeds both halves of the
-  ladder. The causeway prices in Unda too (`causeway_price`) for a different reason: it is the Ward's own glass, and one
-  substance takes one price line. The fares and the cast-XP rates are ONE decision, never two: raising a fare alone
-  would pay more XP for costing more, which is the opposite of a sink. The payability pin asks the standing question:
-  **a cast must be payable at the level that unlocks it.**
+  ladder — on top of the held blocks its shell is built of and the wisp fare its seal lights, one bill. The causeway
+  prices in Unda too (`causeway_price`): the two cell-writing spells share one price line. The fares and the cast-XP
+  rates are ONE decision, never two: raising a fare alone would pay more XP for costing more, which is the opposite of a
+  sink. The payability pin asks the standing question: **a cast must be payable at the level that unlocks it.**
 - **XP per priced cast derives from the price, weighted by the essence it drains.** `skills::cast_xp` takes the fare's
   essence as well as its amount and multiplies by `cast_xp_per_unit`, which answers `CAST_XP_PER_ESSENCE` for four of
   the five and `AETHER_CAST_WORTH` times that for Aether. A unit is not one worth across the ladder — Aether is the one
@@ -277,23 +293,25 @@ Storage is XP-only totals, level always derived, the pinned integer curve untouc
 shared teleport tick, so a rejoin cannot reset the clock. The character screen's teaser machinery reads unlock tables
 and therefore serves Arcana for free.
 
-## 8. Wire inventory (v36)
+## 8. Wire inventory (v39)
 
 - **The spawn spell needed no wire at all**: the channel is client pacing in front of `ClientMsg::ReturnToSpawn`.
 - **`ClientMsg::Cast(CastKind)`** — shaped for the whole roster from day one (`Waystone(kind)`, `Wisp`,
   `Kindle { cell, face }`, v33's `KindleHere`, which carries nothing because the server already holds the head, and
-  v34's `Ward`, which carries nothing for the same reason) so it never needs a v2. A ward's cells do not ride the wire
-  at all: **`ServerMsg::WardWinding { by, head, radius, span }`** and
-  **`ServerMsg::WardEnded { by, head, radius, landed, sealed }`** (both v35) are the whole of it, two frames per cast
-  with both ends deriving the sphere from `ward::plan`, and **`ClientMsg::CastBreak`** (v34) is the caster's word that
-  the channel broke. The pair is why `MIN_PROTOCOL` is v35, and for both of the reasons a floor ever rises: a client
-  that cannot decode them stands inside a sphere it never sees, and the retired `Warded` it replaced means an older one
-  would decode `WardWinding` as the seal whose tag it took. **`ServerMsg::Kindled { cell, secs_left }`** (v33) is every
-  standing light, to everyone on the cast and to a joiner through the reserved join-sync pump BEHIND its journal columns
-  — bursting the backlog inline could fail the join outright once enough lights stood. **`ServerMsg::Waystones`**
-  carries the world's resolved sites in join sync (server state the client cannot derive — each eye was resolved against
-  the journal once and stored). **`ServerMsg::CastRefused(CastRefusal)`** is a reason, never a sentence — `voice`
-  chooses the words.
+  v39's `Sphere { slot }`, which carries the declared hotbar slot and nothing else, on the tag v34's `Ward` held) so it
+  never needs a v2. A sphere's cells do not ride the wire at all:
+  **`ServerMsg::SphereWinding { by, head, radius, span, block }`** and
+  **`ServerMsg::SphereEnded { by, head, radius, landed, sealed, block }`** (both v39, on the tags v35's `WardWinding`
+  and `WardEnded` held) are the whole of it, two frames per cast with both ends deriving the sphere from `sphere::plan`,
+  and **`ClientMsg::CastBreak`** (v34) is the caster's word that the channel broke. Every one of those tag reuses is why
+  `MIN_PROTOCOL` moved with the version, for both of the reasons a floor ever rises: a client that cannot decode them
+  stands inside a sphere it never sees, and a tag whose meaning moved means an older peer would decode it *successfully*
+  and read the wrong thing. `CastRefusal` grew `NoBlock`, `BadBlock` and `BlocksShort` (v39, appended).
+  **`ServerMsg::Kindled { cell, secs_left }`** (v33) is every standing light, to everyone on the cast and to a joiner
+  through the reserved join-sync pump BEHIND its journal columns — bursting the backlog inline could fail the join
+  outright once enough lights stood. **`ServerMsg::Waystones`** carries the world's resolved sites in join sync (server
+  state the client cannot derive — each eye was resolved against the journal once and stored).
+  **`ServerMsg::CastRefused(CastRefusal)`** is a reason, never a sentence — `voice` chooses the words.
 - **`EditKind::PlaceArc`** rides the standing edit request so craft-then-place ordering and slot declaration hold.
 - **The Causeway's planks are ordinary edits.** `EditKind::CausewayStep` rides the standing `EditRequest`, so seq, ack,
   rollback and `pending_at` carry a plank with no new machinery and nothing else in the request is read;
@@ -329,9 +347,10 @@ and therefore serves Arcana for free.
 
 - **Conjured passage** — BUILT, as the Causeway (§5), and in the one shape that did not have to wait. What this
   described was bridge cells on a reversion clock, which needs DELVE-DESIGN D2's scheduled-cell-write substrate and
-  still does. Both shipped spells sidestep the clock instead, from opposite sides: the Ward's glass is PERMANENT
-  journaled matter that digs to nothing, and the Causeway's is retired by the plank that replaces it, so in neither case
-  does a cell need a timer of its own. Kindle sidestepped it a third way by never being a cell at all.
+  still does. Both shipped spells sidestep the clock instead, from opposite sides: the Sphere's shell is PERMANENT
+  journaled matter — the caster's own blocks, paid for and dug back like any placed block — and the Causeway's glass is
+  retired by the plank that replaces it, so in neither case does a cell need a timer of its own. Kindle sidestepped it a
+  third way by never being a cell at all.
 - **Prospect pulse** — the passive audio senses recast as an on-demand ping. Audio only; the no-ESP stance holds.
 - **Mending** — waits on D3 health.
 - **Teleport-to-friend** — consent required, addressed by account id and never by name (the `--admin` lesson).

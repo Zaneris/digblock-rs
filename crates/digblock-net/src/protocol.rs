@@ -27,7 +27,7 @@ pub const DEFAULT_MASTER_URL: &str = "https://master.digblock.net";
 ///
 /// Bump on ANY change to a message's shape or meaning. Postcard encodes enum discriminants by
 /// declaration order, so variants and fields are APPEND-ONLY — never reorder, never remove.
-pub const PROTOCOL_VERSION: u16 = 38;
+pub const PROTOCOL_VERSION: u16 = 39;
 
 /// Chunk-column radius around an arrival — a join or a teleport — whose journaled columns must
 /// reach the client before it may render or simulate. A small radius is the bounded choice: at
@@ -47,7 +47,7 @@ pub const AREA_SYNC_TIMEOUT_SECS: f32 = 5.0;
 /// break raise this floor — a field removed from or added INSIDE an existing variant runs an
 /// older decoder off the frame, and a peer that decodes fine but whose buttons no longer buy
 /// anything. Refusing the handshake is the honest answer to both.
-pub const MIN_PROTOCOL: u16 = 38;
+pub const MIN_PROTOCOL: u16 = 39;
 
 /// Whether a peer speaking `protocol` sits inside this build's window. THE protocol gate: the
 /// preamble check, the sim's own handshake and the menu's pre-dial verdict all ask this, so a

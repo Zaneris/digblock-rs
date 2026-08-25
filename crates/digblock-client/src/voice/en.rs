@@ -61,6 +61,13 @@ pub(super) fn line(msg: &Msg) -> String {
 		Msg::WaystoneLocked => "that casting is beyond your arcana".into(),
 		Msg::CastCantPay => "you cannot pay that fare".into(),
 		Msg::CastBadTarget => "nothing can be conjured here".into(),
+		Msg::SphereNoBlock => "hold a block to raise the sphere from".into(),
+		Msg::SphereBadBlock(Some(b)) => format!("{} cannot be raised into a sphere", b.name()),
+		Msg::SphereBadBlock(None) => "that cannot be raised into a sphere".into(),
+		Msg::SphereBlocksShort(Some((b, need, have))) => {
+			format!("the sphere needs {need} {} and you hold {have}", b.name())
+		}
+		Msg::SphereBlocksShort(None) => "you do not hold enough blocks for the sphere".into(),
 
 		Msg::LevelUp { skill, level } => format!("{} is now level {level}.", skill.name()),
 		Msg::RemoteLevelUp { who, skill, level } => {
@@ -98,7 +105,7 @@ fn spell(s: Spell) -> &'static str {
 		Spell::Waystone => "that waystone",
 		Spell::Wisp => "the wisp",
 		Spell::Kindle => "conjured light",
-		Spell::Ward => "the ward",
+		Spell::Sphere => "the sphere",
 		Spell::Causeway => "the causeway",
 	}
 }

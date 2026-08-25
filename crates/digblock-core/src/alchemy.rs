@@ -146,23 +146,27 @@ pub fn kindle_price(level: u32) -> (Essence, u32) {
 	)
 }
 
-/// The Ward's fare: Unda, the water essence, for the spell that drives
+/// The Sphere's fare: Unda, the water essence, for the spell that drives
 /// water out — shared with the cold and shore ports ([`cast_price`]), so
 /// the springstone node feeds both halves of the ladder rather than one
 /// spell. Doubles with each rank, as the sphere's shell roughly does
-/// (`unlock::ward_radius`), so a wider ward is never a free upgrade.
-pub fn ward_price(level: u32) -> (Essence, u32) {
+/// (`unlock::sphere_radius`), so a wider sphere is never a free upgrade.
+/// The essence is only half the bill: the shell itself is paid in the
+/// caster's held blocks (`sphere::blocks_needed`), and the seal lights
+/// the wisp at [`wisp_price`] on top, since most matter makes a dark
+/// room.
+pub fn sphere_price(level: u32) -> (Essence, u32) {
 	const BASE: u32 = 12;
 	let rank = match level {
-		l if l >= crate::unlock::WARD_VAST_AT => 2,
-		l if l >= crate::unlock::WARD_WIDE_AT => 1,
+		l if l >= crate::unlock::SPHERE_VAST_AT => 2,
+		l if l >= crate::unlock::SPHERE_WIDE_AT => 1,
 		_ => 0,
 	};
 	(Essence::Unda, BASE << rank)
 }
 
-/// The Causeway's fare: Unda, because it is the Ward's own glass — one substance, one price line,
-/// and the springstone faucet feeds both spells that write it. Climbs faster than
+/// The Causeway's fare: Unda, the Sphere's essence — the two cell-writing spells share a price
+/// line, and the springstone faucet feeds both. Climbs faster than
 /// [`crate::unlock::causeway_secs`] lengthens the road, which is what makes a rung sell
 /// uninterrupted distance rather than a discount on it.
 pub fn causeway_price(level: u32) -> (Essence, u32) {
