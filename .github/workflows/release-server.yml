@@ -227,7 +227,7 @@ jobs:
           docker compose up -d
           ```
 
-          You're listed at the public IP you register from; `--advertise-host` overrides it with a DNS name. A second server on the same machine is a second folder with a one-line `.env` (`SERVER_PORT=4434`) — the README has the details. Set `DIGBLOCK_ADMIN_IDS` (or `--admin`) to a player's account id — they copy it from the game's Account screen — for in-game admin chat commands: `/tp`, `/ban`, `/ban-list`, `/unban`. A display name works too and is resolved to an id when the server starts.
+          You're listed at the public IP you register from; `--advertise-host` overrides it with a DNS name. A second server on the same machine is a second folder with the `x-port` line at the top of its compose.yml changed — the README has the details. Set `DIGBLOCK_ADMIN_IDS` (or `--admin`) to a player's account id — they copy it from the game's Account screen — for in-game admin chat commands: `/tp`, `/ban`, `/ban-list`, `/unban`. A display name works too and is resolved to an id when the server starts.
 
           Image: `ghcr.io/zaneris/digblock-server:${{ inputs.version }}`. See the attached README.md for operating notes (upgrades, backups, seeds).
           EOF

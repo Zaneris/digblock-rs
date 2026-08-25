@@ -25,21 +25,20 @@ port-forward/firewall.
 
 ## Several servers on one machine
 
-One folder per server, each with its own `compose.yml`, its own `./data` and its own port. The port goes in a `.env`
-file beside the compose file, and it is the only thing that differs:
+One folder per server, each with its own `compose.yml` and its own `./data`, and the port is the one line that differs:
 
 ```sh
 mkdir digblock-second && cd digblock-second
-# download compose.yml from the release, set DIGBLOCK_SERVER_NAME as before
-echo SERVER_PORT=4434 > .env
+# download compose.yml from the release, set DIGBLOCK_SERVER_NAME as before,
+# and change the x-port line at the top to "4434"
 docker compose up -d
 ```
 
-`SERVER_PORT` is the port published on this machine, the port the server tells the master it is reachable at, and the
-name of the compose project (`digblock-4434`) — so two folders can never claim each other's containers, whatever they
-are called. The master lists ports 4433–4499 and nothing outside that block: open that block once on the firewall and
-every server you add is covered. Each server registers its own address (`host:port`) and keeps its own `master-key`, and
-every one of them shows up in the server list.
+That one value is the port published on this machine, the port the server tells the master it is reachable at, and the
+name of the compose project — so two folders can never claim each other's containers, whatever they are called. The
+master lists ports 4433–4499 and nothing outside that block: open that block once on the firewall and every server you
+add is covered. Each server registers its own address (`host:port`) and keeps its own `master-key`, and every one of
+them shows up in the server list.
 
 ## Without Docker
 
