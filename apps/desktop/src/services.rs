@@ -50,6 +50,9 @@ struct ListServer {
 	protocol_version: u16,
 	#[serde(default, deserialize_with = "lenient_version")]
 	sim_version: u16,
+	/// Absent on a master predating the board, which reads as "does not count".
+	#[serde(default)]
+	reports_skills: bool,
 }
 
 /// A player count, clamped rather than rejected.
@@ -327,6 +330,7 @@ fn fetch_servers(master_url: &str) -> Result<Vec<ServerEntry>, String> {
 			max_players: s.max_players,
 			protocol_version: s.protocol_version,
 			sim_version: s.sim_version,
+			reports_skills: s.reports_skills,
 		})
 		.collect())
 }

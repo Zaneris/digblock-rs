@@ -33,6 +33,7 @@ fn entry(id: &str, name: &str) -> ServerEntry {
 		max_players: 255,
 		protocol_version: digblock_net::protocol::PROTOCOL_VERSION,
 		sim_version: digblock_core::SIM_VERSION,
+		reports_skills: false,
 	}
 }
 
@@ -1475,4 +1476,33 @@ fn each_version_field_can_refuse_a_row_on_its_own() {
 	// Two per gate, or a saturating edge quietly turned a case into a
 	// duplicate of one that passes.
 	assert_eq!(refused, 4);
+}
+
+/// A server whose play counts toward the board says so on its row, and
+/// one whose play does not says nothing — the master's trusted list is
+/// the only thing that decides, and the row is where a player reads it
+/// before spending a join.
+#[test]
+fn a_ranked_server_says_so_on_its_row() {
+	let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
+	menu.set_services_available();
+	open_browser(&mut menu);
+	menu.on_response(MenuResponse::ServerList(Ok(vec![
+		entry("s1", "Alpha"),
+		ServerEntry {
+			reports_skills: true,
+			..entry("s2", "Beta")
+		},
+	])));
+	let view = menu.view(SIZE, 1.0, false);
+	let text = |name: &str| {
+		view.rows
+			.iter()
+			.find(|r| r.text.starts_with(name))
+			.unwrap_or_else(|| panic!("a row for {name}"))
+			.text
+			.clone()
+	};
+	assert!(text("Beta").ends_with(super::view::RANKED_TAG));
+	assert!(!text("Alpha").contains(super::view::RANKED_TAG));
 }

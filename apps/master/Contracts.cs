@@ -47,9 +47,11 @@ public sealed record HeartbeatRequest(int Players, int MaxPlayers);
 // nobody, so an incompatible server listed indistinguishably from a
 // compatible one and the client only found out after a full QUIC connect
 // and Hello. Surfacing them lets the list say so.
+// ReportsSkills: whether play here counts toward the hiscores board — the
+// trusted list's answer, published so a player can see it before joining.
 public sealed record ServerSummary(
     Guid Id, string Name, string Url, string CertHash, int Players, int MaxPlayers,
-    int ProtocolVersion, int SimVersion);
+    int ProtocolVersion, int SimVersion, bool ReportsSkills);
 
 public sealed record ServerListResponse(IReadOnlyList<ServerSummary> Servers);
 

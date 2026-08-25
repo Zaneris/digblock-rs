@@ -28,6 +28,9 @@ pub struct ServerEntry {
 	/// list must not promise what the handshake would refuse.
 	pub protocol_version: u16,
 	pub sim_version: u16,
+	/// Whether play here counts toward the hiscores board — the master's
+	/// trusted list, published so the row can say so before a join.
+	pub reports_skills: bool,
 }
 
 impl ServerEntry {

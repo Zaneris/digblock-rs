@@ -369,12 +369,12 @@ app.MapPost("/api/tokens/verify", (VerifyRequest req, HttpContext http, ServerRe
 
 // ---- game client endpoints -------------------------------------------------
 
-app.MapGet("/api/servers", (ServerRegistry registry) =>
+app.MapGet("/api/servers", (ServerRegistry registry, TrustedServers trusted) =>
     new ServerListResponse([.. registry.Snapshot()
         .OrderBy(e => e.Name, StringComparer.OrdinalIgnoreCase)
         .Select(e => new ServerSummary(
             e.Id, e.Name, e.Url, e.CertHashHex, e.Players, e.MaxPlayers,
-            e.ProtocolVersion, e.SimVersion))]))
+            e.ProtocolVersion, e.SimVersion, trusted.IsTrusted(e)))]))
     .RequireCors(Cors.Client);
 
 // Mint a one-time join token. Authenticated now: the caller presents their

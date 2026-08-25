@@ -13,6 +13,9 @@
 
 use super::*;
 
+/// Appended to a server row whose play counts toward the hiscores board.
+pub(crate) const RANKED_TAG: &str = "  · ranked";
+
 impl Menu {
 	/// Build the frame's view. `blink` drives the name-field caret.
 	pub(crate) fn view(&self, size: (u32, u32), scale: f32, blink: bool) -> MenuView {
@@ -354,8 +357,18 @@ impl Menu {
 							..RowSpec::new(
 								refused.is_none().then_some(RowId::Server(i)),
 								format!(
-									"{}  {}/{}",
-									row.entry.name, row.entry.players, row.entry.max_players
+									"{}  {}/{}{}",
+									row.entry.name,
+									row.entry.players,
+									row.entry.max_players,
+									// Play here counts toward the board: the
+									// master's trusted list, said on the row so
+									// nobody joins to find out.
+									if row.entry.reports_skills {
+										RANKED_TAG
+									} else {
+										""
+									}
 								),
 								if refused.is_none() { C_WHITE } else { C_DIM },
 							)

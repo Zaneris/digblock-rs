@@ -1650,6 +1650,11 @@ fn a_trusted_servers_skill_report_reaches_the_board() {
 		reg.reports_skills,
 		"the master's trusted list names this address, so registration says so"
 	);
+	let (_, list) = get_json(&format!("{}/api/servers", master.url), None);
+	assert_eq!(
+		list["servers"][0]["reportsSkills"], true,
+		"the listing says play here counts"
+	);
 	let (session_a, id_a, name_a) = dev_sign_in(&master.url, "boardA");
 	let (_, id_b, name_b) = dev_sign_in(&master.url, "boardB");
 	let (a, b) = (
@@ -1752,6 +1757,8 @@ fn an_untrusted_servers_skill_report_is_refused() {
 	let server = TestServer::start("unboard", &master.url, true);
 	let reg = server.master_state.registration().expect("registered");
 	assert!(!reg.reports_skills);
+	let (_, list) = get_json(&format!("{}/api/servers", master.url), None);
+	assert_eq!(list["servers"][0]["reportsSkills"], false);
 	let (_, id, _) = dev_sign_in(&master.url, "unboardA");
 	let rows = vec![(AccountId::parse(&id).unwrap(), skills_at(Skill::Mining, 30))];
 	assert_eq!(
