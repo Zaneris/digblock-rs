@@ -37,9 +37,10 @@ could report inflated totals — so the board takes reports from `Master:Hiscore
 `host` or `host:port` entries matched against the address the server is LISTED at (which the probe verified), and from
 nobody else. Registration tells a server whether it is on the list (`RegisterOk.reportsSkills`), so an unlisted server
 never sends a report; one that did is refused with 403, and a refusal is final for that registration. The listing
-publishes the same answer (`ServerSummary.reportsSkills`) and the browser row wears it as a tag, so a player reads
-whether play here counts before spending a join. Reading is public. A signed attestation scheme was considered and
-declined: not worth its complexity at this player count, and the list is the honest statement of who is trusted.
+publishes the same answer (`ServerSummary.reportsSkills`) and the browser row wears it as the sigil's icon — a picture
+where the screens use pictures, never a word — so a player reads whether play here counts before spending a join.
+Reading is public. A signed attestation scheme was considered and declined: not worth its complexity at this player
+count, and the list is the honest statement of who is trusted.
 
 In-game, the character screen grows one line per skill — your rank, when known — because the number on the board is the
 number that makes the C screen's totals mean something. Opening the screen asks the master (`MenuCommand::FetchRanks`);

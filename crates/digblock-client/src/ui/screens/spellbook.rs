@@ -514,6 +514,7 @@ impl SpellScreen {
 							color,
 							highlight: false,
 							caret: false,
+							mark: None,
 						},
 					);
 				}
@@ -559,6 +560,7 @@ impl SpellScreen {
 							color,
 							highlight: hovered,
 							caret: false,
+							mark: None,
 						},
 					);
 					if *ready {

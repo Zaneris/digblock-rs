@@ -450,6 +450,7 @@ impl CharScreen {
 							color,
 							highlight: false,
 							caret: false,
+							mark: None,
 						},
 					);
 				}
@@ -466,6 +467,7 @@ impl CharScreen {
 							color: WHITE,
 							highlight: false,
 							caret: false,
+							mark: None,
 						},
 					);
 				}

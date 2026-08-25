@@ -13,8 +13,10 @@
 
 use super::*;
 
-/// Appended to a server row whose play counts toward the hiscores board.
-pub(crate) const RANKED_TAG: &str = "  · ranked";
+/// The mark on a server row whose play counts toward the hiscores board: the sigil, the game's
+/// own trophy, drawn as the icon it is elsewhere rather than spelled — the same picture the
+/// inventory and the catalog use for it.
+pub(crate) const RANKED_MARK: crate::ui::hud::IconKind = crate::ui::hud::IconKind::Sigil;
 
 impl Menu {
 	/// Build the frame's view. `blink` drives the name-field caret.
@@ -354,21 +356,15 @@ impl Menu {
 								Some(why) => (why.to_string(), C_RED),
 								None => (ping, color),
 							}),
+							// Play here counts toward the board: the master's
+							// trusted list, worn on the row so nobody joins to
+							// find out.
+							mark: row.entry.reports_skills.then_some(RANKED_MARK),
 							..RowSpec::new(
 								refused.is_none().then_some(RowId::Server(i)),
 								format!(
-									"{}  {}/{}{}",
-									row.entry.name,
-									row.entry.players,
-									row.entry.max_players,
-									// Play here counts toward the board: the
-									// master's trusted list, said on the row so
-									// nobody joins to find out.
-									if row.entry.reports_skills {
-										RANKED_TAG
-									} else {
-										""
-									}
+									"{}  {}/{}",
+									row.entry.name, row.entry.players, row.entry.max_players
 								),
 								if refused.is_none() { C_WHITE } else { C_DIM },
 							)
@@ -632,9 +628,12 @@ impl Menu {
 					} else {
 						0.0
 					} + spec
-					.right
-					.as_ref()
-					.map_or(0.0, |(right, _)| col_gap + text_w(right))
+					.mark
+					.map_or(0.0, |_| crate::ui::widgets::mark_w(glyph, scale))
+					+ spec
+						.right
+						.as_ref()
+						.map_or(0.0, |(right, _)| col_gap + text_w(right))
 					+ spec
 						.bar
 						.map_or(0.0, |_| col_gap + crate::ui::widgets::SLIDER_BAR_W * scale)
@@ -654,6 +653,7 @@ impl Menu {
 				bar: spec.bar,
 				color: spec.color,
 				caret: spec.caret,
+				mark: spec.mark,
 			})
 			.collect();
 

@@ -1495,14 +1495,26 @@ fn a_ranked_server_says_so_on_its_row() {
 		},
 	])));
 	let view = menu.view(SIZE, 1.0, false);
-	let text = |name: &str| {
+	let mark = |name: &str| {
 		view.rows
 			.iter()
 			.find(|r| r.text.starts_with(name))
 			.unwrap_or_else(|| panic!("a row for {name}"))
+			.mark
+	};
+	assert_eq!(mark("Beta"), Some(super::view::RANKED_MARK));
+	assert_eq!(mark("Alpha"), None);
+	// A picture, never a word: the row's text is the same either way.
+	let text = |name: &str| {
+		view.rows
+			.iter()
+			.find(|r| r.text.starts_with(name))
+			.unwrap()
 			.text
 			.clone()
 	};
-	assert!(text("Beta").ends_with(super::view::RANKED_TAG));
-	assert!(!text("Alpha").contains(super::view::RANKED_TAG));
+	assert_eq!(
+		text("Beta").trim_start_matches("Beta"),
+		text("Alpha").trim_start_matches("Alpha")
+	);
 }

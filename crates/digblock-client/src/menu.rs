@@ -1592,6 +1592,8 @@ struct RowSpec {
 	/// proportional font, so blinking one in and out would resize the
 	/// panel (sized to its widest row) twice a second.
 	caret: bool,
+	/// An icon after the text — see `widgets::RowContent::mark`.
+	mark: Option<crate::ui::hud::IconKind>,
 }
 
 impl RowSpec {
@@ -1603,6 +1605,7 @@ impl RowSpec {
 			bar: None,
 			color,
 			caret: false,
+			mark: None,
 		}
 	}
 	fn title(t: &str) -> Self {
@@ -1653,6 +1656,8 @@ pub(crate) struct PlacedRow {
 	pub highlight: bool,
 	/// Text-entry caret at the end of `text` (blink phase already applied).
 	pub caret: bool,
+	/// An icon after the text.
+	pub mark: Option<crate::ui::hud::IconKind>,
 }
 
 pub(crate) struct MenuView {
@@ -1698,6 +1703,7 @@ impl MenuView {
 					color: row.color,
 					highlight: row.highlight,
 					caret: row.caret,
+					mark: row.mark,
 				},
 			);
 		}
