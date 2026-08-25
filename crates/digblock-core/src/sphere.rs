@@ -93,16 +93,22 @@ pub enum Refusal {
 	Unloaded,
 }
 
-/// What a sphere may be built of: a block the bar can hold that fills ONE cell at its resting
-/// state. A door is two cells and a slab or stair is a shape the placer orients against a face,
-/// so a shell of either would be a shell of broken objects; a torch hangs from something. The
-/// furniture pieces stand in one cell facing wherever, so they pass. Asked on both ends — the
-/// server refuses a slot holding anything else, the client never offers one.
+/// What a sphere may be built of, DERIVED so a reshaped row moves on its own: a block the bar
+/// can hold, that a body cannot pass (a shell is a wall), that is a material's plain block or a
+/// thing rather than a worked FORM (a slab, stair or door is oriented by its placer against a
+/// face, and the sphere has none to offer), and whose whole object at rest fits ONE cell by
+/// `shapes::object_bounds` — the test a door fails today and a two-cell bed would fail tomorrow.
 pub fn accepts(b: BlockType) -> bool {
 	use crate::block::ShapeFamily;
-	b != BlockType::Air
-		&& b.is_slottable()
-		&& (b.shape_family() == Some(ShapeFamily::Block) || b.is_furniture())
+	use crate::shapes::{GRID, object_bounds};
+	if b == BlockType::Air || !b.is_slottable() || !b.props().collides {
+		return false;
+	}
+	if !matches!(b.shape_family(), Some(ShapeFamily::Block) | None) {
+		return false;
+	}
+	let (_, bounds) = object_bounds((0, 0, 0), make_cell(b, 0));
+	bounds.is_none_or(|bx| bx.max.iter().all(|&m| m <= GRID))
 }
 
 /// The writes one cast performs, in the order they land (`closing_key`): shell cells of air or
@@ -456,23 +462,31 @@ mod tests {
 		);
 	}
 
-	/// What the shell may be made of, asked of every block: one cell at rest and a thing the bar
-	/// holds. The refusals are the shapes a shell would break — the two-cell door, the slab and
-	/// stair a placer orients, the hanging torch — and nothing the world hands out as matter is
-	/// missing from the accepted set. Counted both ways, so a predicate that answered one way
-	/// for everything could not pass.
+	/// What the shell may be made of, asked of every block and checked against the properties
+	/// the answer derives from rather than a list: every accepted block is one the bar holds, one a
+	/// body cannot pass, never a worked form, and one whose object at rest stays inside its cell —
+	/// so the two-cell door fails on geometry, and a piece that grows a second cell would too.
+	/// Counted both ways, so a predicate that answered one way for everything could not pass.
 	#[test]
-	fn a_sphere_is_built_of_one_cell_blocks_the_bar_can_hold() {
+	fn a_sphere_is_built_of_one_cell_walls_the_bar_can_hold() {
+		use crate::shapes::{GRID, object_bounds};
 		let (mut yes, mut no) = (0, 0);
 		for b in BlockType::ALL {
-			let ok = accepts(b);
-			if ok {
+			if accepts(b) {
 				assert!(
 					b.is_slottable(),
 					"{b:?} is accepted but the bar cannot hold it"
 				);
-				assert!(!b.is_door() && !b.is_slab() && !b.is_stair(), "{b:?}");
-				assert_ne!(b, BlockType::Torch, "a torch hangs from something");
+				assert!(b.props().collides, "{b:?} is a wall a body walks through");
+				assert!(
+					!b.is_door() && !b.is_slab() && !b.is_stair(),
+					"{b:?} is a worked form"
+				);
+				let (_, bx) = object_bounds((0, 0, 0), make_cell(b, 0));
+				assert!(
+					bx.is_none_or(|bx| bx.max.iter().all(|&m| m <= GRID)),
+					"{b:?} wears more than one cell"
+				);
 				yes += 1;
 			} else {
 				no += 1;
@@ -481,6 +495,7 @@ mod tests {
 		assert!(yes > 0 && no > 0, "the sweep saw one kind only");
 		assert!(accepts(BlockType::Stone), "plain matter builds");
 		assert!(accepts(BlockType::Chair), "furniture stands in one cell");
+		assert!(!accepts(BlockType::LumberDoor), "a door is two cells");
 		assert!(!accepts(BlockType::Water), "the bar never holds water");
 		assert!(
 			!accepts(BlockType::Wardglass),

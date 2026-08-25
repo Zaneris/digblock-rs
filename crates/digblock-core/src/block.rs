@@ -1328,16 +1328,6 @@ impl BlockType {
 		matches!(self.props().shape, Some(ShapeKind::Slab))
 	}
 
-	/// A furnishing: a shaped thing that stands whole in ONE cell at its resting state, which is
-	/// what lets a spell stand one up without a placer's face to orient it against.
-	#[inline]
-	pub fn is_furniture(self) -> bool {
-		matches!(
-			self.props().shape,
-			Some(ShapeKind::Table | ShapeKind::Chair | ShapeKind::Bed)
-		)
-	}
-
 	/// The full block a slab stack completes into on its third grow: the
 	/// same material in the `Block` shape. Derived rather than tabled, so a
 	/// new material's slab cannot be authored without something to complete

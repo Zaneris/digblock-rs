@@ -163,39 +163,41 @@ actions returned rather than applied. Six spell families shipped; the rest are �
   unwind hands back the fares, the blocks never placed and every block it just took down — but not one somebody dug out
   mid-climb, since the dig already paid them. A dig of a standing shell hands the block back like any placed block,
   which is why the spell needs no conjured row of its own and why the world's own rules apply to what it builds: grass
-  smothers under grass, a shell of dirt greens. What it may be built OF is `sphere::accepts` — a block the bar can hold
-  that fills one cell at its resting state; doors (two cells), slabs and stairs (a placer orients them) and the torch
-  (it hangs) are refused, the furniture pieces pass — and the client's own gates speak the refusal by name
-  (`Msg::SphereNoBlock`, `SphereBadBlock`, `SphereBlocksShort`, the last with the count) where the wire's `CastRefusal`
-  reasons are spell-blind. **The seal lights the wisp** (`wisp_price`, `unlock::wisp_secs`), because most matter makes a
-  dark room: the fare is part of the bill and its XP part of the award. Three ranks (`unlock::sphere_radius`), each a
-  wider sphere at a doubled fare. **The cells never travel.** `sphere::plan` IS the shared rule — one head, one radius
-  and one block give the same writes in the same order on both ends — so the wire carries only what identifies the
-  sphere and how far it got: `ServerMsg::SphereWinding` as the channel begins and `ServerMsg::SphereEnded` at the seal
-  or the break, two frames for a cast of any rank (plus a rebase when the settlement returns something). The per-cell
-  broadcast this replaced sent one `EditApplied` per cell, hundreds inside a single tick against an outbound queue whose
-  refusal DROPS the peer — which made a deliberately broken channel a free, repeatable mass disconnect. The server still
-  journals every cell it writes, and that is what a joiner, the resync rotation and an evicted column all read, so
-  nothing about arriving late changed. `landed` is a PLAN-PREFIX length (`sphere::landed_by`) and deliberately NOT a
-  count of cells written: the two differ wherever a landing was declined, and a client cannot derive which ones the
-  server skipped, so the prefix is the one currency both ends share — and it is what makes a break mid-climb exact. The
-  closing is the SHELL, and it happens DURING the channel: the plan's order is floor to crown with each ring swept
-  around, and the cells land in that order across `unlock::channel_ticks` — the caster's client and the offline engine
-  through the same `sphere::Closing`, the server through its own write path — so the sphere rises about the caster while
-  they stand still and seals overhead the tick the channel completes, with nothing animated but the world. EVERY watcher
-  runs that same climb, not just the caster: `SphereWinding` names the head, the radius, the span and the block, which
-  is the whole of what `sphere::plan` needs, so a remote's sphere rises in place rather than appearing whole — and
-  `SphereEnded`'s prefix reconciles whichever clock ran ahead. An interrupted channel UNWINDS: the client sends
-  `CastBreak` (and the server breaks it on its own if the caster moves or leaves), every cell still standing comes back
-  down crown-first through the same write path, and the bill — taken as the channel began — returns. An unwind reads the
-  climb's OWN record rather than re-deriving, since a plan drawn against a standing sphere names precisely the cells
-  missing from it. `SphereEnded` is the SEAL as well: the one recording (`ward_close.ogg`, the file keeping the spell's
-  old name) and the caster's wash; a cell landing makes no sound of its own. A cell somebody steps into mid-climb is
-  left unwritten — a hole where a player stood, the protected cells' honesty — and a block somebody digs out mid-climb
-  stays dug through an unwind. **The spell was the Ward** and built its shell of `Wardglass`, a `conjured` row that digs
-  to nothing; the Causeway still writes that row, and a server boot sweeps every pane of it out of the journal
-  (`sweep_conjured_glass`), since at boot nothing legitimately holds one — the old spheres are gone, and a road's plank
-  left by a crash has no trail to retire it.
+  smothers under grass, a shell of dirt greens. What it may be built OF is `sphere::accepts`, DERIVED from the row
+  rather than listed: a block the bar can hold, that a body cannot pass (`collides`), that is a plain block or a thing
+  rather than a worked form (`ShapeFamily` — slabs, stairs and doors are oriented by their placer, and a new form is
+  refused unnamed), and whose whole object at rest fits one cell by `shapes::object_bounds` — so a door fails on
+  geometry, and a furnishing that grows a second cell fails the day it does — and the client's own gates speak the
+  refusal by name (`Msg::SphereNoBlock`, `SphereBadBlock`, `SphereBlocksShort`, the last with the count) where the
+  wire's `CastRefusal` reasons are spell-blind. **The seal lights the wisp** (`wisp_price`, `unlock::wisp_secs`),
+  because most matter makes a dark room: the fare is part of the bill and its XP part of the award. Three ranks
+  (`unlock::sphere_radius`), each a wider sphere at a doubled fare. **The cells never travel.** `sphere::plan` IS the
+  shared rule — one head, one radius and one block give the same writes in the same order on both ends — so the wire
+  carries only what identifies the sphere and how far it got: `ServerMsg::SphereWinding` as the channel begins and
+  `ServerMsg::SphereEnded` at the seal or the break, two frames for a cast of any rank (plus a rebase when the
+  settlement returns something). The per-cell broadcast this replaced sent one `EditApplied` per cell, hundreds inside a
+  single tick against an outbound queue whose refusal DROPS the peer — which made a deliberately broken channel a free,
+  repeatable mass disconnect. The server still journals every cell it writes, and that is what a joiner, the resync
+  rotation and an evicted column all read, so nothing about arriving late changed. `landed` is a PLAN-PREFIX length
+  (`sphere::landed_by`) and deliberately NOT a count of cells written: the two differ wherever a landing was declined,
+  and a client cannot derive which ones the server skipped, so the prefix is the one currency both ends share — and it
+  is what makes a break mid-climb exact. The closing is the SHELL, and it happens DURING the channel: the plan's order
+  is floor to crown with each ring swept around, and the cells land in that order across `unlock::channel_ticks` — the
+  caster's client and the offline engine through the same `sphere::Closing`, the server through its own write path — so
+  the sphere rises about the caster while they stand still and seals overhead the tick the channel completes, with
+  nothing animated but the world. EVERY watcher runs that same climb, not just the caster: `SphereWinding` names the
+  head, the radius, the span and the block, which is the whole of what `sphere::plan` needs, so a remote's sphere rises
+  in place rather than appearing whole — and `SphereEnded`'s prefix reconciles whichever clock ran ahead. An interrupted
+  channel UNWINDS: the client sends `CastBreak` (and the server breaks it on its own if the caster moves or leaves),
+  every cell still standing comes back down crown-first through the same write path, and the bill — taken as the channel
+  began — returns. An unwind reads the climb's OWN record rather than re-deriving, since a plan drawn against a standing
+  sphere names precisely the cells missing from it. `SphereEnded` is the SEAL as well: the one recording
+  (`ward_close.ogg`, the file keeping the spell's old name) and the caster's wash; a cell landing makes no sound of its
+  own. A cell somebody steps into mid-climb is left unwritten — a hole where a player stood, the protected cells'
+  honesty — and a block somebody digs out mid-climb stays dug through an unwind. **The spell was the Ward** and built
+  its shell of `Wardglass`, a `conjured` row that digs to nothing; the Causeway still writes that row, and a server boot
+  sweeps every pane of it out of the journal (`sweep_conjured_glass`), since at boot nothing legitimately holds one —
+  the old spheres are gone, and a road's plank left by a crash has no trail to retire it.
 - **The Causeway** — a trail of conjured glass laid one plank at a time under the feet the tick they leave support and
   taken up behind: `causeway::TRAIL` planks stand at once and the head retires the tail, so the road follows the caster
   and never accumulates. `Trail::wants` is the whole rule and its only input is `Player::grounded` — a supported player
