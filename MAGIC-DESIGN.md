@@ -164,9 +164,9 @@ actions returned rather than applied. Six spell families shipped; the rest are �
   mid-climb, since the dig already paid them. A dig of a standing shell hands the block back like any placed block,
   which is why the spell needs no conjured row of its own and why the world's own rules apply to what it builds: grass
   smothers under grass, a shell of dirt greens. What it may be built OF is `sphere::accepts`, DERIVED from the row
-  rather than listed: a block the bar can hold, that a body cannot walk through (`shapes::passable`, which is also why
-  the torch is out), that is a plain block or a thing rather than a worked form (`ShapeFamily` — slabs, stairs and doors
-  are oriented by their placer, and a new form is refused unnamed), and whose whole object at rest fits one cell by
+  rather than listed: a block the bar can hold, that a body collides with (`shapes::collides`, which is also why the
+  torch is out), that is a plain block or a thing rather than a worked form (`ShapeFamily` — slabs, stairs and doors are
+  oriented by their placer, and a new form is refused unnamed), and whose whole object at rest fits one cell by
   `shapes::object_bounds` — so a door fails on geometry, and a furnishing that grows a second cell fails the day it does
   — and the client's own gates speak the refusal by name (`Msg::SphereNoBlock`, `SphereBadBlock`, `SphereBlocksShort`,
   the last with the count) where the wire's `CastRefusal` reasons are spell-blind. **The seal lights the wisp**

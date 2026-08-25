@@ -141,7 +141,7 @@ impl FluidSim {
 /// is the thing that would drift.
 pub fn resolve(world: &impl FluidWorld, x: i32, y: i32, z: i32) -> Option<BlockType> {
 	let cur = world.get(x, y, z)?;
-	if cur.is_fluid_source() || cur.props().collides {
+	if cur.is_fluid_source() || cur.props().solid {
 		return None;
 	}
 	Some(if regenerates(world, x, y, z, cur) {
@@ -155,7 +155,7 @@ pub fn resolve(world: &impl FluidWorld, x: i32, y: i32, z: i32) -> Option<BlockT
 			let Some(a) = world.get(nx, y, nz).and_then(BlockType::water_amount) else {
 				continue;
 			};
-			if a > m && world.get(nx, y - 1, nz).is_some_and(|b| b.props().collides) {
+			if a > m && world.get(nx, y - 1, nz).is_some_and(|b| b.props().solid) {
 				m = a;
 			}
 		}

@@ -94,15 +94,15 @@ pub enum Refusal {
 }
 
 /// What a sphere may be built of, DERIVED so a reshaped row moves on its own: a block the bar
-/// can hold, that a body cannot walk through (`shapes::passable` — a shell is a wall, and a torch
-/// is not), that is a material's plain block or a thing rather than a worked FORM (a slab, stair
+/// can hold, that a body collides with (`shapes::collides` — a shell is a wall, and a torch is
+/// not), that is a material's plain block or a thing rather than a worked FORM (a slab, stair
 /// or door is oriented by its placer against a face, and the sphere has none to offer), and whose
 /// whole object at rest fits ONE cell by `shapes::object_bounds` — the test a door fails today.
 pub fn accepts(b: BlockType) -> bool {
 	use crate::block::ShapeFamily;
-	use crate::shapes::{GRID, object_bounds, passable};
+	use crate::shapes::{GRID, collides, object_bounds};
 	let at_rest = make_cell(b, 0);
-	if b == BlockType::Air || !b.is_slottable() || passable(at_rest) {
+	if b == BlockType::Air || !b.is_slottable() || !collides(at_rest) {
 		return false;
 	}
 	if !matches!(b.shape_family(), Some(ShapeFamily::Block) | None) {
@@ -470,7 +470,7 @@ mod tests {
 	/// that grows a second cell would too. Counted both ways, so one answer for all could not pass.
 	#[test]
 	fn a_sphere_is_built_of_one_cell_walls_the_bar_can_hold() {
-		use crate::shapes::{GRID, object_bounds, passable};
+		use crate::shapes::{GRID, collides, object_bounds};
 		let (mut yes, mut no) = (0, 0);
 		for b in BlockType::ALL {
 			if accepts(b) {
@@ -479,7 +479,7 @@ mod tests {
 					"{b:?} is accepted but the bar cannot hold it"
 				);
 				assert!(
-					!passable(make_cell(b, 0)),
+					collides(make_cell(b, 0)),
 					"{b:?} is a wall a body walks through"
 				);
 				assert!(

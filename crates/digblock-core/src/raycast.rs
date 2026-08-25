@@ -35,7 +35,7 @@ pub fn raycast(
 	cell_at: &dyn Fn(i32, i32, i32) -> Option<u16>,
 ) -> Option<RayHit> {
 	raycast_with(origin, dir, max_dist, cell_at, &|c| {
-		BlockType::from_id(cell_id(c)).props().collides
+		BlockType::from_id(cell_id(c)).props().solid
 	})
 }
 
@@ -50,7 +50,7 @@ pub fn raycast_fluid(
 ) -> Option<RayHit> {
 	raycast_with(origin, dir, max_dist, cell_at, &|c| {
 		let b = BlockType::from_id(cell_id(c));
-		b.props().collides || b.is_fluid_source()
+		b.props().solid || b.is_fluid_source()
 	})
 }
 

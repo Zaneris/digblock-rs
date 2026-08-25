@@ -600,8 +600,10 @@ pub struct BlockProps {
 	/// not a fluid; a translucent SHAPED row keeps `Shaped` here and names
 	/// its see-through-ness by bucket alone).
 	pub class: RenderClass,
-	/// Blocks the player and stops the picking ray.
-	pub collides: bool,
+	/// MATTER: stops the aim ray, stands against fluid, counts as ground for water regen, meets
+	/// light. Not what a body collides with — that is the shape's collision boxes, per state,
+	/// asked through `shapes::collides` (an open door and the torch are solid here and walked through).
+	pub solid: bool,
 	pub bucket: MeshBucket,
 	pub fluid: Option<FluidProps>,
 	/// Cave carving may replace this block (natural terrain, not
@@ -691,10 +693,10 @@ pub enum DigFamily {
 	Rock,
 }
 
-const fn props(class: RenderClass, collides: bool, side: u16, top: u16, bottom: u16) -> BlockProps {
+const fn props(class: RenderClass, solid: bool, side: u16, top: u16, bottom: u16) -> BlockProps {
 	BlockProps {
 		class,
-		collides,
+		solid,
 		bucket: MeshBucket::Solid,
 		fluid: None,
 		carveable: false,
@@ -832,7 +834,7 @@ const fn seams(mut p: BlockProps, level: u8) -> BlockProps {
 const fn water_props(amount: u8, source: bool, falling: bool) -> BlockProps {
 	BlockProps {
 		class: RenderClass::Translucent,
-		collides: false,
+		solid: false,
 		bucket: MeshBucket::Water,
 		fluid: Some(FluidProps {
 			amount,
@@ -1132,7 +1134,7 @@ impl BlockType {
 	/// May a placement overwrite a cell holding this block? Air and water yield; every real block
 	/// must be dug first. THE one authority, shared by the client's prediction and the server's
 	/// validation — the two must agree exactly or a place either desyncs or is rejected after
-	/// prediction. Deliberately not `!props().collides`: an OPEN door has empty collision boxes,
+	/// prediction. Deliberately not `!shapes::collides`: an OPEN door has empty collision boxes,
 	/// so that test let a right-click inside a doorway overwrite the door and orphan its top half.
 	#[inline]
 	pub fn is_replaceable(self) -> bool {
@@ -1310,7 +1312,7 @@ impl BlockType {
 	/// sources would let them grow a hanging source shelf.
 	#[inline]
 	pub fn is_whole(self) -> bool {
-		self.props().collides || self.is_fluid_source()
+		self.props().solid || self.is_fluid_source()
 	}
 
 	#[inline]

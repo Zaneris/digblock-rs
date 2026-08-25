@@ -354,13 +354,14 @@ pub fn interaction_boxes(cell: u16) -> &'static [SubBox] {
 	shape_of_cell(cell).map_or(&[], |v| &v.interaction)
 }
 
-/// Whether a body walks through this cell: nothing solid at all, or a shaped thing with no
-/// collision boxes (an open door, a torch). The physics' own answer, so a rule that needs "is
-/// this a wall" — the sphere's — cannot drift from what the feet feel.
+/// Whether a BODY collides with this cell — THE definition, per state: solid matter that is a
+/// full cube, or a shaped one with collision boxes (an open door and the torch have none). Every
+/// physics and placement question asks this; `BlockProps::solid` is matter, which is a different
+/// question (the ray and fluid respect a torch; the feet pass it).
 #[inline]
-pub fn passable(cell: u16) -> bool {
-	!BlockType::from_id(cell_id(cell)).props().collides
-		|| (!is_full_cube(cell) && collision_boxes(cell).is_empty())
+pub fn collides(cell: u16) -> bool {
+	let b = BlockType::from_id(cell_id(cell));
+	b.props().solid && (b.props().shape.is_none() || !collision_boxes(cell).is_empty())
 }
 
 /// Box of best fit around a cell's drawn geometry, in twelfths — `None`

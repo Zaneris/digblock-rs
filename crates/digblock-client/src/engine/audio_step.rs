@@ -17,7 +17,7 @@ impl Engine {
 			(feet - 0.05).floor() as i32,
 			self.player.pos.z.floor() as i32,
 		);
-		(below, below.is_some_and(|b| b.props().collides))
+		(below, below.is_some_and(|b| b.props().solid))
 	}
 
 	/// Per-frame audio upkeep, after the camera settles: listener pose, footsteps, waterfall

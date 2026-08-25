@@ -188,7 +188,7 @@ impl Engine {
 			// left, and that action is on the other button.
 			self.scoop_ready() && hit.block.is_fluid_source()
 		} else {
-			hit.block.props().collides && hit.block.dig_hardness(hit.cell.1).is_some()
+			hit.block.props().solid && hit.block.dig_hardness(hit.cell.1).is_some()
 		}
 	}
 

@@ -316,12 +316,12 @@ mod tests {
 		let (x, z) = (4, 4);
 		let y = (0..=WORLD_VBLOCK)
 			.rev()
-			.find(|&y| matches!(store.block_at(x, y, z), Some(b) if b.props().collides))
+			.find(|&y| matches!(store.block_at(x, y, z), Some(b) if b.props().solid))
 			.expect("a solid block in the column");
 		let prev = store
 			.set_block(x, y, z, BlockType::Air)
 			.expect("edit lands");
-		assert!(prev.props().collides);
+		assert!(prev.props().solid);
 		journal.record(BlockEdit {
 			x,
 			y,
@@ -352,7 +352,7 @@ mod tests {
 
 		let y = (0..=WORLD_VBLOCK)
 			.rev()
-			.find(|&y| matches!(store.block_at(2, y, 2), Some(b) if b.props().collides))
+			.find(|&y| matches!(store.block_at(2, y, 2), Some(b) if b.props().solid))
 			.unwrap();
 		let prev_block = store.block_at(2, y, 2).unwrap();
 		let mut edits = Vec::new();

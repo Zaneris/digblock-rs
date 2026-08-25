@@ -1190,7 +1190,7 @@ impl digblock_core::fluid::FluidWorld for PipelineWorld<'_> {
 		// world hosted. Refusing the WRITE rather than filtering the
 		// schedule is what covers every direction of approach:
 		// `schedule_around` always enqueues the floor row too, and until now only
-		// `cur.props().collides` kept water out of it — a property of
+		// `cur.props().solid` kept water out of it — a property of
 		// whatever block happens to sit there, which is precisely what
 		// the floor rule must not depend on. The sim reads `false` as
 		// "didn't land" and declines to propagate onward. Offline the

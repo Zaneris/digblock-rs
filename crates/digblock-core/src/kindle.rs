@@ -5,8 +5,6 @@
 //! Its own clock is what lets the caster port away and leave it burning
 //! exactly as long as any other.
 
-use crate::block::BlockType;
-use crate::chunk::cell_id;
 use glam::Vec3;
 
 /// Seconds a kindled light stands.
@@ -22,11 +20,11 @@ pub fn host_cell(eye: Vec3) -> (i32, i32, i32) {
 }
 
 /// Whether a cell can hold conjured light: anything a head can be in —
-/// air, water, a walk-through block. Asked of the cell's CURRENT value on
-/// both ends, so a caster whose head the server has inside stone (an
-/// unadopted claim) is refused rather than lighting the rock.
+/// air, water, a walk-through block, by the physics' own answer. Asked of
+/// the cell's CURRENT value on both ends, so a caster whose head the server
+/// has inside stone (an unadopted claim) is refused rather than lighting the rock.
 pub fn hosts(cell: Option<u16>) -> bool {
-	cell.is_some_and(|v| !BlockType::from_id(cell_id(v)).props().collides)
+	cell.is_some_and(|v| !crate::shapes::collides(v))
 }
 
 /// Where the light radiates from: the host cell's centre.
@@ -41,6 +39,7 @@ pub fn origin(cell: (i32, i32, i32)) -> Vec3 {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::block::BlockType;
 	use crate::chunk::make_cell;
 
 	/// A light never stands inside geometry. The arbiter is the placement contract every other
