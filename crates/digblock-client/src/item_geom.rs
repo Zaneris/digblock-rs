@@ -239,6 +239,17 @@ fn sigil_faces(out: &mut Vec<ItemFace>) {
 	box_faces([4, 4, 4], [8, 8, 8], |_| gem, out);
 }
 
+/// A crest: the sigil's standing plate and foot, with the skill's emblem essence set where the
+/// sigil's crystal sits — the chip sprite's own layer, so the crest and the chip that pays for it
+/// are one colour. Drawn face-on for the same reason the sigil is: a thing you display.
+fn crest_faces(skill: digblock_core::skills::Skill, out: &mut Vec<ItemFace>) {
+	let frame = digblock_core::block::tex::METAL;
+	let emblem = skill.emblem().icon_tex();
+	box_faces([4, 0, 4], [8, 2, 8], |_| frame, out);
+	box_faces([2, 2, 5], [10, 10, 7], |_| frame, out);
+	box_faces([4, 4, 4], [8, 8, 8], |_| emblem, out);
+}
+
 /// Total geometry height in twelfths — doors stack two cells, and the
 /// icon projector sizes its rect from this.
 pub(crate) fn height(kind: IconKind) -> i32 {
@@ -295,6 +306,7 @@ fn build_faces(kind: IconKind, out: &mut Vec<ItemFace>) {
 		IconKind::Siphon => siphon_faces(out),
 		IconKind::Pick => pick_faces(out),
 		IconKind::Sigil => sigil_faces(out),
+		IconKind::Crest(skill) => crest_faces(skill, out),
 		// A chip is a sprite, never geometry: `hud::draw_icon` routes it
 		// to the flat path before this is asked.
 		IconKind::Essence(_) => {}

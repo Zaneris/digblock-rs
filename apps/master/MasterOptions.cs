@@ -11,6 +11,20 @@ public sealed class MasterOptions
     public AuthOptions Auth { get; set; } = new();
     public NetOptions Net { get; set; } = new();
     public DevOptions Dev { get; set; } = new();
+    public HiscoresOptions Hiscores { get; set; } = new();
+}
+
+/// <summary>Who may write to the board. Token verification proves a server is REAL, not that
+/// its sim is honest, and any registered server could report inflated totals — so the global
+/// board takes reports from a hand-kept list and nobody else. Deliberately no scheme beyond
+/// that: a signed attestation is not worth its complexity at this player count.</summary>
+public sealed class HiscoresOptions
+{
+    /// <summary>Addresses whose skill reports are believed, each a <c>host</c> or
+    /// <c>host:port</c> as the server is listed (its advertised host, or the observed one
+    /// when it advertised none). Compared case-insensitively; a bare host trusts every port.
+    /// Empty — the shipped default — means no server writes and the board stays blank.</summary>
+    public string[] TrustedServers { get; set; } = [];
 }
 
 public sealed class NetOptions

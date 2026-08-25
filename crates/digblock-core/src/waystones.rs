@@ -240,7 +240,7 @@ mod tests {
 				assert_eq!(y, h, "a disc write must be the floor itself");
 				assert!(
 					crate::block::BlockType::try_from_id(crate::chunk::cell_id(v))
-						.is_some_and(|b| b.props().collides),
+						.is_some_and(|b| b.props().solid),
 					"the floor must stay solid ground"
 				);
 				floor += 1;

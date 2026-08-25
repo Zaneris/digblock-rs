@@ -52,11 +52,11 @@ impl Engine {
 		self.dig = None;
 		self.cast = None;
 		// The backstop only. A climb is UNWOUND — glass down, fare back —
-		// by `abandon_ward` at the sites that still have the ward's own
+		// by `abandon_sphere` at the sites that still have the sphere's own
 		// world under them; by the time a swap gets here the pipeline may
 		// already be the next world's, and writing into that one would
 		// scatter the old sphere's cells through it.
-		self.ward_climbs.clear();
+		self.sphere_climbs.clear();
 		self.arc_on = false;
 		self.wisp_left = 0.0;
 		// Forgotten, never lifted: the pipeline may already be the next
@@ -198,11 +198,11 @@ impl Engine {
 	/// snapshot-based store (web) serializes from that overlay, and this
 	/// is its last chance to see it before the pipeline is replaced.
 	pub(super) fn close_local_save(&mut self) {
-		// Before the edits are drained: a ward still climbing has to come
-		// back down INTO this save, or the file keeps half a sphere of
-		// glass and the caster keeps none of the fare. Every path that
+		// Before the edits are drained: a sphere still climbing has to come
+		// back down INTO this save, or the file keeps half a shell and the
+		// caster keeps none of the bill. Every path that
 		// puts a local world down comes through here.
-		self.abandon_ward();
+		self.abandon_sphere();
 		let recorded = self.pipeline.take_recorded_edits();
 		if let Some(store) = self.save.world_store.as_mut()
 			&& self.save.in_local_save
@@ -226,7 +226,7 @@ impl Engine {
 		// has glass standing in it and a fare spent on it. The local-save
 		// paths reach this through `close_local_save`; a server we just
 		// left has no save to flush, so it comes through here.
-		self.abandon_ward();
+		self.abandon_sphere();
 		let nanos = web_time::SystemTime::now()
 			.duration_since(web_time::UNIX_EPOCH)
 			.map_or(0, |d| d.subsec_nanos());

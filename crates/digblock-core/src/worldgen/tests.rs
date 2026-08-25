@@ -125,7 +125,7 @@ fn a_pool_step_ends_in_a_weir() {
 			assert_eq!(s.height, wl - 1, "one block deep at ({x},{z})");
 			assert_eq!(column_block(wl, s), BlockType::Water);
 			assert!(
-				column_block(wl - 1, s).props().collides,
+				column_block(wl - 1, s).props().solid,
 				"a weir stands on solid ground at ({x},{z})"
 			);
 			found += 1;

@@ -261,6 +261,11 @@ pub struct ShapeVariant {
 	/// Physics boxes (world edit validation shares them). Open doors:
 	/// EMPTY — the leaf stops blocking entirely.
 	pub collision: Vec<SubBox>,
+	/// What light meets (`gi` builds a shaped cell's covers from these): equals `collision`
+	/// except a fixture a body walks THROUGH but that still stands in the way of light — the
+	/// torch. The open door is empty here as it is in `collision`, on purpose: it lets light
+	/// through.
+	pub light: Vec<SubBox>,
 	/// Picking boxes for the interact ray: equals `collision` except an
 	/// open door, whose swung leaf stays clickable to close it.
 	pub interaction: Vec<SubBox>,
@@ -336,10 +341,27 @@ pub fn collision_boxes(cell: u16) -> &'static [SubBox] {
 	shape_of_cell(cell).map_or(&[], |v| &v.collision)
 }
 
+/// Boxes light meets ([] for full cubes and for an open door; the torch's post, which a body
+/// walks through but light does not).
+#[inline]
+pub fn light_boxes(cell: u16) -> &'static [SubBox] {
+	shape_of_cell(cell).map_or(&[], |v| &v.light)
+}
+
 /// Interact-ray boxes (open door = swung leaf).
 #[inline]
 pub fn interaction_boxes(cell: u16) -> &'static [SubBox] {
 	shape_of_cell(cell).map_or(&[], |v| &v.interaction)
+}
+
+/// Whether a BODY collides with this cell — THE definition, per state: solid matter that is a
+/// full cube, or a shaped one with collision boxes (an open door and the torch have none). Every
+/// physics and placement question asks this; `BlockProps::solid` is matter, which is a different
+/// question (the ray and fluid respect a torch; the feet pass it).
+#[inline]
+pub fn collides(cell: u16) -> bool {
+	let b = BlockType::from_id(cell_id(cell));
+	b.props().solid && (b.props().shape.is_none() || !collision_boxes(cell).is_empty())
 }
 
 /// Box of best fit around a cell's drawn geometry, in twelfths — `None`
@@ -533,8 +555,11 @@ const BED_BOXES: [SubBox; 6] = [
 static TORCHES: LazyLock<[ShapeVariant; 1]> = LazyLock::new(|| {
 	let boxes = TORCH_BOXES.to_vec();
 	let baked = bake(&boxes);
+	// Walked through like an open door — a torch is a fixture, not a
+	// wall — while the interact ray still finds it to dig.
 	[ShapeVariant {
-		collision: boxes.clone(),
+		collision: Vec::new(),
+		light: boxes.clone(),
 		interaction: boxes,
 		quads: baked.quads,
 		face_masks: baked.face_masks,
@@ -560,6 +585,7 @@ fn furniture(canonical: &[SubBox], k: u8) -> ShapeVariant {
 	let baked = bake(&boxes);
 	ShapeVariant {
 		collision: boxes.clone(),
+		light: boxes.clone(),
 		interaction: boxes,
 		quads: baked.quads,
 		face_masks: baked.face_masks,
@@ -575,6 +601,7 @@ static SLABS: LazyLock<[ShapeVariant; 4]> = LazyLock::new(|| {
 		let baked = bake(&boxes);
 		ShapeVariant {
 			collision: boxes.clone(),
+			light: boxes.clone(),
 			interaction: boxes,
 			quads: baked.quads,
 			face_masks: baked.face_masks,
@@ -591,6 +618,7 @@ static STAIRS: LazyLock<[ShapeVariant; 4]> = LazyLock::new(|| {
 		let baked = bake(&boxes);
 		ShapeVariant {
 			collision: boxes.clone(),
+			light: boxes.clone(),
 			interaction: boxes,
 			quads: baked.quads,
 			face_masks: baked.face_masks,
@@ -636,6 +664,7 @@ static DOORS: LazyLock<[ShapeVariant; 16]> = LazyLock::new(|| {
 		ShapeVariant {
 			// Collision is always the UNCUT leaf (lites don't carve) —
 			// and nothing at all while open.
+			light: if open { Vec::new() } else { slab.clone() },
 			collision: if open { Vec::new() } else { slab },
 			// The interact ray still finds an open door on its swung leaf.
 			interaction: interact,

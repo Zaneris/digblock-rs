@@ -145,15 +145,15 @@ For `just run`:
   direction that catches one. `DIG_VAULT` (sealed stone vault + torch; `DIG_VAULT_DARK=1` drops the torch and implies
   it), `DIG_ROOF`, `DIG_TUNNEL` (sealed bore past the cascades' coverage — the unproven-daylight capture; pair with a
   low `--pos`, and the same run above `SEA_LEVEL` is the geometry-identical control), `DIG_DIVE`, `DIG_SHAPES`,
-  `DIG_RIVER` (flooded basin + `--pitch -35`, the only pose with a SHADED water surface on screen), `DIG_WARD=<radius>`
-  (a ward closing about spawn with no cast behind it, at the cast's own climb; `DIG_WARD_AGE=<secs>` holds the climb
-  that far in), `DIG_PLAYERBOX=<item>` (a fake remote holding a HELD-ITEM WIRE id, so the scene walks the real
-  `held_icon` decode), `DIG_MINING=<level>`, `DIG_TORCHES=<n>` / `DIG_TORCHES_FAR=<n>` / `DIG_TORCHES_WALL=1`,
-  `DIG_CONFETTI=1`, `DIG_CRACK=<percent>`, `DIG_SIPHON=<percent>` (rides `DIG_ORE`, fatal without it), `DIG_DOORS=1`,
-  `DIG_CAST=<percent>` (poses the cast channel's aura at that progress with no hold behind it), `DIG_ORE=<tier 1..=4>`
-  (hollows a chamber around the nearest deposit and grants its level — the carve must not touch the vein, or the
-  anti-dupe deletes what is being photographed), `DIG_NODE=<heartwood|leystone|springstone>`,
-  `DIG_SCREEN=menu|inventory|inventory-hover|alchemy|alchemy-hover|transmute|transmuting|skills|spellbook|spellbook-hover|hand|bucket|bucket-full|torch|siphon|pick|sigil`
+  `DIG_RIVER` (flooded basin + `--pitch -35`, the only pose with a SHADED water surface on screen),
+  `DIG_SPHERE=<radius>` (a glass sphere closing about spawn with no cast behind it, at the cast's own climb;
+  `DIG_SPHERE_AGE=<secs>` holds the climb that far in), `DIG_PLAYERBOX=<item>` (a fake remote holding a HELD-ITEM WIRE
+  id, so the scene walks the real `held_icon` decode), `DIG_MINING=<level>`, `DIG_TORCHES=<n>` / `DIG_TORCHES_FAR=<n>` /
+  `DIG_TORCHES_WALL=1`, `DIG_CONFETTI=1`, `DIG_CRACK=<percent>`, `DIG_SIPHON=<percent>` (rides `DIG_ORE`, fatal without
+  it), `DIG_DOORS=1`, `DIG_CAST=<percent>` (poses the cast channel's aura at that progress with no hold behind it),
+  `DIG_ORE=<tier 1..=4>` (hollows a chamber around the nearest deposit and grants its level — the carve must not touch
+  the vein, or the anti-dupe deletes what is being photographed), `DIG_NODE=<heartwood|leystone|springstone>`,
+  `DIG_SCREEN=menu|inventory|inventory-hover|alchemy|alchemy-hover|transmute|transmuting|skills|spellbook|spellbook-hover|hand|bucket|bucket-full|torch|siphon|pick|sigil|crest-mining|crest-alchemy|crest-arcana`
   (the pages are input-only and otherwise invisible to headless capture; the tool names cycle the roster, and screen
   stocking grants every tool since a fresh player owns none). The table's remaining rows are levers rather than scenes —
   `DIG_STUB` and `DIG_GI_ITERS` above, `DIG_SPIKELOG` below, plus `DIG_GI=<window|probes>` (paint the voxel window or
@@ -219,6 +219,10 @@ parses `Essence::ident` — the untranslated operator's word, deliberately NOT t
 same thing whatever language the client shows. Compass in `/tp`: east = sunrise = −x.
 
 - Use `127.0.0.1`, **never `localhost`** (macOS resolves it to `::1`; the server binds IPv4 only).
+- A server is listed only at a port inside `digblock_server::PORT_RANGE`, the master's `ServerPorts` mirrored and pinned
+  by `the_masters_port_block_mirrors_ours` (which also holds the deploy kit's quoted block to it). A claim is
+  `host:port`, so one machine runs several; the kit's `.env` `SERVER_PORT` is the one knob, and it also names the
+  compose project — compose names one after its FOLDER, and two same-named folders replace each other's containers.
 - Anything that can't open a browser signs in through `POST /api/dev/signin`, honoured only under
   `ASPNETCORE_ENVIRONMENT=Development` — a master with it set anywhere else **refuses to boot**. The dev master also
   needs `Master__Probe__AllowPrivateTargets` and `Master__Dev__ProbeHostOverride`; the justfile's `DEV_MASTER_ENV` is
@@ -328,15 +332,19 @@ physics contracts are documented at the code in `shapes.rs` and `player.rs`; the
 
 Three skills (Mining, Alchemy, Arcana), designed in `SKILLS-DESIGN.md` and — for Arcana — `MAGIC-DESIGN.md`. Everything
 shared lives in `digblock-core/src/skills.rs`. **A `conjured` block row (`Wardglass`) is the one diggable thing that
-credits nothing, pays no XP and claims no slot** — the Ward writes hundreds of them for one fare and the Causeway keeps
-writing them for as long as its span runs, so any of the three would make a spell a faucet; every clause of that
-sentence, diggability included, is swept by `a_conjured_row_pays_nothing_and_is_still_diggable`. The two spells that
-write it hold the SAME glass on OPPOSITE trust models, and the difference is the thing to keep straight: `ward::plan`
-derives every cell on both ends and lands all or nothing, the Arc's rule, so the wire carries no cells at all; the
-**Causeway's client NAMES each plank**, because one is owed the tick the feet leave support and a round trip is several
-ticks. What makes that safe is not the server's check but `causeway::TRAIL` — the head retires the tail, so a crafted
-client's standing footprint is a fixed few cells whatever it claims. **Do not "fix" the asymmetry by deriving the
-road**: a derived plank arrives after the fall:
+credits nothing, pays no XP and claims no slot** — the Causeway keeps writing them for as long as its span runs, so any
+of the three would make the spell a faucet; every clause of that sentence, diggability included, is swept by
+`a_conjured_row_pays_nothing_and_is_still_diggable`. The Sphere writes NO conjured row: its shell is the caster's held
+block, billed out of their inventory (`sphere::blocks_needed`, plus its fare and the wisp its seal lights) and dug back
+like any placed block, with `sphere::accepts` deciding what a shell may be built of. A server boot sweeps every standing
+pane of conjured glass out of the journal — the old Ward's spheres, a crashed road's planks — since nothing legitimately
+holds one at boot. The two cell-writing spells sit on OPPOSITE trust models, and the difference is the thing to keep
+straight: `sphere::plan` derives every cell on both ends from the head, the radius and the DECLARED slot's block, and
+lands all or nothing, the Arc's rule, so the wire carries no cells at all; the **Causeway's client NAMES each plank**,
+because one is owed the tick the feet leave support and a round trip is several ticks. What makes that safe is not the
+server's check but `causeway::TRAIL` — the head retires the tail, so a crafted client's standing footprint is a fixed
+few cells whatever it claims. **Do not "fix" the asymmetry by deriving the road**: a derived plank arrives after the
+fall:
 
 - The `Skill` enum is `repr(u8)` and **append-only** — the index is a wire/persistence format. Storage is XP-only `u64`
   totals; level is always derived. The XP curve is a **pinned integer table**, never `powf`.
@@ -372,6 +380,19 @@ level that opens it, which is why the wire sends a reason and never a sentence.
 `process_cast` — and reaches the client as `ServerMsg::XpGain` carrying the new **TOTAL** (idempotent, reorder-safe).
 Join sync always sends `ServerMsg::Skills`, even empty, right after `Layout`. Offline play awards through the same core
 functions in the engine's offline arms only — **never award in the shared prediction path, or multiplayer double-pays.**
+
+**The hiscores board is written by trusted servers only** (SOCIAL-DESIGN.md §1): `Master:Hiscores:TrustedServers` is a
+hand-kept list of `host` or `host:port` entries, matched against the address a server is LISTED at, and a server learns
+at registration whether it is on it (`RegisterOk.reportsSkills`). Totals leave the server through
+`hiscores::SkillOutbox`, filled under `PlayerStore::put` — the one write every change of skills goes through — never at
+the chokepoints. The master derives levels from a COPY of the XP curve (`apps/master/Hiscores/Skills.cs`);
+`the_masters_curve_mirrors_ours` reads that file and fails when the two drift. `MASTERY_AT` is the top of the content
+ladder for all three skills: the crests (`unlock::crest`) open there on THEIR skill, which is why `can_craft` takes the
+whole `SkillSet`, and `Skill::mastery_bits` rides every snapshot for the nameplate glyphs. **Any server pulls**:
+`/api/tokens/verify` carries the board's totals and the handshake folds them in with `merge_from` (max, never
+rewinding), so a character is one character everywhere and an untrusted server can only READ the ladder;
+`--use-master-levels false` opts a server out. The client tells the player at the door when a server is unranked
+(`Msg::UnrankedServer`), deciding from the master's listing and never from the server.
 
 ## Alchemy & the economy
 

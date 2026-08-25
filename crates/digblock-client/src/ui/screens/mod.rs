@@ -211,7 +211,11 @@ mod tests {
 			size,
 			// Deep, so the sweep sees the depth-reward readout in its
 			// live form rather than its "none yet" placeholder.
-			&super::character::CharView::build(&skills, digblock_core::skills::DEPTH_XP_TO),
+			&super::character::CharView::build(
+				&skills,
+				digblock_core::skills::DEPTH_XP_TO,
+				&super::character::sample_ranks(&skills),
+			),
 			&bar,
 			1.0,
 		);
@@ -392,7 +396,8 @@ mod tests {
 		let mut screen = super::character::CharScreen::default();
 		screen.open();
 		screen.handle_input(&moved);
-		let view = super::character::CharView::build(&skills, digblock_core::skills::DEPTH_XP_TO);
+		let view =
+			super::character::CharView::build(&skills, digblock_core::skills::DEPTH_XP_TO, &[]);
 		named.push((
 			"character",
 			frame(&mut |ui| screen.build(ui, size, &view, &bar, 1.0)),

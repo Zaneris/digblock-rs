@@ -20,19 +20,19 @@ fn table_sanity() {
 	for &b in &BlockType::ALL {
 		let p = b.props();
 		// Class-None is Air and the item-only tools, nothing else —
-		// and nothing colliding is None.
+		// and nothing solid is None.
 		assert_eq!(
 			p.class == RenderClass::None,
 			b == BlockType::Air || b.is_tool()
 		);
-		if p.collides {
+		if p.solid {
 			assert_ne!(p.class, RenderClass::None);
 		}
 		// Shape tag and render class travel together, and every shaped
-		// block collides (physics resolves its sub-boxes/ramp).
+		// block is solid matter (what a body meets is its boxes, per state).
 		assert_eq!(p.shape.is_some(), p.class == RenderClass::Shaped, "{b:?}");
 		if p.shape.is_some() {
-			assert!(p.collides, "{b:?} shaped blocks collide");
+			assert!(p.solid, "{b:?} shaped blocks are solid");
 		}
 		// Glass-the-class and Translucent-the-bucket travel together in
 		// one direction each: every Glass row is bucketed translucent,
@@ -57,7 +57,7 @@ fn dig_table_sanity() {
 		let p = b.props();
 		// Every solid block can be dug; only the source in the water
 		// family can (the water tool's scoop) — flows/falls cannot.
-		if p.collides {
+		if p.solid {
 			assert!(b.hardness_ticks().is_some(), "{b:?} is diggable");
 		}
 		if b.is_water() {
@@ -229,7 +229,7 @@ fn dig_families_are_pinned() {
 		(B::Glowvein, Rock),
 		(B::Aetherock, Rock),
 		// Conjured matter swings as the gentlest ground: anyone can dig
-		// their way out of a ward.
+		// their way out of a road.
 		(B::Wardglass, Soft),
 		(B::DepletedStone, Rock),
 		(B::DepletedEmberore, Rock),
@@ -411,6 +411,10 @@ fn material_roster_is_pinned() {
 			// Conjured matter: a spell's write, never a grid cell — it
 			// has no recipe and no price, only a fare.
 			B::Wardglass,
+			// The crests: held items in the sigil's mold, hand-priced.
+			B::MinersCrest,
+			B::AlchemistsCrest,
+			B::ArcanistsCrest,
 		]
 	);
 }
@@ -559,7 +563,7 @@ fn the_water_rows_agree_across_every_field_that_describes_them() {
 		if let Some(a) = b.water_amount() {
 			assert!(a > 0, "{b:?} holds water but none of it");
 			assert_eq!(b.props().class, RenderClass::Translucent, "{b:?}");
-			assert!(!b.props().collides, "{b:?} never collides");
+			assert!(!b.props().solid, "{b:?} never collides");
 		}
 		assert_eq!(b.is_falling(), b == BlockType::WaterFall, "{b:?}");
 		assert_eq!(b.is_fluid_source(), b == BlockType::Water, "{b:?}");

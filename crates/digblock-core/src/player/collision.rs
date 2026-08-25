@@ -108,10 +108,10 @@ pub(super) fn cell_shape(cell: Option<u16>) -> CellShape {
 	let Some(c) = cell else {
 		return CellShape::Empty;
 	};
-	let b = block_of(c);
-	if !b.props().collides {
+	if !crate::shapes::collides(c) {
 		return CellShape::Empty;
 	}
+	let b = block_of(c);
 	if b.props().shape.is_none() {
 		return CellShape::Cube;
 	}
@@ -306,7 +306,7 @@ pub(super) fn block_of(cell: u16) -> BlockType {
 /// `overlaps_solid`; tests keep this for cube-world assertions.
 #[cfg(test)]
 pub(super) fn solid(cell: Option<u16>) -> bool {
-	matches!(cell, Some(c) if block_of(c).props().collides)
+	matches!(cell, Some(c) if crate::shapes::collides(c))
 }
 
 /// Raise `pos` one block at a time until the capsule overlaps no colliding cell — the landing for
@@ -403,10 +403,10 @@ pub fn overlaps_solid(pos: Vec3, cell_at: &dyn Fn(i32, i32, i32) -> Option<u16>)
 /// like a full block. The client's local gate and the server's
 /// InsidePlayer scan share this, so they can never disagree.
 pub fn placement_blocked(pos: Vec3, cell: (i32, i32, i32), placed: u16) -> bool {
-	let b = block_of(placed);
-	if !b.props().collides {
+	if !crate::shapes::collides(placed) {
 		return false;
 	}
+	let b = block_of(placed);
 	let r2 = (RADIUS - CELL_EPS) * (RADIUS - CELL_EPS);
 	let overlap_box = |lo: Vec3, hi: Vec3| -> bool {
 		let (p, q) = closest_axis_box(pos, lo, hi);

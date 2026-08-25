@@ -32,6 +32,11 @@
 # client times out, suspect the server, not the network: `docker logs`
 # first — a server that crashed at boot produces the same client-side
 # timeout a dead network would.
+#
+# Named, so the project is not "docker" — the folder's name, and the one
+# every repo with a docker/ folder would share. The e2e rig's `-p`
+# overrides it, which is how several rigs run at once.
+name: digblock-dev
 services:
   master:
     build:
@@ -48,6 +53,9 @@ services:
       Master__Dev__AuthEnabled: "true"
       Master__Probe__AllowPrivateTargets: "true"
       Master__Dev__ProbeHostOverride: "${PROBE_HOST:-}"
+      # The compose server is the one first-party server this stack has,
+      # so its skill totals reach the board.
+      Master__Hiscores__TrustedServers__0: "${ADVERTISE_HOST:-server}"
 
   server:
     build:
@@ -79,6 +87,10 @@ services:
       # netcode — and a bot refused at accept is indistinguishable from a
       # connect timeout on the client side.
       DIGBLOCK_MAX_CONNS_PER_IP: "${MAX_CONNS_PER_IP:-64}"
+      # A joiner arrives at the levels the master's board holds for their
+      # account — one character on every server. false keeps this server's
+      # ladder its own.
+      DIGBLOCK_USE_MASTER_LEVELS: "${USE_MASTER_LEVELS:-true}"
 
   bots:
     build:

@@ -371,6 +371,10 @@ pub struct RowContent<'a> {
 	pub color: u32,
 	/// Keyboard/hover selection — computed by the screen, drawn here.
 	pub highlight: bool,
+	/// An icon after the text, glyph-sized, on the same layer and path the
+	/// chips' icons take — a state the row wears as a picture rather than
+	/// a word. Measured by [`mark_w`].
+	pub mark: Option<super::hud::IconKind>,
 	/// Draw a text caret at the end of `text` (blink is the caller's).
 	pub caret: bool,
 }
@@ -380,6 +384,14 @@ pub struct RowContent<'a> {
 pub fn caret_w(px: f32) -> f32 {
 	px * 0.5
 }
+
+/// What a row's [`RowContent::mark`] adds to its text width: the chip gap, then a glyph-sized
+/// icon. Screens sizing a panel to its widest row add this for a marked row.
+pub fn mark_w(glyph: f32, scale: f32) -> f32 {
+	super::theme::CHIP_GAP * scale + glyph
+}
+
+const MARK_TINT: u32 = 0xFFFF_FFFF;
 
 /// A selectable text row: optional highlight backdrop, left text,
 /// right-aligned column, and slider bar (geometry via [`slider_rect`],
@@ -397,11 +409,22 @@ pub fn row(dl: &mut DrawList, style: &Style, layer: Layer, rect: Rect, c: RowCon
 		// caller's layer, since a caller may panel there (`menu.rs`) and a wash beneath is unseen.
 		let wash = match c.right {
 			Some(RowRight::Chip(_)) => Layer::Backdrop,
+			_ if c.mark.is_some() => Layer::Backdrop,
 			_ => layer,
 		};
 		dl.quad(wash, rect, ROW_HILIGHT);
 	}
 	dl.text(layer, rect.x + pad_x, text_y, glyph, c.color, c.text);
+	if let Some(kind) = c.mark {
+		let mx = rect.x + pad_x + style.measure(c.text) + mark_w(glyph, style.scale) - glyph;
+		super::hud::draw_icon(
+			dl,
+			Layer::Icons,
+			Rect::new(mx, text_y, glyph, glyph),
+			kind,
+			MARK_TINT,
+		);
+	}
 	if c.caret {
 		// A blinking caret has to be its own quad: swapping a '_' in and
 		// out of the row string would change the string's width every

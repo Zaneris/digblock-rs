@@ -10,6 +10,7 @@ use crate::settings::{
 	DRAW_MAX, DRAW_MIN, DRAW_STEP, GI_SCALE_DIVISORS, LIGHT_CAP_MAX, LIGHT_CAP_MIN, LIGHT_CAP_STEP,
 	Settings, UI_SCALE_MAX, UI_SCALE_MIN, UI_SCALE_STEP, VOL_MAX, VOL_STEP,
 };
+use digblock_net::probe::Ping;
 use digblock_net::protocol::Compat;
 use digblock_net::transport::NetTransport;
 use digblock_platform::{InputEvent, Key, MouseButton};
@@ -28,6 +29,9 @@ pub struct ServerEntry {
 	/// list must not promise what the handshake would refuse.
 	pub protocol_version: u16,
 	pub sim_version: u16,
+	/// Whether play here counts toward the hiscores board — the master's
+	/// trusted list, published so the row can say so before a join.
+	pub reports_skills: bool,
 }
 
 impl ServerEntry {
@@ -50,6 +54,16 @@ pub struct AccountView {
 	/// `None` until the player picks one, which is exactly when the menu
 	/// must send them to the name screen instead of the server list.
 	pub name: Option<String>,
+}
+
+/// Where the signed-in account stands on one of the master's boards (`GET /api/hiscores/me`):
+/// `skill` is `None` for the overall board. A board the account is not on sends no row.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct RankView {
+	pub skill: Option<digblock_core::skills::Skill>,
+	pub rank: u32,
+	pub level: u32,
+	pub xp: u64,
 }
 
 /// Pages [`Menu::test_open`] can jump to.
@@ -82,6 +96,8 @@ pub enum MenuCommand {
 		name: String,
 	},
 	SignOut,
+	/// Where the signed-in account ranks, for the character screen; answered with `Ranks`.
+	FetchRanks,
 }
 
 /// Launcher → menu results.
@@ -90,7 +106,7 @@ pub enum MenuResponse {
 	/// Client-side reachability probe result; None = failed/timed out.
 	Ping {
 		server_id: String,
-		ms: Option<u32>,
+		ping: Option<Ping>,
 	},
 	/// Ready-to-use transport plus the minted token for Hello.
 	Connect {
@@ -113,6 +129,9 @@ pub enum MenuResponse {
 	},
 	/// Answer to `SetName`: the claimed name, or why not.
 	NameSet(Result<String, String>),
+	/// Answer to `FetchRanks`. The ENGINE consumes this before the menu
+	/// sees it: the board is the character screen's, not a menu page's.
+	Ranks(Result<Vec<RankView>, String>),
 }
 
 /// The channel pair the launcher hands the engine. Keeps HTTP entirely out
@@ -153,7 +172,7 @@ const WORLD_NAME_MAX: usize = 16;
 enum PingState {
 	Pending,
 	Failed,
-	Ms(u32),
+	Ms(Ping),
 }
 
 struct BrowserRow {
@@ -363,6 +382,11 @@ pub(crate) struct Menu {
 	/// the in-game rows are hidden and Escape can't dismiss the menu.
 	entered_world: bool,
 	pending_cmds: Vec<MenuCommand>,
+	/// Whether the server the player last chose to join counts toward the
+	/// hiscores — the MASTER's answer off the listing, remembered so the
+	/// engine can say so at the door. Never the server's own claim: a
+	/// modified server would claim whatever it liked.
+	join_ranked: Option<bool>,
 	wants_disconnect: bool,
 	wants_leave_world: bool,
 	wants_spellbook: bool,
@@ -408,6 +432,7 @@ impl Menu {
 			connected: false,
 			entered_world: false,
 			pending_cmds: Vec::new(),
+			join_ranked: None,
 			wants_disconnect: false,
 			wants_leave_world: false,
 			wants_spellbook: false,
@@ -696,6 +721,12 @@ impl Menu {
 		}
 	}
 
+	/// Whether the server the player last chose to join is on the master's
+	/// trusted list; `None` before any join was chosen.
+	pub(crate) fn join_ranked(&self) -> Option<bool> {
+		self.join_ranked
+	}
+
 	/// Feed one service response in; a `Connect` hands the transport+token
 	/// back for the engine to install.
 	pub(crate) fn on_response(
@@ -739,12 +770,12 @@ impl Menu {
 					}
 				}
 			}
-			MenuResponse::Ping { server_id, ms } => {
+			MenuResponse::Ping { server_id, ping } => {
 				if let Some(Screen::Browser(b)) = &mut self.screen
 					&& let Some(row) = b.rows.iter_mut().find(|r| r.entry.id == server_id)
 				{
-					row.ping = match ms {
-						Some(ms) => PingState::Ms(ms),
+					row.ping = match ping {
+						Some(ping) => PingState::Ms(ping),
 						None => PingState::Failed,
 					};
 				}
@@ -787,6 +818,7 @@ impl Menu {
 				available,
 				reason,
 			} => self.name_answered(name, available, reason),
+			MenuResponse::Ranks(_) => {}
 			MenuResponse::NameSet(result) => {
 				let Some(Screen::ChooseName(n)) = &mut self.screen else {
 					return None;
@@ -1336,11 +1368,14 @@ impl Menu {
 				let Some(Screen::Browser(mut prev)) = self.screen.take() else {
 					return;
 				};
-				let Some((server_id, server_name, compat)) = prev
-					.rows
-					.get(i)
-					.map(|r| (r.entry.id.clone(), r.entry.name.clone(), r.entry.compat()))
-				else {
+				let Some((server_id, server_name, compat, ranked)) = prev.rows.get(i).map(|r| {
+					(
+						r.entry.id.clone(),
+						r.entry.name.clone(),
+						r.entry.compat(),
+						r.entry.reports_skills,
+					)
+				}) else {
 					self.screen = Some(Screen::Browser(prev));
 					return;
 				};
@@ -1352,6 +1387,7 @@ impl Menu {
 					self.screen = Some(Screen::Browser(prev));
 					return;
 				}
+				self.join_ranked = Some(ranked);
 				self.pending_cmds.push(MenuCommand::Join { server_id });
 				self.screen = Some(Screen::Connecting {
 					prev,
@@ -1573,6 +1609,8 @@ struct RowSpec {
 	/// proportional font, so blinking one in and out would resize the
 	/// panel (sized to its widest row) twice a second.
 	caret: bool,
+	/// An icon after the text — see `widgets::RowContent::mark`.
+	mark: Option<crate::ui::hud::IconKind>,
 }
 
 impl RowSpec {
@@ -1584,6 +1622,7 @@ impl RowSpec {
 			bar: None,
 			color,
 			caret: false,
+			mark: None,
 		}
 	}
 	fn title(t: &str) -> Self {
@@ -1634,6 +1673,8 @@ pub(crate) struct PlacedRow {
 	pub highlight: bool,
 	/// Text-entry caret at the end of `text` (blink phase already applied).
 	pub caret: bool,
+	/// An icon after the text.
+	pub mark: Option<crate::ui::hud::IconKind>,
 }
 
 pub(crate) struct MenuView {
@@ -1679,6 +1720,7 @@ impl MenuView {
 					color: row.color,
 					highlight: row.highlight,
 					caret: row.caret,
+					mark: row.mark,
 				},
 			);
 		}

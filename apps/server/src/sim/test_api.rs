@@ -271,6 +271,55 @@ impl Sim {
 			.map_or(0, |c| c.inventory.sub_count(e))
 	}
 
+	/// The bar slot holding `b`, as an honest client would declare it —
+	/// `None` when the type is not on the bar at all.
+	#[cfg(test)]
+	pub(super) fn test_slot_of(
+		&self,
+		conn_id: u64,
+		b: digblock_core::block::BlockType,
+	) -> Option<u8> {
+		use digblock_core::hotbar::HotbarItem;
+		self.clients.get(&conn_id).and_then(|c| {
+			c.hotbar
+				.slots()
+				.iter()
+				.position(|s| *s == Some(HotbarItem::Block(b)))
+				.map(|i| i as u8)
+		})
+	}
+
+	/// Spend `n` of a client's blocks without a dig or a place behind it —
+	/// staging a short purse, the bar left as it was.
+	#[cfg(test)]
+	pub(super) fn test_take(&mut self, conn_id: u64, b: digblock_core::block::BlockType, n: u32) {
+		let client = self.clients.get_mut(&conn_id).unwrap();
+		assert!(
+			client.inventory.try_take(b, n),
+			"the stock covers {n} {b:?}"
+		);
+	}
+
+	/// A bar slot holding nothing — what a cast declaring an empty hand
+	/// names.
+	#[cfg(test)]
+	pub(super) fn test_empty_slot(&self, conn_id: u64) -> u8 {
+		self.clients
+			.get(&conn_id)
+			.and_then(|c| c.hotbar.slots().iter().position(Option::is_none))
+			.map(|i| i as u8)
+			.expect("a bar with an empty slot")
+	}
+
+	/// Is this client's wisp burning right now, by the sim's own clock?
+	#[cfg(test)]
+	pub(super) fn test_wisp_lit(&self, conn_id: u64) -> bool {
+		self.clients
+			.get(&conn_id)
+			.and_then(|c| c.wisp_until)
+			.is_some_and(|until| self.tick < until)
+	}
+
 	/// Standing kindled lights — the world-wide list every joiner is
 	/// handed a copy of, and the thing the cap bounds.
 	#[cfg(test)]

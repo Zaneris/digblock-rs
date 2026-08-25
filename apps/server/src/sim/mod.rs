@@ -38,7 +38,7 @@ use digblock_core::player::{self, Player, PlayerIntent, PlayerState};
 use digblock_core::worldgen::{Seed, TerrainVersion};
 use digblock_net::codec;
 use digblock_net::messages::{
-	ClientMsg, InputBatch, InputTick, RejectReason, RemoteState, SelfState, ServerMsg,
+	BlockEdit, ClientMsg, InputBatch, InputTick, RejectReason, RemoteState, SelfState, ServerMsg,
 };
 use digblock_net::protocol::{
 	AccountId, CHAT_BURST, EDIT_BURST, MIN_PROTOCOL, NO_CLIENT_SEQ, PROTOCOL_VERSION, PlayerId,
@@ -90,6 +90,10 @@ pub enum SimEvent {
 		/// change it. `AccountId::NONE` only in tests and the offline
 		/// harness, which have no master to ask.
 		account: AccountId,
+		/// The board's copy of the account's totals, from the same answer.
+		/// Folded into the record at the handshake unless this server
+		/// keeps its skills local; empty where there is no master.
+		skills: digblock_core::skills::SkillSet,
 	},
 	Msg {
 		conn_id: u64,
@@ -291,7 +295,7 @@ struct Client {
 	edit_tokens: f32,
 	chat_tokens: f32,
 	/// The cast bucket, spent by every `Cast` ATTEMPT — refused ones
-	/// included, since validation is the expensive half: the Ward's
+	/// included, since validation is the expensive half: the Sphere's
 	/// derives a whole sphere and scans every player against it before
 	/// anything can be refused. A bucket that only charged for success
 	/// would leave that work unbounded, and the reliable stream's own
@@ -436,7 +440,16 @@ pub struct Sim {
 	/// Connections that have not completed the Hello handshake, with the
 	/// tick they arrived (reaped after HELLO_TIMEOUT_TICKS) and the account
 	/// the master vouched for at admission.
-	lobby: FxHashMap<u64, (OutTx, u32, std::net::SocketAddr, AccountId)>,
+	lobby: FxHashMap<
+		u64,
+		(
+			OutTx,
+			u32,
+			std::net::SocketAddr,
+			AccountId,
+			digblock_core::skills::SkillSet,
+		),
+	>,
 	/// Client actions (edits + dig starts/cancels) queued this tick,
 	/// processed in wire order by `process_edits`.
 	action_queue: Vec<edits::ClientAction>,
@@ -475,6 +488,10 @@ pub struct Sim {
 	/// authorization decision, and it keys on the one identifier the master
 	/// vouches for.
 	admin_accounts: FxHashSet<AccountId>,
+	/// Fold the master's copy of a joiner's skills into the record at
+	/// join — the default, so a character is one character everywhere.
+	/// Off, this server's ladder stands alone (`--use-master-levels false`).
+	master_levels: bool,
 	/// Seconds added to the tick clock by `/time` — same lifetime and
 	/// persistence policy as the tick counter it offsets (none).
 	tod_offset_secs: f64,
@@ -493,10 +510,10 @@ pub struct Sim {
 	/// server changes nothing about when it goes out. Not journaled: a
 	/// light is never a cell, and a restart may forget it.
 	kindled: Vec<Kindled>,
-	/// Every ward still climbing — at most one per caster. Fare paid and
+	/// Every sphere still climbing — at most one per caster. Bill paid and
 	/// plan fixed as the channel began; the climb lasts the channel and
 	/// UNWINDS if the caster breaks it, moves, or leaves.
-	closings: Vec<WardClosing>,
+	closings: Vec<SphereClosing>,
 	/// Causeway planks whose removal could not land — an unloaded column
 	/// or an unhealthy journal. Held by the SIM because the trail that
 	/// knew about them is already gone with its caster, and this is the
@@ -506,32 +523,80 @@ pub struct Sim {
 	owed_planks: std::collections::VecDeque<digblock_core::causeway::Cell>,
 }
 
-/// One ward climbing about a channelling caster: the cells still to land, who is paying, where
-/// they stood when it began (a step away breaks the channel — the client's contract, and the
-/// server holds its own copy), and the fare to hand back on an unwind. `plan_len` and `span` are
-/// here because the wire carries the climb's PROGRESS rather than its cells: every client
-/// re-derives the plan from `head` and `radius`, so how far the sphere got is a prefix length.
-struct WardClosing {
+/// One sphere climbing about a channelling caster: the cells still to land, who is paying, where
+/// they stood when it began (a step away breaks the channel, the client's contract), and the bill.
+/// `plan_len` and `span` are here because the wire carries the climb's PROGRESS, not its cells:
+/// every client re-derives the plan from `head`, `radius` and `block`. The blocks are paid whole as
+/// the channel begins and settled at its end: `debited` less `placed` is what the climb declined.
+struct SphereClosing {
 	conn_id: u64,
 	by: PlayerId,
 	head: (i32, i32, i32),
 	radius: i32,
 	from: Vec3,
+	block: digblock_core::block::BlockType,
 	essence: digblock_core::block::Essence,
 	fare: u32,
+	/// The wisp the seal lights, priced as the channel began.
+	wisp: (digblock_core::block::Essence, u32),
+	debited: u32,
+	placed: u32,
 	plan_len: usize,
 	span: u32,
-	closing: digblock_core::ward::Closing,
+	closing: digblock_core::sphere::Closing,
 }
 
-impl WardClosing {
+impl SphereClosing {
 	/// How much of the plan has been handed to the world: a PREFIX
-	/// length in `ward::plan`'s own order, which is the one currency both
+	/// length in `sphere::plan`'s own order, which is the one currency both
 	/// ends share. Not the number of cells written — the two differ
 	/// wherever a landing was declined, and a client cannot derive that.
 	fn landed(&self) -> u32 {
-		let n = digblock_core::ward::landed_by(self.plan_len, self.closing.step(), self.span);
+		let n = digblock_core::sphere::landed_by(self.plan_len, self.closing.step(), self.span);
 		u32::try_from(n).unwrap_or(u32::MAX)
+	}
+
+	/// The cell the shell is built of.
+	fn wall(&self) -> u16 {
+		digblock_core::chunk::make_cell(self.block, 0)
+	}
+
+	/// Both fares, as one bill.
+	fn fares(&self) -> [(digblock_core::block::Essence, u32); 2] {
+		[(self.essence, self.fare), self.wisp]
+	}
+}
+
+/// Every pane of conjured glass in the record is an orphan at boot: the Sphere used to be built of
+/// it and is not any more, and a road's planks come up before their caster is gone — so nothing
+/// legitimately holds one. Each is journaled back to air as an ordinary server edit, which is what
+/// a joiner, a resync and an evicted column read; the store holds nothing yet, so nothing else
+/// needs correcting. Runs every boot; one pass over the index once the record is clean.
+fn sweep_conjured_glass(journal: &mut Journal) {
+	use digblock_core::block::BlockType;
+	use digblock_core::chunk::cell_id;
+	let panes: Vec<(i32, i32, i32)> = journal
+		.index
+		.iter_edits()
+		.filter(|&(_, v)| BlockType::from_id(cell_id(v)).is_conjured())
+		.map(|(c, _)| c)
+		.collect();
+	for &(x, y, z) in &panes {
+		journal.append(
+			BlockEdit {
+				x,
+				y,
+				z,
+				block: BlockType::Air as u16,
+			},
+			SERVER_ID,
+		);
+	}
+	if !panes.is_empty() {
+		log::info!(
+			"swept {} panes of conjured glass out of the record",
+			panes.len()
+		);
 	}
 }
 
@@ -588,7 +653,8 @@ impl Sim {
 		store: ChunkStore,
 		spawn: Vec3,
 	) -> std::io::Result<Self> {
-		let journal = Journal::open(data_dir, seed)?;
+		let mut journal = Journal::open(data_dir, seed)?;
+		sweep_conjured_glass(&mut journal);
 		let player_store = PlayerStore::open(data_dir)?;
 		let ban_store = BanStore::open(data_dir)?;
 		let spawn_store = SpawnStore::open(data_dir)?;
@@ -617,6 +683,7 @@ impl Sim {
 			ban_store,
 			waystone_store,
 			admin_accounts: FxHashSet::default(),
+			master_levels: true,
 			tod_offset_secs: 0.0,
 			world_jobs: digblock_core::worldjob::Scheduler::new(),
 			// After `Journal::open`, which is what creates the directory
@@ -636,6 +703,11 @@ impl Sim {
 	/// connection at once.
 	pub fn set_admin_accounts(&mut self, accounts: impl IntoIterator<Item = AccountId>) {
 		self.admin_accounts = accounts.into_iter().filter(|a| !a.is_none()).collect();
+	}
+
+	/// Whether a join folds in the board's copy of the account's skills.
+	pub fn set_master_levels(&mut self, on: bool) {
+		self.master_levels = on;
 	}
 
 	fn is_admin(&self, account: AccountId) -> bool {
@@ -659,6 +731,13 @@ impl Sim {
 	/// heartbeat reports.
 	pub fn player_count(&self) -> usize {
 		self.clients.len()
+	}
+
+	/// Announce every change of skills to the board's outbox, starting
+	/// with what the store already holds. Wired by the launcher, not
+	/// `Sim::new`, so the test harness's worlds report to nobody.
+	pub fn attach_skill_outbox(&mut self, outbox: std::sync::Arc<crate::hiscores::SkillOutbox>) {
+		self.player_store.attach_outbox(outbox);
 	}
 
 	/// Run one tick with the events drained since the last one.
@@ -783,8 +862,10 @@ impl Sim {
 				out,
 				addr,
 				account,
+				skills,
 			} => {
-				self.lobby.insert(conn_id, (out, self.tick, addr, account));
+				self.lobby
+					.insert(conn_id, (out, self.tick, addr, account, skills));
 			}
 			SimEvent::Msg { conn_id, msg } => match msg {
 				ClientMsg::Hello {
@@ -936,7 +1017,7 @@ impl Sim {
 				// position when they run anyway).
 				ClientMsg::ReturnToSpawn => self.handle_return_to_spawn(conn_id),
 				ClientMsg::Cast(kind) => self.handle_cast(conn_id, kind),
-				ClientMsg::CastBreak => self.break_ward(conn_id),
+				ClientMsg::CastBreak => self.break_sphere(conn_id),
 				ClientMsg::CausewayEnd => self.lift_causeway(conn_id),
 				// Inline like chat: sync radius is read fresh each tick, so the
 				// change applies from the next sync pass.

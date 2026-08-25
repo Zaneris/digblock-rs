@@ -108,7 +108,7 @@ impl Sim {
 		if digblock_core::protect::immutable(claim.0, claim.1, claim.2, &regions) {
 			return Err(RejectReason::Protected);
 		}
-		// A plank closes on nobody, the Ward's rule at one cell.
+		// A plank closes on nobody, the Sphere's rule at one cell.
 		if self
 			.clients
 			.values()

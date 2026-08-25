@@ -171,6 +171,40 @@ impl Inventory {
 		*c = c.saturating_add(n).min(MAX_STACK);
 	}
 
+	/// Can the purse cover every one of these fares AT ONCE? Summed per essence first, so two
+	/// fares in one essence are one question — checked separately, each would pass alone and the
+	/// second debit would fail after the first had gone through.
+	pub fn can_pay(&self, fares: &[(Essence, u32)]) -> bool {
+		Essence::ALL.iter().all(|&e| {
+			let owed: u32 = fares
+				.iter()
+				.filter(|f| f.0 == e)
+				.map(|f| f.1)
+				.fold(0, u32::saturating_add);
+			self.sub_count(e) >= owed
+		})
+	}
+
+	/// Debit every fare or none — [`Self::can_pay`] then the takes, which cannot fail after it.
+	#[must_use]
+	pub fn try_take_fares(&mut self, fares: &[(Essence, u32)]) -> bool {
+		if !self.can_pay(fares) {
+			return false;
+		}
+		for &(e, n) in fares {
+			let took = self.try_take_sub(e, n);
+			debug_assert!(took, "can_pay answered for this");
+		}
+		true
+	}
+
+	/// The refund of [`Self::try_take_fares`].
+	pub fn add_fares(&mut self, fares: &[(Essence, u32)]) {
+		for &(e, n) in fares {
+			self.add_sub(e, n);
+		}
+	}
+
 	/// Debit sub-material units if the stock covers it.
 	#[must_use]
 	pub fn try_take_sub(&mut self, m: Essence, n: u32) -> bool {
@@ -253,19 +287,20 @@ fn totals<K: Copy + PartialEq>(lines: impl IntoIterator<Item = (K, u32)>) -> Vec
 }
 
 /// THE alchemy rule, shared verbatim by the server's validation and the offline engine
-/// (single-player must match multiplayer bit-for-bit). `level` is the actor's Alchemy level —
-/// costs key on it ([`crate::alchemy`]), and so does whether the op is open at all
-/// ([`crate::unlock`]). Returns false — inventory untouched — on any invalid, locked or
-/// unaffordable op.
+/// (single-player must match multiplayer bit-for-bit). `skills` is the actor's whole set: costs
+/// key on the Alchemy level ([`crate::alchemy`]), and whether the op is open at all
+/// ([`crate::unlock::can_craft`]) may ask another skill. Returns false — inventory untouched —
+/// on any invalid, locked or unaffordable op.
 #[must_use]
-pub fn apply_alchemy(inv: &mut Inventory, op: AlchemyOp, level: u32) -> bool {
+pub fn apply_alchemy(inv: &mut Inventory, op: AlchemyOp, skills: &crate::skills::SkillSet) -> bool {
 	use crate::{alchemy, unlock};
+	let level = skills.level(crate::skills::Skill::Alchemy);
 	match op {
 		AlchemyOp::Craft { item, count } => {
 			if !(1..=ALCHEMY_MAX_COUNT).contains(&count) {
 				return false;
 			}
-			if !unlock::can_craft(item, level) {
+			if !unlock::can_craft(item, skills) {
 				return false;
 			}
 			let ideal = alchemy::craft_ideal(item).expect("unlock implies a recipe");

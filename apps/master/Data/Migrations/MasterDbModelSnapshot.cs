@@ -198,6 +198,30 @@ namespace DigBlock.Master.Data.Migrations
                     b.ToTable("Sessions");
                 });
 
+            modelBuilder.Entity("DigBlock.Master.Data.SkillTotal", b =>
+                {
+                    b.Property<Guid>("AccountId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<int>("Skill")
+                        .HasColumnType("INTEGER");
+
+                    b.Property<Guid>("ServerId")
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTimeOffset>("UpdatedUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<long>("Xp")
+                        .HasColumnType("INTEGER");
+
+                    b.HasKey("AccountId", "Skill");
+
+                    b.HasIndex("Skill", "Xp");
+
+                    b.ToTable("SkillTotals");
+                });
+
             modelBuilder.Entity("DigBlock.Master.Data.ProviderLink", b =>
                 {
                     b.HasOne("DigBlock.Master.Data.Account", "Account")
@@ -213,6 +237,17 @@ namespace DigBlock.Master.Data.Migrations
                 {
                     b.HasOne("DigBlock.Master.Data.Account", "Account")
                         .WithMany("Sessions")
+                        .HasForeignKey("AccountId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Account");
+                });
+
+            modelBuilder.Entity("DigBlock.Master.Data.SkillTotal", b =>
+                {
+                    b.HasOne("DigBlock.Master.Data.Account", "Account")
+                        .WithMany()
                         .HasForeignKey("AccountId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();

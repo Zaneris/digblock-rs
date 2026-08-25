@@ -33,6 +33,7 @@ fn entry(id: &str, name: &str) -> ServerEntry {
 		max_players: 255,
 		protocol_version: digblock_net::protocol::PROTOCOL_VERSION,
 		sim_version: digblock_core::SIM_VERSION,
+		reports_skills: false,
 	}
 }
 
@@ -203,7 +204,7 @@ fn panel_fits_every_row() {
 	)])));
 	menu.on_response(MenuResponse::Ping {
 		server_id: "s1".into(),
-		ms: Some(1234),
+		ping: Some(Ping::measured(1234)),
 	});
 	check(&menu);
 	// Settings: slider rows carry text plus a right-aligned bar.
@@ -307,7 +308,7 @@ fn browser_flow_join_and_fail_returns_with_status() {
 	])));
 	menu.on_response(MenuResponse::Ping {
 		server_id: "s2".into(),
-		ms: Some(34),
+		ping: Some(Ping::measured(34)),
 	});
 	let view = menu.view(SIZE, 1.0, false);
 	assert!(view.rows.iter().any(|r| r.text.contains("Alpha")));
@@ -316,6 +317,19 @@ fn browser_flow_join_and_fail_returns_with_status() {
 			.iter()
 			.any(|r| matches!(&r.right, Some((p, _)) if p == "34 ms"))
 	);
+	// An estimate wears the mark; a measurement does not — the same
+	// number must read differently by the flag alone.
+	menu.on_response(MenuResponse::Ping {
+		server_id: "s2".into(),
+		ping: Some(Ping::from_handshake(
+			34 * digblock_net::probe::SESSION_ROUND_TRIPS,
+		)),
+	});
+	let view = menu.view(SIZE, 1.0, false);
+	assert!(view.rows.iter().any(|r| matches!(
+		&r.right,
+		Some((p, _)) if p.starts_with(view::ESTIMATED_MARK) && p.ends_with("34 ms")
+	)));
 
 	// Join the second server.
 	menu.handle_key(Key::Down);
@@ -1475,4 +1489,69 @@ fn each_version_field_can_refuse_a_row_on_its_own() {
 	// Two per gate, or a saturating edge quietly turned a case into a
 	// duplicate of one that passes.
 	assert_eq!(refused, 4);
+}
+
+/// A server whose play counts toward the board says so on its row, and
+/// one whose play does not says nothing — the master's trusted list is
+/// the only thing that decides, and the row is where a player reads it
+/// before spending a join.
+#[test]
+fn a_ranked_server_says_so_on_its_row() {
+	let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
+	menu.set_services_available();
+	open_browser(&mut menu);
+	menu.on_response(MenuResponse::ServerList(Ok(vec![
+		entry("s1", "Alpha"),
+		ServerEntry {
+			reports_skills: true,
+			..entry("s2", "Beta")
+		},
+	])));
+	let view = menu.view(SIZE, 1.0, false);
+	let mark = |name: &str| {
+		view.rows
+			.iter()
+			.find(|r| r.text.starts_with(name))
+			.unwrap_or_else(|| panic!("a row for {name}"))
+			.mark
+	};
+	assert_eq!(mark("Beta"), Some(super::view::RANKED_MARK));
+	assert_eq!(mark("Alpha"), None);
+	// A picture, never a word: the row's text is the same either way.
+	let text = |name: &str| {
+		view.rows
+			.iter()
+			.find(|r| r.text.starts_with(name))
+			.unwrap()
+			.text
+			.clone()
+	};
+	assert_eq!(
+		text("Beta").trim_start_matches("Beta"),
+		text("Alpha").trim_start_matches("Alpha")
+	);
+}
+
+/// Choosing a server remembers the master's word on whether play there
+/// counts, for the engine to say at the door — and it is the listing's
+/// word, never the server's.
+#[test]
+fn joining_remembers_whether_the_server_is_ranked() {
+	for ranked in [false, true] {
+		let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
+		menu.set_services_available();
+		open_browser(&mut menu);
+		assert_eq!(menu.join_ranked(), None);
+		menu.on_response(MenuResponse::ServerList(Ok(vec![ServerEntry {
+			reports_skills: ranked,
+			..entry("s1", "Alpha")
+		}])));
+		menu.handle_key(Key::Enter);
+		assert_eq!(menu.join_ranked(), Some(ranked));
+		assert!(
+			menu.take_commands()
+				.iter()
+				.any(|c| matches!(c, MenuCommand::Join { .. }))
+		);
+	}
 }

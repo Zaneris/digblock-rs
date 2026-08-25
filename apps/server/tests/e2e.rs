@@ -19,7 +19,7 @@ use digblock_net::messages::EditKind;
 use digblock_net::{NetClient, NetEvent};
 use digblock_server::master::{self, MasterConfig, MasterState};
 use digblock_server::sim::Sim;
-use digblock_server::{net, run_sim_loop};
+use digblock_server::{PORT_RANGE, net, run_sim_loop};
 use glam::Vec3;
 use rustc_hash::FxHashMap;
 use std::path::{Path, PathBuf};
@@ -46,6 +46,23 @@ impl MasterProc {
 	/// container per test with the real QUIC probe on (short timeout so
 	/// probe-failure tests stay fast).
 	fn spawn() -> Self {
+		Self::spawn_with(&[])
+	}
+
+	/// The address every test server registers from, as the master lists
+	/// it — what a trusted-list entry has to name.
+	const SERVER_HOST: &str = "127.0.0.1";
+
+	/// As `spawn`, with this test server's address on the master's trusted
+	/// list, so its skill reports are believed.
+	fn spawn_trusting() -> Self {
+		Self::spawn_with(&[&format!(
+			"Master__Hiscores__TrustedServers__0={}",
+			Self::SERVER_HOST
+		)])
+	}
+
+	fn spawn_with(extra_env: &[&str]) -> Self {
 		static BUILD: std::sync::Once = std::sync::Once::new();
 		static NEXT: AtomicU32 = AtomicU32::new(0);
 		BUILD.call_once(|| {
@@ -80,6 +97,13 @@ impl MasterProc {
 				&name,
 				"-p",
 				&format!("127.0.0.1:{port}:5200"),
+				// The image declares `VOLUME /data`, and a run that mounts
+				// nothing there mints an anonymous volume per boot that a
+				// forced `rm` leaves behind — thousands, over a week of
+				// suites. A tmpfs shadows the declaration: nothing is
+				// minted, and a throwaway master's SQLite lives in RAM.
+				"--mount",
+				"type=tmpfs,destination=/data",
 				"-e",
 				"Master__Probe__TimeoutSeconds=3",
 				// Everything in this rig is on a private address, and the
@@ -98,8 +122,9 @@ impl MasterProc {
 				// address it was handed.
 				"-e",
 				&format!("Master__Dev__ProbeHostOverride={HOST_FROM_CONTAINER}"),
-				MASTER_IMAGE,
 			])
+			.args(extra_env.iter().flat_map(|e| ["-e", e]))
+			.arg(MASTER_IMAGE)
 			.stdout(std::process::Stdio::null())
 			.status()
 			.expect("docker run master");
@@ -119,8 +144,10 @@ impl MasterProc {
 	}
 
 	fn kill(&mut self) {
+		// `-v`: a forced rm supersedes `--rm`'s own cleanup, and without
+		// it any anonymous volume the image grows stays behind.
 		let _ = std::process::Command::new("docker")
-			.args(["rm", "-f", &self.name])
+			.args(["rm", "-f", "-v", &self.name])
 			.stdout(std::process::Stdio::null())
 			.stderr(std::process::Stdio::null())
 			.status();
@@ -131,6 +158,22 @@ impl Drop for MasterProc {
 	fn drop(&mut self) {
 		self.kill();
 	}
+}
+
+/// Bind the first free port in the block the master lists: a registration
+/// names its port, and one outside the block is refused before any probe.
+/// Tests run in parallel, so each takes the next port the OS still has —
+/// a `just play` holding the default on this machine is simply skipped.
+fn bind_listed_port() -> (
+	wtransport::Endpoint<wtransport::endpoint::endpoint_side::Server>,
+	[u8; 32],
+) {
+	for port in PORT_RANGE {
+		if let Ok(bound) = net::make_endpoint(port) {
+			return bound;
+		}
+	}
+	panic!("no free udp port in {PORT_RANGE:?}")
 }
 
 fn free_tcp_port() -> u16 {
@@ -173,6 +216,12 @@ fn mint_token_with(master_url: &str, session: &str) -> ([u8; 16], String) {
 	let server_id = list["servers"][0]["id"]
 		.as_str()
 		.expect("a registered server in the list");
+	mint_token_for(master_url, session, server_id)
+}
+
+/// A token for ONE listed server — tokens are scoped to the server they
+/// were minted for, so a rig with several servers up names which.
+fn mint_token_for(master_url: &str, session: &str, server_id: &str) -> ([u8; 16], String) {
 	// No displayName: the master reads it off the authenticated account.
 	let mut res = ureq::post(format!("{master_url}/api/join"))
 		.header("authorization", &format!("Bearer {session}"))
@@ -238,6 +287,12 @@ impl TestServer {
 		Self::start_with_legacy(tag, master_url, registered, None)
 	}
 
+	/// As `start`, with `--use-master-levels false`: the board's copy of a
+	/// joiner's skills is not folded in.
+	fn start_local_levels(tag: &str, master_url: &str) -> Self {
+		Self::start_with(tag, master_url, true, None, false)
+	}
+
 	/// As `start`, but the data dir already holds a pre-account character — a server that ran
 	/// before accounts and is now being upgraded. It has to be planted HERE, between wiping the
 	/// dir and opening the sim: the store reads its file once at open and rewrites the whole
@@ -249,12 +304,22 @@ impl TestServer {
 		registered: bool,
 		legacy: Option<([u8; 16], BlockType, u32)>,
 	) -> Self {
+		Self::start_with(tag, master_url, registered, legacy, true)
+	}
+
+	fn start_with(
+		tag: &str,
+		master_url: &str,
+		registered: bool,
+		legacy: Option<([u8; 16], BlockType, u32)>,
+		master_levels: bool,
+	) -> Self {
 		let rt = tokio::runtime::Builder::new_multi_thread()
 			.enable_all()
 			.build()
 			.unwrap();
 		let _guard = rt.enter();
-		let (endpoint, cert_hash) = net::make_endpoint(0).expect("bind ephemeral udp");
+		let (endpoint, cert_hash) = bind_listed_port();
 		let endpoint = Arc::new(endpoint);
 		let port = endpoint.local_addr().unwrap().port();
 		let data_dir = std::env::temp_dir().join(format!("dbe2e-{tag}-{}", std::process::id()));
@@ -266,7 +331,8 @@ impl TestServer {
 		// the default seed's spawn disc is bare Stone, which SIM v12's
 		// rock gate refuses (a real design consequence — a stone-spawn
 		// player levels on leaves/soil off the disc first).
-		let sim = Sim::new(7.0, &data_dir, 2, 2).unwrap();
+		let mut sim = Sim::new(7.0, &data_dir, 2, 2).unwrap();
+		sim.set_master_levels(master_levels);
 		let (event_tx, event_rx) = unbounded();
 		let running = Arc::new(AtomicBool::new(true));
 		let players = Arc::new(AtomicUsize::new(0));
@@ -317,7 +383,7 @@ impl TestServer {
 		MasterConfig {
 			url: master_url.to_string(),
 			server_name: name.to_string(),
-			advertise_host: Some("127.0.0.1".into()),
+			advertise_host: Some(MasterProc::SERVER_HOST.into()),
 			server_key: None,
 			advertise_port: self.port,
 		}
@@ -355,6 +421,8 @@ struct TestClient {
 	inventories: Vec<Vec<(u16, u32)>>,
 	/// (from, text) chat lines, sender echoes included.
 	chats: Vec<(u8, String)>,
+	/// The latest `Skills` frame — join sync's, or a correction's.
+	skills: Option<digblock_core::skills::SkillSet>,
 }
 
 impl TestClient {
@@ -391,6 +459,7 @@ impl TestClient {
 			joined_names: Vec::new(),
 			inventories: Vec::new(),
 			chats: Vec::new(),
+			skills: None,
 		}
 	}
 
@@ -458,20 +527,22 @@ impl TestClient {
 				NetEvent::PlayerLeft { .. } => {}
 				NetEvent::Inventory { counts, .. } => self.inventories.push(counts),
 				NetEvent::Chat { from, text } => self.chats.push((from, text)),
+				NetEvent::Skills { xp } => {
+					self.skills = Some(digblock_core::skills::SkillSet::from_wire(&xp));
+				}
 				// No e2e case requests a teleport; unexpected = loud.
 				NetEvent::Teleported { pos, .. } => panic!("unrequested teleport to {pos}"),
 				NetEvent::TimeOfDay { .. }
 				| NetEvent::AdminCommands { .. }
 				| NetEvent::AdminReply(_)
 				| NetEvent::Layout { .. }
-				| NetEvent::Skills { .. }
 				| NetEvent::XpGain { .. }
 				| NetEvent::LevelUp { .. }
 				| NetEvent::Waystones { .. }
 				| NetEvent::CastRefused { .. }
 				| NetEvent::Kindled { .. }
-				| NetEvent::WardWinding { .. }
-				| NetEvent::WardEnded { .. }
+				| NetEvent::SphereWinding { .. }
+				| NetEvent::SphereEnded { .. }
 				| NetEvent::AreaReady => {}
 			}
 		}
@@ -1410,13 +1481,13 @@ fn client_probe_reports_a_round_trip_not_a_handshake() {
 			let _ = tx.send(ms);
 		},
 	);
-	let ms = rx
+	let ping = rx
 		.recv_timeout(Duration::from_secs(10))
 		.expect("probe called back")
 		.expect("probe reached the server");
 	assert!(
-		ms < 100,
-		"loopback round trip read as {ms} ms — that is quinn's 333 ms initial \
+		!ping.estimated && ping.ms < 100,
+		"loopback round trip read as {ping:?} — that is quinn's 333 ms initial \
 		 default or a handshake time, not a measurement"
 	);
 }
@@ -1431,10 +1502,12 @@ fn probe_rejects_unreachable_server() {
 		url: master.url.clone(),
 		server_name: "nowhere".into(),
 		// No probe-host split: the master probes the advertised address —
-		// its own container loopback, where nothing listens.
+		// its own container loopback, where nothing listens. A port the
+		// master would list, so the refusal is the probe's and not the
+		// block's.
 		advertise_host: Some("127.0.0.1".into()),
 		server_key: None,
-		advertise_port: 4,
+		advertise_port: *PORT_RANGE.end(),
 	};
 	match master::register(&cfg, &[0xaa; 32]) {
 		Err(master::RegisterError::Unreachable(_)) => {}
@@ -1443,6 +1516,58 @@ fn probe_rejects_unreachable_server() {
 		}
 		Ok(_) => panic!("registration of an unreachable server must not succeed"),
 	}
+}
+
+/// The master lists a fixed block of ports and nothing outside it, and the refusal comes BEFORE
+/// any probe: a live server advertising a port past the block gets a plain rejection naming the
+/// block, not an unreachable verdict — the class an operator's log tells the two apart by.
+#[test]
+fn a_port_outside_the_listed_block_is_refused_unprobed() {
+	let _ = env_logger::builder().is_test(true).try_init();
+	let master = MasterProc::spawn();
+	let server = TestServer::start("outside", &master.url, false);
+	let mut cfg = server.master_config(&master.url, "outside");
+	cfg.advertise_port = PORT_RANGE.end() + 1;
+	match master::register(&cfg, &server.cert_hash) {
+		Err(master::RegisterError::Rejected(e)) => assert!(
+			e.contains(&PORT_RANGE.end().to_string()),
+			"the refusal must name the block: {e}"
+		),
+		Err(master::RegisterError::Unreachable(e)) => {
+			panic!("refused by the probe, not the block: {e}")
+		}
+		Err(master::RegisterError::Transport(e)) => panic!("transport: {e}"),
+		Ok(_) => panic!("a port outside the block must not be listed"),
+	}
+	let mut res = ureq::get(format!("{}/api/servers", master.url))
+		.call()
+		.unwrap();
+	let list: serde_json::Value = res.body_mut().read_json().unwrap();
+	assert!(list["servers"].as_array().unwrap().is_empty());
+}
+
+/// Two servers behind one address are two listings: a claim is on host AND port, so a second
+/// server on the same machine neither contests the first nor needs its key.
+#[test]
+fn two_servers_on_one_host_are_two_listings() {
+	let _ = env_logger::builder().is_test(true).try_init();
+	let master = MasterProc::spawn();
+	let a = TestServer::start("twin-a", &master.url, true);
+	let b = TestServer::start("twin-b", &master.url, true);
+	let mut res = ureq::get(format!("{}/api/servers", master.url))
+		.call()
+		.unwrap();
+	let list: serde_json::Value = res.body_mut().read_json().unwrap();
+	let entries = list["servers"].as_array().unwrap();
+	let mut listed: Vec<String> = entries
+		.iter()
+		.map(|e| e["url"].as_str().unwrap().to_string())
+		.collect();
+	listed.sort();
+	let mut expected = vec![a.url.clone(), b.url.clone()];
+	expected.sort();
+	assert_eq!(listed, expected, "both servers listed at their own port");
+	assert_ne!(entries[0]["id"], entries[1]["id"]);
 }
 
 /// Until registration lands, a server can admit no one.
@@ -1587,4 +1712,223 @@ fn a_negative_player_count_cannot_break_the_server_list() {
 		"clamped at the master, not passed through: {raw}"
 	);
 	assert_eq!(entry["maxPlayers"].as_i64(), Some(0), "{raw}");
+}
+
+// ---- hiscores --------------------------------------------------------------
+
+/// A skill set at `level` in one skill, the way a server would report it.
+fn skills_at(skill: digblock_core::skills::Skill, level: u32) -> digblock_core::skills::SkillSet {
+	let mut s = digblock_core::skills::SkillSet::default();
+	s.set_total(skill, digblock_core::skills::total_xp_for(level));
+	s
+}
+
+fn get_json(url: &str, bearer: Option<&str>) -> (u16, serde_json::Value) {
+	let agent = ureq::Agent::new_with_config(
+		ureq::Agent::config_builder()
+			.http_status_as_error(false)
+			.build(),
+	);
+	let mut req = agent.get(url);
+	if let Some(b) = bearer {
+		req = req.header("authorization", &format!("Bearer {b}"));
+	}
+	let mut res = req.call().unwrap();
+	let status = res.status().as_u16();
+	let body = res
+		.body_mut()
+		.read_json()
+		.unwrap_or(serde_json::Value::Null);
+	(status, body)
+}
+
+/// The whole board, end to end: a trusted server's report lands, is ranked by the game's own
+/// curve, names the account the master holds the name for, answers the account's own rank, and
+/// renders as a page — and a later report can only RAISE a total, never rewind it.
+#[test]
+fn a_trusted_servers_skill_report_reaches_the_board() {
+	use digblock_core::skills::{Skill, level_for_xp, total_xp_for};
+	use digblock_net::protocol::AccountId;
+	use digblock_server::master::{ReportOutcome, report_skills};
+	let master = MasterProc::spawn_trusting();
+	let server = TestServer::start("board", &master.url, true);
+	let reg = server.master_state.registration().expect("registered");
+	assert!(
+		reg.reports_skills,
+		"the master's trusted list names this address, so registration says so"
+	);
+	let (_, list) = get_json(&format!("{}/api/servers", master.url), None);
+	assert_eq!(
+		list["servers"][0]["reportsSkills"], true,
+		"the listing says play here counts"
+	);
+	let (session_a, id_a, name_a) = dev_sign_in(&master.url, "boardA");
+	let (_, id_b, name_b) = dev_sign_in(&master.url, "boardB");
+	let (a, b) = (
+		AccountId::parse(&id_a).unwrap(),
+		AccountId::parse(&id_b).unwrap(),
+	);
+	let rows = vec![
+		(a, skills_at(Skill::Mining, 30)),
+		(b, skills_at(Skill::Mining, 40)),
+	];
+	assert_eq!(
+		report_skills(&master.url, &reg, &rows).unwrap(),
+		ReportOutcome::Accepted
+	);
+
+	let (status, board) = get_json(&format!("{}/api/hiscores?skill=mining", master.url), None);
+	assert_eq!(status, 200);
+	assert_eq!(board["total"], 2);
+	let top = &board["rows"][0];
+	assert_eq!(top["rank"], 1);
+	assert_eq!(top["displayName"].as_str(), name_b.as_deref());
+	assert_eq!(top["level"], 40);
+	assert_eq!(top["xp"], total_xp_for(40));
+	assert_eq!(board["rows"][1]["displayName"].as_str(), name_a.as_deref());
+	// The overall board sums levels: two unreported skills sit at the
+	// first level each, exactly as the game reads an empty total.
+	let (_, overall) = get_json(&format!("{}/api/hiscores", master.url), None);
+	assert_eq!(overall["rows"][0]["level"], 40 + 1 + 1);
+	assert_eq!(overall["rows"][0]["xp"], total_xp_for(40));
+
+	let (status, me) = get_json(&format!("{}/api/hiscores/me", master.url), Some(&session_a));
+	assert_eq!(status, 200);
+	let ranks = me["ranks"].as_array().unwrap();
+	let mining = ranks
+		.iter()
+		.find(|r| r["skill"] == "mining")
+		.expect("a mining rank");
+	assert_eq!(mining["rank"], 2);
+	assert_eq!(mining["level"], level_for_xp(total_xp_for(30)));
+	assert!(
+		ranks.iter().all(|r| r["skill"] != "alchemy"),
+		"a skill never reported is absent, not ranked at zero"
+	);
+	let (status, _) = get_json(&format!("{}/api/hiscores/me", master.url), None);
+	assert_eq!(status, 401, "your own rank needs your session");
+
+	// Monotone: a stale, lower total is ignored; a higher one lands.
+	let rows = vec![(b, skills_at(Skill::Mining, 20))];
+	assert_eq!(
+		report_skills(&master.url, &reg, &rows).unwrap(),
+		ReportOutcome::Accepted
+	);
+	let (_, board) = get_json(&format!("{}/api/hiscores?skill=mining", master.url), None);
+	assert_eq!(
+		board["rows"][0]["level"], 40,
+		"a report cannot rewind a total"
+	);
+	let rows = vec![(a, skills_at(Skill::Mining, 45))];
+	report_skills(&master.url, &reg, &rows).unwrap();
+	let (_, board) = get_json(&format!("{}/api/hiscores?skill=mining", master.url), None);
+	assert_eq!(board["rows"][0]["displayName"].as_str(), name_a.as_deref());
+
+	// The page renders the same board, script-free.
+	let mut res = ureq::get(format!("{}/hiscores?skill=mining", master.url))
+		.call()
+		.unwrap();
+	let html = res.body_mut().read_to_string().unwrap();
+	assert!(html.contains(name_a.as_deref().unwrap()));
+	assert!(html.contains(name_b.as_deref().unwrap()));
+	assert!(!html.contains("<script"), "the page needs no script");
+
+	// An unknown skill index refuses the whole batch, so the roster is
+	// extended on both ends or neither.
+	let res = ureq::Agent::new_with_config(
+		ureq::Agent::config_builder()
+			.http_status_as_error(false)
+			.build(),
+	)
+	.post(format!(
+		"{}/api/servers/{}/skills",
+		master.url, reg.server_id
+	))
+	.header("authorization", &format!("Bearer {}", reg.server_key))
+	.send_json(serde_json::json!({
+		"players": [{ "accountId": id_a, "skills": [{ "skill": 200, "xp": 1 }] }]
+	}))
+	.unwrap();
+	assert_eq!(res.status().as_u16(), 400);
+}
+
+/// A server the master does not list is told so at registration, and a
+/// report from it — should one ever be sent — is refused rather than
+/// quietly believed.
+#[test]
+fn an_untrusted_servers_skill_report_is_refused() {
+	use digblock_core::skills::Skill;
+	use digblock_net::protocol::AccountId;
+	use digblock_server::master::{ReportOutcome, report_skills};
+	let master = MasterProc::spawn();
+	let server = TestServer::start("unboard", &master.url, true);
+	let reg = server.master_state.registration().expect("registered");
+	assert!(!reg.reports_skills);
+	let (_, list) = get_json(&format!("{}/api/servers", master.url), None);
+	assert_eq!(list["servers"][0]["reportsSkills"], false);
+	let (_, id, _) = dev_sign_in(&master.url, "unboardA");
+	let rows = vec![(AccountId::parse(&id).unwrap(), skills_at(Skill::Mining, 30))];
+	assert_eq!(
+		report_skills(&master.url, &reg, &rows).unwrap(),
+		ReportOutcome::Refused
+	);
+	let (_, board) = get_json(&format!("{}/api/hiscores?skill=mining", master.url), None);
+	assert_eq!(
+		board["total"], 0,
+		"nothing an untrusted server says is ranked"
+	);
+}
+
+/// The pull half: a character is one character on every server. What a trusted server reported
+/// arrives with the account at ANY server's join — the untrusted one included, since only the
+/// write is gated — folded in without rewinding what that server already held; and a server run
+/// with `--use-master-levels false` keeps its own ladder and folds in nothing.
+#[test]
+fn a_joiner_arrives_at_the_levels_the_board_holds() {
+	use digblock_core::skills::Skill;
+	use digblock_net::protocol::AccountId;
+	use digblock_server::master::{ReportOutcome, report_skills};
+	let master = MasterProc::spawn_trusting();
+	let trusted = TestServer::start("pullsrc", &master.url, true);
+	let reg = trusted.master_state.registration().expect("registered");
+	let (session, id, _) = dev_sign_in(&master.url, "pullA");
+	let account = AccountId::parse(&id).unwrap();
+	assert_eq!(
+		report_skills(
+			&master.url,
+			&reg,
+			&[(account, skills_at(Skill::Mining, 30))]
+		)
+		.unwrap(),
+		ReportOutcome::Accepted
+	);
+
+	// A second server, never played on: the join sync's Skills frame
+	// already carries the board's copy.
+	let other = TestServer::start("pulldst", &master.url, true);
+	let other_id = other.master_state.registration().unwrap().server_id;
+	let (token, _) = mint_token_for(&master.url, &session, &other_id);
+	let mut a = TestClient::connect(&other.url, "whatever", token);
+	a.wait("welcome", |c| c.welcomed);
+	a.wait("the board's skills", |c| c.skills.is_some());
+	assert_eq!(
+		a.skills.as_ref().unwrap().level(Skill::Mining),
+		30,
+		"a character carried over arrives at its level, not the first"
+	);
+	drop(a);
+
+	// Local skills: the same join on a server that keeps its own ladder
+	// starts from nothing.
+	let local = TestServer::start_local_levels("pulllocal", &master.url);
+	let local_id = local.master_state.registration().unwrap().server_id;
+	let (token, _) = mint_token_for(&master.url, &session, &local_id);
+	let mut a = TestClient::connect(&local.url, "whatever", token);
+	a.wait("welcome", |c| c.welcomed);
+	a.wait("this server's skills", |c| c.skills.is_some());
+	assert_eq!(
+		a.skills.as_ref().unwrap().level(Skill::Mining),
+		1,
+		"--use-master-levels false: the board's copy is not folded in"
+	);
 }

@@ -65,21 +65,21 @@ fn a_causeway_does_not_reach_past_the_world() {
 	);
 }
 
-/// A plank claims exactly what a Ward's shell claims. Derived by asking
-/// `ward::plan` what it does with a world made of each block, rather than
-/// restating the predicate — the two spells write one substance and must
-/// not drift about where it may go. Counted, or a `claims` that always
-/// said no would pass.
+/// A plank claims exactly what a Sphere's shell claims. Derived by asking
+/// `sphere::plan` what it does with a world made of each block, rather
+/// than restating the predicate — the two spells claim one kind of cell
+/// and must not drift about where it may go. Counted, or a `claims` that
+/// always said no would pass.
 #[test]
-fn a_plank_claims_exactly_what_a_ward_pane_claims() {
+fn a_plank_claims_exactly_what_a_sphere_pane_claims() {
 	let (mut yes, mut no) = (0, 0);
 	for b in BlockType::ALL {
 		let v = make_cell(b, 0);
-		let warded = !crate::ward::plan((0, 40, 0), 2, |_| Some(v))
+		let sphered = !crate::sphere::plan((0, 40, 0), 2, BlockType::Stone, |_| Some(v))
 			.expect("a resident world refuses nothing")
 			.is_empty();
-		assert_eq!(claims(v), warded, "{b:?} splits the two glass spells");
-		if warded { yes += 1 } else { no += 1 }
+		assert_eq!(claims(v), sphered, "{b:?} splits the two spells");
+		if sphered { yes += 1 } else { no += 1 }
 	}
 	assert!(yes > 0 && no > 0, "the sweep saw one kind only");
 }
@@ -108,7 +108,7 @@ fn the_road_standing_is_never_longer_than_the_trail() {
 /// A causeway never takes up a pane it did not lay. The rule is
 /// structural rather than checked: only what [`Trail::wants`] names can be
 /// laid, and it names nothing that is not claimable — a standing pane of
-/// the Ward's own glass least of all, which is what stops a road punching
+/// its own glass least of all, which is what stops a road punching
 /// a hole in a sphere it crosses.
 #[test]
 fn a_causeway_never_takes_up_a_pane_it_did_not_lay() {
@@ -184,7 +184,7 @@ fn the_road_and_its_fare_climb_together() {
 
 /// A rung sells uninterrupted distance, never a discount on it: the fare
 /// climbs FASTER than the road lengthens, so every rung costs more per
-/// second than the one below. The Ward's "never a free upgrade" rule,
+/// second than the one below. The Sphere's "never a free upgrade" rule,
 /// which a span that grew on its own would break — compared by cross
 /// multiplication, so the property survives any retune of either table.
 #[test]
@@ -207,14 +207,14 @@ fn a_longer_road_is_never_a_cheaper_second_of_one() {
 	}
 }
 
-/// The Causeway is the Ward's glass, so it drains the Ward's essence —
-/// one substance, one price line, asked of the tables rather than named.
+/// The Causeway drains the Sphere's essence — the two cell-writing spells
+/// share one price line, asked of the tables rather than named.
 #[test]
 fn both_glass_spells_drain_one_essence() {
 	for level in RUNGS {
 		assert_eq!(
 			crate::alchemy::causeway_price(level).0,
-			crate::alchemy::ward_price(level).0
+			crate::alchemy::sphere_price(level).0
 		);
 	}
 }

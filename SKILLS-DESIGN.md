@@ -518,7 +518,7 @@ as today. Which tool sits *in* the slot is a separate axis:
  blocks (digits 1–8)         tool   faded rail: other owned tools
 ```
 
-- **Ownership is inventory counts.** Tools are item-only `blocks!` rows — `RenderClass::None`, `collides: false`, not
+- **Ownership is inventory counts.** Tools are item-only `blocks!` rows — `RenderClass::None`, `solid: false`, not
   placeable, and **`is_slottable: false`** like water. Crafting the pick is `inventory.add(pick, 1)`; the tool rail
   lists every nonzero tool id; `reconcile_layout` keeps tools out of the block slots and the grid with the rule it
   already has. Ownership, prediction, rebase, and both persistence formats all ride the existing count machinery

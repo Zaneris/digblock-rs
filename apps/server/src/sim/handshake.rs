@@ -91,7 +91,7 @@ impl Sim {
 		sim_version: u16,
 		build: String,
 	) {
-		let Some((out, _, addr, account)) = self.lobby.remove(&conn_id) else {
+		let Some((out, _, addr, account, pulled)) = self.lobby.remove(&conn_id) else {
 			return;
 		};
 		let refuse = |out: &OutTx, reason: String| {
@@ -141,9 +141,23 @@ impl Sim {
 			refuse(&out, "this account is already connected".into());
 			return;
 		}
-		let record = identity
+		let mut record = identity
 			.map(|account| self.player_store.get(&account))
 			.unwrap_or_default();
+		// The board's copy of the account, folded in (max, never rewinding)
+		// so a character carried from another server arrives at its level
+		// rather than at the first. Written back only when it moved
+		// something: the store's put is also the outbox's hook, and what
+		// came from the board need not go back to it.
+		if let Some(account) = identity
+			&& self.master_levels
+		{
+			let before = record.skills.clone();
+			record.skills.merge_from(&pulled);
+			if record.skills != before {
+				self.player_store.put(account, record.clone());
+			}
+		}
 		let inventory = record.inventory;
 		// The item arrangement: the stored layout when one exists, else
 		// the deterministic default — the SAME derivation the client runs

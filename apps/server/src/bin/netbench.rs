@@ -85,6 +85,7 @@ fn spawn_clients(sim: &mut Sim, n: usize) -> Vec<Client> {
 				out: tx,
 				addr: format!("127.0.0.1:{}", 40000 + i).parse().unwrap(),
 				account: AccountId(account),
+				skills: Default::default(),
 			},
 			SimEvent::Msg {
 				conn_id,
@@ -796,6 +797,7 @@ fn run_link(link: Link, secs: f64, edits: bool) -> LinkResult {
 		out: out_tx,
 		addr: "127.0.0.1:40000".parse().unwrap(),
 		account: AccountId([7; 16]),
+		skills: Default::default(),
 	}]);
 
 	// Server→client needs the preamble the real net layer writes; the sim

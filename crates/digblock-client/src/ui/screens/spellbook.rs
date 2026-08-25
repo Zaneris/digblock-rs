@@ -25,8 +25,8 @@ pub enum SpellAction {
 	CastWisp,
 	/// Begin conjured light's channel (it stands where the head is at completion).
 	CastKindle,
-	/// Begin the Ward's channel (the sphere closes about the head at completion).
-	CastWard,
+	/// Begin the Sphere's channel (the shell of the held block climbs about the head).
+	CastSphere,
 	/// Begin the Causeway's channel, or — with a road standing — take it up: one row for both.
 	ToggleCauseway,
 	/// Flip the Mason's Arc stance.
@@ -38,7 +38,7 @@ pub enum SpellAction {
 const SLOT_WISP: u8 = 100;
 const SLOT_KINDLE: u8 = 101;
 const SLOT_ARC: u8 = 102;
-const SLOT_WARD: u8 = 103;
+const SLOT_SPHERE: u8 = 103;
 const SLOT_CAUSEWAY: u8 = 104;
 
 /// One port as the page lists it — everything derived from the core
@@ -99,7 +99,7 @@ pub struct SpellView {
 	teleport_ready: bool,
 	wisp_ready: bool,
 	kindle_ready: bool,
-	ward_ready: bool,
+	sphere_ready: bool,
 	arc_shown: bool,
 	causeway_ready: bool,
 	/// The ports a click may cast right now, by `InvId::Spell` slot.
@@ -176,15 +176,21 @@ impl SpellView {
 				ready: kindle_ready,
 			});
 		}
-		let mut ward_ready = false;
-		if unlock::ward_radius(level) > 0 {
-			let (w_essence, w_fare) = digblock_core::alchemy::ward_price(level);
-			ward_ready = inventory.sub_count(w_essence) >= w_fare;
+		// The chip is the sphere's own fare. The rest of the bill — the wisp the seal lights,
+		// priced on the row above, and the held blocks, which no page can count without the
+		// world — is asked as the cast begins, where a refusal can name the shortfall.
+		let mut sphere_ready = false;
+		if unlock::sphere_radius(level) > 0 {
+			let (s_essence, s_fare) = digblock_core::alchemy::sphere_price(level);
+			sphere_ready = inventory.can_pay(&[
+				(s_essence, s_fare),
+				digblock_core::alchemy::wisp_price(level),
+			]);
 			rows.push(Row::Spell {
-				id: InvId::Spell(SLOT_WARD),
-				text: "WARD".to_string(),
-				state: State::fare(w_essence, w_fare, ward_ready),
-				ready: ward_ready,
+				id: InvId::Spell(SLOT_SPHERE),
+				text: "SPHERE".to_string(),
+				state: State::fare(s_essence, s_fare, sphere_ready),
+				ready: sphere_ready,
 			});
 		}
 		// The second glass spell. A road already standing shows what is
@@ -266,7 +272,7 @@ impl SpellView {
 			teleport_ready,
 			wisp_ready,
 			kindle_ready,
-			ward_ready,
+			sphere_ready,
 			arc_shown,
 			causeway_ready,
 			castable,
@@ -281,13 +287,16 @@ impl SpellView {
 /// worded the same on both makes one reword a two-file edit.
 pub(super) fn next_rung(level: u32) -> Option<(u32, &'static str)> {
 	[
-		(unlock::WARD_AT, "a ward of glass closes about you"),
+		(
+			unlock::SPHERE_AT,
+			"a sphere of your held block closes about you",
+		),
 		(unlock::TELEPORT_SWIFT_AT, "home comes back sooner"),
 		(unlock::CAUSEWAY_AT, "glass takes your step over nothing"),
 		(unlock::CHANNEL_QUICK_AT, "every channel quickens"),
-		(unlock::WARD_WIDE_AT, "the ward widens"),
+		(unlock::SPHERE_WIDE_AT, "the sphere widens"),
 		(unlock::CAUSEWAY_LONG_AT, "the road runs longer"),
-		(unlock::WARD_VAST_AT, "the ward widens again"),
+		(unlock::SPHERE_VAST_AT, "the sphere widens again"),
 		(unlock::TELEPORT_SWIFTER_AT, "home comes back sooner still"),
 		(unlock::CAUSEWAY_VAST_AT, "the road runs longer still"),
 	]
@@ -445,7 +454,7 @@ impl SpellScreen {
 					0 if view.teleport_ready => Some(SpellAction::CastHome),
 					SLOT_WISP if view.wisp_ready => Some(SpellAction::CastWisp),
 					SLOT_KINDLE if view.kindle_ready => Some(SpellAction::CastKindle),
-					SLOT_WARD if view.ward_ready => Some(SpellAction::CastWard),
+					SLOT_SPHERE if view.sphere_ready => Some(SpellAction::CastSphere),
 					SLOT_CAUSEWAY if view.causeway_ready => Some(SpellAction::ToggleCauseway),
 					SLOT_ARC if view.arc_shown => Some(SpellAction::ToggleArc),
 					slot => view
@@ -514,6 +523,7 @@ impl SpellScreen {
 							color,
 							highlight: false,
 							caret: false,
+							mark: None,
 						},
 					);
 				}
@@ -559,6 +569,7 @@ impl SpellScreen {
 							color,
 							highlight: hovered,
 							caret: false,
+							mark: None,
 						},
 					);
 					if *ready {

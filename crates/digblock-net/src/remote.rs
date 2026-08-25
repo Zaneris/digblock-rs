@@ -26,6 +26,8 @@ pub struct RemoteSnap {
 	/// The packed effect byte (`messages::pack_fx`), held's rules: the
 	/// newest bracket wins.
 	pub fx: u8,
+	/// The mastery bits (`Skill::mastery_bits`), held's rules.
+	pub mastery: u8,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -38,6 +40,8 @@ pub struct RemoteDraw {
 	pub held: u16,
 	/// The packed effect byte, from the newest snapshot.
 	pub fx: u8,
+	/// The mastery bits, from the newest snapshot.
+	pub mastery: u8,
 }
 
 /// The shortest between-snapshot displacement read as a teleport.
@@ -133,13 +137,16 @@ impl RemotePlayers {
 			if let Some((pos, yaw)) = sample_ring(ring, target) {
 				// The held item and effect byte are discrete state: always
 				// render the newest known value rather than a time-shifted one.
-				let (held, fx) = ring.back().map_or((u16::MAX, 0), |s| (s.held, s.fx));
+				let (held, fx, mastery) = ring
+					.back()
+					.map_or((u16::MAX, 0, 0), |s| (s.held, s.fx, s.mastery));
 				out.push(RemoteDraw {
 					id,
 					pos,
 					yaw: crate::messages::yaw_from_wire(yaw),
 					held,
 					fx,
+					mastery,
 				});
 			}
 		}
@@ -185,6 +192,7 @@ mod tests {
 			yaw: 0,
 			held: u16::MAX,
 			fx: 0,
+			mastery: 0,
 		}
 	}
 

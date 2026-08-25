@@ -8,7 +8,7 @@ use super::*;
 /// as a step: the client breaks its channel on any movement INTENT,
 /// and this is the wider, authoritative copy of the same contract —
 /// generous to a snapshot's jitter, far short of a stride.
-const WARD_STILL: f32 = 0.6;
+const SPHERE_STILL: f32 = 0.6;
 
 /// Cast attempts one client may make back to back, and the rate the bucket refills at. Sized for
 /// the spellbook rather than for the wire: a channel outlasts the whole burst, so no honest client
@@ -310,7 +310,7 @@ impl Sim {
 			CastKind::Waystone(idx) => idx,
 			CastKind::Wisp => return self.cast_wisp(conn_id),
 			CastKind::KindleHere => return self.cast_kindle(conn_id),
-			CastKind::Ward => return self.cast_ward(conn_id),
+			CastKind::Sphere { slot } => return self.cast_sphere(conn_id, slot),
 			CastKind::Causeway => return self.cast_causeway(conn_id),
 			// The retired aimed form: a cell the client named is exactly
 			// what the spell no longer trusts.
@@ -379,10 +379,20 @@ impl Sim {
 			);
 			return;
 		}
-		client.wisp_until = Some(self.tick + digblock_core::unlock::wisp_secs(level) * TICK_RATE);
 		let counts = client.inventory.to_wire();
 		client_send(client, &ServerMsg::InventoryFull { counts });
+		self.light_wisp(conn_id);
 		self.process_cast(conn_id, digblock_core::skills::cast_xp(essence, fare));
+	}
+
+	/// Stand the caster's wisp for their rung's span from now — a recast refreshes rather than
+	/// stacks. The Sphere's seal lights one too, so the lighting is apart from the wisp's debit.
+	fn light_wisp(&mut self, conn_id: u64) {
+		let tick = self.tick;
+		if let Some(client) = self.clients.get_mut(&conn_id) {
+			let level = client.skills.level(digblock_core::skills::Skill::Arcana);
+			client.wisp_until = Some(tick + digblock_core::unlock::wisp_secs(level) * TICK_RATE);
+		}
 	}
 
 	/// Conjured light: validate the rung, the host — the cell the caster's head is in, as the
@@ -438,27 +448,42 @@ impl Sim {
 		self.process_cast(conn_id, digblock_core::skills::cast_xp(essence, fare));
 	}
 
-	/// The Ward, on `Cast(Ward)` sent as the caster's channel BEGINS: `ward::plan` derives the
-	/// sphere from the caster's head as the SERVER holds it, scans it whole for players and
-	/// refuses it whole — the Arc's rule. What is accepted is a CLIMB, landing over the channel's
-	/// own ticks. The cheap gates come FIRST and the plan last, or an affordability check behind a
-	/// cubic scan is a core a broke client can pin; the DEBIT trails both, so a refusal is free.
-	fn cast_ward(&mut self, conn_id: u64) {
+	/// The Sphere, on `Cast(Sphere)` sent as the caster's channel BEGINS: `sphere::plan` derives
+	/// the shell from the head as the SERVER holds it and the declared slot's block, scans it whole
+	/// for players and refuses it whole — the Arc's rule; what is accepted is a CLIMB over the
+	/// channel's ticks. The cheap gates come FIRST and the plan last, or a check behind a cubic scan
+	/// is a core a broke client can pin; the DEBIT — blocks and both fares, all or none — trails all.
+	fn cast_sphere(&mut self, conn_id: u64, slot: u8) {
+		use digblock_core::hotbar::{HOTBAR_SLOTS, HotbarItem};
 		use digblock_core::skills::Skill;
 		use digblock_net::messages::CastRefusal;
 		let refuse = |client: &Client, reason: CastRefusal| {
 			client_send(client, &ServerMsg::CastRefused { reason });
 		};
-		let Some(client) = self.clients.get(&conn_id) else {
+		let Some(client) = self.clients.get_mut(&conn_id) else {
 			return;
 		};
 		if !client.live {
 			return;
 		}
 		let level = client.skills.level(Skill::Arcana);
-		let r = digblock_core::unlock::ward_radius(level);
+		let r = digblock_core::unlock::sphere_radius(level);
 		if r == 0 {
 			return refuse(client, CastRefusal::Locked);
+		}
+		// The declared slot, mirrored as an edit's is: a cast is evidence
+		// of selection that outran the jitter-buffered input path.
+		let held = (usize::from(slot) < HOTBAR_SLOTS).then(|| {
+			client.hotbar.set_selected(usize::from(slot));
+			client.hotbar.slots()[usize::from(slot)]
+		});
+		let client = self.clients.get(&conn_id).expect("checked above");
+		let block = match held {
+			Some(Some(HotbarItem::Block(b))) => b,
+			_ => return refuse(client, CastRefusal::NoBlock),
+		};
+		if !digblock_core::sphere::accepts(block) {
+			return refuse(client, CastRefusal::BadBlock);
 		}
 		if self.closings.iter().any(|w| w.conn_id == conn_id) {
 			return refuse(client, CastRefusal::BadTarget);
@@ -466,19 +491,25 @@ impl Sim {
 		// A sphere is hundreds of journaled cells; an unhealthy journal
 		// stops it where it stops fluid and the sweeps. `BadTarget` is
 		// the nearest true answer the wire has — the caster's rung and
-		// purse are both fine, there is nowhere to put the glass.
+		// purse are both fine, there is nowhere to put the shell.
 		if !self.journal.healthy() {
 			return refuse(client, CastRefusal::BadTarget);
 		}
-		let (essence, fare) = digblock_core::alchemy::ward_price(level);
-		if client.inventory.sub_count(essence) < fare {
+		let (essence, fare) = digblock_core::alchemy::sphere_price(level);
+		let wisp = digblock_core::alchemy::wisp_price(level);
+		if !client.inventory.can_pay(&[(essence, fare), wisp]) {
 			return refuse(client, CastRefusal::CantPay);
 		}
 		let head = digblock_core::kindle::host_cell(client.player.pos);
-		let Ok(writes) = digblock_core::ward::plan(head, r, |c| self.store.cell_at(c.0, c.1, c.2))
+		let Ok(writes) =
+			digblock_core::sphere::plan(head, r, block, |c| self.store.cell_at(c.0, c.1, c.2))
 		else {
 			return refuse(client, CastRefusal::BadTarget);
 		};
+		let debited = digblock_core::sphere::blocks_needed(&writes, block);
+		if client.inventory.count(block) < debited {
+			return refuse(client, CastRefusal::BlocksShort);
+		}
 		// The shell closes on nobody — every live player, the caster
 		// included, who stands inside by construction.
 		let closes_on_someone = self.clients.values().filter(|c| c.live).any(|c| {
@@ -494,44 +525,52 @@ impl Sim {
 		let by = client.id;
 		let from = client.player.pos;
 		let client = self.clients.get_mut(&conn_id).expect("checked above");
-		if !client.inventory.try_take_sub(essence, fare) {
+		if !client.inventory.try_take_fares(&[(essence, fare), wisp])
+			|| !client.inventory.try_take(block, debited)
+		{
+			// Checked above; cannot fail, and would have taken nothing.
 			let client = self.clients.get(&conn_id).expect("checked above");
 			return refuse(client, CastRefusal::CantPay);
 		}
 		let counts = client.inventory.to_wire();
 		client_send(client, &ServerMsg::InventoryFull { counts });
-		self.closings.push(WardClosing {
+		self.closings.push(SphereClosing {
 			conn_id,
 			by,
 			head,
 			radius: r,
 			from,
+			block,
 			essence,
 			fare,
+			wisp,
+			debited,
+			placed: 0,
 			plan_len,
 			span,
-			closing: digblock_core::ward::Closing::new(writes, span),
+			closing: digblock_core::sphere::Closing::new(writes, span),
 		});
 		// ONE frame for the whole climb. Every client derives the same
-		// plan from the same head and radius, so the cells themselves are
-		// redundant — and a sphere's worth of `EditApplied` is a fan-out
-		// that fills an outbound queue, whose refusal kills the peer it
-		// was sent to.
-		self.broadcast(&ServerMsg::WardWinding {
+		// plan from the same head, radius and block, so the cells
+		// themselves are redundant — and a sphere's worth of
+		// `EditApplied` is a fan-out that fills an outbound queue, whose
+		// refusal kills the peer it was sent to.
+		self.broadcast(&ServerMsg::SphereWinding {
 			by,
 			head: [head.0, head.1, head.2],
-			radius: ward_radius_wire(r),
+			radius: sphere_radius_wire(r),
 			span,
+			block: block as u16,
 		});
 	}
 
-	/// One tick of every ward still climbing. A caster who has left, or stepped further than
-	/// [`WARD_STILL`] from where they began, has broken the channel whatever their client said.
+	/// One tick of every sphere still climbing. A caster who has left, or stepped further than
+	/// [`SPHERE_STILL`] from where they began, has broken the channel whatever their client said.
 	/// Otherwise the tick's cells land, leaving a cell a player has stepped into unwritten rather
-	/// than closed over; the completing tick SEALS the sphere. Protection is re-asked per tick,
-	/// not filtered into the plan, or a region appearing mid-channel would be glassed over.
+	/// than closed over; the completing tick SEALS the sphere, settles the bill for what the climb
+	/// declined and lights the wisp. Protection is re-asked per tick, never filtered into the plan.
 	pub(super) fn step_closings(&mut self) {
-		// A ward's cells are journaled edits like any other: an unhealthy
+		// A sphere's cells are journaled edits like any other: an unhealthy
 		// journal stops the climb where it stops fluid and the sweeps,
 		// rather than mutating a world nothing can persist.
 		if self.closings.is_empty() || !self.journal.healthy() {
@@ -545,15 +584,16 @@ impl Sim {
 				.clients
 				.get(&w.conn_id)
 				.filter(|c| c.live)
-				.is_some_and(|c| c.player.pos.distance(w.from) <= WARD_STILL);
+				.is_some_and(|c| c.player.pos.distance(w.from) <= SPHERE_STILL);
 			if !still {
 				let w = closings.remove(i);
-				self.unwind_ward(w);
+				self.unwind_sphere(w);
 				continue;
 			}
 			let regions = self.requester_regions(closings[i].conn_id);
 			let w = &mut closings[i];
 			let by = w.by;
+			let wall = w.wall();
 			for (cell, val) in w.closing.land() {
 				if digblock_core::protect::immutable(cell.0, cell.1, cell.2, &regions) {
 					continue;
@@ -568,13 +608,23 @@ impl Sim {
 				}
 				if let Some(prev) = self.store.set_cell(cell.0, cell.1, cell.2, val) {
 					w.closing.record(cell, val, prev);
+					if val == wall {
+						w.placed += 1;
+					}
 					self.journal_write(cell, val, by);
 				}
 			}
 			if w.closing.done() {
 				let w = closings.remove(i);
-				self.ward_ended(&w, true);
-				self.process_cast(w.conn_id, digblock_core::skills::cast_xp(w.essence, w.fare));
+				self.refund_sphere(&w, w.debited.saturating_sub(w.placed), false);
+				self.sphere_ended(&w, true);
+				self.light_wisp(w.conn_id);
+				let (we, wf) = w.wisp;
+				self.process_cast(
+					w.conn_id,
+					digblock_core::skills::cast_xp(w.essence, w.fare)
+						+ digblock_core::skills::cast_xp(we, wf),
+				);
 				continue;
 			}
 			i += 1;
@@ -583,27 +633,28 @@ impl Sim {
 	}
 
 	/// `CastBreak`: the caster's own word that the channel broke.
-	pub(super) fn break_ward(&mut self, conn_id: u64) {
+	pub(super) fn break_sphere(&mut self, conn_id: u64) {
 		if let Some(i) = self.closings.iter().position(|w| w.conn_id == conn_id) {
 			let w = self.closings.remove(i);
-			self.unwind_ward(w);
+			self.unwind_sphere(w);
 		}
 	}
 
-	/// Put back what a broken climb had landed, crown-first, through the same write path — but
-	/// only a cell that still holds our glass, so a pane somebody dug out mid-climb stays dug.
-	/// The fare goes back to a caster still here, as one correction to the balance their client
-	/// is predicting; one who left mid-channel forfeits it. Crediting `player_store` instead was
-	/// declined rather than impossible — `drop_client`'s record is right there for a rejoin.
-	fn unwind_ward(&mut self, w: WardClosing) {
+	/// Put back what a broken climb had landed, crown-first, through the same write path — but only
+	/// a cell that still holds our block, so one somebody dug out mid-climb stays dug and stays
+	/// theirs (the dig credited it). The bill goes back to a caster still here as one rebase — both
+	/// fares, the blocks never placed and every one just taken down; one who left mid-channel
+	/// forfeits it (crediting `player_store` was declined, not impossible: `drop_client` has the record).
+	fn unwind_sphere(&mut self, mut w: SphereClosing) {
 		let by = w.by;
-		self.ward_ended(&w, false);
-		if let Some(client) = self.clients.get_mut(&w.conn_id) {
-			client.inventory.add_sub(w.essence, w.fare);
-			let counts = client.inventory.to_wire();
-			client_send(client, &ServerMsg::InventoryFull { counts });
-		}
-		for (cell, written, prev) in w.closing.unwind() {
+		let wall = w.wall();
+		self.sphere_ended(&w, false);
+		let mut restored = 0;
+		let closing = std::mem::replace(
+			&mut w.closing,
+			digblock_core::sphere::Closing::new(Vec::new(), 1),
+		);
+		for (cell, written, prev) in closing.unwind() {
 			// Through the journal behind the store, and journalled even
 			// where the store cannot answer: a caster's departure evicts
 			// the very columns their sphere stands in before this runs,
@@ -612,21 +663,43 @@ impl Sim {
 			if self.world_cell(cell.0, cell.1, cell.2) != Some(written) {
 				continue;
 			}
+			if written == wall {
+				restored += 1;
+			}
 			self.store.set_cell(cell.0, cell.1, cell.2, prev);
 			self.journal_write(cell, prev, by);
 		}
+		self.refund_sphere(&w, w.debited.saturating_sub(w.placed) + restored, true);
 	}
 
-	/// The one frame a ward's end costs, whichever way it ended: the
-	/// sphere, how far through its plan it got, and whether the glass
+	/// Hand a caster still here `blocks` of the shell's block back, and the fares too when the
+	/// climb came to nothing, as ONE rebase — silent when there is nothing to hand back, so a seal
+	/// that placed every cell it billed costs no frame at all.
+	fn refund_sphere(&mut self, w: &SphereClosing, blocks: u32, fares: bool) {
+		if blocks == 0 && !fares {
+			return;
+		}
+		if let Some(client) = self.clients.get_mut(&w.conn_id) {
+			client.inventory.add(w.block, blocks);
+			if fares {
+				client.inventory.add_fares(&w.fares());
+			}
+			let counts = client.inventory.to_wire();
+			client_send(client, &ServerMsg::InventoryFull { counts });
+		}
+	}
+
+	/// The one frame a sphere's end costs, whichever way it ended: the
+	/// sphere, how far through its plan it got, and whether the shell
 	/// stayed. Everything else a client needs it derives.
-	fn ward_ended(&self, w: &WardClosing, sealed: bool) {
-		self.broadcast(&ServerMsg::WardEnded {
+	fn sphere_ended(&self, w: &SphereClosing, sealed: bool) {
+		self.broadcast(&ServerMsg::SphereEnded {
 			by: w.by,
 			head: [w.head.0, w.head.1, w.head.2],
-			radius: ward_radius_wire(w.radius),
+			radius: sphere_radius_wire(w.radius),
 			landed: w.landed(),
 			sealed,
+			block: w.block as u16,
 		});
 	}
 
@@ -667,11 +740,11 @@ impl Sim {
 	}
 }
 
-/// A sphere's radius as the wire carries it. `ward::MAX_RADIUS` is what
+/// A sphere's radius as the wire carries it. `sphere::MAX_RADIUS` is what
 /// makes the narrowing total — every castable rank sits inside it, and
 /// `sets` clamps anything that does not.
-fn ward_radius_wire(r: i32) -> u8 {
-	u8::try_from(r.clamp(0, digblock_core::ward::MAX_RADIUS)).expect("the cap fits a byte")
+fn sphere_radius_wire(r: i32) -> u8 {
+	u8::try_from(r.clamp(0, digblock_core::sphere::MAX_RADIUS)).expect("the cap fits a byte")
 }
 
 /// One light as the wire carries it, its remaining time read off the

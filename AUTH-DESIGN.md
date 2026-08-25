@@ -186,6 +186,12 @@ while everyone who knows you still reads that name as you.
 Registration stays **anonymous** — a self-hoster still just runs the container, with no signup and no operator account.
 What changed is that an address remembers the key that claimed it.
 
+Before any of it, a port outside the block `ServerPorts` names is refused with 400 and no probe is spent. Registering
+makes the master dial `host:port`, and listing aims every client at it, so an anonymous caller does not get to choose
+the port on a host it names; the block is also what one operator's firewall rule opens for every server on a machine.
+The game server carries the same block (`PORT_RANGE`, refused at boot) and `the_masters_port_block_mirrors_ours` reads
+this side's source to hold the two together.
+
 The algorithm, in `Program.cs`'s `/api/servers/register`, and the reason for each step:
 
 1. **Temp-banned source → refused.** See below.
@@ -368,7 +374,11 @@ entirely rather than leave a permanent claim path open.
 - **No provider linking UI.** The schema supports several providers per account (that is why `ProviderLink` is a table
   and not two columns), but nothing exposes adding one.
 - **No account website.** The browser's whole job is the provider round trip. Choosing a name, reading your id, signing
-  out are in-game screens, which is why the master ships exactly two HTML pages.
+  out are in-game screens, which is why the master ships exactly two HTML pages a player can DO anything on; the
+  hiscores board (`/hiscores`, SOCIAL-DESIGN.md §1) is the third page and is read-only.
+- **No attestation of skill reports.** The board believes a hand-kept list of server addresses
+  (`Master:Hiscores:TrustedServers`) and nobody else — the registration key says WHICH server is reporting, the list
+  says whether its word counts. Anything stronger waits for a player count that makes it worth having.
 - **No global ban tooling.** `Account.Status` and `BanUntilUtc` exist and `/api/join` honours them; nothing sets them
   but a hand-edited row.
 - **No per-server pseudonymous ids.** See §1.1.

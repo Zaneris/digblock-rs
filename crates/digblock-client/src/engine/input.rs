@@ -309,9 +309,9 @@ impl Engine {
 							self.ui.spellbook.close();
 							self.start_cast(CastTarget::Kindle);
 						}
-						Some(SpellAction::CastWard) => {
+						Some(SpellAction::CastSphere) => {
 							self.ui.spellbook.close();
-							self.start_cast(CastTarget::Ward);
+							self.start_cast(CastTarget::Sphere);
 						}
 						Some(SpellAction::ToggleCauseway) => {
 							self.ui.spellbook.close();
@@ -461,7 +461,7 @@ impl Engine {
 					if pressed {
 						self.input.keys = HeldKeys::default();
 						self.input.dig_held = false;
-						self.ui.char_screen.open();
+						self.open_character_screen();
 					}
 				}
 				// Home: begin the Return Home channel (on cooldown the

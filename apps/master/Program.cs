@@ -5,6 +5,7 @@ using DigBlock.Master.Accounts;
 using DigBlock.Master.Auth;
 using DigBlock.Master.Data;
 using DigBlock.Master.Dev;
+using DigBlock.Master.Hiscores;
 using DigBlock.Master.Servers;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Data.Sqlite;
@@ -31,6 +32,8 @@ builder.Services.AddSingleton<AuthRequestStore>();
 builder.Services.AddSingleton<RegistrationBans>();
 builder.Services.AddScoped<AccountService>();
 builder.Services.AddScoped<ServerClaims>();
+builder.Services.AddSingleton<TrustedServers>();
+builder.Services.AddScoped<HiscoreService>();
 builder.Services.AddHostedService<HealthChecker>();
 builder.Services.AddDigBlockAuth(masterOptions);
 builder.Services.AddDigBlockRateLimits();
@@ -151,6 +154,7 @@ app.UseRateLimiter();
 
 app.MapAuthEndpoints();
 app.MapAccountEndpoints();
+app.MapHiscoreEndpoints();
 if (masterOptions.Dev.AuthEnabled)
 {
     app.MapDevEndpoints();
@@ -191,8 +195,8 @@ app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 //     that address, serving a certificate that needs the incumbent's key.
 app.MapPost("/api/servers/register", async (
     RegisterRequest req, HttpContext http, ServerRegistry registry, ServerClaims claims,
-    RegistrationBans bans, IReachabilityProbe probe, IOptions<MasterOptions> opts,
-    IHostEnvironment env, CancellationToken ct) =>
+    RegistrationBans bans, IReachabilityProbe probe, TrustedServers trusted,
+    IOptions<MasterOptions> opts, IHostEnvironment env, CancellationToken ct) =>
 {
     var source = http.Connection.RemoteIpAddress;
     if (source?.IsIPv4MappedToIPv6 == true)
@@ -201,8 +205,13 @@ app.MapPost("/api/servers/register", async (
         return Results.Json(new { error = "too many failed registrations from this address" },
             statusCode: StatusCodes.Status429TooManyRequests);
 
-    if (req.Port is < 1 or > 65535)
-        return Results.BadRequest(new { error = "port out of range" });
+    // Checked before the probes: an out-of-range port is a misconfiguration
+    // the operator fixes locally, and it must not cost a probe or a strike.
+    if (!ServerPorts.Allows(req.Port))
+        return Results.BadRequest(new
+        {
+            error = $"port must be between {ServerPorts.Min} and {ServerPorts.Max}",
+        });
     byte[] certHash;
     try
     {
@@ -308,9 +317,11 @@ app.MapPost("/api/servers/register", async (
         claim!.Id, claim.KeyHash, name, advertised, probeHost, req.Port, certHash,
         ServerRegistry.SanitizeCount(req.Players), ServerRegistry.SanitizeCount(req.MaxPlayers),
         req.ProtocolVersion, req.SimVersion);
+    var reportsSkills = trusted.IsTrusted(entry);
     app.Logger.LogInformation(
-        "registered {Name} at {Host}:{Port} as {Id}", entry.Name, advertised, req.Port, entry.Id);
-    return Results.Ok(new RegisterOk(true, entry.Id, key, observed));
+        "registered {Name} at {Host}:{Port} as {Id}{Trusted}",
+        entry.Name, advertised, req.Port, entry.Id, reportsSkills ? " (trusted: reports skills)" : "");
+    return Results.Ok(new RegisterOk(true, entry.Id, key, observed, reportsSkills));
 
     // The four reason codes stay — a self-hoster needs certMismatch apart
     // from timeout to debug a port forward, and ProbeTargets already removed
@@ -348,7 +359,9 @@ app.MapDelete("/api/servers/{id:guid}", (Guid id, HttpContext http, ServerRegist
     return Results.NoContent();
 });
 
-app.MapPost("/api/tokens/verify", (VerifyRequest req, HttpContext http, ServerRegistry registry, TokenStore tokens) =>
+app.MapPost("/api/tokens/verify", async (
+    VerifyRequest req, HttpContext http, ServerRegistry registry, TokenStore tokens,
+    MasterDb db, CancellationToken ct) =>
 {
     // The bearer key identifies which server is asking; a token minted for a
     // different server never verifies. Unknown / expired / consumed / wrong
@@ -358,17 +371,24 @@ app.MapPost("/api/tokens/verify", (VerifyRequest req, HttpContext http, ServerRe
         return Results.Unauthorized();
     if (string.IsNullOrEmpty(req.Token) || !tokens.TryConsume(req.Token, entry.Id, out var consumed))
         return Results.NotFound();
-    return Results.Ok(new VerifyResponse(consumed.DisplayName, consumed.AccountId));
+    // The account's totals ride along: any server may PULL them, trusted or
+    // not — only the write is gated — so a character is one character on
+    // every server rather than a fresh level 1 on each.
+    var skills = await db.SkillTotals
+        .Where(t => t.AccountId == consumed.AccountId)
+        .Select(t => new SkillXp(t.Skill, t.Xp))
+        .ToArrayAsync(ct);
+    return Results.Ok(new VerifyResponse(consumed.DisplayName, consumed.AccountId, skills));
 }).RequireRateLimiting(RateLimits.Verify);
 
 // ---- game client endpoints -------------------------------------------------
 
-app.MapGet("/api/servers", (ServerRegistry registry) =>
+app.MapGet("/api/servers", (ServerRegistry registry, TrustedServers trusted) =>
     new ServerListResponse([.. registry.Snapshot()
         .OrderBy(e => e.Name, StringComparer.OrdinalIgnoreCase)
         .Select(e => new ServerSummary(
             e.Id, e.Name, e.Url, e.CertHashHex, e.Players, e.MaxPlayers,
-            e.ProtocolVersion, e.SimVersion))]))
+            e.ProtocolVersion, e.SimVersion, trusted.IsTrusted(e)))]))
     .RequireCors(Cors.Client);
 
 // Mint a one-time join token. Authenticated now: the caller presents their

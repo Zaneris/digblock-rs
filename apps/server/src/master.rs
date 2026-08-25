@@ -1,12 +1,15 @@
 //! Master-server HTTP client: registration, heartbeats, one-time join
-//! token verification, and the graceful-shutdown notify. The wire contract
-//! lives in apps/master (Contracts.cs) — keep the serde shapes in lockstep.
+//! token verification, the skill report behind the hiscores board, and the
+//! graceful-shutdown notify. The wire contract lives in apps/master
+//! (Contracts.cs) — keep the serde shapes in lockstep.
 //!
 //! All request functions are blocking (ureq); every caller wraps them in
 //! `tokio::task::spawn_blocking`. Playing on a server is impossible without
 //! a master-verified token, so there is no unregistered service mode —
 //! registration retries forever and joins are refused until it lands.
 
+use crate::hiscores::SkillOutbox;
+use digblock_core::skills::SkillSet;
 use digblock_net::protocol::AccountId;
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -17,6 +20,9 @@ use std::time::Duration;
 pub const MAX_PLAYERS: u32 = digblock_net::protocol::SERVER_ID as u32;
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(30);
+/// Rows per skill report, the master's own cap (`HiscoreService.MaxRowsPerReport`) — a
+/// larger batch is refused whole, so the outbox drains in slices of this.
+const REPORT_BATCH: usize = 500;
 const RETRY_MIN: Duration = Duration::from_secs(10);
 const RETRY_MAX: Duration = Duration::from_secs(300);
 
@@ -51,6 +57,10 @@ pub struct Registration {
 	/// advertise host, or the observed registration address when none
 	/// was given.
 	pub observed_host: String,
+	/// Whether the master trusts this address to report skill totals.
+	/// Decided master-side from its own list; an untrusted server never
+	/// sends a report, and one that did would be refused.
+	pub reports_skills: bool,
 }
 
 /// Shared with every connection task plus the heartbeat and shutdown paths.
@@ -130,6 +140,37 @@ struct RegisterOkBody {
 	server_id: String,
 	server_key: String,
 	observed_host: String,
+	/// Absent on a master predating the board, which reads as untrusted.
+	#[serde(default)]
+	reports_skills: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SkillReportBody {
+	players: Vec<SkillReportRow>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SkillReportRow {
+	account_id: String,
+	skills: Vec<SkillXpBody>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SkillXpBody {
+	skill: u8,
+	/// The master stores a signed 64-bit total; a saturated `u64` would
+	/// fail its decode and take the whole batch with it.
+	xp: i64,
+}
+
+/// The `{ "error": ... }` shape every 4xx from the master carries.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct ErrorBody {
+	error: String,
 }
 
 #[derive(Deserialize)]
@@ -160,12 +201,19 @@ struct VerifyOkBody {
 	/// admin, bans — and it arrives HERE rather than in the client's Hello
 	/// precisely so the client cannot choose it.
 	account_id: String,
+	/// The board's copy of the account's totals; absent on a master
+	/// predating the board, which reads as nothing to fold in.
+	#[serde(default)]
+	skills: Vec<SkillXpBody>,
 }
 
 /// What a verified token vouches for.
 pub struct VerifiedJoin {
 	pub display_name: String,
 	pub account: AccountId,
+	/// The account's totals as the board holds them — what this server
+	/// folds into its own record at join, unless it keeps skills local.
+	pub skills: SkillSet,
 }
 
 // ---- blocking HTTP (callers use spawn_blocking) ---------------------------
@@ -210,6 +258,7 @@ pub fn register(cfg: &MasterConfig, cert_hash: &[u8; 32]) -> Result<Registration
 				server_id: ok.server_id,
 				server_key: ok.server_key,
 				observed_host: ok.observed_host,
+				reports_skills: ok.reports_skills,
 			})
 		}
 		422 => {
@@ -226,7 +275,14 @@ pub fn register(cfg: &MasterConfig, cert_hash: &[u8; 32]) -> Result<Registration
 			)))
 		}
 		s @ 500..=599 => Err(RegisterError::Transport(format!("http {s}"))),
-		s => Err(RegisterError::Rejected(format!("http {s}"))),
+		// The master's refusals carry their reason; an operator reading the
+		// log needs it more than the status code.
+		s => Err(RegisterError::Rejected(
+			match res.body_mut().read_json::<ErrorBody>() {
+				Ok(ErrorBody { error }) if !error.is_empty() => format!("http {s}: {error}"),
+				_ => format!("http {s}"),
+			},
+		)),
 	}
 }
 
@@ -255,9 +311,15 @@ pub fn verify_token(
 			let account = AccountId::parse(&ok.account_id).ok_or_else(|| {
 				VerifyError::Unavailable(format!("master sent a bad account id: {}", ok.account_id))
 			})?;
+			let pairs: Vec<(u8, u64)> = ok
+				.skills
+				.iter()
+				.map(|s| (s.skill, s.xp.max(0) as u64))
+				.collect();
 			Ok(VerifiedJoin {
 				display_name: ok.display_name,
 				account,
+				skills: SkillSet::from_wire(&pairs),
 			})
 		}
 		401 | 404 => Err(VerifyError::Denied),
@@ -316,6 +378,52 @@ pub fn heartbeat(
 	}
 }
 
+/// What a skill report came back as.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ReportOutcome {
+	Accepted,
+	/// 404: the master lost our registration, exactly as a heartbeat's.
+	Lost,
+	/// 403: this address is not on the master's trusted list. Final for
+	/// this registration — the master decided, and re-asking is spam.
+	Refused,
+}
+
+/// Post one batch of XP totals to the board.
+pub fn report_skills(
+	url: &str,
+	reg: &Registration,
+	rows: &[(AccountId, SkillSet)],
+) -> Result<ReportOutcome, String> {
+	let body = SkillReportBody {
+		players: rows
+			.iter()
+			.map(|(account, skills)| SkillReportRow {
+				account_id: account.to_string(),
+				skills: skills
+					.to_wire()
+					.into_iter()
+					.map(|(skill, xp)| SkillXpBody {
+						skill,
+						xp: xp.min(i64::MAX as u64) as i64,
+					})
+					.collect(),
+			})
+			.collect(),
+	};
+	let res = agent(Duration::from_secs(10))
+		.post(format!("{url}/api/servers/{}/skills", reg.server_id))
+		.header("authorization", &format!("Bearer {}", reg.server_key))
+		.send_json(&body)
+		.map_err(|e| e.to_string())?;
+	match res.status().as_u16() {
+		204 => Ok(ReportOutcome::Accepted),
+		404 => Ok(ReportOutcome::Lost),
+		403 => Ok(ReportOutcome::Refused),
+		s => Err(format!("http {s}")),
+	}
+}
+
 /// Best-effort graceful-shutdown notify (removes us from the list).
 pub fn notify_shutdown(url: &str, reg: &Registration) {
 	let result = agent(Duration::from_secs(2))
@@ -343,6 +451,7 @@ pub async fn run(
 	reregister: Arc<tokio::sync::Notify>,
 	players: Arc<AtomicUsize>,
 	key_path: Option<std::path::PathBuf>,
+	outbox: Arc<SkillOutbox>,
 ) {
 	register_with_retry(&state, &mut cfg, &cert_hash, key_path.as_deref()).await;
 	let mut interval = tokio::time::interval(HEARTBEAT_INTERVAL);
@@ -372,9 +481,55 @@ pub async fn run(
 				log::warn!("master lost our registration (restart?); re-registering");
 				state.set_registration(None);
 				register_with_retry(&state, &mut cfg, &cert_hash, key_path.as_deref()).await;
+				continue;
 			}
-			Ok(Err(e)) => log::warn!("heartbeat failed: {e}"),
-			Err(e) => log::warn!("heartbeat task failed: {e}"),
+			Ok(Err(e)) => {
+				log::warn!("heartbeat failed: {e}");
+				continue;
+			}
+			Err(e) => {
+				log::warn!("heartbeat task failed: {e}");
+				continue;
+			}
+		}
+		// The board, on the heartbeat's cadence and only behind a heartbeat
+		// that landed: one batch a beat, so a burst of level-ups drains
+		// over a few beats rather than in one oversized post.
+		let Some(reg) = state.registration() else {
+			continue;
+		};
+		if !reg.reports_skills || outbox.is_empty() {
+			continue;
+		}
+		let rows = outbox.drain(REPORT_BATCH);
+		let url = state.url.clone();
+		let outbox = outbox.clone();
+		let report = tokio::task::spawn_blocking(move || {
+			let outcome = report_skills(&url, &reg, &rows);
+			(outcome, rows)
+		})
+		.await;
+		match report {
+			Ok((Ok(ReportOutcome::Accepted), rows)) => {
+				log::info!("reported {} player(s)' skills to the board", rows.len());
+			}
+			Ok((Ok(ReportOutcome::Refused), _)) => {
+				log::warn!(
+					"the master does not trust this server to report skills; dropping the report"
+				);
+				let mut reg = state.registration().expect("registration checked above");
+				reg.reports_skills = false;
+				state.set_registration(Some(reg));
+			}
+			Ok((Ok(ReportOutcome::Lost), rows)) => {
+				outbox.restore(rows);
+				state.set_registration(None);
+			}
+			Ok((Err(e), rows)) => {
+				log::warn!("skill report failed: {e}");
+				outbox.restore(rows);
+			}
+			Err(e) => log::warn!("skill report task failed: {e}"),
 		}
 	}
 }
@@ -399,6 +554,11 @@ async fn register_with_retry(
 					reg.observed_host,
 					cfg.advertise_port
 				);
+				if reg.reports_skills {
+					log::info!("the master trusts this server: skill totals will reach the board");
+				} else {
+					log::info!("not on the master's trusted list: skill totals stay local");
+				}
 				// Hold on to the key: it is what makes the NEXT registration
 				// a re-registration rather than a claim someone else could
 				// have made. Usually unchanged; new on a first run, and new

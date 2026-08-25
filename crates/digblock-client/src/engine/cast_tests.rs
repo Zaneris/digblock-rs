@@ -45,6 +45,77 @@ fn tick(e: &mut Engine) {
 	));
 }
 
+/// What the sweeps build a sphere of: crafted brick, which no terrain
+/// holds — so a shell cell counted as built was built — and no sweep
+/// turns over, unlike the dirt the spell admits first, which the grass
+/// job greens mid-climb (a cell no longer holding the block is rightly
+/// left standing by an unwind, and stays paid for).
+fn matter() -> digblock_core::block::BlockType {
+	let b = digblock_core::block::BlockType::StoneBrick;
+	assert!(digblock_core::sphere::accepts(b), "brick builds");
+	b
+}
+
+/// The two fares one sphere drains at `level` — its own and the wisp
+/// its seal lights — read off the tables.
+fn sphere_fares(level: u32) -> [(digblock_core::block::Essence, u32); 2] {
+	[
+		digblock_core::alchemy::sphere_price(level),
+		digblock_core::alchemy::wisp_price(level),
+	]
+}
+
+/// A caster's balance in each fare, in table order.
+fn balances(e: &Engine, level: u32) -> Vec<u32> {
+	sphere_fares(level)
+		.iter()
+		.map(|&(essence, _)| e.inventory.sub_count(essence))
+		.collect()
+}
+
+/// Put `n` of `block` in the caster's hand: the count in the inventory,
+/// the type on the first bar slot, and the bar pointing at it.
+fn hold(e: &mut Engine, block: digblock_core::block::BlockType, n: u32) {
+	e.inventory.add(block, n);
+	assert!(e.hotbar.assign(0, block), "the first slot takes the block");
+	e.hotbar.set_selected(0);
+}
+
+/// The shell the engine would bill this caster for right now: the plan
+/// at the body's head, less the cells protection would keep it from
+/// writing — the same subtraction the offline arm makes before it bills.
+fn shell_bill(e: &Engine, r: i32, block: digblock_core::block::BlockType) -> u32 {
+	let head = digblock_core::kindle::host_cell(e.body_pos());
+	let mut writes =
+		digblock_core::sphere::plan(head, r, block, |c| e.pipeline.cell_at(c.0, c.1, c.2))
+			.expect("the sphere's cells are resident");
+	writes.retain(|&(c, _)| !digblock_core::protect::immutable(c.0, c.1, c.2, &e.protected));
+	digblock_core::sphere::blocks_needed(&writes, block)
+}
+
+/// Arm a caster for exactly one sphere at the first rank: the rung, both
+/// fares, and just the blocks the shell about them bills, in hand. The
+/// world is settled first, since the bill is read off the plan. Answers
+/// the level and the count billed.
+fn arm_sphere(e: &mut Engine) -> (u32, u32) {
+	settle(e);
+	let level = digblock_core::unlock::SPHERE_AT;
+	e.skills
+		.add_xp(Skill::Arcana, digblock_core::skills::total_xp_for(level));
+	for (essence, fare) in sphere_fares(level) {
+		e.inventory.add_sub(essence, fare);
+	}
+	let need = shell_bill(e, digblock_core::unlock::sphere_radius(level), matter());
+	assert!(need > 10, "a sphere about spawn is worth billing");
+	hold(e, matter(), need);
+	(level, need)
+}
+
+/// Whether the feed has spoken this line.
+fn spoke(e: &Engine, msg: &Msg) -> bool {
+	e.session.feed.iter().any(|(m, _, _)| m == msg)
+}
+
 #[test]
 fn a_completed_channel_takes_channel_ticks_and_starts_the_rung_cooldown() {
 	let mut e = fresh();
@@ -96,58 +167,66 @@ fn a_jump_throws_bursts_that_expire_within_their_life() {
 	assert_eq!(e.vfx.flash, 0.0, "the flash outlived the jump");
 }
 
-/// The Ward climbs THROUGH its channel and a break unwinds it: halfway
-/// through, part of the shell is glass and the fare is gone; one step
-/// puts every pane back and the fare with it; a channel left to finish
-/// seals the whole shell, washes the overlay and keeps the fare.
+/// The Sphere climbs THROUGH its channel and a break unwinds it: halfway
+/// through, part of the shell stands and the whole bill is gone — both
+/// fares and the held blocks; one step puts every block back and the
+/// bill with it; a channel left to finish seals the whole shell, washes
+/// the overlay, keeps the bill, lights the wisp and pays both fares' XP.
 #[test]
-fn a_broken_ward_channel_unwinds_and_a_finished_one_seals() {
+fn a_broken_sphere_channel_unwinds_and_a_finished_one_seals() {
 	use digblock_core::block::BlockType;
 	use digblock_core::chunk::{cell_id, make_cell};
-	use digblock_core::skills::total_xp_for;
+	use digblock_core::skills::{cast_xp, total_xp_for};
 	let mut e = fresh();
-	settle(&mut e);
-	let level = digblock_core::unlock::WARD_AT;
-	e.skills.add_xp(Skill::Arcana, total_xp_for(level));
-	let (essence, fare) = digblock_core::alchemy::ward_price(level);
-	e.inventory.add_sub(essence, fare);
-	let r = digblock_core::unlock::ward_radius(level);
-	let head = digblock_core::kindle::host_cell(e.player.pos);
-	let (shell, _) = digblock_core::ward::sets(head, r);
-	let glass = make_cell(BlockType::Wardglass, 0);
-	let air_cells: Vec<_> = shell
-		.iter()
-		.copied()
-		.filter(|&(x, y, z)| {
-			e.pipeline.cell_at(x, y, z).map(cell_id) == Some(BlockType::Air as u16)
-		})
-		.collect();
+	let (level, billed) = arm_sphere(&mut e);
+	let r = digblock_core::unlock::sphere_radius(level);
+	let wall = make_cell(matter(), 0);
+	// The shell's writable air about wherever the caster stands now —
+	// read again after the step below, since the head moves with them.
+	let shell_air = |e: &Engine| -> Vec<(i32, i32, i32)> {
+		let head = digblock_core::kindle::host_cell(e.body_pos());
+		let (shell, _) = digblock_core::sphere::sets(head, r);
+		shell
+			.into_iter()
+			.filter(|&(x, y, z)| {
+				e.pipeline.cell_at(x, y, z).map(cell_id) == Some(BlockType::Air as u16)
+					&& !digblock_core::protect::immutable(x, y, z, &e.protected)
+			})
+			.collect()
+	};
+	let built = |e: &Engine, cells: &[(i32, i32, i32)]| {
+		cells
+			.iter()
+			.filter(|&&(x, y, z)| e.pipeline.cell_at(x, y, z) == Some(wall))
+			.count()
+	};
+	let air_cells = shell_air(&e);
 	assert!(
 		air_cells.len() > 10,
 		"the shell about spawn must be mostly air, or the sweep proves nothing"
 	);
-	let glassed = |e: &Engine| {
-		air_cells
-			.iter()
-			.filter(|&&(x, y, z)| e.pipeline.cell_at(x, y, z) == Some(glass))
-			.count()
-	};
+	assert_eq!(
+		air_cells.len() as u32,
+		billed,
+		"the bill is the shell's writable air"
+	);
 	let need = digblock_core::unlock::channel_ticks(level);
 
-	e.start_cast(CastTarget::Ward);
+	e.start_cast(CastTarget::Sphere);
 	assert!(e.cast.is_some(), "the channel opened");
 	assert_eq!(
-		e.inventory.sub_count(essence),
-		0,
-		"the fare is taken as the channel begins"
+		balances(&e, level),
+		vec![0, 0],
+		"both fares are taken as the channel begins"
 	);
+	assert_eq!(e.inventory.count(matter()), 0, "and the blocks with them");
 	for _ in 0..need / 2 {
 		tick(&mut e);
 	}
-	let half = glassed(&e);
+	let half = built(&e, &air_cells);
 	assert!(
 		half > 0 && half < air_cells.len(),
-		"halfway through, the glass is climbing"
+		"halfway through, the shell is climbing"
 	);
 	e.input(InputEvent::Key {
 		key: Key::W,
@@ -155,30 +234,107 @@ fn a_broken_ward_channel_unwinds_and_a_finished_one_seals() {
 	});
 	tick(&mut e);
 	assert!(e.cast.is_none(), "the step broke the channel");
-	assert_eq!(glassed(&e), 0, "every pane came back down");
+	assert_eq!(built(&e, &air_cells), 0, "every block came back down");
 	assert_eq!(
-		e.inventory.sub_count(essence),
-		fare,
-		"and the fare came back"
+		balances(&e, level),
+		sphere_fares(level).iter().map(|f| f.1).collect::<Vec<_>>(),
+		"and the fares came back"
 	);
+	assert_eq!(e.inventory.count(matter()), billed, "and the blocks");
+	assert_eq!(e.wisp_left, 0.0, "a broken channel lights nothing");
 	e.input(InputEvent::Key {
 		key: Key::W,
 		pressed: false,
 	});
 
-	e.start_cast(CastTarget::Ward);
-	assert!(e.cast.is_some());
+	// The step moved the head, and the shell about it bills its own
+	// count: the hand is sized for that one now — and HELD again, since
+	// a slot whose count reached zero mid-climb was released, and the
+	// refund lands the type wherever the layout has room.
+	let air_cells = shell_air(&e);
+	let again = air_cells.len() as u32;
+	hold(&mut e, matter(), again.saturating_sub(billed));
+	let have = e.inventory.count(matter());
+	e.start_cast(CastTarget::Sphere);
+	assert!(e.cast.is_some(), "{:?}", e.session.feed);
 	for _ in 0..=need {
 		tick(&mut e);
 	}
 	assert!(e.cast.is_none(), "the channel completed");
-	assert_eq!(glassed(&e), air_cells.len(), "the shell sealed whole");
-	assert!(e.vfx.flash > 0.0, "the seal washes the overlay");
-	assert_eq!(e.inventory.sub_count(essence), 0, "the fare stays spent");
-	assert!(
-		e.skills.xp(Skill::Arcana) > total_xp_for(level),
-		"the seal paid XP"
+	assert_eq!(
+		built(&e, &air_cells),
+		air_cells.len(),
+		"the shell sealed whole"
 	);
+	assert!(e.vfx.flash > 0.0, "the seal washes the overlay");
+	assert_eq!(balances(&e, level), vec![0, 0], "the fares stay spent");
+	assert_eq!(
+		e.inventory.count(matter()),
+		have - again,
+		"every block billed was placed, so none comes back"
+	);
+	assert!(e.wisp_left > 0.0, "the seal lit the wisp");
+	let paid: u64 = sphere_fares(level)
+		.iter()
+		.map(|&(essence, fare)| cast_xp(essence, fare))
+		.sum();
+	assert_eq!(
+		e.skills.xp(Skill::Arcana),
+		total_xp_for(level) + paid,
+		"the seal paid for the sphere and the wisp it lit"
+	);
+}
+
+/// The hand is gated before anything is paid, and each refusal names
+/// what is wrong: an empty hand, a block no shell can be built of, too
+/// few of the right one — the last naming the count. Nothing leaves the
+/// inventory for any of them and no channel opens.
+#[test]
+fn a_sphere_refuses_the_hand_it_cannot_build_from_and_says_why() {
+	use digblock_core::block::BlockType;
+	let mut e = fresh();
+	let (level, billed) = arm_sphere(&mut e);
+	let fares: Vec<u32> = sphere_fares(level).iter().map(|f| f.1).collect();
+	let untouched = |e: &Engine| balances(e, level) == fares && e.cast.is_none();
+
+	// Nothing on the bar under the selection.
+	e.hotbar.set_selected(1);
+	assert_eq!(e.hotbar.selected_item(), None, "slot 1 is bare");
+	e.start_cast(CastTarget::Sphere);
+	assert!(spoke(&e, &Msg::SphereNoBlock), "an empty hand");
+	assert!(untouched(&e));
+
+	// A door — two cells — under it.
+	assert!(!digblock_core::sphere::accepts(BlockType::LumberDoor));
+	e.inventory.add(BlockType::LumberDoor, 1);
+	assert!(e.hotbar.assign(1, BlockType::LumberDoor));
+	e.start_cast(CastTarget::Sphere);
+	assert!(
+		spoke(&e, &Msg::SphereBadBlock(Some(BlockType::LumberDoor))),
+		"a door, named"
+	);
+	assert!(untouched(&e));
+	assert_eq!(e.inventory.count(BlockType::LumberDoor), 1);
+
+	// The right block, one short.
+	e.hotbar.set_selected(0);
+	assert!(e.inventory.try_take(matter(), 1));
+	e.start_cast(CastTarget::Sphere);
+	assert!(
+		spoke(
+			&e,
+			&Msg::SphereBlocksShort(Some((matter(), billed, billed - 1)))
+		),
+		"one short, with the count: {:?}",
+		e.session.feed
+	);
+	assert!(untouched(&e));
+	assert_eq!(e.inventory.count(matter()), billed - 1);
+
+	// And with the block back, the channel opens.
+	e.inventory.add(matter(), 1);
+	e.start_cast(CastTarget::Sphere);
+	assert!(e.cast.is_some(), "the hand is good now");
 }
 
 /// An interrupted channel FADES rather than pops: the aura's envelope is
@@ -287,16 +443,15 @@ fn one_cooldown_covers_home_and_every_port() {
 #[test]
 fn a_light_spell_neither_waits_on_the_clock_nor_arms_it() {
 	let mut e = fresh();
-	// The Ward validates as its channel BEGINS, so it needs its rung,
-	// its fare and a resident sphere to open at all.
-	settle(&mut e);
-	let level = digblock_core::unlock::WARD_AT;
-	e.skills
-		.add_xp(Skill::Arcana, digblock_core::skills::total_xp_for(level));
-	let (essence, fare) = digblock_core::alchemy::ward_price(level);
-	e.inventory.add_sub(essence, fare);
+	// The Sphere validates as its channel BEGINS, so it needs its rung,
+	// its bill and a resident sphere to open at all — and the wisp cast
+	// ahead of it in the sweep spends the wisp's fare, which the sphere's
+	// seal drains again, so that fare is stocked twice.
+	let (level, _) = arm_sphere(&mut e);
+	let (wisp_essence, wisp_fare) = digblock_core::alchemy::wisp_price(level);
+	e.inventory.add_sub(wisp_essence, wisp_fare);
 	let need = digblock_core::unlock::channel_ticks(e.skills.level(Skill::Arcana));
-	for target in [CastTarget::Wisp, CastTarget::Kindle, CastTarget::Ward] {
+	for target in [CastTarget::Wisp, CastTarget::Kindle, CastTarget::Sphere] {
 		assert!(!target.teleports(), "{target:?} must not ride the clock");
 		// Mid-window: long enough that the channel cannot run it out, so
 		// "still running" is what the cast happened UNDER.
@@ -365,24 +520,20 @@ fn a_kindled_light_stands_at_the_head_on_its_own_clock() {
 	assert!(e.vfx.kindled.is_empty(), "and out once the span has run");
 }
 
-/// Fly leaves `player.pos` where the body last stood, and both light
+/// Fly leaves `player.pos` where the body last stood, and both conjuring
 /// spells derive their cell from the head: cast while flying and the
-/// ward closes about a spot you left, with your light standing in it.
+/// sphere closes about a spot you left, with your light standing in it.
 /// Both read `body_pos`, the same position the shell is scanned
 /// against, so the answer is one position rather than two.
 #[test]
 fn a_flying_caster_conjures_where_they_are() {
 	use digblock_core::skills::total_xp_for;
 	let mut e = fresh();
-	settle(&mut e);
-	let level = digblock_core::unlock::WARD_AT.max(digblock_core::unlock::KINDLE_AT);
+	let (_, billed) = arm_sphere(&mut e);
+	let level = digblock_core::unlock::SPHERE_AT.max(digblock_core::unlock::KINDLE_AT);
 	e.skills.add_xp(Skill::Arcana, total_xp_for(level));
-	for (essence, fare) in [
-		digblock_core::alchemy::ward_price(level),
-		digblock_core::alchemy::kindle_price(level),
-	] {
-		e.inventory.add_sub(essence, fare);
-	}
+	let (essence, fare) = digblock_core::alchemy::kindle_price(level);
+	e.inventory.add_sub(essence, fare);
 	// Fly a few blocks up and along: the camera moves, the body does not.
 	e.input.walking = false;
 	let flown = e.player.pos + Vec3::new(3.0, 4.0, -2.0);
@@ -390,6 +541,11 @@ fn a_flying_caster_conjures_where_they_are() {
 	let stale = digblock_core::kindle::host_cell(e.player.pos);
 	let here = digblock_core::kindle::host_cell(e.body_pos());
 	assert_ne!(here, stale, "the fly must actually have gone somewhere");
+	// The shell up here bills differently from the one on the ground
+	// the fixture sized the hand for; top the hand up to whatever it asks.
+	let r = digblock_core::unlock::sphere_radius(e.skills.level(Skill::Arcana));
+	let up_here = shell_bill(&e, r, matter());
+	e.inventory.add(matter(), up_here.saturating_sub(billed));
 
 	let need = digblock_core::unlock::channel_ticks(level);
 	e.start_cast(CastTarget::Kindle);
@@ -399,9 +555,9 @@ fn a_flying_caster_conjures_where_they_are() {
 	assert_eq!(e.vfx.kindled.len(), 1, "the light stood");
 	assert_eq!(e.vfx.kindled[0].cell, here, "and it stood where we are");
 
-	e.start_cast(CastTarget::Ward);
-	let ward = e.own_ward().expect("the climb began");
-	assert_eq!(ward.head, here, "the sphere closes about where we are");
+	e.start_cast(CastTarget::Sphere);
+	let climb = e.own_sphere().expect("the climb began");
+	assert_eq!(climb.head, here, "the sphere closes about where we are");
 }
 
 /// Every standing kindled light keys its own carrier. Two on one key share a `fired` slot and
@@ -460,15 +616,17 @@ fn connected() -> (Engine, Box<dyn digblock_net::transport::NetTransport>) {
 }
 
 /// A climb still standing under a finished channel: the span the server
-/// runs began when `Cast(Ward)` ARRIVED, so it lands `lag` ticks late.
+/// runs began when `Cast(Sphere)` ARRIVED, so it lands `lag` ticks late.
 fn winding(e: &mut Engine, span: u32) {
 	let by = e.session.my_player_id;
-	e.ward_climbs.push(WardClimb {
+	e.sphere_climbs.push(SphereClimb {
 		by,
-		closing: digblock_core::ward::Closing::new(Vec::new(), span),
+		closing: digblock_core::sphere::Closing::new(Vec::new(), span),
 		head: digblock_core::kindle::host_cell(e.body_pos()),
+		block: matter(),
 		prefix: 0,
-		fare: None,
+		placed: 0,
+		bill: None,
 	});
 }
 
@@ -499,11 +657,11 @@ fn clear_head(e: &Engine, r: i32, side: i32) -> (i32, i32, i32) {
 	(x + side * (2 * r + 2), y, z)
 }
 
-/// The sphere a caster's `WardWinding` names, as this end draws it —
+/// The sphere a caster's `SphereWinding` names, as this end draws it —
 /// the same call the engine makes, so an expectation is the plan itself
 /// rather than a count written down.
-fn ward_plan_at(e: &Engine, head: (i32, i32, i32), r: i32) -> Vec<((i32, i32, i32), u16)> {
-	digblock_core::ward::plan(head, r, |c| e.pipeline.cell_at(c.0, c.1, c.2))
+fn sphere_plan_at(e: &Engine, head: (i32, i32, i32), r: i32) -> Vec<((i32, i32, i32), u16)> {
+	digblock_core::sphere::plan(head, r, matter(), |c| e.pipeline.cell_at(c.0, c.1, c.2))
 		.expect("the sphere's cells are resident")
 }
 
@@ -524,9 +682,9 @@ fn cells_of(e: &Engine, plan: &[((i32, i32, i32), u16)]) -> Vec<Option<u16>> {
 
 /// The first castable rank and everything derived from it: the radius
 /// its sphere spans and the channel it climbs through.
-fn ward_rank() -> (i32, u8, u32) {
-	let level = digblock_core::unlock::WARD_AT;
-	let r = digblock_core::unlock::ward_radius(level);
+fn sphere_rank() -> (i32, u8, u32) {
+	let level = digblock_core::unlock::SPHERE_AT;
+	let r = digblock_core::unlock::sphere_radius(level);
 	(
 		r,
 		u8::try_from(r).expect("a castable radius fits the wire"),
@@ -540,11 +698,12 @@ fn winding_msg(
 	radius: u8,
 	span: u32,
 ) -> digblock_net::messages::ServerMsg {
-	digblock_net::messages::ServerMsg::WardWinding {
+	digblock_net::messages::ServerMsg::SphereWinding {
 		by,
 		head: [head.0, head.1, head.2],
 		radius,
 		span,
+		block: matter() as u16,
 	}
 }
 
@@ -555,27 +714,28 @@ fn ended_msg(
 	landed: u32,
 	sealed: bool,
 ) -> digblock_net::messages::ServerMsg {
-	digblock_net::messages::ServerMsg::WardEnded {
+	digblock_net::messages::ServerMsg::SphereEnded {
 		by,
 		head: [head.0, head.1, head.2],
 		radius,
 		landed,
 		sealed,
+		block: matter() as u16,
 	}
 }
 
 /// A remote's sphere CLIMBS rather than appearing whole at the seal.
-/// `WardWinding` carries the head, the radius and the span, which is
-/// everything `ward::plan` needs, so a stranger's glass rises through
-/// their channel exactly as ours does through ours.
+/// `SphereWinding` carries the head, the radius, the span and the block,
+/// which is everything `sphere::plan` needs, so a stranger's shell rises
+/// through their channel exactly as ours does through ours.
 #[test]
-fn a_remote_ward_climbs_rather_than_standing_up_whole() {
+fn a_remote_sphere_climbs_rather_than_standing_up_whole() {
 	let (mut e, mut server) = connected();
 	settle(&mut e);
-	let (r, wire_r, span) = ward_rank();
+	let (r, wire_r, span) = sphere_rank();
 	let by = stranger(&e);
 	let head = clear_head(&e, r, 1);
-	let plan = ward_plan_at(&e, head, r);
+	let plan = sphere_plan_at(&e, head, r);
 	assert!(plan.len() > 10, "the sphere is worth watching climb");
 	assert_eq!(standing(&e, &plan), 0, "the plan is already standing");
 
@@ -605,13 +765,13 @@ fn a_remote_ward_climbs_rather_than_standing_up_whole() {
 /// Two casters at once: each sphere climbs on its own caster's clock,
 /// and one ending — either way it ends — leaves the other standing.
 #[test]
-fn two_wards_climb_side_by_side_and_one_ending_leaves_the_other() {
+fn two_spheres_climb_side_by_side_and_one_ending_leaves_the_other() {
 	let (mut e, mut server) = connected();
 	settle(&mut e);
-	let (r, wire_r, span) = ward_rank();
+	let (r, wire_r, span) = sphere_rank();
 	let (a, b) = (stranger(&e), stranger(&e) + 1);
 	let (head_a, head_b) = (clear_head(&e, r, 1), clear_head(&e, r, -1));
-	let (plan_a, plan_b) = (ward_plan_at(&e, head_a, r), ward_plan_at(&e, head_b, r));
+	let (plan_a, plan_b) = (sphere_plan_at(&e, head_a, r), sphere_plan_at(&e, head_b, r));
 	assert!(
 		plan_a.iter().all(|x| !plan_b.iter().any(|y| y.0 == x.0)),
 		"the two spheres overlap — neither could be told apart"
@@ -657,11 +817,11 @@ fn two_wards_climb_side_by_side_and_one_ending_leaves_the_other() {
 #[test]
 fn a_broken_channel_takes_our_own_climb_and_leaves_a_remote_standing() {
 	let (mut e, mut server) = connected();
-	settle(&mut e);
-	let (r, wire_r, span) = ward_rank();
+	arm_sphere(&mut e);
+	let (r, wire_r, span) = sphere_rank();
 	let by = stranger(&e);
 	let head = clear_head(&e, r, 1);
-	let plan = ward_plan_at(&e, head, r);
+	let plan = sphere_plan_at(&e, head, r);
 	deliver(
 		&mut e,
 		server.as_mut(),
@@ -671,8 +831,8 @@ fn a_broken_channel_takes_our_own_climb_and_leaves_a_remote_standing() {
 	// Ours, stood up by the server's word about our own cast.
 	let me = e.session.my_player_id.expect("connected");
 	let mine = digblock_core::kindle::host_cell(e.body_pos());
-	let my_plan = ward_plan_at(&e, mine, r);
-	e.start_cast(CastTarget::Ward);
+	let my_plan = sphere_plan_at(&e, mine, r);
+	e.start_cast(CastTarget::Sphere);
 	deliver(
 		&mut e,
 		server.as_mut(),
@@ -703,13 +863,13 @@ fn a_broken_channel_takes_our_own_climb_and_leaves_a_remote_standing() {
 	});
 	tick(&mut e);
 	assert!(e.cast.is_none(), "the step broke the channel");
-	assert_eq!(standing(&e, &my_plan), 0, "our own glass stayed up");
+	assert_eq!(standing(&e, &my_plan), 0, "our own shell stayed up");
 	assert!(
 		standing(&e, &plan) >= theirs,
-		"our break took the stranger's glass with it"
+		"our break took the stranger's shell with it"
 	);
 	assert!(
-		e.ward_climbs.iter().any(|w| w.by == Some(by)),
+		e.sphere_climbs.iter().any(|w| w.by == Some(by)),
 		"our break took the stranger's climb with it"
 	);
 }
@@ -725,10 +885,10 @@ fn a_break_reconciles_whichever_clock_ran_ahead() {
 	for ahead in [true, false] {
 		let (mut e, mut server) = connected();
 		settle(&mut e);
-		let (r, wire_r, span) = ward_rank();
+		let (r, wire_r, span) = sphere_rank();
 		let by = stranger(&e);
 		let head = clear_head(&e, r, 1);
-		let plan = ward_plan_at(&e, head, r);
+		let plan = sphere_plan_at(&e, head, r);
 		let pristine = cells_of(&e, &plan);
 		deliver(
 			&mut e,
@@ -740,7 +900,7 @@ fn a_break_reconciles_whichever_clock_ran_ahead() {
 		}
 		// The prefix this end has reached, read off the climb itself.
 		let mid = e
-			.ward_climbs
+			.sphere_climbs
 			.iter()
 			.find(|w| w.by == Some(by))
 			.expect("the climb stands")
@@ -780,7 +940,7 @@ fn a_break_reconciles_whichever_clock_ran_ahead() {
 fn a_remote_climb_does_not_hold_our_own_channel() {
 	let (mut e, mut server) = connected();
 	settle(&mut e);
-	let (r, wire_r, _) = ward_rank();
+	let (r, wire_r, _) = sphere_rank();
 	let by = stranger(&e);
 	let head = clear_head(&e, r, 1);
 	// A climb that outlasts the window, so it is still standing at the
@@ -791,11 +951,11 @@ fn a_remote_climb_does_not_hold_our_own_channel() {
 		&winding_msg(by, head, wire_r, u32::MAX),
 	);
 	assert!(
-		e.ward_climbs.iter().any(|w| w.by == Some(by)),
+		e.sphere_climbs.iter().any(|w| w.by == Some(by)),
 		"the stranger's climb never stood"
 	);
 	let need = digblock_core::unlock::channel_ticks(e.skills.level(Skill::Arcana));
-	e.start_cast(CastTarget::Ward);
+	e.start_cast(CastTarget::Sphere);
 	for _ in 0..need {
 		tick(&mut e);
 	}
@@ -813,35 +973,35 @@ fn a_remote_climb_does_not_hold_our_own_channel() {
 #[test]
 fn the_offline_award_and_refund_find_our_own_climb() {
 	use digblock_core::skills::total_xp_for;
-	let level = digblock_core::unlock::WARD_AT;
-	let (essence, fare) = digblock_core::alchemy::ward_price(level);
+	let level = digblock_core::unlock::SPHERE_AT;
 	let need = digblock_core::unlock::channel_ticks(level);
 	// Offline OUR climb is the one with no caster on it, so any id at
 	// all is somebody else's.
 	let plant = |e: &mut Engine| {
 		let head = digblock_core::kindle::host_cell(e.body_pos());
-		e.ward_climbs.push(WardClimb {
+		e.sphere_climbs.push(SphereClimb {
 			by: Some(1),
-			closing: digblock_core::ward::Closing::new(Vec::new(), u32::MAX),
+			closing: digblock_core::sphere::Closing::new(Vec::new(), u32::MAX),
 			head,
+			block: matter(),
 			prefix: 0,
-			fare: None,
+			placed: 0,
+			bill: None,
 		});
 	};
 	let armed = || {
 		let mut e = fresh();
-		settle(&mut e);
-		e.skills.add_xp(Skill::Arcana, total_xp_for(level));
-		e.inventory.add_sub(essence, fare);
-		e
+		let (armed_level, billed) = arm_sphere(&mut e);
+		assert_eq!(armed_level, level);
+		(e, billed)
 	};
 
 	// A seal pays US, with a stranger's climb standing ahead of ours.
-	let mut e = armed();
+	let (mut e, _) = armed();
 	plant(&mut e);
-	e.start_cast(CastTarget::Ward);
-	assert_eq!(e.inventory.sub_count(essence), 0, "our cast paid its fare");
-	assert_eq!(e.ward_climbs.len(), 2, "our own climb never began");
+	e.start_cast(CastTarget::Sphere);
+	assert_eq!(balances(&e, level), vec![0, 0], "our cast paid its fares");
+	assert_eq!(e.sphere_climbs.len(), 2, "our own climb never began");
 	for _ in 0..=need {
 		tick(&mut e);
 	}
@@ -850,13 +1010,13 @@ fn the_offline_award_and_refund_find_our_own_climb() {
 		"the seal went unpaid — the award read a stranger's climb"
 	);
 
-	// And a break refunds OUR fare, once, leaving the stranger alone.
-	let mut e = armed();
+	// And a break refunds OUR bill, once, leaving the stranger alone.
+	let (mut e, billed) = armed();
 	plant(&mut e);
-	let (r, ..) = ward_rank();
+	let (r, ..) = sphere_rank();
 	let mine = digblock_core::kindle::host_cell(e.body_pos());
-	let my_plan = ward_plan_at(&e, mine, r);
-	e.start_cast(CastTarget::Ward);
+	let my_plan = sphere_plan_at(&e, mine, r);
+	e.start_cast(CastTarget::Sphere);
 	for _ in 0..need / 2 {
 		tick(&mut e);
 	}
@@ -868,29 +1028,35 @@ fn the_offline_award_and_refund_find_our_own_climb() {
 	tick(&mut e);
 	assert!(e.cast.is_none(), "the step broke the channel");
 	assert_eq!(
-		e.inventory.sub_count(essence),
-		fare,
-		"the break refunded something other than our own fare"
+		balances(&e, level),
+		sphere_fares(level).iter().map(|f| f.1).collect::<Vec<_>>(),
+		"the break refunded something other than our own fares"
 	);
-	assert_eq!(standing(&e, &my_plan), 0, "our own glass stayed up");
 	assert_eq!(
-		e.ward_climbs.len(),
+		e.inventory.count(matter()),
+		billed,
+		"and our own blocks, all of them"
+	);
+	assert_eq!(standing(&e, &my_plan), 0, "our own shell stayed up");
+	assert_eq!(
+		e.sphere_climbs.len(),
 		1,
 		"our own break took the stranger's climb with it"
 	);
 }
 
-/// The Ward's stillness contract outlives the caster's own channel. `Cast(Ward)` goes out as the
-/// channel BEGINS, so the server's span starts one upstream latency later and seals that much after
-/// the caster's own bar fills — and until it does, the server is still enforcing stillness and
-/// unwinds the WHOLE sphere, with no refusal and no word, for a caster who walked. So the channel
-/// keeps guarding while a climb stands under it, and the seal releases it.
+/// The Sphere's stillness contract outlives the caster's own channel. `Cast(Sphere)` goes out as
+/// the channel BEGINS, so the server's span starts one upstream latency later and seals that much
+/// after the caster's own bar fills — and until it does, the server is still enforcing stillness
+/// and unwinds the WHOLE sphere, with no refusal and no word, for a caster who walked. So the
+/// channel keeps guarding while a climb stands under it, and the seal releases it.
 #[test]
-fn a_ward_channel_guards_stillness_until_the_seal() {
+fn a_sphere_channel_guards_stillness_until_the_seal() {
 	let (mut e, _server) = connected();
+	arm_sphere(&mut e);
 	let need = digblock_core::unlock::channel_ticks(e.skills.level(Skill::Arcana));
 	let lag = 12;
-	e.start_cast(CastTarget::Ward);
+	e.start_cast(CastTarget::Sphere);
 	assert!(e.cast.is_some(), "the channel opened");
 	for _ in 0..lag {
 		tick(&mut e);
@@ -908,7 +1074,7 @@ fn a_ward_channel_guards_stillness_until_the_seal() {
 	for _ in 0..=lag {
 		tick(&mut e);
 	}
-	assert!(e.ward_climbs.is_empty(), "the climb sealed");
+	assert!(e.sphere_climbs.is_empty(), "the climb sealed");
 	assert!(e.cast.is_none(), "and the hold outlived the seal");
 }
 
@@ -916,13 +1082,14 @@ fn a_ward_channel_guards_stillness_until_the_seal() {
 /// comes back to say the sphere is gone — so a caster held on a climb
 /// that never ends would be frozen for good.
 #[test]
-fn a_ward_channel_never_holds_longer_than_its_grace() {
+fn a_sphere_channel_never_holds_longer_than_its_grace() {
 	let (mut e, _server) = connected();
+	arm_sphere(&mut e);
 	let need = digblock_core::unlock::channel_ticks(e.skills.level(Skill::Arcana));
-	e.start_cast(CastTarget::Ward);
+	e.start_cast(CastTarget::Sphere);
 	// A climb that never completes: the seal will never release this.
 	winding(&mut e, u32::MAX);
-	let grace = (Engine::WARD_SEAL_GRACE_SECS / digblock_core::player::TICK) as u32;
+	let grace = (Engine::SPHERE_SEAL_GRACE_SECS / digblock_core::player::TICK) as u32;
 	for _ in 0..need + grace {
 		tick(&mut e);
 	}
@@ -930,7 +1097,8 @@ fn a_ward_channel_never_holds_longer_than_its_grace() {
 	// Nothing else about the channel changed: it took its own length
 	// plus the bound, and no more.
 	let (mut e, _server) = connected();
-	e.start_cast(CastTarget::Ward);
+	arm_sphere(&mut e);
+	e.start_cast(CastTarget::Sphere);
 	winding(&mut e, u32::MAX);
 	for _ in 0..need {
 		tick(&mut e);
@@ -938,25 +1106,20 @@ fn a_ward_channel_never_holds_longer_than_its_grace() {
 	assert!(e.cast.is_some(), "the bound cut the hold short");
 }
 
-/// Leaving a world takes a climbing ward down with it. Half a sphere of
-/// glass left standing is glass the SAVE keeps and a fare the caster
-/// paid for nothing — so the unwind runs while this world is still the
-/// one under the cells, which is why it hangs off the save's own
-/// close rather than the transient reset after the pipeline swap.
+/// Leaving a world takes a climbing sphere down with it. Half a shell
+/// left standing is matter the SAVE keeps and a bill the caster paid for
+/// nothing — so the unwind runs while this world is still the one under
+/// the cells, which is why it hangs off the save's own close rather than
+/// the transient reset after the pipeline swap.
 #[test]
-fn leaving_a_world_takes_a_climbing_ward_with_it() {
+fn leaving_a_world_takes_a_climbing_sphere_with_it() {
 	use digblock_core::block::BlockType;
 	use digblock_core::chunk::{cell_id, make_cell};
-	use digblock_core::skills::total_xp_for;
 	let mut e = fresh();
-	settle(&mut e);
-	let level = digblock_core::unlock::WARD_AT;
-	e.skills.add_xp(Skill::Arcana, total_xp_for(level));
-	let (essence, fare) = digblock_core::alchemy::ward_price(level);
-	e.inventory.add_sub(essence, fare);
-	let r = digblock_core::unlock::ward_radius(level);
+	let (level, billed) = arm_sphere(&mut e);
+	let r = digblock_core::unlock::sphere_radius(level);
 	let head = digblock_core::kindle::host_cell(e.body_pos());
-	let (shell, _) = digblock_core::ward::sets(head, r);
+	let (shell, _) = digblock_core::sphere::sets(head, r);
 	let air_cells: Vec<_> = shell
 		.iter()
 		.copied()
@@ -965,27 +1128,29 @@ fn leaving_a_world_takes_a_climbing_ward_with_it() {
 		})
 		.collect();
 	assert!(air_cells.len() > 10, "the shell about spawn is mostly air");
-	let glass = make_cell(BlockType::Wardglass, 0);
-	let glassed = |e: &Engine| {
+	let wall = make_cell(matter(), 0);
+	let built = |e: &Engine| {
 		air_cells
 			.iter()
-			.filter(|&&(x, y, z)| e.pipeline.cell_at(x, y, z) == Some(glass))
+			.filter(|&&(x, y, z)| e.pipeline.cell_at(x, y, z) == Some(wall))
 			.count()
 	};
 
-	e.start_cast(CastTarget::Ward);
+	e.start_cast(CastTarget::Sphere);
 	for _ in 0..digblock_core::unlock::channel_ticks(level) / 2 {
 		tick(&mut e);
 	}
-	assert!(glassed(&e) > 0, "the glass is climbing");
-	assert_eq!(e.inventory.sub_count(essence), 0, "the fare is spent");
+	assert!(built(&e) > 0, "the shell is climbing");
+	assert_eq!(balances(&e, level), vec![0, 0], "the fares are spent");
+	assert_eq!(e.inventory.count(matter()), 0, "and the blocks");
 
 	e.close_local_save();
-	assert!(e.ward_climbs.is_empty(), "the climb was abandoned");
-	assert_eq!(glassed(&e), 0, "every pane came back down");
+	assert!(e.sphere_climbs.is_empty(), "the climb was abandoned");
+	assert_eq!(built(&e), 0, "every block came back down");
 	assert_eq!(
-		e.inventory.sub_count(essence),
-		fare,
-		"and the fare came back"
+		balances(&e, level),
+		sphere_fares(level).iter().map(|f| f.1).collect::<Vec<_>>(),
+		"and the fares came back"
 	);
+	assert_eq!(e.inventory.count(matter()), billed, "and the blocks");
 }

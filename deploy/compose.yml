@@ -14,16 +14,34 @@
 # ./data also holds "master-key" from your first registration. It is what
 # lets THIS server re-register its address later; without it, an address
 # someone else is live on cannot be reclaimed. Back it up with the rest.
+#
+# More than one server on this machine: give each its own folder and its
+# own port, the port in a .env file beside this one -
+#
+#   echo SERVER_PORT=4434 > .env
+#
+# - and nothing else changes. That one variable is the port published on
+# this machine, the port the server tells the master it is reachable at,
+# and the name of the compose project (digblock-4434). The name is what
+# keeps two copies of this file apart: compose names a project after its
+# folder unless told otherwise, and two folders that happened to share a
+# name would take turns replacing each other's container. The master
+# lists ports 4433–4499 and nothing outside that block, so one firewall
+# rule covers every server you will run here.
+name: digblock-${SERVER_PORT:-4433}
 services:
   digblock:
     # Pin a release by replacing "latest" with a version like "0.1.0".
     image: ghcr.io/zaneris/digblock-server:latest
     restart: unless-stopped
     ports:
-      - "4433:4433/udp"
+      - "${SERVER_PORT:-4433}:4433/udp"
     volumes:
       - ./data:/data
     environment:
+      # The port players reach this machine at (see SERVER_PORT above).
+      # Inside the container the server always listens on 4433.
+      DIGBLOCK_ADVERTISE_PORT: "${SERVER_PORT:-4433}"
       # Shown in the public server list. Letters, digits, spaces, - and
       # _; up to 24 characters (the master strips anything else).
       DIGBLOCK_SERVER_NAME: "My DigBlock World"

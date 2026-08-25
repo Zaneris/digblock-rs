@@ -139,6 +139,7 @@ fn version_mismatch_refused_and_closed() {
 				out: tx,
 				addr: test_addr(9),
 				account: AccountId::NONE,
+				skills: Default::default(),
 			},
 			SimEvent::Msg {
 				conn_id: 9,
@@ -201,6 +202,7 @@ fn lobby_without_hello_times_out() {
 		out: tx,
 		addr: test_addr(7),
 		account: AccountId::NONE,
+		skills: Default::default(),
 	}]);
 	// One tick short of the deadline: still in the lobby, no Close.
 	for _ in 0..super::HELLO_TIMEOUT_TICKS - 1 {
@@ -334,6 +336,7 @@ fn hostile_names_are_sanitized() {
 			out: tx,
 			addr: test_addr(5),
 			account: AccountId::NONE,
+			skills: Default::default(),
 		},
 		SimEvent::Msg {
 			conn_id: 5,
@@ -1445,21 +1448,21 @@ fn a_wisp_debits_and_a_kindle_conjures() {
 	);
 }
 
-/// The ward frames one client was sent, in order — the WHOLE wire cost
-/// of a cast, since the sphere's cells are derived rather than shipped.
-fn ward_frames(c: &TestClient) -> Vec<&ServerMsg> {
+/// The sphere frames one client was sent, in order — the WHOLE wire cost
+/// of a cast, since the shell's cells are derived rather than shipped.
+fn sphere_frames(c: &TestClient) -> Vec<&ServerMsg> {
 	c.msgs
 		.iter()
 		.filter(|m| {
 			matches!(
 				m,
-				ServerMsg::WardWinding { .. } | ServerMsg::WardEnded { .. }
+				ServerMsg::SphereWinding { .. } | ServerMsg::SphereEnded { .. }
 			)
 		})
 		.collect()
 }
 
-/// How many landed edits a client was pushed. A ward contributes none:
+/// How many landed edits a client was pushed. A sphere contributes none:
 /// this is the count that used to grow with the radius.
 fn applied_edits(c: &TestClient) -> usize {
 	c.msgs
@@ -1468,31 +1471,44 @@ fn applied_edits(c: &TestClient) -> usize {
 		.count()
 }
 
-/// `(landed, sealed)` of the last ward ending the client saw.
+/// `(landed, sealed)` of the last sphere ending the client saw.
 fn last_ending(c: &TestClient) -> Option<(u32, bool)> {
 	c.msgs.iter().rev().find_map(|m| match m {
-		ServerMsg::WardEnded { landed, sealed, .. } => Some((*landed, *sealed)),
+		ServerMsg::SphereEnded { landed, sealed, .. } => Some((*landed, *sealed)),
 		_ => None,
 	})
 }
 
+/// What the sweeps build a sphere of: crafted brick, which no terrain
+/// holds — so a shell cell counted as built was built — and no sweep
+/// turns over, unlike the dirt the spell admits first, which the grass
+/// job greens mid-climb (a cell no longer holding the block is rightly
+/// left standing by an unwind, and stays paid for).
+fn matter() -> digblock_core::block::BlockType {
+	let b = digblock_core::block::BlockType::StoneBrick;
+	assert!(digblock_core::sphere::accepts(b), "brick builds");
+	b
+}
+
 /// The sphere this caster's rank would draw, as the server sees the
 /// world right now.
-fn ward_plan(sim: &super::Sim, conn_id: u64, r: i32) -> Vec<((i32, i32, i32), u16)> {
+fn sphere_plan(sim: &super::Sim, conn_id: u64, r: i32) -> Vec<((i32, i32, i32), u16)> {
 	let head = digblock_core::kindle::host_cell(sim.test_player(conn_id).unwrap().pos);
-	digblock_core::ward::plan(head, r, |c| sim.test_cell_at(c.0, c.1, c.2))
+	digblock_core::sphere::plan(head, r, matter(), |c| sim.test_cell_at(c.0, c.1, c.2))
 		.expect("a resident sphere")
 }
 
 /// Tick until every cell of a sphere that wide is resident. The widest
-/// ranks reach into the neighbouring columns, and `ward::plan` refuses
+/// ranks reach into the neighbouring columns, and `sphere::plan` refuses
 /// outright until the world can answer for all of them — so this waits
 /// on the very predicate the cast will ask.
 fn wait_for_sphere(sim: &mut super::Sim, conn_id: u64, r: i32) {
 	let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
 	loop {
 		let head = digblock_core::kindle::host_cell(sim.test_player(conn_id).unwrap().pos);
-		if digblock_core::ward::plan(head, r, |c| sim.test_cell_at(c.0, c.1, c.2)).is_ok() {
+		if digblock_core::sphere::plan(head, r, matter(), |c| sim.test_cell_at(c.0, c.1, c.2))
+			.is_ok()
+		{
 			return;
 		}
 		assert!(
@@ -1504,20 +1520,58 @@ fn wait_for_sphere(sim: &mut super::Sim, conn_id: u64, r: i32) {
 	}
 }
 
-/// Ask for a ward on this connection's behalf.
-fn cast_ward(sim: &mut super::Sim, conn_id: u64) {
+/// Ask for a sphere on this connection's behalf, built of what `slot` holds.
+fn cast_sphere(sim: &mut super::Sim, conn_id: u64, slot: u8) {
 	sim.tick_once(vec![SimEvent::Msg {
 		conn_id,
-		msg: ClientMsg::Cast(digblock_net::messages::CastKind::Ward),
+		msg: ClientMsg::Cast(digblock_net::messages::CastKind::Sphere { slot }),
 	}]);
+}
+
+/// Put `n` more of the shell's block on the caster's bar and answer the
+/// slot it sits in — what an honest client declares.
+fn hand_matter(sim: &mut super::Sim, conn_id: u64, n: u32) -> u8 {
+	sim.test_grant(conn_id, matter(), n);
+	sim.test_slot_of(conn_id, matter())
+		.expect("granted matter lands on the bar")
+}
+
+/// The two fares one cast at this level drains — the sphere's own and
+/// the wisp its seal lights — read off the tables.
+fn sphere_fares(level: u32) -> [(digblock_core::block::Essence, u32); 2] {
+	[
+		digblock_core::alchemy::sphere_price(level),
+		digblock_core::alchemy::wisp_price(level),
+	]
+}
+
+/// Stock a caster for `casts` spheres at `level`: every fare, and
+/// exactly the blocks the plan the server would draw costs. Answers the
+/// slot the block sits in and the count one cast bills.
+fn stock(sim: &mut super::Sim, conn_id: u64, level: u32, casts: u32) -> (u8, u32) {
+	for (e, f) in sphere_fares(level) {
+		sim.test_grant_essence(conn_id, e, f * casts);
+	}
+	let r = digblock_core::unlock::sphere_radius(level);
+	let need = digblock_core::sphere::blocks_needed(&sphere_plan(sim, conn_id, r), matter());
+	assert!(need > 10, "a sphere about spawn is worth billing");
+	(hand_matter(sim, conn_id, need * casts), need)
+}
+
+/// A caster's balance in each of the cast's fares, in table order.
+fn balances(sim: &super::Sim, conn_id: u64, level: u32) -> Vec<u32> {
+	sphere_fares(level)
+		.iter()
+		.map(|&(e, _)| sim.test_essence(conn_id, e).unwrap_or(0))
+		.collect()
 }
 
 /// Every distinct radius the ladder can cast at, with a level that
 /// reaches it — derived from the unlock table, so a new rank sweeps in.
-fn ward_ranks() -> Vec<(u32, i32)> {
+fn sphere_ranks() -> Vec<(u32, i32)> {
 	let mut out: Vec<(u32, i32)> = Vec::new();
 	for level in 1..=100 {
-		let r = digblock_core::unlock::ward_radius(level);
+		let r = digblock_core::unlock::sphere_radius(level);
 		if r > 0 && out.last().map(|&(_, last)| last) != Some(r) {
 			out.push((level, r));
 		}
@@ -1526,111 +1580,140 @@ fn ward_ranks() -> Vec<(u32, i32)> {
 	out
 }
 
-/// The Ward lands whole or not at all, from the server's own view of the caster: below its rung it
-/// is refused before any debit; at it, every shell cell that was air stands as wardglass — except
-/// inside a locked region, which the sphere leaves exactly as it found it — the interior untouched,
-/// the fare gone and its XP paid at the seal. The CELLS never travel: both ends derive the same
-/// plan from the head and the radius, so a dozen cells and a thousand cost the same wire.
+/// The Sphere lands whole or not at all, from the server's own view of the caster, gated in order
+/// before any debit: rung, a declared slot holding an accepted block, both fares, enough blocks.
+/// At the seal every shell cell that was air stands as the block — except inside a locked region,
+/// which it leaves as found and refunds — the interior untouched, both fares gone, the wisp lit,
+/// both fares' XP paid. The CELLS never travel, so a dozen cells and a thousand cost the same wire.
 #[test]
-fn a_ward_closes_about_the_caster_as_a_derived_sphere() {
+fn a_sphere_closes_about_the_caster_as_a_derived_shell() {
 	use digblock_core::block::BlockType;
 	use digblock_core::chunk::{cell_id, make_cell};
 	use digblock_core::skills::cast_xp;
 	use digblock_net::messages::CastRefusal;
 
-	let mut sim = flat_sim("ward");
+	let mut sim = flat_sim("sphere");
 	let mut c = connect(&mut sim, 1);
 	wait_live(&mut sim, 1);
-	let cast = |sim: &mut super::Sim| cast_ward(sim, 1);
-	let level = digblock_core::unlock::WARD_AT;
-	let (essence, fare) = digblock_core::alchemy::ward_price(level);
-	sim.test_grant_essence(1, essence, fare);
+	let level = digblock_core::unlock::SPHERE_AT;
+	let refused = |c: &mut TestClient, want: CastRefusal| {
+		c.drain();
+		let got = c
+			.msgs
+			.iter()
+			.any(|m| matches!(m, ServerMsg::CastRefused { reason } if *reason == want));
+		c.msgs.clear();
+		got
+	};
+	// Untouched by every refusal below: the purse and the bar.
+	let untouched = |sim: &super::Sim, blocks: u32| {
+		balances(sim, 1, level) == sphere_fares(level).iter().map(|f| f.1).collect::<Vec<_>>()
+			&& sim.test_inventory_count(1, matter()) == blocks
+	};
+	let (slot, need) = stock(&mut sim, 1, level, 1);
 	c.msgs.clear();
-	cast(&mut sim);
-	c.drain();
+	cast_sphere(&mut sim, 1, slot);
 	assert!(
-		c.msgs.iter().any(|m| matches!(
-			m,
-			ServerMsg::CastRefused {
-				reason: CastRefusal::Locked
-			}
-		)),
-		"a ward below its rung must refuse"
+		refused(&mut c, CastRefusal::Locked),
+		"a sphere below its rung must refuse"
 	);
-	assert_eq!(
-		sim.test_essence(1, essence),
-		Some(fare),
-		"and costs nothing"
-	);
+	assert!(untouched(&sim, need), "and costs nothing");
 
 	sim.bench_set_arcana_level(1, level);
+	// An empty hand, then a door — two cells, which no shell can be
+	// built of — then too few of the right thing. Each refused at its
+	// own gate, and nothing leaves the inventory for any of them.
+	let empty = sim.test_empty_slot(1);
+	cast_sphere(&mut sim, 1, empty);
+	assert!(refused(&mut c, CastRefusal::NoBlock), "an empty slot");
+	sim.test_grant(1, BlockType::LumberDoor, 1);
+	let door = sim
+		.test_slot_of(1, BlockType::LumberDoor)
+		.expect("on the bar");
+	cast_sphere(&mut sim, 1, door);
+	assert!(refused(&mut c, CastRefusal::BadBlock), "a door");
+	assert_eq!(sim.test_inventory_count(1, BlockType::LumberDoor), 1);
+	// Short by one: the bar keeps the type, the count is what is asked.
+	sim.test_take(1, matter(), 1);
+	cast_sphere(&mut sim, 1, slot);
+	assert!(refused(&mut c, CastRefusal::BlocksShort), "one block short");
+	assert!(untouched(&sim, need - 1), "and costs nothing");
+	sim.test_grant(1, matter(), 1);
+
 	// A locked pad beside the caster, well inside the sphere.
 	sim.spawn_store
 		.set_lock(Some(crate::spawn_store::SpawnLock {
 			eye: (FLAT_SPAWN + glam::Vec3::new(4.0, 0.0, 0.0)).to_array(),
 		}));
 	let regions = sim.protected_regions();
-	let r = digblock_core::unlock::ward_radius(level);
+	let r = digblock_core::unlock::sphere_radius(level);
 	let span = digblock_core::unlock::channel_ticks(level);
 	let head = digblock_core::kindle::host_cell(sim.test_player(1).unwrap().pos);
-	let (shell, interior) = digblock_core::ward::sets(head, r);
-	let plan_len = ward_plan(&sim, 1, r).len() as u32;
+	let (shell, interior) = digblock_core::sphere::sets(head, r);
+	let plan_len = sphere_plan(&sim, 1, r).len() as u32;
 	let was: Vec<Option<u16>> = shell
 		.iter()
 		.map(|&(x, y, z)| sim.test_cell_at(x, y, z))
 		.collect();
 	c.msgs.clear();
-	cast(&mut sim);
+	cast_sphere(&mut sim, 1, slot);
 	c.drain();
 	assert!(
 		!c.msgs
 			.iter()
 			.any(|m| matches!(m, ServerMsg::CastRefused { .. })),
-		"the ward lands"
+		"the sphere lands"
 	);
 	// The one frame the whole climb costs, carrying what an observer
 	// needs to draw the same sphere at the same pace.
 	assert_matches!(
-		ward_frames(&c).as_slice(),
-		[ServerMsg::WardWinding {
+		sphere_frames(&c).as_slice(),
+		[ServerMsg::SphereWinding {
 			by,
 			head: at,
 			radius,
 			span: s,
+			block,
 		}] if Some(*by) == sim.test_player_id(1)
 			&& *at == [head.0, head.1, head.2]
 			&& i32::from(*radius) == r
-			&& *s == span,
+			&& *s == span
+			&& *block == matter() as u16,
 		"a cast announces its sphere once"
 	);
-	let glass = make_cell(BlockType::Wardglass, 0);
-	// The glass CLIMBS through the channel: on the cast's own tick some
-	// of the shell is glass and some still air, nothing is announced,
-	// and a `CastBreak` puts every pane back and refunds the fare.
-	let shell_glass = |sim: &super::Sim| {
+	let wall = make_cell(matter(), 0);
+	// The shell CLIMBS through the channel: on the cast's own tick some
+	// of the shell is built and some still air, nothing is announced,
+	// and a `CastBreak` puts every block back and refunds the bill.
+	let shell_built = |sim: &super::Sim| {
 		shell
 			.iter()
-			.filter(|&&(x, y, z)| sim.test_cell_at(x, y, z) == Some(glass))
+			.filter(|&&(x, y, z)| sim.test_cell_at(x, y, z) == Some(wall))
 			.count()
 	};
-	let first_tick = shell_glass(&sim);
+	let first_tick = shell_built(&sim);
 	assert!(first_tick > 0, "nothing landed on the cast's tick");
 	assert_eq!(
-		sim.test_essence(1, essence),
-		Some(0),
-		"the fare is taken as the channel begins"
+		balances(&sim, 1, level),
+		vec![0, 0],
+		"both fares are taken as the channel begins"
+	);
+	assert_eq!(
+		sim.test_inventory_count(1, matter()),
+		0,
+		"and the whole shell's blocks with them"
 	);
 	for _ in 1..span / 2 {
 		sim.tick_once(vec![]);
 	}
-	let half = shell_glass(&sim);
+	let half = shell_built(&sim);
 	assert!(
 		half > first_tick,
 		"the shell never grew past the first tick"
 	);
 	c.drain();
 	assert_eq!(
-		ward_frames(&c).len(),
+		sphere_frames(&c).len(),
 		1,
 		"a half-climbed sphere has said nothing more"
 	);
@@ -1643,15 +1726,12 @@ fn a_ward_closes_about_the_caster_as_a_derived_sphere() {
 		conn_id: 1,
 		msg: ClientMsg::CastBreak,
 	}]);
-	assert_eq!(shell_glass(&sim), 0, "the break put every pane back");
+	assert_eq!(shell_built(&sim), 0, "the break put every block back");
 	for (&(x, y, z), &before) in shell.iter().zip(&was) {
 		assert_eq!(sim.test_cell_at(x, y, z), before, "restored at {x},{y},{z}");
 	}
-	assert_eq!(
-		sim.test_essence(1, essence),
-		Some(fare),
-		"and the fare came back"
-	);
+	assert!(untouched(&sim, need), "and the whole bill came back");
+	assert!(!sim.test_wisp_lit(1), "a broken channel lights nothing");
 	c.drain();
 	let (landed, sealed) = last_ending(&c).expect("the break is announced");
 	assert!(!sealed, "a broken channel did not seal");
@@ -1665,67 +1745,69 @@ fn a_ward_closes_about_the_caster_as_a_derived_sphere() {
 	// A step breaks it too, whatever the client says: the caster moved
 	// further than the server's stillness allows, and the sim unwinds
 	// on its own.
-	cast(&mut sim);
-	assert!(shell_glass(&sim) > 0, "the second cast climbs");
+	cast_sphere(&mut sim, 1, slot);
+	assert!(shell_built(&sim) > 0, "the second cast climbs");
 	let from = sim.test_player(1).unwrap().pos;
 	sim.test_teleport(1, from + glam::Vec3::new(1.5, 0.0, 0.0));
 	sim.tick_once(vec![]);
-	assert_eq!(shell_glass(&sim), 0, "a step away unwound the climb");
-	assert_eq!(
-		sim.test_essence(1, essence),
-		Some(fare),
-		"with the fare back"
-	);
+	assert_eq!(shell_built(&sim), 0, "a step away unwound the climb");
+	assert!(untouched(&sim, need), "with the bill back");
 	sim.test_teleport(1, from);
 	c.drain();
 	c.msgs.clear();
 
 	// Left alone, the channel seals: every cell, then the announcement.
-	cast(&mut sim);
+	cast_sphere(&mut sim, 1, slot);
 	for _ in 1..span {
 		sim.tick_once(vec![]);
 	}
 	c.drain();
 	assert_matches!(
-		ward_frames(&c).as_slice(),
+		sphere_frames(&c).as_slice(),
 		[
-			ServerMsg::WardWinding { .. },
-			ServerMsg::WardEnded {
+			ServerMsg::SphereWinding { .. },
+			ServerMsg::SphereEnded {
 				by,
 				head: at,
 				radius,
 				landed,
 				sealed: true,
+				block,
 			}
 		] if Some(*by) == sim.test_player_id(1)
 			&& *at == [head.0, head.1, head.2]
 			&& i32::from(*radius) == r
-			&& *landed == plan_len,
+			&& *landed == plan_len
+			&& *block == matter() as u16,
 		"a sealed sphere is one winding and one ending, and the seal is the whole plan"
 	);
-	let (mut glassed, mut spared) = (0, 0);
+	let (mut built, mut spared, mut declined) = (0, 0, 0);
 	for (&(x, y, z), &before) in shell.iter().zip(&was) {
 		let before = before.expect("a flat world is resident about spawn");
 		let now = sim.test_cell_at(x, y, z).unwrap();
+		let claimable = cell_id(before) == BlockType::Air as u16;
 		if digblock_core::protect::immutable(x, y, z, &regions) {
 			assert_eq!(now, before, "a locked cell stands at {x},{y},{z}");
 			spared += 1;
-		} else if cell_id(before) == BlockType::Air as u16 {
-			assert_eq!(now, glass, "air in the shell at {x},{y},{z}");
-			glassed += 1;
+			if claimable {
+				declined += 1;
+			}
+		} else if claimable {
+			assert_eq!(now, wall, "air in the shell at {x},{y},{z}");
+			built += 1;
 		} else {
 			assert_eq!(now, before, "terrain in the shell stands");
 		}
 	}
 	assert!(
-		glassed > 0 && spared > 0,
+		built > 0 && spared > 0 && declined > 0,
 		"the shell met neither air nor the lock — the sweep proved nothing"
 	);
 	for &(x, y, z) in &interior {
 		assert_ne!(
-			cell_id(sim.test_cell_at(x, y, z).unwrap()),
-			BlockType::Wardglass as u16,
-			"nothing inside is glassed"
+			sim.test_cell_at(x, y, z).unwrap(),
+			wall,
+			"nothing inside is built"
 		);
 	}
 	assert_eq!(
@@ -1733,51 +1815,63 @@ fn a_ward_closes_about_the_caster_as_a_derived_sphere() {
 		0,
 		"the whole sphere reached the caster as two frames and no edits"
 	);
-	assert_eq!(sim.test_essence(1, essence), Some(0), "the fare left");
+	assert_eq!(balances(&sim, 1, level), vec![0, 0], "both fares left");
+	assert_eq!(
+		sim.test_inventory_count(1, matter()),
+		declined,
+		"the blocks the lock declined came back, and only those"
+	);
+	assert!(sim.test_wisp_lit(1), "the seal lit the caster's wisp");
+	let [(e, f), (we, wf)] = sphere_fares(level);
 	assert_eq!(
 		sim.test_skill_xp(1, digblock_core::skills::Skill::Arcana),
-		digblock_core::skills::total_xp_for(level) + cast_xp(essence, fare)
+		digblock_core::skills::total_xp_for(level) + cast_xp(e, f) + cast_xp(we, wf),
+		"the seal pays for the sphere and the wisp it lit"
 	);
 }
 
-/// What a ward costs on the wire does not scale with the sphere. Every rank — the narrowest and
+/// What a sphere costs on the wire does not scale with the shell. Every rank — the narrowest and
 /// the widest the ladder can cast — spends the same frames to climb and the same to come apart,
-/// because both ends derive the cells from the head and the radius. A per-cell broadcast at the
-/// widest rank would be thousands of frames against an outbound queue whose refusal DROPS the
-/// peer, so a caster could disconnect the server's population by breaking a channel.
+/// because both ends derive the cells from the head, the radius and the block. A per-cell
+/// broadcast at the widest rank would be thousands of frames against an outbound queue whose
+/// refusal DROPS the peer, so a caster could disconnect the server's population by breaking a channel.
 #[test]
-fn a_ward_costs_the_same_frames_at_every_rank() {
-	let mut sim = flat_sim("wardframes");
+fn a_sphere_costs_the_same_frames_at_every_rank() {
+	let mut sim = flat_sim("sphereframes");
 	let mut c = connect(&mut sim, 1);
 	wait_live(&mut sim, 1);
 	let mut plans: Vec<usize> = Vec::new();
 	let mut seal_cost: Vec<usize> = Vec::new();
 	let mut break_cost: Vec<usize> = Vec::new();
-	for (level, r) in ward_ranks() {
+	for (level, r) in sphere_ranks() {
 		sim.bench_set_arcana_level(1, level);
 		wait_for_sphere(&mut sim, 1, r);
-		let (essence, fare) = digblock_core::alchemy::ward_price(level);
 		let span = digblock_core::unlock::channel_ticks(level);
-		plans.push(ward_plan(&sim, 1, r).len());
+		plans.push(sphere_plan(&sim, 1, r).len());
 
 		// A whole climb, to the seal.
-		sim.test_grant_essence(1, essence, fare);
+		let (slot, need) = stock(&mut sim, 1, level, 2);
 		c.drain();
 		c.msgs.clear();
-		cast_ward(&mut sim, 1);
+		cast_sphere(&mut sim, 1, slot);
 		for _ in 1..span {
 			sim.tick_once(vec![]);
 		}
 		c.drain();
 		assert_eq!(applied_edits(&c), 0, "r={r}: the sphere sent no edits");
 		assert_matches!(last_ending(&c), Some((_, true)), "r={r}: it sealed");
-		seal_cost.push(ward_frames(&c).len());
+		assert!(
+			sim.test_inventory_count(1, matter()) >= need,
+			"r={r}: one cast's blocks spent, one cast's left"
+		);
+		seal_cost.push(sphere_frames(&c).len());
 
 		// And a climb broken halfway, which used to be the unbudgeted
-		// one: the whole landed plan restored inside a single tick.
-		sim.test_grant_essence(1, essence, fare);
+		// one: the whole landed plan restored inside a single tick. The
+		// sealed shell is terrain to this plan, so it bills less — and
+		// the stock covers it either way.
 		c.msgs.clear();
-		cast_ward(&mut sim, 1);
+		cast_sphere(&mut sim, 1, slot);
 		for _ in 1..span / 2 {
 			sim.tick_once(vec![]);
 		}
@@ -1788,7 +1882,10 @@ fn a_ward_costs_the_same_frames_at_every_rank() {
 		c.drain();
 		assert_eq!(applied_edits(&c), 0, "r={r}: the unwind sent no edits");
 		assert_matches!(last_ending(&c), Some((_, false)), "r={r}: it unwound");
-		break_cost.push(ward_frames(&c).len());
+		break_cost.push(sphere_frames(&c).len());
+		// Back to nothing in hand for the next rank's own stock.
+		let leftover = sim.test_inventory_count(1, matter());
+		sim.test_take(1, matter(), leftover);
 	}
 	assert!(
 		plans.windows(2).all(|w| w[1] > w[0]),
@@ -1804,30 +1901,28 @@ fn a_ward_costs_the_same_frames_at_every_rank() {
 	);
 }
 
-/// The shell closes on nobody: a second player standing where a pane
+/// The shell closes on nobody: a second player standing where a block
 /// would land refuses the whole cast — the Arc's rule — before any
 /// debit and before a single cell is written.
 #[test]
-fn a_ward_refuses_to_close_on_another_player() {
-	use digblock_core::block::BlockType;
+fn a_sphere_refuses_to_close_on_another_player() {
 	use digblock_core::chunk::make_cell;
 	use digblock_net::messages::CastRefusal;
 
-	let mut sim = flat_sim("wardonplayer");
+	let mut sim = flat_sim("sphereonplayer");
 	let mut c = connect(&mut sim, 1);
 	let mut other = connect(&mut sim, 2);
 	wait_live(&mut sim, 1);
 	wait_live(&mut sim, 2);
-	let level = digblock_core::unlock::WARD_AT;
-	let (essence, fare) = digblock_core::alchemy::ward_price(level);
+	let level = digblock_core::unlock::SPHERE_AT;
 	sim.bench_set_arcana_level(1, level);
-	sim.test_grant_essence(1, essence, fare);
-	let r = digblock_core::unlock::ward_radius(level);
+	let (slot, need) = stock(&mut sim, 1, level, 1);
+	let r = digblock_core::unlock::sphere_radius(level);
 	let head = digblock_core::kindle::host_cell(sim.test_player(1).unwrap().pos);
-	let glass = make_cell(BlockType::Wardglass, 0);
-	// Somewhere a pane would land on them — asked of the same predicate
+	let wall = make_cell(matter(), 0);
+	// Somewhere a block would land on them — asked of the same predicate
 	// the server asks, rather than guessed from the geometry.
-	let (shell, _) = digblock_core::ward::sets(head, r);
+	let (shell, _) = digblock_core::sphere::sets(head, r);
 	let stand = shell
 		.iter()
 		.copied()
@@ -1841,11 +1936,11 @@ fn a_ward_refuses_to_close_on_another_player() {
 				),
 			)
 		})
-		.find(|&(cell, pos)| digblock_core::player::placement_blocked(pos, cell, glass))
+		.find(|&(cell, pos)| digblock_core::player::placement_blocked(pos, cell, wall))
 		.expect("a shell cell a player can stand in");
 	sim.test_teleport(2, stand.1);
 	c.msgs.clear();
-	cast_ward(&mut sim, 1);
+	cast_sphere(&mut sim, 1, slot);
 	c.drain();
 	other.drain();
 	assert!(
@@ -1858,56 +1953,59 @@ fn a_ward_refuses_to_close_on_another_player() {
 		"a sphere that would close on somebody is refused whole"
 	);
 	assert_eq!(
-		sim.test_essence(1, essence),
-		Some(fare),
-		"and costs nothing"
+		balances(&sim, 1, level),
+		sphere_fares(level).iter().map(|f| f.1).collect::<Vec<_>>(),
+		"and costs no essence"
 	);
-	assert!(ward_frames(&c).is_empty(), "nothing began");
+	assert_eq!(sim.test_inventory_count(1, matter()), need, "nor a block");
+	assert!(sphere_frames(&c).is_empty(), "nothing began");
 	assert_eq!(
 		shell
 			.iter()
-			.filter(|&&(x, y, z)| sim.test_cell_at(x, y, z) == Some(glass))
+			.filter(|&&(x, y, z)| sim.test_cell_at(x, y, z) == Some(wall))
 			.count(),
 		0,
-		"not one pane landed"
+		"not one block landed"
 	);
 }
 
-/// One ward per caster, and one fare per ward: a second cast while the
+/// One sphere per caster, and one bill per sphere: a second cast while the
 /// first climbs is refused with the first still climbing, and a second
 /// `CastBreak` after the channel is already broken refunds nothing more.
 #[test]
-fn a_second_ward_is_refused_and_a_second_break_refunds_nothing() {
-	use digblock_core::block::BlockType;
+fn a_second_sphere_is_refused_and_a_second_break_refunds_nothing() {
 	use digblock_core::chunk::make_cell;
 	use digblock_net::messages::CastRefusal;
 
-	let mut sim = flat_sim("wardtwice");
+	let mut sim = flat_sim("spheretwice");
 	let mut c = connect(&mut sim, 1);
 	wait_live(&mut sim, 1);
-	let level = digblock_core::unlock::WARD_AT;
-	let (essence, fare) = digblock_core::alchemy::ward_price(level);
+	let level = digblock_core::unlock::SPHERE_AT;
 	sim.bench_set_arcana_level(1, level);
-	// Two fares in hand, so a second debit would be affordable — the
-	// refusal has to be the ward, not the purse.
-	sim.test_grant_essence(1, essence, fare * 2);
-	let glass = make_cell(BlockType::Wardglass, 0);
+	// Two bills in hand, so a second debit would be affordable — the
+	// refusal has to be the sphere, not the purse.
+	let (slot, need) = stock(&mut sim, 1, level, 2);
+	let wall = make_cell(matter(), 0);
 	let head = digblock_core::kindle::host_cell(sim.test_player(1).unwrap().pos);
-	let r = digblock_core::unlock::ward_radius(level);
-	let (shell, _) = digblock_core::ward::sets(head, r);
-	let shell_glass = |sim: &super::Sim| {
+	let r = digblock_core::unlock::sphere_radius(level);
+	let (shell, _) = digblock_core::sphere::sets(head, r);
+	let shell_built = |sim: &super::Sim| {
 		shell
 			.iter()
-			.filter(|&&(x, y, z)| sim.test_cell_at(x, y, z) == Some(glass))
+			.filter(|&&(x, y, z)| sim.test_cell_at(x, y, z) == Some(wall))
 			.count()
 	};
+	let one_bill = |sim: &super::Sim| {
+		sphere_fares(level).iter().map(|f| f.1).collect::<Vec<_>>() == balances(sim, 1, level)
+			&& sim.test_inventory_count(1, matter()) == need
+	};
 	c.msgs.clear();
-	cast_ward(&mut sim, 1);
-	let after_first = shell_glass(&sim);
+	cast_sphere(&mut sim, 1, slot);
+	let after_first = shell_built(&sim);
 	assert!(after_first > 0, "the first cast climbs");
 	c.drain();
 	c.msgs.clear();
-	cast_ward(&mut sim, 1);
+	cast_sphere(&mut sim, 1, slot);
 	c.drain();
 	assert!(
 		c.msgs.iter().any(|m| matches!(
@@ -1916,18 +2014,14 @@ fn a_second_ward_is_refused_and_a_second_break_refunds_nothing() {
 				reason: CastRefusal::BadTarget
 			}
 		)),
-		"a second ward is refused while one is climbing"
+		"a second sphere is refused while one is climbing"
 	);
 	assert!(
-		ward_frames(&c).is_empty(),
+		sphere_frames(&c).is_empty(),
 		"and nothing about it reaches the wire"
 	);
-	assert_eq!(
-		sim.test_essence(1, essence),
-		Some(fare),
-		"one fare taken, not two"
-	);
-	assert!(shell_glass(&sim) >= after_first, "the first still climbs");
+	assert!(one_bill(&sim), "one bill taken, not two");
+	assert!(shell_built(&sim) >= after_first, "the first still climbs");
 
 	let breakit = |sim: &mut super::Sim| {
 		sim.tick_once(vec![SimEvent::Msg {
@@ -1936,26 +2030,34 @@ fn a_second_ward_is_refused_and_a_second_break_refunds_nothing() {
 		}]);
 	};
 	breakit(&mut sim);
-	assert_eq!(shell_glass(&sim), 0, "the break put the climb back");
+	assert_eq!(shell_built(&sim), 0, "the break put the climb back");
 	assert_eq!(
-		sim.test_essence(1, essence),
-		Some(fare * 2),
-		"the fare came back once"
+		balances(&sim, 1, level),
+		sphere_fares(level)
+			.iter()
+			.map(|f| f.1 * 2)
+			.collect::<Vec<_>>(),
+		"the fares came back once"
+	);
+	assert_eq!(
+		sim.test_inventory_count(1, matter()),
+		need * 2,
+		"and the blocks with them"
 	);
 	c.msgs.clear();
 	breakit(&mut sim);
 	assert_eq!(
-		sim.test_essence(1, essence),
-		Some(fare * 2),
+		sim.test_inventory_count(1, matter()),
+		need * 2,
 		"a second break refunds nothing"
 	);
 	assert!(
-		ward_frames(&c).is_empty(),
-		"and announces nothing — there is no ward to end"
+		sphere_frames(&c).is_empty(),
+		"and announces nothing — there is no sphere to end"
 	);
 	// Nothing was stranded: the next cast is accepted.
 	c.msgs.clear();
-	cast_ward(&mut sim, 1);
+	cast_sphere(&mut sim, 1, slot);
 	c.drain();
 	assert!(
 		!c.msgs
@@ -1965,44 +2067,45 @@ fn a_second_ward_is_refused_and_a_second_break_refunds_nothing() {
 	);
 }
 
-/// An unwind puts back what the climb WROTE, and only where its glass still stands: a cell someone
-/// has since changed is left exactly as they left it. It is driven by the climb's own record rather
-/// than by re-deriving the sphere, which is what makes that possible — a plan drawn against a
-/// standing sphere names precisely the cells missing from it.
+/// An unwind puts back what the climb WROTE, and only where its block still stands: a cell someone
+/// has since changed is left exactly as they left it, and the block that stood there stays spent —
+/// whoever took it was credited for it. It is driven by the climb's own record rather than by
+/// re-deriving the sphere, which is what makes that possible — a plan drawn against a standing
+/// sphere names precisely the cells missing from it.
 #[test]
-fn an_unwind_leaves_a_cell_that_no_longer_holds_its_glass() {
+fn an_unwind_leaves_a_cell_that_no_longer_holds_its_block() {
 	use digblock_core::block::BlockType;
 	use digblock_core::chunk::make_cell;
 
-	let mut sim = flat_sim("wardhole");
+	let mut sim = flat_sim("spherehole");
 	let mut c = connect(&mut sim, 1);
 	wait_live(&mut sim, 1);
-	let level = digblock_core::unlock::WARD_AT;
-	let (essence, fare) = digblock_core::alchemy::ward_price(level);
+	let level = digblock_core::unlock::SPHERE_AT;
 	sim.bench_set_arcana_level(1, level);
-	sim.test_grant_essence(1, essence, fare);
-	let glass = make_cell(BlockType::Wardglass, 0);
+	let (slot, need) = stock(&mut sim, 1, level, 1);
+	let wall = make_cell(matter(), 0);
 	let head = digblock_core::kindle::host_cell(sim.test_player(1).unwrap().pos);
-	let r = digblock_core::unlock::ward_radius(level);
+	let r = digblock_core::unlock::sphere_radius(level);
 	let span = digblock_core::unlock::channel_ticks(level);
-	let (shell, _) = digblock_core::ward::sets(head, r);
+	let (shell, _) = digblock_core::sphere::sets(head, r);
 	let was: Vec<Option<u16>> = shell
 		.iter()
 		.map(|&(x, y, z)| sim.test_cell_at(x, y, z))
 		.collect();
-	cast_ward(&mut sim, 1);
+	cast_sphere(&mut sim, 1, slot);
 	for _ in 1..span / 2 {
 		sim.tick_once(vec![]);
 	}
-	// A pane that landed, replaced by somebody else's block. Air would
-	// be the dig, and the same case — but a restored cell and a dug one
+	// A block that landed, replaced by somebody else's. Air would be
+	// the dig, and the same case — but a restored cell and a dug one
 	// are both air, so the marker is what makes the difference visible.
 	let (dug, _) = shell
 		.iter()
 		.zip(&was)
-		.find(|&(&(x, y, z), _)| sim.test_cell_at(x, y, z) == Some(glass))
+		.find(|&(&(x, y, z), _)| sim.test_cell_at(x, y, z) == Some(wall))
 		.expect("the half-climb landed something");
-	let marker = make_cell(BlockType::Stone, 0);
+	let marker = make_cell(BlockType::Sand, 0);
+	assert_ne!(marker, wall, "the marker must not be the shell's own block");
 	sim.test_set_cell(dug.0, dug.1, dug.2, marker);
 	sim.tick_once(vec![SimEvent::Msg {
 		conn_id: 1,
@@ -2020,79 +2123,126 @@ fn an_unwind_leaves_a_cell_that_no_longer_holds_its_glass() {
 		assert_eq!(
 			sim.test_cell_at(x, y, z),
 			before,
-			"every other pane came back at {x},{y},{z}"
+			"every other block came back at {x},{y},{z}"
 		);
 	}
+	assert_eq!(
+		sim.test_inventory_count(1, matter()),
+		need - 1,
+		"the block somebody else took stays spent"
+	);
 	c.drain();
 	assert_matches!(last_ending(&c), Some((_, false)));
 }
 
 /// A caster who LEAVES mid-channel breaks it: the climb unwinds on the
-/// sim's own word, and the fare is forfeit — the refund is a correction
+/// sim's own word, and the bill is forfeit — the refund is a correction
 /// to a live client's predicted balance, and their record was written
 /// on the way out.
 #[test]
-fn a_caster_who_leaves_mid_channel_forfeits_the_fare() {
-	use digblock_core::block::BlockType;
+fn a_caster_who_leaves_mid_channel_forfeits_the_bill() {
 	use digblock_core::chunk::make_cell;
 
-	let mut sim = flat_sim("wardleave");
+	let mut sim = flat_sim("sphereleave");
 	let account = test_account(7);
 	let mut c = connect_as_account(&mut sim, 1, account);
 	wait_live(&mut sim, 1);
-	let level = digblock_core::unlock::WARD_AT;
-	let (essence, fare) = digblock_core::alchemy::ward_price(level);
+	let level = digblock_core::unlock::SPHERE_AT;
 	sim.bench_set_arcana_level(1, level);
-	sim.test_grant_essence(1, essence, fare);
-	let glass = make_cell(BlockType::Wardglass, 0);
+	let (slot, _) = stock(&mut sim, 1, level, 1);
+	let wall = make_cell(matter(), 0);
 	let head = digblock_core::kindle::host_cell(sim.test_player(1).unwrap().pos);
-	let r = digblock_core::unlock::ward_radius(level);
+	let r = digblock_core::unlock::sphere_radius(level);
 	let span = digblock_core::unlock::channel_ticks(level);
-	let (shell, _) = digblock_core::ward::sets(head, r);
+	let (shell, _) = digblock_core::sphere::sets(head, r);
 	// Read through the JOURNAL: the last player leaving evicts every
 	// column, so the store stops answering for the sphere the same tick
 	// the unwind runs — and the journal is the copy a rejoin reads.
-	let journalled_glass = |sim: &super::Sim| {
+	let journalled = |sim: &super::Sim| {
 		shell
 			.iter()
-			.filter(|&&(x, y, z)| sim.journal_cell(x, y, z) == Some(glass))
+			.filter(|&&(x, y, z)| sim.journal_cell(x, y, z) == Some(wall))
 			.count()
 	};
-	cast_ward(&mut sim, 1);
+	cast_sphere(&mut sim, 1, slot);
 	for _ in 1..span / 2 {
 		sim.tick_once(vec![]);
 	}
-	let landed = journalled_glass(&sim);
-	assert!(landed > 0, "the climb had landed panes to unwind");
+	let landed = journalled(&sim);
+	assert!(landed > 0, "the climb had landed blocks to unwind");
 	c.drain();
 	sim.tick_once(vec![SimEvent::Disconnected { conn_id: 1 }]);
 	assert_eq!(
-		journalled_glass(&sim),
+		journalled(&sim),
 		0,
 		"a departure unwinds the climb out of the record too"
 	);
 	// The same account back again reads the record their departure
-	// wrote: the fare stayed spent.
+	// wrote: the bill stayed spent.
 	let mut back = connect_as_account(&mut sim, 2, account);
 	wait_live(&mut sim, 2);
 	back.drain();
 	assert_eq!(
-		sim.test_essence(2, essence),
-		Some(0),
+		balances(&sim, 2, level),
+		vec![0, 0],
 		"a caster who left mid-channel is not refunded"
 	);
+	assert_eq!(sim.test_inventory_count(2, matter()), 0, "nor their blocks");
 	// And nothing is left climbing: the next cast is accepted.
-	sim.test_grant_essence(2, essence, fare);
 	sim.bench_set_arcana_level(2, level);
+	let (slot, _) = stock(&mut sim, 2, level, 1);
 	back.msgs.clear();
-	cast_ward(&mut sim, 2);
+	cast_sphere(&mut sim, 2, slot);
 	back.drain();
 	assert!(
 		!back
 			.msgs
 			.iter()
 			.any(|m| matches!(m, ServerMsg::CastRefused { .. })),
-		"the departed ward left nothing behind"
+		"the departed sphere left nothing behind"
+	);
+}
+
+/// A boot sweeps every pane of conjured glass out of the record and leaves every other edit
+/// standing. The old Ward journaled its shell as glass nothing can take up now that the spell
+/// builds of real blocks, and a road's plank left by a crash has no trail to retire it — at boot
+/// nothing legitimately holds one. Journaled as ordinary server edits, so a joiner reads air.
+#[test]
+fn a_boot_sweeps_conjured_glass_out_of_the_record() {
+	use digblock_core::block::BlockType;
+	use digblock_core::chunk::make_cell;
+	let dir = temp_dir("sweepglass");
+	let glass = make_cell(BlockType::Wardglass, 0);
+	let stone = make_cell(BlockType::Stone, 0);
+	let y = FLAT_GROUND_TOP as i32 + 3;
+	let panes = [(3, y, 4), (-40, y + 2, 71), (3, y + 1, 4)];
+	let kept = (5, y, 5);
+	{
+		let mut sim =
+			super::Sim::new_with_source(SEED, &dir, 1, 2, flat_source(), FLAT_SPAWN).unwrap();
+		let _c = connect(&mut sim, 1);
+		wait_live(&mut sim, 1);
+		for &pane in &panes {
+			sim.journal_write(pane, glass, digblock_net::protocol::SERVER_ID);
+		}
+		sim.journal_write(kept, stone, digblock_net::protocol::SERVER_ID);
+		for &(x, yy, z) in &panes {
+			assert_eq!(sim.journal_cell(x, yy, z), Some(glass), "staged");
+		}
+		sim.journal.sync();
+	}
+	let sim = super::Sim::new_with_source(SEED, &dir, 1, 2, flat_source(), FLAT_SPAWN).unwrap();
+	for &(x, yy, z) in &panes {
+		assert_eq!(
+			sim.journal_cell(x, yy, z),
+			Some(make_cell(BlockType::Air, 0)),
+			"the pane at {x},{yy},{z} survived the boot"
+		);
+	}
+	assert_eq!(
+		sim.journal_cell(kept.0, kept.1, kept.2),
+		Some(stone),
+		"an ordinary edit stands"
 	);
 }
 
@@ -3138,6 +3288,7 @@ fn chat_before_hello_is_ignored() {
 			out: tx,
 			addr: test_addr(9),
 			account: AccountId::NONE,
+			skills: Default::default(),
 		},
 		SimEvent::Msg {
 			conn_id: 9,

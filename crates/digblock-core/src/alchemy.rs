@@ -146,23 +146,27 @@ pub fn kindle_price(level: u32) -> (Essence, u32) {
 	)
 }
 
-/// The Ward's fare: Unda, the water essence, for the spell that drives
+/// The Sphere's fare: Unda, the water essence, for the spell that drives
 /// water out — shared with the cold and shore ports ([`cast_price`]), so
 /// the springstone node feeds both halves of the ladder rather than one
 /// spell. Doubles with each rank, as the sphere's shell roughly does
-/// (`unlock::ward_radius`), so a wider ward is never a free upgrade.
-pub fn ward_price(level: u32) -> (Essence, u32) {
+/// (`unlock::sphere_radius`), so a wider sphere is never a free upgrade.
+/// The essence is only half the bill: the shell itself is paid in the
+/// caster's held blocks (`sphere::blocks_needed`), and the seal lights
+/// the wisp at [`wisp_price`] on top, since most matter makes a dark
+/// room.
+pub fn sphere_price(level: u32) -> (Essence, u32) {
 	const BASE: u32 = 12;
 	let rank = match level {
-		l if l >= crate::unlock::WARD_VAST_AT => 2,
-		l if l >= crate::unlock::WARD_WIDE_AT => 1,
+		l if l >= crate::unlock::SPHERE_VAST_AT => 2,
+		l if l >= crate::unlock::SPHERE_WIDE_AT => 1,
 		_ => 0,
 	};
 	(Essence::Unda, BASE << rank)
 }
 
-/// The Causeway's fare: Unda, because it is the Ward's own glass — one substance, one price line,
-/// and the springstone faucet feeds both spells that write it. Climbs faster than
+/// The Causeway's fare: Unda, the Sphere's essence — the two cell-writing spells share a price
+/// line, and the springstone faucet feeds both. Climbs faster than
 /// [`crate::unlock::causeway_secs`] lengthens the road, which is what makes a rung sell
 /// uninterrupted distance rather than a discount on it.
 pub fn causeway_price(level: u32) -> (Essence, u32) {
@@ -197,6 +201,13 @@ pub fn functional_ideal(b: BlockType) -> Option<&'static [(Essence, u32)]> {
 		B::Lantern => &[(E::Ferrum, 8), (E::Terra, 6)],
 		B::Aetherlamp => &[(E::Ferrum, 12), (E::Aether, 3)],
 		B::MastersSigil => &[(E::Aether, 99)],
+		// The crests: each priced in the essences ITS skill draws, led by
+		// the skill's emblem (`Skill::emblem`), so a crest is paid for by
+		// the ladder it marks. One-offs like the sigil, so the figures are
+		// trophies rather than sinks.
+		B::MinersCrest => &[(E::Ferrum, 120), (E::Aether, 6)],
+		B::AlchemistsCrest => &[(E::Vitae, 90), (E::Terra, 60), (E::Unda, 30)],
+		B::ArcanistsCrest => &[(E::Unda, 120), (E::Aether, 6)],
 		// Furniture is a timber feedstock and a living catalyst — chosen,
 		// not measured: a chair is mostly air and still costs a chair.
 		B::Chair => &[(E::Vitae, 2)],
@@ -376,7 +387,7 @@ fn costliest_op_ticks(level: u32) -> u32 {
 			.map(|l| {
 				BlockType::ALL
 					.into_iter()
-					.filter(|&b| crate::unlock::can_craft(b, l))
+					.filter(|&b| crate::unlock::recipe_open(b, l))
 					.map(|b| craft_pace_ticks(b, l))
 					.max()
 					.unwrap_or(0)

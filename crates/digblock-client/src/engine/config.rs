@@ -53,6 +53,9 @@ impl DebugScreen {
 			"siphon" => Some(Self::Tool(BlockType::EssenceSiphon)),
 			"pick" => Some(Self::Tool(BlockType::ResonantPick)),
 			"sigil" => Some(Self::Tool(BlockType::MastersSigil)),
+			"crest-mining" => Some(Self::Tool(BlockType::MinersCrest)),
+			"crest-alchemy" => Some(Self::Tool(BlockType::AlchemistsCrest)),
+			"crest-arcana" => Some(Self::Tool(BlockType::ArcanistsCrest)),
 			"torch" => Some(Self::Torch),
 			"skills" | "character" => Some(Self::Skills),
 			"transmute" => Some(Self::Transmute),
@@ -94,6 +97,9 @@ pub fn parse_held_item(s: &str) -> Option<u16> {
 		"siphon" => BlockType::EssenceSiphon as u16,
 		"pick" => BlockType::ResonantPick as u16,
 		"sigil" => BlockType::MastersSigil as u16,
+		"crest-mining" => BlockType::MinersCrest as u16,
+		"crest-alchemy" => BlockType::AlchemistsCrest as u16,
+		"crest-arcana" => BlockType::ArcanistsCrest as u16,
 		"empty" => WIRE_EMPTY,
 		_ => return None,
 	})
@@ -235,15 +241,15 @@ pub struct EngineConfig {
 	/// once chunks are Ready. Set by the desktop launcher from
 	/// DIG_SHAPES — visual verification without gameplay wiring.
 	pub debug_shapes: bool,
-	/// Debug: a ward of this radius closing about spawn from the moment
-	/// every cell it would touch is resident — the cast's own plan and
-	/// climb, with no channel or fare behind it. Set by the launcher
-	/// from DIG_WARD.
-	pub debug_ward: Option<i32>,
-	/// Debug: hold DIG_WARD's climb this many seconds in, DIG_CAST's rule
+	/// Debug: a glass sphere of this radius closing about spawn from the
+	/// moment every cell it would touch is resident — the cast's own plan
+	/// and climb, with no channel or bill behind it. Set by the launcher
+	/// from DIG_SPHERE.
+	pub debug_sphere: Option<i32>,
+	/// Debug: hold DIG_SPHERE's climb this many seconds in, DIG_CAST's rule
 	/// — a sphere half-landed is what a headless run cannot otherwise
-	/// photograph. Set by the launcher from DIG_WARD_AGE.
-	pub debug_ward_age: Option<f32>,
+	/// photograph. Set by the launcher from DIG_SPHERE_AGE.
+	pub debug_sphere_age: Option<f32>,
 	/// Debug: stand a rank of doors three cells ahead of spawn, close
 	/// enough that the crosshair lands on one. Set by the desktop
 	/// launcher from DIG_DOORS. See [`debug_doors_plan`] for why
@@ -435,8 +441,8 @@ impl EngineConfig {
 			debug_siphon: None,
 			debug_cast: None,
 			debug_shapes: false,
-			debug_ward: None,
-			debug_ward_age: None,
+			debug_sphere: None,
+			debug_sphere_age: None,
 			debug_doors: false,
 			debug_vault: false,
 			debug_node: None,

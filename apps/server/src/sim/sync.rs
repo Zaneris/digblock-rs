@@ -343,6 +343,7 @@ impl Sim {
 							_ => pack_fx(RemoteFx::None),
 						}
 					},
+					mastery: digblock_core::skills::Skill::mastery_bits(&c.skills),
 				},
 				SelfState {
 					pos: s.pos.to_array(),

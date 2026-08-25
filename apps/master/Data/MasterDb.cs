@@ -14,6 +14,7 @@ public sealed class MasterDb(DbContextOptions<MasterDb> options) : DbContext(opt
     public DbSet<NameReservation> NameReservations => Set<NameReservation>();
     public DbSet<Session> Sessions => Set<Session>();
     public DbSet<ServerClaim> ServerClaims => Set<ServerClaim>();
+    public DbSet<SkillTotal> SkillTotals => Set<SkillTotal>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -74,6 +75,17 @@ public sealed class MasterDb(DbContextOptions<MasterDb> options) : DbContext(opt
             // One claim per address — this uniqueness IS the stickiness.
             e.HasIndex(c => new { c.Host, c.Port }).IsUnique();
             e.HasIndex(c => c.KeyHash).IsUnique();
+        });
+
+        b.Entity<SkillTotal>(e =>
+        {
+            e.HasKey(t => new { t.AccountId, t.Skill });
+            // A per-skill board is a walk down this index.
+            e.HasIndex(t => new { t.Skill, t.Xp });
+            e.HasOne(t => t.Account)
+                .WithMany()
+                .HasForeignKey(t => t.AccountId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
     }
 }

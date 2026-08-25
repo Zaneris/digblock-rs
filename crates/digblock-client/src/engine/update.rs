@@ -5,6 +5,18 @@
 use super::*;
 
 impl Engine {
+	/// Open the character screen and ask the master where this account stands — every time,
+	/// since the board moves under you; the screen draws whatever answer it last had until the
+	/// new one lands. Signed out, or with no launcher services, the screen just opens.
+	pub(super) fn open_character_screen(&mut self) {
+		self.ui.char_screen.open();
+		if let Some(services) = &self.services
+			&& self.ui.menu.account().is_some()
+		{
+			let _ = services.cmd_tx.send(crate::menu::MenuCommand::FetchRanks);
+		}
+	}
+
 	pub(super) fn step(&mut self, dt: Duration) {
 		let t_update = web_time::Instant::now();
 		let dt = dt.as_secs_f32();
@@ -39,29 +51,32 @@ impl Engine {
 			});
 			self.debug_shapes_pending = pending;
 		}
-		// DIG_WARD showcase: the plan refuses until every cell is resident,
+		// DIG_SPHERE showcase: the plan refuses until every cell is resident,
 		// so ask each frame and start the climb the first time it answers
 		// — the same plan, at the channel's own pace, with no channel or
-		// fare behind it.
-		if let Some(r) = self.debug_ward_pending {
+		// bill behind it. Built of glass, so the bowl photographs through.
+		if let Some(r) = self.debug_sphere_pending {
 			// `body_pos`: a capture flown into place leaves `player.pos`
 			// behind, and the sphere has to close about the camera it is
 			// being photographed from.
 			let head = digblock_core::kindle::host_cell(self.body_pos());
-			if let Ok(writes) =
-				digblock_core::ward::plan(head, r, |c| self.pipeline.cell_at(c.0, c.1, c.2))
-			{
+			let block = digblock_core::block::BlockType::Glass;
+			if let Ok(writes) = digblock_core::sphere::plan(head, r, block, |c| {
+				self.pipeline.cell_at(c.0, c.1, c.2)
+			}) {
 				let span = digblock_core::unlock::channel_ticks(
 					self.skills.level(digblock_core::skills::Skill::Arcana),
 				);
-				self.ward_climbs.push(WardClimb {
+				self.sphere_climbs.push(SphereClimb {
 					by: self.session.my_player_id,
-					closing: digblock_core::ward::Closing::new(writes, span),
+					closing: digblock_core::sphere::Closing::new(writes, span),
 					head,
+					block,
 					prefix: 0,
-					fare: None,
+					placed: 0,
+					bill: None,
 				});
-				self.debug_ward_pending = None;
+				self.debug_sphere_pending = None;
 			}
 		}
 		// A fixed --tod freezes the sun angle (dev builds only): advance
@@ -128,6 +143,13 @@ impl Engine {
 			.map(|s| s.resp_rx.try_iter().collect())
 			.unwrap_or_default();
 		for resp in responses {
+			if let crate::menu::MenuResponse::Ranks(result) = resp {
+				match result {
+					Ok(ranks) => self.ranks = Some(ranks),
+					Err(e) => log::info!("hiscores: {e}"),
+				}
+				continue;
+			}
 			if let Some((transport, token)) = self.ui.menu.on_response(resp) {
 				self.set_transport_with_token(transport, token);
 			}
@@ -182,7 +204,7 @@ impl Engine {
 			self.ui.alch_screen.open();
 		}
 		if self.ui.menu.take_character() {
-			self.ui.char_screen.open();
+			self.open_character_screen();
 		}
 		if self.ui.menu.take_spellbook() {
 			self.ui.spellbook.open();
@@ -345,7 +367,7 @@ impl Engine {
 			self.dig_accum -= TICK;
 			self.step_dig();
 			self.step_cast();
-			self.step_ward_climbs();
+			self.step_sphere_climbs();
 		}
 		// The siphon's stream reads the state those ticks just left, so it
 		// ages after them and on the FRAME clock rather than the sim one:

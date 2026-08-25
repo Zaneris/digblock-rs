@@ -177,14 +177,14 @@ fn edits_clear(x: i32, z: i32, h: i32, edits: Edits) -> bool {
 
 /// Whether an edited cell counts as ground/obstruction here.
 ///
-/// Raw cell, decoded id-only: a state-carrying cell (a stair, a slab) is
-/// as solid as a full cube for this purpose, and anything unrecognised is
-/// treated as solid rather than letting an unknown id read as open air.
+/// Would a body collide with this raw cell — the ground it stands on, the
+/// headroom it needs — by the physics' own answer, so a stair or a slab is
+/// as solid as a cube and a torch is not; anything unrecognised is treated
+/// as solid rather than letting an unknown id read as open air.
 fn solid(cell: u16) -> bool {
 	use crate::block::BlockType;
-	let id = crate::chunk::cell_id(cell);
-	match BlockType::try_from_id(id) {
-		Some(b) => b.props().collides,
+	match BlockType::try_from_id(crate::chunk::cell_id(cell)) {
+		Some(_) => crate::shapes::collides(cell),
 		None => true,
 	}
 }

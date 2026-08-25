@@ -9,6 +9,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::rc::Rc;
 
+use digblock_net::probe::Ping;
 use digblock_net::transport::{ConnStatus, NetTransport, TransportEvent};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
@@ -627,14 +628,14 @@ impl WebTransportClient {
 
 /// Open a throwaway WebTransport session, read the browser's own QUIC round-trip estimate, close —
 /// the browser mirror of digblock-net-native's `probe`, and the same measurement it makes. Calls
-/// `done` with `Some(ms)` on success, `None` on failure or timeout. Timing the connect instead is a
-/// handshake plus an HTTP/3 extended CONNECT, which does not scale with distance at all — see the
-/// native probe's module docs. Chrome does not implement `getStats`, so today no ping is reported.
+/// `done` with `Some(ping)` on success, `None` on failure or timeout. Chrome does not implement
+/// `getStats` (still absent in 151), so there the row carries `Ping::from_handshake` — the opening
+/// time divided by the round trips it is made of, and marked as the estimate it is.
 pub fn probe(
 	url: &str,
 	cert_hash: [u8; 32],
 	timeout_ms: u32,
-	done: impl FnOnce(Option<u32>) + 'static,
+	done: impl FnOnce(Option<Ping>) + 'static,
 ) {
 	let transport = match WebTransport::new(url, &options(cert_hash)) {
 		Ok(t) => t,
@@ -654,8 +655,8 @@ pub fn probe(
 			Ok(v) if v.as_string().as_deref() == Some("timeout") => None,
 			Ok(_) => {
 				// Handshake time is still the reachability answer; it is just
-				// not the latency one. Falls back to it when the browser omits
-				// `smoothedRtt`, which the spec permits.
+				// not the latency one. The estimate is made of it when the
+				// browser omits `smoothedRtt`, which the spec permits.
 				let handshake = start.elapsed().as_millis() as u32;
 				// `get_stats` is `catch`-bound because on Chrome the method
 				// does not exist and the call THROWS. Here that throw would
@@ -672,7 +673,10 @@ pub fn probe(
 						.map(|v| v as u32),
 					Err(_) => None,
 				};
-				Some(rtt.filter(|r| *r <= handshake).unwrap_or(handshake))
+				Some(
+					rtt.filter(|r| *r <= handshake)
+						.map_or_else(|| Ping::from_handshake(handshake), Ping::measured),
+				)
 			}
 			Err(_) => None,
 		};

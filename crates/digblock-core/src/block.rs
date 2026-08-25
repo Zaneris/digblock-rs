@@ -313,13 +313,20 @@ blocks! {
 	// Walk-through on purpose — it is light, not matter. Lamp mold
 	// (`emits(glows(...))`), never `seams`, which is the node rows' alone.
 	ConjuredLight = 89 => emits(glows(props(RenderClass::Opaque, false, tex::CONJURED_LIGHT, tex::CONJURED_LIGHT, tex::CONJURED_LIGHT)), 13),
-	// The Ward's pane — the one block a spell writes (`ward`). Conjured:
-	// digs to nothing and claims no slot, or a sphere would be a faucet
-	// of panes; no material, so it sits in no grid and at no bench.
-	// Glass class on purpose: a ward is see-through in every sense the
+	// The Causeway's plank — the one block a spell conjures (`causeway`).
+	// Conjured: digs to nothing and claims no slot, or a road would be a
+	// faucet of panes; no material, so it sits in no grid and at no bench.
+	// Glass class on purpose: a plank is see-through in every sense the
 	// renderer and the GI have (R35's bucket predicate). Soft and
 	// diggable by anyone, so nobody is walled in by a spell.
 	Wardglass = 90 => conjured(dig(translucent(props(RenderClass::Glass, true, tex::WARDGLASS, tex::WARDGLASS, tex::WARDGLASS)), 25, DigFamily::Soft)),
+	/// The three crests (SOCIAL-DESIGN §2): one held item per skill, in the sigil's mold — it does
+	/// nothing, caps at one, and shows in other players' hands. Each is gated on the skill it
+	/// honours reaching `unlock::MASTERY_AT` (`unlock::crest`), never on the bench alone, and priced
+	/// in that skill's own essences — so the thing on your hip says which ladder you climbed.
+	MinersCrest = 91 => props(RenderClass::None, false, 0, 0, 0),
+	AlchemistsCrest = 92 => props(RenderClass::None, false, 0, 0, 0),
+	ArcanistsCrest = 93 => props(RenderClass::None, false, 0, 0, 0),
 }
 
 /// The indestructible world floor: cells at this height can never be dug
@@ -593,8 +600,10 @@ pub struct BlockProps {
 	/// not a fluid; a translucent SHAPED row keeps `Shaped` here and names
 	/// its see-through-ness by bucket alone).
 	pub class: RenderClass,
-	/// Blocks the player and stops the picking ray.
-	pub collides: bool,
+	/// MATTER: stops the aim ray, stands against fluid, counts as ground for water regen, meets
+	/// light. Not what a body collides with — that is the shape's collision boxes, per state,
+	/// asked through `shapes::collides` (an open door and the torch are solid here and walked through).
+	pub solid: bool,
 	pub bucket: MeshBucket,
 	pub fluid: Option<FluidProps>,
 	/// Cave carving may replace this block (natural terrain, not
@@ -684,10 +693,10 @@ pub enum DigFamily {
 	Rock,
 }
 
-const fn props(class: RenderClass, collides: bool, side: u16, top: u16, bottom: u16) -> BlockProps {
+const fn props(class: RenderClass, solid: bool, side: u16, top: u16, bottom: u16) -> BlockProps {
 	BlockProps {
 		class,
-		collides,
+		solid,
 		bucket: MeshBucket::Solid,
 		fluid: None,
 		carveable: false,
@@ -825,7 +834,7 @@ const fn seams(mut p: BlockProps, level: u8) -> BlockProps {
 const fn water_props(amount: u8, source: bool, falling: bool) -> BlockProps {
 	BlockProps {
 		class: RenderClass::Translucent,
-		collides: false,
+		solid: false,
 		bucket: MeshBucket::Water,
 		fluid: Some(FluidProps {
 			amount,
@@ -938,7 +947,7 @@ pub mod tex {
 	pub const ESSENCE_UNDA: u16 = 54;
 	pub const ESSENCE_FERRUM: u16 = 55;
 	pub const ESSENCE_AETHER: u16 = 56;
-	/// The Ward's conjured pane.
+	/// The Causeway's conjured plank.
 	pub const WARDGLASS: u16 = 57;
 
 	/// Layers in the array, i.e. `digblock_assets::tex::LAYERS.len()`.
@@ -1067,6 +1076,9 @@ impl BlockType {
 			BlockType::Lantern => "Lantern".into(),
 			BlockType::Aetherlamp => "Aetherlamp".into(),
 			BlockType::MastersSigil => "Master's Sigil".into(),
+			BlockType::MinersCrest => "Miner's Crest".into(),
+			BlockType::AlchemistsCrest => "Alchemist's Crest".into(),
+			BlockType::ArcanistsCrest => "Arcanist's Crest".into(),
 			BlockType::Wardglass => "Wardglass".into(),
 			_ => "?".into(),
 		}
@@ -1122,7 +1134,7 @@ impl BlockType {
 	/// May a placement overwrite a cell holding this block? Air and water yield; every real block
 	/// must be dug first. THE one authority, shared by the client's prediction and the server's
 	/// validation — the two must agree exactly or a place either desyncs or is rejected after
-	/// prediction. Deliberately not `!props().collides`: an OPEN door has empty collision boxes,
+	/// prediction. Deliberately not `!shapes::collides`: an OPEN door has empty collision boxes,
 	/// so that test let a right-click inside a doorway overwrite the door and orphan its top half.
 	#[inline]
 	pub fn is_replaceable(self) -> bool {
@@ -1183,7 +1195,8 @@ impl BlockType {
 	/// wrote hands back what they put in it — which is what shuts the craft-and-extract loop on a
 	/// substance the world is made of. `edited` is whether that coordinate has ever been written,
 	/// read from the journal or its `EditOverlay` mirror for the same anti-dupe reason
-	/// [`crate::worldgen::nodes::revealed`] does. `alchemy` asks [`crate::unlock::can_craft`].
+	/// [`crate::worldgen::nodes::revealed`] does. `alchemy` asks [`crate::unlock::recipe_open`] — the
+	/// bench half alone, since nothing a crest gates is ever dug.
 	#[inline]
 	pub fn dig_credit(self, edited: bool, alchemy: u32) -> Option<BlockType> {
 		self.hardness_ticks()?;
@@ -1195,7 +1208,7 @@ impl BlockType {
 			return Some(d);
 		}
 		match p.crumbles {
-			Some(c) if !edited || !crate::unlock::can_craft(self, alchemy) => Some(c),
+			Some(c) if !edited || !crate::unlock::recipe_open(self, alchemy) => Some(c),
 			_ => Some(self),
 		}
 	}
@@ -1233,7 +1246,7 @@ impl BlockType {
 	}
 
 	/// Spell-written matter — see [`BlockProps::conjured`]. Never an item,
-	/// never XP: a ward is cast for a fare and must pay nothing back.
+	/// never XP: a road is cast for a fare and must pay nothing back.
 	#[inline]
 	pub fn is_conjured(self) -> bool {
 		self.props().conjured
@@ -1287,6 +1300,9 @@ impl BlockType {
 				| BlockType::EssenceSiphon
 				| BlockType::ResonantPick
 				| BlockType::MastersSigil
+				| BlockType::MinersCrest
+				| BlockType::AlchemistsCrest
+				| BlockType::ArcanistsCrest
 		)
 	}
 
@@ -1296,7 +1312,7 @@ impl BlockType {
 	/// sources would let them grow a hanging source shelf.
 	#[inline]
 	pub fn is_whole(self) -> bool {
-		self.props().collides || self.is_fluid_source()
+		self.props().solid || self.is_fluid_source()
 	}
 
 	#[inline]

@@ -69,6 +69,7 @@ DEV_MASTER_ENV := "-e ASPNETCORE_ENVIRONMENT=Development " + \
 	"-e Master__Dev__AuthEnabled=true " + \
 	"-e Master__Probe__AllowPrivateTargets=true " + \
 	"-e Master__Dev__ProbeHostOverride=host.docker.internal " + \
+	"-e Master__Hiscores__TrustedServers__0=127.0.0.1 " + \
 	"-e Master__Auth__Google__ClientId " + \
 	"-e Master__Auth__Google__ClientSecret " + \
 	"-e Master__Auth__Microsoft__ClientId " + \

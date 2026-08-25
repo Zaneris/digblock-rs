@@ -578,3 +578,63 @@ fn alchemy_xp_derives_from_the_base_tables() {
 	assert!(craft_xp(B::Bucket) > 0);
 	assert!(craft_xp(B::EssenceSiphon) > craft_xp(B::Bucket));
 }
+
+/// The master derives board levels from a COPY of this module's curve and skill roster
+/// (`apps/master/Hiscores/Skills.cs`), and nothing in either build system can check one against
+/// the other — so this reads the C# source and does. A drift would rank players by a curve the
+/// game does not run, which no request to either side would ever report.
+#[test]
+fn the_masters_curve_mirrors_ours() {
+	let src = std::fs::read_to_string(concat!(
+		env!("CARGO_MANIFEST_DIR"),
+		"/../../apps/master/Hiscores/Skills.cs"
+	))
+	.expect("the master's Skills.cs beside this workspace");
+	let ints = |from: &str, to: &str| -> Vec<u64> {
+		let start = src
+			.find(from)
+			.unwrap_or_else(|| panic!("{from:?} in Skills.cs"))
+			+ from.len();
+		let end = start + src[start..].find(to).expect("closing delimiter");
+		src[start..end]
+			.split(|c: char| !c.is_ascii_digit())
+			.filter(|s| !s.is_empty())
+			.map(|s| s.parse().unwrap())
+			.collect()
+	};
+	let curve = ints("XpToNext =\n    [", "]");
+	let ours: Vec<u64> = (1..MAX_LEVEL).map(|l| xp_to_next(l).unwrap()).collect();
+	assert_eq!(curve, ours, "the master's XpToNext is not our XP_TO_NEXT");
+	assert!(src.contains(&format!("MaxLevel = {MAX_LEVEL};")));
+	for s in Skill::ALL {
+		assert!(
+			src.contains(&format!("{} = {},", s.name(), s as u8)),
+			"the master's Skill enum lacks {} = {}",
+			s.name(),
+			s as u8
+		);
+	}
+	assert_eq!(
+		ints("public enum Skill\n{", "}").len(),
+		Skill::COUNT,
+		"the master's Skill enum has a row we do not"
+	);
+}
+
+/// The nameplate byte round-trips the roster, and every mastered skill is one the master's
+/// content ladder actually tops out at.
+#[test]
+fn mastery_bits_round_trip() {
+	for bits in 0..(1u8 << Skill::COUNT) {
+		let mut skills = SkillSet::default();
+		for s in Skill::from_mastery(bits) {
+			skills.set_total(s, total_xp_for(crate::unlock::MASTERY_AT));
+		}
+		assert_eq!(Skill::mastery_bits(&skills), bits);
+		for s in Skill::ALL {
+			assert_eq!(s.mastered(&skills), bits & (1 << s as u8) != 0);
+		}
+	}
+	// A bit past the roster is dropped rather than decoded as something.
+	assert_eq!(Skill::from_mastery(0x80).count(), 0);
+}

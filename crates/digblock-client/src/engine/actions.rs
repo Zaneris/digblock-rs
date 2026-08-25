@@ -188,7 +188,7 @@ impl Engine {
 			// left, and that action is on the other button.
 			self.scoop_ready() && hit.block.is_fluid_source()
 		} else {
-			hit.block.props().collides && hit.block.dig_hardness(hit.cell.1).is_some()
+			hit.block.props().solid && hit.block.dig_hardness(hit.cell.1).is_some()
 		}
 	}
 
@@ -223,12 +223,12 @@ impl Engine {
 			self.ui.spellbook.open();
 			return;
 		}
-		// The Ward climbs THROUGH the channel rather than after it, so
-		// its validation, fare and first cells belong to the start: the
-		// server hears `Cast(Ward)` now and seals on its own clock, and
+		// The Sphere climbs THROUGH the channel rather than after it, so
+		// its validation, bill and first cells belong to the start: the
+		// server hears `Cast(Sphere)` now and seals on its own clock, and
 		// offline the same plan begins its climb beside the channel. A
 		// refusal here is a channel that never opens.
-		if target == CastTarget::Ward && !self.begin_ward() {
+		if target == CastTarget::Sphere && !self.begin_sphere() {
 			return;
 		}
 		self.cast = Some(CastState { target, ticks: 0 });
@@ -240,21 +240,83 @@ impl Engine {
 		});
 	}
 
-	fn begin_ward(&mut self) -> bool {
-		match self.session.client.as_mut() {
-			Some(net) if net.ready() => {
-				net.send_cast(digblock_net::messages::CastKind::Ward);
-				true
-			}
-			_ => self.cast_ward_offline(),
+	/// Open a sphere's channel. Online the server is the judge and the client only DECLARES the
+	/// slot, but the honest gates run here first so the refusal names what is wrong — an empty
+	/// hand, a block no shell can be built of, too few of it — where the wire's reasons are
+	/// spell-blind. A plan this end cannot draw is left to the server, whose residency is wider.
+	fn begin_sphere(&mut self) -> bool {
+		let online = self.session.client.as_ref().is_some_and(|n| n.ready());
+		if !online {
+			return self.cast_sphere_offline();
 		}
+		let Some((block, level)) = self.sphere_hand() else {
+			return false;
+		};
+		let r = digblock_core::unlock::sphere_radius(level);
+		let head = digblock_core::kindle::host_cell(self.body_pos());
+		if let Ok(writes) =
+			digblock_core::sphere::plan(head, r, block, |c| self.pipeline.cell_at(c.0, c.1, c.2))
+			&& !self.sphere_stocked(block, &writes)
+		{
+			return false;
+		}
+		if !self.inventory.can_pay(&sphere_fares(level)) {
+			self.push_feed(Msg::SpellFareShort(Spell::Sphere));
+			return false;
+		}
+		let slot = self.hotbar.selected_index() as u8;
+		if let Some(net) = self.session.client.as_mut() {
+			net.send_cast(digblock_net::messages::CastKind::Sphere { slot });
+		}
+		true
 	}
 
-	/// The channel broke with a Ward climbing under it: the server
+	/// The rung and the hand, the gates both arms share: the caster's
+	/// Arcana admits the spell, and the bar points at a block a shell
+	/// can be built of. Speaks the refusal and answers nothing.
+	fn sphere_hand(&mut self) -> Option<(BlockType, u32)> {
+		use digblock_core::skills::Skill;
+		let level = self.skills.level(Skill::Arcana);
+		if digblock_core::unlock::sphere_radius(level) == 0 {
+			self.push_feed(Msg::SpellLocked(Spell::Sphere));
+			return None;
+		}
+		if self.own_sphere().is_some() {
+			self.push_feed(Msg::CastBadTarget);
+			return None;
+		}
+		let Some(HotbarItem::Block(block)) = self.hotbar.selected_item() else {
+			self.push_feed(Msg::SphereNoBlock);
+			return None;
+		};
+		if !digblock_core::sphere::accepts(block) {
+			self.push_feed(Msg::SphereBadBlock(Some(block)));
+			return None;
+		}
+		Some((block, level))
+	}
+
+	/// Does the stock cover what this plan bills? Speaks the shortfall,
+	/// naming the count, since a player can go and get exactly that many.
+	fn sphere_stocked(
+		&mut self,
+		block: BlockType,
+		writes: &[(digblock_core::sphere::Cell, u16)],
+	) -> bool {
+		let need = digblock_core::sphere::blocks_needed(writes, block);
+		let have = self.inventory.count(block);
+		if have < need {
+			self.push_feed(Msg::SphereBlocksShort(Some((block, need, have))));
+			return false;
+		}
+		true
+	}
+
+	/// The channel broke with a Sphere climbing under it: the server
 	/// unwinds on our word (and on its own, if we moved); this end puts
-	/// its own climb's record back crown-first, only where the glass is
-	/// still ours, and the fare returns.
-	fn break_ward(&mut self) {
+	/// its own climb's record back crown-first, only where the block is
+	/// still ours, and the bill returns.
+	fn break_sphere(&mut self) {
 		if let Some(net) = self.session.client.as_mut()
 			&& net.ready()
 		{
@@ -264,46 +326,85 @@ impl Engine {
 		// standing in this same world on its own caster's clock, and
 		// walking away from our own cast is nothing to it.
 		let me = self.session.my_player_id;
-		if let Some(i) = self.ward_climbs.iter().position(|w| w.own(me)) {
-			let climb = self.ward_climbs.remove(i);
+		if let Some(i) = self.sphere_climbs.iter().position(|w| w.own(me)) {
+			let climb = self.sphere_climbs.remove(i);
 			self.unwind_climb(climb);
 		}
 	}
 
 	/// Take every climb this world holds back down without telling anyone — ours and each remote's,
-	/// since the world under all of them is the one going away. Separate from [`Self::break_ward`]
+	/// since the world under all of them is the one going away. Separate from [`Self::break_sphere`]
 	/// because leaving the WORLD is not a broken channel: there is nobody left to send `CastBreak`
 	/// to, and only OUR climb would be the one to break. Every path that puts this world down calls
 	/// it while that world is still the one under the cells.
-	pub(super) fn abandon_ward(&mut self) {
-		for climb in std::mem::take(&mut self.ward_climbs) {
+	pub(super) fn abandon_sphere(&mut self) {
+		for climb in std::mem::take(&mut self.sphere_climbs) {
 			self.unwind_climb(climb);
 		}
 	}
 
-	/// One climb taken back down: the glass comes down crown-first, only where it is still ours —
-	/// somebody who dug a pane out mid-climb keeps their hole — and the climb's fare returns.
-	/// Restored from the climb's OWN RECORD, never from a re-derived plan: a plan drawn against a
-	/// standing sphere names precisely the cells missing from it, so re-deriving would resurrect
-	/// what was dug.
-	pub(super) fn unwind_climb(&mut self, climb: WardClimb) {
+	/// One climb taken back down: the shell comes down crown-first, only where it is still ours —
+	/// somebody who dug a block out mid-climb keeps their hole AND the block, since the dig paid
+	/// them — and the bill returns: both fares, the blocks never placed and every one just taken
+	/// down. Restored from the climb's OWN RECORD, never a re-derived plan: a plan drawn against a
+	/// standing sphere names precisely the cells missing from it, and would resurrect what was dug.
+	pub(super) fn unwind_climb(&mut self, climb: SphereClimb) {
+		let wall = climb.wall();
+		let (block, placed, bill) = (climb.block, climb.placed, climb.bill);
+		let mut restored = 0;
 		for (c, written, prev) in climb.closing.unwind() {
 			if self.pipeline.cell_at(c.0, c.1, c.2) == Some(written) {
-				self.write_ward_cell(c, prev);
+				if written == wall {
+					restored += 1;
+				}
+				self.write_sphere_cell(c, prev);
 			}
 		}
-		if let Some((essence, fare)) = climb.fare {
-			self.inventory.add_sub(essence, fare);
+		if let Some(bill) = bill {
+			self.inventory
+				.add(block, bill.debited.saturating_sub(placed) + restored);
+			self.inventory.add_fares(&bill.fares);
 		}
+	}
+
+	/// A climb that reached its crown, ours or a stranger's: the seal's wash and chime, and for
+	/// OUR OWN the wisp the spell lights — most matter makes a dark room — with, offline, the bill
+	/// settled (the blocks the climb declined come back) and both fares' XP paid. Online the
+	/// server lights, settles and pays through its own frames, and this end merely predicts the
+	/// light; `SphereEnded` puts it out if the server unwound instead.
+	pub(super) fn seal_climb(&mut self, climb: SphereClimb, own: bool) {
+		use digblock_core::skills::Skill;
+		if own {
+			self.light_wisp();
+			if let Some(bill) = &climb.bill {
+				self.inventory
+					.add(climb.block, bill.debited.saturating_sub(climb.placed));
+				let xp: u64 = bill
+					.fares
+					.iter()
+					.map(|&(e, n)| digblock_core::skills::cast_xp(e, n))
+					.sum();
+				self.award_xp_offline(Skill::Arcana, xp);
+			}
+		}
+		self.sphere_sealed(climb.head, own);
+	}
+
+	/// Stand our wisp for the rung's span — what a wisp cast does at
+	/// completion and what a sphere's seal does for free.
+	pub(super) fn light_wisp(&mut self) {
+		use digblock_core::skills::Skill;
+		let level = self.skills.level(Skill::Arcana);
+		self.wisp_left = digblock_core::unlock::wisp_secs(level) as f32;
 	}
 
 	/// Our own climb, if one stands. Every answer that belongs to the
 	/// LOCAL player — the offline award, the refund, the channel's
 	/// stillness hold — asks this rather than "is anything climbing",
 	/// because a remote's sphere is climbing in our world too.
-	pub(super) fn own_ward(&self) -> Option<&WardClimb> {
+	pub(super) fn own_sphere(&self) -> Option<&SphereClimb> {
 		let me = self.session.my_player_id;
-		self.ward_climbs.iter().find(|w| w.own(me))
+		self.sphere_climbs.iter().find(|w| w.own(me))
 	}
 
 	/// Arm the shared teleport clock at the caster's own window. Every
@@ -314,21 +415,21 @@ impl Engine {
 		self.save.teleport_cooldown = digblock_core::unlock::teleport_cooldown_secs(level) as f32;
 	}
 
-	/// How long a Ward's channel is held past its own length while the
-	/// caster waits for the seal — the bound on [`Self::ward_seal_grace`].
-	pub(super) const WARD_SEAL_GRACE_SECS: f32 = 0.6;
+	/// How long a Sphere's channel is held past its own length while the
+	/// caster waits for the seal — the bound on [`Self::sphere_seal_grace`].
+	pub(super) const SPHERE_SEAL_GRACE_SECS: f32 = 0.6;
 
-	/// Ticks past its own length that a channel keeps guarding stillness — the Ward alone, and only
-	/// online. `Cast(Ward)` goes out as the channel BEGINS, so the server's span ends one upstream
+	/// Ticks past its own length that a channel keeps guarding stillness — the Sphere alone, and
+	/// only online. `Cast(Sphere)` goes out as the channel BEGINS, so the server's span ends one upstream
 	/// latency after the caster's own bar fills, and until it does the server still enforces its
 	/// own stillness and unwinds the WHOLE sphere, with no word, for a caster who has walked off.
 	/// Offline the seal IS this end's own last tick, so there is nothing to wait for.
-	fn ward_seal_grace(&self, target: CastTarget) -> u32 {
-		let waiting = target == CastTarget::Ward
-			&& self.own_ward().is_some()
+	fn sphere_seal_grace(&self, target: CastTarget) -> u32 {
+		let waiting = target == CastTarget::Sphere
+			&& self.own_sphere().is_some()
 			&& self.session.client.as_ref().is_some_and(|n| n.ready());
 		if waiting {
-			(Self::WARD_SEAL_GRACE_SECS / digblock_core::player::TICK) as u32
+			(Self::SPHERE_SEAL_GRACE_SECS / digblock_core::player::TICK) as u32
 		} else {
 			0
 		}
@@ -361,15 +462,15 @@ impl Engine {
 			self.emit(crate::audio::AudioCmd::LoopStop {
 				id: crate::audio::LOOP_CAST,
 			});
-			if target == CastTarget::Ward {
+			if target == CastTarget::Sphere {
 				// Past the channel's own length with nothing climbing,
 				// the sphere has already sealed — the seal arrives
-				// through the ward machinery, not the channel's — so
+				// through the sphere machinery, not the channel's — so
 				// walking away now breaks nothing and says nothing.
-				if ticks >= need && self.own_ward().is_none() {
+				if ticks >= need && self.own_sphere().is_none() {
 					return;
 				}
-				self.break_ward();
+				self.break_sphere();
 			}
 			self.push_feed(Msg::CastInterrupted);
 			return;
@@ -379,7 +480,7 @@ impl Engine {
 			cast.ticks += 1;
 			cast.ticks
 		};
-		if ticks < need + self.ward_seal_grace(target) {
+		if ticks < need + self.sphere_seal_grace(target) {
 			return;
 		}
 		self.cast = None;
@@ -501,14 +602,14 @@ impl Engine {
 						// Predicted: the light shows now, the debit rides
 						// the rebase, and a CastRefused puts it out.
 						net.send_cast(digblock_net::messages::CastKind::Wisp);
-						self.wisp_left = digblock_core::unlock::wisp_secs(level) as f32;
+						self.light_wisp();
 					}
 					_ => {
 						if !self.inventory.try_take_sub(essence, fare) {
 							self.push_feed(Msg::SpellFareShort(Spell::Wisp));
 							return;
 						}
-						self.wisp_left = digblock_core::unlock::wisp_secs(level) as f32;
+						self.light_wisp();
 						self.award_xp_offline(
 							Skill::Arcana,
 							digblock_core::skills::cast_xp(essence, fare),
@@ -552,25 +653,13 @@ impl Engine {
 					_ => self.cast_kindle_offline(),
 				}
 			}
-			CastTarget::Ward => {
-				// The climb began with the channel (`begin_ward`) and the
-				// seal is the climb's own last tick; online the server
-				// declares both ends of it — `WardWinding` stands the
-				// sphere up, `WardEnded` closes or unwinds it — and the
-				// XP rides `XpGain`. Offline the award is the only thing
-				// left.
-				// OUR OWN climb's STORED fare, and not a fresh
-				// `ward_price`: the debit and the refund both spend this
-				// one, and the server pays out of its own `WardClosing`.
-				// Recomputing would pay a rung the cast never charged if
-				// Arcana rose mid-channel, and reading whichever climb
-				// stands first would pay us for a stranger's sphere.
-				if let Some((essence, fare)) = self.own_ward().and_then(|w| w.fare) {
-					self.award_xp_offline(
-						Skill::Arcana,
-						digblock_core::skills::cast_xp(essence, fare),
-					);
-				}
+			CastTarget::Sphere => {
+				// Nothing: the climb began with the channel (`begin_sphere`)
+				// and the seal is the climb's own last tick (`seal_climb`),
+				// which is where the wisp lights and the offline award and
+				// settlement happen. Online the server declares both ends —
+				// `SphereWinding` stands the sphere up, `SphereEnded` closes
+				// or unwinds it — and the XP rides `XpGain`.
 			}
 		}
 	}
@@ -615,28 +704,22 @@ impl Engine {
 		self.award_xp_offline(Skill::Arcana, digblock_core::skills::cast_xp(essence, fare));
 	}
 
-	/// The offline arm of the Ward's START: the same rung, plan, player
-	/// scan and fare the server runs, protected cells skipped the same
-	/// way; what it leaves behind is a climb the tick loop steps beside
-	/// the channel. False when nothing began.
-	fn cast_ward_offline(&mut self) -> bool {
-		use digblock_core::skills::Skill;
-		let level = self.skills.level(Skill::Arcana);
-		let r = digblock_core::unlock::ward_radius(level);
-		if r == 0 {
-			self.push_feed(Msg::SpellLocked(Spell::Ward));
+	/// The offline arm of the Sphere's START: the same rung, hand, plan,
+	/// player scan and bill the server runs, protected cells skipped the
+	/// same way — here BEFORE the bill, so a cell the sphere will never
+	/// write is never charged for; what it leaves behind is a climb the
+	/// tick loop steps beside the channel. False when nothing began.
+	fn cast_sphere_offline(&mut self) -> bool {
+		let Some((block, level)) = self.sphere_hand() else {
 			return false;
-		}
-		if self.own_ward().is_some() {
-			self.push_feed(Msg::CastBadTarget);
-			return false;
-		}
+		};
+		let r = digblock_core::unlock::sphere_radius(level);
 		// The HEAD is the same position the shell is scanned against
 		// (`body_pos`), or a flying caster's sphere closes around where
 		// they last stood while the scan clears them where they are.
 		let head = digblock_core::kindle::host_cell(self.body_pos());
 		let Ok(writes) =
-			digblock_core::ward::plan(head, r, |c| self.pipeline.cell_at(c.0, c.1, c.2))
+			digblock_core::sphere::plan(head, r, block, |c| self.pipeline.cell_at(c.0, c.1, c.2))
 		else {
 			self.push_feed(Msg::CastBadTarget);
 			return false;
@@ -650,62 +733,72 @@ impl Engine {
 		}
 		let mut writes = writes;
 		writes.retain(|&(c, _)| !digblock_core::protect::immutable(c.0, c.1, c.2, &self.protected));
-		let (essence, fare) = digblock_core::alchemy::ward_price(level);
-		if !self.inventory.try_take_sub(essence, fare) {
-			self.push_feed(Msg::SpellFareShort(Spell::Ward));
+		if !self.sphere_stocked(block, &writes) {
 			return false;
 		}
-		self.ward_climbs.push(WardClimb {
+		let fares = sphere_fares(level);
+		if !self.inventory.try_take_fares(&fares) {
+			self.push_feed(Msg::SpellFareShort(Spell::Sphere));
+			return false;
+		}
+		let debited = digblock_core::sphere::blocks_needed(&writes, block);
+		let took = self.inventory.try_take(block, debited);
+		debug_assert!(took, "sphere_stocked answered for this");
+		self.sphere_climbs.push(SphereClimb {
 			by: self.session.my_player_id,
-			closing: digblock_core::ward::Closing::new(
+			closing: digblock_core::sphere::Closing::new(
 				writes,
 				digblock_core::unlock::channel_ticks(level),
 			),
 			head,
+			block,
 			prefix: 0,
-			fare: Some((essence, fare)),
+			placed: 0,
+			bill: Some(SphereBill { debited, fares }),
 		});
 		true
 	}
 
-	/// One sim tick of every ward climbing — ours and each remote's,
+	/// One sim tick of every sphere climbing — ours and each remote's,
 	/// each at its own caster's pace, so hundreds of edits ride one
 	/// frame from the wire. The tick a climb ends is its seal.
-	/// DIG_WARD_AGE holds a climb at its age so a capture can
+	/// DIG_SPHERE_AGE holds a climb at its age so a capture can
 	/// photograph the bowl.
-	pub(super) fn step_ward_climbs(&mut self) {
-		if self.ward_climbs.is_empty() {
+	pub(super) fn step_sphere_climbs(&mut self) {
+		if self.sphere_climbs.is_empty() {
 			return;
 		}
 		let me = self.session.my_player_id;
 		// Taken out for the walk: landing a cell wants the whole engine,
 		// and a climb removed from the list is not a borrow of it.
-		let mut climbs = std::mem::take(&mut self.ward_climbs);
+		let mut climbs = std::mem::take(&mut self.sphere_climbs);
 		let mut i = 0;
 		while i < climbs.len() {
-			if let Some(age) = self.config.debug_ward_age
+			if let Some(age) = self.config.debug_sphere_age
 				&& climbs[i].closing.step() as f32 * digblock_core::player::TICK >= age
 			{
 				i += 1;
 				continue;
 			}
-			self.land_ward_tick(&mut climbs[i]);
+			self.land_sphere_tick(&mut climbs[i]);
 			if climbs[i].closing.done() {
 				let climb = climbs.remove(i);
-				self.ward_sealed(climb.head, climb.own(me));
+				let own = climb.own(me);
+				self.seal_climb(climb, own);
 				continue;
 			}
 			i += 1;
 		}
-		self.ward_climbs = climbs;
+		self.sphere_climbs = climbs;
 	}
 
 	/// One tick's worth of a climb handed to the world and recorded with what it replaced, so a
 	/// break can put it back. A cell somebody has stepped into is left unwritten — the server's
 	/// rule too — and so is one this end cannot read, which the journal carries instead. Neither is
 	/// recorded, so no unwind claims a cell this end never wrote.
-	fn land_ward_tick(&mut self, climb: &mut WardClimb) {
+	fn land_sphere_tick(&mut self, climb: &mut SphereClimb) {
 		let body = self.body_pos();
+		let wall = climb.wall();
 		let cells = climb.closing.land();
 		climb.prefix += cells.len();
 		for (c, v) in cells {
@@ -716,7 +809,10 @@ impl Engine {
 				continue;
 			};
 			climb.closing.record(c, v, prev);
-			self.write_ward_cell(c, v);
+			if v == wall {
+				climb.placed += 1;
+			}
+			self.write_sphere_cell(c, v);
 		}
 	}
 
@@ -724,18 +820,18 @@ impl Engine {
 	/// and the truth about a sphere whose local clock is a round trip out of step either way. A
 	/// tick-sized step can overshoot the count by one tick's cells; only a break can leave those
 	/// standing, and a break takes the whole record back down.
-	pub(super) fn land_ward_to(&mut self, climb: &mut WardClimb, prefix: usize) {
+	pub(super) fn land_sphere_to(&mut self, climb: &mut SphereClimb, prefix: usize) {
 		while climb.prefix < prefix && !climb.closing.done() {
-			self.land_ward_tick(climb);
+			self.land_sphere_tick(climb);
 		}
 	}
 
-	/// Hand one of a ward's cells to the world through the arm that owns this world's edits:
+	/// Hand one of a sphere's cells to the world through the arm that owns this world's edits:
 	/// offline `set_cell`, the local write funnel a save's overlay is recorded from; online
 	/// `apply_authoritative`, the path every journalled edit takes. Online `set_cell` records
 	/// nothing, so a sphere written that way is gone from the overlay mirroring the journal and
 	/// vanishes on the first hard eviction.
-	pub(super) fn write_ward_cell(&mut self, c: digblock_core::ward::Cell, v: u16) {
+	pub(super) fn write_sphere_cell(&mut self, c: digblock_core::sphere::Cell, v: u16) {
 		if self.session.client.is_some() {
 			self.apply_remote_edit(c, v);
 		} else {
@@ -1438,4 +1534,13 @@ impl Engine {
 			);
 		}
 	}
+}
+
+/// The two fares one sphere drains — its own and the wisp its seal lights — as ONE bill, so the
+/// debit, the refund and the award all read the same pair.
+fn sphere_fares(level: u32) -> [(digblock_core::block::Essence, u32); 2] {
+	[
+		digblock_core::alchemy::sphere_price(level),
+		digblock_core::alchemy::wisp_price(level),
+	]
 }

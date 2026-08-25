@@ -472,11 +472,10 @@ mod tests {
 								let (nx, nz) = (wx + dx, wz + dz);
 								let beside = slab.pristine(nx, y, nz).unwrap();
 								assert!(
-									beside.is_water() || beside.props().collides,
+									beside.is_water() || beside.props().solid,
 									"water at ({wx},{y},{wz}) stands against {beside:?}"
 								);
-								if beside.props().collides && super::super::carved(nx, y, nz, SEED)
-								{
+								if beside.props().solid && super::super::carved(nx, y, nz, SEED) {
 									kept += 1;
 								}
 							}

@@ -9,11 +9,14 @@
 //! HTTP contract (mirrors apps/master/Contracts.cs):
 //!   GET  /api/servers → { "servers": [{id, name, url, certHash, players, maxPlayers}] }
 //!   POST /api/join { serverId } → { token, expiresIn, url, certHash }
+//!   GET  /api/hiscores/me + Bearer session → { "ranks": [{skill, rank, level, xp}] }
 
 use std::sync::mpsc;
 
 use crate::auth::{self, Session};
-use digblock_client::{AccountView, MenuCommand, MenuResponse, MenuServices, ServerEntry};
+use digblock_client::{
+	AccountView, MenuCommand, MenuResponse, MenuServices, RankView, ServerEntry,
+};
 use digblock_net::protocol::Compat;
 use serde::Deserialize as _;
 use wasm_bindgen::JsCast;
@@ -41,6 +44,9 @@ struct ListServer {
 	protocol_version: u16,
 	#[serde(default, deserialize_with = "lenient_version")]
 	sim_version: u16,
+	/// Absent on a master predating the board, which reads as "does not count".
+	#[serde(default)]
+	reports_skills: bool,
 }
 
 /// A player count, clamped rather than rejected. The master types these as `int`, so a server can
@@ -66,6 +72,53 @@ struct JoinResponse {
 	token: String,
 	url: String,
 	cert_hash: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RanksResponse {
+	ranks: Vec<RankRow>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RankRow {
+	skill: String,
+	rank: u32,
+	level: u32,
+	xp: u64,
+}
+
+/// A board row as the screen wants it. A slug the client cannot name — a
+/// skill from a newer master — is dropped rather than failing the answer.
+fn rank_view(row: RankRow) -> Option<RankView> {
+	let skill = match row.skill.as_str() {
+		"overall" => None,
+		slug => Some(
+			digblock_core::skills::Skill::ALL
+				.into_iter()
+				.find(|s| s.name().eq_ignore_ascii_case(slug))?,
+		),
+	};
+	Some(RankView {
+		skill,
+		rank: row.rank,
+		level: row.level,
+		xp: row.xp,
+	})
+}
+
+/// Where the signed-in account stands on the master's boards.
+async fn fetch_ranks(master_url: &str, session: &str) -> Result<Vec<RankView>, String> {
+	let text = fetch_bearer(
+		"GET",
+		&format!("{master_url}/api/hiscores/me"),
+		None,
+		Some(session),
+	)
+	.await?;
+	let body: RanksResponse = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+	Ok(body.ranks.into_iter().filter_map(rank_view).collect())
 }
 
 /// Start the service task. Scripted joins are the menu's job
@@ -140,13 +193,16 @@ async fn run(
 						let Ok(hash) = digblock_net_web::parse_sha256_hex(&cert_hash) else {
 							let _ = resp_tx.send(MenuResponse::Ping {
 								server_id: id,
-								ms: None,
+								ping: None,
 							});
 							continue;
 						};
 						let resp_tx = resp_tx.clone();
-						digblock_net_web::probe(&url, hash, 3000, move |ms| {
-							let _ = resp_tx.send(MenuResponse::Ping { server_id: id, ms });
+						digblock_net_web::probe(&url, hash, 3000, move |ping| {
+							let _ = resp_tx.send(MenuResponse::Ping {
+								server_id: id,
+								ping,
+							});
 						});
 					}
 				}
@@ -193,6 +249,13 @@ async fn run(
 					}
 					let _ = resp_tx.send(MenuResponse::NameSet(result));
 				}
+				MenuCommand::FetchRanks => {
+					let result = match &session {
+						Some(s) => fetch_ranks(&master_url, &s.token).await,
+						None => Err("not signed in".into()),
+					};
+					let _ = resp_tx.send(MenuResponse::Ranks(result));
+				}
 				MenuCommand::SignOut => {
 					if let Some(s) = session.take() {
 						auth::sign_out(&master_url, &s.token).await;
@@ -236,6 +299,7 @@ async fn fetch_servers(master_url: &str) -> Result<Vec<ServerEntry>, String> {
 			max_players: s.max_players,
 			protocol_version: s.protocol_version,
 			sim_version: s.sim_version,
+			reports_skills: s.reports_skills,
 		})
 		.collect())
 }

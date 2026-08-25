@@ -7,9 +7,10 @@
 //! the window never re-uploads when a look is tuned.
 //!
 //! Shaped cells get SYNTHETIC classes from [`SHAPE_CLASS_BASE`] up, each
-//! carrying a TWO-BOX COVER of the shape's collision boxes: box 0 exactly, then
-//! the AABB union of the rest. A cover can only ever OVER-block, never under. A
-//! state whose collision is EMPTY — an open door — classifies as air.
+//! carrying a TWO-BOX COVER of the shape's light boxes (`shapes::light_boxes`:
+//! its collision, plus a walk-through fixture's post): box 0 exactly, then the
+//! AABB union of the rest. A cover can only ever OVER-block, never under. A
+//! state with NO light boxes — an open door — classifies as air.
 
 use std::sync::LazyLock;
 
@@ -88,7 +89,7 @@ static SHAPE_CLASSES: LazyLock<(Vec<ShapeClass>, Vec<u8>)> = LazyLock::new(|| {
 		// answer for whatever a journal or an edit actually stored.
 		for state in 0..16u8 {
 			let cell = crate::chunk::make_cell(b, state);
-			let boxes = shapes::collision_boxes(cell);
+			let boxes = shapes::light_boxes(cell);
 			let key = ((b as usize) << 4) | state as usize;
 			if boxes.is_empty() {
 				index[key] = 0;
@@ -459,7 +460,7 @@ mod tests {
 
 	#[test]
 	fn the_cover_contains_every_collision_box() {
-		// Box 0 is collision box 0 exactly; box 1 must contain each of
+		// Box 0 is light box 0 exactly; box 1 must contain each of
 		// the rest. Over-blocking is allowed (a stair's L rounds up to
 		// its bounding pair), under-blocking never (light through a
 		// solid tread).
@@ -470,7 +471,7 @@ mod tests {
 			for state in 0..16u8 {
 				let cell = make_cell(b, state);
 				let class = gi_class(cell);
-				let boxes = shapes::collision_boxes(cell);
+				let boxes = shapes::light_boxes(cell);
 				// A translucent shaped block skips the synthetic classes
 				// on purpose: the GI takes it as a full see-through cell
 				// of its base id, boxes and all (see `gi_class`).

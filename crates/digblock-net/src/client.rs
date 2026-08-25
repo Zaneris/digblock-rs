@@ -161,20 +161,22 @@ pub enum NetEvent {
 		cell: [i32; 3],
 		secs_left: u16,
 	},
-	/// A Ward's channel BEGAN — anyone's, ours included; the cells derive, and are never sent.
-	WardWinding {
+	/// A Sphere's channel BEGAN — anyone's, ours included; the cells derive, and are never sent.
+	SphereWinding {
 		by: PlayerId,
 		head: [i32; 3],
 		radius: u8,
 		span: u32,
+		block: u16,
 	},
-	/// A Ward's channel ENDED with `landed` cells in the world; `sealed` says whether they stayed.
-	WardEnded {
+	/// A Sphere's channel ENDED with `landed` cells in the world; `sealed` says whether they stayed.
+	SphereEnded {
 		by: PlayerId,
 		head: [i32; 3],
 		radius: u8,
 		landed: u32,
 		sealed: bool,
+		block: u16,
 	},
 	Disconnected {
 		reason: String,
@@ -717,29 +719,33 @@ impl NetClient {
 			ServerMsg::Kindled { cell, secs_left } => {
 				out.push(NetEvent::Kindled { cell, secs_left });
 			}
-			ServerMsg::WardWinding {
+			ServerMsg::SphereWinding {
 				by,
 				head,
 				radius,
 				span,
-			} => out.push(NetEvent::WardWinding {
+				block,
+			} => out.push(NetEvent::SphereWinding {
 				by,
 				head,
 				radius,
 				span,
+				block,
 			}),
-			ServerMsg::WardEnded {
+			ServerMsg::SphereEnded {
 				by,
 				head,
 				radius,
 				landed,
 				sealed,
-			} => out.push(NetEvent::WardEnded {
+				block,
+			} => out.push(NetEvent::SphereEnded {
 				by,
 				head,
 				radius,
 				landed,
 				sealed,
+				block,
 			}),
 			ServerMsg::InventoryFull { counts } => {
 				// Raw pairs through to the engine — `Inventory::from_wire`
@@ -802,6 +808,7 @@ impl NetClient {
 					yaw: p.yaw,
 					held: p.held,
 					fx: p.fx,
+					mastery: p.mastery,
 				},
 			);
 		}
@@ -900,7 +907,7 @@ impl NetClient {
 		self.send_msg(&ClientMsg::Cast(kind));
 	}
 
-	/// The Ward channel broke — the server unwinds the climb.
+	/// The Sphere channel broke — the server unwinds the climb.
 	pub fn send_cast_break(&mut self) {
 		self.send_msg(&ClientMsg::CastBreak);
 	}

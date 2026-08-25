@@ -50,69 +50,73 @@ impl Engine {
 		});
 	}
 
-	/// A ward SEALED, ours or a remote's: the glass itself was the
+	/// A sphere SEALED, ours or a remote's: the shell itself was the
 	/// spectacle, climbing as ordinary cells through the channel with no
 	/// sound of their own (a conjured cell never thunks), so the seal is
 	/// the one instant with a voice — the chime, heard flat by the caster
 	/// because it closed about THEIR head, and their wash of the overlay.
-	pub(super) fn ward_sealed(&mut self, head: (i32, i32, i32), own: bool) {
+	pub(super) fn sphere_sealed(&mut self, head: (i32, i32, i32), own: bool) {
 		if own {
 			self.vfx.flash = 0.6;
 		}
 		self.emit(crate::audio::AudioCmd::Sfx {
-			sound: crate::audio::Sfx::WardClose,
+			sound: crate::audio::Sfx::SphereClose,
 			pos: (!own).then(|| cell_center(head)),
 			gain: 0.8,
 		});
 	}
 
-	/// A Ward's channel BEGAN. The sphere's cells never travel: this end draws the same plan from
-	/// the same head and radius and climbs it over the same span, so one frame stands for the
-	/// hundreds of edits a sphere is. EVERY caster's sphere climbs here, ours and a stranger's
-	/// alike — one climb per caster — so a remote's glass rises through their channel instead of
-	/// appearing whole at the seal. A plan this end cannot draw is left to the journal.
-	pub(super) fn ward_winding(
+	/// A Sphere's channel BEGAN. The shell's cells never travel: this end draws the same plan from
+	/// the same head, radius and block and climbs it over the same span, so one frame stands for
+	/// the hundreds of edits a sphere is. EVERY caster's sphere climbs here, ours and a stranger's
+	/// alike — one climb per caster — so a remote's shell rises through their channel instead of
+	/// appearing whole at the seal. A plan this end cannot draw (or decode) is left to the journal.
+	pub(super) fn sphere_winding(
 		&mut self,
 		by: digblock_net::protocol::PlayerId,
 		head: (i32, i32, i32),
 		radius: u8,
 		span: u32,
+		block: u16,
 	) {
-		if self.ward_climbs.iter().any(|w| w.by == Some(by)) {
+		if self.sphere_climbs.iter().any(|w| w.by == Some(by)) {
 			return;
 		}
-		let Some(writes) = self.ward_plan(head, radius) else {
+		let Some((block, writes)) = self.sphere_plan(head, radius, block) else {
 			return;
 		};
-		// No fare: online, the refund is the server's `InventoryFull`.
-		self.ward_climbs.push(WardClimb {
+		// No bill: online, the settlement is the server's `InventoryFull`.
+		self.sphere_climbs.push(SphereClimb {
 			by: Some(by),
-			closing: digblock_core::ward::Closing::new(writes, span),
+			closing: digblock_core::sphere::Closing::new(writes, span),
 			head,
+			block,
 			prefix: 0,
-			fare: None,
+			placed: 0,
+			bill: None,
 		});
 	}
 
-	/// A Ward's channel ENDED, sealed or unwound — THAT caster's alone. The climb is first walked
+	/// A Sphere's channel ENDED, sealed or unwound — THAT caster's alone. The climb is first walked
 	/// to `landed`, the server's count of what it handed the world, since this end's clock is a
 	/// round trip out of step either way. Then it answers out of its OWN record — the cells it
 	/// wrote and what each replaced — so an unwind puts back exactly what went up; re-deriving
 	/// would be the resurrection bug, a plan against a standing sphere naming precisely its holes.
-	pub(super) fn ward_ended(
+	pub(super) fn sphere_ended(
 		&mut self,
 		by: digblock_net::protocol::PlayerId,
 		head: (i32, i32, i32),
 		radius: u8,
 		landed: u32,
 		sealed: bool,
+		block: u16,
 	) {
 		let own = Some(by) == self.session.my_player_id;
-		if let Some(i) = self.ward_climbs.iter().position(|w| w.by == Some(by)) {
-			let mut climb = self.ward_climbs.remove(i);
-			self.land_ward_to(&mut climb, landed as usize);
+		if let Some(i) = self.sphere_climbs.iter().position(|w| w.by == Some(by)) {
+			let mut climb = self.sphere_climbs.remove(i);
+			self.land_sphere_to(&mut climb, landed as usize);
 			if sealed {
-				self.ward_sealed(head, own);
+				self.seal_climb(climb, own);
 			} else {
 				self.unwind_climb(climb);
 			}
@@ -121,11 +125,16 @@ impl Engine {
 		// Nothing climbing here: ours already sealed itself, or this end
 		// could not draw the plan when the channel began — a sphere
 		// reaching past what we hold — and the sealed one stands up
-		// whole now that we can. A broken one left nothing to take down.
+		// whole now that we can. A broken one left nothing to take down
+		// — but our own predicted the seal's light, and the server's
+		// word is that there was no seal.
+		if own && !sealed {
+			self.wisp_left = 0.0;
+		}
 		if own || !sealed {
 			return;
 		}
-		let Some(writes) = self.ward_plan(head, radius) else {
+		let Some((_, writes)) = self.sphere_plan(head, radius, block) else {
 			return;
 		};
 		let body = self.body_pos();
@@ -133,24 +142,31 @@ impl Engine {
 			if digblock_core::player::placement_blocked(body, c, v) {
 				continue;
 			}
-			self.write_ward_cell(c, v);
+			self.write_sphere_cell(c, v);
 		}
-		self.ward_sealed(head, own);
+		self.sphere_sealed(head, own);
 	}
 
 	/// The sphere as this end draws it — `None` when the world here
 	/// cannot answer for every cell, since the plan is all or nothing
-	/// (`ward::plan`). The radius is a server's word, and `ward::sets`
-	/// caps it: the scan is cubic in it.
-	fn ward_plan(
+	/// (`sphere::plan`), or when the block id is one this build has no
+	/// row for. The radius is a server's word, and `sphere::sets` caps
+	/// it: the scan is cubic in it.
+	fn sphere_plan(
 		&self,
-		head: digblock_core::ward::Cell,
+		head: digblock_core::sphere::Cell,
 		radius: u8,
-	) -> Option<Vec<(digblock_core::ward::Cell, u16)>> {
-		digblock_core::ward::plan(head, i32::from(radius), |c| {
+		block: u16,
+	) -> Option<(
+		digblock_core::block::BlockType,
+		Vec<(digblock_core::sphere::Cell, u16)>,
+	)> {
+		let block = digblock_core::block::BlockType::try_from_id(block)?;
+		let writes = digblock_core::sphere::plan(head, i32::from(radius), block, |c| {
 			self.pipeline.cell_at(c.0, c.1, c.2)
 		})
-		.ok()
+		.ok()?;
+		Some((block, writes))
 	}
 
 	/// Land a teleport (return to spawn, admin /tp): hard-set the player and camera — the
@@ -306,6 +322,13 @@ impl Engine {
 					..
 				} => {
 					self.session.my_player_id = Some(player_id);
+					// Said once, at the door, and decided by the CLIENT from
+					// the master's listing: a server not on the trusted
+					// list cannot raise a total, so XP earned here stays
+					// here, whatever the server itself might say.
+					if self.ui.menu.join_ranked() == Some(false) {
+						self.push_feed(crate::voice::Msg::UnrankedServer);
+					}
 					// NOT `menu.on_welcome()` yet: the Connecting screen IS
 					// the join's loading cover, and closing it here is what
 					// used to show the player pristine worldgen for the
@@ -561,23 +584,32 @@ impl Engine {
 				NetEvent::Kindled { cell, secs_left } => {
 					self.kindle_light((cell[0], cell[1], cell[2]), f32::from(secs_left));
 				}
-				NetEvent::WardWinding {
+				NetEvent::SphereWinding {
 					by,
 					head,
 					radius,
 					span,
-				} => self.ward_winding(by, (head[0], head[1], head[2]), radius, span),
-				NetEvent::WardEnded {
+					block,
+				} => self.sphere_winding(by, (head[0], head[1], head[2]), radius, span, block),
+				NetEvent::SphereEnded {
 					by,
 					head,
 					radius,
 					landed,
 					sealed,
-				} => self.ward_ended(by, (head[0], head[1], head[2]), radius, landed, sealed),
+					block,
+				} => self.sphere_ended(
+					by,
+					(head[0], head[1], head[2]),
+					radius,
+					landed,
+					sealed,
+					block,
+				),
 				NetEvent::CastRefused { reason } => {
 					use digblock_net::messages::CastRefusal;
 					// A predicted wisp goes out with the refusal — the
-					// debit it predicted against never happened. A Ward
+					// debit it predicted against never happened. A Sphere
 					// channel still winding has nothing climbing under
 					// it, so it stops here rather than completing into
 					// nothing.
@@ -590,16 +622,23 @@ impl Engine {
 					if self.last_cast == Some(CastTarget::Causeway) {
 						self.end_causeway();
 					}
-					if self.cast.as_ref().map(|c| c.target) == Some(CastTarget::Ward) {
+					if self.cast.as_ref().map(|c| c.target) == Some(CastTarget::Sphere) {
 						self.cast = None;
 						self.emit(crate::audio::AudioCmd::LoopStop {
 							id: crate::audio::LOOP_CAST,
 						});
 					}
+					// The three block reasons name the Sphere on their own —
+					// no other spell takes a block — but not what was held
+					// or how short: the honest gates in `begin_sphere` say
+					// that, and this is the race they lost.
 					self.push_feed(match reason {
 						CastRefusal::Locked => Msg::WaystoneLocked,
 						CastRefusal::CantPay => Msg::CastCantPay,
 						CastRefusal::BadTarget => Msg::CastBadTarget,
+						CastRefusal::NoBlock => Msg::SphereNoBlock,
+						CastRefusal::BadBlock => Msg::SphereBadBlock(None),
+						CastRefusal::BlocksShort => Msg::SphereBlocksShort(None),
 					});
 				}
 				// Hard-set: inter-beat drift is microscopic, and after a

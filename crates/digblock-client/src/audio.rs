@@ -41,8 +41,8 @@ pub enum Sfx {
 	/// The departure's release, and the arrival's landing.
 	TeleportOut,
 	TeleportIn,
-	/// The Ward sealing over its caster — the crown cell of a climb on the channel's own loop.
-	WardClose,
+	/// The Sphere sealing over its caster — the crown cell of a climb on the channel's own loop.
+	SphereClose,
 }
 
 /// The embedded bytes for a sound — the enum↔asset pairing lives here
@@ -75,7 +75,7 @@ pub fn bytes(s: Sfx) -> &'static [u8] {
 		Sfx::CastLoop => a::SIPHON_DRAW,
 		Sfx::TeleportOut => a::SIPHON_TAKE,
 		Sfx::TeleportIn => a::LEVEL_UNLOCK,
-		Sfx::WardClose => a::WARD_CLOSE,
+		Sfx::SphereClose => a::WARD_CLOSE,
 	}
 }
 
@@ -104,7 +104,7 @@ pub const ALL_SFX: [Sfx; 24] = [
 	Sfx::CastLoop,
 	Sfx::TeleportOut,
 	Sfx::TeleportIn,
-	Sfx::WardClose,
+	Sfx::SphereClose,
 ];
 
 /// The fanfare a level-up speaks: the plain chime, or the bigger one

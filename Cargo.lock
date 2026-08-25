@@ -831,6 +831,7 @@ version = "0.7.6"
 dependencies = [
  "arboard",
  "digblock-client",
+ "digblock-core",
  "digblock-net",
  "digblock-net-native",
  "digblock-persist",

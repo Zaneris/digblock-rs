@@ -27,7 +27,7 @@ pub const DEFAULT_MASTER_URL: &str = "https://master.digblock.net";
 ///
 /// Bump on ANY change to a message's shape or meaning. Postcard encodes enum discriminants by
 /// declaration order, so variants and fields are APPEND-ONLY — never reorder, never remove.
-pub const PROTOCOL_VERSION: u16 = 37;
+pub const PROTOCOL_VERSION: u16 = 39;
 
 /// Chunk-column radius around an arrival — a join or a teleport — whose journaled columns must
 /// reach the client before it may render or simulate. A small radius is the bounded choice: at
@@ -47,7 +47,7 @@ pub const AREA_SYNC_TIMEOUT_SECS: f32 = 5.0;
 /// break raise this floor — a field removed from or added INSIDE an existing variant runs an
 /// older decoder off the frame, and a peer that decodes fine but whose buttons no longer buy
 /// anything. Refusing the handshake is the honest answer to both.
-pub const MIN_PROTOCOL: u16 = 37;
+pub const MIN_PROTOCOL: u16 = 39;
 
 /// Whether a peer speaking `protocol` sits inside this build's window. THE protocol gate: the
 /// preamble check, the sim's own handshake and the menu's pre-dial verdict all ask this, so a
@@ -505,13 +505,13 @@ pub const EXTRAP_CAP_TICKS: f64 = 15.0;
 /// datagram.
 ///
 /// For the WORST-CASE encoding: an oversize snapshot does not truncate, it fails to encode.
-pub const MAX_SNAPSHOT_PLAYERS: usize = 40;
+pub const MAX_SNAPSHOT_PLAYERS: usize = 39;
 // The assert below sizes the WORST-case encoding of each part. A RemoteState is its id, a
 // fixed-width f32 position, then velocity, yaw and held as postcard VARINTS — widest at the
-// extremes, not typical. SelfState adds its Option tag; the snapshot carries the datagram
-// variant, two varint ticks and the vec length. A real entry is far smaller, but the cap has
-// to survive the extremes.
-const _: () = assert!(25 + (MAX_SNAPSHOT_PLAYERS - 1) * 28 + 13 <= MAX_DATAGRAM);
+// extremes, not typical — and its two trailing bytes, the effect and the mastery bits.
+// SelfState adds its Option tag; the snapshot carries the datagram variant, two varint ticks
+// and the vec length. A real entry is far smaller, but the cap has to survive the extremes.
+const _: () = assert!(25 + (MAX_SNAPSHOT_PLAYERS - 1) * 29 + 13 <= MAX_DATAGRAM);
 
 /// A remote whose newest snapshot lags the estimated clock by this many ticks left our interest
 /// radius — drop it client-side so it vanishes instead of ghosting at the extrapolation cap;

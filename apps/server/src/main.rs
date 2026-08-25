@@ -4,7 +4,7 @@ use crossbeam_channel::unbounded;
 use digblock_net::protocol::AccountId;
 use digblock_server::master::{self, MasterConfig, MasterState};
 use digblock_server::sim::Sim;
-use digblock_server::{DEFAULT_PORT, DEFAULT_SEED, net, run_sim_loop};
+use digblock_server::{DEFAULT_PORT, DEFAULT_SEED, PORT_RANGE, net, run_sim_loop};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -15,6 +15,19 @@ use std::time::Duration;
 /// An id passes straight through; a display name costs one lookup against the master. Doing it
 /// here rather than at each chat command is what makes admin a decision about an ACCOUNT: the name
 /// is resolved once, against the only party that can answer, and stays a label its owner may edit.
+/// A yes/no setting, spelled the way a compose file or a shell writes one;
+/// anything else is a misconfiguration and exits like a bad number does.
+fn parse_bool_or_die(what: &str, v: &str) -> bool {
+	match v.trim().to_ascii_lowercase().as_str() {
+		"true" | "1" | "yes" | "on" => true,
+		"false" | "0" | "no" | "off" => false,
+		other => {
+			eprintln!("{what}: expected true or false, got {other:?}");
+			std::process::exit(2);
+		}
+	}
+}
+
 fn resolve_admins(specs: &[String], master_url: &str) -> Result<Vec<AccountId>, String> {
 	specs
 		.iter()
@@ -57,17 +70,22 @@ use digblock_net::protocol::DEFAULT_MASTER_URL;
 const USAGE: &str = "usage: digblock-server [--advertise-host HOST] \
 	 [--master-url URL] [--advertise-port N] [--server-name S] [--port N] \
 	 [--seed F] [--data-dir P] [--sim-radius N] [--workers N] [--admin ID-OR-NAME] \
-	 [--max-conns-per-ip N]\n\
+	 [--max-conns-per-ip N] [--use-master-levels BOOL]\n\
 	 (--advertise-host defaults to the address the master observes registering — your public \
-	 IP; set it for a DNS name or multi-homed hosts. --master-url defaults to \
+	 IP; set it for a DNS name or multi-homed hosts. --advertise-port defaults to --port; set \
+	 it when players reach you at a different one (a port forward, a container mapping) — \
+	 the master lists only a fixed block of ports, printed if yours is outside it. \
+	 --master-url defaults to \
 	 https://master.digblock.net. --admin grants a player chat commands (/help /ban \
 	 /ban-list /unban /tp) — give an account id, which a player can copy from the game's \
 	 Account screen, or a display name, which is resolved to one at boot; repeat for \
 	 several admins. --max-conns-per-ip caps live connections from one address; \
-	 raise it for a local soak, where every bot shares one. Env fallbacks: \
+	 raise it for a local soak, where every bot shares one. --use-master-levels (default \
+	 true) is whether a joiner arrives at the levels the master's board holds for their \
+	 account; false keeps this server's skill ladder its own. Env fallbacks: \
 	 DIGBLOCK_MASTER_URL, DIGBLOCK_ADVERTISE_HOST, DIGBLOCK_ADVERTISE_PORT, \
 	 DIGBLOCK_SERVER_NAME, DIGBLOCK_SEED, DIGBLOCK_MAX_CONNS_PER_IP, DIGBLOCK_ADMIN_IDS \
-	 (comma-separated))";
+	 (comma-separated), DIGBLOCK_USE_MASTER_LEVELS)";
 
 fn main() {
 	env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -105,6 +123,11 @@ fn main() {
 		.filter(|s| !s.is_empty())
 		.map(|v| parse_or_die("DIGBLOCK_MAX_CONNS_PER_IP", Some(v)))
 		.unwrap_or(net::DEFAULT_MAX_CONNECTIONS_PER_IP);
+	let mut use_master_levels = std::env::var("DIGBLOCK_USE_MASTER_LEVELS")
+		.ok()
+		.filter(|s| !s.trim().is_empty())
+		.map(|v| parse_bool_or_die("DIGBLOCK_USE_MASTER_LEVELS", &v))
+		.unwrap_or(true);
 	// Account ids or display names; names are resolved once at boot.
 	let mut admins: Vec<String> = std::env::var("DIGBLOCK_ADMIN_IDS")
 		.unwrap_or_default()
@@ -129,6 +152,10 @@ fn main() {
 				advertise_port = Some(parse_or_die("--advertise-port", args.next()));
 			}
 			"--server-name" => server_name = parse_or_die("--server-name", args.next()),
+			"--use-master-levels" => {
+				let v = args.next().unwrap_or_default();
+				use_master_levels = parse_bool_or_die("--use-master-levels", &v);
+			}
 			"--max-conns-per-ip" => {
 				max_conns_per_ip = parse_or_die("--max-conns-per-ip", args.next());
 			}
@@ -166,13 +193,28 @@ fn main() {
 	// Empty counts as unset, like DIGBLOCK_SEED: compose files pass
 	// blanks through.
 	let advertise_host = advertise_host.filter(|h| !h.is_empty());
+	// The port the master is asked to list, checked against the block it
+	// lists BEFORE anything binds or registers: the refusal the master
+	// would send is a 400 after a round trip, and this one names the fix.
+	let advertise_port = advertise_port.unwrap_or(port);
+	if !PORT_RANGE.contains(&advertise_port) {
+		eprintln!(
+			"advertised port {advertise_port} is outside {}-{}, the block the master lists \
+			 servers at. Pick a port in that block for --port, or for --advertise-port \
+			 (DIGBLOCK_ADVERTISE_PORT) when players reach a different port than the one \
+			 this process binds.",
+			PORT_RANGE.start(),
+			PORT_RANGE.end()
+		);
+		std::process::exit(2);
+	}
 	let master_url = master_url.trim_end_matches('/').to_string();
 	let key_path = data_dir.join(master::KEY_FILE);
 	let master_cfg = MasterConfig {
 		url: master_url.clone(),
 		server_name,
 		advertise_host,
-		advertise_port: advertise_port.unwrap_or(port),
+		advertise_port,
 		server_key: master::load_key(&key_path),
 	};
 
@@ -205,6 +247,15 @@ fn main() {
 		log::info!("admin: {id} ({spec})");
 	}
 	sim.set_admin_accounts(admin_accounts);
+	sim.set_master_levels(use_master_levels);
+	if !use_master_levels {
+		log::info!("skills are local to this server; the master's copy is not pulled at join");
+	}
+	// The board's outbox: every stored record now, every change of
+	// skills from here on. Whether any of it is sent is the master's call
+	// at registration.
+	let outbox = Arc::new(digblock_server::hiscores::SkillOutbox::new());
+	sim.attach_skill_outbox(outbox.clone());
 	log::info!("world seed {seed}, data dir {}", data_dir.display());
 
 	let (event_tx, event_rx) = unbounded();
@@ -245,6 +296,7 @@ fn main() {
 			reregister.clone(),
 			players,
 			Some(key_path),
+			outbox,
 		));
 		// The pinned cert is short-lived; rotate it in-process so a
 		// long-running server never becomes unjoinable.

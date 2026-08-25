@@ -148,6 +148,11 @@ fn samples() -> Vec<Msg> {
 		Msg::WaystoneLocked,
 		Msg::CastCantPay,
 		Msg::CastBadTarget,
+		Msg::SphereNoBlock,
+		Msg::SphereBadBlock(Some(BlockType::LumberDoor)),
+		Msg::SphereBadBlock(None),
+		Msg::SphereBlocksShort(Some((BlockType::Stone, 120, 7))),
+		Msg::SphereBlocksShort(None),
 		Msg::LevelUp {
 			skill: Skill::Mining,
 			level: 7,
@@ -159,6 +164,7 @@ fn samples() -> Vec<Msg> {
 		},
 		Msg::VeinsRevealed,
 		Msg::Connected,
+		Msg::UnrankedServer,
 		Msg::LeftServer,
 		Msg::LeftWorld,
 		Msg::Joined { name: "ada".into() },
@@ -192,11 +198,11 @@ fn samples() -> Vec<Msg> {
 		Spell::Waystone,
 		Spell::Wisp,
 		Spell::Kindle,
-		Spell::Ward,
+		Spell::Sphere,
 		Spell::Causeway,
 	] {
 		match s {
-			Spell::Waystone | Spell::Wisp | Spell::Kindle | Spell::Ward | Spell::Causeway => {}
+			Spell::Waystone | Spell::Wisp | Spell::Kindle | Spell::Sphere | Spell::Causeway => {}
 		}
 		all.push(Msg::SpellLocked(s));
 		all.push(Msg::SpellFareShort(s));
@@ -214,10 +220,14 @@ fn samples() -> Vec<Msg> {
 			| Msg::WaystoneLocked
 			| Msg::CastCantPay
 			| Msg::CastBadTarget
+			| Msg::SphereNoBlock
+			| Msg::SphereBadBlock(_)
+			| Msg::SphereBlocksShort(_)
 			| Msg::LevelUp { .. }
 			| Msg::RemoteLevelUp { .. }
 			| Msg::VeinsRevealed
 			| Msg::Connected
+			| Msg::UnrankedServer
 			| Msg::LeftServer
 			| Msg::LeftWorld
 			| Msg::Joined { .. }

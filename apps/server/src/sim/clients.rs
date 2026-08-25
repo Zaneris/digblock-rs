@@ -19,16 +19,17 @@ impl Sim {
 			self.drop_client(conn_id);
 		}
 		let tick = self.tick;
-		self.lobby.retain(|conn_id, (out, since, _addr, _account)| {
-			let keep = tick.wrapping_sub(*since) < HELLO_TIMEOUT_TICKS;
-			if !keep {
-				log::info!("conn {conn_id}: no Hello within the deadline — dropping");
-				// Close ends the net task; dropping the Sender is the
-				// backstop if the queue is already full.
-				let _ = out.try_send(OutMsg::Close);
-			}
-			keep
-		});
+		self.lobby
+			.retain(|conn_id, (out, since, _addr, _account, _skills)| {
+				let keep = tick.wrapping_sub(*since) < HELLO_TIMEOUT_TICKS;
+				if !keep {
+					log::info!("conn {conn_id}: no Hello within the deadline — dropping");
+					// Close ends the net task; dropping the Sender is the
+					// backstop if the queue is already full.
+					let _ = out.try_send(OutMsg::Close);
+				}
+				keep
+			});
 	}
 
 	/// Encode once, fan out to every client. Use this for any message going

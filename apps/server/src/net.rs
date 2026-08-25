@@ -445,6 +445,7 @@ async fn lobby(
 			// putting it on the wire message would invite a future reader
 			// into treating it as something the peer claimed.
 			account: verified.account,
+			skills: verified.skills,
 		})
 		.is_err()
 	{
