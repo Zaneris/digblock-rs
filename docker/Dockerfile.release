@@ -2,7 +2,8 @@
 # by .github/workflows/release-server.yml. Unlike docker/Dockerfile (the
 # local test rig) this ships only the server binary — no bot, no tc/netem
 # tooling. Configuration is env-driven; see deploy/compose.yml for the
-# shareable quickstart (config lives inline there — no .env).
+# shareable quickstart (config lives inline there; the one .env variable
+# is the port, for a second server on the same machine).
 #
 # Multi-arch: linux/amd64 + linux/arm64 (Raspberry Pi 4/5 on a 64-bit
 # OS). Build stages are pinned to $BUILDPLATFORM and cross-compile for

@@ -19,7 +19,7 @@ use digblock_net::messages::EditKind;
 use digblock_net::{NetClient, NetEvent};
 use digblock_server::master::{self, MasterConfig, MasterState};
 use digblock_server::sim::Sim;
-use digblock_server::{net, run_sim_loop};
+use digblock_server::{PORT_RANGE, net, run_sim_loop};
 use glam::Vec3;
 use rustc_hash::FxHashMap;
 use std::path::{Path, PathBuf};
@@ -149,6 +149,22 @@ impl Drop for MasterProc {
 	fn drop(&mut self) {
 		self.kill();
 	}
+}
+
+/// Bind the first free port in the block the master lists: a registration
+/// names its port, and one outside the block is refused before any probe.
+/// Tests run in parallel, so each takes the next port the OS still has —
+/// a `just play` holding the default on this machine is simply skipped.
+fn bind_listed_port() -> (
+	wtransport::Endpoint<wtransport::endpoint::endpoint_side::Server>,
+	[u8; 32],
+) {
+	for port in PORT_RANGE {
+		if let Ok(bound) = net::make_endpoint(port) {
+			return bound;
+		}
+	}
+	panic!("no free udp port in {PORT_RANGE:?}")
 }
 
 fn free_tcp_port() -> u16 {
@@ -294,7 +310,7 @@ impl TestServer {
 			.build()
 			.unwrap();
 		let _guard = rt.enter();
-		let (endpoint, cert_hash) = net::make_endpoint(0).expect("bind ephemeral udp");
+		let (endpoint, cert_hash) = bind_listed_port();
 		let endpoint = Arc::new(endpoint);
 		let port = endpoint.local_addr().unwrap().port();
 		let data_dir = std::env::temp_dir().join(format!("dbe2e-{tag}-{}", std::process::id()));
@@ -1477,10 +1493,12 @@ fn probe_rejects_unreachable_server() {
 		url: master.url.clone(),
 		server_name: "nowhere".into(),
 		// No probe-host split: the master probes the advertised address —
-		// its own container loopback, where nothing listens.
+		// its own container loopback, where nothing listens. A port the
+		// master would list, so the refusal is the probe's and not the
+		// block's.
 		advertise_host: Some("127.0.0.1".into()),
 		server_key: None,
-		advertise_port: 4,
+		advertise_port: *PORT_RANGE.end(),
 	};
 	match master::register(&cfg, &[0xaa; 32]) {
 		Err(master::RegisterError::Unreachable(_)) => {}
@@ -1489,6 +1507,58 @@ fn probe_rejects_unreachable_server() {
 		}
 		Ok(_) => panic!("registration of an unreachable server must not succeed"),
 	}
+}
+
+/// The master lists a fixed block of ports and nothing outside it, and the refusal comes BEFORE
+/// any probe: a live server advertising a port past the block gets a plain rejection naming the
+/// block, not an unreachable verdict — the class an operator's log tells the two apart by.
+#[test]
+fn a_port_outside_the_listed_block_is_refused_unprobed() {
+	let _ = env_logger::builder().is_test(true).try_init();
+	let master = MasterProc::spawn();
+	let server = TestServer::start("outside", &master.url, false);
+	let mut cfg = server.master_config(&master.url, "outside");
+	cfg.advertise_port = PORT_RANGE.end() + 1;
+	match master::register(&cfg, &server.cert_hash) {
+		Err(master::RegisterError::Rejected(e)) => assert!(
+			e.contains(&PORT_RANGE.end().to_string()),
+			"the refusal must name the block: {e}"
+		),
+		Err(master::RegisterError::Unreachable(e)) => {
+			panic!("refused by the probe, not the block: {e}")
+		}
+		Err(master::RegisterError::Transport(e)) => panic!("transport: {e}"),
+		Ok(_) => panic!("a port outside the block must not be listed"),
+	}
+	let mut res = ureq::get(format!("{}/api/servers", master.url))
+		.call()
+		.unwrap();
+	let list: serde_json::Value = res.body_mut().read_json().unwrap();
+	assert!(list["servers"].as_array().unwrap().is_empty());
+}
+
+/// Two servers behind one address are two listings: a claim is on host AND port, so a second
+/// server on the same machine neither contests the first nor needs its key.
+#[test]
+fn two_servers_on_one_host_are_two_listings() {
+	let _ = env_logger::builder().is_test(true).try_init();
+	let master = MasterProc::spawn();
+	let a = TestServer::start("twin-a", &master.url, true);
+	let b = TestServer::start("twin-b", &master.url, true);
+	let mut res = ureq::get(format!("{}/api/servers", master.url))
+		.call()
+		.unwrap();
+	let list: serde_json::Value = res.body_mut().read_json().unwrap();
+	let entries = list["servers"].as_array().unwrap();
+	let mut listed: Vec<String> = entries
+		.iter()
+		.map(|e| e["url"].as_str().unwrap().to_string())
+		.collect();
+	listed.sort();
+	let mut expected = vec![a.url.clone(), b.url.clone()];
+	expected.sort();
+	assert_eq!(listed, expected, "both servers listed at their own port");
+	assert_ne!(entries[0]["id"], entries[1]["id"]);
 }
 
 /// Until registration lands, a server can admit no one.

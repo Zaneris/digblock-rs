@@ -186,6 +186,12 @@ while everyone who knows you still reads that name as you.
 Registration stays **anonymous** — a self-hoster still just runs the container, with no signup and no operator account.
 What changed is that an address remembers the key that claimed it.
 
+Before any of it, a port outside the block `ServerPorts` names is refused with 400 and no probe is spent. Registering
+makes the master dial `host:port`, and listing aims every client at it, so an anonymous caller does not get to choose
+the port on a host it names; the block is also what one operator's firewall rule opens for every server on a machine.
+The game server carries the same block (`PORT_RANGE`, refused at boot) and `the_masters_port_block_mirrors_ours` reads
+this side's source to hold the two together.
+
 The algorithm, in `Program.cs`'s `/api/servers/register`, and the reason for each step:
 
 1. **Temp-banned source → refused.** See below.

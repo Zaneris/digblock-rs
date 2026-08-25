@@ -205,8 +205,13 @@ app.MapPost("/api/servers/register", async (
         return Results.Json(new { error = "too many failed registrations from this address" },
             statusCode: StatusCodes.Status429TooManyRequests);
 
-    if (req.Port is < 1 or > 65535)
-        return Results.BadRequest(new { error = "port out of range" });
+    // Checked before the probes: an out-of-range port is a misconfiguration
+    // the operator fixes locally, and it must not cost a probe or a strike.
+    if (!ServerPorts.Allows(req.Port))
+        return Results.BadRequest(new
+        {
+            error = $"port must be between {ServerPorts.Min} and {ServerPorts.Max}",
+        });
     byte[] certHash;
     try
     {

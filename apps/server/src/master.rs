@@ -166,6 +166,13 @@ struct SkillXpBody {
 	xp: i64,
 }
 
+/// The `{ "error": ... }` shape every 4xx from the master carries.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct ErrorBody {
+	error: String,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RegisterFailedBody {
@@ -268,7 +275,14 @@ pub fn register(cfg: &MasterConfig, cert_hash: &[u8; 32]) -> Result<Registration
 			)))
 		}
 		s @ 500..=599 => Err(RegisterError::Transport(format!("http {s}"))),
-		s => Err(RegisterError::Rejected(format!("http {s}"))),
+		// The master's refusals carry their reason; an operator reading the
+		// log needs it more than the status code.
+		s => Err(RegisterError::Rejected(
+			match res.body_mut().read_json::<ErrorBody>() {
+				Ok(ErrorBody { error }) if !error.is_empty() => format!("http {s}: {error}"),
+				_ => format!("http {s}"),
+			},
+		)),
 	}
 }
 

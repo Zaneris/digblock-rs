@@ -23,6 +23,12 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 pub const DEFAULT_PORT: u16 = 4433;
+/// The ports the master will list a server at, mirrored from its
+/// `ServerPorts` (`apps/master/Servers/ServerPorts.cs`) and pinned to it by
+/// a test — the block an operator's firewall opens and the only ports the
+/// master's probe will ever dial. Checked at boot so a misconfigured
+/// server fails here, not with a 400 after registering.
+pub const PORT_RANGE: std::ops::RangeInclusive<u16> = DEFAULT_PORT..=4499;
 /// Fixed default so an unflagged restart reopens the same world journal
 /// (the desktop's random-seed default would strand the saved edits).
 pub const DEFAULT_SEED: f64 = 42.0;
@@ -55,4 +61,44 @@ pub fn run_sim_loop(
 	}
 	sim.shutdown();
 	log::info!("sim stopped at tick {}", sim.server_tick());
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	/// The master refuses a port outside ITS block, and nothing links the
+	/// two programs — so this reads the C# source. A drift would let a
+	/// server boot with a port the master then refuses, which neither
+	/// side's own tests would report.
+	#[test]
+	fn the_masters_port_block_mirrors_ours() {
+		let src = std::fs::read_to_string(concat!(
+			env!("CARGO_MANIFEST_DIR"),
+			"/../master/Servers/ServerPorts.cs"
+		))
+		.expect("the master's ServerPorts.cs beside this workspace");
+		assert!(
+			src.contains(&format!("Min = {};", PORT_RANGE.start())),
+			"the master's ServerPorts.Min is not our range's start"
+		);
+		assert!(
+			src.contains(&format!("Max = {};", PORT_RANGE.end())),
+			"the master's ServerPorts.Max is not our range's end"
+		);
+		assert!(PORT_RANGE.contains(&DEFAULT_PORT));
+		// The deploy kit is what an operator reads, and it cannot derive
+		// the block — so it quotes it, and this keeps the quote honest.
+		for kit in ["compose.yml", "README.md"] {
+			let text = std::fs::read_to_string(
+				std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../deploy"))
+					.join(kit),
+			)
+			.expect("the deploy kit beside this workspace");
+			assert!(
+				text.contains(&format!("{}–{}", PORT_RANGE.start(), PORT_RANGE.end())),
+				"deploy/{kit} does not name the port block"
+			);
+		}
+	}
 }

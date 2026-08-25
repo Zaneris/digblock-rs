@@ -23,6 +23,24 @@ You're listed at the public IP this machine registers from; set `DIGBLOCK_ADVERT
 with a DNS name. If the logs say the master reports you UNREACHABLE, UDP 4433 isn't open — check the
 port-forward/firewall.
 
+## Several servers on one machine
+
+One folder per server, each with its own `compose.yml`, its own `./data` and its own port. The port goes in a `.env`
+file beside the compose file, and it is the only thing that differs:
+
+```sh
+mkdir digblock-second && cd digblock-second
+# download compose.yml from the release, set DIGBLOCK_SERVER_NAME as before
+echo SERVER_PORT=4434 > .env
+docker compose up -d
+```
+
+`SERVER_PORT` is the port published on this machine, the port the server tells the master it is reachable at, and the
+name of the compose project (`digblock-4434`) — so two folders can never claim each other's containers, whatever they
+are called. The master lists ports 4433–4499 and nothing outside that block: open that block once on the firewall and
+every server you add is covered. Each server registers its own address (`host:port`) and keeps its own `master-key`, and
+every one of them shows up in the server list.
+
 ## Without Docker
 
 Each release also ships standalone binaries (Linux x86_64 and aarch64, both fully static — the latter covers Raspberry
@@ -31,8 +49,13 @@ Pi 4/5 on a 64-bit OS — plus Windows x86_64). Same config via flags or `DIGBLO
 ```sh
 ./digblock-server-linux-x86_64 --server-name "My World"
 # world data lands in ./data; add --advertise-host play.example.com
-# to be listed under a DNS name instead of your public IP
+# to be listed under a DNS name instead of your public IP, and
+# --port 4434 --data-dir ./second for a second server on this machine
 ```
+
+`--port` must sit in the block the master lists (4433–4499); the server refuses to start otherwise. If players reach you
+at a different port than the one you bind — a router forwarding one port to another — `--advertise-port` names the one
+they reach.
 
 On Windows: `digblock-server-windows-x86_64.exe` with the same flags (allow it through Windows Firewall when prompted,
 and forward UDP 4433 on your router). You're responsible for restarts/autostart — on Linux a minimal systemd unit with

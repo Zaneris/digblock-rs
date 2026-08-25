@@ -32,6 +32,11 @@
 # client times out, suspect the server, not the network: `docker logs`
 # first — a server that crashed at boot produces the same client-side
 # timeout a dead network would.
+#
+# Named, so the project is not "docker" — the folder's name, and the one
+# every repo with a docker/ folder would share. The e2e rig's `-p`
+# overrides it, which is how several rigs run at once.
+name: digblock-dev
 services:
   master:
     build:

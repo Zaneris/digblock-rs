@@ -219,6 +219,10 @@ parses `Essence::ident` — the untranslated operator's word, deliberately NOT t
 same thing whatever language the client shows. Compass in `/tp`: east = sunrise = −x.
 
 - Use `127.0.0.1`, **never `localhost`** (macOS resolves it to `::1`; the server binds IPv4 only).
+- A server is listed only at a port inside `digblock_server::PORT_RANGE`, the master's `ServerPorts` mirrored and pinned
+  by `the_masters_port_block_mirrors_ours` (which also holds the deploy kit's quoted block to it). A claim is
+  `host:port`, so one machine runs several; the kit's `.env` `SERVER_PORT` is the one knob, and it also names the
+  compose project — compose names one after its FOLDER, and two same-named folders replace each other's containers.
 - Anything that can't open a browser signs in through `POST /api/dev/signin`, honoured only under
   `ASPNETCORE_ENVIRONMENT=Development` — a master with it set anywhere else **refuses to boot**. The dev master also
   needs `Master__Probe__AllowPrivateTargets` and `Master__Dev__ProbeHostOverride`; the justfile's `DEV_MASTER_ENV` is

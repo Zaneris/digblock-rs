@@ -4,7 +4,7 @@ use crossbeam_channel::unbounded;
 use digblock_net::protocol::AccountId;
 use digblock_server::master::{self, MasterConfig, MasterState};
 use digblock_server::sim::Sim;
-use digblock_server::{DEFAULT_PORT, DEFAULT_SEED, net, run_sim_loop};
+use digblock_server::{DEFAULT_PORT, DEFAULT_SEED, PORT_RANGE, net, run_sim_loop};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -72,7 +72,10 @@ const USAGE: &str = "usage: digblock-server [--advertise-host HOST] \
 	 [--seed F] [--data-dir P] [--sim-radius N] [--workers N] [--admin ID-OR-NAME] \
 	 [--max-conns-per-ip N] [--use-master-levels BOOL]\n\
 	 (--advertise-host defaults to the address the master observes registering — your public \
-	 IP; set it for a DNS name or multi-homed hosts. --master-url defaults to \
+	 IP; set it for a DNS name or multi-homed hosts. --advertise-port defaults to --port; set \
+	 it when players reach you at a different one (a port forward, a container mapping) — \
+	 the master lists only a fixed block of ports, printed if yours is outside it. \
+	 --master-url defaults to \
 	 https://master.digblock.net. --admin grants a player chat commands (/help /ban \
 	 /ban-list /unban /tp) — give an account id, which a player can copy from the game's \
 	 Account screen, or a display name, which is resolved to one at boot; repeat for \
@@ -190,13 +193,28 @@ fn main() {
 	// Empty counts as unset, like DIGBLOCK_SEED: compose files pass
 	// blanks through.
 	let advertise_host = advertise_host.filter(|h| !h.is_empty());
+	// The port the master is asked to list, checked against the block it
+	// lists BEFORE anything binds or registers: the refusal the master
+	// would send is a 400 after a round trip, and this one names the fix.
+	let advertise_port = advertise_port.unwrap_or(port);
+	if !PORT_RANGE.contains(&advertise_port) {
+		eprintln!(
+			"advertised port {advertise_port} is outside {}-{}, the block the master lists \
+			 servers at. Pick a port in that block for --port, or for --advertise-port \
+			 (DIGBLOCK_ADVERTISE_PORT) when players reach a different port than the one \
+			 this process binds.",
+			PORT_RANGE.start(),
+			PORT_RANGE.end()
+		);
+		std::process::exit(2);
+	}
 	let master_url = master_url.trim_end_matches('/').to_string();
 	let key_path = data_dir.join(master::KEY_FILE);
 	let master_cfg = MasterConfig {
 		url: master_url.clone(),
 		server_name,
 		advertise_host,
-		advertise_port: advertise_port.unwrap_or(port),
+		advertise_port,
 		server_key: master::load_key(&key_path),
 	};
 
