@@ -381,6 +381,11 @@ pub(crate) struct Menu {
 	/// the in-game rows are hidden and Escape can't dismiss the menu.
 	entered_world: bool,
 	pending_cmds: Vec<MenuCommand>,
+	/// Whether the server the player last chose to join counts toward the
+	/// hiscores — the MASTER's answer off the listing, remembered so the
+	/// engine can say so at the door. Never the server's own claim: a
+	/// modified server would claim whatever it liked.
+	join_ranked: Option<bool>,
 	wants_disconnect: bool,
 	wants_leave_world: bool,
 	wants_spellbook: bool,
@@ -426,6 +431,7 @@ impl Menu {
 			connected: false,
 			entered_world: false,
 			pending_cmds: Vec::new(),
+			join_ranked: None,
 			wants_disconnect: false,
 			wants_leave_world: false,
 			wants_spellbook: false,
@@ -712,6 +718,12 @@ impl Menu {
 			prev.status = Some(reason.to_string());
 			self.screen = Some(Screen::Browser(prev));
 		}
+	}
+
+	/// Whether the server the player last chose to join is on the master's
+	/// trusted list; `None` before any join was chosen.
+	pub(crate) fn join_ranked(&self) -> Option<bool> {
+		self.join_ranked
 	}
 
 	/// Feed one service response in; a `Connect` hands the transport+token
@@ -1355,11 +1367,14 @@ impl Menu {
 				let Some(Screen::Browser(mut prev)) = self.screen.take() else {
 					return;
 				};
-				let Some((server_id, server_name, compat)) = prev
-					.rows
-					.get(i)
-					.map(|r| (r.entry.id.clone(), r.entry.name.clone(), r.entry.compat()))
-				else {
+				let Some((server_id, server_name, compat, ranked)) = prev.rows.get(i).map(|r| {
+					(
+						r.entry.id.clone(),
+						r.entry.name.clone(),
+						r.entry.compat(),
+						r.entry.reports_skills,
+					)
+				}) else {
 					self.screen = Some(Screen::Browser(prev));
 					return;
 				};
@@ -1371,6 +1386,7 @@ impl Menu {
 					self.screen = Some(Screen::Browser(prev));
 					return;
 				}
+				self.join_ranked = Some(ranked);
 				self.pending_cmds.push(MenuCommand::Join { server_id });
 				self.screen = Some(Screen::Connecting {
 					prev,

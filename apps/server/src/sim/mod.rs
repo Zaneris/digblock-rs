@@ -490,8 +490,8 @@ pub struct Sim {
 	admin_accounts: FxHashSet<AccountId>,
 	/// Fold the master's copy of a joiner's skills into the record at
 	/// join — the default, so a character is one character everywhere.
-	/// Off, this server's ladder stands alone (`--local-skills`).
-	pull_skills: bool,
+	/// Off, this server's ladder stands alone (`--use-master-levels false`).
+	master_levels: bool,
 	/// Seconds added to the tick clock by `/time` — same lifetime and
 	/// persistence policy as the tick counter it offsets (none).
 	tod_offset_secs: f64,
@@ -634,7 +634,7 @@ impl Sim {
 			ban_store,
 			waystone_store,
 			admin_accounts: FxHashSet::default(),
-			pull_skills: true,
+			master_levels: true,
 			tod_offset_secs: 0.0,
 			world_jobs: digblock_core::worldjob::Scheduler::new(),
 			// After `Journal::open`, which is what creates the directory
@@ -657,8 +657,8 @@ impl Sim {
 	}
 
 	/// Whether a join folds in the board's copy of the account's skills.
-	pub fn set_pull_skills(&mut self, on: bool) {
-		self.pull_skills = on;
+	pub fn set_master_levels(&mut self, on: bool) {
+		self.master_levels = on;
 	}
 
 	fn is_admin(&self, account: AccountId) -> bool {

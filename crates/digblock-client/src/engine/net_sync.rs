@@ -306,6 +306,13 @@ impl Engine {
 					..
 				} => {
 					self.session.my_player_id = Some(player_id);
+					// Said once, at the door, and decided by the CLIENT from
+					// the master's listing: a server not on the trusted
+					// list cannot raise a total, so XP earned here stays
+					// here, whatever the server itself might say.
+					if self.ui.menu.join_ranked() == Some(false) {
+						self.push_feed(crate::voice::Msg::UnrankedServer);
+					}
 					// NOT `menu.on_welcome()` yet: the Connecting screen IS
 					// the join's loading cover, and closing it here is what
 					// used to show the player pristine worldgen for the

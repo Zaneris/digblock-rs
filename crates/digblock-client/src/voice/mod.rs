@@ -130,6 +130,8 @@ pub(crate) enum Msg {
 
 	// ---- the session ----
 	Connected,
+	/// The server just joined is not on the master's trusted list.
+	UnrankedServer,
 	LeftServer,
 	LeftWorld,
 	Joined {

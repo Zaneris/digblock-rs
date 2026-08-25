@@ -1518,3 +1518,27 @@ fn a_ranked_server_says_so_on_its_row() {
 		text("Alpha").trim_start_matches("Alpha")
 	);
 }
+
+/// Choosing a server remembers the master's word on whether play there
+/// counts, for the engine to say at the door — and it is the listing's
+/// word, never the server's.
+#[test]
+fn joining_remembers_whether_the_server_is_ranked() {
+	for ranked in [false, true] {
+		let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
+		menu.set_services_available();
+		open_browser(&mut menu);
+		assert_eq!(menu.join_ranked(), None);
+		menu.on_response(MenuResponse::ServerList(Ok(vec![ServerEntry {
+			reports_skills: ranked,
+			..entry("s1", "Alpha")
+		}])));
+		menu.handle_key(Key::Enter);
+		assert_eq!(menu.join_ranked(), Some(ranked));
+		assert!(
+			menu.take_commands()
+				.iter()
+				.any(|c| matches!(c, MenuCommand::Join { .. }))
+		);
+	}
+}

@@ -150,7 +150,7 @@ impl Sim {
 		// something: the store's put is also the outbox's hook, and what
 		// came from the board need not go back to it.
 		if let Some(account) = identity
-			&& self.pull_skills
+			&& self.master_levels
 		{
 			let before = record.skills.clone();
 			record.skills.merge_from(&pulled);

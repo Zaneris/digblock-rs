@@ -383,7 +383,8 @@ ladder for all three skills: the crests (`unlock::crest`) open there on THEIR sk
 whole `SkillSet`, and `Skill::mastery_bits` rides every snapshot for the nameplate glyphs. **Any server pulls**:
 `/api/tokens/verify` carries the board's totals and the handshake folds them in with `merge_from` (max, never
 rewinding), so a character is one character everywhere and an untrusted server can only READ the ladder;
-`--local-skills` opts a server out.
+`--use-master-levels false` opts a server out. The client tells the player at the door when a server is unranked
+(`Msg::UnrankedServer`), deciding from the master's listing and never from the server.
 
 ## Alchemy & the economy
 

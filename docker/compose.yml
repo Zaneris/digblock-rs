@@ -82,10 +82,10 @@ services:
       # netcode — and a bot refused at accept is indistinguishable from a
       # connect timeout on the client side.
       DIGBLOCK_MAX_CONNS_PER_IP: "${MAX_CONNS_PER_IP:-64}"
-      # By default a joiner arrives at the levels the master's board holds
-      # for their account — one character on every server. Set LOCAL_SKILLS=1
-      # to keep this server's ladder its own.
-      DIGBLOCK_LOCAL_SKILLS: "${LOCAL_SKILLS:-}"
+      # A joiner arrives at the levels the master's board holds for their
+      # account — one character on every server. false keeps this server's
+      # ladder its own.
+      DIGBLOCK_USE_MASTER_LEVELS: "${USE_MASTER_LEVELS:-true}"
 
   bots:
     build:

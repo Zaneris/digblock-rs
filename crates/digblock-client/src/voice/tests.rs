@@ -159,6 +159,7 @@ fn samples() -> Vec<Msg> {
 		},
 		Msg::VeinsRevealed,
 		Msg::Connected,
+		Msg::UnrankedServer,
 		Msg::LeftServer,
 		Msg::LeftWorld,
 		Msg::Joined { name: "ada".into() },
@@ -218,6 +219,7 @@ fn samples() -> Vec<Msg> {
 			| Msg::RemoteLevelUp { .. }
 			| Msg::VeinsRevealed
 			| Msg::Connected
+			| Msg::UnrankedServer
 			| Msg::LeftServer
 			| Msg::LeftWorld
 			| Msg::Joined { .. }

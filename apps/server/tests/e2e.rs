@@ -262,9 +262,9 @@ impl TestServer {
 		Self::start_with_legacy(tag, master_url, registered, None)
 	}
 
-	/// As `start`, with `--local-skills`: the board's copy of a joiner's
-	/// skills is not folded in.
-	fn start_local_skills(tag: &str, master_url: &str) -> Self {
+	/// As `start`, with `--use-master-levels false`: the board's copy of a
+	/// joiner's skills is not folded in.
+	fn start_local_levels(tag: &str, master_url: &str) -> Self {
 		Self::start_with(tag, master_url, true, None, false)
 	}
 
@@ -287,7 +287,7 @@ impl TestServer {
 		master_url: &str,
 		registered: bool,
 		legacy: Option<([u8; 16], BlockType, u32)>,
-		pull_skills: bool,
+		master_levels: bool,
 	) -> Self {
 		let rt = tokio::runtime::Builder::new_multi_thread()
 			.enable_all()
@@ -307,7 +307,7 @@ impl TestServer {
 		// rock gate refuses (a real design consequence — a stone-spawn
 		// player levels on leaves/soil off the disc first).
 		let mut sim = Sim::new(7.0, &data_dir, 2, 2).unwrap();
-		sim.set_pull_skills(pull_skills);
+		sim.set_master_levels(master_levels);
 		let (event_tx, event_rx) = unbounded();
 		let running = Arc::new(AtomicBool::new(true));
 		let players = Arc::new(AtomicUsize::new(0));
@@ -1803,7 +1803,7 @@ fn an_untrusted_servers_skill_report_is_refused() {
 /// The pull half: a character is one character on every server. What a trusted server reported
 /// arrives with the account at ANY server's join — the untrusted one included, since only the
 /// write is gated — folded in without rewinding what that server already held; and a server run
-/// with `--local-skills` keeps its own ladder and folds in nothing.
+/// with `--use-master-levels false` keeps its own ladder and folds in nothing.
 #[test]
 fn a_joiner_arrives_at_the_levels_the_board_holds() {
 	use digblock_core::skills::Skill;
@@ -1841,7 +1841,7 @@ fn a_joiner_arrives_at_the_levels_the_board_holds() {
 
 	// Local skills: the same join on a server that keeps its own ladder
 	// starts from nothing.
-	let local = TestServer::start_local_skills("pulllocal", &master.url);
+	let local = TestServer::start_local_levels("pulllocal", &master.url);
 	let local_id = local.master_state.registration().unwrap().server_id;
 	let (token, _) = mint_token_for(&master.url, &session, &local_id);
 	let mut a = TestClient::connect(&local.url, "whatever", token);
@@ -1850,6 +1850,6 @@ fn a_joiner_arrives_at_the_levels_the_board_holds() {
 	assert_eq!(
 		a.skills.as_ref().unwrap().level(Skill::Mining),
 		1,
-		"--local-skills: the board's copy is not folded in"
+		"--use-master-levels false: the board's copy is not folded in"
 	);
 }

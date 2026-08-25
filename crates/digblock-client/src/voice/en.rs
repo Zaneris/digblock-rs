@@ -69,6 +69,9 @@ pub(super) fn line(msg: &Msg) -> String {
 		Msg::VeinsRevealed => "New veins shimmer into view.".into(),
 
 		Msg::Connected => "Connected to server.".into(),
+		Msg::UnrankedServer => {
+			"This server is not on the hiscores: XP earned here stays here.".into()
+		}
 		Msg::LeftServer => "Left the server.".into(),
 		Msg::LeftWorld => "Left the world.".into(),
 		Msg::Joined { name } => format!("{name} joined the server."),

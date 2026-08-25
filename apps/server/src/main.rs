@@ -15,6 +15,19 @@ use std::time::Duration;
 /// An id passes straight through; a display name costs one lookup against the master. Doing it
 /// here rather than at each chat command is what makes admin a decision about an ACCOUNT: the name
 /// is resolved once, against the only party that can answer, and stays a label its owner may edit.
+/// A yes/no setting, spelled the way a compose file or a shell writes one;
+/// anything else is a misconfiguration and exits like a bad number does.
+fn parse_bool_or_die(what: &str, v: &str) -> bool {
+	match v.trim().to_ascii_lowercase().as_str() {
+		"true" | "1" | "yes" | "on" => true,
+		"false" | "0" | "no" | "off" => false,
+		other => {
+			eprintln!("{what}: expected true or false, got {other:?}");
+			std::process::exit(2);
+		}
+	}
+}
+
 fn resolve_admins(specs: &[String], master_url: &str) -> Result<Vec<AccountId>, String> {
 	specs
 		.iter()
@@ -57,19 +70,19 @@ use digblock_net::protocol::DEFAULT_MASTER_URL;
 const USAGE: &str = "usage: digblock-server [--advertise-host HOST] \
 	 [--master-url URL] [--advertise-port N] [--server-name S] [--port N] \
 	 [--seed F] [--data-dir P] [--sim-radius N] [--workers N] [--admin ID-OR-NAME] \
-	 [--max-conns-per-ip N] [--local-skills]\n\
+	 [--max-conns-per-ip N] [--use-master-levels BOOL]\n\
 	 (--advertise-host defaults to the address the master observes registering — your public \
 	 IP; set it for a DNS name or multi-homed hosts. --master-url defaults to \
 	 https://master.digblock.net. --admin grants a player chat commands (/help /ban \
 	 /ban-list /unban /tp) — give an account id, which a player can copy from the game's \
 	 Account screen, or a display name, which is resolved to one at boot; repeat for \
 	 several admins. --max-conns-per-ip caps live connections from one address; \
-	 raise it for a local soak, where every bot shares one. --local-skills keeps this \
-	 server's skill ladder its own: by default a joiner arrives at the levels the master's \
-	 board holds for their account. Env fallbacks: \
+	 raise it for a local soak, where every bot shares one. --use-master-levels (default \
+	 true) is whether a joiner arrives at the levels the master's board holds for their \
+	 account; false keeps this server's skill ladder its own. Env fallbacks: \
 	 DIGBLOCK_MASTER_URL, DIGBLOCK_ADVERTISE_HOST, DIGBLOCK_ADVERTISE_PORT, \
 	 DIGBLOCK_SERVER_NAME, DIGBLOCK_SEED, DIGBLOCK_MAX_CONNS_PER_IP, DIGBLOCK_ADMIN_IDS \
-	 (comma-separated), DIGBLOCK_LOCAL_SKILLS)";
+	 (comma-separated), DIGBLOCK_USE_MASTER_LEVELS)";
 
 fn main() {
 	env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -107,11 +120,11 @@ fn main() {
 		.filter(|s| !s.is_empty())
 		.map(|v| parse_or_die("DIGBLOCK_MAX_CONNS_PER_IP", Some(v)))
 		.unwrap_or(net::DEFAULT_MAX_CONNECTIONS_PER_IP);
-	// A switch, not a value: set to anything but empty, "0" or "false"
-	// and this server's ladder stands alone.
-	let mut local_skills = std::env::var("DIGBLOCK_LOCAL_SKILLS")
+	let mut use_master_levels = std::env::var("DIGBLOCK_USE_MASTER_LEVELS")
 		.ok()
-		.is_some_and(|v| !matches!(v.trim(), "" | "0" | "false"));
+		.filter(|s| !s.trim().is_empty())
+		.map(|v| parse_bool_or_die("DIGBLOCK_USE_MASTER_LEVELS", &v))
+		.unwrap_or(true);
 	// Account ids or display names; names are resolved once at boot.
 	let mut admins: Vec<String> = std::env::var("DIGBLOCK_ADMIN_IDS")
 		.unwrap_or_default()
@@ -136,7 +149,10 @@ fn main() {
 				advertise_port = Some(parse_or_die("--advertise-port", args.next()));
 			}
 			"--server-name" => server_name = parse_or_die("--server-name", args.next()),
-			"--local-skills" => local_skills = true,
+			"--use-master-levels" => {
+				let v = args.next().unwrap_or_default();
+				use_master_levels = parse_bool_or_die("--use-master-levels", &v);
+			}
 			"--max-conns-per-ip" => {
 				max_conns_per_ip = parse_or_die("--max-conns-per-ip", args.next());
 			}
@@ -213,8 +229,8 @@ fn main() {
 		log::info!("admin: {id} ({spec})");
 	}
 	sim.set_admin_accounts(admin_accounts);
-	sim.set_pull_skills(!local_skills);
-	if local_skills {
+	sim.set_master_levels(use_master_levels);
+	if !use_master_levels {
 		log::info!("skills are local to this server; the master's copy is not pulled at join");
 	}
 	// The board's outbox: every stored record now, every change of
