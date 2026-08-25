@@ -367,8 +367,13 @@ fn an_invalid_name_is_refused_without_a_round_trip() {
 			"{bad:?} should not reach the master"
 		);
 		let view = menu.view(SIZE, 1.0, false);
+		let bounds = format!(
+			"{}-{} chars",
+			digblock_net::protocol::MIN_DISPLAY_NAME,
+			digblock_net::protocol::MAX_DISPLAY_NAME
+		);
 		assert!(
-			view.rows.iter().any(|r| r.text.contains("3-10 chars")),
+			view.rows.iter().any(|r| r.text.contains(&bounds)),
 			"{bad:?}: no explanation shown"
 		);
 	}

@@ -171,11 +171,11 @@ dangerous was that it was the account, on every server, forever.
 
 ### 2.2 Names
 
-Globally unique, case-insensitively, over the same 3–10 char alphabet `validate_name` has always defined. Chosen once at
-first sign-in, changeable on a 30-day cooldown — with the **first change free**, so a typo at sign-up is not a
-month-long punishment. A released name is quarantined for 30 days against everyone but its former holder, because
-without that, renaming is an impersonation primitive: step off a name and have an accomplice take it the same second,
-while everyone who knows you still reads that name as you.
+Globally unique, case-insensitively, over the same `MIN_DISPLAY_NAME`–`MAX_DISPLAY_NAME` char alphabet `validate_name`
+has always defined. Chosen once at first sign-in, changeable on a 30-day cooldown — with the **first change free**, so a
+typo at sign-up is not a month-long punishment. A released name is quarantined for 30 days against everyone but its
+former holder, because without that, renaming is an impersonation primitive: step off a name and have an accomplice take
+it the same second, while everyone who knows you still reads that name as you.
 
 `Settings.name` is gone from the client. There is nothing left to remember.
 

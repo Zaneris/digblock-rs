@@ -245,7 +245,7 @@ web-live QUERY="?overlay&spikelog":
 	python3 tools/serve-web.py --query '{{QUERY}}'
 
 # Same topology as `just play`. Open the printed URL in Chrome, pick
-# Multiplayer, type a name (3-10 chars), join "Local World"; append `&join`
+# Multiplayer, type a name, join "Local World"; append `&join`
 # to skip the menu (scripted flows), `&name=X` for a display name.
 #
 # Browser multiplayer test: containerized master + native server + the bundle

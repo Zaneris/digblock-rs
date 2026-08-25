@@ -8,7 +8,7 @@ namespace DigBlock.Master;
 public static class Names
 {
     public const int MinLength = 3;
-    public const int MaxLength = 10;
+    public const int MaxLength = 14;
 
     /// <summary>The alphabet. ASCII-only on purpose — see the note on
     /// <c>is_name_char</c> in protocol.rs.</summary>
@@ -33,5 +33,5 @@ public static class Names
 
     /// <summary>The one refusal wording, so every endpoint that rejects a
     /// name says the same thing the client's own gate does.</summary>
-    public const string Requirement = "name must be 3-10 characters: a-z A-Z 0-9 - _";
+    public const string Requirement = "name must be 3-14 characters: a-z A-Z 0-9 - _";
 }

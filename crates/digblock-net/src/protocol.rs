@@ -143,7 +143,7 @@ pub fn sanitize_name(name: &str) -> String {
 /// backstop. Distinct from [`MAX_NAME_LEN`], which stays the wire-level
 /// sanitization cap.
 pub const MIN_DISPLAY_NAME: usize = 3;
-pub const MAX_DISPLAY_NAME: usize = 10;
+pub const MAX_DISPLAY_NAME: usize = 14;
 
 /// The display-name alphabet. ASCII-only on purpose, and NOT for want of glyphs — the client
 /// draws the whole Latin repertoire (see [`is_text_char`]). Names are mirrored as a regex in the
@@ -193,7 +193,7 @@ pub fn text_charset() -> impl Iterator<Item = char> {
 pub fn validate_name(name: &str) -> Result<(), &'static str> {
 	let n = name.chars().count();
 	if !(MIN_DISPLAY_NAME..=MAX_DISPLAY_NAME).contains(&n) || !name.chars().all(is_name_char) {
-		return Err("name must be 3-10 chars: a-z 0-9 - _");
+		return Err("name must be 3-14 chars: a-z 0-9 - _");
 	}
 	Ok(())
 }

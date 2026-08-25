@@ -34,14 +34,14 @@ namespace DigBlock.Master.Data.Migrations
                         .HasColumnType("TEXT");
 
                     b.Property<string>("DisplayName")
-                        .HasMaxLength(10)
+                        .HasMaxLength(14)
                         .HasColumnType("TEXT");
 
                     b.Property<DateTimeOffset?>("DisplayNameChangedUtc")
                         .HasColumnType("TEXT");
 
                     b.Property<string>("DisplayNameNormalized")
-                        .HasMaxLength(10)
+                        .HasMaxLength(14)
                         .HasColumnType("TEXT");
 
                     b.Property<DateTimeOffset>("LastSeenUtc")
@@ -61,7 +61,7 @@ namespace DigBlock.Master.Data.Migrations
             modelBuilder.Entity("DigBlock.Master.Data.NameReservation", b =>
                 {
                     b.Property<string>("NameNormalized")
-                        .HasMaxLength(10)
+                        .HasMaxLength(14)
                         .HasColumnType("TEXT");
 
                     b.Property<Guid>("AccountId")
