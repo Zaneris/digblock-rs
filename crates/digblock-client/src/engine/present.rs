@@ -196,9 +196,10 @@ impl Engine {
 			|| c.y - y as f32 <= 1.0 - SURFACE_DROP + FLIP_EARLY
 	}
 
-	/// Visible height of the water surface directly above the camera
-	/// (top of the contiguous water column, minus the rendered drop) —
-	/// the shaders' path-length clamp. Only meaningful while submerged.
+	/// Height of the water surface directly above the camera (top of the
+	/// contiguous water column, minus the rendered drop), measured from the
+	/// EYE: the shaders' path-length clamp, which an absolute height turns
+	/// into a hundred blocks of water over every ray. Submerged only.
 	pub(super) fn water_surface_above(&self) -> f32 {
 		let c = self.camera.pos;
 		let (x, z) = (c.x.floor() as i32, c.z.floor() as i32);
@@ -212,7 +213,7 @@ impl Engine {
 		{
 			y += 1;
 		}
-		y as f32 + 1.0 - digblock_core::player::WATER_SURFACE_DROP
+		y as f32 + 1.0 - digblock_core::player::WATER_SURFACE_DROP - c.y
 	}
 
 	pub(super) fn frame_uniforms(&self) -> FrameUniforms {

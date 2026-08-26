@@ -304,6 +304,14 @@ impl Engine {
 				self.ui
 					.char_screen
 					.build(&mut ui, size, &view, &hotbar_view, daylight);
+			} else if self.ui.hiscores.is_open() {
+				let view = crate::ui::screens::hiscores::HiscoresView::build(
+					&self.board,
+					self.services.is_some(),
+				);
+				self.ui
+					.hiscores
+					.build(&mut ui, size, &view, &hotbar_view, daylight);
 			} else if self.ui.spellbook.is_open() {
 				let view = crate::ui::screens::spellbook::SpellView::build(
 					&self.skills,
@@ -361,6 +369,7 @@ impl Engine {
 				let screen_open = self.ui.inv_screen.is_open()
 					|| self.ui.alch_screen.is_open()
 					|| self.ui.char_screen.is_open()
+					|| self.ui.hiscores.is_open()
 					|| self.ui.spellbook.is_open();
 				crate::ui::hud::touch_buttons(
 					ui.dl,
@@ -400,6 +409,7 @@ impl Engine {
 			&& !self.ui.inv_screen.is_open()
 			&& !self.ui.alch_screen.is_open()
 			&& !self.ui.char_screen.is_open()
+			&& !self.ui.hiscores.is_open()
 			&& !self.ui.spellbook.is_open())
 		.then(|| self.viewmodel_frame(&frame))
 		.flatten();

@@ -8,8 +8,8 @@ group further spells under the skill; and make every teleport destination protec
 constant or function, the reference is to shipped code.
 
 Decisions settled during the build, so they stay settled: the skill is named **Arcana** (`Skill::Arcana`); casting lives
-in a **spellbook screen** (J; H starts the home channel directly, and the pause menu's old "Return to Spawn" row now
-opens the book); **the spawn lock stopped being an operator toggle and is always on**, its region a **sphere**
+in a **spellbook screen** (J; Return Home is cast from the book like every spell, and the pause menu's old "Return to
+Spawn" row now opens it); **the spawn lock stopped being an operator toggle and is always on**, its region a **sphere**
 containing the old box, and the same protection covers every teleport destination; waystone **structures are STAMPED by
 the server as ordinary journaled edits, never worldgen** (§3); and the teleport visuals are their own
 helix-and-column-of-light shaders, deliberately **not the confetti look**.

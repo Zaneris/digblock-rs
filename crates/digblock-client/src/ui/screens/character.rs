@@ -297,8 +297,9 @@ fn next_unlock(skill: Skill, level: u32) -> Option<(u32, &'static str)> {
 }
 
 /// Thousands-grouped decimal ("1,103,585") — XP totals get big enough
-/// that ungrouped digits stop being readable at a glance.
-fn group(n: u64) -> String {
+/// that ungrouped digits stop being readable at a glance. The hiscores
+/// page groups its figures the same way.
+pub(super) fn group(n: u64) -> String {
 	let digits = n.to_string();
 	let mut out = String::with_capacity(digits.len() + digits.len() / 3);
 	for (i, c) in digits.chars().enumerate() {

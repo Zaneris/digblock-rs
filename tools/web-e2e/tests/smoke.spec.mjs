@@ -27,7 +27,7 @@ test("a capture run reaches its frame count and renders terrain", async ({ dig }
 test("the scenes the desktop can pose, the browser can pose", async ({ dig }) => {
 	// Each arm is a query-only knob the page had no spelling for before
 	// knobs::ALL; a typo in the table reaches the console as a panic.
-	for (const params of [{ vault: true }, { node: "leystone" }, { screen: "alchemy" }, { screen: "spellbook" }, { screen: "skills" }, { ore: 2, siphon: 50 }]) {
+	for (const params of [{ vault: true }, { node: "leystone" }, { screen: "alchemy" }, { screen: "spellbook" }, { screen: "skills" }, { screen: "hiscores" }, { ore: 2, siphon: 50 }]) {
 		const d = await dig({ seed: 7, frames: 45, ...params });
 		await d.exit();
 		expectRendered(await d.shot(test.info().outputPath(`${Object.keys(params).join("-")}.png`)), JSON.stringify(params));

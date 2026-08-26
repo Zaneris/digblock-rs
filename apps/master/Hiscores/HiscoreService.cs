@@ -12,6 +12,8 @@ public sealed record Standing(Guid AccountId, string DisplayName, int Level, lon
 /// per-skill ones. Revisit with a cache when a request here shows up in the master's logs.</summary>
 public sealed class HiscoreService(MasterDb db)
 {
+    /// <summary>The longest page cut, and the web page's. A client may ask for
+    /// fewer rows (<c>size=</c>), never more.</summary>
     public const int PageSize = 25;
 
     /// <summary>The largest batch one report may carry. A trusted server
@@ -117,18 +119,19 @@ public sealed class HiscoreService(MasterDb db)
             .ToList();
     }
 
-    public async Task<HiscoresResponse> PageAsync(Skill? skill, int page, CancellationToken ct)
+    public async Task<HiscoresResponse> PageAsync(Skill? skill, int page, int pageSize, CancellationToken ct)
     {
         var standings = await StandingsAsync(skill, ct);
         page = Math.Max(page, 1);
+        pageSize = Math.Clamp(pageSize, 1, PageSize);
         var rows = standings
-            .Skip((page - 1) * PageSize)
-            .Take(PageSize)
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
             .Select((st, i) => new HiscoreRow(
-                (page - 1) * PageSize + i + 1, st.AccountId, st.DisplayName, st.Level, st.Xp))
+                (page - 1) * pageSize + i + 1, st.AccountId, st.DisplayName, st.Level, st.Xp))
             .ToArray();
         return new HiscoresResponse(
-            skill?.Slug() ?? Skills.Overall, page, PageSize, standings.Count, rows);
+            skill?.Slug() ?? Skills.Overall, page, pageSize, standings.Count, rows);
     }
 
     /// <summary>One account's rank on every board it appears on.</summary>

@@ -4,6 +4,7 @@
 
 pub mod alchemy;
 pub mod character;
+pub mod hiscores;
 pub mod inventory;
 pub mod spellbook;
 
@@ -221,6 +222,27 @@ mod tests {
 		);
 		out.push(("character", dl));
 
+		// The hiscores page over its sample board: a full page, both ends
+		// of the pager, and the own-row wash.
+		let mut dl = DrawList::default();
+		let mut hits: HitMap<InvId> = HitMap::default();
+		let mut board = super::hiscores::BoardModel::default();
+		board.debug_fill(super::hiscores::sample_board(None));
+		let mut screen = super::hiscores::HiscoresScreen::default();
+		screen.open();
+		screen.build(
+			&mut Ui {
+				dl: &mut dl,
+				hits: &mut hits,
+				style,
+			},
+			size,
+			&super::hiscores::HiscoresView::build(&board, true),
+			&bar,
+			1.0,
+		);
+		out.push(("hiscores", dl));
+
 		// Two states of the spellbook: the page, and the page with the
 		// cursor on the first fare chip. It grew hover and tooltips, so it
 		// needs the hover fixture every page with a tooltip needs — the
@@ -293,6 +315,7 @@ mod tests {
 			D::Alchemy => Some("alchemy"),
 			D::AlchemyHover => Some("alchemy-hover"),
 			D::Skills => Some("character"),
+			D::Hiscores => Some("hiscores"),
 			D::Transmute | D::Transmuting => Some("alchemy-transmuting"),
 			D::Spellbook => Some("spellbook"),
 			D::SpellbookHover => Some("spellbook-hover"),
@@ -336,7 +359,7 @@ mod tests {
 		assert_eq!(checked, 4);
 	}
 
-	/// Every page drawn OVER the hotbar names the slot under the pointer, all four of them. The
+	/// Every page drawn OVER the hotbar names the slot under the pointer, all five of them. The
 	/// bar is drawn after whichever page is open, at the window's scale, so a page that stepped
 	/// the fit ladder is a rung smaller and a frame has exactly one text size — which is why the
 	/// naming is the PAGE's job and not the bar's. Swept rather than spot-checked, because the
@@ -403,6 +426,17 @@ mod tests {
 			frame(&mut |ui| screen.build(ui, size, &view, &bar, 1.0)),
 		));
 
+		let mut screen = super::hiscores::HiscoresScreen::default();
+		screen.open();
+		screen.handle_input(&moved, &HitMap::default());
+		let mut board = super::hiscores::BoardModel::default();
+		board.debug_fill(super::hiscores::sample_board(None));
+		let view = super::hiscores::HiscoresView::build(&board, true);
+		named.push((
+			"hiscores",
+			frame(&mut |ui| screen.build(ui, size, &view, &bar, 1.0)),
+		));
+
 		let mut screen = super::spellbook::SpellScreen::default();
 		screen.open();
 		let view = spell_view(&inv);
@@ -412,7 +446,7 @@ mod tests {
 			frame(&mut |ui| screen.build(ui, size, &view, &bar, 1.0)),
 		));
 
-		assert_eq!(named.len(), 4, "every page over the bar is listed");
+		assert_eq!(named.len(), 5, "every page over the bar is listed");
 		for (page, names) in named {
 			assert_eq!(
 				names,
@@ -466,6 +500,7 @@ mod tests {
 			D::Inventory,
 			D::Alchemy,
 			D::Skills,
+			D::Hiscores,
 			D::Transmute,
 			D::Transmuting,
 			D::Spellbook,

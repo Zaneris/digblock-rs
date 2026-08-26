@@ -55,20 +55,35 @@ fn medium_water_tr(d: f32) -> vec3f {
 	return exp(-WATER_SIGMA * max(d, 0.0));
 }
 
-// Down-welling light surviving to `depth` below the surface — the source term
-// for anything in-scattered underwater, and the reason deep water goes dark AND
-// blue rather than merely dark. Attenuating irradiance by the BEAM coefficient
-// slightly overstates the darkening (diffuse K_d is smaller, because forward-
-// scattered light keeps going down); the error is in the safe direction.
-fn medium_water_light(sky_down: vec3f, depth: f32) -> vec3f {
-	return sky_down * WATER_ALBEDO * medium_water_tr(depth);
+// medium_water_tr(dw) / medium_air_tr(da) as ONE exponential: un-hazing a sample
+// divides by its air term, which underflows at the far plane, and the water term
+// has long since won by then — the quotient is bounded by the air over `da - dw`.
+fn medium_water_over_air(dw: f32, da: f32) -> vec3f {
+	return exp(AIR_SIGMA * max(da, 0.0) - WATER_SIGMA * max(dw, 0.0));
 }
 
-// One submerged segment: `d` blocks of water between `col` and the eye,
-// lit by `l_in`.
-fn medium_water_seg(col: vec3f, l_in: vec3f, d: f32) -> vec3f {
-	let tr = medium_water_tr(d);
-	return col * tr + l_in * (vec3f(1.0) - tr);
+// One submerged segment: `col` seen through `d` blocks of water whose depth
+// runs from `z0` at `s` blocks per block travelled (s = -ray.y), lit by the
+// down-welling `sky_down`. The in-scatter is the single-scatter integral in
+// closed form, so its source is the light at EVERY point of the segment: a long
+// grazing column is lit by its shallow end, where evaluating the source at the
+// segment's midpoint (the previous form) put a bay's far water twenty blocks
+// deep and black. Attenuating the source by the BEAM coefficient overstates the
+// darkening slightly (diffuse K_d is smaller); the error is in the safe
+// direction. `k` reaches zero only on a ray straight up, where the integral is
+// linear in `d`.
+fn medium_water_column(col: vec3f, sky_down: vec3f, z0: f32, s: f32, d: f32) -> vec3f {
+	let dd = max(d, 0.0);
+	let k = max(1.0 + s, 0.0);
+	let grow = select((vec3f(1.0) - exp(-WATER_SIGMA * k * dd)) / k, WATER_SIGMA * dd, k < 1e-3);
+	return col * medium_water_tr(dd) + WATER_ALBEDO * sky_down * medium_water_tr(z0) * grow;
+}
+
+// The column above with no end: what a submerged eye sees along a ray that
+// never surfaces — past the last streamed chunk, or reflected off the
+// underside. `s` is non-negative there, so `1 + s` cannot vanish.
+fn medium_water_endless(sky_down: vec3f, z0: f32, s: f32) -> vec3f {
+	return WATER_ALBEDO * sky_down * medium_water_tr(z0) / (1.0 + max(s, 0.0));
 }
 
 // The streaming boundary, a separate fact from the air: the medium hides no edge
@@ -78,6 +93,13 @@ fn medium_water_seg(col: vec3f, l_in: vec3f, d: f32) -> vec3f {
 // downward look. It fades to the same in-scattered sky, so the two agree.
 fn medium_rim(horiz_dist: f32, far: f32) -> f32 {
 	return smoothstep(far * 0.82, far, horiz_dist);
+}
+
+// The rim as a mix toward `sky_f`, the caller's (depth-faded) in-scatter: a
+// deep fragment at the streaming edge fades to dark rather than to sky,
+// consistent by construction.
+fn medium_rim_mix(col: vec3f, sky_f: vec3f, cam: vec3f, world: vec3f, far: f32) -> vec3f {
+	return mix(col, sky_f, medium_rim(distance(cam.xz, world.xz), far));
 }
 
 // The whole primary-ray medium: surface colour `col` at `world`, seen from
@@ -95,14 +117,18 @@ fn medium_view(
 	far: f32,
 ) -> vec3f {
 	let d = distance(cam, world);
-	var out = col;
-	var air = d;
 	// In-scatter is SKY light, and underground there is none: the medium has no
 	// occlusion term, so without this a 50-block tunnel view in-scattered a
 	// distance-proportional slice of full daylight at any depth — the dominant
 	// leak R32 removes. Faded at the FRAGMENT's altitude, so a viewer looking out
 	// of a tunnel mouth still sees full haze on the surface beyond it.
 	let sky_f = sky * medium_sky_fade(world.y);
+	// The rim FIRST. It stands for the unstreamed world beyond the surface, which
+	// a submerged eye sees through the same water as the surface itself — so it
+	// fades toward the column's in-scatter with everything else, rather than
+	// toward a dome the water never tinted. Dry, the two mixes commute.
+	var out = medium_rim_mix(col, sky_f, cam, world, far);
+	var air = d;
 	if water_misc.x > 0.5 {
 		let ray = (world - cam) / max(d, 1e-4);
 		// The submerged segment ends where the ray leaves the water —
@@ -112,25 +138,12 @@ fn medium_view(
 		if ray.y > 1e-4 {
 			dw = min(d, water_misc.z / ray.y);
 		}
-		// Depth of the segment's MIDPOINT below the surface: one
-		// evaluation point for the whole segment, which is what makes
-		// this a single-scatter approximation rather than a march.
-		let depth = max(water_misc.z - ray.y * dw * 0.5, 0.0);
 		// The down-welling source fades with the same ramp — deep water
 		// darkens with world depth on top of its own extinction, which is
 		// the correct direction and costs nothing extra.
-		out = medium_water_seg(
-			out,
-			medium_water_light(sky_down * medium_sky_fade(world.y), depth),
-			dw,
-		);
+		out = medium_water_column(out, sky_down * medium_sky_fade(world.y), water_misc.z, -ray.y, dw);
 		air = d - dw;
 	}
 	let tr = medium_air_tr(air);
-	out = out * tr + sky_f * (1.0 - tr);
-	// The rim fades to the same (depth-faded) in-scatter, so a deep
-	// fragment at the streaming edge fades to dark rather than to sky —
-	// consistent by construction, and invisible in practice: the rim
-	// lives at the horizon, which is surface terrain.
-	return mix(out, sky_f, medium_rim(distance(cam.xz, world.xz), far));
+	return out * tr + sky_f * (1.0 - tr);
 }

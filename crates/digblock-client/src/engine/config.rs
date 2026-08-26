@@ -25,6 +25,8 @@ pub enum DebugScreen {
 	Torch,
 	/// The character screen, with mid-curve XP stocked so the bars photograph as they play.
 	Skills,
+	/// The hiscores screen over a sample page, since no master answers a capture.
+	Hiscores,
 	/// The alchemy screen's second tab (craft rows, locked rows, costs).
 	Transmute,
 	/// The same tab mid-cycle: a paced craft is over in seconds and needs a press to start.
@@ -58,6 +60,7 @@ impl DebugScreen {
 			"crest-arcana" => Some(Self::Tool(BlockType::ArcanistsCrest)),
 			"torch" => Some(Self::Torch),
 			"skills" | "character" => Some(Self::Skills),
+			"hiscores" => Some(Self::Hiscores),
 			"transmute" => Some(Self::Transmute),
 			"transmuting" => Some(Self::Transmuting),
 			"spellbook" => Some(Self::Spellbook),

@@ -62,6 +62,7 @@ impl Engine {
 						&& (self.ui.inv_screen.is_open()
 							|| self.ui.alch_screen.is_open()
 							|| self.ui.char_screen.is_open()
+							|| self.ui.hiscores.is_open()
 							|| self.ui.spellbook.is_open())))
 			{
 				let (px, py) = (x * self.ui.size.0 as f32, y * self.ui.size.1 as f32);
@@ -90,6 +91,7 @@ impl Engine {
 						self.ui.inv_screen.close();
 						self.ui.alch_screen.close();
 						self.ui.char_screen.close();
+						self.ui.hiscores.close();
 						self.ui.spellbook.close();
 					}
 					return;
@@ -99,6 +101,7 @@ impl Engine {
 				|| self.ui.inv_screen.is_open()
 				|| self.ui.alch_screen.is_open()
 				|| self.ui.char_screen.is_open()
+				|| self.ui.hiscores.is_open()
 				|| self.ui.spellbook.is_open()
 			{
 				let (px, py) = (x * self.ui.size.0 as f32, y * self.ui.size.1 as f32);
@@ -145,6 +148,7 @@ impl Engine {
 			self.ui.inv_screen.close();
 			self.ui.alch_screen.close();
 			self.ui.char_screen.close();
+			self.ui.hiscores.close();
 			self.ui.spellbook.close();
 			if matches!(event, InputEvent::FocusLost | InputEvent::PointerLockLost) {
 				self.input.keys = HeldKeys::default();
@@ -260,6 +264,30 @@ impl Engine {
 					pressed: true,
 				} => self.ui.char_screen.close(),
 				_ => self.ui.char_screen.handle_input(&event),
+			}
+			return;
+		}
+		// Hiscores open: the cursor is free; a tab or a pager end changes
+		// what is in view, and a change is a fetch. H/Escape close (Escape
+		// consumed like the others').
+		if self.ui.hiscores.is_open() {
+			match event {
+				InputEvent::FocusLost | InputEvent::PointerLockLost => {
+					self.input.keys = HeldKeys::default();
+					self.clear_touch_state();
+					self.input.dig_held = false;
+				}
+				InputEvent::Key {
+					key: Key::H | Key::Escape,
+					pressed: true,
+				} => self.ui.hiscores.close(),
+				_ => {
+					if let Some(act) = self.ui.hiscores.handle_input(&event, &self.ui.ui_hits)
+						&& self.board.apply(act)
+					{
+						self.request_board();
+					}
+				}
 			}
 			return;
 		}
@@ -464,12 +492,11 @@ impl Engine {
 						self.open_character_screen();
 					}
 				}
-				// Home: begin the Return Home channel (on cooldown the
-				// request opens the spellbook instead, where the countdown
-				// is visible). Drained in update() beside the cast step.
 				Key::H => {
 					if pressed {
-						self.save.return_spawn_requested = true;
+						self.input.keys = HeldKeys::default();
+						self.input.dig_held = false;
+						self.open_hiscores_screen();
 					}
 				}
 				Key::J => {

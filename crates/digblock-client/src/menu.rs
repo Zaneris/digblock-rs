@@ -66,6 +66,35 @@ pub struct RankView {
 	pub xp: u64,
 }
 
+/// One page of one of the master's boards (`GET /api/hiscores`): `skill` is `None` for the
+/// overall board, where a row's level and XP are sums. `total` is how many accounts the board
+/// holds, so the screen can page; `page_size` is what the master actually cut, which is what the
+/// pager divides by — never the size that was asked for.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct BoardView {
+	pub skill: Option<digblock_core::skills::Skill>,
+	pub page: u32,
+	pub page_size: u32,
+	pub total: u32,
+	pub rows: Vec<BoardRow>,
+}
+
+/// One ranked account. `me` is the launcher's verdict — it holds the session and so the account
+/// id, which the engine deliberately never sees.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct BoardRow {
+	pub rank: u32,
+	pub name: String,
+	pub level: u32,
+	pub xp: u64,
+	pub me: bool,
+}
+
+/// Rows one page of the hiscores screen holds. Asked of the master as `size=`, which clamps it
+/// to its own ceiling — fewer than the web page's rows, because the screen sits in a panel above
+/// the hotbar with no scrolling, and a page that outgrows the window would need the fit ladder.
+pub const BOARD_PAGE_ROWS: u32 = 10;
+
 /// Pages [`Menu::test_open`] can jump to.
 #[cfg(test)]
 #[derive(Clone, Copy)]
@@ -98,6 +127,12 @@ pub enum MenuCommand {
 	SignOut,
 	/// Where the signed-in account ranks, for the character screen; answered with `Ranks`.
 	FetchRanks,
+	/// One page of one board for the hiscores screen; answered with `Board`. Public on the master,
+	/// so it needs no session.
+	FetchBoard {
+		skill: Option<digblock_core::skills::Skill>,
+		page: u32,
+	},
 }
 
 /// Launcher → menu results.
@@ -132,6 +167,9 @@ pub enum MenuResponse {
 	/// Answer to `FetchRanks`. The ENGINE consumes this before the menu
 	/// sees it: the board is the character screen's, not a menu page's.
 	Ranks(Result<Vec<RankView>, String>),
+	/// Answer to `FetchBoard`, consumed by the engine the same way: the hiscores screen's, not a
+	/// menu page's. Carries the board and page it answers, so a stale answer can be told apart.
+	Board(Result<BoardView, String>),
 }
 
 /// The channel pair the launcher hands the engine. Keeps HTTP entirely out
@@ -293,6 +331,8 @@ enum Act {
 	OpenAlchemy,
 	/// Close the menu and open the character screen (engine drains [`Menu::take_character`]).
 	OpenCharacter,
+	/// Close the menu and open the hiscores screen (engine drains [`Menu::take_hiscores`]).
+	OpenHiscores,
 	JoinRow(usize),
 	Refresh,
 	OpenSettings,
@@ -393,6 +433,7 @@ pub(crate) struct Menu {
 	wants_inventory: bool,
 	wants_alchemy: bool,
 	wants_character: bool,
+	wants_hiscores: bool,
 	/// Text the player asked to copy, drained by the engine. A `String`
 	/// rather than a call because this module does no I/O — see
 	/// [`Menu::take_clipboard`] for why the engine drains it from `input`
@@ -439,6 +480,7 @@ impl Menu {
 			wants_inventory: false,
 			wants_alchemy: false,
 			wants_character: false,
+			wants_hiscores: false,
 			wants_copy: None,
 			settings,
 			settings_dirty: false,
@@ -588,6 +630,11 @@ impl Menu {
 	/// The Character row was picked: the engine opens the screen.
 	pub(crate) fn take_character(&mut self) -> bool {
 		std::mem::take(&mut self.wants_character)
+	}
+
+	/// The Hiscores row was picked: the engine opens the screen.
+	pub(crate) fn take_hiscores(&mut self) -> bool {
+		std::mem::take(&mut self.wants_hiscores)
 	}
 
 	/// The full settings snapshot, once per change batch. The engine
@@ -818,7 +865,7 @@ impl Menu {
 				available,
 				reason,
 			} => self.name_answered(name, available, reason),
-			MenuResponse::Ranks(_) => {}
+			MenuResponse::Ranks(_) | MenuResponse::Board(_) => {}
 			MenuResponse::NameSet(result) => {
 				let Some(Screen::ChooseName(n)) = &mut self.screen else {
 					return None;
@@ -1270,6 +1317,10 @@ impl Menu {
 				self.wants_character = true;
 				self.screen = None;
 			}
+			Act::OpenHiscores => {
+				self.wants_hiscores = true;
+				self.screen = None;
+			}
 			Act::Refresh => {
 				if let Some(Screen::Browser(b)) = &mut self.screen
 					&& !b.fetching
@@ -1409,8 +1460,8 @@ impl Menu {
 				// save list; the ephemeral "Play Local" survives only for
 				// store-less runs (scripted flows, no-injection paths).
 				// In-game order: Back to Game, then the hotkey screens
-				// (Return to Spawn, Inventory, Alchemy), then the one exit
-				// row, with Settings last. Local and multiplayer read the
+				// (Spellbook, Inventory, Alchemy, Character, Hiscores), then
+				// the one exit row, with Settings last. Local and multiplayer read the
 				// same in game — Singleplayer and Multiplayer belong to
 				// the title menu, and reaching either from inside a world
 				// now goes through Leave.
@@ -1420,6 +1471,7 @@ impl Menu {
 					acts.push((RowId::RootItem(6), Act::OpenInventory));
 					acts.push((RowId::RootItem(7), Act::OpenAlchemy));
 					acts.push((RowId::RootItem(9), Act::OpenCharacter));
+					acts.push((RowId::RootItem(12), Act::OpenHiscores));
 					if self.connected {
 						acts.push((RowId::RootItem(2), Act::LeaveServer));
 					} else {

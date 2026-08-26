@@ -1276,6 +1276,24 @@ The ones that bite if broken. CLAUDE.md points here rather than restating them.
   draws, so terrain fades into exactly the sky pixel behind it and the streaming rim disappears. It is the ONLY water
   extinction — `gi_sun_vis` returns a water PATH LENGTH so the sun ray and the view ray cannot disagree. There is no
   fog, no INDIRECT_K, no tonemap.
+- **Water's backdrop is hazed at the SURFACE, never at the bed.** The refracted sample arrives with chunk.wgsl's air
+  mixed in at the seabed; water.wgsl peels that off at the bed's own distance, transports the bed through the column,
+  and runs the result through `medium_view` at the surface, beside the same call the surface's own light takes. Leaving
+  the bed's air in lets the column absorb it (a grazing bay navy to a hard chunk edge); keying the surface's haze on the
+  bed's distance paints the seabed's silhouette on the sea and turns any pane over an unstreamed bed into sky.
+- **A submerged segment's in-scatter is the single-scatter integral in closed form** (`medium_water_column`), sourced by
+  the down-welling light at every point of the segment. Sourcing it at the segment's midpoint instead put a bay's far
+  water twenty blocks deep and black, which no haze at the surface could lift.
+- **`water_misc.z` is the surface's height above the EYE**, the path-length clamp every submerged ray divides by. An
+  absolute height there once put a hundred blocks of water over every ray, and the land above the surface went black
+  from below.
+- **A submerged eye sees everything through the column.** `medium_view` mixes the rim in BEFORE the water segment, so
+  the unstreamed world fades to the column's in-scatter rather than to a dome; the sky pass runs the same column when
+  submerged (to the surface where the ray rises through it, endless where it does not); and the underside of a surface
+  is ONE continuous surface, no Snell's window: the same fresnel as the top side, mirroring the seabed where the screen
+  knows it and `medium_water_endless` where it does not. Real water bends the sky into a cone and turns to a mirror
+  outside it, but a mirror of a floor the screen cannot see is a wall, and every softened cone tried still read as a
+  hole overhead. The dome is never a fallback under water.
 - **Unproven daylight fades with depth** (R32). A march that PROVES open sky answers full daylight at any depth; every
   answer given on no data multiplies by `medium_sky_fade`, whose top edge equals `SEA_LEVEL` and saturates there — so
   the surface world is bit-identical by construction and only underground goes honestly dark.

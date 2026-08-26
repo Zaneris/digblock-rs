@@ -288,6 +288,9 @@ pub struct Engine {
 	/// the character screen opens; `None` until an answer lands, and the
 	/// screen simply says nothing about rank.
 	ranks: Option<Vec<crate::menu::RankView>>,
+	/// The hiscores screen's board: what is in view, the last answer, and
+	/// whether one is outstanding. Fetched on open and on every tab or page.
+	board: crate::ui::screens::hiscores::BoardModel,
 	/// Launcher-injected settings persistence hook, called with each
 	/// change batch; None (bench, drill, iOS) = settings don't persist.
 	settings_store: Option<crate::settings::SettingsStore>,
@@ -556,9 +559,6 @@ struct SaveSession {
 	/// its own copy.
 	teleport_cooldown: f32,
 
-	/// H pressed in-game: merged with the menu's return-spawn request.
-	return_spawn_requested: bool,
-
 	/// A return-to-spawn is outstanding, so the next teleport that lands
 	/// is ours and says so. Kept apart from the teleport's `look`, which
 	/// a server with `/set-spawn-dir` set fills in on this path too.
@@ -765,6 +765,9 @@ struct UiState {
 
 	/// The character screen (C toggles): per-skill levels + XP bars.
 	char_screen: crate::ui::screens::character::CharScreen,
+
+	/// The hiscores screen (H toggles): one page of one of the master's boards.
+	hiscores: crate::ui::screens::hiscores::HiscoresScreen,
 
 	/// The spellbook screen (J toggles): Arcana's casting surface.
 	spellbook: crate::ui::screens::spellbook::SpellScreen,
@@ -1054,6 +1057,7 @@ impl Game for Engine {
 			&& !self.ui.inv_screen.is_open()
 			&& !self.ui.alch_screen.is_open()
 			&& !self.ui.char_screen.is_open()
+			&& !self.ui.hiscores.is_open()
 			&& !self.ui.spellbook.is_open()
 	}
 

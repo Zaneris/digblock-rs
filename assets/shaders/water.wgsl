@@ -169,26 +169,39 @@ fn ripple_grad(p: vec2f, t: f32, flow: vec2f, boost: f32, dist: f32) -> vec2f {
 // fallback — so shoreline blocks, trees and cliffs mirror where the screen knows them, and open
 // water still mirrors the actual sky. The sun/moon discs are deliberately absent: the analytic
 // specular lobe plays their role on the rippled surface.
-fn reflection_color(origin: vec3f, ray: vec3f, dist: f32, weight: f32) -> vec3f {
+// Schlick's approximation from a head-on reflectance `f0`; `c` is the cosine
+// on the AIR side of the interface.
+fn schlick_at(f0: f32, c: f32) -> f32 {
+	return f0 + (1.0 - f0) * pow(1.0 - c, 5.0);
+}
+
+// The interface's reflectance from above, at water's own head-on value.
+fn schlick(c: f32) -> f32 {
+	return schlick_at(0.02, c);
+}
+
+// The underside's head-on reflectance, a LOOK rather than water's number: the
+// surface overhead should read as a mirror without a Snell's window to give
+// it an edge, and water's F0 makes it nearly invisible head-on.
+const UNDERSIDE_F0 = 0.25;
+
+// The mirror's analytic fallback above the surface, UNPROVEN sky — an
+// underground pool must not mirror the daytime dome through its ceiling (R32;
+// the SSR march is real screen data and needs no fade). Saturates to 1 at the
+// ramp's top edge, so open water is bit-identical.
+fn mirror_sky(origin: vec3f, ray: vec3f) -> vec3f {
 	var sky = sky_base(ray, frame.horizon.rgb, frame.zenith.rgb, frame.sun_dir, frame.moon_dir);
 	sky += vec3f(sky_stars(ray)) * frame.sun_dir.w * smoothstep(0.0, 0.3, ray.y);
-	// The analytic fallback is UNPROVEN sky — an underground pool must
-	// not mirror the daytime dome through its ceiling (R32; the SSR march
-	// below is real screen data and needs no fade). Saturates to 1 at the
-	// ramp's top edge, so open water is bit-identical.
-	sky *= medium_sky_fade(origin.y);
-	// `weight` is the Fresnel blend this result is about to be mixed
-	// with, and the march is gated on it for the same reason the sun
-	// DDA above is gated on its own: it was running at full cost where
-	// it cannot show. Submerged, looking at the underside of a surface,
-	// `mirror_w` is pinned to EXACTLY zero — and `reflection_color` is
-	// called as a function argument, so the march's dependent depth loads
-	// ran anyway and the answer was multiplied by nothing. That alone was a
-	// substantial slice of the water pass on the submerged pose (BENCH.md
-	// holds the figure).
-	// Above water it retires the other degenerate case: head-on, Schlick
-	// bottoms out at its F0 floor, so a look straight down at calm water
-	// was paying the full march for a sliver of a pixel.
+	return sky * medium_sky_fade(origin.y);
+}
+
+fn reflection_color(origin: vec3f, ray: vec3f, dist: f32, weight: f32, sky: vec3f) -> vec3f {
+	// `sky` is the fallback where the march finds nothing. `weight` is the
+	// Fresnel blend this result is about to be mixed with, and the march is
+	// gated on it for the same reason the sun DDA above is gated on its own:
+	// it was running at full cost where it cannot show — head-on, Schlick
+	// bottoms out at its F0 floor, so a look straight down at calm water was
+	// paying the full march for a sliver of a pixel (BENCH.md holds the figure).
 	if weight <= MIRROR_MIN_W || frame.water_misc.y < 0.5 || stubbed(STUB_WSSR) {
 		return sky;
 	}
@@ -412,7 +425,7 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	let nrm = ripple_normal(i.ni, g);
 	let vdir = normalize(frame.cam_pos.xyz - i.world);
 	let mirror = 1.0 - 0.7 * aer;
-	let fres = (0.02 + 0.98 * pow(1.0 - abs(dot(vdir, nrm)), 5.0)) * mirror;
+	let fres = schlick(abs(dot(vdir, nrm))) * mirror;
 	// Glint from the active caster (sun by day, moon by night) on the
 	// rippled normal. The exponent widens with distance so the glitter
 	// path stays stable instead of aliasing into per-pixel shimmer;
@@ -420,7 +433,7 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	// at the half vector: bright at low sun, subtle from above.
 	let e = mix(240.0, 24.0, smoothstep(8.0, 120.0, i.view_dist));
 	let hs = normalize(vdir - frame.light_dir.xyz);
-	let fres_h = 0.02 + 0.98 * pow(1.0 - max(dot(vdir, hs), 0.0), 5.0);
+	let fres_h = schlick(max(dot(vdir, hs), 0.0));
 	let spec = pow(max(dot(nrm, hs), 0.0), e) * (e + 2.0) / 242.0 * fres_h;
 	// Water column thickness along the view ray: reconstruct the solid
 	// scene point behind this fragment from the pre-water depth copy
@@ -436,12 +449,19 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	let below = frame.water_misc.x > 0.5 && dot(vdir, NORMALS[i.ni]) < 0.0;
 	var thick = 0.0;
 	var suv = i.pos.xy / dims;
+	// The point behind the pane, when it is a bed the sample was shaded at (see `bed_known`).
+	var bed_known = false;
+	var bed_dist = 0.0;
+	var bed_y = i.world.y;
 	if !stubbed(STUB_WREFRACT) {
 		let d_scene = textureLoad(scene_depth, vec2i(i.pos.xy), 0).x;
 		let ndc = (i.pos.xy / dims * 2.0 - 1.0) * vec2f(1.0, -1.0);
 		let wp = frame.inv_view_proj * vec4f(ndc, d_scene, 1.0);
-		let scene_dist = distance(wp.xyz / wp.w, frame.cam_pos.xyz);
-		thick = select(max(scene_dist - i.view_dist, 0.0), 0.0, below);
+		let bed = wp.xyz / wp.w;
+		bed_dist = distance(bed, frame.cam_pos.xyz);
+		thick = select(max(bed_dist - i.view_dist, 0.0), 0.0, below);
+		bed_known = !below;
+		bed_y = bed.y;
 		// Refraction: sample the scene through a ripple-perturbed offset
 		// that grows with thickness (clamped so shores don't smear), and
 		// falls back to the straight sample when the offset ray would pull
@@ -493,22 +513,36 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	let froth_light = frame.light_color.rgb * 0.8 * sh + indirect;
 	var col = textureSampleLevel(scene_tex, scene_smp, suv, 0.0).rgb;
 	let vray = -vdir;
+	let sky_in = sky_base(vray, frame.horizon.rgb, frame.zenith.rgb, frame.sun_dir, frame.moon_dir);
 	// The down-welling source fades with depth (R32), exactly as
 	// medium_view's submerged branch does — an underground pool's
 	// backdrop must not in-scatter the daytime zenith.
-	col = medium_water_seg(
-		col,
-		medium_water_light(
-			frame.zenith.rgb * medium_sky_fade(i.world.y),
-			max(-vray.y, 0.0) * thick * 0.5,
-		),
-		thick,
-	);
-	// How much of this pixel is still the refracted BACKDROP, which already carries chunk.wgsl's
-	// medium the whole way from the camera — fogging it again hazes distant water about twice as
-	// hard as the shore beside it, a visible step at the waterline. Only the surface's own light
-	// (froth, mirror, glint) has not travelled yet, and every term below is a `mix`, so one scalar
-	// tracks the split exactly.
+	let sky_down = frame.zenith.rgb * medium_sky_fade(i.world.y);
+	// Light leaves the bed, crosses the water, THEN the air. The sample arrives with chunk.wgsl's
+	// air mixed in at the BED, and neither keeping that nor adjusting it survives a grazing bay:
+	// kept, the column absorbs it and the sea runs navy to a hard chunk edge; keyed on the bed,
+	// the sea wears its seabed's silhouette and a bed beyond the streamed world reads as sky at
+	// any range. So peel the bed's own air off, transport, and haze at the SURFACE like the shore.
+	if bed_known {
+		let a = medium_air_tr(bed_dist);
+		let bed_tw = max(col - (1.0 - a) * sky_in * medium_sky_fade(bed_y), vec3f(0.0))
+			* medium_water_over_air(thick, bed_dist);
+		// `bed_tw` is already through the column, so the column contributes its in-scatter alone.
+		col = medium_view(
+			bed_tw + medium_water_column(vec3f(0.0), sky_down, 0.0, max(-vray.y, 0.0), thick),
+			frame.cam_pos.xyz,
+			i.world,
+			sky_in,
+			frame.zenith.rgb,
+			frame.water_misc,
+			frame.misc.y,
+		);
+	}
+	// How much of this pixel is still the refracted BACKDROP, which has already been through the
+	// medium — above, at the surface, or seen from below the leg chunk.wgsl gave it — so fogging
+	// it again hazes distant water about twice as hard as the shore beside it, a visible step at
+	// the waterline. Only the surface's own light (froth, mirror, glint) has not travelled yet,
+	// and every term below is a `mix`, so one scalar tracks the split exactly.
 	var backdrop = 1.0;
 	let backdrop_col = col;
 	// Churned water is full of bubbles and reads white whatever the
@@ -519,11 +553,27 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	backdrop *= 1.0 - shore * 0.25;
 	// Reflected sky, fresnel-blended: water mirrors the horizon at
 	// grazing angles and stays see-through head-on. SSR rides inside
-	// `reflection_color` and is explicitly staying.
+	// `reflection_color` and is explicitly staying. Seen from BELOW, the
+	// SAME fresnel, and no Snell's window: the underside mirrors the seabed
+	// where the screen knows it and the column's own in-scatter where it
+	// does not, never the dome. Real water bends the sky into a cone and
+	// turns to a mirror outside it, but a mirror of a floor the screen
+	// cannot see is a wall, and any cone at all read as a hole overhead;
+	// one continuous surface is the answer that plays.
 	var rr = reflect(-vdir, nrm);
-	rr.y = max(rr.y, 0.02);
-	let mirror_w = fres * select(1.0 - 0.7 * frame.water_misc.x, 0.0, below);
-	col = mix(col, reflection_color(i.world, normalize(rr), i.view_dist, mirror_w), mirror_w);
+	rr.y = select(max(rr.y, 0.02), min(rr.y, -0.02), below);
+	rr = normalize(rr);
+	let mirror_w = select(
+		fres * (1.0 - 0.7 * frame.water_misc.x),
+		schlick_at(UNDERSIDE_F0, abs(dot(vdir, nrm))) * mirror,
+		below,
+	);
+	let mirror_fallback = select(
+		mirror_sky(i.world, rr),
+		medium_water_endless(sky_down, 0.0, -rr.y),
+		below,
+	);
+	col = mix(col, reflection_color(i.world, rr, i.view_dist, mirror_w, mirror_fallback), mirror_w);
 	backdrop *= 1.0 - mirror_w;
 	// Splash foam (after the mirror mix — froth sits on the surface):
 	// a STATIC wash, brightest on the impact cell and fading with the
@@ -555,7 +605,6 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	// see-through.
 	let cover = max(1.0 - backdrop, 1e-4);
 	let back = backdrop_col * backdrop;
-	let sky_in = sky_base(vray, frame.horizon.rgb, frame.zenith.rgb, frame.sun_dir, frame.moon_dir);
 	let surf = medium_view(
 		(col - back) / cover,
 		frame.cam_pos.xyz,

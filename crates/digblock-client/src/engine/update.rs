@@ -17,6 +17,21 @@ impl Engine {
 		}
 	}
 
+	/// Open the hiscores screen on whatever board it last showed, and ask for it afresh. Public on
+	/// the master, so signed out is no bar; no launcher services is, and the page says so.
+	pub(super) fn open_hiscores_screen(&mut self) {
+		self.ui.hiscores.open();
+		self.request_board();
+	}
+
+	/// Fetch the board and page the model has in view.
+	pub(super) fn request_board(&mut self) {
+		let cmd = self.board.request();
+		if let Some(services) = &self.services {
+			let _ = services.cmd_tx.send(cmd);
+		}
+	}
+
 	pub(super) fn step(&mut self, dt: Duration) {
 		let t_update = web_time::Instant::now();
 		let dt = dt.as_secs_f32();
@@ -150,6 +165,13 @@ impl Engine {
 				}
 				continue;
 			}
+			if let crate::menu::MenuResponse::Board(result) = resp {
+				if let Err(e) = &result {
+					log::info!("hiscores: {e}");
+				}
+				self.board.answer(result);
+				continue;
+			}
 			if let Some((transport, token)) = self.ui.menu.on_response(resp) {
 				self.set_transport_with_token(transport, token);
 			}
@@ -209,10 +231,8 @@ impl Engine {
 		if self.ui.menu.take_spellbook() {
 			self.ui.spellbook.open();
 		}
-		// The H shortcut: begin the home channel — or, on cooldown, show
-		// the page with the countdown instead of doing nothing silently.
-		if std::mem::take(&mut self.save.return_spawn_requested) {
-			self.start_cast(super::CastTarget::Home);
+		if self.ui.menu.take_hiscores() {
+			self.open_hiscores_screen();
 		}
 		if let Some(services) = &self.services {
 			for cmd in self.ui.menu.take_commands() {

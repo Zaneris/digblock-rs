@@ -193,7 +193,7 @@ pub const ALL: &[Knob] = &[
 
 /// The known spellings of a `screen` value, for the error a typo raises.
 const SCREEN_NAMES: &str = "menu|inventory|inventory-hover|alchemy|alchemy-hover|transmute|transmuting|\
-	skills|spellbook|spellbook-hover|hand|bucket|bucket-full|torch|siphon|pick|sigil";
+	skills|hiscores|spellbook|spellbook-hover|hand|bucket|bucket-full|torch|siphon|pick|sigil";
 
 /// Read every knob through `get` and write what it means into `config`. `get` answers with the raw
 /// value the launcher found, or `None` when the knob was not set — a flag's value is ignored beyond

@@ -1786,6 +1786,26 @@ fn a_trusted_servers_skill_report_reaches_the_board() {
 	assert_eq!(top["level"], 40);
 	assert_eq!(top["xp"], total_xp_for(40));
 	assert_eq!(board["rows"][1]["displayName"].as_str(), name_a.as_deref());
+	// The game client's page is shorter than the web page's: `size=` cuts
+	// fewer rows, the answer says how many, and the total stays the
+	// board's. More than the master's ceiling is clamped, never honoured.
+	let (_, short) = get_json(
+		&format!("{}/api/hiscores?skill=mining&size=1", master.url),
+		None,
+	);
+	assert_eq!(short["pageSize"], 1);
+	assert_eq!(short["rows"].as_array().unwrap().len(), 1);
+	assert_eq!(short["total"], 2);
+	let (_, second) = get_json(
+		&format!("{}/api/hiscores?skill=mining&size=1&page=2", master.url),
+		None,
+	);
+	assert_eq!(second["rows"][0]["rank"], 2, "paging steps by the size cut");
+	let (_, capped) = get_json(
+		&format!("{}/api/hiscores?skill=mining&size=9999", master.url),
+		None,
+	);
+	assert!(capped["pageSize"].as_u64().unwrap() < 9999);
 	// The overall board sums levels: two unreported skills sit at the
 	// first level each, exactly as the game reads an empty total.
 	let (_, overall) = get_json(&format!("{}/api/hiscores", master.url), None);

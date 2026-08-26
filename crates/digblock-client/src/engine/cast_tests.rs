@@ -16,12 +16,11 @@ fn fresh() -> Engine {
 	Engine::new(config)
 }
 
-fn press(e: &mut Engine, key: Key) {
-	e.input(InputEvent::Key { key, pressed: true });
-	e.input(InputEvent::Key {
-		key,
-		pressed: false,
-	});
+/// Ask for the home channel the way the spellbook's Home row does. The
+/// request lands ahead of the cast step within one `tick`, exactly as the
+/// drained key request did, so every count below is in channel ticks.
+fn cast_home(e: &mut Engine) {
+	e.start_cast(CastTarget::Home);
 }
 
 /// Stream the world about spawn in until nothing is in flight — a cast
@@ -120,7 +119,7 @@ fn spoke(e: &Engine, msg: &Msg) -> bool {
 fn a_completed_channel_takes_channel_ticks_and_starts_the_rung_cooldown() {
 	let mut e = fresh();
 	let need = digblock_core::unlock::channel_ticks(e.skills.level(Skill::Arcana));
-	press(&mut e, Key::H);
+	cast_home(&mut e);
 	tick(&mut e); // drains the request into a live channel
 	assert!(e.cast.is_some(), "H did not open a channel");
 	// One tick shy: still winding up, nothing fired.
@@ -136,7 +135,7 @@ fn a_completed_channel_takes_channel_ticks_and_starts_the_rung_cooldown() {
 	assert_eq!(e.save.teleport_cooldown.ceil() as u32, want);
 	// And a fresh request during the cooldown opens the PAGE (where the
 	// countdown lives) instead of silently doing nothing.
-	press(&mut e, Key::H);
+	cast_home(&mut e);
 	tick(&mut e);
 	assert!(e.cast.is_none());
 	assert!(
@@ -152,7 +151,7 @@ fn a_completed_channel_takes_channel_ticks_and_starts_the_rung_cooldown() {
 fn a_jump_throws_bursts_that_expire_within_their_life() {
 	let mut e = fresh();
 	let need = digblock_core::unlock::channel_ticks(e.skills.level(Skill::Arcana));
-	press(&mut e, Key::H);
+	cast_home(&mut e);
 	for _ in 0..=need {
 		tick(&mut e);
 	}
@@ -343,7 +342,7 @@ fn a_sphere_refuses_the_hand_it_cannot_build_from_and_says_why() {
 #[test]
 fn an_interrupted_channel_fades_rather_than_pops() {
 	let mut e = fresh();
-	press(&mut e, Key::H);
+	cast_home(&mut e);
 	// Long enough for the envelope to open fully.
 	let open = (crate::teleport::FADE_IN_SECS / digblock_core::player::TICK) as u32 + 2;
 	for _ in 0..open {
@@ -372,7 +371,7 @@ fn an_interrupted_channel_fades_rather_than_pops() {
 #[test]
 fn an_interrupt_resets_the_channel() {
 	let mut e = fresh();
-	press(&mut e, Key::H);
+	cast_home(&mut e);
 	tick(&mut e);
 	assert!(e.cast.is_some());
 	// Movement is the interrupt: press-and-hold W for one tick.
@@ -393,7 +392,7 @@ fn an_interrupt_resets_the_channel() {
 	// A reset is a reset: the next channel starts from nothing and runs
 	// its full length again.
 	let need = digblock_core::unlock::channel_ticks(e.skills.level(Skill::Arcana));
-	press(&mut e, Key::H);
+	cast_home(&mut e);
 	tick(&mut e);
 	for _ in 0..need - 2 {
 		tick(&mut e);

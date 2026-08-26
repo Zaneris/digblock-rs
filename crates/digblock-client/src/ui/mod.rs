@@ -56,6 +56,11 @@ pub enum InvId {
 	Spell(u8),
 	/// Spellbook: the fare chip in `Spell(n)`, its own id so a tooltip can name the rect it drew.
 	SpellFare(u8),
+	/// Hiscores: one board tab (overall first, then the skills in roster order).
+	Board(u8),
+	/// Hiscores: the pager's two ends.
+	BoardPrev,
+	BoardNext,
 }
 
 /// Pixel-space rectangle, y-down from the top-left (the overlay's

@@ -10,13 +10,17 @@
 //!   GET  /api/servers → { "servers": [{id, name, url, certHash, players, maxPlayers}] }
 //!   POST /api/join { serverId } → { token, expiresIn, url, certHash }
 //!   GET  /api/hiscores/me + Bearer session → { "ranks": [{skill, rank, level, xp}] }
+//!   GET  /api/hiscores?skill=&page=&size= → { skill, page, pageSize, total,
+//!                                            rows: [{rank, accountId, displayName, level, xp}] }
 
 use std::sync::mpsc;
 
 use crate::auth::{self, Session};
 use digblock_client::{
-	AccountView, MenuCommand, MenuResponse, MenuServices, RankView, ServerEntry,
+	AccountView, BOARD_PAGE_ROWS, BoardRow, BoardView, MenuCommand, MenuResponse, MenuServices,
+	RankView, ServerEntry,
 };
+use digblock_core::skills::Skill;
 use digblock_net::protocol::Compat;
 use serde::Deserialize as _;
 use wasm_bindgen::JsCast;
@@ -89,23 +93,101 @@ struct RankRow {
 	xp: u64,
 }
 
-/// A board row as the screen wants it. A slug the client cannot name — a
-/// skill from a newer master — is dropped rather than failing the answer.
+/// The board a slug names: "overall" is every skill summed. `None` for a
+/// slug the client cannot name — a skill from a newer master.
+fn board_of(slug: &str) -> Option<Option<Skill>> {
+	match slug {
+		"overall" => Some(None),
+		slug => Skill::ALL
+			.into_iter()
+			.find(|s| s.name().eq_ignore_ascii_case(slug))
+			.map(Some),
+	}
+}
+
+/// The slug a board is asked for by — the master matches case-blind.
+fn slug_of(board: Option<Skill>) -> String {
+	match board {
+		None => "overall".into(),
+		Some(s) => s.name().to_ascii_lowercase(),
+	}
+}
+
+/// A rank row as the screen wants it. A slug the client cannot name is
+/// dropped rather than failing the answer.
 fn rank_view(row: RankRow) -> Option<RankView> {
-	let skill = match row.skill.as_str() {
-		"overall" => None,
-		slug => Some(
-			digblock_core::skills::Skill::ALL
-				.into_iter()
-				.find(|s| s.name().eq_ignore_ascii_case(slug))?,
-		),
-	};
 	Some(RankView {
-		skill,
+		skill: board_of(&row.skill)?,
 		rank: row.rank,
 		level: row.level,
 		xp: row.xp,
 	})
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BoardResponse {
+	skill: String,
+	page: u32,
+	page_size: u32,
+	total: u32,
+	rows: Vec<BoardRowJson>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BoardRowJson {
+	rank: u32,
+	account_id: String,
+	display_name: String,
+	level: u32,
+	xp: u64,
+}
+
+/// One page as the screen wants it. `me` is the signed-in account's id,
+/// which only this task holds: the row is marked here so the engine
+/// never has to see one. A whole board for a skill the client cannot
+/// name is a failure — there is no row to drop, only a page to refuse.
+fn board_view(body: BoardResponse, me: Option<&str>) -> Result<BoardView, String> {
+	let skill = board_of(&body.skill).ok_or_else(|| format!("unknown board {:?}", body.skill))?;
+	Ok(BoardView {
+		skill,
+		page: body.page,
+		page_size: body.page_size,
+		total: body.total,
+		rows: body
+			.rows
+			.into_iter()
+			.map(|r| BoardRow {
+				rank: r.rank,
+				me: me.is_some_and(|id| id.eq_ignore_ascii_case(&r.account_id)),
+				name: r.display_name,
+				level: r.level,
+				xp: r.xp,
+			})
+			.collect(),
+	})
+}
+
+/// One page of one board. Public: no session goes up, only the account id
+/// the marking needs stays here.
+async fn fetch_board(
+	master_url: &str,
+	skill: Option<Skill>,
+	page: u32,
+	me: Option<&str>,
+) -> Result<BoardView, String> {
+	let text = fetch_text(
+		"GET",
+		&format!(
+			"{master_url}/api/hiscores?skill={}&page={page}&size={BOARD_PAGE_ROWS}",
+			slug_of(skill)
+		),
+		None,
+	)
+	.await?;
+	let body: BoardResponse = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+	board_view(body, me)
 }
 
 /// Where the signed-in account stands on the master's boards.
@@ -255,6 +337,11 @@ async fn run(
 						None => Err("not signed in".into()),
 					};
 					let _ = resp_tx.send(MenuResponse::Ranks(result));
+				}
+				MenuCommand::FetchBoard { skill, page } => {
+					let me = session.as_ref().map(|s| s.account_id.as_str());
+					let result = fetch_board(&master_url, skill, page, me).await;
+					let _ = resp_tx.send(MenuResponse::Board(result));
 				}
 				MenuCommand::SignOut => {
 					if let Some(s) = session.take() {

@@ -10,11 +10,15 @@
 //!   GET  /api/servers → { "servers": [{id, name, url, certHash, …}] }
 //!   POST /api/join { serverId } + Bearer session → { token, url, certHash }
 //!   GET  /api/hiscores/me + Bearer session → { "ranks": [{skill, rank, level, xp}] }
+//!   GET  /api/hiscores?skill=&page=&size= → { skill, page, pageSize, total,
+//!                                            rows: [{rank, accountId, displayName, level, xp}] }
 
 use crate::auth::{self, Session};
 use digblock_client::{
-	AccountView, MenuCommand, MenuResponse, MenuServices, RankView, ServerEntry,
+	AccountView, BOARD_PAGE_ROWS, BoardRow, BoardView, MenuCommand, MenuResponse, MenuServices,
+	RankView, ServerEntry,
 };
+use digblock_core::skills::Skill;
 use digblock_net::protocol::Compat;
 use serde::Deserialize as _;
 use std::sync::Arc;
@@ -96,22 +100,79 @@ struct RankRow {
 	xp: u64,
 }
 
-/// A board row as the screen wants it. A slug the client cannot name — a
-/// skill from a newer master — is dropped rather than failing the answer.
+/// The board a slug names: "overall" is every skill summed. `None` for a
+/// slug the client cannot name — a skill from a newer master.
+fn board_of(slug: &str) -> Option<Option<Skill>> {
+	match slug {
+		"overall" => Some(None),
+		slug => Skill::ALL
+			.into_iter()
+			.find(|s| s.name().eq_ignore_ascii_case(slug))
+			.map(Some),
+	}
+}
+
+/// The slug a board is asked for by — the master matches case-blind.
+fn slug_of(board: Option<Skill>) -> String {
+	match board {
+		None => "overall".into(),
+		Some(s) => s.name().to_ascii_lowercase(),
+	}
+}
+
+/// A rank row as the screen wants it. A slug the client cannot name is
+/// dropped rather than failing the answer.
 fn rank_view(row: RankRow) -> Option<RankView> {
-	let skill = match row.skill.as_str() {
-		"overall" => None,
-		slug => Some(
-			digblock_core::skills::Skill::ALL
-				.into_iter()
-				.find(|s| s.name().eq_ignore_ascii_case(slug))?,
-		),
-	};
 	Some(RankView {
-		skill,
+		skill: board_of(&row.skill)?,
 		rank: row.rank,
 		level: row.level,
 		xp: row.xp,
+	})
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BoardResponse {
+	skill: String,
+	page: u32,
+	page_size: u32,
+	total: u32,
+	rows: Vec<BoardRowJson>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BoardRowJson {
+	rank: u32,
+	account_id: String,
+	display_name: String,
+	level: u32,
+	xp: u64,
+}
+
+/// One page as the screen wants it. `me` is the signed-in account's id,
+/// which only this thread holds: the row is marked here so the engine
+/// never has to see one. A whole board for a skill the client cannot
+/// name is a failure — there is no row to drop, only a page to refuse.
+fn board_view(body: BoardResponse, me: Option<&str>) -> Result<BoardView, String> {
+	let skill = board_of(&body.skill).ok_or_else(|| format!("unknown board {:?}", body.skill))?;
+	Ok(BoardView {
+		skill,
+		page: body.page,
+		page_size: body.page_size,
+		total: body.total,
+		rows: body
+			.rows
+			.into_iter()
+			.map(|r| BoardRow {
+				rank: r.rank,
+				me: me.is_some_and(|id| id.eq_ignore_ascii_case(&r.account_id)),
+				name: r.display_name,
+				level: r.level,
+				xp: r.xp,
+			})
+			.collect(),
 	})
 }
 
@@ -288,6 +349,15 @@ fn run(
 				};
 				let _ = resp_tx.send(MenuResponse::Ranks(result));
 			}
+			MenuCommand::FetchBoard { skill, page } => {
+				let me = session
+					.lock()
+					.expect("session mutex")
+					.as_ref()
+					.map(|s| s.account_id.clone());
+				let result = fetch_board(&master_url, skill, page, me.as_deref());
+				let _ = resp_tx.send(MenuResponse::Board(result));
+			}
 			MenuCommand::SignOut => {
 				// Cancel any sign-in still waiting on a browser, or its
 				// eventual success would sign us straight back in.
@@ -351,6 +421,29 @@ fn fetch_ranks(master_url: &str, session: &str) -> Result<Vec<RankView>, String>
 	.map_err(|e| e.to_string())?;
 	let body: RanksResponse = res.body_mut().read_json().map_err(|e| e.to_string())?;
 	Ok(body.ranks.into_iter().filter_map(rank_view).collect())
+}
+
+/// One page of one board. Public: no session goes up, only the account id
+/// the marking needs stays here.
+fn fetch_board(
+	master_url: &str,
+	skill: Option<Skill>,
+	page: u32,
+	me: Option<&str>,
+) -> Result<BoardView, String> {
+	let mut res = ureq::Agent::new_with_config(
+		ureq::Agent::config_builder()
+			.timeout_global(Some(Duration::from_secs(5)))
+			.build(),
+	)
+	.get(format!(
+		"{master_url}/api/hiscores?skill={}&page={page}&size={BOARD_PAGE_ROWS}",
+		slug_of(skill)
+	))
+	.call()
+	.map_err(|e| e.to_string())?;
+	let body: BoardResponse = res.body_mut().read_json().map_err(|e| e.to_string())?;
+	board_view(body, me)
 }
 
 /// Mint a join token and dial the server.
@@ -447,6 +540,37 @@ pub(crate) fn auto_join(
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	/// The board decodes to what the screen shows: the slug back to the board it named, the
+	/// master's own page size rather than the one asked for, and the session's row marked — by
+	/// id, case-blind, since a GUID's case is the master's choice.
+	#[test]
+	fn a_board_page_decodes_with_the_own_row_marked() {
+		let json = r#"{"skill":"mining","page":2,"pageSize":10,"total":37,"rows":[
+			{"rank":11,"accountId":"ABCDEF00-0000-0000-0000-000000000001","displayName":"Ada","level":40,"xp":500},
+			{"rank":12,"accountId":"abcdef00-0000-0000-0000-000000000002","displayName":"Bo","level":39,"xp":400}]}"#;
+		let body: BoardResponse = serde_json::from_str(json).unwrap();
+		let view = board_view(body, Some("abcdef00-0000-0000-0000-000000000001")).unwrap();
+		assert_eq!(view.skill, Some(Skill::Mining));
+		assert_eq!((view.page, view.page_size, view.total), (2, 10, 37));
+		assert_eq!(
+			view.rows
+				.iter()
+				.map(|r| (r.rank, r.name.as_str(), r.me))
+				.collect::<Vec<_>>(),
+			vec![(11, "Ada", true), (12, "Bo", false)]
+		);
+		// Signed out, nobody is us.
+		let body: BoardResponse = serde_json::from_str(json).unwrap();
+		assert!(board_view(body, None).unwrap().rows.iter().all(|r| !r.me));
+		// The slug walk round-trips every board the client can ask for.
+		for board in std::iter::once(None).chain(Skill::ALL.into_iter().map(Some)) {
+			assert_eq!(board_of(&slug_of(board)), Some(board));
+		}
+		let body: BoardResponse =
+			serde_json::from_str(&json.replace("\"mining\"", "\"smithing\"")).unwrap();
+		assert!(board_view(body, None).is_err(), "a board we cannot name");
+	}
 
 	#[test]
 	fn token_hex_round_trips() {
