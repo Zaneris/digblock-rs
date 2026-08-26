@@ -44,12 +44,15 @@ public static class HiscoreEndpoints
             return Results.NoContent();
         }).RequireRateLimiting(RateLimits.Report);
 
+        // `size` is the game client's: its page sits in a panel with no
+        // scrolling, so it asks for fewer rows than the web page shows.
+        // Clamped in the service; the answer says what was cut.
         app.MapGet("/api/hiscores", async (
-            string? skill, int? page, HiscoreService hiscores, CancellationToken ct) =>
+            string? skill, int? page, int? size, HiscoreService hiscores, CancellationToken ct) =>
         {
             if (!TryBoard(skill, out var board))
                 return Results.BadRequest(new ApiError(UnknownBoard));
-            return Results.Ok(await hiscores.PageAsync(board, page ?? 1, ct));
+            return Results.Ok(await hiscores.PageAsync(board, page ?? 1, size ?? HiscoreService.PageSize, ct));
         }).RequireCors(Cors.Client).RequireRateLimiting(RateLimits.Lookup);
 
         app.MapGet("/api/hiscores/me", async (
@@ -66,7 +69,7 @@ public static class HiscoreEndpoints
         {
             if (!TryBoard(skill, out var board))
                 return Results.NotFound();
-            var response = await hiscores.PageAsync(board, page ?? 1, ct);
+            var response = await hiscores.PageAsync(board, page ?? 1, HiscoreService.PageSize, ct);
             return Results.Content(HiscorePage.Render(response), "text/html; charset=utf-8");
         }).RequireRateLimiting(RateLimits.Lookup);
     }

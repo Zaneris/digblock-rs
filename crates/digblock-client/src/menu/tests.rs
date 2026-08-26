@@ -77,6 +77,8 @@ fn inventory_row_raises_intent_and_hotkey_hints_show() {
 	assert_eq!(hint("Inventory"), Some("I"));
 	assert_eq!(hint("Alchemy"), Some("K"));
 	assert_eq!(hint("Spellbook"), Some("J"));
+	assert_eq!(hint("Character"), Some("C"));
+	assert_eq!(hint("Hiscores"), Some("H"));
 
 	menu.handle_key(Key::Down); // Spellbook
 	menu.handle_key(Key::Down); // Inventory
@@ -645,6 +647,24 @@ fn spellbook_row_raises_intent_and_closes() {
 	assert!(menu.take_spellbook());
 	assert!(!menu.take_spellbook(), "intent is one-shot");
 	assert!(!menu.is_open());
+}
+
+/// The Hiscores row mirrors the other screen rows: raises its intent and closes. Found by what
+/// it does, since a row inserted above it would move it.
+#[test]
+fn hiscores_row_raises_intent_and_closes() {
+	let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
+	assert!(
+		!offers(&menu, |a| matches!(a, Act::OpenHiscores)),
+		"no hiscores row before entering a world"
+	);
+	menu.handle_key(Key::Enter); // Play Local
+	menu.open();
+	select_act(&mut menu, |a| matches!(a, Act::OpenHiscores));
+	menu.handle_key(Key::Enter);
+	assert!(menu.take_hiscores());
+	assert!(!menu.take_hiscores(), "intent is one-shot");
+	assert!(!menu.is_open(), "menu closed for the screen");
 }
 
 /// Does the menu offer an act matching `f`?

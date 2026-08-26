@@ -89,7 +89,9 @@ public sealed record SkillReportRow(Guid AccountId, SkillXp[] Skills);
 public sealed record SkillXp(int Skill, long Xp);
 
 /// <summary>One page of one board. <c>Skill</c> is the slug asked for ("mining", …, or
-/// "overall"); <c>Total</c> is how many accounts the board holds, so a client can page.</summary>
+/// "overall"); <c>Total</c> is how many accounts the board holds, so a client can page.
+/// <c>PageSize</c> is what was cut: a client asks for fewer rows with <c>size=</c>, clamped to
+/// the master's ceiling, and pages by the answer rather than by what it asked.</summary>
 public sealed record HiscoresResponse(
     string Skill, int Page, int PageSize, int Total, HiscoreRow[] Rows);
 

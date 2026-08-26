@@ -87,6 +87,11 @@ impl Menu {
 						&mut y,
 						RowSpec::item_hint(RowId::RootItem(9), "Character", "C"),
 					);
+					push(
+						&mut specs,
+						&mut y,
+						RowSpec::item_hint(RowId::RootItem(12), "Hiscores", "H"),
+					);
 					if self.connected {
 						push(
 							&mut specs,

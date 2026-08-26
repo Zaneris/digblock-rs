@@ -117,6 +117,7 @@ impl Engine {
 				debug_hover: None,
 				alch_screen: Default::default(),
 				char_screen: Default::default(),
+				hiscores: Default::default(),
 				spellbook: Default::default(),
 				menu,
 				chat: crate::chat::Chat::default(),
@@ -171,6 +172,7 @@ impl Engine {
 			// there is not "entering the water".
 			services: None,
 			ranks: None,
+			board: Default::default(),
 			settings_store: None,
 			clipboard: None,
 			save: SaveSession {
@@ -180,7 +182,6 @@ impl Engine {
 				offline_waystones: digblock_core::waystones::Roster::new(seed),
 				spawn_pos: spawn,
 				teleport_cooldown: 0.0,
-				return_spawn_requested: false,
 				spawn_return_pending: false,
 				arrival_hold: None,
 			},
@@ -503,6 +504,14 @@ impl Engine {
 					engine.ranks =
 						Some(crate::ui::screens::character::sample_ranks(&engine.skills));
 					engine.ui.char_screen.open();
+				}
+				DebugScreen::Hiscores => {
+					// A full page with a page behind it, one row ours —
+					// the sample, since no master answers a capture.
+					engine
+						.board
+						.debug_fill(crate::ui::screens::hiscores::sample_board(None));
+					engine.ui.hiscores.open();
 				}
 				DebugScreen::Spellbook | DebugScreen::SpellbookHover => {
 					// Past the LAST spell rung the ladder opens below the

@@ -267,13 +267,16 @@ impl InvScreen {
 						SlotView::Empty | SlotView::Tool { .. } => return None,
 						SlotView::Block { block, .. } => HotbarItem::Block(*block),
 					},
-					// Alchemy and spellbook ids never appear while this
-					// screen is open.
+					// Other screens' ids never appear while this screen is
+					// open.
 					InvId::Craft(_)
 					| InvId::Family(_)
 					| InvId::CraftGo
 					| InvId::Spell(_)
-					| InvId::SpellFare(_) => {
+					| InvId::SpellFare(_)
+					| InvId::Board(_)
+					| InvId::BoardPrev
+					| InvId::BoardNext => {
 						return None;
 					}
 				};

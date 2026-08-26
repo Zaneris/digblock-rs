@@ -153,7 +153,7 @@ For `just run`:
   it), `DIG_DOORS=1`, `DIG_CAST=<percent>` (poses the cast channel's aura at that progress with no hold behind it),
   `DIG_ORE=<tier 1..=4>` (hollows a chamber around the nearest deposit and grants its level — the carve must not touch
   the vein, or the anti-dupe deletes what is being photographed), `DIG_NODE=<heartwood|leystone|springstone>`,
-  `DIG_SCREEN=menu|inventory|inventory-hover|alchemy|alchemy-hover|transmute|transmuting|skills|spellbook|spellbook-hover|hand|bucket|bucket-full|torch|siphon|pick|sigil|crest-mining|crest-alchemy|crest-arcana`
+  `DIG_SCREEN=menu|inventory|inventory-hover|alchemy|alchemy-hover|transmute|transmuting|skills|hiscores|spellbook|spellbook-hover|hand|bucket|bucket-full|torch|siphon|pick|sigil|crest-mining|crest-alchemy|crest-arcana`
   (the pages are input-only and otherwise invisible to headless capture; the tool names cycle the roster, and screen
   stocking grants every tool since a fresh player owns none). The table's remaining rows are levers rather than scenes —
   `DIG_STUB` and `DIG_GI_ITERS` above, `DIG_SPIKELOG` below, plus `DIG_GI=<window|probes>` (paint the voxel window or

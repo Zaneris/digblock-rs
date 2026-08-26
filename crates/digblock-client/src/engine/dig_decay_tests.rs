@@ -158,6 +158,7 @@ fn a_capture_takes_neither_the_keyboard_nor_the_pointer() {
 			|| e.ui.inv_screen.is_open()
 			|| e.ui.alch_screen.is_open()
 			|| e.ui.char_screen.is_open()
+			|| e.ui.hiscores.is_open()
 			|| e.ui.spellbook.is_open()
 	};
 	// One key per engine. Pressing all four in sequence cancels
@@ -186,12 +187,12 @@ fn a_capture_takes_neither_the_keyboard_nor_the_pointer() {
 		e.input.look_accum != (0.0, 0.0)
 	};
 
-	// The three that were genuinely reachable. `Escape` is asserted
+	// The keys that were genuinely reachable. `Escape` is asserted
 	// on the capture side too, but it is NOT a control: `Menu::open`
 	// checks `enabled`, which a capture never sets, so Escape was
 	// already inert there and a control on it would fail for a
 	// reason that has nothing to do with this flag.
-	const SCREEN_KEYS: [Key; 4] = [Key::I, Key::K, Key::C, Key::J];
+	const SCREEN_KEYS: [Key; 5] = [Key::I, Key::K, Key::C, Key::J, Key::H];
 
 	// A capture is deaf and never asks for the pointer.
 	assert!(

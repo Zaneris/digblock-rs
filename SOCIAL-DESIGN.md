@@ -57,6 +57,14 @@ In-game, the character screen grows one line per skill — your rank, when known
 number that makes the C screen's totals mean something. Opening the screen asks the master (`MenuCommand::FetchRanks`);
 the answer is the engine's, not a menu page's, and a board the account is not on says nothing rather than "unranked".
 
+The board itself is in-game too: the **hiscores screen** (H, and the pause menu's Hiscores row) shows one page of one
+board, a tab per board and a pager, with the account's own row marked. It asks through the same channel
+(`MenuCommand::FetchBoard`), for a page shorter than the web page's (`BOARD_PAGE_ROWS`, sent as `size=`, which the
+master clamps to its ceiling and answers with what it cut) because the page sits in a panel above the hotbar with no
+scrolling. Reading is public, so a signed-out player reads it too; the LAUNCHER marks the own row, since it alone holds
+the account id, and the engine keeps an answer only when it names the board and page in view — a stale one for the tab
+the player just left must not be drawn under the one they moved to.
+
 ## 2. Status display
 
 **The Master's Sigil is already the pattern.** A held item that does nothing, costs everything, and shows in other

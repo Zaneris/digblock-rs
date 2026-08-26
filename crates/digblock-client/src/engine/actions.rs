@@ -452,6 +452,7 @@ impl Engine {
 			|| self.ui.inv_screen.is_open()
 			|| self.ui.alch_screen.is_open()
 			|| self.ui.char_screen.is_open()
+			|| self.ui.hiscores.is_open()
 			|| self.ui.spellbook.is_open()
 			|| self.ui.chat.is_open();
 		let need = digblock_core::unlock::channel_ticks(
