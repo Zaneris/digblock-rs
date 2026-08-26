@@ -436,12 +436,19 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	let below = frame.water_misc.x > 0.5 && dot(vdir, NORMALS[i.ni]) < 0.0;
 	var thick = 0.0;
 	var suv = i.pos.xy / dims;
+	// The point behind the pane, when it is a bed the sample was shaded at (see `bed_known`).
+	var bed_known = false;
+	var bed_dist = 0.0;
+	var bed_y = i.world.y;
 	if !stubbed(STUB_WREFRACT) {
 		let d_scene = textureLoad(scene_depth, vec2i(i.pos.xy), 0).x;
 		let ndc = (i.pos.xy / dims * 2.0 - 1.0) * vec2f(1.0, -1.0);
 		let wp = frame.inv_view_proj * vec4f(ndc, d_scene, 1.0);
-		let scene_dist = distance(wp.xyz / wp.w, frame.cam_pos.xyz);
-		thick = select(max(scene_dist - i.view_dist, 0.0), 0.0, below);
+		let bed = wp.xyz / wp.w;
+		bed_dist = distance(bed, frame.cam_pos.xyz);
+		thick = select(max(bed_dist - i.view_dist, 0.0), 0.0, below);
+		bed_known = !below;
+		bed_y = bed.y;
 		// Refraction: sample the scene through a ripple-perturbed offset
 		// that grows with thickness (clamped so shores don't smear), and
 		// falls back to the straight sample when the offset ray would pull
@@ -493,22 +500,36 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	let froth_light = frame.light_color.rgb * 0.8 * sh + indirect;
 	var col = textureSampleLevel(scene_tex, scene_smp, suv, 0.0).rgb;
 	let vray = -vdir;
+	let sky_in = sky_base(vray, frame.horizon.rgb, frame.zenith.rgb, frame.sun_dir, frame.moon_dir);
 	// The down-welling source fades with depth (R32), exactly as
 	// medium_view's submerged branch does — an underground pool's
 	// backdrop must not in-scatter the daytime zenith.
-	col = medium_water_seg(
-		col,
-		medium_water_light(
-			frame.zenith.rgb * medium_sky_fade(i.world.y),
-			max(-vray.y, 0.0) * thick * 0.5,
-		),
-		thick,
-	);
-	// How much of this pixel is still the refracted BACKDROP, which already carries chunk.wgsl's
-	// medium the whole way from the camera — fogging it again hazes distant water about twice as
-	// hard as the shore beside it, a visible step at the waterline. Only the surface's own light
-	// (froth, mirror, glint) has not travelled yet, and every term below is a `mix`, so one scalar
-	// tracks the split exactly.
+	let sky_down = frame.zenith.rgb * medium_sky_fade(i.world.y);
+	// Light leaves the bed, crosses the water, THEN the air. The sample arrives with chunk.wgsl's
+	// air mixed in at the BED, and neither keeping that nor adjusting it survives a grazing bay:
+	// kept, the column absorbs it and the sea runs navy to a hard chunk edge; keyed on the bed,
+	// the sea wears its seabed's silhouette and a bed beyond the streamed world reads as sky at
+	// any range. So peel the bed's own air off, transport, and haze at the SURFACE like the shore.
+	if bed_known {
+		let a = medium_air_tr(bed_dist);
+		let bed_tw = max(col - (1.0 - a) * sky_in * medium_sky_fade(bed_y), vec3f(0.0))
+			* medium_water_over_air(thick, bed_dist);
+		// `bed_tw` is already through the column, so the column contributes its in-scatter alone.
+		col = medium_view(
+			bed_tw + medium_water_column(vec3f(0.0), sky_down, 0.0, max(-vray.y, 0.0), thick),
+			frame.cam_pos.xyz,
+			i.world,
+			sky_in,
+			frame.zenith.rgb,
+			frame.water_misc,
+			frame.misc.y,
+		);
+	}
+	// How much of this pixel is still the refracted BACKDROP, which has already been through the
+	// medium — above, at the surface, or seen from below the leg chunk.wgsl gave it — so fogging
+	// it again hazes distant water about twice as hard as the shore beside it, a visible step at
+	// the waterline. Only the surface's own light (froth, mirror, glint) has not travelled yet,
+	// and every term below is a `mix`, so one scalar tracks the split exactly.
 	var backdrop = 1.0;
 	let backdrop_col = col;
 	// Churned water is full of bubbles and reads white whatever the
@@ -555,7 +576,6 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	// see-through.
 	let cover = max(1.0 - backdrop, 1e-4);
 	let back = backdrop_col * backdrop;
-	let sky_in = sky_base(vray, frame.horizon.rgb, frame.zenith.rgb, frame.sun_dir, frame.moon_dir);
 	let surf = medium_view(
 		(col - back) / cover,
 		frame.cam_pos.xyz,

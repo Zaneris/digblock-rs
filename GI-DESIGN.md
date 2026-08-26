@@ -1276,6 +1276,14 @@ The ones that bite if broken. CLAUDE.md points here rather than restating them.
   draws, so terrain fades into exactly the sky pixel behind it and the streaming rim disappears. It is the ONLY water
   extinction — `gi_sun_vis` returns a water PATH LENGTH so the sun ray and the view ray cannot disagree. There is no
   fog, no INDIRECT_K, no tonemap.
+- **Water's backdrop is hazed at the SURFACE, never at the bed.** The refracted sample arrives with chunk.wgsl's air
+  mixed in at the seabed; water.wgsl peels that off at the bed's own distance, transports the bed through the column,
+  and runs the result through `medium_view` at the surface, beside the same call the surface's own light takes. Leaving
+  the bed's air in lets the column absorb it (a grazing bay navy to a hard chunk edge); keying the surface's haze on the
+  bed's distance paints the seabed's silhouette on the sea and turns any pane over an unstreamed bed into sky.
+- **A submerged segment's in-scatter is the single-scatter integral in closed form** (`medium_water_column`), sourced by
+  the down-welling light at every point of the segment. Sourcing it at the segment's midpoint instead put a bay's far
+  water twenty blocks deep and black, which no haze at the surface could lift.
 - **Unproven daylight fades with depth** (R32). A march that PROVES open sky answers full daylight at any depth; every
   answer given on no data multiplies by `medium_sky_fade`, whose top edge equals `SEA_LEVEL` and saturates there — so
   the surface world is bit-identical by construction and only underground goes honestly dark.
