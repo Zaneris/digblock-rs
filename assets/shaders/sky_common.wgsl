@@ -31,6 +31,19 @@ fn sky_stars(ray: vec3f) -> f32 {
 // Horizon→zenith gradient plus sunset/sunrise glow — the disc-free,
 // star-free sky base. sun/moon are the frame lanes passed through
 // verbatim: moon.w = sunset glow strength.
+// The dome as the sky pass draws it: the gradient plus the sun and moon discs
+// and the night's stars. Snell's window samples this along the BENT ray.
+fn sky_dome(ray: vec3f, horizon: vec3f, zenith: vec3f, sun: vec4f, moon: vec4f) -> vec3f {
+	var col = sky_base(ray, horizon, zenith, sun, moon);
+	// Sun disc (soft-edged, and oversized for game feel).
+	col += vec3f(1.0, 0.95, 0.85) * smoothstep(0.9994, 0.9998, dot(ray, sun.xyz)) * 4.0;
+	// Moon disc: smaller, dim, slightly blue.
+	col += vec3f(0.9, 0.93, 1.0) * smoothstep(0.9996, 0.9999, dot(ray, moon.xyz));
+	// Stars fade in at night, suppressed in the horizon haze.
+	col += vec3f(sky_stars(ray)) * sun.w * smoothstep(0.0, 0.3, ray.y);
+	return col;
+}
+
 fn sky_base(ray: vec3f, horizon: vec3f, zenith: vec3f, sun: vec4f, moon: vec4f) -> vec3f {
 	let up = max(ray.y, 0.0);
 	var col = mix(horizon, zenith, pow(up, 0.45));

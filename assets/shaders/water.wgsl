@@ -177,6 +177,11 @@ fn schlick(c: f32) -> f32 {
 
 // Water's index of refraction: Snell's window from below is the ray this bends.
 const WATER_IOR = 1.333;
+// Where the underside's reflectance starts its climb to total, as the sine
+// squared of the bent ray: flat water turns total within a few degrees of the
+// critical angle, but a rippled interface integrates that step over its cone
+// of normals, and the wider band is what reads as a window rather than a hole.
+const SNELL_BAND = 0.6;
 
 // The mirror's analytic fallback above the surface, UNPROVEN sky — an
 // underground pool must not mirror the daytime dome through its ceiling (R32;
@@ -446,8 +451,11 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	var bed_known = false;
 	var bed_dist = 0.0;
 	var bed_y = i.world.y;
+	// Nothing solid behind the pane: the sky pass's dome, at NDC depth exactly one.
+	var behind_sky = false;
 	if !stubbed(STUB_WREFRACT) {
 		let d_scene = textureLoad(scene_depth, vec2i(i.pos.xy), 0).x;
+		behind_sky = d_scene >= 1.0;
 		let ndc = (i.pos.xy / dims * 2.0 - 1.0) * vec2f(1.0, -1.0);
 		let wp = frame.inv_view_proj * vec4f(ndc, d_scene, 1.0);
 		let bed = wp.xyz / wp.w;
@@ -531,12 +539,25 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 			frame.misc.y,
 		);
 	}
+	// Snell's window. From below, the dome is sampled along the BENT ray, which is what
+	// compresses the whole hemisphere into the cone and rings its edge with the horizon; the
+	// straight sample the sky pass left behind made the window a hole with the zenith in it.
+	// Bent here rather than by the sky pass, it has not travelled yet, so it joins the surface's
+	// own light below instead of the backdrop. `refract` answers zero past the critical angle,
+	// where the mirror takes the whole pixel and any finite direction serves.
+	var window = false;
+	if below && behind_sky {
+		let bent = refract(-vdir, -nrm, WATER_IOR);
+		let dir = select(vec3f(0.0, 1.0, 0.0), bent, dot(bent, bent) > 0.5);
+		col = sky_dome(dir, frame.horizon.rgb, frame.zenith.rgb, frame.sun_dir, frame.moon_dir);
+		window = true;
+	}
 	// How much of this pixel is still the refracted BACKDROP, which has already been through the
 	// medium — above, at the surface, or seen from below the leg chunk.wgsl gave it — so fogging
 	// it again hazes distant water about twice as hard as the shore beside it, a visible step at
-	// the waterline. Only the surface's own light (froth, mirror, glint) has not travelled yet,
-	// and every term below is a `mix`, so one scalar tracks the split exactly.
-	var backdrop = 1.0;
+	// the waterline. Only the surface's own light (froth, mirror, glint, the window) has not
+	// travelled yet, and every term below is a `mix`, so one scalar tracks the split exactly.
+	var backdrop = select(1.0, 0.0, window);
 	let backdrop_col = col;
 	// Churned water is full of bubbles and reads white whatever the
 	// depth behind it; the mirror terms damp out over the same ramp.
@@ -556,7 +577,11 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	rr = normalize(rr);
 	let cos_i = abs(dot(vdir, nrm));
 	let sin_t2 = WATER_IOR * WATER_IOR * (1.0 - cos_i * cos_i);
-	let fres_in = select(1.0, schlick(sqrt(max(1.0 - sin_t2, 0.0))), sin_t2 < 1.0) * mirror;
+	let fres_in = mix(
+		schlick(sqrt(max(1.0 - sin_t2, 0.0))),
+		1.0,
+		smoothstep(SNELL_BAND, 1.0, sin_t2),
+	) * mirror;
 	let mirror_w = select(fres * (1.0 - 0.7 * frame.water_misc.x), fres_in, below);
 	let mirror_fallback = select(
 		mirror_sky(i.world, rr),

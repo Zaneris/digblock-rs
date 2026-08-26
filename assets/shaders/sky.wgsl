@@ -33,15 +33,7 @@ fn view_ray(ndc: vec2f) -> vec3f {
 @fragment
 fn fs(i: VsOut) -> @location(0) vec4f {
 	let ray = view_ray(i.ndc);
-	var col = sky_base(ray, frame.horizon.rgb, frame.zenith.rgb, frame.sun_dir, frame.moon_dir);
-	// Sun disc (soft-edged, and oversized for game feel).
-	let ds = dot(ray, frame.sun_dir.xyz);
-	col += vec3f(1.0, 0.95, 0.85) * smoothstep(0.9994, 0.9998, ds) * 4.0;
-	// Moon disc: smaller, dim, slightly blue.
-	let dm = dot(ray, frame.moon_dir.xyz);
-	col += vec3f(0.9, 0.93, 1.0) * smoothstep(0.9996, 0.9999, dm);
-	// Stars fade in at night, suppressed in the horizon haze.
-	col += vec3f(sky_stars(ray)) * frame.sun_dir.w * smoothstep(0.0, 0.3, ray.y);
+	var col = sky_dome(ray, frame.horizon.rgb, frame.zenith.rgb, frame.sun_dir, frame.moon_dir);
 	// Submerged, the dome is seen through the water: the column up to where the ray surfaces,
 	// or an endless one where it never does — which is what lies past the last streamed chunk,
 	// and was a raw sky beside a seabed the medium had faded into its own in-scatter.
