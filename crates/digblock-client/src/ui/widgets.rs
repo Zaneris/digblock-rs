@@ -168,31 +168,16 @@ pub fn button<Id: Copy + PartialEq>(
 	}
 }
 
-/// Stack-count badge in a slot's bottom-right corner, saturating at "99+", with a drop shadow so
-/// digits stay readable on light icons (snow, sand). Drawn at the frame's one text size like
-/// everything else, not pinned at [`scale::FIXED_GLYPH_PX`] — a pinned badge reads as half-size
-/// text beside a scaled-up UI on a dense display.
+/// Stack-count badge in a slot's bottom-right corner, with a drop shadow so digits stay readable
+/// on light icons (snow, sand). Drawn at the frame's one text size like everything else, not
+/// pinned at [`scale::FIXED_GLYPH_PX`] — a pinned badge reads as half-size text beside a
+/// scaled-up UI on a dense display.
 pub fn count_badge(dl: &mut DrawList, layer: Layer, style: &Style, slot: Rect, count: u32, c: u32) {
 	const SHADOW: u32 = 0xE0000000;
 	let px = style.glyph;
 	let inset = 2.0 * style.scale;
-	let mut buf = [0u8; 3];
-	let text: &str = if count > 99 {
-		"99+"
-	} else {
-		// Right-aligning off a digit count would assume tabular figures;
-		// measure what we're actually about to draw instead.
-		let n = count.min(99);
-		let len = if n >= 10 {
-			buf[0] = b'0' + (n / 10) as u8;
-			buf[1] = b'0' + (n % 10) as u8;
-			2
-		} else {
-			buf[0] = b'0' + n as u8;
-			1
-		};
-		std::str::from_utf8(&buf[..len]).unwrap_or("?")
-	};
+	let mut buf = [0u8; 11];
+	let text = badge_text(count, &mut buf);
 	let x = slot.x + slot.w - inset - crate::font::ui().measure(text, px);
 	let y = slot.y + slot.h - px - inset;
 	let off = (px / 16.0).round().max(1.0);
@@ -213,6 +198,24 @@ pub struct Chip {
 	/// cannot cover it.
 	pub ink: u32,
 }
+
+/// What a stack badge reads: the count itself up to [`BADGE_EXACT_MAX`], then whole thousands
+/// with a `k`, floored — a badge that rounded up would show a stack the player does not hold.
+/// Right-aligning off a digit count would assume tabular figures, so the caller measures what
+/// this returns instead.
+fn badge_text(count: u32, buf: &mut [u8; 11]) -> &str {
+	if count <= BADGE_EXACT_MAX {
+		let (head, _) = buf.split_at_mut(10);
+		return digits(count, head.try_into().expect("ten bytes"));
+	}
+	let (head, tail) = buf.split_at_mut(10);
+	let n = digits(count / 1000, head.try_into().expect("ten bytes")).len();
+	tail[0] = b'k';
+	std::str::from_utf8(&buf[10 - n..]).expect("decimal digits and a k are ASCII")
+}
+
+/// The largest count a badge spells out in full; past it the badge counts thousands.
+const BADGE_EXACT_MAX: u32 = 999;
 
 /// A `u32` written into a caller's stack buffer. The amount on a chip is measured through
 /// `Face::run` like any other string — never from a digit count, which tells you nothing about a
@@ -568,6 +571,41 @@ mod tests {
 			(30 + extremes.len() + 2048) as u32,
 			"the sweep covered what it meant to"
 		);
+	}
+
+	/// A badge never claims a stack the player does not hold: spelled out, it IS the count, and
+	/// in thousands it is the floor of the count. Swept across the boundary and every decade the
+	/// buffer can hold rather than spot-checked, and counted so a sweep that stopped early fails.
+	#[test]
+	fn a_badge_reads_the_count_or_its_floor_in_thousands() {
+		let mut buf = [0u8; 11];
+		let mut checked = 0u32;
+		let edges = (0..10).flat_map(|p: u32| {
+			let d = 10u32.pow(p);
+			[d - 1, d, d + 1]
+		});
+		for n in edges
+			.chain([0, u32::MAX, BADGE_EXACT_MAX, BADGE_EXACT_MAX + 1])
+			.chain(0..4096)
+		{
+			let text = badge_text(n, &mut buf);
+			match text.strip_suffix('k') {
+				None => {
+					assert!(n <= BADGE_EXACT_MAX, "{n} spelled out past the cap");
+					assert_eq!(text, n.to_string());
+				}
+				Some(k) => {
+					assert!(n > BADGE_EXACT_MAX, "{n} shown in thousands under the cap");
+					let k: u32 = k.parse().expect("digits before the k");
+					assert!(
+						k as u64 * 1000 <= n as u64 && (n as u64) < (k as u64 + 1) * 1000,
+						"{n} -> {text}"
+					);
+				}
+			}
+			checked += 1;
+		}
+		assert_eq!(checked, 30 + 4 + 4096, "the sweep covered what it meant to");
 	}
 
 	#[test]
