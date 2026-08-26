@@ -245,6 +245,9 @@ fn admin(r: &AdminReply) -> String {
 			"your pre-account character on this server has been added to your account".into()
 		}
 		AdminReply::CommandsAreAdminOnly => "commands are admin-only".into(),
+		AdminReply::WithheldOnRankedServer { command } => {
+			format!("{command} is off here: this server's levels reach the hiscores")
+		}
 	}
 }
 

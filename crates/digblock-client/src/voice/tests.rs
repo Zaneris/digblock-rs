@@ -17,6 +17,9 @@ fn admin_samples() -> Vec<AdminReply> {
 		A::UnknownCommand {
 			typed: "/nope".into(),
 		},
+		A::WithheldOnRankedServer {
+			command: "/give".into(),
+		},
 		A::CompassHint,
 		A::NoSuchPlayer {
 			name: "ada".into(),
@@ -127,7 +130,8 @@ fn admin_samples() -> Vec<AdminReply> {
 			| A::Unbanned { .. }
 			| A::NoBanMatches { .. }
 			| A::LegacyCharacterClaimed
-			| A::CommandsAreAdminOnly => {}
+			| A::CommandsAreAdminOnly
+			| A::WithheldOnRankedServer { .. } => {}
 		}
 	}
 	all
@@ -327,6 +331,14 @@ fn every_argument_reaches_the_words() {
 	let e0 = Essence::ALL[0] as u16;
 	let e1 = Essence::ALL[1] as u16;
 	let pairs: Vec<(Msg, Msg)> = vec![
+		(
+			a(A::WithheldOnRankedServer {
+				command: "/give".into(),
+			}),
+			a(A::WithheldOnRankedServer {
+				command: "/reset".into(),
+			}),
+		),
 		(
 			Msg::LevelUp {
 				skill: Skill::Mining,

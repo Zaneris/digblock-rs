@@ -1,3 +1,4 @@
+use super::{COMMANDS, Scope, stem};
 use crate::sim::harness::*;
 use crate::sim::{Sim, SimEvent};
 use digblock_core::block::BlockType;
@@ -1040,4 +1041,131 @@ fn lock_spawn_is_no_longer_a_command() {
 		r,
 		AdminReply::UnknownCommand { .. }
 	)));
+}
+
+/// The stems an `AdminCommands` frame advertised, newest frame first.
+fn advertised(c: &TestClient) -> Option<Vec<String>> {
+	c.msgs.iter().rev().find_map(|m| match m {
+		ServerMsg::AdminCommands { commands } => {
+			Some(commands.iter().map(|(u, _)| stem(u).to_string()).collect())
+		}
+		_ => None,
+	})
+}
+
+/// The stems the table marks `Unranked` — the levers a ranked server closes.
+fn levers() -> Vec<&'static str> {
+	COMMANDS
+		.iter()
+		.filter(|(_, _, s)| *s == Scope::Unranked)
+		.map(|(u, _, _)| stem(u))
+		.collect()
+}
+
+/// A server the board listens to withholds every `Unranked` lever, from the advertisement, from
+/// `/help` and at dispatch — the master's verdict arrives as an event, so it can land while an
+/// admin is already online, and it must move the chat box's completions as well as the answer.
+/// The verdict moving back reopens them, which is what keeps this a gate and not a one-way latch.
+#[test]
+fn a_ranked_server_withholds_the_testing_levers() {
+	use digblock_core::block::Essence;
+	let mut sim = admin_sim("ranked");
+	let mut admin = connect_admin(&mut sim, 1, "boss");
+	let mut guest = connect_named(&mut sim, 2, "guest");
+	wait_live(&mut sim, 1);
+	wait_live(&mut sim, 2);
+	let levers = levers();
+	assert!(!levers.is_empty(), "the table marks at least one lever");
+	let open = advertised(&admin).expect("advertised at join");
+	assert!(
+		levers.iter().all(|l| open.iter().any(|s| s == l)),
+		"unranked, every lever is offered: {open:?}"
+	);
+	sim.bench_set_mining_level(2, 33);
+	let level = sim.test_mining_level(2);
+	admin.drain();
+	admin.msgs.clear();
+	guest.drain();
+	guest.msgs.clear();
+
+	sim.tick_once(vec![SimEvent::Registered {
+		reports_skills: true,
+	}]);
+	admin.drain();
+	let closed = advertised(&admin).expect("the verdict re-advertises");
+	assert!(
+		levers.iter().all(|l| !closed.iter().any(|s| s == l)),
+		"ranked, no lever is offered: {closed:?}"
+	);
+	assert_eq!(
+		closed.len() + levers.len(),
+		open.len(),
+		"and nothing else went with them"
+	);
+	admin.msgs.clear();
+
+	for lever in &levers {
+		let line = match *lever {
+			"/give" => "/give guest aether 7".to_string(),
+			"/reset" => "/reset guest".to_string(),
+			other => panic!("a new lever {other} needs a line here"),
+		};
+		sim.tick_once(vec![chat(1, &line)]);
+		admin.drain();
+		assert!(
+			answered(&admin, |r| matches!(
+				r,
+				AdminReply::WithheldOnRankedServer { command } if command == lever
+			)),
+			"{lever} is withheld by name: {:?}",
+			admin.msgs
+		);
+		admin.msgs.clear();
+	}
+	assert_eq!(
+		sim.test_sub_count(2, Essence::Aether),
+		0,
+		"nothing was given"
+	);
+	assert_eq!(sim.test_mining_level(2), level, "nobody was reset");
+	guest.drain();
+	assert!(
+		guest.msgs.is_empty(),
+		"the target heard nothing: {:?}",
+		guest.msgs
+	);
+
+	sim.tick_once(vec![chat(1, "/help")]);
+	admin.drain();
+	let listed: Vec<String> = replies(&admin)
+		.into_iter()
+		.filter_map(|r| match r {
+			AdminReply::CommandHint { usage, .. } => Some(stem(&usage).to_string()),
+			_ => None,
+		})
+		.collect();
+	assert_eq!(listed, closed, "/help and the advertisement read one table");
+	admin.msgs.clear();
+
+	// The same verdict again moves nothing; a reversed one reopens the levers.
+	sim.tick_once(vec![SimEvent::Registered {
+		reports_skills: true,
+	}]);
+	admin.drain();
+	assert!(
+		advertised(&admin).is_none(),
+		"an unchanged verdict is not re-advertised"
+	);
+	admin.msgs.clear();
+	sim.tick_once(vec![SimEvent::Registered {
+		reports_skills: false,
+	}]);
+	admin.drain();
+	assert_eq!(advertised(&admin).as_deref(), Some(open.as_slice()));
+	sim.tick_once(vec![chat(1, "/give guest aether 7")]);
+	assert_eq!(
+		sim.test_sub_count(2, Essence::Aether),
+		7,
+		"unranked again, the gift lands"
+	);
 }

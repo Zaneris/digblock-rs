@@ -213,7 +213,9 @@ the bounds and charset, mirrored in the master's `Names` class — which is why 
 
 Admin is **accounts, never names** — the name compare it replaced made joining as "admin" a complete server takeover. A
 display name resolves to an id ONCE at boot, so a rename doesn't drop admin and an unresolvable admin is fatal rather
-than silently granted to nobody. `/reset` is a TEMPORARY testing lever. `/give` hands out ESSENCE rather than blocks on
+than silently granted to nobody. `/reset` is a TEMPORARY testing lever, and it and `/give` are WITHHELD on a ranked
+server (`admin::Scope::Unranked`, gated on `Sim::ranked`, which only `SimEvent::Registered` sets — the master's verdict,
+never the operator's): a number they minted would stand on the board. `/give` hands out ESSENCE rather than blocks on
 purpose — a block would be a world edit with no journal entry behind it, while essence rides the standing rebase; it
 parses `Essence::ident` — the untranslated operator's word, deliberately NOT the screens' label, so an admin types the
 same thing whatever language the client shows. Compass in `/tp`: east = sunrise = −x.

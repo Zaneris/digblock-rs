@@ -36,11 +36,13 @@ The master already owns accounts and display names; servers already persist per-
 could report inflated totals — so the board takes reports from `Master:Hiscores:TrustedServers`, a hand-kept list of
 `host` or `host:port` entries matched against the address the server is LISTED at (which the probe verified), and from
 nobody else. Registration tells a server whether it is on the list (`RegisterOk.reportsSkills`), so an unlisted server
-never sends a report; one that did is refused with 403, and a refusal is final for that registration. The listing
-publishes the same answer (`ServerSummary.reportsSkills`) and the browser row wears it as the sigil's icon — a picture
-where the screens use pictures, never a word — so a player reads whether play here counts before spending a join.
-Reading is public. A signed attestation scheme was considered and declined: not worth its complexity at this player
-count, and the list is the honest statement of who is trusted.
+never sends a report; one that did is refused with 403, and a refusal is final for that registration. The same verdict
+reaches the sim as `SimEvent::Registered` and closes the two admin levers that mint progress, `/give` and `/reset` —
+withheld from the advertisement, from `/help` and at dispatch (`admin::Scope::Unranked`), since a ranked server's every
+total is a claim on the ladder. The listing publishes the same answer (`ServerSummary.reportsSkills`) and the browser
+row wears it as the sigil's icon — a picture where the screens use pictures, never a word — so a player reads whether
+play here counts before spending a join. Reading is public. A signed attestation scheme was considered and declined: not
+worth its complexity at this player count, and the list is the honest statement of who is trusted.
 
 **And the pull.** The board is not only a mirror: `/api/tokens/verify` answers with the account's totals as the board
 holds them, and every server — trusted or not, since only the WRITE is gated — folds them into its own record at join

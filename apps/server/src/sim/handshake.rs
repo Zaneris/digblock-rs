@@ -310,7 +310,7 @@ impl Sim {
 		// The server's command set, so the chat box can autocomplete —
 		// admin only (nobody else can use them, or needs to see them).
 		if self.is_admin(account) {
-			send_frame(&out, &admin::commands_msg());
+			send_frame(&out, &admin::commands_msg(self.ranked));
 		}
 		self.clients.insert(
 			conn_id,

@@ -13,37 +13,67 @@ use digblock_net::messages::{AdminReply, AdminUsage, NoPlayer, ServerMsg};
 use digblock_net::protocol::validate_name;
 use glam::Vec3;
 
-/// `(usage, description)` — usage's first token is the dispatch key and
+/// Where a command is offered. `Unranked` marks the testing levers that mint progress out of
+/// nothing: a server whose totals reach the board withholds them, or one `/give` would put a number
+/// on the ladder nobody earned. Checked at dispatch AND at the advertisement, from one table.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Scope {
+	Any,
+	Unranked,
+}
+
+/// `(usage, description, scope)` — usage's first token is the dispatch key and
 /// the client's autocomplete stem.
-const COMMANDS: &[(&str, &str)] = &[
-	("/help", "list admin commands"),
+const COMMANDS: &[(&str, &str, Scope)] = &[
+	("/help", "list admin commands", Scope::Any),
 	(
 		"/tp <x> <z> [n|s|e|w]",
 		"land on the column top; ~ or ~<d> is relative",
+		Scope::Any,
 	),
-	("/goto <name>", "go to a player"),
+	("/goto <name>", "go to a player", Scope::Any),
 	(
 		"/time [hh:mm]",
 		"show or set the clock; 6:00 sunrise, 18:00 sunset",
+		Scope::Any,
 	),
-	("/bring <name>", "pull a player to you"),
+	("/bring <name>", "pull a player to you", Scope::Any),
 	(
 		"/give <name> <essence> [n]",
 		"credit essence; naming none lists them",
+		Scope::Unranked,
 	),
 	(
 		"/reset <name>",
 		"testing: wipe a player's skills and inventory",
+		Scope::Unranked,
 	),
-	("/ban <name>", "kick a player and ban their IP"),
-	("/ban-list", "list bans"),
-	("/unban <name-or-ip>", "remove a ban"),
-	("/set-spawn", "move spawn to the block you aim at"),
+	("/ban <name>", "kick a player and ban their IP", Scope::Any),
+	("/ban-list", "list bans", Scope::Any),
+	("/unban <name-or-ip>", "remove a ban", Scope::Any),
+	(
+		"/set-spawn",
+		"move spawn to the block you aim at",
+		Scope::Any,
+	),
 	(
 		"/set-spawn-dir [n|s|e|w]",
 		"set spawn facing; no argument uses yours",
+		Scope::Any,
 	),
 ];
+
+/// The dispatch stem of a usage line.
+fn stem(usage: &str) -> &str {
+	usage.split_ascii_whitespace().next().unwrap_or(usage)
+}
+
+/// The rows a server offers: every row, less the `Unranked` ones once the board is listening.
+fn offered(ranked: bool) -> impl Iterator<Item = &'static (&'static str, &'static str, Scope)> {
+	COMMANDS
+		.iter()
+		.filter(move |(_, _, scope)| !(ranked && *scope == Scope::Unranked))
+}
 
 /// `/tp` coordinate clamp: far past any playable range, comfortably
 /// inside f32 world-position precision.
@@ -81,12 +111,11 @@ pub(super) fn server_reply(r: AdminReply) -> ServerMsg {
 	ServerMsg::Admin(r)
 }
 
-/// The advertisement sent to the admin at join.
-pub(super) fn commands_msg() -> ServerMsg {
+/// The advertisement sent to the admin at join, and again if the verdict moves while they play.
+pub(super) fn commands_msg(ranked: bool) -> ServerMsg {
 	ServerMsg::AdminCommands {
-		commands: COMMANDS
-			.iter()
-			.map(|(u, d)| (u.to_string(), d.to_string()))
+		commands: offered(ranked)
+			.map(|(u, d, _)| (u.to_string(), d.to_string()))
 			.collect(),
 	}
 }
@@ -152,9 +181,23 @@ impl Sim {
 		let mut parts = line.split_ascii_whitespace();
 		let cmd = parts.next().unwrap_or("");
 		let args: Vec<&str> = parts.collect();
+		// Withheld before the match, so a lever the table closes cannot be reached by a typed
+		// line the advertisement never offered.
+		if self.ranked
+			&& COMMANDS
+				.iter()
+				.any(|(u, _, scope)| *scope == Scope::Unranked && stem(u) == cmd)
+		{
+			return self.reply(
+				conn_id,
+				AdminReply::WithheldOnRankedServer {
+					command: cmd.to_string(),
+				},
+			);
+		}
 		match cmd {
 			"/help" => {
-				for (usage, desc) in COMMANDS {
+				for (usage, desc, _) in offered(self.ranked) {
 					self.reply(
 						conn_id,
 						AdminReply::CommandHint {
@@ -193,6 +236,20 @@ impl Sim {
 			return;
 		};
 		client_send(client, &server_reply(r));
+	}
+
+	/// The master's verdict landed. A verdict that moved re-advertises to every admin online, so
+	/// the chat box stops (or starts) completing a lever the server would refuse.
+	pub(super) fn set_ranked(&mut self, ranked: bool) {
+		if self.ranked == ranked {
+			return;
+		}
+		self.ranked = ranked;
+		for client in self.clients.values() {
+			if self.is_admin(client.account) {
+				client_send(client, &commands_msg(ranked));
+			}
+		}
 	}
 
 	fn cmd_tp(&mut self, conn_id: u64, args: &[&str]) {
