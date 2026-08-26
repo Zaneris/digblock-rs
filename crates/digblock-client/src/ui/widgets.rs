@@ -254,6 +254,21 @@ fn walk_chips(style: &Style, x: f32, y: f32, max_w: f32, chips: &[Chip], mut f: 
 	}
 }
 
+/// The width a chip's number takes — what a page reserving a column of
+/// amounts measures its widest row by.
+pub fn amount_w(style: &Style, n: u32) -> f32 {
+	let mut buf = [0u8; 10];
+	style.measure(digits(n, &mut buf))
+}
+
+/// The span of a row's two fare columns — the icon and the `amount_w`
+/// reserved for its number — as [`row`] lays them out from the right
+/// edge. The width a page sizes a fare row by, and the box it hit-tests
+/// for hover.
+pub fn fare_cols_w(style: &Style, amount_w: f32) -> f32 {
+	style.glyph + super::theme::CHIP_GAP * style.scale + amount_w
+}
+
 /// The run of `chips` laid out from `(x, y)`, as [`walk_chips`] places
 /// them — the measure half of [`chips`], and what a screen hit-tests for
 /// hover.
@@ -357,8 +372,10 @@ pub fn tooltip(dl: &mut DrawList, style: &Style, size: (u32, u32), anchor: Rect,
 pub enum RowRight<'a> {
 	/// Coloured text (a ping, a hint, a state).
 	Text(&'a str, u32),
-	/// An amount with an icon (a fare).
-	Chip(Chip),
+	/// An amount with an icon (a fare), drawn as two columns: the number
+	/// right-aligned inside `amount_w` — the widest amount on the page, so
+	/// every row's icon lands on one vertical — and the icon just left of it.
+	Chip { chip: Chip, amount_w: f32 },
 }
 
 /// One menu-style row's content, rendered by [`row`].
@@ -440,11 +457,24 @@ pub fn row(dl: &mut DrawList, style: &Style, layer: Layer, rect: Rect, c: RowCon
 			let rx = rect.x + rect.w - pad_x - style.measure(right);
 			dl.text(layer, rx, text_y, glyph, color, right);
 		}
-		Some(RowRight::Chip(chip)) => {
-			let run = [chip];
-			let rx = rect.x + rect.w - pad_x - chips_w(style, &run);
-			let top = rect.y + (rect.h - super::theme::ROW_H * style.scale) / 2.0;
-			chips(dl, style, layer, rx, top, f32::INFINITY, &run);
+		Some(RowRight::Chip { chip, amount_w }) => {
+			let right = rect.x + rect.w - pad_x;
+			let icon_x = right - fare_cols_w(style, amount_w);
+			super::hud::draw_icon(
+				dl,
+				Layer::Icons,
+				Rect::new(icon_x, text_y, glyph, glyph),
+				chip.kind,
+				chip.tint,
+			);
+			dl.text_fmt(
+				layer,
+				right - self::amount_w(style, chip.n),
+				text_y,
+				glyph,
+				chip.ink,
+				format_args!("{}", chip.n),
+			);
 		}
 		None => {}
 	}
