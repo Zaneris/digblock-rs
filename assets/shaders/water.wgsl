@@ -169,11 +169,21 @@ fn ripple_grad(p: vec2f, t: f32, flow: vec2f, boost: f32, dist: f32) -> vec2f {
 // fallback — so shoreline blocks, trees and cliffs mirror where the screen knows them, and open
 // water still mirrors the actual sky. The sun/moon discs are deliberately absent: the analytic
 // specular lobe plays their role on the rippled surface.
-// Schlick's approximation at the water's F0, the one place the interface's
-// reflectance lives; `c` is the cosine on the AIR side of the interface.
-fn schlick(c: f32) -> f32 {
-	return 0.02 + 0.98 * pow(1.0 - c, 5.0);
+// Schlick's approximation from a head-on reflectance `f0`; `c` is the cosine
+// on the AIR side of the interface.
+fn schlick_at(f0: f32, c: f32) -> f32 {
+	return f0 + (1.0 - f0) * pow(1.0 - c, 5.0);
 }
+
+// The interface's reflectance from above, at water's own head-on value.
+fn schlick(c: f32) -> f32 {
+	return schlick_at(0.02, c);
+}
+
+// The underside's head-on reflectance, a LOOK rather than water's number: the
+// surface overhead should read as a mirror without a Snell's window to give
+// it an edge, and water's F0 makes it nearly invisible head-on.
+const UNDERSIDE_F0 = 0.25;
 
 // The mirror's analytic fallback above the surface, UNPROVEN sky — an
 // underground pool must not mirror the daytime dome through its ceiling (R32;
@@ -553,7 +563,11 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	var rr = reflect(-vdir, nrm);
 	rr.y = select(max(rr.y, 0.02), min(rr.y, -0.02), below);
 	rr = normalize(rr);
-	let mirror_w = fres * select(1.0 - 0.7 * frame.water_misc.x, 1.0, below);
+	let mirror_w = select(
+		fres * (1.0 - 0.7 * frame.water_misc.x),
+		schlick_at(UNDERSIDE_F0, abs(dot(vdir, nrm))) * mirror,
+		below,
+	);
 	let mirror_fallback = select(
 		mirror_sky(i.world, rr),
 		medium_water_endless(sky_down, 0.0, -rr.y),
