@@ -248,7 +248,9 @@ actions returned rather than applied. Six spell families shipped; the rest are �
   one seq (`EditKind::PlaceArc`), debiting one block per cell. The server re-derives the line from its own raycast (the
   pick's no-cheat-surface rule) and the line is **all or nothing** — a partial line would leave the two ends deriving
   different sets. The arc multiplies PLAIN placements only: slabs grow, doors pair and water pours, each its own
-  machinery the line must not multiply. No XP by design — placement paying XP would make place-spam a faucet.
+  machinery the line must not multiply. It pays Arcana for its REACH alone (`skills::arc_xp`): the cells past the first,
+  at the smallest rate on the ladder — every cell is billed out of the player's own stock, so the ordinary place pays
+  nothing and place-spam is no faucet.
 - **Travel** — Return Home (§2) and the waystone roster (§3), each cast a channel with the same interruption surface.
 
 ## 6. Costs & XP — Arcana is the standing essence sink
@@ -279,7 +281,7 @@ actions returned rather than applied. Six spell families shipped; the rest are �
   cold port the LEAST Arcana of any port in the roster. A price retune still moves its XP with it, and
   `the_port_tables_are_twins_and_the_fare_is_payable` sweeps the level-sorted roster to keep the award STRICTLY rising
   with remoteness, which is the property the amounts alone can no longer carry. Home derives from distance instead (§2),
-  and the Arc pays zero — the three shapes are pinned together.
+  and the Arc pays its reach — the three shapes are pinned together.
 - **The fares ARE Arcana's XP spine** — there is no other Arcana faucet but repeatable play: ports, returns, kindles and
   wisps, each paying what it drains (§3 records why the first-arrival milestone was withdrawn). Records written while
   milestones existed carry Arcana totals this ladder cannot produce, so the player store winds Arcana — and only Arcana

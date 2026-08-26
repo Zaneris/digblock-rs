@@ -378,10 +378,11 @@ Everything asks `dig_blocked`, which returns the first unmet `Requirement` — t
 wording lives in core: the client's `voice` turns one into the ONE sentence that gate speaks, naming the block and the
 level that opens it, which is why the wire sends a reason and never a sentence.
 
-**XP is server-computed at exactly three chokepoints** — the dig-credit block in `sim/edits.rs`, `process_alchemy` and
-`process_cast` — and reaches the client as `ServerMsg::XpGain` carrying the new **TOTAL** (idempotent, reorder-safe).
-Join sync always sends `ServerMsg::Skills`, even empty, right after `Layout`. Offline play awards through the same core
-functions in the engine's offline arms only — **never award in the shared prediction path, or multiplayer double-pays.**
+**XP is server-computed at exactly three chokepoints** — the edit-credit block in `sim/edits.rs` (a dig, or an Arc's
+reach), `process_alchemy` and `process_cast` — and reaches the client as `ServerMsg::XpGain` carrying the new **TOTAL**
+(idempotent, reorder-safe). Join sync always sends `ServerMsg::Skills`, even empty, right after `Layout`. Offline play
+awards through the same core functions in the engine's offline arms only — **never award in the shared prediction path,
+or multiplayer double-pays.**
 
 **The hiscores board is written by trusted servers only** (SOCIAL-DESIGN.md §1): `Master:Hiscores:TrustedServers` is a
 hand-kept list of `host` or `host:port` entries, matched against the address a server is LISTED at, and a server learns

@@ -1439,6 +1439,13 @@ impl Engine {
 				);
 			}
 			_ => {
+				// The offline award arm ONLY — the shared path never
+				// awards, or multiplayer double-pays. Online the server's
+				// `XpGain` carries the Arc's award.
+				self.award_xp_offline(
+					digblock_core::skills::Skill::Arcana,
+					digblock_core::skills::arc_xp(arc_len as usize),
+				);
 				for &(c, _, _) in &entries {
 					self.fluid.schedule_around(c.0, c.1, c.2);
 				}

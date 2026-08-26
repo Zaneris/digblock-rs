@@ -579,6 +579,26 @@ fn alchemy_xp_derives_from_the_base_tables() {
 	assert!(craft_xp(B::EssenceSiphon) > craft_xp(B::Bucket));
 }
 
+/// The arc pays for its REACH and never for the place itself: the single cell below the first
+/// rank — the ordinary place — is worth nothing, and each rank the line widens at pays more than
+/// the one below. Swept over every level rather than the two rungs, and counted.
+#[test]
+fn an_arc_pays_for_its_reach_and_nothing_for_the_place() {
+	use crate::unlock::arc_cells;
+	assert_eq!(arc_xp(arc_cells(0)), 0, "the ordinary place pays nothing");
+	let mut widened = 0u32;
+	for level in 1..=MAX_LEVEL {
+		let (below, here) = (arc_cells(level - 1), arc_cells(level));
+		if here > below {
+			assert!(arc_xp(here) > arc_xp(below), "rank at {level}");
+			widened += 1;
+		} else {
+			assert_eq!(arc_xp(here), arc_xp(below), "no rank at {level}");
+		}
+	}
+	assert_eq!(widened, 2, "the arc has two ranks");
+}
+
 /// The master derives board levels from a COPY of this module's curve and skill roster
 /// (`apps/master/Hiscores/Skills.cs`), and nothing in either build system can check one against
 /// the other — so this reads the C# source and does. A drift would rank players by a curve the
