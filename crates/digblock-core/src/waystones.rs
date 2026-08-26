@@ -30,19 +30,57 @@ pub const MIN_SEPARATION: i32 = 320;
 /// roster written under an older rule is discarded and re-placed once.
 pub const PLACEMENT_RULE: u32 = 2;
 
-/// Where the four standing stones rise, as offsets from the pad centre:
-/// outside the validated CLEAR disc (the site must pass its own
-/// `stands_clear`), inside the LOCK_RADIUS sphere (the lock must cover
-/// every cell the stamp writes).
-const STONE_OUT: i32 = CLEAR + 2;
+/// Where the four standing stones rise, as the offset on BOTH axes from
+/// the pad centre — one diagonally off each platform corner: outside the
+/// validated CLEAR disc (the site must pass its own `stands_clear`) and
+/// inside the LOCK_RADIUS sphere (the lock must cover every cell the
+/// stamp writes — and a corner reaches √2 farther out than a cardinal).
+const STONE_OUT: i32 = CLEAR + 1;
 /// Shaft height above the platform, capstone on top.
 const STONE_H: i32 = 2;
 
 const _: () = assert!(STONE_OUT > CLEAR, "stones must clear the validated disc");
-// The farthest stamped cell — a capstone's top at (STONE_OUT, STONE_H + 1)
+// The farthest stamped cell — a capstone's top at (STONE_OUT, STONE_H + 1, STONE_OUT)
 // — stays inside the lock sphere, so protection covers the whole build.
 const _: () =
-	assert!(STONE_OUT * STONE_OUT + (STONE_H + 1) * (STONE_H + 1) <= LOCK_RADIUS * LOCK_RADIUS);
+	assert!(2 * STONE_OUT * STONE_OUT + (STONE_H + 1) * (STONE_H + 1) <= LOCK_RADIUS * LOCK_RADIUS);
+
+/// Where the stones stood before they moved to the corners: at the
+/// cardinals, this far out. A MIGRATION rather than part of the build —
+/// a pad stamped under that design still wears four stones there and
+/// the stamp is the only thing that may take them down. Delete with
+/// [`retired`] once no world stands on it.
+const RETIRED_STONE_OUT: i32 = CLEAR + 2;
+/// The retired design's shaft height — its own figure, so a retune of
+/// `STONE_H` cannot make the migration miss a cell it wrote.
+const RETIRED_STONE_H: i32 = 2;
+
+/// One cell of an arrival pad's structure, as a write against the
+/// world: `to` is what the pad wants there. A BUILD write lands whatever
+/// stands there; an UNBUILD write (`from` set) lands only while the
+/// retired design's own block still stands, so ground the old stamp
+/// never touched, or anything built since, is left alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Write {
+	pub x: i32,
+	pub y: i32,
+	pub z: i32,
+	pub from: Option<u16>,
+	pub to: u16,
+}
+
+impl Write {
+	/// Whether this write is still owed against what the cell holds —
+	/// `None` for a cell no journal has ever written. Either kind is a
+	/// no-op once the cell holds `to`, which is what makes a re-stamp
+	/// converge.
+	pub fn owed(&self, cur: Option<u16>) -> bool {
+		match self.from {
+			None => cur != Some(self.to),
+			Some(from) => cur == Some(from),
+		}
+	}
+}
 
 /// The world's waystones, resolved rung by rung. The roster resolves as a SET because
 /// [`MIN_SEPARATION`] is mutual — see the module header. Placement order is the ladder's, lowest
@@ -161,40 +199,82 @@ fn crowds(x: i32, z: i32, other: Vec3) -> bool {
 
 /// The structure every arrival pad wears, as writes against the world:
 /// a polished platform REPLACING the ground under the validated disc,
-/// and four stone shafts at the cardinals, capped with lamps. Pure — the
-/// caller applies through its own authoritative path, and skips cells
-/// already holding the value so a re-stamp is a no-op.
-pub fn stamp(eye: Vec3) -> Vec<(i32, i32, i32, u16)> {
+/// four stone shafts at the corners capped with lamps, and the retired
+/// design's stones taken down. Pure — the caller applies each write
+/// its [`Write::owed`] says is due through its own authoritative path.
+pub fn stamp(eye: Vec3) -> Vec<Write> {
 	let (x, z) = (eye.x.floor() as i32, eye.z.floor() as i32);
 	let h = eye.y.floor() as i32 - 2;
+	let build = |x, y, z, b: BlockType| Write {
+		x,
+		y,
+		z,
+		from: None,
+		to: b as u16,
+	};
 	let mut out = Vec::new();
 	// The platform: the exact floor cells `stands_clear` requires solid,
 	// so the stamp can never invalidate its own pad.
 	for dz in -CLEAR..=CLEAR {
 		for dx in -CLEAR..=CLEAR {
-			out.push((x + dx, h, z + dz, BlockType::PolishedStone as u16));
+			out.push(build(x + dx, h, z + dz, BlockType::PolishedStone));
 		}
 	}
-	// The four standing stones, at the cardinals.
+	// The four standing stones, one off each corner of the platform.
 	for (dx, dz) in [
-		(STONE_OUT, 0),
-		(-STONE_OUT, 0),
-		(0, STONE_OUT),
-		(0, -STONE_OUT),
+		(STONE_OUT, STONE_OUT),
+		(-STONE_OUT, STONE_OUT),
+		(STONE_OUT, -STONE_OUT),
+		(-STONE_OUT, -STONE_OUT),
 	] {
 		// A footing under the shaft, flush with the platform's plane.
-		out.push((x + dx, h, z + dz, BlockType::PolishedStone as u16));
+		out.push(build(x + dx, h, z + dz, BlockType::PolishedStone));
 		for dy in 1..=STONE_H {
-			out.push((x + dx, h + dy, z + dz, BlockType::StoneBrick as u16));
+			out.push(build(x + dx, h + dy, z + dz, BlockType::StoneBrick));
 		}
-		out.push((
+		out.push(build(
 			x + dx,
 			h + STONE_H + 1,
 			z + dz,
-			BlockType::Aetherlamp as u16,
+			BlockType::Aetherlamp,
 		));
 	}
+	out.extend(retired(x, h, z));
 	out
+}
+
+/// The unbuild half of the stamp: every cell the retired design wrote
+/// that the current one does not, guarded on the block it put there.
+/// Dismantled to air — no reader of the pristine cell exists, and the
+/// guard already keeps this off anything the old stamp did not touch.
+fn retired(x: i32, h: i32, z: i32) -> impl Iterator<Item = Write> {
+	let unbuild = move |x, y, z, b: BlockType| Write {
+		x,
+		y,
+		z,
+		from: Some(b as u16),
+		to: BlockType::Air as u16,
+	};
+	[
+		(RETIRED_STONE_OUT, 0),
+		(-RETIRED_STONE_OUT, 0),
+		(0, RETIRED_STONE_OUT),
+		(0, -RETIRED_STONE_OUT),
+	]
+	.into_iter()
+	.flat_map(move |(dx, dz)| {
+		let (sx, sz) = (x + dx, z + dz);
+		std::iter::once(unbuild(sx, h, sz, BlockType::PolishedStone))
+			.chain(
+				(1..=RETIRED_STONE_H).map(move |dy| unbuild(sx, h + dy, sz, BlockType::StoneBrick)),
+			)
+			.chain(std::iter::once(unbuild(
+				sx,
+				h + RETIRED_STONE_H + 1,
+				sz,
+				BlockType::Aetherlamp,
+			)))
+	})
 }
 
 #[cfg(test)]
@@ -218,11 +298,56 @@ mod tests {
 		let region = crate::spawn::lock_region(eye);
 		let writes = stamp(eye);
 		assert!(!writes.is_empty());
-		for &(x, y, z, _) in &writes {
+		for w in &writes {
 			assert!(
-				region.contains(x, y, z),
-				"stamped cell ({x},{y},{z}) is outside the lock"
+				region.contains(w.x, w.y, w.z),
+				"stamped cell ({},{},{}) is outside the lock",
+				w.x,
+				w.y,
+				w.z
 			);
+		}
+	}
+
+	/// The build and the unbuild name disjoint cells: were a retired
+	/// cell also a built one, the two writes would fight over it and
+	/// the stamp could never converge.
+	#[test]
+	fn the_build_and_the_unbuild_never_share_a_cell() {
+		let writes = stamp(eye_at(0, 100, 0));
+		let built: std::collections::HashSet<_> = writes
+			.iter()
+			.filter(|w| w.from.is_none())
+			.map(|w| (w.x, w.y, w.z))
+			.collect();
+		let mut unbuilt = 0u32;
+		for w in writes.iter().filter(|w| w.from.is_some()) {
+			assert!(!built.contains(&(w.x, w.y, w.z)), "{w:?} is also built");
+			unbuilt += 1;
+		}
+		assert!(unbuilt > 0, "the migration names nothing");
+	}
+
+	/// An unbuild write is owed only while the retired design's own
+	/// block stands there — never against pristine ground, a player's
+	/// block, or a cell already cleared; a build write is owed against
+	/// anything but its own value. Swept over the whole stamp.
+	#[test]
+	fn a_write_is_owed_against_exactly_what_it_may_change() {
+		let foreign = BlockType::Dirt as u16;
+		for w in stamp(eye_at(5, 100, -5)) {
+			assert!(!w.owed(Some(w.to)), "{w:?} owed against itself");
+			match w.from {
+				None => {
+					assert!(w.owed(None), "{w:?} not owed on pristine ground");
+					assert!(w.owed(Some(foreign)), "{w:?} not owed over a foreign block");
+				}
+				Some(from) => {
+					assert!(w.owed(Some(from)), "{w:?} not owed over its own relic");
+					assert!(!w.owed(None), "{w:?} would carve pristine ground");
+					assert!(!w.owed(Some(foreign)), "{w:?} would clear a foreign block");
+				}
+			}
 		}
 	}
 
@@ -234,12 +359,13 @@ mod tests {
 		let eye = eye_at(0, 130, 0);
 		let (cx, cz, h) = (0, 0, 130);
 		let mut floor = 0u32;
-		for &(x, y, z, v) in &stamp(eye) {
+		for w in stamp(eye).iter().filter(|w| w.from.is_none()) {
+			let (x, y, z) = (w.x, w.y, w.z);
 			let in_disc = (x - cx).abs() <= CLEAR && (z - cz).abs() <= CLEAR;
 			if in_disc {
 				assert_eq!(y, h, "a disc write must be the floor itself");
 				assert!(
-					crate::block::BlockType::try_from_id(crate::chunk::cell_id(v))
+					crate::block::BlockType::try_from_id(crate::chunk::cell_id(w.to))
 						.is_some_and(|b| b.props().solid),
 					"the floor must stay solid ground"
 				);
@@ -265,11 +391,11 @@ mod tests {
 		let h = 98;
 		let writes = stamp(eye);
 		let cell = |x: i32, y: i32, z: i32| -> Option<u16> {
-			if let Some(&(_, _, _, v)) = writes
+			if let Some(w) = writes
 				.iter()
-				.find(|&&(wx, wy, wz, _)| (wx, wy, wz) == (x, y, z))
+				.find(|w| w.from.is_none() && (w.x, w.y, w.z) == (x, y, z))
 			{
-				return Some(v);
+				return Some(w.to);
 			}
 			// Flat synthetic ground: solid at and below the floor.
 			Some(if y <= h {

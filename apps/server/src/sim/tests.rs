@@ -2988,8 +2988,11 @@ fn a_site_stamp_lands_once_and_converges() {
 		.filter(|m| matches!(m, ServerMsg::EditApplied { .. }))
 		.count();
 	assert!(landed > 0, "the stamp wrote nothing");
-	for (x, y, z, v) in digblock_core::waystones::stamp(FLAT_SPAWN) {
-		assert_eq!(sim.test_cell_at(x, y, z), Some(v), "cell ({x},{y},{z})");
+	for w in digblock_core::waystones::stamp(FLAT_SPAWN) {
+		assert!(
+			!w.owed(sim.test_cell_at(w.x, w.y, w.z)),
+			"{w:?} still owed after the stamp"
+		);
 	}
 	// Idempotence: the journal already holds every value.
 	c.msgs.clear();
@@ -3003,6 +3006,54 @@ fn a_site_stamp_lands_once_and_converges() {
 			.count(),
 		0,
 		"a re-stamp re-broadcast cells it already owns"
+	);
+}
+
+/// A pad stamped under the retired design is MOVED, not doubled: the
+/// stamp takes down every relic still standing where the old stones
+/// were, and leaves a cell alone where a player has since built —
+/// the guard is the relic's own block, and nothing else earns a clear.
+#[test]
+fn a_stamp_takes_down_the_retired_stones_and_nothing_else() {
+	use digblock_core::block::BlockType;
+	use digblock_core::chunk::make_cell;
+	let mut sim = flat_sim("restamp");
+	let _c = connect(&mut sim, 1);
+	wait_live(&mut sim, 1);
+	let writes = digblock_core::waystones::stamp(FLAT_SPAWN);
+	let relics: Vec<_> = writes.iter().filter(|w| w.from.is_some()).collect();
+	assert!(relics.len() > 1, "the migration names too little to test");
+	// Every relic but the last stands as the old design left it; the
+	// last is a player's block on a cell the old design once held.
+	let (rebuilt, relics) = relics.split_last().unwrap();
+	let player_block = make_cell(BlockType::Dirt, 0);
+	for w in relics {
+		sim.journal_write(
+			(w.x, w.y, w.z),
+			w.from.unwrap(),
+			digblock_net::protocol::SERVER_ID,
+		);
+	}
+	sim.journal_write(
+		(rebuilt.x, rebuilt.y, rebuilt.z),
+		player_block,
+		digblock_net::protocol::SERVER_ID,
+	);
+	sim.stamp_site(FLAT_SPAWN);
+	for w in relics {
+		assert_eq!(
+			sim.journal_cell(w.x, w.y, w.z),
+			Some(w.to),
+			"the relic at {},{},{} survived the stamp",
+			w.x,
+			w.y,
+			w.z
+		);
+	}
+	assert_eq!(
+		sim.journal_cell(rebuilt.x, rebuilt.y, rebuilt.z),
+		Some(player_block),
+		"a player's block on a retired cell was cleared"
 	);
 }
 

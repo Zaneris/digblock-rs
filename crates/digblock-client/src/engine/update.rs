@@ -413,10 +413,10 @@ impl Engine {
 			if !self.pending_stamp.is_empty() {
 				let pipeline = &mut self.pipeline;
 				self.pending_stamp
-					.retain(|&(x, y, z, v)| match pipeline.cell_at(x, y, z) {
-						Some(cur) if cur == v => false,
-						Some(_) => pipeline.set_cell(x, y, z, v).is_none(),
+					.retain(|w| match pipeline.cell_at(w.x, w.y, w.z) {
 						None => true,
+						Some(cur) if !w.owed(Some(cur)) => false,
+						Some(_) => pipeline.set_cell(w.x, w.y, w.z, w.to).is_none(),
 					});
 			}
 		}

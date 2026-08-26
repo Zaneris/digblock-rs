@@ -878,11 +878,10 @@ fn a_set_spawn_moves_the_lock_and_becomes_the_spawn() {
 	// The structure followed the point: every cell the stamp names holds
 	// its value at the new site — asserted over the builder's own list,
 	// so a redesigned stamp keeps this test without edits.
-	for (x, y, z, v) in digblock_core::waystones::stamp(set) {
-		assert_eq!(
-			sim.test_cell_at(x, y, z),
-			Some(v),
-			"stamped cell ({x},{y},{z}) missing after /set-spawn"
+	for w in digblock_core::waystones::stamp(set) {
+		assert!(
+			!w.owed(sim.test_cell_at(w.x, w.y, w.z)),
+			"{w:?} still owed after /set-spawn"
 		);
 	}
 

@@ -226,8 +226,9 @@ impl Sim {
 	/// path; a non-resident one is journal-only, which join sync and the
 	/// standing resync repair deliver exactly like any other edit.
 	pub(super) fn stamp_site(&mut self, eye: Vec3) {
-		for (x, y, z, v) in digblock_core::waystones::stamp(eye) {
-			if self.journal_cell(x, y, z) == Some(v) {
+		for w in digblock_core::waystones::stamp(eye) {
+			let (x, y, z, v) = (w.x, w.y, w.z, w.to);
+			if !w.owed(self.journal_cell(x, y, z)) {
 				continue;
 			}
 			if let Some(prev) = self.store.set_cell(x, y, z, v) {
