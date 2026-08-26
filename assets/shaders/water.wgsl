@@ -177,11 +177,14 @@ fn schlick(c: f32) -> f32 {
 
 // Water's index of refraction: Snell's window from below is the ray this bends.
 const WATER_IOR = 1.333;
-// Where the underside's reflectance starts its climb to total, as the sine
-// squared of the bent ray: flat water turns total within a few degrees of the
-// critical angle, but a rippled interface integrates that step over its cone
-// of normals, and the wider band is what reads as a window rather than a hole.
+// The underside's reflectance past the critical angle climbs toward TIR_CAP,
+// across the band of the bent ray's sine squared that starts at SNELL_BAND —
+// deliberately short of the total reflection real water has. Total, the
+// underside mirrors a floor the screen cannot see and turns into a wall around
+// the window; the cap keeps it a mirror you can still see the sky through, and
+// the band is the rippled interface's cone of normals softening flat water's step.
 const SNELL_BAND = 0.6;
+const TIR_CAP = 0.55;
 
 // The mirror's analytic fallback above the surface, UNPROVEN sky — an
 // underground pool must not mirror the daytime dome through its ceiling (R32;
@@ -543,12 +546,14 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	// compresses the whole hemisphere into the cone and rings its edge with the horizon; the
 	// straight sample the sky pass left behind made the window a hole with the zenith in it.
 	// Bent here rather than by the sky pass, it has not travelled yet, so it joins the surface's
-	// own light below instead of the backdrop. `refract` answers zero past the critical angle,
-	// where the mirror takes the whole pixel and any finite direction serves.
+	// own light below instead of the backdrop. `refract` answers zero past the critical angle;
+	// the ray continues along the horizon in its own azimuth there, continuous with the edge.
 	var window = false;
 	if below && behind_sky {
-		let bent = refract(-vdir, -nrm, WATER_IOR);
-		let dir = select(vec3f(0.0, 1.0, 0.0), bent, dot(bent, bent) > 0.5);
+		let inc = -vdir;
+		let bent = refract(inc, -nrm, WATER_IOR);
+		let grazing = normalize(vec3f(inc.x, 0.0, inc.z) + vec3f(0.0, 0.02, 0.0));
+		let dir = select(grazing, bent, dot(bent, bent) > 0.5);
 		col = sky_dome(dir, frame.horizon.rgb, frame.zenith.rgb, frame.sun_dir, frame.moon_dir);
 		window = true;
 	}
@@ -568,10 +573,9 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	// Reflected sky, fresnel-blended: water mirrors the horizon at
 	// grazing angles and stays see-through head-on. SSR rides inside
 	// `reflection_color` and is explicitly staying. Seen from BELOW, the
-	// underside is Snell's window: past the critical angle it reflects the
-	// water totally, inside it by the fresnel of the bent ray — mirroring
-	// the seabed where the screen knows it and the column's own in-scatter
-	// where it does not, never the dome.
+	// underside mirrors the seabed where the screen knows it and the
+	// column's own in-scatter where it does not, never the dome, by the
+	// bent ray's fresnel inside the window and a CAPPED climb past it.
 	var rr = reflect(-vdir, nrm);
 	rr.y = select(max(rr.y, 0.02), min(rr.y, -0.02), below);
 	rr = normalize(rr);
@@ -579,7 +583,7 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	let sin_t2 = WATER_IOR * WATER_IOR * (1.0 - cos_i * cos_i);
 	let fres_in = mix(
 		schlick(sqrt(max(1.0 - sin_t2, 0.0))),
-		1.0,
+		TIR_CAP,
 		smoothstep(SNELL_BAND, 1.0, sin_t2),
 	) * mirror;
 	let mirror_w = select(fres * (1.0 - 0.7 * frame.water_misc.x), fres_in, below);
