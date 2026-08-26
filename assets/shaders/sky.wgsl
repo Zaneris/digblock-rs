@@ -42,5 +42,17 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	col += vec3f(0.9, 0.93, 1.0) * smoothstep(0.9996, 0.9999, dm);
 	// Stars fade in at night, suppressed in the horizon haze.
 	col += vec3f(sky_stars(ray)) * frame.sun_dir.w * smoothstep(0.0, 0.3, ray.y);
+	// Submerged, the dome is seen through the water: the column up to where the ray surfaces,
+	// or an endless one where it never does — which is what lies past the last streamed chunk,
+	// and was a raw sky beside a seabed the medium had faded into its own in-scatter.
+	if frame.water_misc.x > 0.5 {
+		let z0 = frame.water_misc.z;
+		let sky_down = frame.zenith.rgb * medium_sky_fade(frame.cam_pos.y + z0);
+		if ray.y > 1e-4 {
+			col = medium_water_column(col, sky_down, z0, -ray.y, z0 / ray.y);
+		} else {
+			col = medium_water_endless(sky_down, z0, -ray.y);
+		}
+	}
 	return vec4f(col, 1.0);
 }

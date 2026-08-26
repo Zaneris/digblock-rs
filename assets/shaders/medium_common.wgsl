@@ -79,6 +79,13 @@ fn medium_water_column(col: vec3f, sky_down: vec3f, z0: f32, s: f32, d: f32) -> 
 	return col * medium_water_tr(dd) + WATER_ALBEDO * sky_down * medium_water_tr(z0) * grow;
 }
 
+// The column above with no end: what a submerged eye sees along a ray that
+// never surfaces — past the last streamed chunk, or reflected off the
+// underside. `s` is non-negative there, so `1 + s` cannot vanish.
+fn medium_water_endless(sky_down: vec3f, z0: f32, s: f32) -> vec3f {
+	return WATER_ALBEDO * sky_down * medium_water_tr(z0) / (1.0 + max(s, 0.0));
+}
+
 // The streaming boundary, a separate fact from the air: the medium hides no edge
 // at any honest sigma, so it gets its own term. Terrain streams in a vertical
 // CYLINDER of draw_dist chunks, so the world's edge sits at a fixed HORIZONTAL
@@ -86,6 +93,13 @@ fn medium_water_column(col: vec3f, sky_down: vec3f, z0: f32, s: f32, d: f32) -> 
 // downward look. It fades to the same in-scattered sky, so the two agree.
 fn medium_rim(horiz_dist: f32, far: f32) -> f32 {
 	return smoothstep(far * 0.82, far, horiz_dist);
+}
+
+// The rim as a mix toward `sky_f`, the caller's (depth-faded) in-scatter: a
+// deep fragment at the streaming edge fades to dark rather than to sky,
+// consistent by construction.
+fn medium_rim_mix(col: vec3f, sky_f: vec3f, cam: vec3f, world: vec3f, far: f32) -> vec3f {
+	return mix(col, sky_f, medium_rim(distance(cam.xz, world.xz), far));
 }
 
 // The whole primary-ray medium: surface colour `col` at `world`, seen from
@@ -103,14 +117,18 @@ fn medium_view(
 	far: f32,
 ) -> vec3f {
 	let d = distance(cam, world);
-	var out = col;
-	var air = d;
 	// In-scatter is SKY light, and underground there is none: the medium has no
 	// occlusion term, so without this a 50-block tunnel view in-scattered a
 	// distance-proportional slice of full daylight at any depth — the dominant
 	// leak R32 removes. Faded at the FRAGMENT's altitude, so a viewer looking out
 	// of a tunnel mouth still sees full haze on the surface beyond it.
 	let sky_f = sky * medium_sky_fade(world.y);
+	// The rim FIRST. It stands for the unstreamed world beyond the surface, which
+	// a submerged eye sees through the same water as the surface itself — so it
+	// fades toward the column's in-scatter with everything else, rather than
+	// toward a dome the water never tinted. Dry, the two mixes commute.
+	var out = medium_rim_mix(col, sky_f, cam, world, far);
+	var air = d;
 	if water_misc.x > 0.5 {
 		let ray = (world - cam) / max(d, 1e-4);
 		// The submerged segment ends where the ray leaves the water —
@@ -127,10 +145,5 @@ fn medium_view(
 		air = d - dw;
 	}
 	let tr = medium_air_tr(air);
-	out = out * tr + sky_f * (1.0 - tr);
-	// The rim fades to the same (depth-faded) in-scatter, so a deep
-	// fragment at the streaming edge fades to dark rather than to sky —
-	// consistent by construction, and invisible in practice: the rim
-	// lives at the horizon, which is surface terrain.
-	return mix(out, sky_f, medium_rim(distance(cam.xz, world.xz), far));
+	return out * tr + sky_f * (1.0 - tr);
 }

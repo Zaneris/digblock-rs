@@ -274,6 +274,7 @@ pub mod shader {
 	);
 	pub const SKY: &str = concat!(
 		include_str!("../../../assets/shaders/frame_common.wgsl"),
+		include_str!("../../../assets/shaders/medium_common.wgsl"),
 		include_str!("../../../assets/shaders/sky_common.wgsl"),
 		include_str!("../../../assets/shaders/sky.wgsl"),
 	);

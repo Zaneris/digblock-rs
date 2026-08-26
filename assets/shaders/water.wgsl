@@ -169,26 +169,32 @@ fn ripple_grad(p: vec2f, t: f32, flow: vec2f, boost: f32, dist: f32) -> vec2f {
 // fallback — so shoreline blocks, trees and cliffs mirror where the screen knows them, and open
 // water still mirrors the actual sky. The sun/moon discs are deliberately absent: the analytic
 // specular lobe plays their role on the rippled surface.
-fn reflection_color(origin: vec3f, ray: vec3f, dist: f32, weight: f32) -> vec3f {
+// Schlick's approximation at the water's F0, the one place the interface's
+// reflectance lives; `c` is the cosine on the AIR side of the interface.
+fn schlick(c: f32) -> f32 {
+	return 0.02 + 0.98 * pow(1.0 - c, 5.0);
+}
+
+// Water's index of refraction: Snell's window from below is the ray this bends.
+const WATER_IOR = 1.333;
+
+// The mirror's analytic fallback above the surface, UNPROVEN sky — an
+// underground pool must not mirror the daytime dome through its ceiling (R32;
+// the SSR march is real screen data and needs no fade). Saturates to 1 at the
+// ramp's top edge, so open water is bit-identical.
+fn mirror_sky(origin: vec3f, ray: vec3f) -> vec3f {
 	var sky = sky_base(ray, frame.horizon.rgb, frame.zenith.rgb, frame.sun_dir, frame.moon_dir);
 	sky += vec3f(sky_stars(ray)) * frame.sun_dir.w * smoothstep(0.0, 0.3, ray.y);
-	// The analytic fallback is UNPROVEN sky — an underground pool must
-	// not mirror the daytime dome through its ceiling (R32; the SSR march
-	// below is real screen data and needs no fade). Saturates to 1 at the
-	// ramp's top edge, so open water is bit-identical.
-	sky *= medium_sky_fade(origin.y);
-	// `weight` is the Fresnel blend this result is about to be mixed
-	// with, and the march is gated on it for the same reason the sun
-	// DDA above is gated on its own: it was running at full cost where
-	// it cannot show. Submerged, looking at the underside of a surface,
-	// `mirror_w` is pinned to EXACTLY zero — and `reflection_color` is
-	// called as a function argument, so the march's dependent depth loads
-	// ran anyway and the answer was multiplied by nothing. That alone was a
-	// substantial slice of the water pass on the submerged pose (BENCH.md
-	// holds the figure).
-	// Above water it retires the other degenerate case: head-on, Schlick
-	// bottoms out at its F0 floor, so a look straight down at calm water
-	// was paying the full march for a sliver of a pixel.
+	return sky * medium_sky_fade(origin.y);
+}
+
+fn reflection_color(origin: vec3f, ray: vec3f, dist: f32, weight: f32, sky: vec3f) -> vec3f {
+	// `sky` is the fallback where the march finds nothing. `weight` is the
+	// Fresnel blend this result is about to be mixed with, and the march is
+	// gated on it for the same reason the sun DDA above is gated on its own:
+	// it was running at full cost where it cannot show — head-on, Schlick
+	// bottoms out at its F0 floor, so a look straight down at calm water was
+	// paying the full march for a sliver of a pixel (BENCH.md holds the figure).
 	if weight <= MIRROR_MIN_W || frame.water_misc.y < 0.5 || stubbed(STUB_WSSR) {
 		return sky;
 	}
@@ -412,7 +418,7 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	let nrm = ripple_normal(i.ni, g);
 	let vdir = normalize(frame.cam_pos.xyz - i.world);
 	let mirror = 1.0 - 0.7 * aer;
-	let fres = (0.02 + 0.98 * pow(1.0 - abs(dot(vdir, nrm)), 5.0)) * mirror;
+	let fres = schlick(abs(dot(vdir, nrm))) * mirror;
 	// Glint from the active caster (sun by day, moon by night) on the
 	// rippled normal. The exponent widens with distance so the glitter
 	// path stays stable instead of aliasing into per-pixel shimmer;
@@ -420,7 +426,7 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	// at the half vector: bright at low sun, subtle from above.
 	let e = mix(240.0, 24.0, smoothstep(8.0, 120.0, i.view_dist));
 	let hs = normalize(vdir - frame.light_dir.xyz);
-	let fres_h = 0.02 + 0.98 * pow(1.0 - max(dot(vdir, hs), 0.0), 5.0);
+	let fres_h = schlick(max(dot(vdir, hs), 0.0));
 	let spec = pow(max(dot(nrm, hs), 0.0), e) * (e + 2.0) / 242.0 * fres_h;
 	// Water column thickness along the view ray: reconstruct the solid
 	// scene point behind this fragment from the pre-water depth copy
@@ -540,11 +546,24 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	backdrop *= 1.0 - shore * 0.25;
 	// Reflected sky, fresnel-blended: water mirrors the horizon at
 	// grazing angles and stays see-through head-on. SSR rides inside
-	// `reflection_color` and is explicitly staying.
+	// `reflection_color` and is explicitly staying. Seen from BELOW, the
+	// underside is Snell's window: past the critical angle it reflects the
+	// water totally, inside it by the fresnel of the bent ray — mirroring
+	// the seabed where the screen knows it and the column's own in-scatter
+	// where it does not, never the dome.
 	var rr = reflect(-vdir, nrm);
-	rr.y = max(rr.y, 0.02);
-	let mirror_w = fres * select(1.0 - 0.7 * frame.water_misc.x, 0.0, below);
-	col = mix(col, reflection_color(i.world, normalize(rr), i.view_dist, mirror_w), mirror_w);
+	rr.y = select(max(rr.y, 0.02), min(rr.y, -0.02), below);
+	rr = normalize(rr);
+	let cos_i = abs(dot(vdir, nrm));
+	let sin_t2 = WATER_IOR * WATER_IOR * (1.0 - cos_i * cos_i);
+	let fres_in = select(1.0, schlick(sqrt(max(1.0 - sin_t2, 0.0))), sin_t2 < 1.0) * mirror;
+	let mirror_w = select(fres * (1.0 - 0.7 * frame.water_misc.x), fres_in, below);
+	let mirror_fallback = select(
+		mirror_sky(i.world, rr),
+		medium_water_endless(sky_down, 0.0, -rr.y),
+		below,
+	);
+	col = mix(col, reflection_color(i.world, rr, i.view_dist, mirror_w, mirror_fallback), mirror_w);
 	backdrop *= 1.0 - mirror_w;
 	// Splash foam (after the mirror mix — froth sits on the surface):
 	// a STATIC wash, brightest on the impact cell and fading with the

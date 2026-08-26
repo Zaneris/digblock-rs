@@ -1284,6 +1284,15 @@ The ones that bite if broken. CLAUDE.md points here rather than restating them.
 - **A submerged segment's in-scatter is the single-scatter integral in closed form** (`medium_water_column`), sourced by
   the down-welling light at every point of the segment. Sourcing it at the segment's midpoint instead put a bay's far
   water twenty blocks deep and black, which no haze at the surface could lift.
+- **`water_misc.z` is the surface's height above the EYE**, the path-length clamp every submerged ray divides by. An
+  absolute height there once put a hundred blocks of water over every ray, and the land above the surface went black
+  from below.
+- **A submerged eye sees everything through the column.** `medium_view` mixes the rim in BEFORE the water segment, so
+  the unstreamed world fades to the column's in-scatter rather than to a dome; the sky pass runs the same column when
+  submerged (to the surface where the ray rises through it, endless where it does not); and the underside of a surface
+  is Snell's window — total internal reflection past the critical angle, the bent ray's fresnel inside it, mirroring the
+  seabed where the screen knows it and `medium_water_endless` where it does not. The dome is never a fallback under
+  water.
 - **Unproven daylight fades with depth** (R32). A march that PROVES open sky answers full daylight at any depth; every
   answer given on no data multiplies by `medium_sky_fade`, whose top edge equals `SEA_LEVEL` and saturates there — so
   the surface world is bit-identical by construction and only underground goes honestly dark.
