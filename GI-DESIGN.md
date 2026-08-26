@@ -1290,11 +1290,10 @@ The ones that bite if broken. CLAUDE.md points here rather than restating them.
 - **A submerged eye sees everything through the column.** `medium_view` mixes the rim in BEFORE the water segment, so
   the unstreamed world fades to the column's in-scatter rather than to a dome; the sky pass runs the same column when
   submerged (to the surface where the ray rises through it, endless where it does not); and the underside of a surface
-  is Snell's window — the dome sampled along the BENT ray so the hemisphere compresses into the cone, continued along
-  the horizon past the critical angle — with the bent ray's fresnel inside the window and a climb past the critical
-  angle that is CAPPED at `TIR_CAP` across `SNELL_BAND`, deliberately short of real water's total reflection: a mirror
-  of a floor the screen cannot see is a wall around the window. The underside mirrors the seabed where the screen knows
-  it and `medium_water_endless` where it does not. The dome is never a fallback under water.
+  is ONE continuous surface, no Snell's window: the same fresnel as the top side, mirroring the seabed where the screen
+  knows it and `medium_water_endless` where it does not. Real water bends the sky into a cone and turns to a mirror
+  outside it, but a mirror of a floor the screen cannot see is a wall, and every softened cone tried still read as a
+  hole overhead. The dome is never a fallback under water.
 - **Unproven daylight fades with depth** (R32). A march that PROVES open sky answers full daylight at any depth; every
   answer given on no data multiplies by `medium_sky_fade`, whose top edge equals `SEA_LEVEL` and saturates there — so
   the surface world is bit-identical by construction and only underground goes honestly dark.

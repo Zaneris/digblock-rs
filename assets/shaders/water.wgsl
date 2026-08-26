@@ -175,17 +175,6 @@ fn schlick(c: f32) -> f32 {
 	return 0.02 + 0.98 * pow(1.0 - c, 5.0);
 }
 
-// Water's index of refraction: Snell's window from below is the ray this bends.
-const WATER_IOR = 1.333;
-// The underside's reflectance past the critical angle climbs toward TIR_CAP,
-// across the band of the bent ray's sine squared that starts at SNELL_BAND —
-// deliberately short of the total reflection real water has. Total, the
-// underside mirrors a floor the screen cannot see and turns into a wall around
-// the window; the cap keeps it a mirror you can still see the sky through, and
-// the band is the rippled interface's cone of normals softening flat water's step.
-const SNELL_BAND = 0.6;
-const TIR_CAP = 0.55;
-
 // The mirror's analytic fallback above the surface, UNPROVEN sky — an
 // underground pool must not mirror the daytime dome through its ceiling (R32;
 // the SSR march is real screen data and needs no fade). Saturates to 1 at the
@@ -454,11 +443,8 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	var bed_known = false;
 	var bed_dist = 0.0;
 	var bed_y = i.world.y;
-	// Nothing solid behind the pane: the sky pass's dome, at NDC depth exactly one.
-	var behind_sky = false;
 	if !stubbed(STUB_WREFRACT) {
 		let d_scene = textureLoad(scene_depth, vec2i(i.pos.xy), 0).x;
-		behind_sky = d_scene >= 1.0;
 		let ndc = (i.pos.xy / dims * 2.0 - 1.0) * vec2f(1.0, -1.0);
 		let wp = frame.inv_view_proj * vec4f(ndc, d_scene, 1.0);
 		let bed = wp.xyz / wp.w;
@@ -542,27 +528,12 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 			frame.misc.y,
 		);
 	}
-	// Snell's window. From below, the dome is sampled along the BENT ray, which is what
-	// compresses the whole hemisphere into the cone and rings its edge with the horizon; the
-	// straight sample the sky pass left behind made the window a hole with the zenith in it.
-	// Bent here rather than by the sky pass, it has not travelled yet, so it joins the surface's
-	// own light below instead of the backdrop. `refract` answers zero past the critical angle;
-	// the ray continues along the horizon in its own azimuth there, continuous with the edge.
-	var window = false;
-	if below && behind_sky {
-		let inc = -vdir;
-		let bent = refract(inc, -nrm, WATER_IOR);
-		let grazing = normalize(vec3f(inc.x, 0.0, inc.z) + vec3f(0.0, 0.02, 0.0));
-		let dir = select(grazing, bent, dot(bent, bent) > 0.5);
-		col = sky_dome(dir, frame.horizon.rgb, frame.zenith.rgb, frame.sun_dir, frame.moon_dir);
-		window = true;
-	}
 	// How much of this pixel is still the refracted BACKDROP, which has already been through the
 	// medium — above, at the surface, or seen from below the leg chunk.wgsl gave it — so fogging
 	// it again hazes distant water about twice as hard as the shore beside it, a visible step at
-	// the waterline. Only the surface's own light (froth, mirror, glint, the window) has not
-	// travelled yet, and every term below is a `mix`, so one scalar tracks the split exactly.
-	var backdrop = select(1.0, 0.0, window);
+	// the waterline. Only the surface's own light (froth, mirror, glint) has not travelled yet,
+	// and every term below is a `mix`, so one scalar tracks the split exactly.
+	var backdrop = 1.0;
 	let backdrop_col = col;
 	// Churned water is full of bubbles and reads white whatever the
 	// depth behind it; the mirror terms damp out over the same ramp.
@@ -573,20 +544,16 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	// Reflected sky, fresnel-blended: water mirrors the horizon at
 	// grazing angles and stays see-through head-on. SSR rides inside
 	// `reflection_color` and is explicitly staying. Seen from BELOW, the
-	// underside mirrors the seabed where the screen knows it and the
-	// column's own in-scatter where it does not, never the dome, by the
-	// bent ray's fresnel inside the window and a CAPPED climb past it.
+	// SAME fresnel, and no Snell's window: the underside mirrors the seabed
+	// where the screen knows it and the column's own in-scatter where it
+	// does not, never the dome. Real water bends the sky into a cone and
+	// turns to a mirror outside it, but a mirror of a floor the screen
+	// cannot see is a wall, and any cone at all read as a hole overhead;
+	// one continuous surface is the answer that plays.
 	var rr = reflect(-vdir, nrm);
 	rr.y = select(max(rr.y, 0.02), min(rr.y, -0.02), below);
 	rr = normalize(rr);
-	let cos_i = abs(dot(vdir, nrm));
-	let sin_t2 = WATER_IOR * WATER_IOR * (1.0 - cos_i * cos_i);
-	let fres_in = mix(
-		schlick(sqrt(max(1.0 - sin_t2, 0.0))),
-		TIR_CAP,
-		smoothstep(SNELL_BAND, 1.0, sin_t2),
-	) * mirror;
-	let mirror_w = select(fres * (1.0 - 0.7 * frame.water_misc.x), fres_in, below);
+	let mirror_w = fres * select(1.0 - 0.7 * frame.water_misc.x, 1.0, below);
 	let mirror_fallback = select(
 		mirror_sky(i.world, rr),
 		medium_water_endless(sky_down, 0.0, -rr.y),
