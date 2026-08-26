@@ -135,6 +135,15 @@ impl BoardModel {
 		self.error = None;
 	}
 
+	/// The page whose SHAPE to lay out while the one in view is on its way: the last answer of
+	/// any board, so a tab change keeps the panel's height and columns instead of collapsing to a
+	/// status line and springing back when the answer lands. Its figures are never drawn.
+	fn placeholder(&self, has_master: bool) -> Option<&BoardView> {
+		(has_master && self.pending)
+			.then_some(self.view.as_ref())
+			.flatten()
+	}
+
 	/// The answer for the board and page in view, if it has landed.
 	fn shown(&self) -> Option<&BoardView> {
 		self.view
@@ -214,6 +223,9 @@ pub struct HiscoresView {
 	skill: Option<Skill>,
 	rows: Vec<Row>,
 	entries: Vec<Entry>,
+	/// The entries are the previous page's, kept for the layout alone:
+	/// measured, never drawn, until the page in view lands.
+	loading: bool,
 	/// The pager's summary and whether each of its ends is live.
 	summary: String,
 	prev: bool,
@@ -227,7 +239,8 @@ impl HiscoresView {
 		let mut rows = vec![Row::Title, Row::Space, Row::Tabs, Row::Space];
 		let mut entries = Vec::new();
 		let (mut summary, mut prev, mut next) = (String::new(), false, false);
-		match model.shown() {
+		let loading = model.shown().is_none();
+		match model.shown().or_else(|| model.placeholder(has_master)) {
 			Some(v) => {
 				if v.rows.is_empty() {
 					rows.push(Row::Info("nobody here yet".into()));
@@ -246,15 +259,19 @@ impl HiscoresView {
 						rows.push(Row::Entry(i));
 					}
 				}
-				let last = last_page(v);
-				summary = format!(
-					"page {} of {} — {} ranked",
-					v.page,
-					last,
-					group(u64::from(v.total))
-				);
-				prev = v.page > 1;
-				next = v.page < last;
+				if loading {
+					summary = "fetching...".into();
+				} else {
+					let last = last_page(v);
+					summary = format!(
+						"page {} of {} — {} ranked",
+						v.page,
+						last,
+						group(u64::from(v.total))
+					);
+					prev = v.page > 1;
+					next = v.page < last;
+				}
 				rows.push(Row::Space);
 				rows.push(Row::Pager);
 			}
@@ -270,6 +287,7 @@ impl HiscoresView {
 			skill: model.skill,
 			rows,
 			entries,
+			loading,
 			summary,
 			prev,
 			next,
@@ -547,6 +565,8 @@ impl HiscoresScreen {
 						},
 					);
 				}
+				// A loading page keeps its rows' room and shows none of them.
+				Row::Entry(_) if view.loading => {}
 				Row::Entry(i) => {
 					let e = &view.entries[*i];
 					let texts: Vec<&str> = e.cols.iter().map(String::as_str).collect();
@@ -700,6 +720,47 @@ mod tests {
 		assert!(all.contains("LEVEL") && !all.contains("TOTAL LEVEL"));
 		let (dl, _) = emit(&showing(sample_board(None)), true);
 		assert!(texts(&dl).join("\n").contains("TOTAL LEVEL"));
+	}
+
+	/// A tab change keeps the panel the previous page's size until the new page lands — the
+	/// same rows and columns are measured — while none of the previous page's figures are drawn
+	/// under the new tab. The first fetch, with nothing before it, still says so in one line.
+	#[test]
+	fn a_pending_tab_keeps_the_previous_pages_shape_and_shows_none_of_it() {
+		let mut m = showing(sample_board(None));
+		let style = Style::new(1.0);
+		let before = measure_rows(&HiscoresView::build(&m, true), &style);
+		assert!(m.apply(HiscoresAction::SelectBoard(Some(Skill::Mining))));
+		let _ = m.request();
+		let view = HiscoresView::build(&m, true);
+		assert_eq!(measure_rows(&view, &style), before, "the panel moved");
+		let (dl, hits) = emit(&m, true);
+		let all = texts(&dl).join("\n");
+		for r in &sample_board(None).rows {
+			assert!(
+				!all.contains(&r.name),
+				"{} drawn under the new tab:\n{all}",
+				r.name
+			);
+		}
+		assert!(all.contains("fetching"), "{all}");
+		assert!(
+			hits.rect_of(InvId::BoardNext).is_none(),
+			"nothing to page while loading"
+		);
+		// Landed: the figures return and the pager wakes.
+		m.answer(Ok(sample_board(Some(Skill::Mining))));
+		let (dl, hits) = emit(&m, true);
+		assert!(
+			texts(&dl)
+				.join("\n")
+				.contains(&sample_board(None).rows[0].name)
+		);
+		assert!(hits.rect_of(InvId::BoardNext).is_some());
+		// Nothing before it: one line, no phantom table.
+		let mut fresh = BoardModel::default();
+		let _ = fresh.request();
+		assert!(measure_rows(&HiscoresView::build(&fresh, true), &style).1 < before.1);
 	}
 
 	/// Our own row is the one that wears the highlight wash — one wash per
