@@ -22,6 +22,10 @@ a decision or rebuilding something:
   server that has not updated. Read it before raising `MIN_PROTOCOL` or `SIM_VERSION`. §7 is built; the rest is design.
 - `DELVE-DESIGN.md`, `SOCIAL-DESIGN.md` — design-only, not built.
 
+**Edit source with the Edit and Write tools, never with a script.** No `python3 - <<EOF`, `sed -i` or heredoc rewriting
+a file: a scripted edit hides the hunk it changed behind an anchor string, and the reviewer sees a program rather than a
+diff. Bash is for running, building, searching and testing — anything whose output is the point rather than the file.
+
 ## Four writing rules
 
 **A number lives in exactly one place: the code that defines it.** Comments, doc comments and Markdown name constants
