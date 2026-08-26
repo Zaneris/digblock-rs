@@ -371,10 +371,10 @@ pub struct RowContent<'a> {
 	pub color: u32,
 	/// Keyboard/hover selection — computed by the screen, drawn here.
 	pub highlight: bool,
-	/// An icon after the text, glyph-sized, on the same layer and path the
-	/// chips' icons take — a state the row wears as a picture rather than
-	/// a word. Measured by [`mark_w`].
-	pub mark: Option<super::hud::IconKind>,
+	/// Columns after the text, each at a fixed offset from the text's origin so a run of rows
+	/// lines up; the caller measures the widest entry of each column and hands every row the
+	/// same offsets. Sized into a panel by [`cells_w`].
+	pub cells: &'a [Cell<'a>],
 	/// Draw a text caret at the end of `text` (blink is the caller's).
 	pub caret: bool,
 }
@@ -385,13 +385,21 @@ pub fn caret_w(px: f32) -> f32 {
 	px * 0.5
 }
 
-/// What a row's [`RowContent::mark`] adds to its text width: the chip gap, then a glyph-sized
-/// icon. Screens sizing a panel to its widest row add this for a marked row.
-pub fn mark_w(glyph: f32, scale: f32) -> f32 {
-	super::theme::CHIP_GAP * scale + glyph
+/// One column entry on a row: text drawn at `x` past the row's text origin.
+pub struct Cell<'a> {
+	pub x: f32,
+	pub text: &'a str,
+	pub color: u32,
 }
 
-const MARK_TINT: u32 = 0xFFFF_FFFF;
+/// How far past the text origin a row's cells reach — what a panel sized to its widest row
+/// takes instead of the text's own width when the cells run past it.
+pub fn cells_w(style: &Style, cells: &[Cell<'_>]) -> f32 {
+	cells
+		.iter()
+		.map(|c| c.x + style.measure(c.text))
+		.fold(0.0, f32::max)
+}
 
 /// A selectable text row: optional highlight backdrop, left text,
 /// right-aligned column, and slider bar (geometry via [`slider_rect`],
@@ -402,27 +410,22 @@ pub fn row(dl: &mut DrawList, style: &Style, layer: Layer, rect: Rect, c: RowCon
 	let pad_x = scale::text_pad_x(style.scale);
 	let text_y = rect.y + (rect.h - glyph) / 2.0;
 	if c.highlight {
-		// The wash has to sit UNDER the row's own icon: a chip draws its icon in `Layer::Icons`,
-		// which the whole of `Layer::Content` covers, so a wash on the caller's layer greys the
-		// icon and leaves its number crisp — one row reading as two states. [`slot`] and
-		// [`button`] wash on `Layer::Backdrop` for the same reason. A row with no icon keeps the
-		// caller's layer, since a caller may panel there (`menu.rs`) and a wash beneath is unseen.
-		let wash = match c.right {
-			Some(RowRight::Chip(_)) => Layer::Backdrop,
-			_ if c.mark.is_some() => Layer::Backdrop,
-			_ => layer,
-		};
-		dl.quad(wash, rect, ROW_HILIGHT);
+		// The wash has to sit UNDER the row's own icon: a chip draws in `Layer::Icons`, which
+		// the whole of `Layer::Content` covers, so a wash on the caller's layer greys the icon
+		// and leaves its number crisp — one row reading as two states. [`slot`] and [`button`]
+		// wash on `Layer::Backdrop` for the same reason, and every screen panels there
+		// (`every_screen_dims_and_panels_the_same_way`), so the wash lands over its panel.
+		dl.quad(Layer::Backdrop, rect, ROW_HILIGHT);
 	}
 	dl.text(layer, rect.x + pad_x, text_y, glyph, c.color, c.text);
-	if let Some(kind) = c.mark {
-		let mx = rect.x + pad_x + style.measure(c.text) + mark_w(glyph, style.scale) - glyph;
-		super::hud::draw_icon(
-			dl,
-			Layer::Icons,
-			Rect::new(mx, text_y, glyph, glyph),
-			kind,
-			MARK_TINT,
+	for cell in c.cells {
+		dl.text(
+			layer,
+			rect.x + pad_x + cell.x,
+			text_y,
+			glyph,
+			cell.color,
+			cell.text,
 		);
 	}
 	if c.caret {

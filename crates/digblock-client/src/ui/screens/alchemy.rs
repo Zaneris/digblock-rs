@@ -760,7 +760,7 @@ impl AlchScreen {
 				color: WHITE,
 				highlight: false,
 				caret: false,
-				mark: None,
+				cells: &[],
 			},
 		);
 		*y += row_h;
@@ -1060,7 +1060,7 @@ impl AlchScreen {
 				color: if queued.is_some() { WHITE } else { DIM },
 				highlight: false,
 				caret: false,
-				mark: None,
+				cells: &[],
 			},
 		);
 	}

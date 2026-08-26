@@ -16,10 +16,10 @@ use super::*;
 /// Prefix on a ping the probe derived rather than sampled (`Ping::estimated`).
 pub(super) const ESTIMATED_MARK: &str = "~";
 
-/// The mark on a server row whose play counts toward the hiscores board: the sigil, the game's
-/// own trophy, drawn as the icon it is elsewhere rather than spelled — the same picture the
-/// inventory and the catalog use for it.
-pub(crate) const RANKED_MARK: crate::ui::hud::IconKind = crate::ui::hud::IconKind::Sigil;
+/// The mark on a server row whose play counts toward the hiscores board. A glyph, so it is
+/// measured and drawn like any other column text — the ONE codepoint the UI face carries beyond
+/// the typeable repertoire (assets/fonts/SOURCES.md), pinned by `the_ranked_mark_has_a_glyph`.
+pub(crate) const RANKED_MARK: &str = "\u{2605}";
 
 impl Menu {
 	/// Build the frame's view. `blink` drives the name-field caret.
@@ -33,6 +33,7 @@ impl Menu {
 		let pad_x = crate::ui::scale::text_pad_x(scale);
 		// Minimum gap between a row's text and its right-aligned column.
 		let col_gap = 2.0 * glyph;
+		let text_w = |s: &str| crate::font::ui().measure(s, glyph);
 		let (w, h) = (size.0 as f32, size.1 as f32);
 		let y0 = (h * 0.18).max(8.0);
 		let mut y = y0;
@@ -320,12 +321,25 @@ impl Menu {
 				} else if b.rows.is_empty() {
 					push(&mut specs, &mut y, RowSpec::dim("no servers online"));
 				}
+				// Four columns — name, players, ranked, ping. The count is right-aligned within
+				// its column so the figures stay in step as they climb; the mark stands at one
+				// x for every row, past the widest count; the ping keeps the right edge.
+				let count = |e: &ServerEntry| format!("{}/{}", e.players, e.max_players);
+				let widest = |f: &dyn Fn(&ServerEntry) -> String| {
+					b.rows
+						.iter()
+						.map(|r| text_w(&f(&r.entry)))
+						.fold(0.0, f32::max)
+				};
+				let count_end = widest(&|e| e.name.clone()) + col_gap + widest(&count);
+				let mark_x = count_end + col_gap;
 				for (i, row) in b.rows.iter().enumerate() {
 					// The verdict takes the ping's column and the row's own
 					// ink: a latency for a server that cannot be joined is
 					// answering a question nobody can ask. Same call `acts`
 					// makes, so what is drawn and what is offered agree.
 					let refused = compat_label(row.entry.compat());
+					let ink = if refused.is_none() { C_WHITE } else { C_DIM };
 					let (ping, color) = match row.ping {
 						PingState::Pending => ("...".to_string(), C_DIM),
 						PingState::Failed => ("n/a".to_string(), C_RED),
@@ -360,17 +374,23 @@ impl Menu {
 								Some(why) => (why.to_string(), C_RED),
 								None => (ping, color),
 							}),
+							cells: std::iter::once((
+								count_end - text_w(&count(&row.entry)),
+								count(&row.entry),
+								ink,
+							))
 							// Play here counts toward the board: the master's
 							// trusted list, worn on the row so nobody joins to
 							// find out.
-							mark: row.entry.reports_skills.then_some(RANKED_MARK),
+							.chain(row.entry.reports_skills.then(|| {
+								let green = if refused.is_none() { C_GREEN } else { C_DIM };
+								(mark_x, RANKED_MARK.to_string(), green)
+							}))
+							.collect(),
 							..RowSpec::new(
 								refused.is_none().then_some(RowId::Server(i)),
-								format!(
-									"{}  {}/{}",
-									row.entry.name, row.entry.players, row.entry.max_players
-								),
-								if refused.is_none() { C_WHITE } else { C_DIM },
+								row.entry.name.clone(),
+								ink,
 							)
 						},
 					);
@@ -619,21 +639,25 @@ impl Menu {
 		// fits with the overlay's own padding, clamped to the window; min_panel_w keeps short
 		// screens from looking cramped. Must match what widgets::row actually draws — see
 		// `panel_fits_every_row`, which re-derives this independently.
-		let text_w = |s: &str| crate::font::ui().measure(s, glyph);
 		let content_w = specs
 			.iter()
 			.map(|(spec, _)| {
-				pad_x * 2.0
-					+ text_w(&spec.text)
-					// Reserved whether or not the caret is lit this frame,
-					// so the panel doesn't breathe with the blink.
+				// The body is the text — with its caret reserved whether or not it is lit this
+				// frame, so the panel doesn't breathe with the blink — or its cells, whichever
+				// reaches further.
+				let body = text_w(&spec.text)
 					+ if spec.caret {
 						crate::ui::widgets::caret_w(glyph)
 					} else {
 						0.0
-					} + spec
-					.mark
-					.map_or(0.0, |_| crate::ui::widgets::mark_w(glyph, scale))
+					};
+				let cells = spec
+					.cells
+					.iter()
+					.map(|(x, text, _)| x + text_w(text))
+					.fold(0.0, f32::max);
+				pad_x * 2.0
+					+ body.max(cells)
 					+ spec
 						.right
 						.as_ref()
@@ -657,7 +681,7 @@ impl Menu {
 				bar: spec.bar,
 				color: spec.color,
 				caret: spec.caret,
-				mark: spec.mark,
+				cells: spec.cells,
 			})
 			.collect();
 

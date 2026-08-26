@@ -1609,8 +1609,8 @@ struct RowSpec {
 	/// proportional font, so blinking one in and out would resize the
 	/// panel (sized to its widest row) twice a second.
 	caret: bool,
-	/// An icon after the text — see `widgets::RowContent::mark`.
-	mark: Option<crate::ui::hud::IconKind>,
+	/// Columns after the text — see `widgets::RowContent::cells`.
+	cells: Vec<(f32, String, u32)>,
 }
 
 impl RowSpec {
@@ -1622,7 +1622,7 @@ impl RowSpec {
 			bar: None,
 			color,
 			caret: false,
-			mark: None,
+			cells: Vec::new(),
 		}
 	}
 	fn title(t: &str) -> Self {
@@ -1673,8 +1673,8 @@ pub(crate) struct PlacedRow {
 	pub highlight: bool,
 	/// Text-entry caret at the end of `text` (blink phase already applied).
 	pub caret: bool,
-	/// An icon after the text.
-	pub mark: Option<crate::ui::hud::IconKind>,
+	/// Columns after the text.
+	pub cells: Vec<(f32, String, u32)>,
 }
 
 pub(crate) struct MenuView {
@@ -1689,7 +1689,8 @@ pub(crate) struct MenuView {
 impl MenuView {
 	/// Emit the menu into the frame's draw list: full-screen dim (faded
 	/// with the world's darkness — the panel keeps its fixed backdrop),
-	/// panel backdrop, then rows through the framework's row widget.
+	/// panel backdrop, then rows through the framework's row widget. The
+	/// dim and the panel go on `Layer::Backdrop`, as every screen's do.
 	pub(crate) fn emit(
 		&self,
 		dl: &mut crate::ui::DrawList,
@@ -1699,12 +1700,21 @@ impl MenuView {
 	) {
 		use crate::ui::{Layer, Rect, theme, widgets};
 		dl.quad(
-			Layer::Content,
+			Layer::Backdrop,
 			Rect::new(0.0, 0.0, size.0 as f32, size.1 as f32),
 			widgets::scaled_dim(theme::SCREEN_DIM, daylight),
 		);
-		widgets::panel(dl, Layer::Content, self.panel.into(), theme::PANEL_BG);
+		widgets::panel(dl, Layer::Backdrop, self.panel.into(), theme::PANEL_BG);
 		for row in &self.rows {
+			let cells: Vec<widgets::Cell<'_>> = row
+				.cells
+				.iter()
+				.map(|(x, text, color)| widgets::Cell {
+					x: *x,
+					text,
+					color: *color,
+				})
+				.collect();
 			widgets::row(
 				dl,
 				style,
@@ -1720,7 +1730,7 @@ impl MenuView {
 					color: row.color,
 					highlight: row.highlight,
 					caret: row.caret,
-					mark: row.mark,
+					cells: &cells,
 				},
 			);
 		}
