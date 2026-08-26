@@ -216,13 +216,18 @@ impl Engine {
 		//
 		// An ARRIVAL raises the floor instead of riding it: past `rim_backlog` this is a world
 		// leaving, not a crescent, and the two worlds' meshes are live together until it drains.
-		// The derived GI state goes with it, once — the coarse mirror is keyed by a TOROIDAL wrap,
-		// so a window that has jumped holds another region's occupancy in every slot the new world
-		// has yet to write, and marching against it is both wrong and dear. `remove_chunk` prunes
-		// the emitter maps per chunk, so only the mirror needs saying.
+		// Everything derived goes with it, once, and is reloaded whole — the device-loss rebuild,
+		// deliberately, so an arrival has no state of its own to get wrong: the coarse mirror is
+		// keyed by a TOROIDAL wrap and holds another region's occupancy in every slot the new
+		// world has yet to write, and the light maps ride the same two uploads. The re-queues are
+		// the half that bites if dropped: a jump within draw distance keeps a lens of RETAINED
+		// chunks that `gi_recenter` never re-dirties (they never left coverage), so a wipe alone
+		// left them dark and reading as air. The re-mesh is what puts `surfaces` back.
 		let arrival = self.stream.pending_evicts.len() > rim_backlog(self.config.draw_dist);
 		if arrival && !self.stream.evict_burst {
 			renderer.gi_clear_derived_state();
+			self.pipeline.remesh_all();
+			self.pipeline.gi_redirty_all();
 		}
 		self.stream.evict_burst = arrival;
 		let floor = if arrival { EVICT_BURST } else { EVICT_MIN };
