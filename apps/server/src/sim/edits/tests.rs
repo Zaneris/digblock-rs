@@ -2627,6 +2627,7 @@ fn held_item_rides_snapshots() {
 /// so both ends always derive one set). Every expectation derived.
 #[test]
 fn an_arc_places_a_full_line_or_nothing() {
+	use digblock_core::skills::{Skill, arc_xp, total_xp_for};
 	use digblock_core::unlock::{ARC_AT, arc_cells};
 	let mut sim = flat_sim("arcline");
 	let mut c = connect(&mut sim, 1);
@@ -2659,6 +2660,8 @@ fn an_arc_places_a_full_line_or_nothing() {
 			},
 		}]);
 	};
+	c.drain();
+	c.msgs.clear();
 	arc(&mut sim, 1);
 	for i in 1..=n as i32 {
 		assert_eq!(
@@ -2667,6 +2670,17 @@ fn an_arc_places_a_full_line_or_nothing() {
 			"cell {i} of the line"
 		);
 	}
+	// The award is the line's REACH, sent as the new total.
+	c.drain();
+	let arcana_total = total_xp_for(ARC_AT) + arc_xp(n as usize);
+	assert!(
+		c.msgs.iter().any(|m| matches!(
+			m,
+			ServerMsg::XpGain { skill, total } if *skill == Skill::Arcana as u8 && *total == arcana_total
+		)),
+		"an arc pays Arcana for the cells past the first: {:?}",
+		c.msgs
+	);
 	assert_eq!(
 		sim.test_inventory_count(1, BlockType::Stone),
 		n,
@@ -2726,6 +2740,11 @@ fn an_arc_places_a_full_line_or_nothing() {
 		sim.test_inventory_count(1, BlockType::Stone),
 		n,
 		"a bounced line debits nothing"
+	);
+	assert!(
+		!c.msgs.iter().any(|m| matches!(m, ServerMsg::XpGain { .. })),
+		"a bounced line pays nothing: {:?}",
+		c.msgs
 	);
 }
 

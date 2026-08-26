@@ -360,3 +360,50 @@ fn the_causeway_row_prices_a_cast_and_never_the_taking_up() {
 		"a standing road still advertises a price"
 	);
 }
+
+/// The fares are two columns, not a run of chips: every priced row's
+/// icon stands on one vertical and every amount ends on another, so a
+/// two-digit fare under a one-digit one does not push its icon left.
+/// The sweep counts the amount widths it saw, because a page whose
+/// fares all took the same width would line up by accident.
+#[test]
+fn the_fares_stand_in_two_columns() {
+	let mut r = rig_at(digblock_core::unlock::SPHERE_AT, |_| {});
+	let dl = build(&mut r);
+	let icons = essence_icons(&dl);
+	assert!(icons.len() >= 2, "too few priced rows to be a sweep");
+	let (cmds, arena) = dl.cmds(Layer::Content);
+	let mut widths = std::collections::BTreeSet::new();
+	let mut icon_xs = std::collections::BTreeSet::new();
+	let mut ends = std::collections::BTreeSet::new();
+	for (icon, _) in &icons {
+		let amount = cmds
+			.iter()
+			.filter_map(|c| match c {
+				Cmd::Text { x, y, range, .. } if (y - icon.y).abs() < 0.5 && *x > icon.x => {
+					Some((*x, &arena[range.0 as usize..range.1 as usize]))
+				}
+				_ => None,
+			})
+			.next()
+			.expect("an amount to the right of every fare icon");
+		let w = r.style.measure(amount.1);
+		widths.insert(w.to_bits());
+		icon_xs.insert(icon.x.round() as i32);
+		ends.insert((amount.0 + w).round() as i32);
+	}
+	assert!(
+		widths.len() >= 2,
+		"every fare took the same width: nothing to align"
+	);
+	assert_eq!(
+		icon_xs.len(),
+		1,
+		"the icons do not share a column: {icon_xs:?}"
+	);
+	assert_eq!(
+		ends.len(),
+		1,
+		"the amounts do not share a right edge: {ends:?}"
+	);
+}

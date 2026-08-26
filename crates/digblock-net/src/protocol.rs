@@ -27,7 +27,7 @@ pub const DEFAULT_MASTER_URL: &str = "https://master.digblock.net";
 ///
 /// Bump on ANY change to a message's shape or meaning. Postcard encodes enum discriminants by
 /// declaration order, so variants and fields are APPEND-ONLY — never reorder, never remove.
-pub const PROTOCOL_VERSION: u16 = 39;
+pub const PROTOCOL_VERSION: u16 = 40;
 
 /// Chunk-column radius around an arrival — a join or a teleport — whose journaled columns must
 /// reach the client before it may render or simulate. A small radius is the bounded choice: at

@@ -696,7 +696,8 @@ impl Pipeline {
 		}
 	}
 
-	/// Force a re-mesh of every resident Ready chunk (device-loss drill).
+	/// Force a re-mesh of every resident Ready chunk (the device-loss rebuild, and an arrival's
+	/// reload in `engine/streaming.rs`).
 	pub fn remesh_all(&mut self) {
 		let center = self.center;
 		for (pos, slot) in self.store.iter_mut() {

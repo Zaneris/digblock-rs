@@ -168,31 +168,16 @@ pub fn button<Id: Copy + PartialEq>(
 	}
 }
 
-/// Stack-count badge in a slot's bottom-right corner, saturating at "99+", with a drop shadow so
-/// digits stay readable on light icons (snow, sand). Drawn at the frame's one text size like
-/// everything else, not pinned at [`scale::FIXED_GLYPH_PX`] — a pinned badge reads as half-size
-/// text beside a scaled-up UI on a dense display.
+/// Stack-count badge in a slot's bottom-right corner, with a drop shadow so digits stay readable
+/// on light icons (snow, sand). Drawn at the frame's one text size like everything else, not
+/// pinned at [`scale::FIXED_GLYPH_PX`] — a pinned badge reads as half-size text beside a
+/// scaled-up UI on a dense display.
 pub fn count_badge(dl: &mut DrawList, layer: Layer, style: &Style, slot: Rect, count: u32, c: u32) {
 	const SHADOW: u32 = 0xE0000000;
 	let px = style.glyph;
 	let inset = 2.0 * style.scale;
-	let mut buf = [0u8; 3];
-	let text: &str = if count > 99 {
-		"99+"
-	} else {
-		// Right-aligning off a digit count would assume tabular figures;
-		// measure what we're actually about to draw instead.
-		let n = count.min(99);
-		let len = if n >= 10 {
-			buf[0] = b'0' + (n / 10) as u8;
-			buf[1] = b'0' + (n % 10) as u8;
-			2
-		} else {
-			buf[0] = b'0' + n as u8;
-			1
-		};
-		std::str::from_utf8(&buf[..len]).unwrap_or("?")
-	};
+	let mut buf = [0u8; 11];
+	let text = badge_text(count, &mut buf);
 	let x = slot.x + slot.w - inset - crate::font::ui().measure(text, px);
 	let y = slot.y + slot.h - px - inset;
 	let off = (px / 16.0).round().max(1.0);
@@ -213,6 +198,24 @@ pub struct Chip {
 	/// cannot cover it.
 	pub ink: u32,
 }
+
+/// What a stack badge reads: the count itself up to [`BADGE_EXACT_MAX`], then whole thousands
+/// with a `k`, floored — a badge that rounded up would show a stack the player does not hold.
+/// Right-aligning off a digit count would assume tabular figures, so the caller measures what
+/// this returns instead.
+fn badge_text(count: u32, buf: &mut [u8; 11]) -> &str {
+	if count <= BADGE_EXACT_MAX {
+		let (head, _) = buf.split_at_mut(10);
+		return digits(count, head.try_into().expect("ten bytes"));
+	}
+	let (head, tail) = buf.split_at_mut(10);
+	let n = digits(count / 1000, head.try_into().expect("ten bytes")).len();
+	tail[0] = b'k';
+	std::str::from_utf8(&buf[10 - n..]).expect("decimal digits and a k are ASCII")
+}
+
+/// The largest count a badge spells out in full; past it the badge counts thousands.
+const BADGE_EXACT_MAX: u32 = 999;
 
 /// A `u32` written into a caller's stack buffer. The amount on a chip is measured through
 /// `Face::run` like any other string — never from a digit count, which tells you nothing about a
@@ -252,6 +255,21 @@ fn walk_chips(style: &Style, x: f32, y: f32, max_w: f32, chips: &[Chip], mut f: 
 		f(Rect::new(cx, cy, w, row_h));
 		cx += w + sep;
 	}
+}
+
+/// The width a chip's number takes — what a page reserving a column of
+/// amounts measures its widest row by.
+pub fn amount_w(style: &Style, n: u32) -> f32 {
+	let mut buf = [0u8; 10];
+	style.measure(digits(n, &mut buf))
+}
+
+/// The span of a row's two fare columns — the icon and the `amount_w`
+/// reserved for its number — as [`row`] lays them out from the right
+/// edge. The width a page sizes a fare row by, and the box it hit-tests
+/// for hover.
+pub fn fare_cols_w(style: &Style, amount_w: f32) -> f32 {
+	style.glyph + super::theme::CHIP_GAP * style.scale + amount_w
 }
 
 /// The run of `chips` laid out from `(x, y)`, as [`walk_chips`] places
@@ -357,8 +375,10 @@ pub fn tooltip(dl: &mut DrawList, style: &Style, size: (u32, u32), anchor: Rect,
 pub enum RowRight<'a> {
 	/// Coloured text (a ping, a hint, a state).
 	Text(&'a str, u32),
-	/// An amount with an icon (a fare).
-	Chip(Chip),
+	/// An amount with an icon (a fare), drawn as two columns: the number
+	/// right-aligned inside `amount_w` — the widest amount on the page, so
+	/// every row's icon lands on one vertical — and the icon just left of it.
+	Chip { chip: Chip, amount_w: f32 },
 }
 
 /// One menu-style row's content, rendered by [`row`].
@@ -371,10 +391,10 @@ pub struct RowContent<'a> {
 	pub color: u32,
 	/// Keyboard/hover selection — computed by the screen, drawn here.
 	pub highlight: bool,
-	/// An icon after the text, glyph-sized, on the same layer and path the
-	/// chips' icons take — a state the row wears as a picture rather than
-	/// a word. Measured by [`mark_w`].
-	pub mark: Option<super::hud::IconKind>,
+	/// Columns after the text, each at a fixed offset from the text's origin so a run of rows
+	/// lines up; the caller measures the widest entry of each column and hands every row the
+	/// same offsets. Sized into a panel by [`cells_w`].
+	pub cells: &'a [Cell<'a>],
 	/// Draw a text caret at the end of `text` (blink is the caller's).
 	pub caret: bool,
 }
@@ -385,13 +405,21 @@ pub fn caret_w(px: f32) -> f32 {
 	px * 0.5
 }
 
-/// What a row's [`RowContent::mark`] adds to its text width: the chip gap, then a glyph-sized
-/// icon. Screens sizing a panel to its widest row add this for a marked row.
-pub fn mark_w(glyph: f32, scale: f32) -> f32 {
-	super::theme::CHIP_GAP * scale + glyph
+/// One column entry on a row: text drawn at `x` past the row's text origin.
+pub struct Cell<'a> {
+	pub x: f32,
+	pub text: &'a str,
+	pub color: u32,
 }
 
-const MARK_TINT: u32 = 0xFFFF_FFFF;
+/// How far past the text origin a row's cells reach — what a panel sized to its widest row
+/// takes instead of the text's own width when the cells run past it.
+pub fn cells_w(style: &Style, cells: &[Cell<'_>]) -> f32 {
+	cells
+		.iter()
+		.map(|c| c.x + style.measure(c.text))
+		.fold(0.0, f32::max)
+}
 
 /// A selectable text row: optional highlight backdrop, left text,
 /// right-aligned column, and slider bar (geometry via [`slider_rect`],
@@ -402,27 +430,22 @@ pub fn row(dl: &mut DrawList, style: &Style, layer: Layer, rect: Rect, c: RowCon
 	let pad_x = scale::text_pad_x(style.scale);
 	let text_y = rect.y + (rect.h - glyph) / 2.0;
 	if c.highlight {
-		// The wash has to sit UNDER the row's own icon: a chip draws its icon in `Layer::Icons`,
-		// which the whole of `Layer::Content` covers, so a wash on the caller's layer greys the
-		// icon and leaves its number crisp — one row reading as two states. [`slot`] and
-		// [`button`] wash on `Layer::Backdrop` for the same reason. A row with no icon keeps the
-		// caller's layer, since a caller may panel there (`menu.rs`) and a wash beneath is unseen.
-		let wash = match c.right {
-			Some(RowRight::Chip(_)) => Layer::Backdrop,
-			_ if c.mark.is_some() => Layer::Backdrop,
-			_ => layer,
-		};
-		dl.quad(wash, rect, ROW_HILIGHT);
+		// The wash has to sit UNDER the row's own icon: a chip draws in `Layer::Icons`, which
+		// the whole of `Layer::Content` covers, so a wash on the caller's layer greys the icon
+		// and leaves its number crisp — one row reading as two states. [`slot`] and [`button`]
+		// wash on `Layer::Backdrop` for the same reason, and every screen panels there
+		// (`every_screen_dims_and_panels_the_same_way`), so the wash lands over its panel.
+		dl.quad(Layer::Backdrop, rect, ROW_HILIGHT);
 	}
 	dl.text(layer, rect.x + pad_x, text_y, glyph, c.color, c.text);
-	if let Some(kind) = c.mark {
-		let mx = rect.x + pad_x + style.measure(c.text) + mark_w(glyph, style.scale) - glyph;
-		super::hud::draw_icon(
-			dl,
-			Layer::Icons,
-			Rect::new(mx, text_y, glyph, glyph),
-			kind,
-			MARK_TINT,
+	for cell in c.cells {
+		dl.text(
+			layer,
+			rect.x + pad_x + cell.x,
+			text_y,
+			glyph,
+			cell.color,
+			cell.text,
 		);
 	}
 	if c.caret {
@@ -437,11 +460,24 @@ pub fn row(dl: &mut DrawList, style: &Style, layer: Layer, rect: Rect, c: RowCon
 			let rx = rect.x + rect.w - pad_x - style.measure(right);
 			dl.text(layer, rx, text_y, glyph, color, right);
 		}
-		Some(RowRight::Chip(chip)) => {
-			let run = [chip];
-			let rx = rect.x + rect.w - pad_x - chips_w(style, &run);
-			let top = rect.y + (rect.h - super::theme::ROW_H * style.scale) / 2.0;
-			chips(dl, style, layer, rx, top, f32::INFINITY, &run);
+		Some(RowRight::Chip { chip, amount_w }) => {
+			let right = rect.x + rect.w - pad_x;
+			let icon_x = right - fare_cols_w(style, amount_w);
+			super::hud::draw_icon(
+				dl,
+				Layer::Icons,
+				Rect::new(icon_x, text_y, glyph, glyph),
+				chip.kind,
+				chip.tint,
+			);
+			dl.text_fmt(
+				layer,
+				right - self::amount_w(style, chip.n),
+				text_y,
+				glyph,
+				chip.ink,
+				format_args!("{}", chip.n),
+			);
 		}
 		None => {}
 	}
@@ -535,6 +571,41 @@ mod tests {
 			(30 + extremes.len() + 2048) as u32,
 			"the sweep covered what it meant to"
 		);
+	}
+
+	/// A badge never claims a stack the player does not hold: spelled out, it IS the count, and
+	/// in thousands it is the floor of the count. Swept across the boundary and every decade the
+	/// buffer can hold rather than spot-checked, and counted so a sweep that stopped early fails.
+	#[test]
+	fn a_badge_reads_the_count_or_its_floor_in_thousands() {
+		let mut buf = [0u8; 11];
+		let mut checked = 0u32;
+		let edges = (0..10).flat_map(|p: u32| {
+			let d = 10u32.pow(p);
+			[d - 1, d, d + 1]
+		});
+		for n in edges
+			.chain([0, u32::MAX, BADGE_EXACT_MAX, BADGE_EXACT_MAX + 1])
+			.chain(0..4096)
+		{
+			let text = badge_text(n, &mut buf);
+			match text.strip_suffix('k') {
+				None => {
+					assert!(n <= BADGE_EXACT_MAX, "{n} spelled out past the cap");
+					assert_eq!(text, n.to_string());
+				}
+				Some(k) => {
+					assert!(n > BADGE_EXACT_MAX, "{n} shown in thousands under the cap");
+					let k: u32 = k.parse().expect("digits before the k");
+					assert!(
+						k as u64 * 1000 <= n as u64 && (n as u64) < (k as u64 + 1) * 1000,
+						"{n} -> {text}"
+					);
+				}
+			}
+			checked += 1;
+		}
+		assert_eq!(checked, 30 + 4 + 4096, "the sweep covered what it meant to");
 	}
 
 	#[test]

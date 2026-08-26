@@ -318,12 +318,9 @@ const FUNCTIONAL_FAMILIES: [(&str, &[BlockType]); 3] = [
 	),
 	(
 		"Tools",
-		// The vessels lead: the bucket and the siphon are the catalog's
-		// first crafts (feedstock-only, so a fresh player can make both),
-		// and members sit in unlock order like everywhere else.
 		&[
-			BlockType::Bucket,
 			BlockType::EssenceSiphon,
+			BlockType::Bucket,
 			BlockType::ResonantPick,
 			BlockType::MinersCrest,
 			BlockType::ArcanistsCrest,
@@ -335,7 +332,9 @@ const FUNCTIONAL_FAMILIES: [(&str, &[BlockType]); 3] = [
 
 /// The families, built once per process: one per shape in
 /// `ShapeFamily::ALL` order (members in material order, empty families
-/// dropped), then the functional ones.
+/// dropped), then the functional ones. Every family sits in the order
+/// its lock badges climb (`unlock::craft_gate`), so a retuned level
+/// moves the tile with it and the roster above only decides ties.
 pub fn families() -> &'static [Family] {
 	static FAMILIES: std::sync::OnceLock<Vec<Family>> = std::sync::OnceLock::new();
 	FAMILIES.get_or_init(|| {
@@ -353,9 +352,10 @@ pub fn families() -> &'static [Family] {
 			// empty tile with nothing behind it.
 			.filter(|f| !f.members.is_empty())
 			.collect();
-		out.extend(FUNCTIONAL_FAMILIES.iter().map(|&(name, members)| Family {
-			name,
-			members: members.to_vec(),
+		out.extend(FUNCTIONAL_FAMILIES.iter().map(|&(name, members)| {
+			let mut members = members.to_vec();
+			members.sort_by_key(|&b| unlock::craft_gate(b).map(|(_, l)| l));
+			Family { name, members }
 		}));
 		out
 	})
@@ -760,7 +760,7 @@ impl AlchScreen {
 				color: WHITE,
 				highlight: false,
 				caret: false,
-				mark: None,
+				cells: &[],
 			},
 		);
 		*y += row_h;
@@ -1060,7 +1060,7 @@ impl AlchScreen {
 				color: if queued.is_some() { WHITE } else { DIM },
 				highlight: false,
 				caret: false,
-				mark: None,
+				cells: &[],
 			},
 		);
 	}

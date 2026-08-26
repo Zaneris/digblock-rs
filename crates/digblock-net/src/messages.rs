@@ -154,6 +154,10 @@ pub enum AdminReply {
 	LegacyCharacterClaimed,
 	/// A slash line from a player who is not an admin.
 	CommandsAreAdminOnly,
+	/// A testing lever typed on a server whose totals reach the board; `command` is its stem.
+	WithheldOnRankedServer {
+		command: String,
+	},
 }
 
 // ---- unreliable datagrams --------------------------------------------

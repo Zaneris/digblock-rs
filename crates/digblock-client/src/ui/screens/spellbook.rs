@@ -381,8 +381,24 @@ fn row_h(row: &Row, scale: f32) -> f32 {
 		}
 }
 
+/// The amount column every fare row shares: as wide as the page's widest
+/// fare, so the essence icons stand in one column and the numbers in
+/// another, whatever their digit counts.
+fn amount_w(rows: &[Row], style: &Style) -> f32 {
+	rows.iter()
+		.filter_map(|row| match row {
+			Row::Spell {
+				state: State::Fare { n, .. },
+				..
+			} => Some(widgets::amount_w(style, *n)),
+			_ => None,
+		})
+		.fold(0.0, f32::max)
+}
+
 fn measure_rows(rows: &[Row], style: &Style) -> (f32, f32) {
 	let s = style.scale;
+	let amount_w = amount_w(rows, style);
 	let (mut width, mut height) = (0.0f32, 0.0f32);
 	for row in rows {
 		let w = match row {
@@ -391,9 +407,7 @@ fn measure_rows(rows: &[Row], style: &Style) -> (f32, f32) {
 			Row::Spell { state, .. } => {
 				let right = match state {
 					State::Text(t) => style.measure(t),
-					fare => fare
-						.chip(WHITE)
-						.map_or(0.0, |c| widgets::chips_w(style, &[c])),
+					State::Fare { .. } => widgets::fare_cols_w(style, amount_w),
 				};
 				theme::text_row_w(style, row_text(row)) + right + theme::SECTION_GAP * s
 			}
@@ -498,6 +512,7 @@ impl SpellScreen {
 		let panel = theme::panel_of(row_x, row_y, row_w, height, s);
 		widgets::panel(ui.dl, Layer::Backdrop, panel, theme::PANEL_BG);
 
+		let amount_w = amount_w(&view.rows, &ui.style);
 		let mut y = row_y;
 		let mut hover: Option<(Rect, String)> = None;
 		for row in &view.rows {
@@ -523,7 +538,7 @@ impl SpellScreen {
 							color,
 							highlight: false,
 							caret: false,
-							mark: None,
+							cells: &[],
 						},
 					);
 				}
@@ -537,10 +552,9 @@ impl SpellScreen {
 						State::Text(t) => widgets::RowRight::Text(t, color),
 						fare => {
 							let chip = fare.chip(color).expect("a fare");
-							// The chip's own rect, as `widgets::row` places
-							// it, so hovering the fare names its essence.
-							let run = [chip];
-							let w = widgets::chips_w(&ui.style, &run);
+							// The two fare columns' rect, as `widgets::row`
+							// places them, so hovering the fare names its essence.
+							let w = widgets::fare_cols_w(&ui.style, amount_w);
 							let pad_x = crate::ui::scale::text_pad_x(s);
 							let chip_rect = Rect::new(
 								rect.x + rect.w - pad_x - w,
@@ -554,7 +568,7 @@ impl SpellScreen {
 							{
 								hover = Some((chip_rect, e.name().to_string()));
 							}
-							widgets::RowRight::Chip(chip)
+							widgets::RowRight::Chip { chip, amount_w }
 						}
 					};
 					widgets::row(
@@ -569,7 +583,7 @@ impl SpellScreen {
 							color,
 							highlight: hovered,
 							caret: false,
-							mark: None,
+							cells: &[],
 						},
 					);
 					if *ready {

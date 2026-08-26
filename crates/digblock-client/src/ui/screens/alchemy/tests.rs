@@ -375,7 +375,17 @@ fn the_vessels_craft_from_timber_alone() {
 	let tools = center(r.hits.rect_of(family(&r, "Tools")).unwrap());
 	press(&mut r, tools);
 	rebuild(&mut r);
-	// Lands on the bucket — the first unlocked member.
+	// Lands on the family's first member, whichever vessel opens
+	// earlier — the roster's order, never a name the test decided.
+	let first = families()
+		.iter()
+		.find(|f| f.name == "Tools")
+		.expect("a Tools family")
+		.members[0];
+	assert!(
+		[B::Bucket, B::EssenceSiphon].contains(&first),
+		"a vessel leads the tools: {first:?}"
+	);
 	assert!(
 		r.view.affordable(B::Bucket) > 0,
 		"timber affords the bucket"
@@ -386,7 +396,7 @@ fn the_vessels_craft_from_timber_alone() {
 	);
 	let go = center(r.hits.rect_of(InvId::CraftGo).unwrap());
 	press(&mut r, go);
-	assert_eq!(r.screen.crafting, Some((B::Bucket, 1)));
+	assert_eq!(r.screen.crafting, Some((first, 1)));
 	// Cancel (the second press), keeping the family selection.
 	rebuild(&mut r);
 	let go = center(r.hits.rect_of(InvId::CraftGo).unwrap());
@@ -399,25 +409,25 @@ fn the_vessels_craft_from_timber_alone() {
 	assert!(r.inv.try_take(B::Wood, wood), "drain the timber");
 	rebuild(&mut r);
 	assert_eq!(
-		strip_reason(&r.view, B::Bucket),
+		strip_reason(&r.view, first),
 		StripReason::Short {
 			of: ShortOf::Feedstock(B::Wood),
-			more: alchemy::craft_feedstock(B::Bucket)
+			more: alchemy::craft_feedstock(first)
 				.iter()
 				.find(|(f, _)| *f == B::Wood)
 				.map(|&(_, n)| n)
-				.expect("the bucket is priced in timber")
+				.expect("the vessel is priced in timber")
 		},
 		"the strip must name the missing TIMBER, not an essence that cannot help"
 	);
 	// And the shortfall reaches the screen as a CHIP, never a word: the
 	// timber line's icon is the Wood cube, its number is the price, and
 	// its ink is the short one — while no text anywhere names the block.
-	let chips = strip_chips(&r, B::Bucket);
+	let chips = strip_chips(&r, first);
 	let wood = chips
 		.iter()
 		.find(|c| crate::ui::hud::icon_block(c.kind) == Some(B::Wood))
-		.expect("the bucket's price has a timber chip");
+		.expect("the vessel's price has a timber chip");
 	assert_eq!(wood.ink, theme::SHORT_INK, "the short line reads short");
 	let texts = texts_on(&r, Layer::Content);
 	assert!(
@@ -855,6 +865,33 @@ fn every_craftable_appears_in_exactly_one_family() {
 			"{b:?}: craftable blocks sit in exactly one family, others in none"
 		);
 	}
+}
+
+/// A family reads left to right in the order its members open — the
+/// level each tile's lock badge names, which for a crest is mastery on
+/// its own skill rather than the bench. The shape families inherit it
+/// from the material order; the functional ones are sorted into it, so
+/// a retuned level (the bucket's move past the siphon) moves the tile
+/// rather than stranding it ahead of a cheaper one.
+#[test]
+fn every_family_sits_in_the_order_its_gates_climb() {
+	let gate = |b: BlockType| unlock::craft_gate(b).expect("members are craftable").1;
+	let mut pairs = 0;
+	for fam in families() {
+		for w in fam.members.windows(2) {
+			assert!(
+				gate(w[0]) <= gate(w[1]),
+				"{}: {:?} ({}) sits before {:?} ({})",
+				fam.name,
+				w[0],
+				gate(w[0]),
+				w[1],
+				gate(w[1])
+			);
+			pairs += 1;
+		}
+	}
+	assert!(pairs > 0, "the sweep examined nothing");
 }
 
 /// The page shows what is unlocked plus ONE teaser tier — the next

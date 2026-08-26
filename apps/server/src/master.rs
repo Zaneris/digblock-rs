@@ -67,6 +67,9 @@ pub struct Registration {
 pub struct MasterState {
 	pub url: String,
 	registration: RwLock<Option<Registration>>,
+	/// The sim's inbox: a registration's verdict on the board goes in as `SimEvent::Registered`
+	/// from `set_registration` itself, so no path that lands one can forget to tell the sim.
+	events: crossbeam_channel::Sender<crate::sim::SimEvent>,
 	/// Replay backstop: the master consumes tokens on first verify; this
 	/// stops a second connection racing the same token without HTTP. Only
 	/// successfully verified tokens land here (never pruned — one token's
@@ -75,10 +78,11 @@ pub struct MasterState {
 }
 
 impl MasterState {
-	pub fn new(url: String) -> Self {
+	pub fn new(url: String, events: crossbeam_channel::Sender<crate::sim::SimEvent>) -> Self {
 		Self {
 			url,
 			registration: RwLock::new(None),
+			events,
 			used_tokens: Mutex::new(rustc_hash::FxHashSet::default()),
 		}
 	}
@@ -88,6 +92,11 @@ impl MasterState {
 	}
 
 	pub fn set_registration(&self, reg: Option<Registration>) {
+		if let Some(reg) = &reg {
+			let _ = self.events.send(crate::sim::SimEvent::Registered {
+				reports_skills: reg.reports_skills,
+			});
+		}
 		*self.registration.write().unwrap() = reg;
 	}
 
@@ -665,5 +674,32 @@ mod tests {
 	#[test]
 	fn hex_encodes_lowercase() {
 		assert_eq!(hex(&[0x00, 0xab, 0xff]), "00abff");
+	}
+
+	/// Every registration that lands tells the sim the board's verdict, and a lost one tells it
+	/// nothing — so the sim's last answer stands until the master gives a new one.
+	#[test]
+	fn a_registration_tells_the_sim_whether_it_is_ranked() {
+		use crate::sim::SimEvent;
+		let (tx, rx) = crossbeam_channel::unbounded();
+		let state = MasterState::new("http://127.0.0.1:0".into(), tx);
+		let reg = |reports_skills| Registration {
+			server_id: "s".into(),
+			server_key: "k".into(),
+			observed_host: "h".into(),
+			reports_skills,
+		};
+		for expect in [true, false, true] {
+			state.set_registration(Some(reg(expect)));
+			assert!(matches!(
+				rx.try_recv(),
+				Ok(SimEvent::Registered { reports_skills }) if reports_skills == expect
+			));
+		}
+		state.set_registration(None);
+		assert!(
+			rx.try_recv().is_err(),
+			"a lost registration carries no verdict"
+		);
 	}
 }

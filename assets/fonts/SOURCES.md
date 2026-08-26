@@ -27,6 +27,7 @@ U+0100-017F  Latin Extended-A
 U+2013-2014  en dash, em dash
 U+2018-201D  curly quotes
 U+20AC       euro sign
+U+2605       black star — the multiplayer list's ranked mark; drawn by the UI, never typeable
 ```
 
 Known gaps, all deliberate — `font::REPERTOIRE` excludes them and `is_typeable` rejects them, so they can never reach
@@ -38,7 +39,9 @@ the renderer:
   overlay could not, and that draws engine-generated ASCII exclusively.
 
 `font::face` has a test asserting the UI face covers every codepoint in `REPERTOIRE` and the mono face covers printable
-ASCII. Swapping in a different face fails that test rather than silently rendering `?`.
+ASCII; the star sits outside the typeable set, so `the_ranked_mark_has_a_glyph` pins it separately (JetBrains Mono has
+none, which is fine — the mono face never draws it). Swapping in a different face fails those tests rather than silently
+rendering `?`.
 
 ## Regeneration
 
@@ -47,7 +50,7 @@ Requires `fonttools` (any recent version; 4.63.0 was used). Use a virtualenv —
 ```sh
 python3 -m venv /tmp/fontenv && /tmp/fontenv/bin/pip install fonttools
 BIN=/tmp/fontenv/bin
-UNI='U+0020-007E,U+00A0-00FF,U+0100-017F,U+2013-2014,U+2018-201D,U+20AC'
+UNI='U+0020-007E,U+00A0-00FF,U+0100-017F,U+2013-2014,U+2018-201D,U+20AC,U+2605'
 
 # Inter: pin weight 400 and optical size 14 (the default, tuned for small text).
 curl -sSL -o Inter-var.ttf \

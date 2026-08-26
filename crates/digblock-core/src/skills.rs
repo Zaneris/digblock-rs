@@ -483,6 +483,18 @@ pub const HOME_XP_STRIDE: f32 = 8.0;
 /// The home award's ceiling, per jump.
 pub const HOME_XP_CAP: u64 = 60;
 
+/// Arcana XP for a Mason's Arc placement: the cells the arc laid BEYOND the one the hand would
+/// have placed anyway, so a line that fell back to the ordinary place pays nothing and the
+/// award grows only with the rank's reach. Deliberately the smallest rate on the ladder: every
+/// cell is billed out of the player's own stock, which is what keeps place-spam from being a
+/// faucet, and a rate that outpaid the fares would make the stance Arcana's cheapest rung.
+pub fn arc_xp(cells: usize) -> u64 {
+	cells.saturating_sub(1) as u64 * ARC_XP_PER_EXTRA_CELL
+}
+
+/// Points per cell an arc lays past the first.
+pub const ARC_XP_PER_EXTRA_CELL: u64 = 1;
+
 /// Arcana XP for a PRICED cast, derived from what it drains — the `craft_xp` rule: the award
 /// rides the price, so a fare retune moves its XP with it and zero-cost casts pay zero.
 ///

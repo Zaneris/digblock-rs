@@ -150,8 +150,9 @@ fn view_emits_draw_commands_and_hit_map_agrees() {
 		.collect();
 	assert_eq!(texts.len(), view.rows.len(), "one text per row");
 	assert!(texts.contains(&"DIGBLOCK"));
-	// Dim + panel quads lead the layer.
-	assert!(matches!(cmds[0], Cmd::Quad { .. }) && matches!(cmds[1], Cmd::Quad { .. }));
+	// Dim + panel quads lead the backdrop, under everything a row draws.
+	let (backdrop, _) = dl.cmds(Layer::Backdrop);
+	assert!(matches!(backdrop[0], Cmd::Quad { .. }) && matches!(backdrop[1], Cmd::Quad { .. }));
 
 	// Hit map: a selectable row's center resolves to its id.
 	let row = view.rows.iter().find(|r| r.id.is_some()).unwrap();
@@ -172,10 +173,14 @@ fn panel_fits_every_row() {
 			let [rx, _, rw, _] = row.rect;
 			let glyph = crate::ui::scale::glyph_px(1.0);
 			let w = |s: &str| crate::font::ui().measure(s, glyph);
-			let mut need = crate::ui::scale::text_pad_x(1.0) * 2.0 + w(&row.text);
+			let mut body = w(&row.text);
 			if row.caret {
-				need += crate::ui::widgets::caret_w(glyph);
+				body += crate::ui::widgets::caret_w(glyph);
 			}
+			for (x, text, _) in &row.cells {
+				body = body.max(x + w(text));
+			}
+			let mut need = crate::ui::scale::text_pad_x(1.0) * 2.0 + body;
 			if let Some((right, _)) = &row.right {
 				need += w(right);
 			}
@@ -1513,28 +1518,85 @@ fn a_ranked_server_says_so_on_its_row() {
 		},
 	])));
 	let view = menu.view(SIZE, 1.0, false);
-	let mark = |name: &str| {
+	let row = |name: &str| {
 		view.rows
 			.iter()
-			.find(|r| r.text.starts_with(name))
+			.find(|r| r.text == name)
 			.unwrap_or_else(|| panic!("a row for {name}"))
-			.mark
 	};
-	assert_eq!(mark("Beta"), Some(super::view::RANKED_MARK));
-	assert_eq!(mark("Alpha"), None);
-	// A picture, never a word: the row's text is the same either way.
-	let text = |name: &str| {
-		view.rows
+	let marked = |name: &str| {
+		row(name)
+			.cells
 			.iter()
-			.find(|r| r.text.starts_with(name))
-			.unwrap()
-			.text
-			.clone()
+			.any(|(_, text, _)| text == super::view::RANKED_MARK)
 	};
-	assert_eq!(
-		text("Beta").trim_start_matches("Beta"),
-		text("Alpha").trim_start_matches("Alpha")
+	assert!(marked("Beta"));
+	assert!(!marked("Alpha"));
+	// A mark, never a word: the row's text is the name either way, and the
+	// only cell the unranked row lacks is the mark.
+	assert_eq!(row("Beta").cells.len(), row("Alpha").cells.len() + 1);
+}
+
+/// The mark is one glyph past the typeable repertoire, so the coverage
+/// sweep over `text_charset` cannot vouch for it — a face swapped in
+/// without it would draw `?` where the star should be.
+#[test]
+fn the_ranked_mark_has_a_glyph() {
+	for c in super::view::RANKED_MARK.chars() {
+		assert!(crate::font::ui().covers(c), "ui.ttf lacks {c:?}");
+	}
+}
+
+/// Name, players, ranked, ping: the list is read down as much as across, so
+/// the counts share one right edge (the figures stay in step as they climb)
+/// and the mark stands at ONE x on every row, clear of the longest name and
+/// the widest count above them — whatever the row's own name and count
+/// measure.
+#[test]
+fn server_columns_line_up_across_rows() {
+	let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
+	menu.set_services_available();
+	open_browser(&mut menu);
+	menu.on_response(MenuResponse::ServerList(Ok(vec![
+		ServerEntry {
+			reports_skills: true,
+			players: 100,
+			..entry("s1", "A")
+		},
+		ServerEntry {
+			reports_skills: true,
+			players: 1,
+			..entry("s2", "A-Much-Longer-Name")
+		},
+	])));
+	let view = menu.view(SIZE, 1.0, false);
+	let glyph = crate::ui::scale::glyph_px(1.0);
+	let w = |s: &str| crate::font::ui().measure(s, glyph);
+	let rows: Vec<&PlacedRow> = view
+		.rows
+		.iter()
+		.filter(|r| matches!(r.id, Some(RowId::Server(_))))
+		.collect();
+	assert_eq!(rows.len(), 2);
+	let ends: Vec<f32> = rows
+		.iter()
+		.map(|r| r.cells[0].0 + w(&r.cells[0].1))
+		.collect();
+	assert!(
+		ends.iter().all(|e| (e - ends[0]).abs() < 0.01),
+		"count right edges drift: {ends:?}"
 	);
+	let marks: Vec<f32> = rows.iter().map(|r| r.cells[1].0).collect();
+	assert!(
+		marks.iter().all(|x| *x == marks[0]),
+		"mark column drifts: {marks:?}"
+	);
+	for r in &rows {
+		let (count_x, count, _) = &r.cells[0];
+		let (mark_x, _, _) = &r.cells[1];
+		assert!(w(&r.text) < *count_x, "{:?} runs into its count", r.text);
+		assert!(count_x + w(count) < *mark_x, "{count:?} runs into the mark");
+	}
 }
 
 /// Choosing a server remembers the master's word on whether play there

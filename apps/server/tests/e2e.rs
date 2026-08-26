@@ -340,7 +340,7 @@ impl TestServer {
 			let running = running.clone();
 			std::thread::spawn(move || run_sim_loop(sim, event_rx, running, players))
 		};
-		let state = Arc::new(MasterState::new(master_url.to_string()));
+		let state = Arc::new(MasterState::new(master_url.to_string(), event_tx.clone()));
 		// Every client in this suite connects from loopback, so the
 		// internet-facing per-address default would cap the fixture rather
 		// than anything under test.

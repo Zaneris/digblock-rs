@@ -729,6 +729,7 @@ impl Sim {
 		// borrow above has ended (the broadcast walks every client). A
 		// LIST: one action can level both skills at once.
 		let mut crossed = Vec::new();
+		let mut awards = Vec::new();
 		if place_cell.is_none() {
 			// An extraction credits ESSENCE, never a block: the siphon draws
 			// the seam out where it stands, so no node is ever an item and the
@@ -782,34 +783,43 @@ impl Sim {
 			// makes the same one, so the two economies cannot drift.
 			let (mining_xp, alch_xp) =
 				digblock_core::skills::dig_award(prev, extracting, broken, req.cell.1);
-			for (skill, xp) in [
+			awards.extend([
 				(digblock_core::skills::Skill::Mining, mining_xp),
 				(digblock_core::skills::Skill::Alchemy, alch_xp),
-			] {
-				if xp == 0 {
-					continue;
-				}
-				let before = client.skills.level(skill);
-				let total = client.skills.add_xp(skill, xp);
-				send_frame(
-					&client.out,
-					&ServerMsg::XpGain {
-						skill: skill as u8,
-						total,
-					},
-				);
-				let after = client.skills.level(skill);
-				if after > before {
-					// PUSHED, not assigned. A field extraction pays both
-					// skills in one action, so a player sitting under both
-					// thresholds crosses both — and overwriting dropped the
-					// Mining one on the floor: no LevelUp broadcast, no
-					// confetti over their head for anyone else, no feed
-					// line. The single-award version could not reach this.
-					crossed.push((skill, after));
-				}
-			}
+			]);
 			client.digging = None;
+		} else if arc {
+			// The Arc's award, on the line the server itself derived —
+			// the cells past the first, so a line that fell back to the
+			// ordinary place pays nothing (`skills::arc_xp`).
+			awards.push((
+				digblock_core::skills::Skill::Arcana,
+				digblock_core::skills::arc_xp(writes.len()),
+			));
+		}
+		for (skill, xp) in awards {
+			if xp == 0 {
+				continue;
+			}
+			let before = client.skills.level(skill);
+			let total = client.skills.add_xp(skill, xp);
+			send_frame(
+				&client.out,
+				&ServerMsg::XpGain {
+					skill: skill as u8,
+					total,
+				},
+			);
+			let after = client.skills.level(skill);
+			if after > before {
+				// PUSHED, not assigned. A field extraction pays both
+				// skills in one action, so a player sitting under both
+				// thresholds crosses both — and overwriting dropped the
+				// Mining one on the floor: no LevelUp broadcast, no
+				// confetti over their head for anyone else, no feed
+				// line. The single-award version could not reach this.
+				crossed.push((skill, after));
+			}
 		}
 		if let Some(hash) = client.identity {
 			self.player_store.put(hash, client.record());

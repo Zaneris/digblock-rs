@@ -284,7 +284,7 @@ fn main() {
 		};
 		let endpoint = Arc::new(endpoint);
 		log::info!("listening on udp {port}");
-		let master_state = Arc::new(MasterState::new(master_cfg.url.clone()));
+		let master_state = Arc::new(MasterState::new(master_cfg.url.clone(), event_tx.clone()));
 		let cert_hash = Arc::new(std::sync::RwLock::new(cert_hash));
 		let reregister = Arc::new(tokio::sync::Notify::new());
 		// Registration must not delay serving — the master's probe-back

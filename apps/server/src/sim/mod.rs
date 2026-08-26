@@ -106,6 +106,12 @@ pub enum SimEvent {
 	Disconnected {
 		conn_id: u64,
 	},
+	/// The master's verdict at registration: whether this server's totals reach the hiscores
+	/// board. Re-sent whenever a registration lands, so a re-register that moves the verdict
+	/// reaches the sim; a lost registration sends nothing and the last verdict stands.
+	Registered {
+		reports_skills: bool,
+	},
 }
 
 #[derive(Debug)]
@@ -492,6 +498,10 @@ pub struct Sim {
 	/// join — the default, so a character is one character everywhere.
 	/// Off, this server's ladder stands alone (`--use-master-levels false`).
 	master_levels: bool,
+	/// Whether the master trusts this server's totals onto the board. False until a registration
+	/// says otherwise — and nobody can join before one does. Ranked, the testing levers
+	/// (`admin::Scope::Unranked`) are withheld: a number they minted would stand on the ladder.
+	ranked: bool,
 	/// Seconds added to the tick clock by `/time` — same lifetime and
 	/// persistence policy as the tick counter it offsets (none).
 	tod_offset_secs: f64,
@@ -684,6 +694,7 @@ impl Sim {
 			waystone_store,
 			admin_accounts: FxHashSet::default(),
 			master_levels: true,
+			ranked: false,
 			tod_offset_secs: 0.0,
 			world_jobs: digblock_core::worldjob::Scheduler::new(),
 			// After `Journal::open`, which is what creates the directory
@@ -1064,6 +1075,7 @@ impl Sim {
 			},
 			SimEvent::Inputs { conn_id, batch } => self.handle_inputs(conn_id, batch),
 			SimEvent::Disconnected { conn_id } => self.drop_client(conn_id),
+			SimEvent::Registered { reports_skills } => self.set_ranked(reports_skills),
 		}
 	}
 
