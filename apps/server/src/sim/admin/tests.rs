@@ -909,12 +909,13 @@ fn set_spawn_dir_takes_your_facing_and_rides_both_spawn_paths() {
 
 	// No argument: the admin's own look, flattened to a yaw.
 	let mut t = 0;
-	let looking = Vec3::new(0.0, -0.5, -1.0).normalize();
+	let north = digblock_core::compass::cardinal("north").unwrap();
+	let looking = (north + Vec3::new(0.0, -0.5, 0.0)).normalize();
 	face(&mut sim, 1, looking, &mut t);
 	sim.tick_once(vec![chat(1, "/set-spawn-dir")]);
 	admin.drain();
 	let dir = sim.test_spawn_dir().expect("dir set");
-	assert_eq!(dir, Vec3::new(0.0, 0.0, -1.0), "pitch was not flattened");
+	assert_eq!(dir, north, "pitch was not flattened");
 	assert!(
 		answered(&admin, |r| matches!(
 			r,

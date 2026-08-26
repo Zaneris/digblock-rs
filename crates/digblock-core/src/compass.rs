@@ -4,9 +4,13 @@
 //! is north" would be a coin flip nobody could see was wrong.
 //!
 //! The convention is derived from the engine, not invented: the sun
-//! rotates about world Z with sunrise on the −x horizon, and `Dir::West`
-//! is +x — so **east = −x, west = +x**; camera yaw 0 looks +z and +yaw
-//! turns right, so **north = −z, south = +z**.
+//! rotates about world Z with sunrise on the −x horizon, so **east = −x,
+//! west = +x**; and facing north puts sunrise on your right, where the
+//! right-handed view's right is `forward × up` — so **north = +z,
+//! south = −z**, which is also what `Dir::North` names. Derive north from
+//! that cross product and never from a yaw's sign: the camera's +yaw
+//! turns LEFT, and a compass once built on the opposite belief put
+//! sunrise on the player's left.
 
 use glam::Vec3;
 
@@ -14,8 +18,8 @@ use glam::Vec3;
 /// takes a heading, not a diagonal).
 pub fn cardinal(dir: &str) -> Option<Vec3> {
 	Some(match dir {
-		"n" | "north" => Vec3::new(0.0, 0.0, -1.0),
-		"s" | "south" => Vec3::new(0.0, 0.0, 1.0),
+		"n" | "north" => Vec3::new(0.0, 0.0, 1.0),
+		"s" | "south" => Vec3::new(0.0, 0.0, -1.0),
 		"e" | "east" => Vec3::new(-1.0, 0.0, 0.0),
 		"w" | "west" => Vec3::new(1.0, 0.0, 0.0),
 		_ => return None,
@@ -27,7 +31,7 @@ pub fn cardinal(dir: &str) -> Option<Vec3> {
 /// horizontal component to name — straight up or down has no heading, and
 /// answering "north" for it would be a lie rather than a rounding.
 fn sector(dir: Vec3) -> Option<usize> {
-	let (east, north) = (-dir.x, -dir.z);
+	let (east, north) = (-dir.x, dir.z);
 	// A component earns a name only when it carries real weight:
 	// tan(22.5°) splits the eight sectors evenly.
 	const T: f32 = 0.4142;
@@ -90,13 +94,30 @@ mod tests {
 		assert_eq!(cardinal("northeast"), None, "diagonals are not headings");
 	}
 
-	/// Sunrise is −x and north is −z: the two facts every caller inherits.
+	/// East is wherever the sun comes up and north is the heading that
+	/// puts it on your right — both DERIVED, from the sun and from the
+	/// right-handed view's `forward × up`, so a compass that merely
+	/// agreed with its own header could not pass.
 	#[test]
 	fn the_convention_is_the_engines() {
-		assert_eq!(compass(Vec3::NEG_X), "east", "sunrise");
-		assert_eq!(compass(Vec3::NEG_Z), "north");
-		assert_eq!(compass(Vec3::X), "west");
-		assert_eq!(compass(Vec3::Z), "south");
+		let morning = crate::sun::Sun::with_tod(crate::sun::TOD_START);
+		let sunrise = -morning.sun_dir().with_y(0.0).normalize();
+		assert_eq!(compass(sunrise), "east", "sunrise");
+		assert_eq!(compass(-sunrise), "west");
+		let north = cardinal("north").unwrap();
+		assert_eq!(
+			north.cross(Vec3::Y),
+			sunrise,
+			"facing north, sunrise is on the right"
+		);
+		assert_eq!(compass(north), "north");
+		assert_eq!(compass(-north), "south");
+		let (dx, dy, dz) = crate::dir::Dir::North.offset();
+		assert_eq!(
+			north,
+			Vec3::new(dx as f32, dy as f32, dz as f32),
+			"Dir::North"
+		);
 	}
 
 	/// Diagonals get named as diagonals, and the split is even: just inside
@@ -104,10 +125,12 @@ mod tests {
 	/// past it the name is the diagonal.
 	#[test]
 	fn eight_sectors_split_evenly() {
+		let (north, east) = (cardinal("north").unwrap(), cardinal("east").unwrap());
+		// Bearing from north, clockwise — in whichever axes the cardinals
+		// stand, so the split is tested and not the convention twice.
 		let at = |deg: f32| {
-			let r = deg.to_radians();
-			// Bearing from north, clockwise: north = −z, east = −x.
-			Vec3::new(-r.sin(), 0.0, -r.cos())
+			let (s, c) = deg.to_radians().sin_cos();
+			north * c + east * s
 		};
 		assert_eq!(compass(at(0.0)), "north");
 		assert_eq!(compass(at(22.4)), "north");
@@ -138,9 +161,9 @@ mod tests {
 				.collect();
 			assert_eq!(*name, spelled, "row {i}");
 		}
-		assert_eq!(compass_abbrev(Vec3::NEG_Z), "N");
-		// east = -x: the sun's convention, the trap the header warns of.
-		assert_eq!(compass_abbrev(Vec3::new(-1.0, 0.0, -1.0)), "NE");
+		let (north, east) = (cardinal("north").unwrap(), cardinal("east").unwrap());
+		assert_eq!(compass_abbrev(north), "N");
+		assert_eq!(compass_abbrev(north + east), "NE");
 		assert_eq!(compass_abbrev(Vec3::Y), "--", "straight up has no heading");
 		assert_eq!(compass(Vec3::Y), "");
 	}

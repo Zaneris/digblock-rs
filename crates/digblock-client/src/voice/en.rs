@@ -156,7 +156,7 @@ fn admin(r: &AdminReply) -> String {
 		AdminReply::Usage(u) => usage(*u),
 		AdminReply::CommandHint { usage, desc } => command_hint(usage, desc).text,
 		AdminReply::UnknownCommand { typed } => format!("unknown command {typed} - try /help"),
-		AdminReply::CompassHint => "compass: e = sunrise (-x), n = -z".into(),
+		AdminReply::CompassHint => "compass: e = sunrise (-x), n = +z".into(),
 		AdminReply::NoSuchPlayer { name, why } => match why {
 			NoPlayer::NotAName => format!("{name} is not a player display name"),
 			NoPlayer::StillJoining => format!("{name} is still joining"),

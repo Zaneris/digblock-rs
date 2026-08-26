@@ -33,7 +33,8 @@ impl FlyCamera {
 	pub(crate) fn dir(&self) -> Vec3 {
 		let (ys, yc) = self.yaw_deg.to_radians().sin_cos();
 		let (ps, pc) = self.pitch_deg.to_radians().sin_cos();
-		// yaw 0 => +z (Java initial direction), yaw increases turning right.
+		// yaw 0 => +z (Java initial direction); +yaw turns LEFT in the
+		// right-handed view, which is why `look` subtracts the mouse's dx.
 		Vec3::new(ys * pc, ps, yc * pc).normalize()
 	}
 
