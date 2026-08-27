@@ -88,6 +88,15 @@ const SKY_SURFACE_CENTILE: usize = 20;
 /// votes on lights the ranking already rejects. The price, accepted: an UNDERSUBSCRIBED list
 /// ranges past it, so a deep valley's far lights can be culled by a floor its own columns never
 /// voted on.
+///
+/// Two things that scope this number rather than justify it, both worth knowing before retuning
+/// it. It was measured against a SATURATED list at the desktop cap, and `EngineConfig::web_mobile`
+/// boots at `settings::LIGHT_CAP_MIN` by design — so mobile web sits in the undersubscribed regime
+/// named above rather than the one this was sized in. And it is currently the same distance as
+/// `settings::DRAW_FLOOR` in blocks, so at the shortest draw distance the outermost ring of the
+/// tally is never resident and simply does not vote; that direction is safe (fewer samples pull
+/// the percentile DOWN, and a lower floor arms the cull less), but the two moving apart is a
+/// silent change to how much of the disc answers.
 pub(crate) const SKY_TALLY_REACH: f32 = 96.0;
 
 /// The sky cull's floor for this frame, or None while it is disarmed: take the sampled column-top
@@ -335,9 +344,13 @@ pub(crate) struct GiDraw {
 	/// heading swing while oversubscribed re-flushes on the same rule a
 	/// walk does: either one moves the anchor.
 	lights_anchor: [f32; 3],
-	/// Emitters written at that flush, so a move that changes WHICH are in
-	/// reach re-flushes even under the cap.
-	lights_len: usize,
+	/// Emitters IN REACH at that flush, so a move that changes WHICH are in reach re-flushes even
+	/// under the cap. Deliberately the pre-cull count and not the flushed length: the staleness
+	/// test compares it against a freshly counted `reachable()`, and the culls
+	/// ([`BEHIND_REACH`], the sky floor) make those two different numbers — comparing across them
+	/// both re-flushes every moved frame the moment anything is culled AND lets a coincidence of
+	/// counts hold a stale list.
+	lights_reachable: usize,
 	/// The sky-cull floor the list was last flushed under, so arming,
 	/// disarming or a tally move re-flushes like a cap move does.
 	lights_floor: Option<f32>,
@@ -530,7 +543,10 @@ fn select_lights(
 				return false;
 			}
 			// The two outright culls ([`BEHIND_REACH`], [`sky_floor`]).
-			// The carrier's own light sits at the eye, ahead of both.
+			// The LOCAL carrier's light sits at the eye and is ahead of
+			// both; every other entry in `carried` — a remote's torch, a
+			// wisp, a kindled light standing in a cell — is somewhere
+			// else and is culled like any placed emitter.
 			let dy = p[1] - cam[1];
 			dx * fwd[0] + dy * fwd[1] + dz * fwd[2] >= -BEHIND_REACH
 				&& sky_floor.is_none_or(|f| p[1] >= f)

@@ -383,6 +383,33 @@ fn a_quarry_moves_the_floor_a_lone_shaft_cannot() {
 	assert_eq!(sky_floor(armed, &mut []), None);
 }
 
+/// An emptied tally DISARMS rather than guessing, which is the property
+/// `Engine::reset_sky_tally` leans on at a teleport and a world swap: the
+/// floor those hooks throw away describes terrain the camera has left,
+/// and the safe state to be wrong in is the one that culls nothing.
+#[test]
+fn an_emptied_tally_disarms_the_cull_at_any_height() {
+	let mut swept = 0;
+	for cam_y in [0.0, 64.0, 200.0, 4000.0] {
+		assert_eq!(sky_floor(cam_y, &mut []), None, "cam_y {cam_y}");
+		swept += 1;
+	}
+	assert_eq!(swept, 4);
+	// And a disarmed floor is what `select_lights` reads as "cull nothing":
+	// the deepest emitter survives a camera arbitrarily far above it.
+	let deep = point_at([0.0, -1000.0, 8.0]);
+	let picked = select_lights(
+		[deep].into_iter(),
+		&[],
+		[0.0, 4000.0, 0.0],
+		[0.0, 0.0, 1.0],
+		1e9,
+		sky_floor(4000.0, &mut []),
+		MAX_LIGHTS,
+	);
+	assert_eq!(picked.len(), 1, "a disarmed cull drops nothing");
+}
+
 /// The unproven-daylight fade (R32) is bit-identical above its top edge because `smoothstep`
 /// saturates there — which is only the surface-world guarantee while that edge IS the surface's
 /// floor. This crate is the one that sees both the shader source and worldgen, so it holds the two

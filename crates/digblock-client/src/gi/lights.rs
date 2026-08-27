@@ -48,9 +48,9 @@ impl GiDraw {
 			self.light_cap = cap;
 			self.lights_dirty = true;
 		}
-		// The floor is quantized (whole-block heights, recomputed per camera
-		// chunk), so this fires on arming, disarming and real tally moves —
-		// never on frame-to-frame jitter.
+		// The floor is quantized (whole-block column tops), so this fires on
+		// arming, disarming and real tally moves — never on the frame-to-frame
+		// jitter a camera height would carry.
 		if sky_floor != self.lights_floor {
 			self.lights_floor = sky_floor;
 			self.lights_dirty = true;
@@ -95,11 +95,19 @@ impl GiDraw {
 		// cap this costs one walk and one small buffer write each time the anchor clears the
 		// refresh distance above. The tally rides INSIDE `moved`, and not beside it: it walks
 		// both emitter maps, and a frame that has not moved would pay for an answer it discards.
-		let stale = moved && {
-			let total = reachable(&self.emitters)
+		let count_reachable = || {
+			reachable(&self.emitters)
 				+ reachable(&self.surfaces)
-				+ carried.iter().copied().filter(&in_reach).count();
-			total > cap || total != self.lights_len
+				+ carried.iter().copied().filter(&in_reach).count()
+		};
+		// Banked when `moved` already paid for it, so a flush does not walk both maps twice.
+		let mut counted = None;
+		let stale = moved && {
+			let total = *counted.insert(count_reachable());
+			// Against the count IN REACH at the last flush, never against the length flushed:
+			// the culls make those different numbers, and comparing across them would report
+			// every moved frame as stale the moment one light is culled.
+			total > cap || total != self.lights_reachable
 		};
 		// A carried light moves with its carrier, so the list is stale the moment one does.
 		// EXACT equality, not an epsilon: at rest the presentation eye is bit-identical frame to
@@ -114,6 +122,8 @@ impl GiDraw {
 		if !self.lights_dirty && !stale && !carried_moved {
 			return;
 		}
+		// Before `self.carried` is rewritten, since the tally reads it.
+		self.lights_reachable = counted.unwrap_or_else(count_reachable);
 		self.carried.clear();
 		self.carried
 			.extend(carried.iter().copied().filter(&in_reach));
@@ -133,7 +143,6 @@ impl GiDraw {
 			cap,
 		);
 		let count = all.len() as u32;
-		self.lights_len = all.len();
 		let mut bytes = Vec::with_capacity(16 + all.len() * 32);
 		bytes.extend_from_slice(bytemuck::cast_slice(&[count, 0, 0, 0]));
 		bytes.extend_from_slice(bytemuck::cast_slice(&all));
