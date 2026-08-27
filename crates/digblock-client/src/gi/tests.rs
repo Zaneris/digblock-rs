@@ -801,7 +801,7 @@ fn a_surface_emitter_packs_its_rectangle_beside_its_position() {
 #[test]
 fn the_sky_ceiling_tops_the_highest_brick() {
 	let (w, h, d) = (40usize, 32, 40);
-	let mut mirror = vec![0u8; w * h * d];
+	let mut mirror = vec![0u32; w * h * d];
 	assert_eq!(sky_ceiling(&mirror, w, h, d), -1.0);
 	mirror[(17 * h + 9) * w + 33] = 0b01;
 	assert_eq!(sky_ceiling(&mirror, w, h, d), (9 * 8 + 7) as f32);

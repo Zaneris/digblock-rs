@@ -694,16 +694,16 @@ fn window_textures(device: &wgpu::Device, side: u32) -> (wgpu::Texture, wgpu::Te
 		mip_level_count: 1,
 		sample_count: 1,
 		dimension: wgpu::TextureDimension::D3,
-		format: wgpu::TextureFormat::R8Uint,
+		format: wgpu::TextureFormat::R32Uint,
 		usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
 		view_formats: &[],
 	});
 	(window, coarse)
 }
 
-/// The CPU copy of the coarse texture, one byte per brick, in its upload order.
-fn coarse_mirror(side: u32) -> Box<[u8]> {
-	vec![0u8; (side / 8 * (WORLD_H / 8) * (side / 8)) as usize].into_boxed_slice()
+/// The CPU copy of the coarse texture, one word per brick, in its upload order.
+fn coarse_mirror(side: u32) -> Box<[u32]> {
+	vec![0u32; (side / 8 * (WORLD_H / 8) * (side / 8)) as usize].into_boxed_slice()
 }
 
 /// One cascade's probe-update bind groups, per atlas ping.

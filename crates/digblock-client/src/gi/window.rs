@@ -45,10 +45,10 @@ impl GiDraw {
 				},
 				aspect: wgpu::TextureAspect::All,
 			},
-			&gi.coarse,
+			bytemuck::cast_slice(&gi.coarse),
 			wgpu::TexelCopyBufferLayout {
 				offset: 0,
-				bytes_per_row: Some(2),
+				bytes_per_row: Some(2 * 4),
 				rows_per_image: Some(2),
 			},
 			wgpu::Extent3d {

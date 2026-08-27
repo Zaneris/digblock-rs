@@ -29,17 +29,106 @@ pub enum GiOpacity {
 }
 
 /// One classified chunk, ready for the GPU: texel bytes in
-/// write_texture order, the coarse occupancy bytes, and the cells
+/// write_texture order, the coarse brick words, and the cells
 /// that emit (for the light list).
 pub struct GiChunk {
 	/// `[z][y][x]` — depth slices in `write_texture` layout, x fastest
 	/// (NOT ChunkData's y-major order).
 	pub bytes: Box<[u8; CHUNK_VOLUME]>,
-	/// One byte per coarse cell of the chunk, `[z][y][x]`; the low bits
-	/// flag, in order, any ray-blocking cell and any emitting cell.
-	pub coarse: [u8; 8],
+	/// One [`pack_coarse`] word per brick of the chunk, `[z][y][x]`.
+	pub coarse: [u32; 8],
 	/// Emitting cells as (local x, y, z, class).
 	pub emitters: Vec<(u8, u8, u8, u8)>,
+}
+
+/// Cells along a brick's edge; a brick address is a cell address shifted by its log.
+pub const BRICK: usize = 8;
+const BRICK_CELLS: usize = BRICK * BRICK * BRICK;
+
+/// A brick's far-field summary (GI-DESIGN.md R41): a heightfield with a density. Each column of
+/// the brick has a TOP, one above its highest blocker (zero for none); `lo` and `hi` are the
+/// lowest and highest tops. A ray segment above `hi` is open, one below `lo` crosses the CORE at
+/// `core` density, and the band between crosses at `band` density — so a ray skimming flat ground
+/// inside the ground's own brick is open, which one density over the whole brick got wrong.
+/// `modal` is the class most blockers wear. Densities are fractions of their full scale —
+/// `CORE_FULL` and `BAND_FULL`, the two bit widths the word affords — and any brick with a
+/// blocker has `hi > 0`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct Brick {
+	pub lo: u8,
+	pub hi: u8,
+	pub core: u8,
+	pub band: u8,
+	pub modal: u8,
+}
+
+pub const CORE_FULL: u8 = 63;
+pub const BAND_FULL: u8 = 255;
+
+/// A brick's coarse word: two flags (any ray-blocking cell, any emitting cell) that alone decide
+/// whether a march may SKIP the brick, then the [`Brick`] summary a far gather ray reads to cross
+/// the brick without descending into it. A brick with any blocker has a nonzero summary, so "word
+/// is zero" and "nothing to march" stay one test. `gi_common.wgsl` decodes the same layout.
+pub fn pack_coarse(blocks_rays: bool, emits: bool, b: Brick) -> u32 {
+	u32::from(blocks_rays)
+		| u32::from(emits) << 1
+		| u32::from(b.core) << 2
+		| u32::from(b.band) << 8
+		| u32::from(b.modal) << 16
+		| u32::from(b.lo) << 24
+		| u32::from(b.hi) << 28
+}
+
+/// The summary a coarse word carries.
+pub fn unpack_coarse(word: u32) -> Brick {
+	Brick {
+		lo: ((word >> 24) & 0xf) as u8,
+		hi: (word >> 28) as u8,
+		core: ((word >> 2) & 0x3f) as u8,
+		band: (word >> 8) as u8,
+		modal: (word >> 16) as u8,
+	}
+}
+
+/// A density as the word stores it: a fraction of `cells` on the scale `full`, never zero for a
+/// nonzero count (so a lone blocker still makes its brick a medium rather than open air).
+fn density(blockers: usize, cells: usize, full: u8) -> u8 {
+	match cells {
+		0 => 0,
+		_ => (blockers * usize::from(full))
+			.div_ceil(cells)
+			.min(usize::from(full)) as u8,
+	}
+}
+
+/// Summarize one brick from its blocker mask, `[z][y][x]` over the brick's own cells.
+fn summarize_brick(blk: &[bool; BRICK_CELLS], hist: &[u16; 256]) -> Brick {
+	let at = |x: usize, y: usize, z: usize| blk[(z * BRICK + y) * BRICK + x];
+	let (mut lo, mut hi) = (BRICK, 0);
+	for z in 0..BRICK {
+		for x in 0..BRICK {
+			let top = (0..BRICK).rev().find(|&y| at(x, y, z)).map_or(0, |y| y + 1);
+			lo = lo.min(top);
+			hi = hi.max(top);
+		}
+	}
+	let count = |y0: usize, y1: usize| {
+		(y0..y1)
+			.flat_map(|y| (0..BRICK).flat_map(move |z| (0..BRICK).map(move |x| (x, y, z))))
+			.filter(|&(x, y, z)| at(x, y, z))
+			.count()
+	};
+	let modal = match hi {
+		0 => 0,
+		_ => (0..256).max_by_key(|&c| hist[c]).unwrap_or(0) as u8,
+	};
+	Brick {
+		lo: lo as u8,
+		hi: hi as u8,
+		core: density(count(0, lo), lo * BRICK * BRICK, CORE_FULL),
+		band: density(count(lo, hi), (hi - lo) * BRICK * BRICK, BAND_FULL),
+		modal,
+	}
 }
 
 /// First class byte the shaped-variant classes occupy: below is a plain block id (or air), from
@@ -276,7 +365,9 @@ pub fn pack_box(b: SubBox) -> u32 {
 pub fn classify_chunk(data: &ChunkData) -> GiChunk {
 	let n = CHUNK_SIZE;
 	let mut bytes = Box::new([0u8; CHUNK_VOLUME]);
-	let mut coarse = [0u8; 8];
+	let mut flags = [0u32; 8];
+	let mut hist = [[0u16; 256]; 8];
+	let mut blk = Box::new([[false; BRICK_CELLS]; 8]);
 	let mut emitters = Vec::new();
 	for z in 0..n {
 		for y in 0..n {
@@ -304,12 +395,19 @@ pub fn classify_chunk(data: &ChunkData) -> GiChunk {
 				// throughput, so a wall of panes would go untinted.
 				let blocks_rays = class >= SHAPE_CLASS_BASE
 					|| matches!(opacity(b), GiOpacity::Opaque | GiOpacity::Tinted);
-				if blocks_rays || emits {
-					let ci = (z / 8) * 4 + (y / 8) * 2 + (x / 8);
-					coarse[ci] |= u8::from(blocks_rays) | (u8::from(emits) << 1);
+				let ci = (z / BRICK) * 4 + (y / BRICK) * 2 + (x / BRICK);
+				flags[ci] |= u32::from(blocks_rays) | u32::from(emits) << 1;
+				if blocks_rays {
+					hist[ci][usize::from(class)] += 1;
+					blk[ci][((z % BRICK) * BRICK + y % BRICK) * BRICK + x % BRICK] = true;
 				}
 			}
 		}
+	}
+	let mut coarse = [0u32; 8];
+	for ci in 0..8 {
+		let b = summarize_brick(&blk[ci], &hist[ci]);
+		coarse[ci] = pack_coarse(flags[ci] & 1 != 0, flags[ci] & 2 != 0, b);
 	}
 	GiChunk {
 		bytes,
@@ -545,10 +643,10 @@ mod tests {
 		data.set(2, 2, 2, BlockType::Stone);
 		data.set(12, 12, 12, BlockType::Torch);
 		let gi = classify_chunk(&data);
-		assert_eq!(gi.coarse[0], 0b01, "stone: blocks, no emission");
+		assert_eq!(gi.coarse[0] & 0b11, 0b01, "stone: blocks, no emission");
 		// The torch blocks (partial cells still pin their brick) and
 		// emits; its class is synthetic now, carrying the post boxes.
-		assert_eq!(gi.coarse[7], 0b11);
+		assert_eq!(gi.coarse[7] & 0b11, 0b11);
 		let torch_class = gi_class(BlockType::Torch as u16);
 		assert!(torch_class >= SHAPE_CLASS_BASE);
 		assert_eq!(gi.emitters, vec![(12, 12, 12, torch_class)]);
@@ -565,7 +663,99 @@ mod tests {
 		let mut pane = ChunkData::default();
 		pane.set(0, 0, 0, BlockType::Glass);
 		let g = classify_chunk(&pane);
-		assert_eq!(g.coarse[0], 0b01, "glass: pins the brick, no emission");
+		assert_eq!(
+			g.coarse[0] & 0b11,
+			0b01,
+			"glass: pins the brick, no emission"
+		);
 		assert_eq!(opacity(BlockType::Glass), GiOpacity::Tinted);
+	}
+
+	/// The far gather crosses a brick by its summary, so a brick with any blocker must be
+	/// unskippable AND carry a top, the mode must be the class most blockers wear, a solid brick
+	/// must read as a full core, and the word must round-trip the summary it was packed from.
+	#[test]
+	fn a_brick_with_a_blocker_is_never_open() {
+		let mut data = ChunkData::default();
+		let mut examined = 0;
+		let mut b = Brick::default();
+		for n in 0..BRICK_CELLS {
+			let (x, y, z) = (n % BRICK, (n / BRICK) % BRICK, n / (BRICK * BRICK));
+			data.set(
+				x,
+				y,
+				z,
+				if n % 3 == 2 {
+					BlockType::Dirt
+				} else {
+					BlockType::Stone
+				},
+			);
+			let w = classify_chunk(&data).coarse[0];
+			b = unpack_coarse(w);
+			assert!(
+				b.hi > 0 && (w & 1) == 1,
+				"a brick with a blocker is never skippable"
+			);
+			assert!(b.lo <= b.hi);
+			assert!(
+				b.core > 0 || b.band > 0,
+				"some layer of the brick must be a medium"
+			);
+			assert_eq!(
+				b.modal,
+				gi_class(BlockType::Stone as u16),
+				"the mode is the class most blockers wear"
+			);
+			assert_eq!(
+				unpack_coarse(pack_coarse(true, false, b)),
+				b,
+				"the word round-trips"
+			);
+			examined += 1;
+		}
+		assert_eq!(examined, BRICK_CELLS);
+		assert_eq!(
+			(b.lo, b.hi, b.core),
+			(BRICK as u8, BRICK as u8, CORE_FULL),
+			"a solid brick is all core"
+		);
+		assert_eq!(classify_chunk(&ChunkData::default()).coarse[0], 0);
+		// Water attenuates without blocking, so it counts toward nothing.
+		let mut wet = ChunkData::default();
+		wet.set(1, 1, 1, BlockType::Water);
+		assert_eq!(classify_chunk(&wet).coarse[0], 0);
+	}
+
+	/// The heightfield half of the summary: flat ground inside a brick is ALL core and no band
+	/// (so a ray skimming it is open), and one pillar on that ground opens a band exactly as
+	/// tall as the pillar, at the pillar's own thin density, leaving the core untouched.
+	#[test]
+	fn the_brick_summary_is_a_heightfield() {
+		let floor = 3;
+		let mut data = ChunkData::default();
+		for z in 0..BRICK {
+			for x in 0..BRICK {
+				for y in 0..floor {
+					data.set(x, y, z, BlockType::Stone);
+				}
+			}
+		}
+		let flat = unpack_coarse(classify_chunk(&data).coarse[0]);
+		assert_eq!((flat.lo, flat.hi), (floor as u8, floor as u8));
+		assert_eq!((flat.core, flat.band), (CORE_FULL, 0));
+		let pillar = 4;
+		for y in floor..floor + pillar {
+			data.set(5, y, 5, BlockType::Stone);
+		}
+		let b = unpack_coarse(classify_chunk(&data).coarse[0]);
+		assert_eq!((b.lo, b.hi), (floor as u8, (floor + pillar) as u8));
+		assert_eq!(b.core, CORE_FULL, "the floor is still the core");
+		let band_cells = pillar * BRICK * BRICK;
+		assert_eq!(b.band, density(pillar, band_cells, BAND_FULL));
+		assert!(
+			b.band > 0 && b.band < BAND_FULL,
+			"a lone pillar is a thin band, never a wall"
+		);
 	}
 }

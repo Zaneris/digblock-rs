@@ -59,11 +59,46 @@ fn gi_cell_w(w: vec2i, y: i32) -> u32 {
 // wrap(c >> s, side >> s) == wrap(c, side) >> s holds exactly and the brick address is a shift off
 // the fine one. Caching the last brick index was measured and REJECTED — the extra live register
 // plus the divergent branch beat the load it saves. The y guard is the FINE bound.
-fn gi_coarse_empty_w(w: vec2i, y: i32) -> bool {
+fn gi_coarse_w(w: vec2i, y: i32) -> u32 {
 	if y < 0 || y > 255 {
-		return true;
+		return 0u;
 	}
-	return textureLoad(gi_coarse, vec3i(w.x >> 3u, y >> 3u, w.y >> 3u), 0).r == 0u;
+	return textureLoad(gi_coarse, vec3i(w.x >> 3u, y >> 3u, w.y >> 3u), 0).r;
+}
+
+fn gi_coarse_empty_w(w: vec2i, y: i32) -> bool {
+	return gi_coarse_w(w, y) == 0u;
+}
+
+// The brick word's summary (`core::gi::pack_coarse` packs it, `Brick` names the fields): the
+// class most of its blockers wear, and the heightfield-with-a-density `gi_brick_open` reads.
+fn gi_coarse_class(word: u32) -> u32 {
+	return (word >> 16u) & 0xffu;
+}
+
+// The length of [t0, t1] over which a ray at height `oy + dy*t` lies in [a, b).
+fn gi_span_len(oy: f32, dy: f32, t0: f32, t1: f32, a: f32, b: f32) -> f32 {
+	if abs(dy) < 1e-6 {
+		return select(0.0, t1 - t0, oy >= a && oy < b);
+	}
+	let ta = (a - oy) / dy;
+	let tb = (b - oy) / dy;
+	return max(min(max(ta, tb), t1) - max(min(ta, tb), t0), 0.0);
+}
+
+// The probability a ray crossing a brick over [t0, t1] comes out the other side (R41). The
+// brick is three layers by height: open above its highest column top, the CORE below its lowest,
+// and the band between — each a homogeneous medium at its stored density, crossed for the length
+// the ray spends inside it. The layering is what keeps a ray skimming flat ground open inside
+// the ground's own brick; one density over the whole brick darkened every horizon.
+fn gi_brick_open(word: u32, oy: f32, dy: f32, ybase: f32, t0: f32, t1: f32) -> f32 {
+	let lo = ybase + f32((word >> 24u) & 0xfu);
+	let hi = ybase + f32(word >> 28u);
+	let core = f32((word >> 2u) & 0x3fu) / 63.0;
+	let band = f32((word >> 8u) & 0xffu) / 255.0;
+	let l_core = gi_span_len(oy, dy, t0, t1, ybase, lo);
+	let l_band = gi_span_len(oy, dy, t0, t1, lo, hi);
+	return pow(1.0 - core, l_core) * pow(1.0 - band, l_band);
 }
 
 // The wrapping form, for the callers that hold a world cell rather than
@@ -281,6 +316,9 @@ struct GiHit {
 	cell: vec3i,
 	// Axis last crossed — the hit face's axis.
 	axis: u32,
+	// On a hit, the class struck: the cell's own, or — past `coarse_from` — the brick's modal
+	// one, which is why a caller reads this rather than the window at `cell`.
+	cls: u32,
 	// Water cells crossed on the way, as a PATH LENGTH (see gi_sun_vis).
 	water: f32,
 	// Glass throughput crossed on the way — see GiSunVis.thru.
@@ -293,11 +331,21 @@ struct GiHit {
 	sky: bool,
 }
 
-fn gi_march(side: i32, sky_y: f32, cam_xz: vec2f, p: vec3f, dir: vec3f, max_t: f32, iters: i32) -> GiHit {
+// `coarse_from` is the t past which a brick is no longer entered but crossed by its summary
+// (R41, `gi_brick_open`): the ray survives with the probability the summary gives, `seed` rolls
+// that, and a stop is a hit in the brick's modal class at its entry cell. The far gather passes
+// the brick edge — one cosine sample of a hemisphere has a footprint the size of its travel, so
+// past a brick's length the brick IS its resolution — and every shadow ray passes `max_t`,
+// because a torch's occluder is a cell, not a density.
+fn gi_march(
+	side: i32, sky_y: f32, cam_xz: vec2f, p: vec3f, dir: vec3f,
+	max_t: f32, iters: i32, coarse_from: f32, seed: u32,
+) -> GiHit {
 	var out: GiHit;
 	out.hit = false;
 	out.cell = vec3i(0);
 	out.axis = 1u;
+	out.cls = 0u;
 	out.water = 0.0;
 	out.thru = vec3f(1.0);
 	out.sky = false;
@@ -306,6 +354,7 @@ fn gi_march(side: i32, sky_y: f32, cam_xz: vec2f, p: vec3f, dir: vec3f, max_t: f
 	let inv = 1.0 / max(abs(dir), vec3f(1e-6));
 	var r = gi_ray_init(o, dir, inv);
 	let lateral_max = gi_lateral_max(f32(side));
+	var rng = seed;
 	for (var i = 0; i < 128; i++) {
 		if i >= iters {
 			break;
@@ -325,9 +374,26 @@ fn gi_march(side: i32, sky_y: f32, cam_xz: vec2f, p: vec3f, dir: vec3f, max_t: f
 			break;
 		}
 		let w = gi_wrap2(r.cell.xz, side);
-		if gi_coarse_empty_w(w, r.cell.y) {
+		let cw = gi_coarse_w(w, r.cell.y);
+		if cw == 0u {
 			// Lands on the last cell inside the empty region; the step at
 			// the top of the loop is what crosses out of it.
+			r = gi_ray_skip_brick(r, dir, step_dir, inv);
+			continue;
+		}
+		if r.t >= coarse_from {
+			// The brick by its summary. Water and glass inside it go uncounted: a far bounce's
+			// tint is below what one sample of a hemisphere resolves.
+			let t1 = min(gi_brick_exit(r, dir, step_dir, inv), max_t);
+			let ybase = f32((r.cell.y >> 3u) << 3u);
+			let open = gi_brick_open(cw, o.y, dir.y, ybase, r.t, t1);
+			if lcg_next(&rng) >= open {
+				out.hit = true;
+				out.cell = r.cell;
+				out.axis = r.axis;
+				out.cls = gi_coarse_class(cw);
+				return out;
+			}
 			r = gi_ray_skip_brick(r, dir, step_dir, inv);
 			continue;
 		}
@@ -339,6 +405,7 @@ fn gi_march(side: i32, sky_y: f32, cam_xz: vec2f, p: vec3f, dir: vec3f, max_t: f
 				out.hit = true;
 				out.cell = r.cell;
 				out.axis = r.axis;
+				out.cls = v;
 				return out;
 			}
 			if op == 3u {
@@ -353,6 +420,7 @@ fn gi_march(side: i32, sky_y: f32, cam_xz: vec2f, p: vec3f, dir: vec3f, max_t: f
 					out.hit = true;
 					out.cell = r.cell;
 					out.axis = u32(bh.y);
+					out.cls = v;
 					return out;
 				}
 			}
@@ -777,10 +845,8 @@ fn sum_lights(side: i32, sky_y: f32, cam_xz: vec2f, p: vec3f, n: vec3f) -> vec3f
 		let dist = length(d);
 		// Stop short of the light's own cell (gi_light_margin, shared with
 		// both other NEE passes).
-		let sh = gi_march(
-			side, sky_y, cam_xz, p, d / dist,
-			max(dist - gi_light_margin_of(l), 0.0), GI_NEE_ITERS,
-		);
+		let reach = max(dist - gi_light_margin_of(l), 0.0);
+		let sh = gi_march(side, sky_y, cam_xz, p, d / dist, reach, GI_NEE_ITERS, reach, 0u);
 		if !sh.hit {
 			// Glass on the path, exactly as both other NEE passes charge
 			// it — nothing filters a body (R33/R34), so without this a

@@ -288,8 +288,8 @@ pub(crate) struct GiDraw {
 	coarse: wgpu::Texture,
 	/// CPU copy of the coarse texture, in upload order (x fastest, z
 	/// slowest) — what the sky ceiling is recomputed from when chunks
-	/// land. One byte per coarse brick, so it stays small.
-	coarse_mirror: Box<[u8]>,
+	/// land. One word per coarse brick, so it stays small.
+	coarse_mirror: Box<[u32]>,
 	/// The mirror changed this frame; `sky_y` rescans at the next
 	/// `encode`.
 	coarse_mips_dirty: bool,
@@ -630,7 +630,7 @@ fn chunk_in_reach(pos: ChunkPos, cam: [f32; 3], reach: f32) -> bool {
 /// y. A non-descending ray above it is proven lit/sky in one float compare, which ends the sun
 /// march at the tallest local hill instead of the top of the world — proving open sky one brick
 /// skip at a time cost a dependent texture load per skip. Negative when the mirror is still empty.
-fn sky_ceiling(mirror: &[u8], w: usize, h: usize, d: usize) -> f32 {
+fn sky_ceiling(mirror: &[u32], w: usize, h: usize, d: usize) -> f32 {
 	(0..h)
 		.rev()
 		.find(|&y| {
