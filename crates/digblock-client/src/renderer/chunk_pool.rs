@@ -195,6 +195,12 @@ impl Renderer {
 		self.gi.upload_chunk(gpu, pos, gi);
 	}
 
+	/// RTGI: rebuild the voxel window for a new draw distance — see
+	/// `GiDraw::resize_window`; the caller re-dirties every resident chunk.
+	pub(crate) fn gi_resize_window(&mut self, gpu: &Gpu, window_chunks: u32) {
+		self.gi.resize_window(gpu, window_chunks);
+	}
+
 	/// RTGI: queue probe invalidation around an edited cell.
 	pub(crate) fn gi_invalidate(&mut self, pos: [f32; 3]) {
 		self.gi.invalidate(pos);

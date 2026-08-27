@@ -29,34 +29,7 @@ impl GiDraw {
 		let device = &gpu.device;
 		let queue = &gpu.queue;
 		let side = window_chunks * 16;
-		let window = device.create_texture(&wgpu::TextureDescriptor {
-			label: Some("gi voxel window"),
-			size: wgpu::Extent3d {
-				width: side,
-				height: WORLD_H,
-				depth_or_array_layers: side,
-			},
-			mip_level_count: 1,
-			sample_count: 1,
-			dimension: wgpu::TextureDimension::D3,
-			format: wgpu::TextureFormat::R8Uint,
-			usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
-			view_formats: &[],
-		});
-		let coarse = device.create_texture(&wgpu::TextureDescriptor {
-			label: Some("gi coarse occupancy"),
-			size: wgpu::Extent3d {
-				width: side / 8,
-				height: WORLD_H / 8,
-				depth_or_array_layers: side / 8,
-			},
-			mip_level_count: 1,
-			sample_count: 1,
-			dimension: wgpu::TextureDimension::D3,
-			format: wgpu::TextureFormat::R8Uint,
-			usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
-			view_formats: &[],
-		});
+		let (window, coarse) = window_textures(device, side);
 		let lut = material_lut(layer_means);
 		let lut_buf = device.create_buffer(&wgpu::BufferDescriptor {
 			label: Some("gi material lut"),
@@ -162,6 +135,13 @@ impl GiDraw {
 		gpu.queue.write_buffer(&cam_buf, 0, &[0u8; 32]);
 		let window_view = window.create_view(&Default::default());
 		let coarse_view = coarse.create_view(&Default::default());
+		let world = WorldBinds {
+			window: &window_view,
+			coarse: &coarse_view,
+			lut: &lut_buf,
+			lights: &lights_buf,
+			cam: &cam_buf,
+		};
 
 		let make_cascade = |dims: (u32, u32, u32), spacing: u32, name: &str| -> Cascade {
 			let atlas = [
@@ -182,61 +162,13 @@ impl GiDraw {
 				usage: wgpu::TextureUsages::STORAGE_BINDING,
 				view_formats: &[],
 			});
-			let flags_view = flags.create_view(&Default::default());
 			let uniform_buf = device.create_buffer(&wgpu::BufferDescriptor {
 				label: Some(&format!("gi uniforms {name}")),
 				size: GI_UNIFORM_SIZE,
 				usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
 				mapped_at_creation: false,
 			});
-			let views = [
-				atlas[0].create_view(&Default::default()),
-				atlas[1].create_view(&Default::default()),
-			];
-			let bind = std::array::from_fn(|prev| {
-				device.create_bind_group(&wgpu::BindGroupDescriptor {
-					label: Some(&format!("gi probe bg {name} {prev}")),
-					layout: &bgl,
-					entries: &[
-						wgpu::BindGroupEntry {
-							binding: 0,
-							resource: uniform_buf.as_entire_binding(),
-						},
-						wgpu::BindGroupEntry {
-							binding: 1,
-							resource: wgpu::BindingResource::TextureView(&window_view),
-						},
-						wgpu::BindGroupEntry {
-							binding: 2,
-							resource: wgpu::BindingResource::TextureView(&coarse_view),
-						},
-						wgpu::BindGroupEntry {
-							binding: 3,
-							resource: lut_buf.as_entire_binding(),
-						},
-						wgpu::BindGroupEntry {
-							binding: 4,
-							resource: lights_buf.as_entire_binding(),
-						},
-						wgpu::BindGroupEntry {
-							binding: 5,
-							resource: wgpu::BindingResource::TextureView(&views[prev]),
-						},
-						wgpu::BindGroupEntry {
-							binding: 6,
-							resource: wgpu::BindingResource::TextureView(&views[1 - prev]),
-						},
-						wgpu::BindGroupEntry {
-							binding: 7,
-							resource: wgpu::BindingResource::TextureView(&flags_view),
-						},
-						wgpu::BindGroupEntry {
-							binding: 8,
-							resource: cam_buf.as_entire_binding(),
-						},
-					],
-				})
-			});
+			let bind = probe_binds(device, &bgl, name, &uniform_buf, &atlas, &flags, &world);
 			Cascade {
 				dims,
 				spacing,
@@ -244,6 +176,7 @@ impl GiDraw {
 				stride: schedule_stride(dims.0 * dims.1 * dims.2),
 				uniform_buf,
 				atlas,
+				flags,
 				bind,
 			}
 		};
@@ -332,35 +265,7 @@ impl GiDraw {
 				),
 			],
 		});
-		let debug_bind = std::array::from_fn(|i| {
-			let av = cascades[0].atlas[i].create_view(&Default::default());
-			device.create_bind_group(&wgpu::BindGroupDescriptor {
-				label: Some("gi debug bg"),
-				layout: &debug_bgl,
-				entries: &[
-					wgpu::BindGroupEntry {
-						binding: 0,
-						resource: debug_buf.as_entire_binding(),
-					},
-					wgpu::BindGroupEntry {
-						binding: 1,
-						resource: wgpu::BindingResource::TextureView(&window_view),
-					},
-					wgpu::BindGroupEntry {
-						binding: 2,
-						resource: wgpu::BindingResource::TextureView(&coarse_view),
-					},
-					wgpu::BindGroupEntry {
-						binding: 3,
-						resource: lut_buf.as_entire_binding(),
-					},
-					wgpu::BindGroupEntry {
-						binding: 4,
-						resource: wgpu::BindingResource::TextureView(&av),
-					},
-				],
-			})
-		});
+		let debug_bind = debug_binds(device, &debug_bgl, &debug_buf, &cascades[0].atlas, &world);
 		let debug_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
 			label: Some("gi debug"),
 			source: wgpu::ShaderSource::Wgsl(digblock_assets::shader::GI_DEBUG.into()),
@@ -493,40 +398,7 @@ impl GiDraw {
 				),
 			],
 		});
-		let gather_bind = std::array::from_fn(|i| {
-			let a0 = cascades[0].atlas[i].create_view(&Default::default());
-			let a1 = cascades[1].atlas[i].create_view(&Default::default());
-			device.create_bind_group(&wgpu::BindGroupDescriptor {
-				label: Some("gi gather bg"),
-				layout: &gather_bgl,
-				entries: &[
-					wgpu::BindGroupEntry {
-						binding: 0,
-						resource: wgpu::BindingResource::TextureView(&window_view),
-					},
-					wgpu::BindGroupEntry {
-						binding: 1,
-						resource: wgpu::BindingResource::TextureView(&coarse_view),
-					},
-					wgpu::BindGroupEntry {
-						binding: 2,
-						resource: lut_buf.as_entire_binding(),
-					},
-					wgpu::BindGroupEntry {
-						binding: 3,
-						resource: wgpu::BindingResource::TextureView(&a0),
-					},
-					wgpu::BindGroupEntry {
-						binding: 4,
-						resource: wgpu::BindingResource::TextureView(&a1),
-					},
-					wgpu::BindGroupEntry {
-						binding: 5,
-						resource: lights_buf.as_entire_binding(),
-					},
-				],
-			})
-		});
+		let gather_bind = gather_binds(device, &gather_bgl, &cascades, &world);
 		let resolve_buf = device.create_buffer(&wgpu::BufferDescriptor {
 			label: Some("gi resolve uniforms"),
 			// The camera matrices, the resolve's vec4 block, the
@@ -687,11 +559,13 @@ impl GiDraw {
 			frame: 0,
 			window,
 			coarse,
-			coarse_mirror: vec![0u8; (side / 8 * (WORLD_H / 8) * (side / 8)) as usize]
-				.into_boxed_slice(),
+			coarse_mirror: coarse_mirror(side),
 			coarse_mips_dirty: false,
 			sky_y: 255.0,
 			window_chunks,
+			probe_bgl: bgl,
+			debug_bgl,
+			lut_buf,
 			stub,
 			gather_iters,
 			sun_iters,
@@ -728,4 +602,249 @@ impl GiDraw {
 			debug_probes,
 		}
 	}
+
+	/// Rebuild the voxel window at a new side (`window_chunks_for`, the draw-distance slider).
+	/// Only what holds the window's texels moves: the two textures, the CPU mirror and the bind
+	/// groups that name them; the cascades keep their history and the light maps their entries.
+	/// The fresh window is EMPTY, so the caller re-dirties every resident chunk
+	/// (`Pipeline::gi_redirty_all`) — exactly the device-loss rebuild's second half.
+	pub(crate) fn resize_window(&mut self, gpu: &Gpu, window_chunks: u32) {
+		if window_chunks == self.window_chunks {
+			return;
+		}
+		let device = &gpu.device;
+		let side = window_chunks * 16;
+		let (window, coarse) = window_textures(device, side);
+		self.window = window;
+		self.coarse = coarse;
+		self.coarse_mirror = coarse_mirror(side);
+		// As at construction: the ceiling sits at the world top until the
+		// first upload lands, never at the empty mirror's answer.
+		self.coarse_mips_dirty = false;
+		self.sky_y = 255.0;
+		self.window_chunks = window_chunks;
+		let window_view = self.window.create_view(&Default::default());
+		let coarse_view = self.coarse.create_view(&Default::default());
+		let world = WorldBinds {
+			window: &window_view,
+			coarse: &coarse_view,
+			lut: &self.lut_buf,
+			lights: &self.lights_buf,
+			cam: &self.cam_buf,
+		};
+		for (c, name) in self.cascades.iter_mut().zip(["c0", "c1"]) {
+			c.bind = probe_binds(
+				device,
+				&self.probe_bgl,
+				name,
+				&c.uniform_buf,
+				&c.atlas,
+				&c.flags,
+				&world,
+			);
+		}
+		self.debug_bind = debug_binds(
+			device,
+			&self.debug_bgl,
+			&self.debug_buf,
+			&self.cascades[0].atlas,
+			&world,
+		);
+		self.gather_bind = gather_binds(device, &self.gather_bgl, &self.cascades, &world);
+		// The light reach is the window's half-extent (`lateral_max`), so
+		// the list's membership moved with it.
+		self.lights_dirty = true;
+	}
+}
+
+/// Everything a window-dependent bind group names besides the cascade it serves — shared by
+/// construction and `resize_window`, so the two cannot bind the world differently.
+struct WorldBinds<'a> {
+	window: &'a wgpu::TextureView,
+	coarse: &'a wgpu::TextureView,
+	lut: &'a wgpu::Buffer,
+	lights: &'a wgpu::Buffer,
+	cam: &'a wgpu::Buffer,
+}
+
+/// The per-block class ids and the coarse occupancy over them, for a
+/// side in blocks (GI-DESIGN.md "Data model").
+fn window_textures(device: &wgpu::Device, side: u32) -> (wgpu::Texture, wgpu::Texture) {
+	let window = device.create_texture(&wgpu::TextureDescriptor {
+		label: Some("gi voxel window"),
+		size: wgpu::Extent3d {
+			width: side,
+			height: WORLD_H,
+			depth_or_array_layers: side,
+		},
+		mip_level_count: 1,
+		sample_count: 1,
+		dimension: wgpu::TextureDimension::D3,
+		format: wgpu::TextureFormat::R8Uint,
+		usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
+		view_formats: &[],
+	});
+	let coarse = device.create_texture(&wgpu::TextureDescriptor {
+		label: Some("gi coarse occupancy"),
+		size: wgpu::Extent3d {
+			width: side / 8,
+			height: WORLD_H / 8,
+			depth_or_array_layers: side / 8,
+		},
+		mip_level_count: 1,
+		sample_count: 1,
+		dimension: wgpu::TextureDimension::D3,
+		format: wgpu::TextureFormat::R32Uint,
+		usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
+		view_formats: &[],
+	});
+	(window, coarse)
+}
+
+/// The CPU copy of the coarse texture, one word per brick, in its upload order.
+fn coarse_mirror(side: u32) -> Box<[u32]> {
+	vec![0u32; (side / 8 * (WORLD_H / 8) * (side / 8)) as usize].into_boxed_slice()
+}
+
+/// One cascade's probe-update bind groups, per atlas ping.
+fn probe_binds(
+	device: &wgpu::Device,
+	bgl: &wgpu::BindGroupLayout,
+	name: &str,
+	uniform_buf: &wgpu::Buffer,
+	atlas: &[wgpu::Texture; 2],
+	flags: &wgpu::Texture,
+	world: &WorldBinds,
+) -> [wgpu::BindGroup; 2] {
+	let flags_view = flags.create_view(&Default::default());
+	let views = [
+		atlas[0].create_view(&Default::default()),
+		atlas[1].create_view(&Default::default()),
+	];
+	std::array::from_fn(|prev| {
+		device.create_bind_group(&wgpu::BindGroupDescriptor {
+			label: Some(&format!("gi probe bg {name} {prev}")),
+			layout: bgl,
+			entries: &[
+				wgpu::BindGroupEntry {
+					binding: 0,
+					resource: uniform_buf.as_entire_binding(),
+				},
+				wgpu::BindGroupEntry {
+					binding: 1,
+					resource: wgpu::BindingResource::TextureView(world.window),
+				},
+				wgpu::BindGroupEntry {
+					binding: 2,
+					resource: wgpu::BindingResource::TextureView(world.coarse),
+				},
+				wgpu::BindGroupEntry {
+					binding: 3,
+					resource: world.lut.as_entire_binding(),
+				},
+				wgpu::BindGroupEntry {
+					binding: 4,
+					resource: world.lights.as_entire_binding(),
+				},
+				wgpu::BindGroupEntry {
+					binding: 5,
+					resource: wgpu::BindingResource::TextureView(&views[prev]),
+				},
+				wgpu::BindGroupEntry {
+					binding: 6,
+					resource: wgpu::BindingResource::TextureView(&views[1 - prev]),
+				},
+				wgpu::BindGroupEntry {
+					binding: 7,
+					resource: wgpu::BindingResource::TextureView(&flags_view),
+				},
+				wgpu::BindGroupEntry {
+					binding: 8,
+					resource: world.cam.as_entire_binding(),
+				},
+			],
+		})
+	})
+}
+
+/// The debug raymarch's bind groups, one per front atlas of C0.
+fn debug_binds(
+	device: &wgpu::Device,
+	bgl: &wgpu::BindGroupLayout,
+	debug_buf: &wgpu::Buffer,
+	atlas0: &[wgpu::Texture; 2],
+	world: &WorldBinds,
+) -> [wgpu::BindGroup; 2] {
+	std::array::from_fn(|i| {
+		let av = atlas0[i].create_view(&Default::default());
+		device.create_bind_group(&wgpu::BindGroupDescriptor {
+			label: Some("gi debug bg"),
+			layout: bgl,
+			entries: &[
+				wgpu::BindGroupEntry {
+					binding: 0,
+					resource: debug_buf.as_entire_binding(),
+				},
+				wgpu::BindGroupEntry {
+					binding: 1,
+					resource: wgpu::BindingResource::TextureView(world.window),
+				},
+				wgpu::BindGroupEntry {
+					binding: 2,
+					resource: wgpu::BindingResource::TextureView(world.coarse),
+				},
+				wgpu::BindGroupEntry {
+					binding: 3,
+					resource: world.lut.as_entire_binding(),
+				},
+				wgpu::BindGroupEntry {
+					binding: 4,
+					resource: wgpu::BindingResource::TextureView(&av),
+				},
+			],
+		})
+	})
+}
+
+/// gi_common.wgsl's group(2), one per atlas ping.
+fn gather_binds(
+	device: &wgpu::Device,
+	bgl: &wgpu::BindGroupLayout,
+	cascades: &[Cascade; 2],
+	world: &WorldBinds,
+) -> [wgpu::BindGroup; 2] {
+	std::array::from_fn(|i| {
+		let a0 = cascades[0].atlas[i].create_view(&Default::default());
+		let a1 = cascades[1].atlas[i].create_view(&Default::default());
+		device.create_bind_group(&wgpu::BindGroupDescriptor {
+			label: Some("gi gather bg"),
+			layout: bgl,
+			entries: &[
+				wgpu::BindGroupEntry {
+					binding: 0,
+					resource: wgpu::BindingResource::TextureView(world.window),
+				},
+				wgpu::BindGroupEntry {
+					binding: 1,
+					resource: wgpu::BindingResource::TextureView(world.coarse),
+				},
+				wgpu::BindGroupEntry {
+					binding: 2,
+					resource: world.lut.as_entire_binding(),
+				},
+				wgpu::BindGroupEntry {
+					binding: 3,
+					resource: wgpu::BindingResource::TextureView(&a0),
+				},
+				wgpu::BindGroupEntry {
+					binding: 4,
+					resource: wgpu::BindingResource::TextureView(&a1),
+				},
+				wgpu::BindGroupEntry {
+					binding: 5,
+					resource: world.lights.as_entire_binding(),
+				},
+			],
+		})
+	})
 }

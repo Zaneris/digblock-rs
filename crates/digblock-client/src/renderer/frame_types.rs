@@ -97,8 +97,14 @@ pub mod stub {
 	/// Drop the blended-glass draw (the whole Translucent-bucket cost —
 	/// a pass-level CPU gate like `NOWATER`, not a shader branch).
 	pub const NOGLASS: u32 = 1 << 15;
+	/// The final gather marches its whole reach at cell level instead of crossing far bricks as
+	/// a medium (GI-DESIGN.md R41) — the pre-LOD gather, for pricing the LOD against it.
+	pub const GILOD: u32 = 1 << 16;
+	/// A gather hit's sun visibility is marched afresh instead of read back off last frame's
+	/// screen (GI-DESIGN.md R42) — the pre-reuse secondary sun, for pricing the reuse against it.
+	pub const GISCREEN: u32 = 1 << 17;
 
-	const NAMES: [(&str, u32); 16] = [
+	const NAMES: [(&str, u32); 18] = [
 		("wvert", WVERT),
 		("wsun", WSUN),
 		("wssr", WSSR),
@@ -115,6 +121,8 @@ pub mod stub {
 		("noscene", NOSCENE),
 		("noraster", NORASTER),
 		("noglass", NOGLASS),
+		("gilod", GILOD),
+		("giscreen", GISCREEN),
 	];
 
 	/// Comma-separated names → mask. Unknown names are returned so the

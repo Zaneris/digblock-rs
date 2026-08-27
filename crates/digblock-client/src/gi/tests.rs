@@ -801,7 +801,7 @@ fn a_surface_emitter_packs_its_rectangle_beside_its_position() {
 #[test]
 fn the_sky_ceiling_tops_the_highest_brick() {
 	let (w, h, d) = (40usize, 32, 40);
-	let mut mirror = vec![0u8; w * h * d];
+	let mut mirror = vec![0u32; w * h * d];
 	assert_eq!(sky_ceiling(&mirror, w, h, d), -1.0);
 	mirror[(17 * h + 9) * w + 33] = 0b01;
 	assert_eq!(sky_ceiling(&mirror, w, h, d), (9 * 8 + 7) as f32);
@@ -1128,4 +1128,31 @@ fn consecutive_sweep_steps_are_not_neighbours() {
 		worst > count / 8,
 		"consecutive steps land {worst} apart out of {count} — that is a band"
 	);
+}
+
+/// The window is sized so that every march reaches the last streamed column at every slider
+/// rung: its toroidal half-extent holds the whole residency disc (so no resident chunk is
+/// refused by `gi_uploadable`), and `lateral_max` — the bound every march breaks at — is not
+/// short of the streamed radius. A window one draw distance on a side failed both by half, and
+/// that half was a lit, shadowless, dome-lit ring around any camera high enough to see it (R40).
+#[test]
+fn the_window_covers_the_streamed_radius() {
+	use crate::settings::{DRAW_FLOOR, DRAW_MAX};
+	let mut rungs = 0;
+	for d in DRAW_FLOOR..=DRAW_MAX {
+		let wc = window_chunks_for(d);
+		assert!(
+			(wc / 2) as i32 >= d,
+			"draw {d}: a half-extent of {} chunks leaves resident columns outside the window",
+			wc / 2
+		);
+		let streamed = (d * 16) as f32;
+		assert!(
+			lateral_max(wc) >= streamed - 1.0,
+			"draw {d}: the marches stop at {} blocks, short of the {streamed} streamed",
+			lateral_max(wc)
+		);
+		rungs += 1;
+	}
+	assert!(rungs > 1, "the sweep examined the slider");
 }

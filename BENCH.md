@@ -1,5 +1,71 @@
 # Bench baseline & hotspot analysis
 
+## 2026-08-27 — R41/R42: the far gather crosses bricks by summary, and a hit's sun comes off the screen
+
+M2 Max, 5.43 MP (`--size 1728x1117`), `--no-vsync --fixed-dt 0.0166667 --offscreen`, seed 42, tod 45, draw 20, the
+standard flyover, ×3 interleaved. ONE binary: `DIG_STUB=gilod,giscreen` is the pre-R41 gather (whole reach at cell
+level, every hit marching its own sun ray), un-stubbed is R41+R42. Both sides are the R40 window.
+
+| build                  | avg ms            | p95               | p99               | worst             | over-12.5ms    |
+| ---------------------- | ----------------- | ----------------- | ----------------- | ----------------- | -------------- |
+| `gilod,giscreen` (pre) | 12.78 12.80 12.84 | 19.09 19.07 19.20 | 21.24 21.40 20.50 | 25.99 25.76 25.28 | 1111 1108 1123 |
+| R41+R42                | 11.76 11.79 11.86 | 17.55 17.59 17.59 | 18.87 19.11 19.24 | 21.68 22.17 21.50 | 982 980 984    |
+
+**−1.0 ms average (−8%), −1.5 ms at p95, −2 ms at p99**, repeatable to the second decimal. (The same-day R40 entry's
+baseline read 11.73 on this scene; this session's pre-LOD side reads 12.8 — a thermal state, not a regression, which is
+why the pair is interleaved and why nothing here is compared against that table.) Image cost, same binary,
+`--bench --walk --frames 3000` stills diffed with the web harness's decoder: the ground pose (spawn, tod 45) moves mean
+**0.138**/255 with luminance 124.78 vs 124.92; the sky pose (`--pos 0 200 0 --tod -25`, the R40 ring's pose) moves
+**0.000** — every brick those rays cross is open above its highest column top, so the summary answers what the descent
+answered and merely skips the walk.
+
+**How the two halves were priced, and what the pricing found.** The first build of R41 alone (a single blocker density
+per brick) measured 12.63 → 12.00 (−0.6 ms) — and darkened the ground still by 1.7% (mean diff 2.26/255): the ground's
+own surface brick attenuated rays skimming it. The heightfield summary (GI-DESIGN.md R41) removed the darkening at no
+frame-time cost. Attribution of what remained, un-stubbed R41 build: `gigather` 12.00 → 7.36 (the whole gather term, 4.6
+ms), `gisun` → 9.41 (2.6 ms). Deleting the SECONDARY sun march in `path_radiance` outright (a throwaway edit) → 9.81,
+**2.2 ms** — nearly the primary sun ray's whole cost, spent from hit points; and a budget sweep on it (16 iters 11.06,
+48 11.87, 96 12.00) put the cost in its first steps, so no truncation could recover it. R42 (the screen readback)
+recovered 12.25 → 11.88 and 12.05 → 11.73 on two interleaved reps — a fraction of the 2.2 ms bound, because on this
+forest flyover most gather hits are canopy undersides and the ground beneath trees, which the camera never saw. Two
+other poses, `--bench --walk`: spawn 6.36 → 6.18 avg / 9.30 → 8.27 p99 (all of it R41; the readback moves nothing over
+open ground, where few gather rays hit at all), and `DIG_VAULT=1` 7.77 → 7.75 (nothing — enclosed hits are blocked
+within a few steps, so there is little to save).
+
+**The lever this leaves on the table is the climb.** A throwaway run with the sky ceiling clamped to 100 while the
+flyover's real ceiling read 167–239 measured 6.46 ms — but the terrain along the path sits at y≈150–200, so that clamp
+proved every ray at its first step and bounds the whole sun-and-climb machinery (≤5.3 ms) rather than the climb. What
+the primary sun ray, the fallback secondary and every up-going gather ray still pay is one brick skip per empty brick
+between the surface and the WINDOW'S highest brick, which R40's wider window raised. A hierarchical max heightfield
+(maximum mipmaps, the Tevs et al. structure) would end a non-descending ray in a few tests instead; not built.
+
+## 2026-08-27 — R40: the voxel window covers the streamed radius, and the frame pays for the reach
+
+M2 Max, 5.43 MP (`--size 1728x1117`), `--no-vsync --fixed-dt 0.0166667 --offscreen`, seed 42, tod 45, draw 20, the
+standard flyover, ×3 runs each side. Working tree (window side = twice the draw distance, `gi::window_chunks_for`)
+against the commit before it (one draw distance on a side).
+
+| build       | avg ms            | p95               | p99               | worst             | fill s         | over-12.5ms |
+| ----------- | ----------------- | ----------------- | ----------------- | ----------------- | -------------- | ----------- |
+| half-radius | 10.00 10.01 10.00 | 14.73 14.68 14.72 | 16.58 16.60 16.61 | 17.77 18.04 18.03 | 1.93 1.95 1.97 | 487 490 487 |
+| full (R40)  | 11.73 11.74 11.73 | 17.54 17.47 17.43 | 18.51 18.64 18.63 | 23.12 19.88 19.61 | 2.25 2.27 2.17 | 989 988 993 |
+
+**+1.7 ms average, +2.8 ms at p95, and the fill is a quarter longer** — repeatable to the second decimal on both sides.
+The CSV's per-interval GPU phase figures (comparable only against each other, not against the frame) name where: at the
+15 s row the GI trace goes 8.8 → 12.6, the denoise 18.6 → 26.1 and the scene pass 10.1 → 14.0, while the probe update,
+water and prepass do not move, and the resident emitter count is the same on both sides (169–211) — so this is the
+resolve reaching farther, not the light list growing. Two things reach: every pixel past the old `gather_max` now fires
+the per-pixel gather and NEE rays instead of falling through to the cascades, and a sun ray that used to break at the
+old bound marches on. The denoise and scene passes move with it because they consume what the resolve produces at the
+same pixels, and the quadrupled window is a 105 MiB texture at this draw distance against 26 before, which the overlay's
+`gpu` figure does not count.
+
+This is the trade GI-DESIGN.md's earlier entry declined on memory alone, now paid on purpose: the half-radius window
+drew a lit, shadowless, dome-lit ring around any camera high enough to see past the horizon haze (R40 has the
+mechanism), and a boundary the player can see is not a tradeoff the frame time gets to make. The levers left if the 1.7
+ms has to come back are the ones the earlier entry named — bounding the window's Y extent, or coarse occupancy alone in
+the far field — neither built.
+
 ## 2026-08-27 — R38's light culls move no frame time (the win is the list's contents), and the light CAP is priced
 
 M2 Max, 5.43 MP (`--size 1728x1117`, effectively fullscreen), `--no-vsync --fixed-dt 0.0166667 --offscreen`, seed 42,

@@ -106,27 +106,36 @@ fn gi_ray_step(r: GiRay, step_dir: vec3i, inv: vec3f) -> GiRay {
 	return o;
 }
 
-// Advance to the LAST cell of the empty coarse brick containing `r.cell`, leaving the boundary
+// A coarse brick's edge in cells — the `>> 3u` every brick address below is, as a length.
+const GI_BRICK = 8.0;
+
+// Crossings remaining from `r.cell` to the face of its brick, per axis. An axis with no motion
+// never leaves, so it gets a count nothing can beat.
+fn gi_brick_crossings(r: GiRay, dir: vec3f, step_dir: vec3i) -> vec3i {
+	let lo = (r.cell >> vec3u(3u)) << vec3u(3u);
+	let up = lo + vec3i(8) - r.cell;
+	let dn = r.cell - lo + vec3i(1);
+	let moving = abs(dir) > vec3f(1e-6);
+	return select(vec3i(1 << 20), select(dn, up, step_dir > vec3i(0)), moving);
+}
+
+// The absolute t at which the ray leaves the brick containing `r.cell`, in the same accumulating
+// units `tmax` carries — the far gather's brick-as-medium path length is this less `r.t`.
+fn gi_brick_exit(r: GiRay, dir: vec3f, step_dir: vec3i, inv: vec3f) -> f32 {
+	let n = gi_brick_crossings(r, dir, step_dir);
+	let tface = r.tmax + vec3f(n - vec3i(1)) * inv;
+	return min(tface.x, min(tface.y, tface.z));
+}
+
+// Advance to the LAST cell of the coarse brick containing `r.cell`, leaving the boundary
 // crossing itself to the ordinary step, which is what keeps this bit-identical to stepping.
 // It advances the DDA's state arithmetically rather than reconstructing `origin + dir*t`,
 // which lands past the exit plane and skips a cell at a brick EDGE — periodic, not rare, with
 // the sun pinned to dir.z == 0 — and accumulates f32 error. The counts below need no epsilon.
 fn gi_ray_skip_brick(r: GiRay, dir: vec3f, step_dir: vec3i, inv: vec3f) -> GiRay {
-	let lo = (r.cell >> vec3u(3u)) << vec3u(3u);
-	// Crossings remaining to this brick's face, per axis. An axis with
-	// no motion never leaves, so it gets a count nothing can beat.
-	let up = lo + vec3i(8) - r.cell;
-	let dn = r.cell - lo + vec3i(1);
+	let n = gi_brick_crossings(r, dir, step_dir);
 	let moving = abs(dir) > vec3f(1e-6);
-	let n = select(
-		vec3i(1 << 20),
-		select(dn, up, step_dir > vec3i(0)),
-		moving,
-	);
-	// t at which each axis reaches the brick face, in the same
-	// accumulating units tmax already carries.
-	let tface = r.tmax + vec3f(n - vec3i(1)) * inv;
-	let t_exit = min(tface.x, min(tface.y, tface.z));
+	let t_exit = gi_brick_exit(r, dir, step_dir, inv);
 	let raw = floor((vec3f(t_exit) - r.tmax) / inv) + vec3f(1.0);
 	let m = select(
 		vec3i(0),

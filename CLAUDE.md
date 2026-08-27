@@ -136,12 +136,12 @@ For `just run`:
   alone silently takes the interactive path and is not hermetic. For FLICKER, diff a `--walk` frame against the one
   exactly one oscillation period later at fixed dt.
 - **Attribution**: `DIG_STUB=<terms>` removes one shading term per run — water
-  `wvert wsun wssr wripple wrefract wflat spray nowater`, GI `gisun gigather ginee giflat giatrous`, raster
-  `noscene noraster noglass`. Uniform-branch gated, so an un-stubbed run pays nothing; a typo is fatal. `noscene` is the
-  CLEAN raster stub; `noraster` drops the prepass too and is an UPPER BOUND only. Never subtract the two to "get" the
-  prepass. On web the same masks ride `?stub=`. `--max-lights` / `?maxlights=` cap the GI light list (the Light Sources
-  slider's lever, unsnapped for sweeps) and `DIG_GI_ITERS=<gather>,<sun>` / `?giiters=` set the resolve's ray budgets —
-  A/B levers only, GI-DESIGN.md R36 owns the rules.
+  `wvert wsun wssr wripple wrefract wflat spray nowater`, GI `gisun gigather ginee giflat giatrous gilod giscreen`,
+  raster `noscene noraster noglass`. Uniform-branch gated, so an un-stubbed run pays nothing; a typo is fatal. `noscene`
+  is the CLEAN raster stub; `noraster` drops the prepass too and is an UPPER BOUND only. Never subtract the two to "get"
+  the prepass. On web the same masks ride `?stub=`. `--max-lights` / `?maxlights=` cap the GI light list (the Light
+  Sources slider's lever, unsnapped for sweeps) and `DIG_GI_ITERS=<gather>,<sun>` / `?giiters=` set the resolve's ray
+  budgets — A/B levers only, GI-DESIGN.md R36 owns the rules.
 - **Scenes** — every one is a row of `digblock_client::knobs::ALL`, which BOTH launchers parse through one function: the
   desktop reads `DIG_VAULT` from the environment, the web page reads `?vault` from its URL, and a knob cannot exist on
   one platform and not the other. A malformed value and a flag spelled `=0` are settled there (fatal, ON — `DIG_VAULT=0`
@@ -155,10 +155,11 @@ For `just run`:
   `DIG_SPHERE=<radius>` (a glass sphere closing about spawn with no cast behind it, at the cast's own climb;
   `DIG_SPHERE_AGE=<secs>` holds the climb that far in), `DIG_PLAYERBOX=<item>` (a fake remote holding a HELD-ITEM WIRE
   id, so the scene walks the real `held_icon` decode), `DIG_MINING=<level>`, `DIG_TORCHES=<n>` / `DIG_TORCHES_FAR=<n>` /
-  `DIG_TORCHES_WALL=1`, `DIG_CONFETTI=1`, `DIG_CRACK=<percent>`, `DIG_SIPHON=<percent>` (rides `DIG_ORE`, fatal without
-  it), `DIG_DOORS=1`, `DIG_CAST=<percent>` (poses the cast channel's aura at that progress with no hold behind it),
-  `DIG_ORE=<tier 1..=4>` (hollows a chamber around the nearest deposit and grants its level — the carve must not touch
-  the vein, or the anti-dupe deletes what is being photographed), `DIG_NODE=<heartwood|leystone|springstone>`,
+  `DIG_TORCHES_WALL=1`, `DIG_CONFETTI=1`, `DIG_NO_MARKERS=1` (drops the standing arrival spiral — a high pose near spawn
+  otherwise has it in frame as a white ball), `DIG_CRACK=<percent>`, `DIG_SIPHON=<percent>` (rides `DIG_ORE`, fatal
+  without it), `DIG_DOORS=1`, `DIG_CAST=<percent>` (poses the cast channel's aura at that progress with no hold behind
+  it), `DIG_ORE=<tier 1..=4>` (hollows a chamber around the nearest deposit and grants its level — the carve must not
+  touch the vein, or the anti-dupe deletes what is being photographed), `DIG_NODE=<heartwood|leystone|springstone>`,
   `DIG_SCREEN=menu|inventory|inventory-hover|alchemy|alchemy-hover|transmute|transmuting|skills|hiscores|spellbook|spellbook-hover|hand|bucket|bucket-full|torch|siphon|pick|sigil|crest-mining|crest-alchemy|crest-arcana`
   (the pages are input-only and otherwise invisible to headless capture; the tool names cycle the roster, and screen
   stocking grants every tool since a fresh player owns none). The table's remaining rows are levers rather than scenes —

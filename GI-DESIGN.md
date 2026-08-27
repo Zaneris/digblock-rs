@@ -8,8 +8,8 @@ different thing in a different place from the vertex-packed step folded into AO 
 
 What lights the world now, in one sentence per stage:
 
-- A GPU **voxel window** (R8Uint, toroidal, `draw_dist` chunks on a side) plus a coarse occupancy texture, both fed by
-  byte- and clock-budgeted CPU classification.
+- A GPU **voxel window** (R8Uint, toroidal, `window_chunks_for` chunks on a side) plus a coarse brick texture, both fed
+  by byte- and clock-budgeted CPU classification.
 - Two **toroidal ambient-cube probe cascades** (C0 fine and near, C1 coarser and wider), updated by a compute kernel
   over a permuted round-robin: one workgroup per probe, a fixed ray set folded to 6 axes, blended with a hysteresis
   ladder. Rays terminate in last frame's field, which is where multi-bounce comes from, and take one **next-event
@@ -64,30 +64,17 @@ Named here because this document previously described several of these as done:
   ever sampled these with hardware filtering, so the texture buys only the copy it forces — still stands on its own.
   `gather_prev` DOES now bound itself to the cascade's coverage and validate the toroidal checksum, matching the
   fragment side (M5b).
-- **The voxel window still covers half the streamed radius, and that is now a DECISION.** It is built `draw_dist` chunks
-  on a SIDE while terrain streams to `draw_dist` chunks of RADIUS — half the reach — so 9.2% of pixels have a sun ray
-  that leaves the window and is answered "fully lit" on no data, along a boundary centred on the camera. (Since R32 that
-  no-data answer fades with depth below `SKY_FADE_FULL_Y`; at the surface, where this statistic was measured and
-  accepted, it is unchanged.) That statistic is real and it is very nearly INVISIBLE, which is the part that took
-  measuring. Building a window that genuinely covers the streamed radius (doubling the side AND lifting `engine.rs`'s
-  upload clamp, which is what the earlier attempt missed) and holding the sun ray's reach as the only variable moves the
-  image by mean 0.0169 — at the 0.007 repeat-noise floor. Distant terrain is mostly lit anyway, so "lit" is usually the
-  right answer, and by the window's own half-reach the participating medium has faded the surface most of the way into
-  the sky. What DID matter at that range was the final gather, and it cost nothing to fix — see `gather_max` in
-  gi_resolve.wgsl. With the gather fixed, the whole remaining benefit of a full-coverage window is mean 0.0556, confined
-  to the horizon band, bought for a QUADRUPLED window texture — **+75 MiB** (note `gpu_buffer_bytes` in the metrics
-  counts mesh buffers only and does not see it) — and an initial fill slower in the same proportion, since the upload
-  loop is byte-budgeted per frame. Declined on that trade, and those two figures are the trade. The earlier "doubling
-  helps a lot and costs no frame time" note was **retracted**. That build could not have been measuring new data:
-  `engine.rs` clamps the upload window to `draw_dist` independently of texture size, so the outer half of the texture
-  was never written, and wgpu zero-initializes it — which `gi_cell` reads as air, the same answer the narrow window gave
-  by breaking at its bound. Confirmed directly: with the debug view's `cam.w`-scaled depth cue neutralized so a diff
-  means geometry alone, `DIG_GI=window` at the shipped side vs a doubled one differs by a literal handful of pixels in a
-  multi-megapixel frame. The apparent win was several `side`-derived bounds moving at once against unchanged data, and
-  most of it was `gather_max`. Whoever revisits this: the honest fix is not a bigger box. The window's Y extent is the
-  full world height and most of it is empty air, so bounding Y is where the memory actually is; and the far field
-  plausibly needs only coarse occupancy — a small fraction of a full-identity window's bytes even at the doubled side —
-  rather than full material identity, since the gather ray only reaches `GI_GATHER_T`.
+- **The voxel window is not bounded in Y.** It spans the full world column while most of that is empty air, so if the
+  window's memory ever has to come down (R40 quadrupled it to cover the streamed radius), bounding Y is where the bytes
+  are. Not built, not measured. (The far field's rays now read the coarse brick alone — R41 — but the window still holds
+  full material identity everywhere, because the sun ray and every shadow ray descend to the cell at any range.)
+- **The sun ray has no level of detail.** R41 gave the final gather a far field; the sun ray still marches every cell it
+  grazes to the window's edge. A brick-as-medium sun would bias a slope's own surface bricks into its shadow — a ray
+  leaving a sunlit hillside at a low sun spends its whole reach inside bricks that are half that hillside — and the sun
+  term is deterministic per world point, so a stochastic crossing would be a fixed dither rather than noise the
+  accumulator averages. The honest LOD there is Teardown's: coarse levels for skipping, refinement on a hit — which is
+  the brick skip already built. What remains is a second, coarser skip level, which was measured out once (see
+  `gi_sun_vis`) at terrain altitudes.
 - **No probe classification**, and **the axis fold is still lopsided** (`update_probes` barriers the workgroup and then
   leaves one thread per ambient-cube axis alive, each running a serial RAYS-iteration reduction while the rest idle).
   Both were M5b items and both were measured out, because M5a removed their justification: after the cadence cut the
@@ -1207,6 +1194,79 @@ stands over, and every piece is a named constant in `gi.rs`:
   and the flushed list fell 256 → 50 — the first scene where the cull's count win is real rather than content-only,
   worth ~1.7 ms of resolve scan at the measured per-light cost.
 
+### R40 — the window covers the streamed radius, and follows the slider
+
+The window shipped one draw distance on a SIDE while terrain streams to one draw distance of RADIUS, and "What is NOT
+built" carried the decision to leave it there: 9.2% of pixels had a sun ray leave the window and be answered "lit" on no
+data, along a boundary centred on the camera, and at ground level — where that was measured — the boundary sat in the
+horizon haze and was judged invisible. From the top of the world it is not. A camera at `WORLD_H` looking down sees the
+boundary mid-frame as a ring, and the ring is DARKER outside, not merely shadowless: past `gather_max` the resolve stops
+firing its per-pixel gather ray and `gi_indirect` falls through the cascades to `gi_sky_fallback`, a fraction of the
+dome, while inside it the gather ray proves sky and answers the whole hemisphere. The sun's no-data answer and the
+gather's fallthrough share one bound, so a single number drew both edges.
+
+Built: the side is twice the draw distance (`gi::window_chunks_for`), which is what makes the toroidal half-extent the
+streamed radius and `lateral_max` reach the last resident column — pinned by `the_window_covers_the_streamed_radius`,
+swept over every slider rung. The upload clamp in `engine/streaming.rs` keys on the same function, since the earlier
+doubling attempt left it at `draw_dist` and never wrote the outer half. And the window follows the slider: the streaming
+pass compares the side the renderer built against the one the config wants and calls `GiDraw::resize_window`, which
+replaces the two textures, the CPU mirror and the bind groups naming them — the cascades keep their history, the light
+maps their entries — and then `gi_redirty_all` refills it through the ordinary budgeted drain, the device-loss rebuild's
+second half. Before this the window was sized once at boot, which is why the ring stayed at the same radius whatever the
+slider said.
+
+The trade the earlier decision declined is paid in memory: the texture is quadrupled (the per-block byte times the side
+squared times `WORLD_H`; at the desktop default that is a little over a hundred MiB, at `DRAW_MAX` a little over a
+quarter of a GiB), and `gpu_buffer_bytes` on the overlay still does not see it. Frame time is priced in BENCH.md
+2026-08-27 (R40).
+
+### R41 — the far gather crosses a brick as a medium
+
+The final gather was half the frame (BENCH.md 2026-08-12) and spent it uniformly: a ray from a pixel ten blocks away and
+one three hundred blocks away both marched `GI_GATHER_T` blocks cell by cell, descending into every brick that held
+anything. The brick skip only ever bought empty space; the expensive rays are the ones grazing terrain, canopies and
+cave walls, where every brick holds something and the skip never fires. Nothing about the answer justified that: one
+cosine sample of a hemisphere has a footprint the size of its travel, so past a brick's length of travel the brick IS
+the finest thing the sample can resolve — the rule cone tracing states as picking the octree level from the ray
+differential, and the one Teardown's ambient trace follows by doubling its step and climbing a mip as the ray goes.
+
+Built: past `coarse_from` blocks of travel the gather no longer enters a non-empty brick. It reads the brick's word —
+which now carries a summary beside the two flags (`core::gi::Brick`, packed by `pack_coarse`) — and crosses the brick by
+it: the ray survives with the probability the summary gives (`gi_brick_open`), rolled off a per-pixel, per-frame seed,
+and a stop is a hit in the brick's modal blocker class at its entry cell, shaded exactly as a cell hit is
+(`path_radiance` reads `GiHit.cls` for both). A stochastic crossing is the right shape here and nowhere else: the gather
+is already a one-sample estimator the accumulator averages over frames, so a roulette termination is unbiased in
+expectation and costs no new noise machinery.
+
+**The summary is a heightfield with a density, not a density.** The first build stored one blocker fraction per brick
+and treated the brick as a homogeneous medium, and it darkened the whole frame by a couple of levels: the ground's own
+surface brick is half solid, so a gather ray skimming flat ground — inside that brick for its whole reach — was
+attenuated by ground it flew over. That is the shape of every per-brick statistic on a heightfield world: a summary that
+cannot tell "above the local surface" from "below" biases every ray travelling along it. So the brick stores its lowest
+and highest column TOPS: above the highest a segment is open, below the lowest it crosses the CORE at the core's density
+(solid, for terrain), and between the two it crosses the band at the band's — three layers, each a homogeneous medium
+for the length the ray spends inside it. Flat ground becomes exact and a lone pillar becomes a thin band rather than a
+wall; what remains approximate is a ray running along a slope inside its band. Water and glass inside a crossed brick go
+uncounted — a far bounce's tint is below what the sample resolves. The resolve passes the brick edge as `coarse_from`;
+every shadow ray passes its own reach, so no NEE ray ever crosses a brick by its summary — a torch's occluder is a cell,
+not a density, and a stochastic shadow ray would flicker inside the torch's own shadow. The sun ray is untouched, for
+the reasons "What is NOT built" now records. `DIG_STUB=gilod` restores the whole-reach cell march, which is how the
+trade was priced: BENCH.md 2026-08-27 (R41).
+
+### R42 — a gather hit's sun comes off the screen
+
+`path_radiance` shades every gather hit with its own direct sun, and that is a second `gi_sun_vis` march per hit at the
+gather's budget. Stubbing it out measured that march at more than the whole brick LOD had saved (BENCH.md), and a budget
+sweep put the cost in its first steps, so truncation could not buy it — the march has to not run. Lumen's answer is a
+surface cache: a hit point's direct light is looked up, never traced. This engine's nearest thing is the previous
+frame's sun target, which holds a validated sun visibility for every surface the camera saw. So a hit is reprojected
+through `prev_vp` and, where the face code the prepass stored and the view distance the history carries both agree with
+the hit (`screen_sun`, the history fetch's own two tests), its visibility and water path are read back and the march is
+skipped; a hit behind an occluder, off the edge or on a face the camera never saw fails and marches as before. The reuse
+buys exactly as much as the scene has on-screen hits: on the forest flyover most gather hits are canopy undersides and
+the ground beneath trees, and the saving is a fraction of the bound; over open ground or inside a sealed room there are
+few long secondary marches to save in the first place. `DIG_STUB=giscreen` restores the march.
+
 ## Non-goals (v1)
 
 - Specular GI / reflections (SSR stays as-is for water).
@@ -1228,15 +1288,16 @@ DDA occlusion at resolve time plus probe relocation; (2) the probe payload is a 
 ## Data model
 
 **Voxel window** — R8Uint 3D texture of GI-class ids, one texel per block, XZ-toroidal at chunk granularity, Y spans the
-full world column (an up-ray always reaches sky; the window never scrolls vertically). The per-tier dimensions and their
-memory live in `gi.rs`: desktop widest, web narrower, iOS narrower still. GI-class mapping is a pure function in
-`digblock-core` (headless-tested): air has its own class, water is translucent, `emits`/`glows` blocks map to emissive
-classes. Shaped cells were "opaque, the same v1 approximation fluid makes" until R16: they now classify per (id, state)
-into synthetic PARTIAL classes from `SHAPE_CLASS_BASE` up, each carrying a two-box cover of the shape's LIGHT boxes
-(`shapes::light_boxes` — its collision boxes, except that a fixture a body walks through, the torch, still stands in the
-light's way; box 0 = the first box exactly, box 1 = the AABB union of the rest — over-blocks only, never under, worst
-case the old full cell), and a state with no light boxes at all (an open door) classifies as air, which is what lets
-light through a doorway. A chunk re-uploads as one `write_texture`; scrolling uploads only entering slabs.
+full world column (an up-ray always reaches sky; the window never scrolls vertically). Its side is twice the draw
+distance (`gi::window_chunks_for`), so the toroidal half-extent IS the streamed radius, and it is rebuilt in place when
+the draw-distance slider moves (`GiDraw::resize_window`, driven by the streaming pass) — R40. GI-class mapping is a pure
+function in `digblock-core` (headless-tested): air has its own class, water is translucent, `emits`/`glows` blocks map
+to emissive classes. Shaped cells were "opaque, the same v1 approximation fluid makes" until R16: they now classify per
+(id, state) into synthetic PARTIAL classes from `SHAPE_CLASS_BASE` up, each carrying a two-box cover of the shape's
+LIGHT boxes (`shapes::light_boxes` — its collision boxes, except that a fixture a body walks through, the torch, still
+stands in the light's way; box 0 = the first box exactly, box 1 = the AABB union of the rest — over-blocks only, never
+under, worst case the old full cell), and a state with no light boxes at all (an open door) classifies as air, which is
+what lets light through a doorway. A chunk re-uploads as one `write_texture`; scrolling uploads only entering slabs.
 
 **Material LUT** — one storage-buffer row per GI class: albedo rgb, the opacity class (air / water / opaque / partial)
 and the cast-light level in the first words, the partial class's two packed sub-boxes (in twelfths, zero meaning no box)
@@ -1245,9 +1306,12 @@ shape classes borrow their base block's albedo and light. Rays never touch the b
 so the probe kernel and the fragment marches share one definition) tests the boxes against the ray's in-cell [t_entry,
 t_exit] span — the ESVO-contour / SEUS-PTGI pattern.
 
-**Coarse occupancy** — a second R8Uint 3D texture, one texel per coarse region; the byte carries an any_solid and an
-any_emissive bit for that region, computed CPU-side at classification. Rays in empty space skip a whole coarse region
-per load.
+**Coarse bricks** — a second 3D texture, R32Uint, one texel per `core::gi::BRICK`-edged brick, computed CPU-side at
+classification (`pack_coarse`). The low bits flag any ray-blocking and any emitting cell, and they alone decide whether
+a march may skip the brick, so "word is zero" stays the one skip test every DDA runs; above them rides the brick's
+summary (`core::gi::Brick`: its lowest and highest column tops, a density for the core below the one and for the band
+between the two, and its modal blocker class), which the far gather reads to cross a brick without descending into it
+(R41). Rays in empty space skip a whole brick per load.
 
 **Light list** — up to `MAX_LIGHTS` emitters within `gi_lateral_max` of the camera: `pos` plus the GI class byte
 bit-cast into `w`, one storage buffer. Tint and cast level come from that class's material-LUT row, so nothing about a
@@ -1323,6 +1387,12 @@ The ones that bite if broken. CLAUDE.md points here rather than restating them.
 - The voxel window is DERIVED data: never serialized, never on the wire; device loss rebuilds it by re-upload + age
   reset (drill-tested). Classification is a pure function of the cell value, pinned headless.
 - Everything the rays read (window, LUT, coarse, light list, atlases) lives on the GPU; the CPU never reads probes back.
+- **A zero coarse word means "nothing to march", and nothing else may.** Every DDA skips on that one test; the summary
+  above the flags is the far gather's alone, and `pack_coarse` keeps a brick with any blocker nonzero in both halves
+  (`a_brick_with_a_blocker_is_never_open`). **Only the final gather crosses a brick by its summary** — a shadow ray
+  passes its reach as `coarse_from`, the sun ray has no such lever (R41). **The summary is a heightfield, not one
+  density**: a ray above a brick's highest column top is open there (`the_brick_summary_is_a_heightfield`), because one
+  density over the whole brick darkened every horizon — the ground's own surface brick attenuated rays skimming it.
 - **The accumulator must be rgba32f** (`gi::GI_ACC_FORMAT`). A half-float's mantissa is too short to resolve the
   smallest update a converged history can make, so it rounds to zero and every pixel freezes where it stood
   (`history_format_resolves_the_accumulator`).

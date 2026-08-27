@@ -192,6 +192,8 @@ const STUB_GISUN = 256u;
 const STUB_GIGATHER = 512u;
 const STUB_GINEE = 1024u;
 const STUB_GIFLAT = 2048u;
+const STUB_GILOD = 65536u;
+const STUB_GISCREEN = 131072u;
 
 fn stubbed(bit: u32) -> bool {
 	return (u32(rz.jitter.w) & bit) != 0u;
@@ -207,6 +209,49 @@ const CODE_NORMALS = array<vec3f, 6>(
 	vec3f(0.0, 0.0, 1.0),
 	vec3f(0.0, 0.0, -1.0),
 );
+
+// The face code a normal from CODE_NORMALS carries — the inverse of that table, so a hit point's
+// code can be compared against what the prepass stored at its pixel.
+fn code_of_normal(n: vec3f) -> u32 {
+	let axis = select(select(2u, 1u, n.y != 0.0), 0u, n.x != 0.0);
+	return axis * 2u + select(0u, 1u, n[axis] < 0.0);
+}
+
+// Last frame's sun visibility at `hp`, read back off the screen (R42): the per-pixel sun ray
+// already answered it for every surface the camera saw, so a gather hit on one of them needs no
+// second march. Validated exactly as the history fetch is — the face code the prepass stored
+// and the distance the point WOULD have been at from the old camera — so a hit behind an occluder
+// or off the edge fails and takes the march instead. x < 0 is that failure; else x is the
+// visibility with the glass luminance the sun lane folds in, y the water path.
+fn screen_sun(hp: vec3f, hn: vec3f) -> vec2f {
+	let none = vec2f(-1.0, 0.0);
+	if rz.prev_cam.w < 0.5 {
+		return none;
+	}
+	let pc = rz.prev_vp * vec4f(hp, 1.0);
+	if pc.w <= 0.0 {
+		return none;
+	}
+	let nd = pc.xy / pc.w;
+	let huv = vec2f(nd.x * 0.5 + 0.5, 0.5 - nd.y * 0.5);
+	if any(huv < vec2f(0.0)) || any(huv >= vec2f(1.0)) {
+		return none;
+	}
+	let hdim = vec2f(textureDimensions(hist_indirect));
+	let t = vec2i(huv * hdim);
+	let hs = textureLoad(hist_sun, t, 0);
+	if (u32(hs.g) & 255u) != code_of_normal(hn) {
+		return none;
+	}
+	// A secondary point inside a one-sample estimate: the history's own depth tolerance, loosened
+	// by the fraction of a cell `hp` stands off its face.
+	let want = length(hp - rz.prev_cam.xyz);
+	let hi = textureLoad(hist_indirect, t, 0);
+	if abs(hi.w - want) > 0.02 * max(want, 1.0) + 0.1 {
+		return none;
+	}
+	return vec2f(hs.r, hs.b);
+}
 
 // The tail of the gather path: radiance arriving from `dir` after the ray resolved — the probe
 // cascades as the cache that TERMINATES a path, so one ray buys the whole multi-bounce series.
@@ -249,9 +294,8 @@ fn path_radiance(side: i32, h: GiHit, dir: vec3f) -> vec3f {
 		);
 		return mix(c, sky, fade) * tr;
 	}
-	let v = gi_cell(side, h.cell);
-	let alb = gi_albedo(v);
-	if gi_emit(v) > 0.0 {
+	let alb = gi_albedo(h.cls);
+	if gi_emit(h.cls) > 0.0 {
 		return vec3f(0.0);
 	}
 	// The hit face, from the axis the DDA last crossed.
@@ -282,11 +326,19 @@ fn path_radiance(side: i32, h: GiHit, dir: vec3f) -> vec3f {
 	if rz.sun.w > 0.5 {
 		let ndl = max(dot(hn, rz.sun_exact.xyz), 0.0);
 		if ndl > 0.0 {
-			// The secondary sun check spends the GATHER budget, not the
-			// primary sun ray's: it shades a point inside a one-sample
-			// estimate, so it inherits the cheap tier by design.
-			let sv = gi_sun_vis(side, rz.jitter.z, rz.cam.xz, rz.sun, hp, i32(rz.budget.x));
-			e += rz.sun_color.rgb * ndl * sv.vis * medium_water_tr(sv.water) * sv.thru;
+			// Off the screen first (R42); the march is the fallback for a hit the camera did
+			// not see. That march spends the GATHER budget, not the primary sun ray's: it
+			// shades a point inside a one-sample estimate, so it inherits the cheap tier.
+			var ss = vec2f(-1.0, 0.0);
+			if !stubbed(STUB_GISCREEN) {
+				ss = screen_sun(hp, hn);
+			}
+			if ss.x >= 0.0 {
+				e += rz.sun_color.rgb * ndl * ss.x * medium_water_tr(ss.y);
+			} else {
+				let sv = gi_sun_vis(side, rz.jitter.z, rz.cam.xz, rz.sun, hp, i32(rz.budget.x));
+				e += rz.sun_color.rgb * ndl * sv.vis * medium_water_tr(sv.water) * sv.thru;
+			}
 		}
 	}
 	return alb * e * tr;
@@ -402,9 +454,9 @@ fn fs(i: VsOut) -> FsOut {
 			// Stop short of the light's own cell (gi_light_margin, shared
 			// with the probe nee()) so the whole-cell emitter rule can't
 			// self-occlude.
+			let reach = max(pick.dist - pick.margin, 0.0);
 			let sh = gi_march(
-				side, rz.jitter.z, rz.cam.xz, sp, pick.dir,
-				max(pick.dist - pick.margin, 0.0), GI_NEE_ITERS,
+				side, rz.jitter.z, rz.cam.xz, sp, pick.dir, reach, GI_NEE_ITERS, reach, 0u,
 			);
 			if !sh.hit {
 				// `sh.thru` is the glass crossed on the way to the light.
@@ -430,7 +482,13 @@ fn fs(i: VsOut) -> FsOut {
 		} else {
 			let ui = sample2(uv + vec2i(7919, 104729), rz.jitter.x);
 			let rd = cosine_hemi(n, ui);
-			let hit = gi_march(side, rz.jitter.z, rz.cam.xz, sp, rd, GI_GATHER_T, i32(rz.budget.x));
+			// STUB_GILOD keeps the whole reach at cell level — the pre-R41 gather, for
+			// pricing the brick-as-medium far field against it.
+			let coarse_from = select(GI_BRICK, GI_GATHER_T, stubbed(STUB_GILOD));
+			let hit = gi_march(
+				side, rz.jitter.z, rz.cam.xz, sp, rd, GI_GATHER_T, i32(rz.budget.x),
+				coarse_from, seed ^ 0x5bd1e995u,
+			);
 			indirect = path_radiance(side, hit, rd) + nee;
 		}
 	}

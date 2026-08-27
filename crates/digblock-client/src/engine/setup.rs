@@ -703,8 +703,9 @@ impl Engine {
 
 	/// Apply a settings change batch at runtime, then persist it. SSR is a per-frame uniform
 	/// bit; volumes ride the audio command stream; draw distance retunes the camera far plane,
-	/// the streaming radius (rescan on next maintain), and — connected — the server's sync
-	/// radius. The store sees every batch, including name-only changes from the join path.
+	/// the streaming radius (rescan on next maintain), the GI window (rebuilt by the streaming
+	/// pass, which holds the device) and — connected — the server's sync radius. The store sees
+	/// every batch, including name-only changes from the join path.
 	pub(super) fn apply_settings(&mut self, s: crate::settings::Settings) {
 		self.config.ssr = s.ssr;
 		self.config.touch_jump_button = s.touch_jump_button;

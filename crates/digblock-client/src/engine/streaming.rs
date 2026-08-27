@@ -123,12 +123,18 @@ impl Engine {
 		// much as the bytes: `classify_gi` walks every cell of a chunk, and the byte cap alone
 		// permits many chunks in one frame; `GI_UPLOAD_MIN` floors progress.
 		let t_gi = web_time::Instant::now();
-		// The window AS BUILT, never the live draw distance. Raising draw distance from the
-		// settings screen mutates `config.draw_dist` while the GI window texture keeps its
-		// construction size, and approving a chunk beyond that makes `upload_chunk`'s
+		// The window follows the draw distance the way the render targets follow the scale: keyed
+		// on what the renderer last built, rebuilt here where the device is in hand, and the
+		// fresh window is empty so every resident chunk goes back through the drain below.
+		let want = crate::gi::window_chunks_for(self.config.draw_dist);
+		if renderer.gi_window_chunks() != want as i32 {
+			renderer.gi_resize_window(gpu, want);
+			self.pipeline.gi_redirty_all();
+		}
+		// Still the window AS BUILT: approving a chunk beyond it makes `upload_chunk`'s
 		// `rem_euclid` wrap it onto a different cell than the gather reads — one part of the
 		// world written into another's slot.
-		let gi_window = renderer.gi_window_chunks().min(self.config.draw_dist);
+		let gi_window = renderer.gi_window_chunks().min(want as i32);
 		self.pipeline.gi_recenter(center, gi_window);
 		for pos in self.pipeline.take_gi_dirty() {
 			if self.stream.gi_queued.insert(pos) {
