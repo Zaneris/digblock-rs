@@ -1173,6 +1173,13 @@ session priced the cap itself (~8.6 µs per flushed light per frame at 5.43 MP),
 the default cap?" — no — and names the remaining lever for a levelled player's frame: cheaper scan or a smarter pool,
 not a longer list.
 
+That sweep is also why an interactive desktop session no longer STARTS at the capacity. The scan is linear in the list,
+and the top half of it buys picture only in a scene that actually oversubscribes — so `LIGHT_CAP_DEFAULT` is where a
+session with no expressed graphics preference begins and the full list is the Light Sources slider's opt-in. It rides
+`EngineConfig::gfx_defaults_auto`, the same gate the density-derived lighting detail uses and for the same reason: it is
+false on every capture path, so `Settings::default` stays at the capacity every baseline here was recorded with, and
+false on the mobile base, whose own `LIGHT_CAP_MIN` start this must not raise.
+
 ### R39 — the sky cull's floor learned the terrain
 
 R38's fixed pair (a floor just under `SEA_LEVEL`, armed at a fixed camera height) was right only where terrain sits near
