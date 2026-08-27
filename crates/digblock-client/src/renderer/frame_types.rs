@@ -172,6 +172,10 @@ pub(crate) struct FrameScene<'a> {
 	/// runs inside `GiDraw::encode`, so an out-of-order setter would be a
 	/// hazard for nothing.
 	pub light_cap: usize,
+	/// The sky cull's floor (`gi::sky_floor` over the engine's column-top
+	/// tally), or None while it is disarmed. Rides the frame like
+	/// `light_cap`, for the same reason.
+	pub sky_floor: Option<f32>,
 	/// Live level-up confetti bursts `[origin.xyz, age][seed, …]`, aged
 	/// by the engine — the flakes themselves are a pure function of these
 	/// in the shader.

@@ -64,14 +64,45 @@ const GATHER_T: f32 = 32.0;
 /// below notice, to keep the flushed list off `resample_light`'s per-pixel bill.
 const BEHIND_REACH: f32 = GATHER_T + SELECT_AHEAD;
 
-/// The sky cull's floor: a camera at or above [`SKY_CULL_CAM`] drops emitters below this. Sits
-/// under `SEA_LEVEL` so a lit ocean or lakebed stays visible from the air — what it drops is the
-/// cave network, where the emitter census found the large majority of a levelled player's seams.
-const SKY_CULL_FLOOR: f32 = (digblock_core::worldgen::SEA_LEVEL - 8) as f32;
+/// The sky cull's cushion under its reference surface. The tally counts WATER as the surface
+/// (`Pipeline::column_top`), so over an ocean or a lake the reference is the water top — and this
+/// cushion is the depth of bed still allowed to light: a springstone bed a few blocks under its
+/// surface keeps its glow from the air, while the cave network far beneath does not. The two are a
+/// pair; shrink the cushion or make the tally read beds and the lit-ocean case dies.
+const SKY_CULL_CUSHION: f32 = 8.0;
 
-/// The sky cull's camera edge: a full light-reach plus a margin above the floor, so nothing the
-/// cull drops could have lit the camera's own surroundings directly.
-const SKY_CULL_CAM: f32 = SKY_CULL_FLOOR + SELECT_AHEAD + 16.0;
+/// How far above the reference surface the camera must ride before the sky cull arms: two
+/// light-reaches, so nothing dropped could have lit anything within a reach of the camera's own
+/// band even indirectly through the surface the tally stands on.
+const SKY_CULL_ABOVE: f32 = 2.0 * SELECT_AHEAD;
+
+/// The tally's percentile, as a divisor of the sample count: the reference surface is the height
+/// only one in this many sampled columns sits below. A lone shaft cannot drag the floor down and
+/// disarm the cull; a quarry wide enough to matter moves the tally with it, which is what keeps a
+/// dug-out crater's own lights alive under a high camera.
+const SKY_SURFACE_CENTILE: usize = 20;
+
+/// How far out the sky-cull tally samples column tops, in blocks. Deliberately NOT the light
+/// reach: under a saturated cap the selection keeps nothing near the window's edge — the furthest
+/// survivor measured sits just inside this (BENCH.md 2026-08-27) — so terrain past here mostly
+/// votes on lights the ranking already rejects. The price, accepted: an UNDERSUBSCRIBED list
+/// ranges past it, so a deep valley's far lights can be culled by a floor its own columns never
+/// voted on.
+pub(crate) const SKY_TALLY_REACH: f32 = 96.0;
+
+/// The sky cull's floor for this frame, or None while it is disarmed: take the sampled column-top
+/// heights around the camera (`Pipeline::column_top` over [`SKY_TALLY_REACH`]), pick the
+/// [`SKY_SURFACE_CENTILE`] reference, and arm only once the camera rides [`SKY_CULL_ABOVE`] over
+/// it. Reorders `heights`; the caller's cache only feeds this function.
+pub(crate) fn sky_floor(cam_y: f32, heights: &mut [i32]) -> Option<f32> {
+	if heights.is_empty() {
+		return None;
+	}
+	let idx = heights.len() / SKY_SURFACE_CENTILE;
+	let (_, &mut p, _) = heights.select_nth_unstable(idx);
+	let p = p as f32;
+	(cam_y >= p + SKY_CULL_ABOVE).then_some(p - SKY_CULL_CUSHION)
+}
 
 /// One entry in the light list: world position and the GI class byte whose LUT row carries its
 /// cast level and its tint. A light a player is CARRYING is one of these too — it just isn't in a
@@ -307,6 +338,9 @@ pub(crate) struct GiDraw {
 	/// Emitters written at that flush, so a move that changes WHICH are in
 	/// reach re-flushes even under the cap.
 	lights_len: usize,
+	/// The sky-cull floor the list was last flushed under, so arming,
+	/// disarming or a tally move re-flushes like a cap move does.
+	lights_floor: Option<f32>,
 	/// The runtime cap the list was last flushed under
 	/// (`Settings::max_lights`, ≤ `MAX_LIGHTS`). Tracked so a slider move
 	/// re-flushes in BOTH directions — without it a raised cap would not
@@ -453,6 +487,7 @@ fn select_lights(
 	cam: [f32; 3],
 	fwd: [f32; 3],
 	reach: f32,
+	sky_floor: Option<f32>,
 	cap: usize,
 ) -> Vec<[f32; 8]> {
 	let entry = |e: Emitter, carried: u32| {
@@ -494,11 +529,11 @@ fn select_lights(
 			if dx * dx + dz * dz > reach * reach {
 				return false;
 			}
-			// The two outright culls ([`BEHIND_REACH`], [`SKY_CULL_FLOOR`]).
+			// The two outright culls ([`BEHIND_REACH`], [`sky_floor`]).
 			// The carrier's own light sits at the eye, ahead of both.
 			let dy = p[1] - cam[1];
 			dx * fwd[0] + dy * fwd[1] + dz * fwd[2] >= -BEHIND_REACH
-				&& !(cam[1] >= SKY_CULL_CAM && p[1] < SKY_CULL_FLOOR)
+				&& sky_floor.is_none_or(|f| p[1] >= f)
 		})
 		.map(|(p, e)| {
 			// Distance to the eye→anchor SEGMENT, not to a point ahead:
@@ -524,12 +559,14 @@ fn select_lights(
 
 /// The per-frame inputs to the light-list flush, handed over WITH the frame
 /// (see `FrameScene::carried` for why an out-of-order setter would be a
-/// hazard): the camera's look direction, the carried emitters, and the
-/// player's cap.
+/// hazard): the camera's look direction, the carried emitters, the
+/// player's cap, and the sky cull's floor (the engine's [`sky_floor`]
+/// over its column-top tally; None while disarmed).
 pub(crate) struct LightInputs<'a> {
 	pub fwd: [f32; 3],
 	pub carried: &'a [Emitter],
 	pub cap: usize,
+	pub sky_floor: Option<f32>,
 }
 
 /// Where the light selection measures from: the far end of the segment the

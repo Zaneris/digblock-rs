@@ -165,6 +165,19 @@ pub struct Engine {
 	player: Player,
 	/// See [`InputState`].
 	input: InputState,
+	/// The sky cull's column-top tally (`gi::sky_floor`'s input), rebuilt
+	/// INCREMENTALLY: a few column walks per frame into the stage, adopted
+	/// whole when a pass completes. Continuous because no cheap key says
+	/// when the answer changed — residency counts slots before terrain
+	/// lands, and edits change heights with no key at all — so streaming,
+	/// digging and flying all register within one pass.
+	sky_tally: Vec<i32>,
+	sky_stage: Vec<i32>,
+	/// Next cell of the sampling grid; a completed pass wraps it to zero.
+	sky_cursor: usize,
+	/// Block position the running pass samples around, fixed when the
+	/// pass starts so a moving camera cannot shear one tally.
+	sky_origin: (i32, i32),
 	/// See [`BenchState`].
 	bench: BenchState,
 	tick_accum: f32,

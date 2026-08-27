@@ -140,14 +140,22 @@ fn the_cap_bounds_the_selection() {
 		.collect();
 	let mut swept = 0;
 	for cap in [1, MAX_LIGHTS / 4, MAX_LIGHTS / 2, MAX_LIGHTS] {
-		let all = select_lights(field.iter().copied(), &[], cam, fwd, 1000.0, cap);
+		let all = select_lights(field.iter().copied(), &[], cam, fwd, 1000.0, None, cap);
 		assert_eq!(all.len(), cap.min(n), "cap {cap}");
 		swept += 1;
 	}
 	assert_eq!(swept, 4);
 	// Under the cap nothing is dropped, whatever the cap.
 	let few: Vec<Emitter> = field.iter().copied().take(MAX_LIGHTS / 8).collect();
-	let all = select_lights(few.iter().copied(), &[], cam, fwd, 1000.0, MAX_LIGHTS / 4);
+	let all = select_lights(
+		few.iter().copied(),
+		&[],
+		cam,
+		fwd,
+		1000.0,
+		None,
+		MAX_LIGHTS / 4,
+	);
 	assert_eq!(all.len(), few.len());
 }
 
@@ -166,7 +174,15 @@ fn an_oversubscribed_list_drops_the_lights_behind_first() {
 		.map(|i| point_at([i as f32 - 4.0, 8.0, -d]))
 		.collect();
 	let both: Vec<Emitter> = fore.iter().chain(aft.iter()).copied().collect();
-	let picked = select_lights(both.iter().copied(), &[], cam, fwd, 1000.0, fore.len());
+	let picked = select_lights(
+		both.iter().copied(),
+		&[],
+		cam,
+		fwd,
+		1000.0,
+		None,
+		fore.len(),
+	);
 	assert_eq!(picked.len(), fore.len());
 	for e in &picked {
 		assert!(
@@ -176,13 +192,22 @@ fn an_oversubscribed_list_drops_the_lights_behind_first() {
 	}
 	// Same field, opposite heading, cap covering everything: the heading
 	// must not change WHAT is selected, only (under pressure) what wins.
-	let a = select_lights(both.iter().copied(), &[], cam, fwd, 1000.0, MAX_LIGHTS);
+	let a = select_lights(
+		both.iter().copied(),
+		&[],
+		cam,
+		fwd,
+		1000.0,
+		None,
+		MAX_LIGHTS,
+	);
 	let b = select_lights(
 		both.iter().copied(),
 		&[],
 		cam,
 		[0.0, 0.0, -1.0],
 		1000.0,
+		None,
 		MAX_LIGHTS,
 	);
 	let key = |v: &[[f32; 8]]| {
@@ -215,6 +240,7 @@ fn the_carriers_own_light_survives_any_cap() {
 			cam,
 			fwd,
 			1000.0,
+			None,
 			cap,
 		);
 		assert!(
@@ -235,7 +261,15 @@ fn the_behind_horizon_is_a_cull_not_a_bias() {
 	let inside = point_at([0.0, 8.0, -(BEHIND_REACH - 1.0)]);
 	let past = point_at([0.0, 8.0, -(BEHIND_REACH + 1.0)]);
 	let both = [inside, past];
-	let picked = select_lights(both.iter().copied(), &[], cam, fwd, 1000.0, MAX_LIGHTS);
+	let picked = select_lights(
+		both.iter().copied(),
+		&[],
+		cam,
+		fwd,
+		1000.0,
+		None,
+		MAX_LIGHTS,
+	);
 	assert_eq!(picked.len(), 1, "{picked:?}");
 	assert_eq!(entry_pos(&picked[0]), inside.pos);
 	// The same field about-face: the culled light is now ahead and kept.
@@ -245,6 +279,7 @@ fn the_behind_horizon_is_a_cull_not_a_bias() {
 		cam,
 		[0.0, 0.0, -1.0],
 		1000.0,
+		None,
 		MAX_LIGHTS,
 	);
 	assert_eq!(turned.len(), 2);
@@ -264,28 +299,88 @@ fn the_behind_horizon_is_a_cull_not_a_bias() {
 		high,
 		pitched,
 		1000.0,
+		None,
 		MAX_LIGHTS,
 	);
 	assert_eq!(picked.len(), 1, "pitch must count toward the horizon");
 }
 
-/// The sky cull keys on BOTH edges: a camera under its edge keeps the cave
-/// seams, one at the edge drops them — and keeps a light at the floor
-/// itself, which is the lit-ocean case the floor sits under `SEA_LEVEL`
-/// for. Every light ahead of the camera, so only the altitude decides.
+/// The sky cull is the FLOOR select_lights is handed: disarmed (None)
+/// keeps the cave seams, armed drops what sits under the floor and keeps
+/// a light AT it — the lit-bed case the cushion exists for. Every light
+/// ahead of the camera, so only the floor decides.
 #[test]
 fn a_sky_camera_drops_the_cave_lights() {
 	let fwd = [0.0, 0.0, 1.0];
-	let cave = point_at([0.0, SKY_CULL_FLOOR - 10.0, 8.0]);
-	let bed = point_at([0.0, SKY_CULL_FLOOR, 8.0]);
+	let cam = [0.0, 200.0, 0.0];
+	let floor = 120.0f32;
+	let cave = point_at([0.0, floor - 10.0, 8.0]);
+	let bed = point_at([0.0, floor, 8.0]);
 	let both = [cave, bed];
-	let low_cam = [0.0, SKY_CULL_CAM - 1.0, 0.0];
-	let picked = select_lights(both.iter().copied(), &[], low_cam, fwd, 1000.0, MAX_LIGHTS);
-	assert_eq!(picked.len(), 2, "under the edge nothing is culled");
-	let sky_cam = [0.0, SKY_CULL_CAM, 0.0];
-	let picked = select_lights(both.iter().copied(), &[], sky_cam, fwd, 1000.0, MAX_LIGHTS);
+	let picked = select_lights(
+		both.iter().copied(),
+		&[],
+		cam,
+		fwd,
+		1000.0,
+		None,
+		MAX_LIGHTS,
+	);
+	assert_eq!(picked.len(), 2, "disarmed, nothing is culled");
+	let picked = select_lights(
+		both.iter().copied(),
+		&[],
+		cam,
+		fwd,
+		1000.0,
+		Some(floor),
+		MAX_LIGHTS,
+	);
 	assert_eq!(picked.len(), 1, "{picked:?}");
 	assert_eq!(entry_pos(&picked[0]), bed.pos);
+}
+
+/// The floor tally: it arms only once the camera rides `SKY_CULL_ABOVE`
+/// over the reference surface, and the reference is a PERCENTILE — a
+/// lone shaft in the sample cannot drag it down and disarm the cull,
+/// while a quarry wide enough to matter carries the tally with it, which
+/// is what keeps a dug-out crater's own lights alive under a high
+/// camera. Expectations derived from the constants throughout.
+#[test]
+fn a_quarry_moves_the_floor_a_lone_shaft_cannot() {
+	let flat = 130i32;
+	let mut plain: Vec<i32> = vec![flat; 100];
+	// Below the arming edge: no floor, whatever the terrain says.
+	assert_eq!(
+		sky_floor(flat as f32 + SKY_CULL_ABOVE - 1.0, &mut plain),
+		None
+	);
+	let armed = flat as f32 + SKY_CULL_ABOVE;
+	assert_eq!(
+		sky_floor(armed, &mut plain),
+		Some(flat as f32 - SKY_CULL_CUSHION)
+	);
+	// One shaft to bedrock in a hundred columns: under the percentile,
+	// so the floor stands where the plain put it.
+	let mut shaft = plain.clone();
+	shaft[37] = 5;
+	assert_eq!(
+		sky_floor(armed, &mut shaft),
+		Some(flat as f32 - SKY_CULL_CUSHION)
+	);
+	// A quarry spanning a third of the sample carries the tally: the
+	// floor follows the dug surface, so torches on the quarry bed stay.
+	let depth = 60i32;
+	let mut quarry = plain.clone();
+	for h in quarry.iter_mut().take(33) {
+		*h = flat - depth;
+	}
+	assert_eq!(
+		sky_floor(armed, &mut quarry),
+		Some((flat - depth) as f32 - SKY_CULL_CUSHION)
+	);
+	// An empty tally never arms — no sampled column, no floor to stand on.
+	assert_eq!(sky_floor(armed, &mut []), None);
 }
 
 /// The unproven-daylight fade (R32) is bit-identical above its top edge because `smoothstep`
@@ -358,6 +453,7 @@ fn a_carried_light_is_a_light_like_any_other() {
 		cam,
 		[0.0, 0.0, 1.0],
 		reach,
+		None,
 		MAX_LIGHTS,
 	);
 	assert_eq!(out.len(), MAX_LIGHTS, "the list still fills exactly once");
@@ -404,6 +500,7 @@ fn a_carried_light_is_a_light_like_any_other() {
 			cam,
 			[0.0, 0.0, 1.0],
 			reach,
+			None,
 			MAX_LIGHTS
 		)
 		.is_empty()
@@ -435,6 +532,7 @@ fn a_wielders_level_rides_the_entry_and_nothing_elses() {
 			cam,
 			[0.0, 0.0, 1.0],
 			8.0,
+			None,
 			MAX_LIGHTS,
 		)[0][3]
 			.to_bits()
@@ -636,6 +734,7 @@ fn a_surface_emitter_packs_its_rectangle_beside_its_position() {
 		cam,
 		[0.0, 0.0, 1.0],
 		32.0,
+		None,
 		MAX_LIGHTS,
 	);
 	assert_eq!(out.len(), 2, "one entry each, whatever their shape");

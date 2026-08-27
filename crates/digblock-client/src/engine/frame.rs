@@ -5,6 +5,48 @@
 use super::*;
 
 impl Engine {
+	/// The sky cull's floor for this frame (`gi::sky_floor`), fed by the
+	/// incremental column-top tally — see the field docs. A column still
+	/// generating is skipped rather than defaulted, so it cannot vote a
+	/// height that is not there; until the first pass completes the tally
+	/// is empty and the cull stays disarmed.
+	fn sky_floor(&mut self) -> Option<f32> {
+		// The grid: [`gi::SKY_TALLY_REACH`]'s disc at this stride, walked
+		// this many columns per frame — a full pass lands in about a
+		// second, which is the lag streaming, digging and flying all see.
+		const STRIDE: i32 = 8;
+		const PER_FRAME: usize = 8;
+		let r = crate::gi::SKY_TALLY_REACH as i32;
+		let w = (2 * (r / STRIDE) + 1) as usize;
+		let cam = self.camera.pos;
+		if self.sky_cursor == 0 {
+			self.sky_origin = (cam.x as i32, cam.z as i32);
+			self.sky_stage.clear();
+		}
+		let mut walked = 0;
+		while self.sky_cursor < w * w && walked < PER_FRAME {
+			let (i, j) = (self.sky_cursor % w, self.sky_cursor / w);
+			self.sky_cursor += 1;
+			let dx = (i as i32) * STRIDE - r;
+			let dz = (j as i32) * STRIDE - r;
+			if dx * dx + dz * dz > r * r {
+				continue;
+			}
+			walked += 1;
+			if let Some(top) = self
+				.pipeline
+				.column_top(self.sky_origin.0 + dx, self.sky_origin.1 + dz)
+			{
+				self.sky_stage.push(top);
+			}
+		}
+		if self.sky_cursor >= w * w {
+			std::mem::swap(&mut self.sky_tally, &mut self.sky_stage);
+			self.sky_cursor = 0;
+		}
+		crate::gi::sky_floor(cam.y, &mut self.sky_tally)
+	}
+
 	pub(super) fn draw(&mut self, gpu: &Gpu, target: &wgpu::TextureView, size: (u32, u32)) {
 		self.ui.size = size;
 		self.recompute_ui_scale();
@@ -501,6 +543,7 @@ impl Engine {
 			crate::waystone_fx::visible(&self.vfx.marker_sites, self.camera.pos, &mut scratch);
 			self.vfx.marker_scratch = scratch;
 		}
+		let sky_floor = self.sky_floor();
 		if let Some(r) = self.renderer.as_mut() {
 			// A carried light that has travelled — or has just gone out —
 			// re-places itself through the same hook a block edit uses, so
@@ -526,6 +569,7 @@ impl Engine {
 				carried: &self.vfx.carried.lights,
 				cam_forward: self.camera.dir().to_array(),
 				light_cap: self.config.max_lights.max(1) as usize,
+				sky_floor,
 				confetti: &self.vfx.confetti,
 				// The stream ends where the tool's own light hangs, and
 				// the destination is handed over rather than derived in

@@ -1395,3 +1395,48 @@ fn cheap_run_cannot_collapse_the_prediction() {
 		c.predicted_ms()
 	);
 }
+
+/// `column_top` answers the surface the sky cull tallies, and each rule is
+/// exercised by construction rather than by worldgen luck: the cell above
+/// the top is always air (swept, and the sweep counted); water COUNTS as
+/// the surface — the cushion under the tally is what spares a lit bed,
+/// not this walk; an edit IS the surface (a quarry's floor is what its
+/// torches stand on); and a column that is not fully resident answers
+/// nothing rather than guessing.
+#[test]
+fn column_top_is_the_topmost_non_air_and_follows_edits() {
+	let mut p = Pipeline::new(Seed::current(42.0), 3, 0);
+	quiesce(&mut p, ChunkPos::new(0, 0, 0));
+	let mut swept = 0;
+	for x in -16..16 {
+		for z in -16..16 {
+			let top = p.column_top(x, z).expect("resident column");
+			assert_eq!(
+				p.block_at(x, top + 1, z),
+				Some(BlockType::Air),
+				"above the top"
+			);
+			assert_ne!(
+				p.block_at(x, top, z),
+				Some(BlockType::Air),
+				"the top itself"
+			);
+			swept += 1;
+		}
+	}
+	assert_eq!(swept, 32 * 32);
+	let top = p.column_top(0, 0).unwrap();
+	p.set_block(0, top + 5, 0, BlockType::Water);
+	assert_eq!(
+		p.column_top(0, 0),
+		Some(top + 5),
+		"water overhead IS the surface"
+	);
+	p.set_block(0, top + 5, 0, BlockType::Air);
+	let y = top + 20;
+	p.set_block(0, y, 0, BlockType::Stone);
+	assert_eq!(p.column_top(0, 0), Some(y), "a placed block is the surface");
+	p.set_block(0, y, 0, BlockType::Air);
+	assert_eq!(p.column_top(0, 0), Some(top), "and a dug one is not");
+	assert_eq!(p.column_top(10_000, 10_000), None, "beyond residency");
+}

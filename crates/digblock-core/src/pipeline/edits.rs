@@ -113,6 +113,40 @@ impl Pipeline {
 		}
 	}
 
+	/// The column's topmost non-air cell, as a world y — the "surface" the sky cull's floor is
+	/// tallied over (the client's `gi::sky_floor`). Water COUNTS as the surface: an ocean column
+	/// answers the water top, and the cushion the floor sits below the tally is what keeps a lit
+	/// bed under it visible — pair, not this alone. Reading chunks and not worldgen is deliberate:
+	/// a quarry's floor is the surface its torches stand on. `None` until the whole column is
+	/// resident — a half-generated column would answer with a surface that is not there.
+	pub fn column_top(&self, x: i32, z: i32) -> Option<i32> {
+		let n = crate::chunk::CHUNK_SIZE as i32;
+		let (cx, lx) = (x.div_euclid(n), x.rem_euclid(n) as usize);
+		let (cz, lz) = (z.div_euclid(n), z.rem_euclid(n) as usize);
+		let mut stack = Vec::with_capacity(crate::chunk::WORLD_VCHUNK as usize);
+		for cy in 0..crate::chunk::WORLD_VCHUNK {
+			match self.store.get(&ChunkPos::new(cx, cy, cz)) {
+				Some(ChunkSlot {
+					state: ChunkState::Ready(d),
+					..
+				}) => stack.push(d),
+				_ => return None,
+			}
+		}
+		for cy in (0..crate::chunk::WORLD_VCHUNK).rev() {
+			let d = stack[cy as usize];
+			if crate::chunk::is_air_chunk(d) {
+				continue;
+			}
+			for ly in (0..crate::chunk::CHUNK_SIZE).rev() {
+				if d.get(lx, ly, lz) != crate::block::BlockType::Air {
+					return Some(cy * n + ly as i32);
+				}
+			}
+		}
+		None
+	}
+
 	/// Apply an AUTHORITATIVE block value (a server edit): unlike [`set_block`], an edit into a
 	/// not-yet-generated chunk is not dropped — it is held and applied (pre-mesh) when the chunk
 	/// lands, so join-sync edits racing generation can never be lost. Every world consumer gets

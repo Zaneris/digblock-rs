@@ -25,6 +25,7 @@ impl Renderer {
 			carried,
 			cam_forward,
 			light_cap,
+			sky_floor,
 			overlay,
 			confetti,
 			siphon,
@@ -105,6 +106,7 @@ impl Renderer {
 				fwd: cam_forward,
 				carried,
 				cap: light_cap,
+				sky_floor,
 			},
 		);
 		// AFTER the encode, not before it: `carried` is folded into the

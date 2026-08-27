@@ -1152,9 +1152,10 @@ in `select_lights`, both derived, both pinned:
   most a light-reach further. Culling there spends only the multi-bounce tail, which attenuates below notice. "Behind"
   is the LOOK direction, pitch included — a flyer looking down has the ground they just passed on screen, so the
   half-space tilts with the camera (`the_behind_horizon_is_a_cull_not_a_bias` pins the pitch case).
-- **The sky cull** (`SKY_CULL_FLOOR`/`SKY_CULL_CAM`): a camera a light-reach plus margin above a floor sitting just
-  under `SEA_LEVEL` drops every emitter below that floor. The floor spares the lit-ocean and lakebed case; the accepted
-  approximation is cave-mouth glow going dark when seen from high overhead, judged unnoticeable at that distance.
+- **The sky cull**: a camera riding high over the local surface drops every emitter below a floor derived from that
+  surface. Fixed thresholds shipped first and R39 replaced them the same day — the terrain-adaptive floor is the living
+  design. The accepted approximation is cave-mouth glow going dark when seen from high overhead, judged unnoticeable at
+  that distance.
 
 Both culls change list membership with heading and altitude, which the anchor-staleness rule (R36) already refreshes on;
 the forward bias still only reorders eviction inside the horizon. The census harness that produced the figures above was
@@ -1171,6 +1172,33 @@ reach the picture. The count win (a shorter list, hence cheaper frame) exists on
 session priced the cap itself (~8.6 µs per flushed light per frame at 5.43 MP), which is the number that settles "raise
 the default cap?" — no — and names the remaining lever for a levelled player's frame: cheaper scan or a smarter pool,
 not a longer list.
+
+### R39 — the sky cull's floor learned the terrain
+
+R38's fixed pair (a floor just under `SEA_LEVEL`, armed at a fixed camera height) was right only where terrain sits near
+sea level: under a highland the whole cave band above the fixed floor survived, and over a dug-out crater the fixed
+floor would cull the quarry's own torches the moment the camera rode high. The floor now derives from the ground it
+stands over, and every piece is a named constant in `gi.rs`:
+
+- **The tally**: `Pipeline::column_top` — the topmost non-air cell, WATER INCLUDED: an ocean column answers its water
+  top, and `SKY_CULL_CUSHION` is the depth of bed still allowed to light below the reference, which is what keeps a lit
+  springstone bed visible from the air — the tally and the cushion are a PAIR, and making the tally read beds instead
+  would strip the cushion of its job. Chunk data and not worldgen, so a quarry's floor is the surface its torches stand
+  on. The engine samples it on a stride grid over `SKY_TALLY_REACH` — scoped by measurement (BENCH.md 2026-08-27: the
+  furthest emitter a SATURATED list keeps sits just inside it), not the light reach, since terrain farther out mostly
+  votes on lights the ranking already rejects. Sampling is INCREMENTAL — a few column walks per frame, adopted when a
+  pass completes — because no cheap key says when the answer changed: residency counts slots before terrain lands (the
+  bug the first cached version shipped with), and edits change heights with no key at all. Until the first pass
+  completes the tally is empty and the cull stays disarmed.
+- **The reference** is a low PERCENTILE of the tally (`SKY_SURFACE_CENTILE`), not the minimum: a lone shaft cannot drag
+  the floor down and disarm the cull, while a quarry wide enough to matter carries the tally with it — the crater's own
+  lights stay lit under a high camera (`a_quarry_moves_the_floor_a_lone_shaft_cannot`). The floor is the reference minus
+  `SKY_CULL_CUSHION`; the cull arms once the camera rides `SKY_CULL_ABOVE` (two light-reaches) over the reference. The
+  percentile's own price: a narrow canyon in the lowest twentieth of columns can have its bed lights culled while
+  genuinely visible from the air.
+- **Verified live** at a camera held two light-reaches over spawn at Mining 99: the floor armed at the local reference
+  and the flushed list fell 256 → 50 — the first scene where the cull's count win is real rather than content-only,
+  worth ~1.7 ms of resolve scan at the measured per-light cost.
 
 ## Non-goals (v1)
 
@@ -1392,9 +1420,10 @@ The ones that bite if broken. CLAUDE.md points here rather than restating them.
   from that capacity. Under oversubscription selection ranks by distance to the eye→`SELECT_AHEAD` segment (the shader's
   `LIGHT_RANGE`, pinned); the eye stays on the key's zero set so the carrier's own light is never the one dropped, and
   the REACH filter stays camera-centred — the forward bias reorders eviction inside the behind horizon, and the only
-  outright culls are R38's two derived ones: past `BEHIND_REACH` along the look direction (pitch included), and under
-  `SKY_CULL_FLOOR` with the camera at `SKY_CULL_CAM` or higher. Neither can drop a light any ray this frame could
-  observe, save the multi-bounce tail and the cave-mouth-from-the-sky case R38 accepts.
+  outright culls are the two derived ones (R38, R39): past `BEHIND_REACH` along the look direction (pitch included), and
+  under the terrain-adaptive sky floor (`gi::sky_floor` over the engine's column-top tally) while the camera rides
+  `SKY_CULL_ABOVE` over the tally's reference. Neither can drop a light any ray this frame could observe, save the
+  multi-bounce tail, the cave-mouth-from-the-sky case R38 accepts, and R39's percentile and tally-reach edges.
 
 ## Test pins (grown per phase)
 

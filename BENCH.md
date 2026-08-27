@@ -32,6 +32,20 @@ resolution, and the platform the cap exists for has far less headroom. The cap d
 It also says the levers that would actually cheapen a levelled player's frame are per-entry scan cost or a smarter
 candidate pool, not membership trims at a full cap.
 
+**Follow-up, same day (R39 — the adaptive floor).** A probe on `flush_lights` measured how far out the selection
+actually keeps lights: the furthest survivor of a SATURATED 256 list sat at 76 blocks (grounded camera) and 88 (frozen
+flight) of a 159-block reach, which is what sized `SKY_TALLY_REACH` — the tally has no business sampling terrain whose
+lights cannot win slots. An undersubscribed list is different: held two light-reaches over spawn the armed floor cut the
+list 256 → 50 (~1.7 ms of scan at the sweep's per-light cost), and what remained ranged to 144 blocks. Two disclosures
+for the reader re-running this: `--pos` cannot pose a HIGH camera (gravity grounds the player, and the earlier "sky
+pose" rows above are really an eye at ~158 — their conclusions stand, but the label oversold them);
+`--bench --walk --pos 0 200 0` is what actually holds the eye aloft. And the first cached tally shipped a bug worth
+recording: `Pipeline::resident()` counts SLOTS, which reach their final count while every chunk is still `Generating`,
+so a key built on it goes permanently stale on a stationary camera — the shipped tally re-samples incrementally instead
+of trusting any key.
+
+## 2026-08-25 — the server browser's ping on web: an opening time is three round trips
+
 Chrome has no `WebTransport.getStats` (absent in 151), so the browser probe's only figure is how long `ready` took — and
 that is the number the web server list has been showing. Measured against the compose rig's server behind netem
 (`tc netem delay N` on the container's egress, so the added RTT is N; Docker Desktop, macOS, HeadlessChrome 151, five

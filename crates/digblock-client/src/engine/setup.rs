@@ -250,6 +250,10 @@ impl Engine {
 				click_place: false,
 				tool_swap: crate::hotbar::ToolSwap::default(),
 			},
+			sky_tally: Vec::new(),
+			sky_stage: Vec::new(),
+			sky_cursor: 0,
+			sky_origin: (0, 0),
 			bench: BenchState {
 				metrics,
 				bench_reported: false,

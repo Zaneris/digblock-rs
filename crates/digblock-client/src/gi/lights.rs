@@ -37,10 +37,22 @@ impl GiDraw {
 	/// drops the torches around the player. Nothing is sorted: `select_lights` partitions. `cap`
 	/// is `Settings::max_lights`; the buffer and shader clamps stay sized to `MAX_LIGHTS`.
 	pub(super) fn flush_lights(&mut self, gpu: &Gpu, cam: [f32; 3], lights: LightInputs<'_>) {
-		let LightInputs { fwd, carried, cap } = lights;
+		let LightInputs {
+			fwd,
+			carried,
+			cap,
+			sky_floor,
+		} = lights;
 		let cap = cap.clamp(1, MAX_LIGHTS);
 		if cap != self.light_cap {
 			self.light_cap = cap;
+			self.lights_dirty = true;
+		}
+		// The floor is quantized (whole-block heights, recomputed per camera
+		// chunk), so this fires on arming, disarming and real tally moves —
+		// never on frame-to-frame jitter.
+		if sky_floor != self.lights_floor {
+			self.lights_floor = sky_floor;
 			self.lights_dirty = true;
 		}
 		// Only emitters a march can actually REACH belong in the list. Every trace breaks at
@@ -117,6 +129,7 @@ impl GiDraw {
 			cam,
 			fwd,
 			reach,
+			sky_floor,
 			cap,
 		);
 		let count = all.len() as u32;
