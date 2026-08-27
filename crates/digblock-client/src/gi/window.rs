@@ -115,11 +115,11 @@ impl GiDraw {
 		self.lights_dirty |= changed;
 	}
 
-	/// The voxel window's radius in chunks, AS BUILT. The streaming side must key off this and not
-	/// off the live `config.draw_dist`, which the settings screen mutates at runtime while the
-	/// window texture keeps the size it was created with. A chunk approved outside the built
-	/// window hands `upload_chunk` a position whose `rem_euclid` wraps onto a DIFFERENT cell than
-	/// the gather's — the aliasing `gi_uploadable` exists to prevent.
+	/// The voxel window's side in chunks, AS BUILT. The streaming side keys off this and not off
+	/// the live `config.draw_dist` — it is what tells that side a slider move has yet to be
+	/// rebuilt (`resize_window`), and a chunk approved outside the built window hands
+	/// `upload_chunk` a position whose `rem_euclid` wraps onto a DIFFERENT cell than the
+	/// gather's — the aliasing `gi_uploadable` exists to prevent.
 	pub(crate) fn window_chunks(&self) -> i32 {
 		self.window_chunks as i32
 	}

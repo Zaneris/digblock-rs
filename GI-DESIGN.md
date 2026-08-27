@@ -64,30 +64,10 @@ Named here because this document previously described several of these as done:
   ever sampled these with hardware filtering, so the texture buys only the copy it forces — still stands on its own.
   `gather_prev` DOES now bound itself to the cascade's coverage and validate the toroidal checksum, matching the
   fragment side (M5b).
-- **The voxel window still covers half the streamed radius, and that is now a DECISION.** It is built `draw_dist` chunks
-  on a SIDE while terrain streams to `draw_dist` chunks of RADIUS — half the reach — so 9.2% of pixels have a sun ray
-  that leaves the window and is answered "fully lit" on no data, along a boundary centred on the camera. (Since R32 that
-  no-data answer fades with depth below `SKY_FADE_FULL_Y`; at the surface, where this statistic was measured and
-  accepted, it is unchanged.) That statistic is real and it is very nearly INVISIBLE, which is the part that took
-  measuring. Building a window that genuinely covers the streamed radius (doubling the side AND lifting `engine.rs`'s
-  upload clamp, which is what the earlier attempt missed) and holding the sun ray's reach as the only variable moves the
-  image by mean 0.0169 — at the 0.007 repeat-noise floor. Distant terrain is mostly lit anyway, so "lit" is usually the
-  right answer, and by the window's own half-reach the participating medium has faded the surface most of the way into
-  the sky. What DID matter at that range was the final gather, and it cost nothing to fix — see `gather_max` in
-  gi_resolve.wgsl. With the gather fixed, the whole remaining benefit of a full-coverage window is mean 0.0556, confined
-  to the horizon band, bought for a QUADRUPLED window texture — **+75 MiB** (note `gpu_buffer_bytes` in the metrics
-  counts mesh buffers only and does not see it) — and an initial fill slower in the same proportion, since the upload
-  loop is byte-budgeted per frame. Declined on that trade, and those two figures are the trade. The earlier "doubling
-  helps a lot and costs no frame time" note was **retracted**. That build could not have been measuring new data:
-  `engine.rs` clamps the upload window to `draw_dist` independently of texture size, so the outer half of the texture
-  was never written, and wgpu zero-initializes it — which `gi_cell` reads as air, the same answer the narrow window gave
-  by breaking at its bound. Confirmed directly: with the debug view's `cam.w`-scaled depth cue neutralized so a diff
-  means geometry alone, `DIG_GI=window` at the shipped side vs a doubled one differs by a literal handful of pixels in a
-  multi-megapixel frame. The apparent win was several `side`-derived bounds moving at once against unchanged data, and
-  most of it was `gather_max`. Whoever revisits this: the honest fix is not a bigger box. The window's Y extent is the
-  full world height and most of it is empty air, so bounding Y is where the memory actually is; and the far field
-  plausibly needs only coarse occupancy — a small fraction of a full-identity window's bytes even at the doubled side —
-  rather than full material identity, since the gather ray only reaches `GI_GATHER_T`.
+- **The voxel window is not bounded in Y.** It spans the full world column while most of that is empty air, so if the
+  window's memory ever has to come down (R40 quadrupled it to cover the streamed radius), bounding Y is where the bytes
+  are; the far field could also plausibly carry coarse occupancy alone rather than full material identity, since the
+  gather ray only reaches `GI_GATHER_T`. Neither is built, and neither is measured.
 - **No probe classification**, and **the axis fold is still lopsided** (`update_probes` barriers the workgroup and then
   leaves one thread per ambient-cube axis alive, each running a serial RAYS-iteration reduction while the rest idle).
   Both were M5b items and both were measured out, because M5a removed their justification: after the cadence cut the
@@ -1207,6 +1187,32 @@ stands over, and every piece is a named constant in `gi.rs`:
   and the flushed list fell 256 → 50 — the first scene where the cull's count win is real rather than content-only,
   worth ~1.7 ms of resolve scan at the measured per-light cost.
 
+### R40 — the window covers the streamed radius, and follows the slider
+
+The window shipped one draw distance on a SIDE while terrain streams to one draw distance of RADIUS, and "What is NOT
+built" carried the decision to leave it there: 9.2% of pixels had a sun ray leave the window and be answered "lit" on no
+data, along a boundary centred on the camera, and at ground level — where that was measured — the boundary sat in the
+horizon haze and was judged invisible. From the top of the world it is not. A camera at `WORLD_H` looking down sees the
+boundary mid-frame as a ring, and the ring is DARKER outside, not merely shadowless: past `gather_max` the resolve stops
+firing its per-pixel gather ray and `gi_indirect` falls through the cascades to `gi_sky_fallback`, a fraction of the
+dome, while inside it the gather ray proves sky and answers the whole hemisphere. The sun's no-data answer and the
+gather's fallthrough share one bound, so a single number drew both edges.
+
+Built: the side is twice the draw distance (`gi::window_chunks_for`), which is what makes the toroidal half-extent the
+streamed radius and `lateral_max` reach the last resident column — pinned by `the_window_covers_the_streamed_radius`,
+swept over every slider rung. The upload clamp in `engine/streaming.rs` keys on the same function, since the earlier
+doubling attempt left it at `draw_dist` and never wrote the outer half. And the window follows the slider: the streaming
+pass compares the side the renderer built against the one the config wants and calls `GiDraw::resize_window`, which
+replaces the two textures, the CPU mirror and the bind groups naming them — the cascades keep their history, the light
+maps their entries — and then `gi_redirty_all` refills it through the ordinary budgeted drain, the device-loss rebuild's
+second half. Before this the window was sized once at boot, which is why the ring stayed at the same radius whatever the
+slider said.
+
+The trade the earlier decision declined is paid in memory: the texture is quadrupled (the per-block byte times the side
+squared times `WORLD_H`; at the desktop default that is a little over a hundred MiB, at `DRAW_MAX` a little over a
+quarter of a GiB), and `gpu_buffer_bytes` on the overlay still does not see it. Frame time is priced in BENCH.md
+2026-08-27 (R40).
+
 ## Non-goals (v1)
 
 - Specular GI / reflections (SSR stays as-is for water).
@@ -1228,15 +1234,16 @@ DDA occlusion at resolve time plus probe relocation; (2) the probe payload is a 
 ## Data model
 
 **Voxel window** — R8Uint 3D texture of GI-class ids, one texel per block, XZ-toroidal at chunk granularity, Y spans the
-full world column (an up-ray always reaches sky; the window never scrolls vertically). The per-tier dimensions and their
-memory live in `gi.rs`: desktop widest, web narrower, iOS narrower still. GI-class mapping is a pure function in
-`digblock-core` (headless-tested): air has its own class, water is translucent, `emits`/`glows` blocks map to emissive
-classes. Shaped cells were "opaque, the same v1 approximation fluid makes" until R16: they now classify per (id, state)
-into synthetic PARTIAL classes from `SHAPE_CLASS_BASE` up, each carrying a two-box cover of the shape's LIGHT boxes
-(`shapes::light_boxes` — its collision boxes, except that a fixture a body walks through, the torch, still stands in the
-light's way; box 0 = the first box exactly, box 1 = the AABB union of the rest — over-blocks only, never under, worst
-case the old full cell), and a state with no light boxes at all (an open door) classifies as air, which is what lets
-light through a doorway. A chunk re-uploads as one `write_texture`; scrolling uploads only entering slabs.
+full world column (an up-ray always reaches sky; the window never scrolls vertically). Its side is twice the draw
+distance (`gi::window_chunks_for`), so the toroidal half-extent IS the streamed radius, and it is rebuilt in place when
+the draw-distance slider moves (`GiDraw::resize_window`, driven by the streaming pass) — R40. GI-class mapping is a pure
+function in `digblock-core` (headless-tested): air has its own class, water is translucent, `emits`/`glows` blocks map
+to emissive classes. Shaped cells were "opaque, the same v1 approximation fluid makes" until R16: they now classify per
+(id, state) into synthetic PARTIAL classes from `SHAPE_CLASS_BASE` up, each carrying a two-box cover of the shape's
+LIGHT boxes (`shapes::light_boxes` — its collision boxes, except that a fixture a body walks through, the torch, still
+stands in the light's way; box 0 = the first box exactly, box 1 = the AABB union of the rest — over-blocks only, never
+under, worst case the old full cell), and a state with no light boxes at all (an open door) classifies as air, which is
+what lets light through a doorway. A chunk re-uploads as one `write_texture`; scrolling uploads only entering slabs.
 
 **Material LUT** — one storage-buffer row per GI class: albedo rgb, the opacity class (air / water / opaque / partial)
 and the cast-light level in the first words, the partial class's two packed sub-boxes (in twelfths, zero meaning no box)

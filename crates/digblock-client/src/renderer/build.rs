@@ -140,7 +140,7 @@ impl Renderer {
 		let textures = BlockTextures::new(gpu);
 		let gi = crate::gi::GiDraw::new(
 			gpu,
-			config.draw_dist as u32,
+			crate::gi::window_chunks_for(config.draw_dist),
 			&textures.layer_means,
 			surface_format,
 			crate::gi::GiConfig {

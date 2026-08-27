@@ -1,5 +1,32 @@
 # Bench baseline & hotspot analysis
 
+## 2026-08-27 — R40: the voxel window covers the streamed radius, and the frame pays for the reach
+
+M2 Max, 5.43 MP (`--size 1728x1117`), `--no-vsync --fixed-dt 0.0166667 --offscreen`, seed 42, tod 45, draw 20, the
+standard flyover, ×3 runs each side. Working tree (window side = twice the draw distance, `gi::window_chunks_for`)
+against the commit before it (one draw distance on a side).
+
+| build       | avg ms            | p95               | p99               | worst             | fill s         | over-12.5ms |
+| ----------- | ----------------- | ----------------- | ----------------- | ----------------- | -------------- | ----------- |
+| half-radius | 10.00 10.01 10.00 | 14.73 14.68 14.72 | 16.58 16.60 16.61 | 17.77 18.04 18.03 | 1.93 1.95 1.97 | 487 490 487 |
+| full (R40)  | 11.73 11.74 11.73 | 17.54 17.47 17.43 | 18.51 18.64 18.63 | 23.12 19.88 19.61 | 2.25 2.27 2.17 | 989 988 993 |
+
+**+1.7 ms average, +2.8 ms at p95, and the fill is a quarter longer** — repeatable to the second decimal on both sides.
+The CSV's per-interval GPU phase figures (comparable only against each other, not against the frame) name where: at the
+15 s row the GI trace goes 8.8 → 12.6, the denoise 18.6 → 26.1 and the scene pass 10.1 → 14.0, while the probe update,
+water and prepass do not move, and the resident emitter count is the same on both sides (169–211) — so this is the
+resolve reaching farther, not the light list growing. Two things reach: every pixel past the old `gather_max` now fires
+the per-pixel gather and NEE rays instead of falling through to the cascades, and a sun ray that used to break at the
+old bound marches on. The denoise and scene passes move with it because they consume what the resolve produces at the
+same pixels, and the quadrupled window is a 105 MiB texture at this draw distance against 26 before, which the overlay's
+`gpu` figure does not count.
+
+This is the trade GI-DESIGN.md's earlier entry declined on memory alone, now paid on purpose: the half-radius window
+drew a lit, shadowless, dome-lit ring around any camera high enough to see past the horizon haze (R40 has the
+mechanism), and a boundary the player can see is not a tradeoff the frame time gets to make. The levers left if the 1.7
+ms has to come back are the ones the earlier entry named — bounding the window's Y extent, or coarse occupancy alone in
+the far field — neither built.
+
 ## 2026-08-27 — R38's light culls move no frame time (the win is the list's contents), and the light CAP is priced
 
 M2 Max, 5.43 MP (`--size 1728x1117`, effectively fullscreen), `--no-vsync --fixed-dt 0.0166667 --offscreen`, seed 42,

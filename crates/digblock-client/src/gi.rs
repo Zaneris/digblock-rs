@@ -241,6 +241,8 @@ struct Cascade {
 	stride: u32,
 	uniform_buf: wgpu::Buffer,
 	atlas: [wgpu::Texture; 2],
+	/// Per-probe age, dead bit and relocation code (GI-DESIGN.md "Data model").
+	flags: wgpu::Texture,
 	/// bind[i]: atlas[i] is prev (sampled), atlas[1-i] is out (written).
 	bind: [wgpu::BindGroup; 2],
 }
@@ -298,8 +300,13 @@ pub(crate) struct GiDraw {
 	/// mips. Sits at the world ceiling until the first flush
 	/// (conservative: never breaks a ray early on unclassified data).
 	sky_y: f32,
-	/// XZ extent in chunks (= draw distance): the toroidal modulus.
+	/// XZ extent in chunks (`window_chunks_for`): the toroidal modulus.
 	window_chunks: u32,
+	/// Kept beside the window because `resize_window` rebuilds the bind
+	/// groups that name its texels against these very layouts.
+	probe_bgl: wgpu::BindGroupLayout,
+	debug_bgl: wgpu::BindGroupLayout,
+	lut_buf: wgpu::Buffer,
 	/// Cost-stub mask (DIG_STUB) — rides `jitter.w` into gi_resolve.wgsl,
 	/// which has no frame UBO of its own to read `misc.z` from.
 	stub: u32,
@@ -486,6 +493,15 @@ fn material_lut(layer_means: &[[u8; 4]]) -> [[u32; 4]; 256] {
 /// `MAX_LIGHTS` slot on one it would not. Pinned by `the_light_reach_matches_the_shaders_bound`.
 fn lateral_max(window_chunks: u32) -> f32 {
 	(window_chunks * 16) as f32 * 0.5 - 1.0
+}
+
+/// The window's side in chunks for a streamed radius: TWICE the draw distance, so the toroidal
+/// half-extent IS the streamed radius and `lateral_max` reaches the last resident column. One
+/// draw distance on a side (R40's predecessor) drew a circle around a high camera: past the bound
+/// the sun answered "lit" on no data and the gather fell through to the sky dome, darker than
+/// the traced field inside it. Rebuilt in place when the slider moves (`GiDraw::resize_window`).
+pub(crate) fn window_chunks_for(draw_dist: i32) -> u32 {
+	2 * draw_dist.max(1) as u32
 }
 
 /// The light list's payload: every observable emitter — inside the reach, not past
