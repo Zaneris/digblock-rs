@@ -10,12 +10,14 @@ numbers stand on). Two scenes: the standard bench flyover (`--bench --frames 150
 **The A/B (working tree vs stash) is flat on both scenes, and the win is elsewhere.** Flyover: 9.93 avg / 16.67 p99 with
 the culls, 10.35 / 16.05 without — inside run-to-run noise. Sky pose: 4.96 avg with, 4.97 without. A temporary probe on
 `flush_lights` named why: even at y=200 with the sky cull ACTIVE, the flushed list sits at the 256 cap — the surface
-band above `SKY_CULL_FLOOR` alone oversubscribes it near spawn at Mining 99. So under saturation the culls change WHICH
-lights hold slots, not how many — and that is the actual win: the ranking only knows distance, and underground is CLOSE,
-so before the culls a sealed seam under the player's feet outranked a visible light farther ahead, spending real slots
-on emitters no ray could observe while observable ones were evicted. With the culls the whole cap lands inside the
-observable set — the same scan cost buys lighting instead of nothing. A shorter list (hence a cheaper frame) happens
-only where the in-horizon pool is smaller than the cap; no ms claim stands at these scenes.
+band above the floor alone oversubscribes it near spawn at Mining 99. (The floor was R38's fixed `SEA_LEVEL`-relative
+constant, replaced by R39's terrain-derived one the same day; these numbers stand as the reading they were, and the R39
+entry below re-measures the scene.) So under saturation the culls change WHICH lights hold slots, not how many — and
+that is the actual win: the ranking only knows distance, and underground is CLOSE, so before the culls a sealed seam
+under the player's feet outranked a visible light farther ahead, spending real slots on emitters no ray could observe
+while observable ones were evicted. With the culls the whole cap lands inside the observable set — the same scan cost
+buys lighting instead of nothing. A shorter list (hence a cheaper frame) happens only where the in-horizon pool is
+smaller than the cap; no ms claim stands at these scenes.
 
 **What the sweep priced instead is the cap itself.** Same sky pose, `--max-lights`:
 
