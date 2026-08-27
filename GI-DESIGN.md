@@ -1133,6 +1133,45 @@ term does not qualify, and that is a property of the architecture, not of the tu
 low-variance direct light with no filter behind it — and the unfiltered consumers this engine has (players, confetti)
 already run `sum_lights` instead, deterministically, for exactly that reason (R34).
 
+### R38 — the selection learned two outright culls, because most of a levelled player's lights are underground
+
+An emitter census over the seed-42 bench world (25×25 columns around origin, the real reveal + `mesher::lights` on every
+chunk) put numbers on what the cave network does to the light list once the reveal tables open: at reveal levels 1/1 the
+region holds 52 seam lights, all surface Heartwood; at 99/99 it holds 7,184, and **85% sit below the local terrain
+surface** — the caves are that cluttered (80.7% of fully-below-surface chunks contain carved air). The reach filter is
+lateral, so for a surface player at high level those seams are candidates: the cap saturates and `resample_light` walks
+a full list per pixel, mostly on lights sealed under the ground.
+
+Camera-visibility culling (frustum or occlusion) stays rejected — a light behind a doorway must keep lighting the room
+ahead, and R37 is the record of what visibility-aware selection costs. What landed instead is two cheap geometric culls
+in `select_lights`, both derived, both pinned:
+
+- **The behind horizon** (`BEHIND_REACH`): a light farther behind the camera than one gather march plus one light-reach
+  (`GI_GATHER_T` + `LIGHT_RANGE`, mirrored as `GATHER_T` + `SELECT_AHEAD`) cannot be observed by any ray this frame —
+  the deepest backward path is a gather ray from a visible surface reaching geometry behind the camera, NEE-lit from at
+  most a light-reach further. Culling there spends only the multi-bounce tail, which attenuates below notice. "Behind"
+  is the LOOK direction, pitch included — a flyer looking down has the ground they just passed on screen, so the
+  half-space tilts with the camera (`the_behind_horizon_is_a_cull_not_a_bias` pins the pitch case).
+- **The sky cull** (`SKY_CULL_FLOOR`/`SKY_CULL_CAM`): a camera a light-reach plus margin above a floor sitting just
+  under `SEA_LEVEL` drops every emitter below that floor. The floor spares the lit-ocean and lakebed case; the accepted
+  approximation is cave-mouth glow going dark when seen from high overhead, judged unnoticeable at that distance.
+
+Both culls change list membership with heading and altitude, which the anchor-staleness rule (R36) already refreshes on;
+the forward bias still only reorders eviction inside the horizon. The census harness that produced the figures above was
+a temporary test over `digblock-core`, and its numbers are recorded here rather than in BENCH.md because they are world
+statistics, not frame times.
+
+**Priced the same day (BENCH.md 2026-08-27): no frame time moved, and the win is what the frame now buys.** At Mining 99
+the in-horizon pool oversubscribes the cap even with both culls active — the surface band alone does it — so the flushed
+count stays at 256 and the A/Bs sit flat on both the flyover and a sky pose. What changed is the list's CONTENTS: the
+ranking only knows distance, and underground is close, so before the culls a sealed seam under the player's feet
+outranked a visible light farther ahead — slots were spent on emitters no ray could observe while observable ones were
+evicted. With the culls the whole cap lands inside the observable set: the same scan cost, spent on lights that can
+reach the picture. The count win (a shorter list, hence cheaper frame) exists only in the undersubscribed case. The same
+session priced the cap itself (~8.6 µs per flushed light per frame at 5.43 MP), which is the number that settles "raise
+the default cap?" — no — and names the remaining lever for a levelled player's frame: cheaper scan or a smarter pool,
+not a longer list.
+
 ## Non-goals (v1)
 
 - Specular GI / reflections (SSR stays as-is for water).
@@ -1352,8 +1391,10 @@ The ones that bite if broken. CLAUDE.md points here rather than restating them.
   the probe uniform and the shader clamps stay sized to `MAX_LIGHTS` at compile time — the slider maximum is DERIVED
   from that capacity. Under oversubscription selection ranks by distance to the eye→`SELECT_AHEAD` segment (the shader's
   `LIGHT_RANGE`, pinned); the eye stays on the key's zero set so the carrier's own light is never the one dropped, and
-  the REACH filter stays camera-centred — the forward bias reorders eviction, it never culls a light the probes behind
-  the camera still need.
+  the REACH filter stays camera-centred — the forward bias reorders eviction inside the behind horizon, and the only
+  outright culls are R38's two derived ones: past `BEHIND_REACH` along the look direction (pitch included), and under
+  `SKY_CULL_FLOOR` with the camera at `SKY_CULL_CAM` or higher. Neither can drop a light any ray this frame could
+  observe, save the multi-bounce tail and the cave-mouth-from-the-sky case R38 accepts.
 
 ## Test pins (grown per phase)
 

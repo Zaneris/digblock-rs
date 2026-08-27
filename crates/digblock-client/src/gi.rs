@@ -54,6 +54,25 @@ pub(crate) const MAX_LIGHTS: usize = 256;
 /// light above all — still measures from the eye. The reach filter stays camera-centred.
 const SELECT_AHEAD: f32 = 24.0;
 
+/// CPU twin of `GI_GATHER_T` in gi_resolve.wgsl — how far a gather ray marches back from a shaded
+/// surface, in blocks. Pinned by `the_behind_horizon_matches_the_shaders_march`.
+const GATHER_T: f32 = 32.0;
+
+/// How far behind the camera a light can still be observed: one gather march back from a visible
+/// surface plus the light's own reach at the hit. Past it `select_lights` culls outright — where
+/// the forward bias merely reorders eviction — spending the multi-bounce tail, which attenuates
+/// below notice, to keep the flushed list off `resample_light`'s per-pixel bill.
+const BEHIND_REACH: f32 = GATHER_T + SELECT_AHEAD;
+
+/// The sky cull's floor: a camera at or above [`SKY_CULL_CAM`] drops emitters below this. Sits
+/// under `SEA_LEVEL` so a lit ocean or lakebed stays visible from the air — what it drops is the
+/// cave network, where the emitter census found the large majority of a levelled player's seams.
+const SKY_CULL_FLOOR: f32 = (digblock_core::worldgen::SEA_LEVEL - 8) as f32;
+
+/// The sky cull's camera edge: a full light-reach plus a margin above the floor, so nothing the
+/// cull drops could have lit the camera's own surroundings directly.
+const SKY_CULL_CAM: f32 = SKY_CULL_FLOOR + SELECT_AHEAD + 16.0;
+
 /// One entry in the light list: world position and the GI class byte whose LUT row carries its
 /// cast level and its tint. A light a player is CARRYING is one of these too — it just isn't in a
 /// chunk, and the only readers that can tell are `gi_light_margin_of`, because the margin is a
@@ -422,7 +441,8 @@ fn lateral_max(window_chunks: u32) -> f32 {
 	(window_chunks * 16) as f32 * 0.5 - 1.0
 }
 
-/// The light list's payload: every reachable emitter, at most `cap` nearest to the forward-leading
+/// The light list's payload: every observable emitter — inside the reach, not past
+/// [`BEHIND_REACH`], not under the sky cull — at most `cap` nearest to the forward-leading
 /// segment (see `SELECT_AHEAD`), in the GPU entry form. Carried lights are simply more candidates,
 /// with no reservation: a carrier's own light sits at the near end of the segment and can never be
 /// the one dropped. Selection, NOT ordering — no reader cares about order, so the cap is settled by
@@ -471,7 +491,14 @@ fn select_lights(
 		.chain(held)
 		.filter(|(p, _)| {
 			let (dx, dz) = (p[0] - cam[0], p[2] - cam[2]);
-			dx * dx + dz * dz <= reach * reach
+			if dx * dx + dz * dz > reach * reach {
+				return false;
+			}
+			// The two outright culls ([`BEHIND_REACH`], [`SKY_CULL_FLOOR`]).
+			// The carrier's own light sits at the eye, ahead of both.
+			let dy = p[1] - cam[1];
+			dx * fwd[0] + dy * fwd[1] + dz * fwd[2] >= -BEHIND_REACH
+				&& !(cam[1] >= SKY_CULL_CAM && p[1] < SKY_CULL_FLOOR)
 		})
 		.map(|(p, e)| {
 			// Distance to the eye→anchor SEGMENT, not to a point ahead:

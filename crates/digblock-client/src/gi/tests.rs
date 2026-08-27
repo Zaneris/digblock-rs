@@ -85,6 +85,30 @@ fn the_selection_lead_matches_the_shaders_light_range() {
 	assert_eq!(found, 2);
 }
 
+/// The behind horizon is one gather march plus one light-reach: `GATHER_T`
+/// mirrors `GI_GATHER_T` in gi_resolve.wgsl, read out of the shader rather
+/// than restated, exactly like the reach pin above. A march that grows
+/// without this moving would cull a light a ray can still observe.
+#[test]
+fn the_behind_horizon_matches_the_shaders_march() {
+	let src = digblock_assets::shader::GI_RESOLVE;
+	let decl = src
+		.split("const GI_GATHER_T")
+		.nth(1)
+		.expect("gi_resolve.wgsl must declare GI_GATHER_T");
+	let value: f32 = decl
+		.split('=')
+		.nth(1)
+		.and_then(|v| v.split(';').next())
+		.and_then(|v| v.trim().parse().ok())
+		.expect("GI_GATHER_T must be a literal");
+	assert_eq!(
+		value, GATHER_T,
+		"gi_resolve.wgsl's GI_GATHER_T and gi::GATHER_T must agree"
+	);
+	assert_eq!(BEHIND_REACH, GATHER_T + SELECT_AHEAD);
+}
+
 /// Helpers for the selection tests: a point emitter of the torch class,
 /// and the position packed in a selected entry.
 #[cfg(test)]
@@ -198,6 +222,70 @@ fn the_carriers_own_light_survives_any_cap() {
 			"cap {cap} dropped the carrier's own light"
 		);
 	}
+}
+
+/// The behind horizon is a CULL, not a bias: a light just inside it
+/// survives an uncapped selection, its neighbour just past it is dropped
+/// with the cap nowhere near — and the horizon follows the heading, so
+/// turning around is what brings the light back.
+#[test]
+fn the_behind_horizon_is_a_cull_not_a_bias() {
+	let cam = [0.0, 8.0, 0.0];
+	let fwd = [0.0, 0.0, 1.0];
+	let inside = point_at([0.0, 8.0, -(BEHIND_REACH - 1.0)]);
+	let past = point_at([0.0, 8.0, -(BEHIND_REACH + 1.0)]);
+	let both = [inside, past];
+	let picked = select_lights(both.iter().copied(), &[], cam, fwd, 1000.0, MAX_LIGHTS);
+	assert_eq!(picked.len(), 1, "{picked:?}");
+	assert_eq!(entry_pos(&picked[0]), inside.pos);
+	// The same field about-face: the culled light is now ahead and kept.
+	let turned = select_lights(
+		both.iter().copied(),
+		&[],
+		cam,
+		[0.0, 0.0, -1.0],
+		1000.0,
+		MAX_LIGHTS,
+	);
+	assert_eq!(turned.len(), 2);
+	// The horizon is the LOOK direction, pitch included, not the yaw: a
+	// flyer looking down at the ground they just passed over has it on
+	// screen, so a light past the horizon by yaw alone must survive.
+	let high = [0.0, 8.0 + BEHIND_REACH, 0.0];
+	let down_back = point_at([0.0, 8.0, -(BEHIND_REACH + 8.0)]);
+	let pitched = {
+		let d = [0.0f32, -(BEHIND_REACH + 8.0), -(BEHIND_REACH + 8.0)];
+		let n = (d[1] * d[1] + d[2] * d[2]).sqrt();
+		[0.0, d[1] / n, d[2] / n]
+	};
+	let picked = select_lights(
+		[down_back].into_iter(),
+		&[],
+		high,
+		pitched,
+		1000.0,
+		MAX_LIGHTS,
+	);
+	assert_eq!(picked.len(), 1, "pitch must count toward the horizon");
+}
+
+/// The sky cull keys on BOTH edges: a camera under its edge keeps the cave
+/// seams, one at the edge drops them — and keeps a light at the floor
+/// itself, which is the lit-ocean case the floor sits under `SEA_LEVEL`
+/// for. Every light ahead of the camera, so only the altitude decides.
+#[test]
+fn a_sky_camera_drops_the_cave_lights() {
+	let fwd = [0.0, 0.0, 1.0];
+	let cave = point_at([0.0, SKY_CULL_FLOOR - 10.0, 8.0]);
+	let bed = point_at([0.0, SKY_CULL_FLOOR, 8.0]);
+	let both = [cave, bed];
+	let low_cam = [0.0, SKY_CULL_CAM - 1.0, 0.0];
+	let picked = select_lights(both.iter().copied(), &[], low_cam, fwd, 1000.0, MAX_LIGHTS);
+	assert_eq!(picked.len(), 2, "under the edge nothing is culled");
+	let sky_cam = [0.0, SKY_CULL_CAM, 0.0];
+	let picked = select_lights(both.iter().copied(), &[], sky_cam, fwd, 1000.0, MAX_LIGHTS);
+	assert_eq!(picked.len(), 1, "{picked:?}");
+	assert_eq!(entry_pos(&picked[0]), bed.pos);
 }
 
 /// The unproven-daylight fade (R32) is bit-identical above its top edge because `smoothstep`

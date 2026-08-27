@@ -1,6 +1,36 @@
 # Bench baseline & hotspot analysis
 
-## 2026-08-25 — the server browser's ping on web: an opening time is three round trips
+## 2026-08-27 — R38's light culls move no frame time (the win is the list's contents), and the light CAP is priced
+
+M2 Max, 5.43 MP (`--size 1728x1117`, effectively fullscreen), `--no-vsync --fixed-dt 0.0166667 --offscreen`, seed 42,
+tod 45, draw 20, `DIG_MINING=99` (the reveal fully open — the emitter census in GI-DESIGN.md R38 is the world these
+numbers stand on). Two scenes: the standard bench flyover (`--bench --frames 1500`), and a static sky pose
+(`--pos 0 200 0 --pitch -89`, 4000 frames, last settled metrics window).
+
+**The A/B (working tree vs stash) is flat on both scenes, and the win is elsewhere.** Flyover: 9.93 avg / 16.67 p99 with
+the culls, 10.35 / 16.05 without — inside run-to-run noise. Sky pose: 4.96 avg with, 4.97 without. A temporary probe on
+`flush_lights` named why: even at y=200 with the sky cull ACTIVE, the flushed list sits at the 256 cap — the surface
+band above `SKY_CULL_FLOOR` alone oversubscribes it near spawn at Mining 99. So under saturation the culls change WHICH
+lights hold slots, not how many — and that is the actual win: the ranking only knows distance, and underground is CLOSE,
+so before the culls a sealed seam under the player's feet outranked a visible light farther ahead, spending real slots
+on emitters no ray could observe while observable ones were evicted. With the culls the whole cap lands inside the
+observable set — the same scan cost buys lighting instead of nothing. A shorter list (hence a cheaper frame) happens
+only where the in-horizon pool is smaller than the cap; no ms claim stands at these scenes.
+
+**What the sweep priced instead is the cap itself.** Same sky pose, `--max-lights`:
+
+| cap | avg ms | p99  |
+| --- | ------ | ---- |
+| 8   | 2.83   | 3.73 |
+| 64  | 3.31   | 4.27 |
+| 256 | 4.97   | 6.02 |
+
+Linear at ~8.6 µs per light per frame — `resample_light`'s per-pixel scan, paid even though not one of these seams
+visibly lights a surface the camera sees. The full default list is ~2.1 ms of this 5 ms frame, which answers the "raise
+the default cap to 512?" question with a number: another 256 slots is another ~2 ms on THIS machine at native
+resolution, and the platform the cap exists for has far less headroom. The cap default stays; the slider is the opt-in.
+It also says the levers that would actually cheapen a levelled player's frame are per-entry scan cost or a smarter
+candidate pool, not membership trims at a full cap.
 
 Chrome has no `WebTransport.getStats` (absent in 151), so the browser probe's only figure is how long `ready` took — and
 that is the number the web server list has been showing. Measured against the compose rig's server behind netem
