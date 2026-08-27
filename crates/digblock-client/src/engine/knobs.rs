@@ -60,6 +60,11 @@ pub const PLAYERBOX: Knob = value(
 	"a fake remote holding <item> (dirt|torch|stairs|slab|door|bucket|bucket-full|siphon|pick|sigil|empty)",
 );
 pub const CONFETTI: Knob = flag("confetti", "DIG_CONFETTI", "the milestone confetti burst");
+pub const NO_MARKERS: Knob = flag(
+	"nomarkers",
+	"DIG_NO_MARKERS",
+	"drop the standing arrival markers (the spawn spiral) from the frame",
+);
 pub const SHAPES: Knob = flag(
 	"shapes",
 	"DIG_SHAPES",
@@ -165,6 +170,7 @@ pub const ALL: &[Knob] = &[
 	SCREEN,
 	PLAYERBOX,
 	CONFETTI,
+	NO_MARKERS,
 	SHAPES,
 	DOORS,
 	SPHERE,
@@ -237,6 +243,7 @@ pub fn apply(
 		})?);
 	}
 	config.debug_confetti = on(&CONFETTI);
+	config.markers = !on(&NO_MARKERS);
 	config.debug_shapes = on(&SHAPES);
 	config.debug_doors = on(&DOORS);
 	config.debug_vault_dark = on(&VAULT_DARK);

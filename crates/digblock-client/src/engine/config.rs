@@ -218,6 +218,11 @@ pub struct EngineConfig {
 	/// `debug_screen` makes for the input-only screens. Set by the
 	/// desktop launcher from DIG_CONFETTI.
 	pub debug_confetti: bool,
+	/// Draw the standing arrival markers (`waystone_fx`). A capture posed
+	/// within `MARKER_RADIUS` of spawn otherwise has the spiral in frame —
+	/// from above it is a white ball over the terrain under test. Cleared
+	/// by DIG_NO_MARKERS.
+	pub markers: bool,
 	/// Debug: pin the crack decal at this progress (0..1) on whatever the crosshair is holding, and
 	/// stand a wall of blocks two cells ahead for it to hold. Digging is INPUT-driven and a hold
 	/// lasts a second or two, so the crack is otherwise unphotographable — `debug_confetti`'s
@@ -440,6 +445,7 @@ impl EngineConfig {
 			player_name: None,
 			debug_playerbox: None,
 			debug_confetti: false,
+			markers: true,
 			debug_crack: None,
 			debug_siphon: None,
 			debug_cast: None,

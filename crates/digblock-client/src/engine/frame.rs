@@ -555,10 +555,15 @@ impl Engine {
 				f32::from(k.key),
 			));
 		}
-		// The standing markers, culled here on the CPU (reused scratch).
+		// The standing markers, culled here on the CPU (reused scratch);
+		// an empty scratch is no draw, which is what DIG_NO_MARKERS asks.
 		{
 			let mut scratch = std::mem::take(&mut self.vfx.marker_scratch);
-			crate::waystone_fx::visible(&self.vfx.marker_sites, self.camera.pos, &mut scratch);
+			if self.config.markers {
+				crate::waystone_fx::visible(&self.vfx.marker_sites, self.camera.pos, &mut scratch);
+			} else {
+				scratch.clear();
+			}
 			self.vfx.marker_scratch = scratch;
 		}
 		let sky_floor = self.sky_floor();
