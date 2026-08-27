@@ -102,6 +102,8 @@ just play-docker wifi     # desktop client vs containerized stack (clean | wifi 
 just ios-sim / ios-device # build+run via Xcode (full Xcode required)
 just master               # .NET master natively (QUIC probe needs `brew install libmsquic`)
 just server               # dedicated server (journal in ./data; joining is token-only)
+just fleet <cmd>          # OUR dedicated servers over ssh, from tools/fleet/fleet.toml: status,
+                          # start/stop/restart, diff/apply (an update is a `version =` edit + apply)
 just bot -- --bots 4      # headless bots: pick a server via the master, mint tokens, join
 just compose wifi         # dockerized master + server behind tc netem
 just compose-bots wifi    # same + a bot soak, exits non-zero on missed snapshots
@@ -228,8 +230,10 @@ same thing whatever language the client shows. Compass in `/tp`: east = sunrise 
 - Use `127.0.0.1`, **never `localhost`** (macOS resolves it to `::1`; the server binds IPv4 only).
 - A server is listed only at a port inside `digblock_server::PORT_RANGE`, the master's `ServerPorts` mirrored and pinned
   by `the_masters_port_block_mirrors_ours` (which also holds the deploy kit's quoted block to it). A claim is
-  `host:port`, so one machine runs several; the kit's `.env` `SERVER_PORT` is the one knob, and it also names the
-  compose project — compose names one after its FOLDER, and two same-named folders replace each other's containers.
+  `host:port`, so one machine runs several; the kit's `x-port` anchor is the one knob — it is the published port, the
+  advertised port AND the compose project's name, since compose would otherwise name the project after its FOLDER, and
+  two same-named folders replace each other's containers. Our own servers are rows of `tools/fleet/fleet.toml`, driven
+  by `just fleet` (`tools/fleet/README.md`): the row renders the kit, so nothing is hand-edited on a host.
 - Anything that can't open a browser signs in through `POST /api/dev/signin`, honoured only under
   `ASPNETCORE_ENVIRONMENT=Development` — a master with it set anywhere else **refuses to boot**. The dev master also
   needs `Master__Probe__AllowPrivateTargets` and `Master__Dev__ProbeHostOverride`; the justfile's `DEV_MASTER_ENV` is

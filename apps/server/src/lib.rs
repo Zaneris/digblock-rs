@@ -100,5 +100,20 @@ mod tests {
 				"deploy/{kit} does not name the port block"
 			);
 		}
+		// The fleet tool validates its inventory against the block, and
+		// Python cannot read this constant either.
+		let fleet = std::fs::read_to_string(concat!(
+			env!("CARGO_MANIFEST_DIR"),
+			"/../../tools/fleet/fleet.py"
+		))
+		.expect("the fleet tool beside this workspace");
+		assert!(
+			fleet.contains(&format!(
+				"PORT_BLOCK = ({}, {})",
+				PORT_RANGE.start(),
+				PORT_RANGE.end()
+			)),
+			"tools/fleet/fleet.py does not quote the port block"
+		);
 	}
 }

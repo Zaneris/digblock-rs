@@ -1,0 +1,38 @@
+# The dedicated servers `just fleet` drives. A row is rendered into
+# deploy/compose.yml and pushed by `apply`; `just fleet adopt` prints what
+# the hosts currently hold in this same shape. A seed change starts a
+# fresh world and a port change renames the compose project, so `apply`
+# refuses both without --i-mean-it.
+version = "0.8.2"
+
+[hosts.a]
+addr = "148.113.183.210"
+user = "debian"
+
+[hosts.b]
+addr = "57.129.129.226"
+user = "debian"
+
+[servers.a1]
+host = "a"
+dir = "digblock"
+port = 4433
+name = "CSharp Void"
+seed = 6
+admins = ["f7a89819-53c1-4ba7-a8bc-be1d68e2b936"]
+
+[servers.a2]
+host = "a"
+dir = "digblock2"
+port = 4434
+name = "Canada East"
+seed = 7
+admins = ["f7a89819-53c1-4ba7-a8bc-be1d68e2b936"]
+
+[servers.b1]
+host = "b"
+dir = "digblock"
+port = 4433
+name = "United Kingdom"
+seed = 8
+admins = ["f7a89819-53c1-4ba7-a8bc-be1d68e2b936"]

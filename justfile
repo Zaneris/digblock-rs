@@ -98,6 +98,18 @@ DEV_ADMIN_ID := "b2379408-3102-8b68-b56b-5774dec269b8"
 server *ARGS:
 	cargo run -p digblock-server --bin digblock-server -- {{ARGS}}
 
+# The inventory is authoritative: `apply` renders deploy/compose.yml from
+# each row and pushes it, so an update is one `version =` edit and an
+# apply, and a rollback is the revert. tools/fleet/README.md has the loop.
+#
+# Our dedicated servers over ssh: setup | adopt | diff | apply | status | start | stop | restart | logs | backup.
+fleet *ARGS:
+	python3 tools/fleet/fleet.py {{ARGS}}
+
+# The fleet tool's own tests: render/parse round trip, inventory rules, log verdicts. No hosts.
+fleet-unit:
+	python3 -m unittest tools/fleet/fleet_test.py
+
 # Picks a server from the master's list (the first, or `--server
 # NAME_FILTER`), signs in as bot-<n> through the master's development
 # endpoint, mints one token each, then joins. One account per bot index, so
