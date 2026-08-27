@@ -630,8 +630,16 @@ impl Sim {
 	) -> std::io::Result<Self> {
 		let recorded = crate::journal::world_terrain(data_dir, seed)?;
 		let seed = Seed::new(seed, recorded.unwrap_or(TerrainVersion::CURRENT));
-		if recorded.is_none() {
-			log::info!("new world: seed {seed:?}");
+		match recorded {
+			None => log::info!("new world: seed {seed:?}"),
+			// Continuing is the default; trading the world for the current
+			// generator is the operator's --archive-world.
+			Some(v) if v != TerrainVersion::CURRENT => log::info!(
+				"world stays on the generator that made it ({v:?}); a new world under \
+				 {:?} is --archive-world",
+				TerrainVersion::CURRENT
+			),
+			Some(_) => {}
 		}
 		let store = ChunkStore::new(seed, workers);
 		let mut sim = Self::with_store(seed, data_dir, sim_radius, store, player::spawn(seed))?;

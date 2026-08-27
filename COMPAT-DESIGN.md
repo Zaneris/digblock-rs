@@ -1,11 +1,12 @@
 # Compatibility — joining a server that has not updated (design document)
 
-Status: **C1 (§7) and C2 (§5.3) are BUILT; everything else here is design only.** It came out of the 2026-08-23 question
-of what happens once dedicated servers are run by people who did not ship the release, and turned on a sharper one a day
-later: the reason a server will not upgrade is usually not sloth but that upgrading takes the world. Every way of
-changing either carries a cost worth choosing deliberately rather than discovering. Where this document names a constant
-or a function that does not exist yet, the name is a proposal; where it names one that does (`MIN_PROTOCOL`,
-`dig_grace`, `landmark_fallback_only_adds`), the reference is to shipped code and the claim about it has been checked.
+Status: **C1 (§7), C2 (§5.3) and §1's boot-time refusal are BUILT; everything else here is design only.** It came out of
+the 2026-08-23 question of what happens once dedicated servers are run by people who did not ship the release, and
+turned on a sharper one a day later: the reason a server will not upgrade is usually not sloth but that upgrading takes
+the world. Every way of changing either carries a cost worth choosing deliberately rather than discovering. Where this
+document names a constant or a function that does not exist yet, the name is a proposal; where it names one that does
+(`MIN_PROTOCOL`, `dig_grace`, `landmark_fallback_only_adds`), the reference is to shipped code and the claim about it
+has been checked.
 
 The staging (§8) is ordered so each slice ships alone. The first buys no compatibility at all — it makes the failure
 legible, which everything after it depends on. The second removes the reason worlds are lost, which is a better lever
@@ -37,10 +38,13 @@ refused**, answered with the standing rebase so an out-of-date client at least r
 wire's graceful degradation looks like, and there is exactly one of it.
 
 One gate is not on the wire at all, and it is the one that decides whether a server operator ever upgrades:
-`journal::VERSION`. A bump means the server **renames the world aside at boot and starts fresh**, announced by a single
-`log::warn!` — the operator learns from a log line, or from their players. Client saves share the constant and REFUSE
-instead. The destructive default is on the side carrying everyone's world, which is backwards, and it is why §5.3 is the
-part of this document that matters most.
+`journal::VERSION`. A bump used to mean the server **renamed the world aside at boot and started fresh**, announced by a
+single `log::warn!` — the operator learned from a log line, or from their players. That destructive default sat on the
+side carrying everyone's world, which was backwards, and it is why §5.3 is the part of this document that matters most.
+It is gone: boot now REFUSES and says so, and `journal::archive_world` — the server's `--archive-world` — is the one
+lever that replaces a stored world, covering the format break and the deliberate trade of a world for the current
+generator alike. It is inert on a current world, so the flag is a decision about an upgrade rather than a standing
+hazard. Client saves share the constant and refuse in the world list.
 
 ## 2. Why the floor keeps rising
 
@@ -345,8 +349,9 @@ Each stage stands alone and none of them presumes the next.
   a theory.
 - **C7 — version-matched web delivery (§6)**, last, for the reason §6 closes with.
 
-One thing belongs beside C2 and is not compatibility work: the boot-time archive should REFUSE and say so rather than
-renaming the world aside on a warn line (§1). C2 removes the common reason it fires; it does not make firing safe.
+One thing shipped beside C2 and is not compatibility work: the boot-time archive now REFUSES and says so rather than
+renaming the world aside on a warn line, with `--archive-world` the manual path (§1). C2 removed the common reason it
+fires; the refusal is what makes the rare firing an operator's decision.
 
 §4.2's envelope is deliberately unplaced. It is the right answer if field-append keeps being what raises the floor after
 C3 lands, and the wrong one if C3 alone holds — a question the next year of bumps answers, not this document.

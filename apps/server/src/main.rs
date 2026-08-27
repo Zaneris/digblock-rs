@@ -70,7 +70,7 @@ use digblock_net::protocol::DEFAULT_MASTER_URL;
 const USAGE: &str = "usage: digblock-server [--advertise-host HOST] \
 	 [--master-url URL] [--advertise-port N] [--server-name S] [--port N] \
 	 [--seed F] [--data-dir P] [--sim-radius N] [--workers N] [--admin ID-OR-NAME] \
-	 [--max-conns-per-ip N] [--use-master-levels BOOL]\n\
+	 [--max-conns-per-ip N] [--use-master-levels BOOL] [--archive-world]\n\
 	 (--advertise-host defaults to the address the master observes registering — your public \
 	 IP; set it for a DNS name or multi-homed hosts. --advertise-port defaults to --port; set \
 	 it when players reach you at a different one (a port forward, a container mapping) — \
@@ -82,10 +82,15 @@ const USAGE: &str = "usage: digblock-server [--advertise-host HOST] \
 	 several admins. --max-conns-per-ip caps live connections from one address; \
 	 raise it for a local soak, where every bot shares one. --use-master-levels (default \
 	 true) is whether a joiner arrives at the levels the master's board holds for their \
-	 account; false keeps this server's skill ladder its own. Env fallbacks: \
+	 account; false keeps this server's skill ladder its own. --archive-world moves the \
+	 stored world aside (.vN.bak, byte-intact) at boot and starts fresh under the current \
+	 generator — the ONLY way this server ever replaces a world: boot refuses a \
+	 stale-format journal, and a worldgen update keeps a world on the generator that made \
+	 it, so pass this to take the new format or the new terrain. Inert while the world is \
+	 already current. Env fallbacks: \
 	 DIGBLOCK_MASTER_URL, DIGBLOCK_ADVERTISE_HOST, DIGBLOCK_ADVERTISE_PORT, \
 	 DIGBLOCK_SERVER_NAME, DIGBLOCK_SEED, DIGBLOCK_MAX_CONNS_PER_IP, DIGBLOCK_ADMIN_IDS \
-	 (comma-separated), DIGBLOCK_USE_MASTER_LEVELS)";
+	 (comma-separated), DIGBLOCK_USE_MASTER_LEVELS, DIGBLOCK_ARCHIVE_WORLD)";
 
 fn main() {
 	env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
@@ -128,6 +133,11 @@ fn main() {
 		.filter(|s| !s.trim().is_empty())
 		.map(|v| parse_bool_or_die("DIGBLOCK_USE_MASTER_LEVELS", &v))
 		.unwrap_or(true);
+	let mut archive_world = std::env::var("DIGBLOCK_ARCHIVE_WORLD")
+		.ok()
+		.filter(|s| !s.trim().is_empty())
+		.map(|v| parse_bool_or_die("DIGBLOCK_ARCHIVE_WORLD", &v))
+		.unwrap_or(false);
 	// Account ids or display names; names are resolved once at boot.
 	let mut admins: Vec<String> = std::env::var("DIGBLOCK_ADMIN_IDS")
 		.unwrap_or_default()
@@ -160,6 +170,7 @@ fn main() {
 				max_conns_per_ip = parse_or_die("--max-conns-per-ip", args.next());
 			}
 			"--admin" => admins.push(parse_or_die("--admin", args.next())),
+			"--archive-world" => archive_world = true,
 			// Both of these were security holes, not merely renames, so
 			// they exit rather than mapping onto the replacement — an
 			// operator who quietly kept using them would be relying on the
@@ -218,6 +229,21 @@ fn main() {
 		server_key: master::load_key(&key_path),
 	};
 
+	// Losing a world is the operator's decision, never a side effect: boot
+	// refuses a stale record format, and a worldgen release keeps a world
+	// on the generator that made it. This flag IS the decision, and it is
+	// inert on a current world, so leaving it set archives once per
+	// deliberate upgrade rather than once per restart.
+	if archive_world {
+		match digblock_server::journal::archive_world(&data_dir, seed) {
+			Ok(true) => log::warn!("world archived; starting fresh under the current generator"),
+			Ok(false) => log::info!("--archive-world: world already current, nothing archived"),
+			Err(e) => {
+				eprintln!("--archive-world failed: {e}");
+				std::process::exit(1);
+			}
+		}
+	}
 	let mut sim = match Sim::new(seed, &data_dir, sim_radius, workers) {
 		Ok(sim) => sim,
 		Err(e) => {

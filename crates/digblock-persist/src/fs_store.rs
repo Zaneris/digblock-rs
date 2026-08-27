@@ -213,10 +213,10 @@ impl WorldStore for FsWorldStore {
 		let Some(seed) = seed else {
 			return Err("save was made by a newer world generator".into());
 		};
-		// Refuse incompatible saves BEFORE Journal::open, whose archive-
-		// and-start-fresh policy is right for a server volume and wrong
-		// for a named user save. (A pre-shard save is NOT incompatible —
-		// `Journal::open` migrates it in place.)
+		// Refuse incompatible saves BEFORE Journal::open — open refuses too,
+		// but its message talks to a server operator and this one to a
+		// player. (A pre-shard save is NOT incompatible — `Journal::open`
+		// migrates it in place.)
 		match world_version(&dir, value) {
 			Ok(None) => {}
 			Ok(Some(v)) => return Err(format!("save is from an old version (v{v})")),

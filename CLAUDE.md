@@ -197,8 +197,9 @@ Eight crates, thin launchers, a dedicated server, and a .NET master. The boundar
   that module's `#[wasm_bindgen(start)]` reaches for `window()` and would panic in a worker, and every worker
   instantiates its own linear memory. **Never give it a `start`, and never let in a dep that pulls `web-sys`.**
 - **`apps/server`** — authoritative fixed-tick sim (`sim/`, socket-free, tested by injected events), wtransport layer,
-  master client, append-only journal with boot compaction. Terrain is never sent; join sync = seed + edits. Old-version
-  journals archive to `.vN.bak` — this destructive path is server-only.
+  master client, append-only journal with boot compaction. Terrain is never sent; join sync = seed + edits. An
+  old-version journal REFUSES to boot; `--archive-world` is the operator's explicit
+  archive-to-`.vN.bak`-and-start-fresh, and also the lever that trades a world for the current generator.
 - **`apps/master`** — .NET 10 minimal API, not in the cargo workspace. First-party packages only. Verifies reachability
   with a mandatory QUIC probe pinned to the registered cert hash (no probe-off mode). **Never put `Urls` in
   appsettings.json** — it overrides `ASPNETCORE_URLS` and breaks the container bind. **EF Core turns SQLite's WAL on by
