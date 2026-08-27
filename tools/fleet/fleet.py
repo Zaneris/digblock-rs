@@ -44,7 +44,10 @@ WATCH_POLL_SECS = 3
 SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]
 
 HOST_KEYS = {"addr", "user"}
-SERVER_KEYS = {"host", "dir", "port", "name", "seed", "admins", "advertise_host", "version"}
+SERVER_KEYS = {"host", "dir", "port", "name", "seed", "admins", "advertise_host", "version", "archive_world", "adopt_terrain"}
+# Row keys that are a one-off DECISION rather than configuration: each is inert until its own
+# reason applies, so leaving one set costs nothing, but `apply` says so every time.
+DECISIONS = ("archive_world", "adopt_terrain")
 
 
 class Fatal(Exception):
@@ -72,16 +75,30 @@ class Values:
 	seed: str | None = None
 	admins: tuple[str, ...] = ()
 	advertise_host: str | None = None
+	# The two world-replacement levers (DECISIONS). Separate, because one set to recover a world
+	# this build cannot read must not still be armed at the next terrain release.
+	archive_world: bool = False
+	adopt_terrain: bool = False
 
 	def same_world(self, other: Values) -> bool:
-		mine = None if self.seed is None else float(self.seed)
-		theirs = None if other.seed is None else float(other.seed)
-		return mine == theirs
+		"""Whether the two name the same world. Seeds compare NUMERICALLY, so "6" and "6.0" are
+		one world — but a remote file is not necessarily one we rendered, and a hand-edited seed
+		that is not a number must be a refusal rather than a traceback out of `diff`."""
+
+		def value(v: Values) -> float | None:
+			if v.seed is None:
+				return None
+			try:
+				return float(v.seed)
+			except ValueError:
+				raise Fatal(f"seed {v.seed!r} in a compose.yml is not a number") from None
+
+		return value(self) == value(other)
 
 	def changes(self, other: Values) -> list[str]:
 		"""Field-by-field differences, worded as `field: mine -> other`."""
 		out = []
-		for name in ("port", "tag", "name", "seed", "admins", "advertise_host"):
+		for name in ("port", "tag", "name", "seed", "admins", "advertise_host", *DECISIONS):
 			a, b = getattr(self, name), getattr(other, name)
 			if name == "seed":
 				if self.same_world(other):
@@ -191,6 +208,12 @@ def build_inventory(data: dict) -> Inventory:
 		admins = row.get("admins", [])
 		if not isinstance(admins, list) or not all(isinstance(a, str) and a for a in admins):
 			raise Fatal(f"server {name!r}: admins must be a list of account ids")
+		decisions = {}
+		for key in DECISIONS:
+			v = row.get(key, False)
+			if not isinstance(v, bool):
+				raise Fatal(f"server {name!r}: {key} must be true or false, not {v!r}")
+			decisions[key] = v
 		values = Values(
 			port=port,
 			tag=str(row.get("version", default_version)),
@@ -198,6 +221,7 @@ def build_inventory(data: dict) -> Inventory:
 			seed=seed_text(row.get("seed")),
 			admins=tuple(admins),
 			advertise_host=row.get("advertise_host") or None,
+			**decisions,
 		)
 		inv.servers[name] = Server(name, host, directory, values)
 	return inv
@@ -226,6 +250,9 @@ def toml_rows(inv: Inventory, servers: dict[str, tuple[Host, str, Values]]) -> s
 			lines.append("admins = [" + ", ".join(json.dumps(a) for a in v.admins) + "]")
 		if v.advertise_host:
 			lines.append(f"advertise_host = {json.dumps(v.advertise_host)}")
+		for key in DECISIONS:
+			if getattr(v, key):
+				lines.append(f"{key} = true")
 		if v.tag != inv.default_version:
 			lines.append(f'version = "{v.tag}"')
 		lines.append("")
@@ -236,8 +263,8 @@ def toml_rows(inv: Inventory, servers: dict[str, tuple[Host, str, Values]]) -> s
 
 PORT_LINE = re.compile(r'^x-port: &port "(\d+)"$')
 IMAGE_LINE = re.compile(rf"^(\s*)image: {re.escape(IMAGE)}:(\S+)$")
-ENV_LINE = re.compile(r'^(\s*)(#?)(DIGBLOCK_(?:SERVER_NAME|ADVERTISE_HOST|SEED|ADMIN_IDS)): "(.*)"$')
-OPTIONAL = {"DIGBLOCK_ADVERTISE_HOST", "DIGBLOCK_SEED", "DIGBLOCK_ADMIN_IDS"}
+ENV_LINE = re.compile(r'^(\s*)(#?)(DIGBLOCK_(?:SERVER_NAME|ADVERTISE_HOST|SEED|ADMIN_IDS|ARCHIVE_WORLD|ADOPT_TERRAIN)): "(.*)"$')
+OPTIONAL = {"DIGBLOCK_ADVERTISE_HOST", "DIGBLOCK_SEED", "DIGBLOCK_ADMIN_IDS", "DIGBLOCK_ARCHIVE_WORLD", "DIGBLOCK_ADOPT_TERRAIN"}
 
 
 def _slots(text: str) -> dict[str, int]:
@@ -276,6 +303,10 @@ def parse(text: str) -> Values:
 		seed=env("DIGBLOCK_SEED"),
 		admins=tuple(a.strip() for a in admins.split(",") if a.strip()) if admins else (),
 		advertise_host=env("DIGBLOCK_ADVERTISE_HOST"),
+		# The server parses these itself; here only set-and-true counts as on,
+		# so a commented slot and an explicit "false" read the same.
+		archive_world=(env("DIGBLOCK_ARCHIVE_WORLD") or "").lower() == "true",
+		adopt_terrain=(env("DIGBLOCK_ADOPT_TERRAIN") or "").lower() == "true",
 	)
 
 
@@ -292,6 +323,10 @@ def render(v: Values, kit: str | None = None) -> str:
 		"DIGBLOCK_ADVERTISE_HOST": v.advertise_host,
 		"DIGBLOCK_SEED": v.seed,
 		"DIGBLOCK_ADMIN_IDS": ",".join(v.admins) if v.admins else None,
+		# Off is the slot left commented, so a row that has not decided
+		# renders the kit's own example and the host carries no switch.
+		"DIGBLOCK_ARCHIVE_WORLD": "true" if v.archive_world else None,
+		"DIGBLOCK_ADOPT_TERRAIN": "true" if v.adopt_terrain else None,
 	}
 	for key, value in wanted.items():
 		i = slots[key]
@@ -309,8 +344,15 @@ def render(v: Values, kit: str | None = None) -> str:
 
 
 def classify(line: str) -> str | None:
-	"""What one server log line says about a boot: live, failed, archived, or nothing."""
-	if "registered with master" in line:
+	"""What one server log line says about a boot: live, failed, archived, or nothing.
+
+	Substring matching over free-text logs is what this is, so the live test is anchored on the
+	registration line's own tail rather than on a phrase that also appears inside a REFUSAL:
+	`conn N: refused (server not yet registered with master)` contains "registered with master",
+	and a player reconnecting during an upgrade would otherwise report the boot as a success and
+	stop the watch.
+	"""
+	if "registered with master" in line and "(listed at " in line:
 		return "live"
 	if "world archived" in line or ("archiving" in line and ".bak" in line):
 		return "archived"
@@ -530,6 +572,12 @@ def cmd_apply(inv: Inventory, args) -> None:
 			why = "changing the port renames the compose project (the old one is torn down first)" if port_changed else "changing the seed STARTS A FRESH WORLD"
 			print(f"  refused: {why}; rerun with --i-mean-it to do exactly that")
 			continue
+		# Said every apply, not only the one that flips it: these stay armed
+		# until removed, and the whole point is that replacing a world is
+		# never something an operator discovers afterwards.
+		for key in DECISIONS:
+			if getattr(s.values, key):
+				print(f"  {key} is SET: this boot may move the world aside to a .vN.bak and start fresh")
 		tag_changed = old is None or old.tag != s.values.tag
 		was_running = container_state(s)[1] == "running"
 		if port_changed:
@@ -583,7 +631,11 @@ def cmd_status(inv: Inventory, args) -> None:
 		state = containers[0].get("State", "?") if containers else "absent"
 		booted = re.search(r"digblock-server (\S+)", first_log)
 		running = booted.group(1) if booted else "?"
-		entry = listed.get(f"{s.host.addr}:{s.values.port}")
+		# The master lists a server at the address it ADVERTISED: the row's
+		# advertise_host when it set one, the observed IP otherwise. Looking
+		# only at the IP reported "not listed" for every healthy server with
+		# a DNS name.
+		entry = listed.get(f"{s.values.advertise_host or s.host.addr}:{s.values.port}")
 		master = f"listed, {entry['players']} online, p{entry['protocolVersion']}/s{entry['simVersion']}" if entry else "not listed"
 		pinned = s.values.tag + ("" if running == s.values.tag else "  <- drift")
 		rows.append((s.name, f"{s.host.name}:{s.values.port}", s.dir, state, running, pinned, master))

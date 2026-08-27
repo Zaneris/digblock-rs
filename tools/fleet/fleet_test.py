@@ -54,6 +54,26 @@ class RenderParse(unittest.TestCase):
 		with self.assertRaises(fleet.Fatal):
 			fleet.render(fleet.Values(port=4433, tag="x", name='say "hi"'))
 
+	def test_the_world_levers_round_trip_and_default_off(self):
+		"""Two switches, never one: a row may arm either without arming the other, and a row that
+		has decided nothing pushes neither. Asserted on WHOLE LINES, because the kit carries a
+		commented example of each and a substring test would pass on that."""
+
+		def armed_in(text: str, key: str) -> bool:
+			want = f'DIGBLOCK_{key.upper()}: "true"'
+			return any(line.strip() == want for line in text.splitlines())
+
+		for key in fleet.DECISIONS:
+			with self.subTest(key):
+				self.assertFalse(getattr(BARE, key), "off unless a row says otherwise")
+				self.assertFalse(armed_in(fleet.render(BARE), key), "an undecided row pushes it")
+				armed = fleet.Values(port=4433, tag="x", name="n", **{key: True})
+				text = fleet.render(armed)
+				self.assertEqual(fleet.parse(text), armed, "round trip")
+				self.assertTrue(armed_in(text, key))
+				other = next(k for k in fleet.DECISIONS if k != key)
+				self.assertFalse(armed_in(text, other), "one lever armed the other")
+
 	def test_the_value_summary_ignores_seed_spelling(self):
 		a = fleet.Values(port=4433, tag="x", name="n", seed="6")
 		b = fleet.Values(port=4433, tag="x", name="n", seed="6.0")
@@ -80,14 +100,15 @@ class InventoryRules(unittest.TestCase):
 			"unknown key": inventory(a2={"host": "a", "dir": "other", "port": 4434, "name": "n", "seeed": 1}),
 			"nested dir": inventory(a2={"host": "a", "dir": "x/y", "port": 4434, "name": "n"}),
 			"admins not a list": inventory(a2={"host": "a", "dir": "other", "port": 4434, "name": "n", "admins": "id"}),
+			"a world lever that is not a bool": inventory(a2={"host": "a", "dir": "other", "port": 4434, "name": "n", "archive_world": "yes"}),
 		}
 		for label, data in cases.items():
 			with self.subTest(label), self.assertRaises(fleet.Fatal):
 				fleet.build_inventory(data)
-		self.assertEqual(len(cases), 8)
+		self.assertEqual(len(cases), 9)
 
 	def test_adopt_output_reloads_to_the_same_inventory(self):
-		inv = fleet.build_inventory(inventory(a2={"host": "a", "dir": "digblock2", "port": 4434, "name": "Two", "seed": 7, "admins": ["id"], "version": "0.7.0"}))
+		inv = fleet.build_inventory(inventory(a2={"host": "a", "dir": "digblock2", "port": 4434, "name": "Two", "seed": 7, "admins": ["id"], "version": "0.7.0", "adopt_terrain": True}))
 		text = fleet.toml_rows(inv, {n: (s.host, s.dir, s.values) for n, s in inv.servers.items()})
 		again = fleet.build_inventory(fleet.tomllib.loads(text))
 		self.assertEqual(again, inv)
@@ -106,8 +127,30 @@ class LogClassifier(unittest.TestCase):
 		self.assertEqual(fleet.classify("registered with master https://m as id (listed at h:4433)"), "live")
 		self.assertEqual(fleet.classify("master says we are UNREACHABLE (timeout) — clients cannot join."), "failed")
 		self.assertEqual(fleet.classify("failed to bind udp 4433: in use"), "failed")
-		self.assertEqual(fleet.classify("journal version 2 != 3: archiving x to x.v2.bak, starting fresh"), "archived")
+		self.assertEqual(fleet.classify("archiving /data/world-x.journal to /data/world-x.v1.bak"), "archived")
+		self.assertEqual(fleet.classify("world archived; starting fresh under the current generator"), "archived")
 		self.assertIsNone(fleet.classify("listening on udp 4433"))
+
+	def test_a_refusal_is_never_a_successful_boot(self):
+		"""The server logs a REFUSAL containing "registered with master"; a player reconnecting
+		during an upgrade would otherwise end the watch with a verdict of "live"."""
+		self.assertIsNone(fleet.classify("conn 3: refused (server not yet registered with master)"))
+
+	def test_the_boot_refusal_is_a_failure(self):
+		"""What `Journal::open` refusing a stale format actually reaches the log as."""
+		line = (
+			"failed to open world: journal version 1 != 3: /data/world-x.journal is from another "
+			"record format and was left untouched. Run the build that wrote it, or archive it and "
+			"start fresh (the server's --archive-world)"
+		)
+		self.assertEqual(fleet.classify(line), "failed")
+
+
+class SeedParsing(unittest.TestCase):
+	def test_a_non_numeric_seed_is_refused_not_a_traceback(self):
+		bad = fleet.Values(port=4433, tag="x", name="n", seed="not-a-number")
+		with self.assertRaises(fleet.Fatal):
+			bad.same_world(BARE)
 
 
 class PsShapes(unittest.TestCase):

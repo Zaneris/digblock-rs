@@ -52,6 +52,23 @@ services:
       # fresh world; the old world's journal stays in ./data and comes
       # back if you switch the seed back.
       #DIGBLOCK_SEED: "42"
+      # Replacing a world is never something an upgrade does on its own.
+      # If an update ships a new save format, the server REFUSES to start
+      # and leaves your world exactly as it is, rather than replacing it
+      # and telling you afterwards. Two ways forward: go back to the
+      # version that wrote it, or set this to "true" for one start, which
+      # renames the world to a .vN.bak beside it and begins a fresh one.
+      # It does nothing while your world is readable, so it is safe to
+      # leave set - but unset it once you are through.
+      #DIGBLOCK_ARCHIVE_WORLD: "true"
+      # The other half, and deliberately not the same switch: an update
+      # that changes how new terrain is GENERATED leaves existing worlds
+      # on the generator that made them, forever. Set this to "true" to
+      # give this world up for the new terrain instead - same .vN.bak,
+      # same fresh start. Separate from the one above so a switch you set
+      # to recover an unreadable world cannot quietly trade a perfectly
+      # good one later.
+      #DIGBLOCK_ADOPT_TERRAIN: "true"
       # Optional admins, by ACCOUNT ID, comma-separated. A player finds
       # theirs in the game: Multiplayer -> Account -> Copy ID. They get
       # /help /tp /ban /ban-list /unban in chat.

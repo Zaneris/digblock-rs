@@ -106,7 +106,9 @@ server *ARGS:
 fleet *ARGS:
 	python3 tools/fleet/fleet.py {{ARGS}}
 
-# The fleet tool's own tests: render/parse round trip, inventory rules, log verdicts. No hosts.
+# The fleet tool's own tests: render/parse round trip, inventory rules, log verdicts. No hosts,
+# no network, so `check` runs it — a boot verdict read out of the server's log is a string match
+# against a program that changes, and nothing else in the gate would notice it drifting.
 fleet-unit:
 	python3 -m unittest tools/fleet/fleet_test.py
 
@@ -453,6 +455,7 @@ check:
 	cargo fmt --all --check
 	just check-md
 	cargo clippy --workspace --all-targets -- -D warnings
+	just fleet-unit
 	just test
 
 # --no-fail-fast is the point: cargo stops after the first failing test

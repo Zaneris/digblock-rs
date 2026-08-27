@@ -83,6 +83,11 @@ name, an IP, or an account id.
 ## Operating
 
 - **Upgrade:** `docker compose pull && docker compose up -d`
+- **If an upgrade refuses to start:** an update that changes the save format will not replace your world to get itself
+  running — the server stops with a line naming the file it left untouched. Either go back to the version that wrote it
+  (`image:` pinned to that release), or set `DIGBLOCK_ARCHIVE_WORLD: "true"` in `compose.yml` to move the world aside to
+  a `.vN.bak` next to it and start fresh. `DIGBLOCK_ADOPT_TERRAIN: "true"` is the separate switch for giving a world
+  that still works up for newly generated terrain. Back `./data` up first either way.
 - **Backup:** the `./data` directory (one journal directory per world seed holding a shard per world region, player
   inventories, bans, and `master-key` — the credential for re-registering your address)
 - **New world:** set `DIGBLOCK_SEED` in `compose.yml` and restart; each seed keeps its own journal, so switching back
