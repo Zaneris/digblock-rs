@@ -41,10 +41,15 @@ One gate is not on the wire at all, and it is the one that decides whether a ser
 `journal::VERSION`. A bump used to mean the server **renamed the world aside at boot and started fresh**, announced by a
 single `log::warn!` — the operator learned from a log line, or from their players. That destructive default sat on the
 side carrying everyone's world, which was backwards, and it is why §5.3 is the part of this document that matters most.
-It is gone: boot now REFUSES and says so, and `journal::archive_world` — the server's `--archive-world` — is the one
-lever that replaces a stored world, covering the format break and the deliberate trade of a world for the current
-generator alike. It is inert on a current world, so the flag is a decision about an upgrade rather than a standing
-hazard. Client saves share the constant and refuse in the world list.
+It is gone: boot now REFUSES and says so, and `journal::archive_world` is the one lever that replaces a stored world. It
+takes an `Archive` scope rather than a bare go-ahead, because the two reasons to replace one are independent and must
+not share a flag: `--archive-world` recovers from a journal this build cannot read, `--adopt-terrain` gives a perfectly
+readable world up for the current generator. One flag for both would mean a lever set to recover an unreadable world was
+still armed at the next terrain release — the boot side effect this section exists to remove, reintroduced a level up.
+Each is inert until its own reason applies, so neither is a standing hazard, and both carry the world's arrival pads out
+with it (`archive_arrival_pads`): `spawn.json` and `waystones.json` pin eyes resolved against terrain, read back at boot
+as final on the rule that a protected region cannot have stopped being valid — true against edits, false against
+regenerating those coordinates under another generator. Client saves share the constant and refuse in the world list.
 
 ## 2. Why the floor keeps rising
 
@@ -350,8 +355,8 @@ Each stage stands alone and none of them presumes the next.
 - **C7 — version-matched web delivery (§6)**, last, for the reason §6 closes with.
 
 One thing shipped beside C2 and is not compatibility work: the boot-time archive now REFUSES and says so rather than
-renaming the world aside on a warn line, with `--archive-world` the manual path (§1). C2 removed the common reason it
-fires; the refusal is what makes the rare firing an operator's decision.
+renaming the world aside on a warn line, with `--archive-world` and `--adopt-terrain` the manual paths (§1). C2 removed
+the common reason it fires; the refusal is what makes the rare firing an operator's decision.
 
 §4.2's envelope is deliberately unplaced. It is the right answer if field-append keeps being what raises the floor after
 C3 lands, and the wrong one if C3 alone holds — a question the next year of bumps answers, not this document.

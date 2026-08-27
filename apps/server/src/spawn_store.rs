@@ -152,7 +152,7 @@ impl SpawnStore {
 
 /// First free `spawn.json.bak[N]` slot — never overwrite an earlier
 /// archive (mirrors the ban and inventory stores).
-fn bak_path(path: &Path) -> PathBuf {
+pub(crate) fn bak_path(path: &Path) -> PathBuf {
 	for n in 0..100u32 {
 		let p = if n == 0 {
 			path.with_extension("json.bak")

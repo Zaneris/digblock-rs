@@ -33,6 +33,26 @@ pub const PORT_RANGE: std::ops::RangeInclusive<u16> = DEFAULT_PORT..=4499;
 /// (the desktop's random-seed default would strand the saved edits).
 pub const DEFAULT_SEED: f64 = 42.0;
 
+/// Move the world's ARRIVAL PADS aside, beside whatever `journal::archive_world` just did to the
+/// journal. Both files pin an eye resolved against terrain — `spawn.json` the lock and any
+/// hand-picked point, `waystones.json` the resolved site per biome — and both are read back at
+/// boot as final, on the standing rule that a protected region cannot have stopped being valid.
+/// That rule holds against EDITS and not against regenerating the same coordinates under another
+/// generator, so a world replaced without these is a fresh world wearing the old one's pads:
+/// a protection sphere and a stamped structure at coordinates the new terrain never produced.
+/// Archived rather than deleted, since an operator may want the old spawn's numbers back.
+pub fn archive_arrival_pads(dir: &std::path::Path) -> std::io::Result<()> {
+	for name in ["spawn.json", "waystones.json"] {
+		let path = dir.join(name);
+		if path.exists() {
+			let bak = spawn_store::bak_path(&path);
+			log::warn!("archiving {} to {}", path.display(), bak.display());
+			std::fs::rename(&path, &bak)?;
+		}
+	}
+	Ok(())
+}
+
 /// Run the sim loop until `running` goes false. Instant-anchored pacing;
 /// when the OS oversleeps past the catch-up bound (container jitter), the
 /// backlog is dropped rather than replayed.
