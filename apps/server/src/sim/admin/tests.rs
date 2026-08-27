@@ -2,6 +2,7 @@ use super::{COMMANDS, Scope, stem};
 use crate::sim::harness::*;
 use crate::sim::{Sim, SimEvent};
 use digblock_core::block::BlockType;
+use digblock_core::compass::cardinal;
 use digblock_net::messages::{AdminReply, AdminUsage, NoPlayer};
 use digblock_net::messages::{ClientMsg, ServerMsg};
 use digblock_net::protocol::AccountId;
@@ -465,9 +466,9 @@ fn tp_absolute_relative_and_facing() {
 	// not resident and unedited).
 	let h = digblock_core::worldgen::terrain_height(40, -20, SEED);
 	assert_eq!(pos[1], h as f32 + 2.5);
-	// East = sunrise = -x.
-	assert_eq!(look, [-1.0, 0.0, 0.0]);
-	assert_eq!(sim.test_look(1), Some(Vec3::new(-1.0, 0.0, 0.0)));
+	let east = cardinal("east").unwrap();
+	assert_eq!(look, east.to_array());
+	assert_eq!(sim.test_look(1), Some(east));
 	assert_eq!(sim.test_player(1).unwrap().pos.to_array(), pos);
 	assert!(answered(&admin, |r| matches!(
 		r,
@@ -487,7 +488,7 @@ fn tp_absolute_relative_and_facing() {
 		})
 		.expect("second Teleported");
 	assert_eq!((pos[0], pos[2]), (30.5, -19.5));
-	assert_eq!(look, [0.0, 0.0, -1.0]);
+	assert_eq!(look, cardinal("north").unwrap().to_array());
 
 	// Bad args: usage reply, no teleport (gravity may still settle the
 	// player vertically between ticks — compare the column).
@@ -909,7 +910,7 @@ fn set_spawn_dir_takes_your_facing_and_rides_both_spawn_paths() {
 
 	// No argument: the admin's own look, flattened to a yaw.
 	let mut t = 0;
-	let north = digblock_core::compass::cardinal("north").unwrap();
+	let north = cardinal("north").unwrap();
 	let looking = (north + Vec3::new(0.0, -0.5, 0.0)).normalize();
 	face(&mut sim, 1, looking, &mut t);
 	sim.tick_once(vec![chat(1, "/set-spawn-dir")]);
@@ -929,8 +930,8 @@ fn set_spawn_dir_takes_your_facing_and_rides_both_spawn_paths() {
 	admin.msgs.clear();
 	sim.tick_once(vec![chat(1, "/set-spawn-dir e")]);
 	admin.drain();
-	// East = sunrise = −x.
-	assert_eq!(sim.test_spawn_dir(), Some(Vec3::new(-1.0, 0.0, 0.0)));
+	let east = cardinal("east").unwrap();
+	assert_eq!(sim.test_spawn_dir(), Some(east));
 	assert!(answered(&admin, |r| matches!(
 		r,
 		AdminReply::SpawnFacingSet { compass } if compass == "east"
@@ -946,7 +947,7 @@ fn set_spawn_dir_takes_your_facing_and_rides_both_spawn_paths() {
 			_ => None,
 		})
 		.expect("Welcome");
-	assert_eq!(look, [-1.0, 0.0, 0.0]);
+	assert_eq!(look, east.to_array());
 
 	// ...and so does a return to spawn.
 	wait_live(&mut sim, 2);
@@ -965,8 +966,8 @@ fn set_spawn_dir_takes_your_facing_and_rides_both_spawn_paths() {
 			_ => None,
 		})
 		.expect("Teleported");
-	assert_eq!(look, [-1.0, 0.0, 0.0]);
-	assert_eq!(sim.test_look(2), Some(Vec3::new(-1.0, 0.0, 0.0)));
+	assert_eq!(look, east.to_array());
+	assert_eq!(sim.test_look(2), Some(east));
 }
 
 /// Straight up has no yaw in it, and a garbled cardinal is not a
@@ -1011,7 +1012,8 @@ fn a_resumed_join_does_not_get_the_spawn_facing() {
 	let first = crate::sim::harness::try_connect_as(&mut sim, 2, id, "guest");
 	assert_matches!(
 		first.msgs.first(),
-		Some(ServerMsg::Welcome { spawn_look, .. }) if *spawn_look == [0.0, 0.0, -1.0]
+		Some(ServerMsg::Welcome { spawn_look, .. })
+			if *spawn_look == cardinal("north").unwrap().to_array()
 	);
 	wait_live(&mut sim, 2);
 	sim.tick_once(vec![SimEvent::Disconnected { conn_id: 2 }]);

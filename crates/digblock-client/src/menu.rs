@@ -693,6 +693,14 @@ impl Menu {
 		self.settings.gi_scale_div = gi_scale_div;
 	}
 
+	/// Adopt the light cap the engine started this session at, on the same
+	/// terms and for the same reason as [`Menu::set_gi_scale`]: the slider
+	/// must read what is in use, and nothing was chosen, so nothing is
+	/// persisted.
+	pub(crate) fn set_max_lights(&mut self, max_lights: i32) {
+		self.settings.max_lights = max_lights;
+	}
+
 	/// World-store intents raised since the last drain.
 	pub(crate) fn take_world_intents(&mut self) -> Vec<WorldIntent> {
 		std::mem::take(&mut self.pending_worlds)

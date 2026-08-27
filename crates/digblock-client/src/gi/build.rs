@@ -706,7 +706,7 @@ impl GiDraw {
 			lights_dirty: false,
 			lights_buf,
 			lights_anchor: [f32::INFINITY; 3],
-			lights_len: 0,
+			lights_reachable: 0,
 			lights_floor: None,
 			light_cap: MAX_LIGHTS,
 			inval_queue: Vec::new(),

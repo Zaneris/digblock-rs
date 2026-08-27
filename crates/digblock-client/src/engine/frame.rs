@@ -14,9 +14,14 @@ impl Engine {
 		// The grid: [`gi::SKY_TALLY_REACH`]'s disc at this stride, walked
 		// this many columns per frame — a full pass lands in about a
 		// second, which is the lag streaming, digging and flying all see.
+		// A discontinuity does NOT wait for it: `reset_sky_tally`.
 		const STRIDE: i32 = 8;
 		const PER_FRAME: usize = 8;
-		let r = crate::gi::SKY_TALLY_REACH as i32;
+		// Rounded DOWN to the stride and back, so the disc the walk covers
+		// is the disc the reach test admits — otherwise a reach that is not
+		// a multiple of the stride silently samples a smaller circle than
+		// it names.
+		let r = (crate::gi::SKY_TALLY_REACH as i32 / STRIDE) * STRIDE;
 		let w = (2 * (r / STRIDE) + 1) as usize;
 		let cam = self.camera.pos;
 		if self.sky_cursor == 0 {
@@ -45,6 +50,19 @@ impl Engine {
 			self.sky_cursor = 0;
 		}
 		crate::gi::sky_floor(cam.y, &mut self.sky_tally)
+	}
+
+	/// Throw the sky-cull tally away because the camera is no longer over the ground that filled
+	/// it. The incremental walk is right for a discontinuity it can SEE — a stride, a stream, a
+	/// dig — and wrong for one it cannot: a teleport or a world swap leaves a floor describing
+	/// terrain the player has left, for the rest of the running pass plus a whole one after it,
+	/// and the cull is absolute rather than a ranking. Port down off a highland and the stale
+	/// high floor culls the arrival pad's own lights at the moment somebody is looking at them.
+	/// Clearing rather than re-seeding, because the disarmed state is the safe one to be wrong in.
+	pub(super) fn reset_sky_tally(&mut self) {
+		self.sky_tally.clear();
+		self.sky_stage.clear();
+		self.sky_cursor = 0;
 	}
 
 	pub(super) fn draw(&mut self, gpu: &Gpu, target: &wgpu::TextureView, size: (u32, u32)) {

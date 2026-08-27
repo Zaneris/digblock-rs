@@ -668,6 +668,8 @@ impl Engine {
 		if let Some(dispatch) = dispatch {
 			self.pipeline.set_dispatch(dispatch);
 		}
+		// Column tops are terrain, and this is a different world's.
+		self.reset_sky_tally();
 	}
 
 	/// Inject the named-save backend (launcher-owned: desktop files, web

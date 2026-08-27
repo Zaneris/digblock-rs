@@ -24,6 +24,14 @@ pub const DRAW_FLOOR: i32 = 6;
 pub const LIGHT_CAP_MIN: i32 = 64;
 pub const LIGHT_CAP_STEP: i32 = 64;
 pub const LIGHT_CAP_MAX: i32 = crate::gi::MAX_LIGHTS as i32;
+/// Where an interactive desktop (and desktop-web) session STARTS, applied beside the
+/// density-derived lighting detail and only when the player has expressed no graphics preference
+/// — `EngineConfig::gfx_defaults_auto`, which is false on every capture path, so the shipped
+/// `Settings::default` stays at the capacity every recorded baseline was taken with. The full
+/// list is the slider's opt-in rather than the default because the cap sweep priced it: the scan
+/// is linear in the list (BENCH.md 2026-08-27), and the top half of it buys picture only where a
+/// scene actually oversubscribes. On the step grid by construction, so `clamped` cannot move it.
+pub const LIGHT_CAP_DEFAULT: i32 = LIGHT_CAP_MIN + LIGHT_CAP_STEP;
 
 /// Volume sliders: multipliers on the authored gains. Unity gain sits at
 /// the slider midpoint so quiet mixes can be boosted, not just cut.
@@ -281,6 +289,22 @@ mod tests {
 		// measured the same win and this one costs far less picture.
 		assert_eq!(density_gi_div(2.0), 3);
 		assert_eq!(density_gi_div(1.0), GI_SCALE_DEFAULT);
+		// An interactive session starts SHORT of the capacity captures
+		// keep, and above the floor the mobile profile starts at — so the
+		// full list is an opt-in and the desktop default is not the
+		// mobile one. On the step grid, or the slider could display a
+		// rung it can never return to.
+		const { assert!(LIGHT_CAP_MIN < LIGHT_CAP_DEFAULT && LIGHT_CAP_DEFAULT < LIGHT_CAP_MAX) };
+		assert_eq!(
+			Settings {
+				max_lights: LIGHT_CAP_DEFAULT,
+				..Default::default()
+			}
+			.clamped()
+			.max_lights,
+			LIGHT_CAP_DEFAULT,
+			"the interactive default must survive its own clamp"
+		);
 
 		assert_eq!(
 			Settings {

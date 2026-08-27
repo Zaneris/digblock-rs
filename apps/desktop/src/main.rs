@@ -355,16 +355,22 @@ fn main() {
 		config.sfx_vol = saved.sfx_vol;
 		config.ssr = saved.ssr;
 		config.ui_scale = saved.ui_scale;
-		config.max_lights = saved.max_lights;
 		config.touch_jump_button = saved.touch_jump_button;
-		// A saved value (or a --gi-scale flag, applied after this block) is
-		// an explicit preference; only its absence lets density pick.
+		// A saved value (or a flag, applied after this block) is an
+		// explicit preference; only its absence lets the engine pick.
 		// `settings::load` leaves `base` untouched when the file has no
-		// entry, so an unchanged value means nothing was saved.
-		config.gfx_defaults_auto =
-			cli_gi_scale.is_none() && saved.gi_scale_div == config.gi_scale_div;
+		// entry, so an unchanged value means nothing was saved. Every
+		// graphics term the block picks is tested, light cap included —
+		// one that is not would be overwritten after the player chose it.
+		config.gfx_defaults_auto = cli_gi_scale.is_none()
+			&& cli_max_lights.is_none()
+			&& saved.gi_scale_div == config.gi_scale_div
+			&& saved.max_lights == config.max_lights;
+		// After the test, like its siblings: each is compared against the
+		// base it would overwrite.
 		config.render_scale = saved.render_scale;
 		config.gi_scale_div = saved.gi_scale_div;
+		config.max_lights = saved.max_lights;
 	}
 	if let Some(d) = cli_draw {
 		config.draw_dist = d;

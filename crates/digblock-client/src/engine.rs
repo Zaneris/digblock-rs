@@ -1033,9 +1033,15 @@ impl Game for Engine {
 			self.config.gfx_defaults_auto = false;
 			let gi = crate::settings::density_gi_div(scale_factor);
 			self.config.gi_scale_div = gi;
+			// Not density-derived, unlike the line above — the same gate
+			// simply IS "no graphics preference", and the full list is the
+			// slider's opt-in rather than where a session starts.
+			let lights = crate::settings::LIGHT_CAP_DEFAULT;
+			self.config.max_lights = lights;
 			// Keep the settings screen showing what is actually in use.
 			self.ui.menu.set_gi_scale(gi);
-			log::info!("display scale {scale_factor}x: lighting detail /{gi}");
+			self.ui.menu.set_max_lights(lights);
+			log::info!("display scale {scale_factor}x: lighting detail /{gi}, {lights} lights");
 		}
 		self.recompute_ui_scale();
 	}

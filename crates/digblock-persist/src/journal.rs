@@ -1208,20 +1208,34 @@ fn refuse(path: &Path, version: u16) -> std::io::Error {
 	))
 }
 
-/// Archive the stored world aside (`.vN.bak`, byte-intact) so the next open starts fresh — the
-/// ONE lever behind every way a world is replaced: `open` refuses a stale format rather than
-/// doing this itself, and a worldgen release keeps a world on the generator that made it, so
-/// taking the new terrain is also this call. Inert (`Ok(false)`) on a current or absent world,
-/// so a flag an operator leaves set archives once per deliberate upgrade, never once per boot.
+/// Which reason for replacing a world the caller has actually decided on. The two are
+/// INDEPENDENT and are never one flag: a lever set once to recover from an unreadable world
+/// would otherwise still be armed at the next terrain release and trade a perfectly readable one
+/// as a side effect of a restart — the boot side effect this whole module exists to remove.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[cfg(not(target_arch = "wasm32"))]
-pub fn archive_world(dir: &Path, seed: f64) -> std::io::Result<bool> {
+pub struct Archive {
+	/// The world's record format is not one this build reads (`open` refuses it).
+	pub stale_format: bool,
+	/// The world's generator is not `TerrainVersion::CURRENT` (`open` continues on it).
+	pub foreign_terrain: bool,
+}
+
+/// Archive the stored world aside (`.vN.bak`, byte-intact) so the next open starts fresh — the
+/// ONE lever behind every way a world is replaced, `open` having refused to do it as a boot side
+/// effect. `scope` is which reason the caller decided on ([`Archive`]); a world outside it is
+/// left alone, so `Ok(false)` means nothing here matched and a flag left set archives once per
+/// deliberate upgrade rather than once per boot.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn archive_world(dir: &Path, seed: f64, scope: Archive) -> std::io::Result<bool> {
 	let mut archived = false;
 	for path in [legacy_path(dir, seed), shard_dir(dir, seed)] {
 		let Some((format, terrain)) = stored_header(&path)? else {
 			continue;
 		};
-		if format == VERSION && TerrainVersion::from_wire(terrain) == Some(TerrainVersion::CURRENT)
-		{
+		let stale = format != VERSION;
+		let foreign = TerrainVersion::from_wire(terrain) != Some(TerrainVersion::CURRENT);
+		if !((stale && scope.stale_format) || (foreign && scope.foreign_terrain)) {
 			continue;
 		}
 		archive(&path, format)?;
@@ -1859,7 +1873,18 @@ mod tests {
 		assert!(err.to_string().contains("version 1"), "{err}");
 		assert_eq!(std::fs::read(&path).unwrap(), old, "left byte-intact");
 
-		assert!(archive_world(&dir, 3.0).unwrap(), "stale world archives");
+		// The terrain lever alone does not touch it: an unreadable world is
+		// not a generator trade, and one flag for both would make a lever
+		// set here still armed at the next terrain release.
+		assert!(
+			!archive_world(&dir, 3.0, FOREIGN).unwrap(),
+			"a format break is not a generator trade"
+		);
+		assert_eq!(std::fs::read(&path).unwrap(), old, "still byte-intact");
+		assert!(
+			archive_world(&dir, 3.0, STALE).unwrap(),
+			"stale world archives"
+		);
 		let j = Journal::open(&dir, Seed::current(3.0)).unwrap();
 		assert!(j.records.is_empty(), "fresh world, no records");
 		drop(j);
@@ -1868,7 +1893,7 @@ mod tests {
 
 		// A second break with a .bak already present takes the next slot.
 		std::fs::write(&path, &old).unwrap();
-		assert!(archive_world(&dir, 3.0).unwrap());
+		assert!(archive_world(&dir, 3.0, STALE).unwrap());
 		assert!(path.with_extension("journal.v1.bak1").exists());
 
 		// The fresh world reopens as a normal current-version journal.
@@ -1900,7 +1925,7 @@ mod tests {
 		assert!(err.to_string().contains("version 1"), "{err}");
 		assert_eq!(std::fs::read(&shard).unwrap(), bytes, "left byte-intact");
 
-		assert!(archive_world(&dir, seed.value).unwrap());
+		assert!(archive_world(&dir, seed.value, STALE).unwrap());
 		let j = Journal::open(&dir, seed).unwrap();
 		assert!(j.records.is_empty(), "fresh world, no records");
 		assert_eq!(j.index.live_cells(), 0);
@@ -1920,6 +1945,21 @@ mod tests {
 		let _ = std::fs::remove_dir_all(&dir);
 	}
 
+	/// Both reasons at once — the widest scope any caller can ask for, so
+	/// a test that passes here is not passing because its scope was narrow.
+	const BOTH: Archive = Archive {
+		stale_format: true,
+		foreign_terrain: true,
+	};
+	const STALE: Archive = Archive {
+		stale_format: true,
+		foreign_terrain: false,
+	};
+	const FOREIGN: Archive = Archive {
+		stale_format: false,
+		foreign_terrain: true,
+	};
+
 	/// `archive_world` is inert on a world already on the current format
 	/// and generator: an operator flag left set archives once per
 	/// deliberate upgrade, never once per boot.
@@ -1934,7 +1974,7 @@ mod tests {
 			j.sync();
 		}
 		assert!(
-			!archive_world(&dir, seed.value).unwrap(),
+			!archive_world(&dir, seed.value, BOTH).unwrap(),
 			"current world is not archived"
 		);
 		let j = Journal::open(&dir, seed).unwrap();
@@ -1963,7 +2003,13 @@ mod tests {
 		bytes[6..8].copy_from_slice(&999u16.to_le_bytes());
 		std::fs::write(&shard, &bytes).unwrap();
 
-		assert!(archive_world(&dir, seed.value).unwrap());
+		// The format lever alone leaves it standing: this world reads fine,
+		// it is only OLD, and the two decisions are not one flag.
+		assert!(
+			!archive_world(&dir, seed.value, STALE).unwrap(),
+			"a readable world is not a format break"
+		);
+		assert!(archive_world(&dir, seed.value, FOREIGN).unwrap());
 		let bak = shards_of(&dir, seed).with_file_name(format!(
 			"world-{:016x}.v{VERSION}.bak",
 			seed.value.to_bits()

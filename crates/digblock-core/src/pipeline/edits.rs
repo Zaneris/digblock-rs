@@ -119,22 +119,29 @@ impl Pipeline {
 	/// bed under it visible — pair, not this alone. Reading chunks and not worldgen is deliberate:
 	/// a quarry's floor is the surface its torches stand on. `None` until the whole column is
 	/// resident — a half-generated column would answer with a surface that is not there.
+	///
+	/// The stack is an ARRAY, not a `Vec`: the caller probes on a fixed budget every frame and
+	/// most probes miss (a short draw distance leaves most of the tally's disc non-resident), so
+	/// a heap allocation ahead of the residency check was paid mostly by columns that answer
+	/// nothing.
 	pub fn column_top(&self, x: i32, z: i32) -> Option<i32> {
 		let n = crate::chunk::CHUNK_SIZE as i32;
 		let (cx, lx) = (x.div_euclid(n), x.rem_euclid(n) as usize);
 		let (cz, lz) = (z.div_euclid(n), z.rem_euclid(n) as usize);
-		let mut stack = Vec::with_capacity(crate::chunk::WORLD_VCHUNK as usize);
+		let mut stack = [None; crate::chunk::WORLD_VCHUNK as usize];
 		for cy in 0..crate::chunk::WORLD_VCHUNK {
 			match self.store.get(&ChunkPos::new(cx, cy, cz)) {
 				Some(ChunkSlot {
 					state: ChunkState::Ready(d),
 					..
-				}) => stack.push(d),
+				}) => stack[cy as usize] = Some(d),
 				_ => return None,
 			}
 		}
 		for cy in (0..crate::chunk::WORLD_VCHUNK).rev() {
-			let d = stack[cy as usize];
+			let Some(d) = stack[cy as usize] else {
+				continue;
+			};
 			if crate::chunk::is_air_chunk(d) {
 				continue;
 			}

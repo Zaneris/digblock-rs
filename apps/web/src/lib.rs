@@ -174,20 +174,24 @@ async fn boot() -> Result<(), JsValue> {
 	config.sfx_vol = saved.sfx_vol;
 	config.ssr = saved.ssr;
 	config.ui_scale = saved.ui_scale;
-	config.max_lights = saved.max_lights;
 	config.touch_jump_button = saved.touch_jump_button;
-	// Density picks both only when NEITHER was saved — the engine applies
-	// them at the first `set_scale_factor`, where the backing scale is
-	// first known (see `gfx_defaults_auto`). Never on a capture path: those
-	// keep the shipped values so no baseline moves with the display. Never
-	// on the mobile base either: it already IS the density decision, and a
-	// second authority re-deriving it could only agree or fight.
+	// The engine picks these only when NONE was saved, at the first
+	// `set_scale_factor`, where the backing scale is first known (see
+	// `gfx_defaults_auto`). Never on a capture path: those keep the shipped
+	// values so no baseline moves with the display. Never on the mobile
+	// base either: it already IS the density decision — and its own shorter
+	// light list, which the desktop default must not raise — so a second
+	// authority re-deriving it could only agree or fight.
 	config.gfx_defaults_auto = interactive
 		&& !mobile
 		&& saved.render_scale == config.render_scale
-		&& saved.gi_scale_div == config.gi_scale_div;
+		&& saved.gi_scale_div == config.gi_scale_div
+		&& saved.max_lights == config.max_lights;
+	// After the test, like its two siblings: each is compared against the
+	// base it would overwrite.
 	config.render_scale = saved.render_scale;
 	config.gi_scale_div = saved.gi_scale_div;
+	config.max_lights = saved.max_lights;
 	if let Some(r) = param::<f32>(&params, "renderscale") {
 		config.render_scale = r.clamp(
 			digblock_client::settings::RENDER_SCALE_MIN,

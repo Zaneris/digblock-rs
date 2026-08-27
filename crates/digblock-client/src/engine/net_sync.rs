@@ -189,6 +189,7 @@ impl Engine {
 		self.audio.fall_from_y = pos.y;
 		self.session.tick_lerp.reset(pos);
 		self.dig = None;
+		self.reset_sky_tally();
 		if look != Vec3::ZERO {
 			self.face(look);
 		}
