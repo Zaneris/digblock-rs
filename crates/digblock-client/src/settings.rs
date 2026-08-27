@@ -294,7 +294,7 @@ mod tests {
 		// full list is an opt-in and the desktop default is not the
 		// mobile one. On the step grid, or the slider could display a
 		// rung it can never return to.
-		assert!(LIGHT_CAP_MIN < LIGHT_CAP_DEFAULT && LIGHT_CAP_DEFAULT < LIGHT_CAP_MAX);
+		const { assert!(LIGHT_CAP_MIN < LIGHT_CAP_DEFAULT && LIGHT_CAP_DEFAULT < LIGHT_CAP_MAX) };
 		assert_eq!(
 			Settings {
 				max_lights: LIGHT_CAP_DEFAULT,
