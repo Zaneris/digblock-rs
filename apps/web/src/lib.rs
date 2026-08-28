@@ -132,6 +132,18 @@ async fn boot() -> Result<(), JsValue> {
 		config.warp = true;
 	}
 	config.walk = flag(&params, "walk");
+	// `?stare`: the desktop's `--stare`, with the same two implications —
+	// no arrival markers, and a run that ends at the last station unless
+	// `?frames` says otherwise.
+	config.stare = flag(&params, "stare");
+	if config.stare {
+		config.markers = false;
+		if config.debug_mining == 0 {
+			config.debug_mining = digblock_core::skills::MAX_LEVEL;
+		}
+	}
+	let frames =
+		frames.or_else(|| (config.bench && config.stare).then_some(digblock_client::STARE_FRAMES));
 
 	// ONE predicate, exactly as desktop derives it (`apps/desktop/main.rs`), rather than a guard
 	// per capture flag: a capture path gets no menu, no audio, no master traffic, and neither
@@ -517,6 +529,7 @@ const PAGE_PARAMS: &[&str] = &[
 	"fly",
 	"warp",
 	"walk",
+	"stare",
 	"capture",
 	"play",
 	"mobile",

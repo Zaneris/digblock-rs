@@ -158,6 +158,10 @@ pub struct RunOptions {
 	/// are load-bearing — the framebuffer follows the scale, so the GI resolve's cost moves with
 	/// it, and a display-paced frame lets the GPU downclock. A bracket across screens measures it.
 	pub display: Option<usize>,
+	/// Open borderless fullscreen on the chosen monitor (`--fullscreen`). A MEASUREMENT knob like
+	/// `display`: a bench's resolve cost is per pixel, so a windowed run measures whatever size
+	/// the window happened to open at; fullscreen is the display's own, and the same every run.
+	pub fullscreen: bool,
 	/// Step the world by exactly this much per frame instead of by measured wall time
 	/// (`--fixed-dt`). Everything animated rides dt — water ripple phase, the fluid sim, the spawn
 	/// settle — so without it two builds of DIFFERENT SPEED reach `--frames N` in different world

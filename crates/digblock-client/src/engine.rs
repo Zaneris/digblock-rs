@@ -33,6 +33,7 @@ mod net_sync;
 mod present;
 mod progression;
 mod setup;
+mod stare;
 mod streaming;
 mod update;
 mod world_session;
@@ -47,6 +48,7 @@ use debug_plans::{
 	debug_river_plan, debug_roof_plan, debug_shapes_plan, debug_torches_plan, debug_tunnel_plan,
 	debug_vault_plan, quantized_facing,
 };
+pub use stare::STARE_FRAMES;
 
 /// The launcher-injected clipboard writer, in the same shape as
 /// [`crate::settings::SettingsStore`]: the engine raises an intent, the
@@ -743,6 +745,18 @@ struct BenchState {
 
 	/// Frames through `update`, for `--gi-drill-at`.
 	frames_seen: u32,
+
+	/// Where `config.stare`'s stations are laid out from: the camera's
+	/// pose at the first step, i.e. spawn.
+	stare_origin: Option<Vec3>,
+
+	/// The stare station in progress, so a change of station marks the
+	/// metrics and re-arms the placement exactly once.
+	stare_station: Option<u32>,
+
+	/// Whether the current station's glass block has landed (see
+	/// `stare_step` — the placement retries until the column exists).
+	stare_placed: bool,
 }
 
 /// The screens and the frame's UI scratch. A frame has exactly one

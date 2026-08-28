@@ -191,6 +191,12 @@ pub struct EngineConfig {
 	/// default — changing it silently invalidates all of them, so don't. The default is several
 	/// times `WALK_SPEED`, a different STREAMING REGIME rather than merely a faster one: the GI
 	/// upload budget cannot keep up and the classify drain drops entries, so a cost that appears
+	/// The third regime beside the flight and the walk: a still stare straight down from a glass
+	/// block at the top of the world, a few stations of it (`--stare`, `engine/stare.rs`). The
+	/// worst case for the GI resolve — every texel far, through glass, nothing reprojecting — and
+	/// the number the GI work is judged by. Implies `markers: false`: the arrival spiral would
+	/// otherwise sit in the middle of every station's frame.
+	pub stare: bool,
 	/// only there may be starvation rather than a leak. (`--walk` brings no new terrain in at all.)
 	pub bench_speed: f32,
 	/// Fire the F7 GI drill at this frame (`--gi-drill-at`), so the ratchet
@@ -438,6 +444,7 @@ impl EngineConfig {
 			gi_scale_div: crate::settings::GI_SCALE_DEFAULT,
 			bench_speed: 30.0,
 			gi_drill_at: None,
+			stare: false,
 			ssr: true,
 			ui_scale: 1.0,
 			music_vol: 1.0,

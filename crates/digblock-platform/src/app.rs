@@ -237,6 +237,7 @@ fn window_attrs(
 	title: &str,
 	size: Option<(u32, u32)>,
 	display: Option<usize>,
+	fullscreen: bool,
 	_el: &ActiveEventLoop,
 ) -> winit::window::WindowAttributes {
 	let attrs = Window::default_attributes().with_title(title.to_owned());
@@ -286,8 +287,18 @@ fn window_attrs(
 			}
 		}
 	};
+	// Borderless fullscreen on the pinned monitor (or the current one). Borderless rather than
+	// exclusive: the display keeps its own mode and refresh rate, which is what the bench wants
+	// to measure against.
+	#[cfg(not(any(target_arch = "wasm32", target_os = "ios")))]
+	let attrs = if fullscreen {
+		let monitor = display.and_then(|i| _el.available_monitors().nth(i));
+		attrs.with_fullscreen(Some(winit::window::Fullscreen::Borderless(monitor)))
+	} else {
+		attrs
+	};
 	#[cfg(any(target_arch = "wasm32", target_os = "ios"))]
-	let _ = display;
+	let _ = (display, fullscreen);
 	#[cfg(target_os = "ios")]
 	let attrs = {
 		use winit::platform::ios::WindowAttributesExtIOS;
@@ -549,6 +560,7 @@ impl<G: Game> App<G> {
 				&self.options.title,
 				self.options.window_size,
 				self.options.display,
+				self.options.fullscreen,
 				el,
 			))
 			.unwrap(),
@@ -737,6 +749,7 @@ impl<G: Game> App<G> {
 					&self.options.title,
 					self.options.window_size,
 					self.options.display,
+					self.options.fullscreen,
 					el,
 				))
 				.unwrap(),

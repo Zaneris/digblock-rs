@@ -126,6 +126,10 @@ fn main() {
 			// with screen motion, so the flyover and the walk are two
 			// regimes and a fix has to be measured in both.
 			"--walk" => config.walk = true,
+			// The third regime: a still stare straight down from the top of
+			// the world, a few stations of it. The GI worst case — see
+			// `engine/stare.rs`. Ends itself after the last station.
+			"--stare" => config.stare = true,
 			// Flyover speed in blocks/s. The default is several times
 			// WALK_SPEED and is a different STREAMING regime, not just a
 			// faster one: at that pace the GI upload budget cannot keep
@@ -191,6 +195,9 @@ fn main() {
 			// wait with it, and BENCH.md's baselines were taken through
 			// the surface.
 			"--offscreen" => options.offscreen = true,
+			// Borderless fullscreen on the pinned display. The bench's resolve cost is per pixel,
+			// so this is what makes two runs measure the same number of them.
+			"--fullscreen" => options.fullscreen = true,
 			// Pin the window to one monitor (index into winit's
 			// enumeration). Frame-time captures are not comparable across
 			// screens — backing scale sets the physical framebuffer and a
@@ -263,11 +270,30 @@ fn main() {
 		}
 		config.tod = Some(tod);
 	}
+	if config.walk && config.stare {
+		eprintln!("--walk and --stare are two regimes; pick one");
+		std::process::exit(2);
+	}
 	if config.bench {
 		config.seed.get_or_insert(42.0);
 		config.tod.get_or_insert(45.0);
 		config.metrics_csv.get_or_insert_with(|| "bench.csv".into());
-		options.exit_after_frames = Some(u64::from(frames.unwrap_or(1800)));
+		if config.stare {
+			config.markers = false;
+			// A late-game pick, unless DIG_MINING says otherwise (knobs
+			// apply below and override): every vein in the window reveals
+			// and joins the light list, which is the emitter load the
+			// resolve's NEE and the list's selection scale with.
+			if config.debug_mining == 0 {
+				config.debug_mining = digblock_core::skills::MAX_LEVEL;
+			}
+		}
+		let default_frames = if config.stare {
+			digblock_client::STARE_FRAMES
+		} else {
+			1800
+		};
+		options.exit_after_frames = Some(frames.map_or(default_frames, u64::from));
 		// Vsync-paced by default: the flight looks as played and the
 		// over-budget frame count measures real drops. Add --no-vsync
 		// for uncapped raw-cost measurement (percentiles = true frame

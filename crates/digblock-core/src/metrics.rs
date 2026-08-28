@@ -213,14 +213,12 @@ pub struct RenderStats {
 	pub draw_calls: u32,
 	pub triangles: u32,
 	/// The GI window's sky ceiling (R18) — the highest occupied cell in the window, and the
-	/// early-out every non-descending ray in the resolve breaks on. A session HIGH-WATER MARK in
-	/// practice: the coarse mirror it is scanned from is never cleared on eviction, so it climbs
-	/// as terrain is explored and never comes back down — the number to watch when frame time
-	/// degrades over a session.
+	/// early-out every non-descending ray in the resolve breaks on. Follows residency: eviction
+	/// prunes the coarse mirror it is read from, so it comes back down when tall terrain leaves
+	/// the window. A tall build near the camera holds it high, and every sun ray pays for that.
 	pub sky_y: f32,
 	/// Emitter cells the GI knows about. Bounded by `MAX_LIGHTS` on the
-	/// GPU but NOT on the CPU: the map is only pruned when a chunk
-	/// re-classifies to zero emitters, so this also ratchets.
+	/// GPU but NOT on the CPU; pruned on eviction, so it tracks residency.
 	pub emitters: u32,
 }
 
@@ -334,6 +332,16 @@ pub struct Metrics {
 	/// Full-run frame history (bench mode only; one f32 per frame) so the
 	/// exit summary can compute run-level percentiles.
 	run_history: Option<Vec<f32>>,
+	/// The GPU pass gauge as it stood at each frame of `run_history`, in
+	/// lockstep with it, so a station's summary can carry the pass means
+	/// the CSV's 5 s windows are too coarse to place inside one station.
+	run_gpu: Option<Vec<GpuPassMs>>,
+	/// The bench stations marked so far (see [`Self::mark_station`]).
+	stations: Vec<StationMark>,
+	/// The station in progress — a gauge for the CSV, so a row can be
+	/// attributed to the pose it was measured at. 0 when no bench regime
+	/// marks stations.
+	pub station: u32,
 	last_report: Instant,
 	report_every: Duration,
 	frames_since_report: u32,
@@ -389,6 +397,15 @@ pub struct Metrics {
 	csv: Option<std::io::BufWriter<std::fs::File>>,
 }
 
+/// A bench station: one pose held for a stretch of the run (`--bench --stare`). `start`
+/// indexes the run history; the first `settle` frames are the arrival — the fill, the probe
+/// sweep — and are dropped from the station's percentiles so the line reads the pose at rest.
+struct StationMark {
+	station: u32,
+	start: usize,
+	settle: usize,
+}
+
 /// Schema note: columns are only ever APPENDED to a group, never
 /// reordered, but old CSVs still can't be diffed naively against new ones
 /// (`BENCH.md` carries the same warning for the `gpu_water_ms` insertion).
@@ -398,7 +415,7 @@ gpu_prepass_ms,gpu_main_ms,gpu_water_ms,gpu_overlay_ms,\
 gpu_gi_ms,gpu_gi_trace_ms,gpu_gi_denoise_ms,gpu_depth_blit_ms,gpu_viewmodel_ms,gpu_upscale_ms,\
 gen_n,gen_avg_ms,gen_max_ms,mesh_n,mesh_avg_ms,mesh_max_ms,\
 uploads,upl_kb,stale,requeue,evict,sat,resident,gen_q,mesh_q,in_flight,upl_q,evict_q,\
-drawn,culled,water,draws,tris,gpu_bytes,budget_ms,sky_y,emitters";
+drawn,culled,water,draws,tris,gpu_bytes,budget_ms,sky_y,emitters,station";
 
 impl Metrics {
 	/// `spike_log` comes from the launcher: core is env-free by convention,
@@ -428,6 +445,9 @@ impl Metrics {
 			first_frame_at: None,
 			streamed_at: None,
 			run_history: None,
+			run_gpu: None,
+			stations: Vec::new(),
+			station: 0,
 			last_report: now,
 			report_every: Duration::from_secs(5),
 			frames_since_report: 0,
@@ -506,6 +526,9 @@ impl Metrics {
 			self.frame_ms.push_back(timings.total_ms);
 			if let Some(h) = &mut self.run_history {
 				h.push(timings.total_ms);
+			}
+			if let Some(g) = &mut self.run_gpu {
+				g.push(self.gpu.unwrap_or_default());
 			}
 			if timings.total_ms > HITCH_MS {
 				self.hitches += 1;
@@ -604,6 +627,74 @@ impl Metrics {
 	/// report run-level percentiles instead of last-window ones.
 	pub fn record_run_history(&mut self) {
 		self.run_history = Some(Vec::with_capacity(2048));
+		self.run_gpu = Some(Vec::with_capacity(2048));
+	}
+
+	/// A bench regime has moved to station `station` and will hold it: the frames from here on
+	/// belong to that pose, the first `settle_frames` of them to its arrival. The station is also
+	/// what the CSV's `station` column carries from now on. Without run history (not a bench) the
+	/// gauge still moves; only the summary lines need the history.
+	pub fn mark_station(&mut self, station: u32, settle_frames: usize) {
+		self.station = station;
+		if let Some(h) = &self.run_history {
+			self.stations.push(StationMark {
+				station,
+				start: h.len(),
+				settle: settle_frames,
+			});
+		}
+	}
+
+	/// One line per marked station: that pose's frame-time percentiles and pacing counts over
+	/// its held stretch minus the settle, plus the mean of the GPU passes the plan's work is
+	/// measured by. A station whose stretch is all settle prints nothing — there is no rest to
+	/// report. `over`/`drop` are the same bars `bench_summary` uses.
+	fn station_lines(
+		&self,
+		history: &[f32],
+		gpu: &[GpuPassMs],
+		over: f32,
+		drop: f32,
+	) -> Vec<String> {
+		let mut out = Vec::new();
+		for (i, m) in self.stations.iter().enumerate() {
+			let end = self
+				.stations
+				.get(i + 1)
+				.map_or(history.len(), |n| n.start)
+				.min(history.len());
+			let from = (m.start + m.settle).min(end);
+			let mut frames = history[from..end].to_vec();
+			let Some(s) = Self::summarize(&mut frames) else {
+				continue;
+			};
+			let n = frames.len();
+			let over_n = frames.iter().filter(|&&ms| ms > over).count();
+			let drop_n = frames.iter().filter(|&&ms| ms > drop).count();
+			let mean = |f: fn(&GpuPassMs) -> f32| {
+				let g = &gpu[from.min(gpu.len())..end.min(gpu.len())];
+				if g.is_empty() {
+					0.0
+				} else {
+					g.iter().map(f).sum::<f32>() / g.len() as f32
+				}
+			};
+			out.push(format!(
+				"bench: station {} frames {n} (settle {} dropped) | avg {:.2} p95 {:.2} p99 {:.2} worst {:.2} ms | over-8.3ms {over_n} over-12.5ms {drop_n} | gpu main {:.2} water {:.2} gi {:.2} trace {:.2} den {:.2} ms",
+				m.station,
+				m.settle,
+				s.avg_ms,
+				s.p95_ms,
+				s.p99_ms,
+				s.worst_ms,
+				mean(|g| g.main_ms),
+				mean(|g| g.water_ms),
+				mean(|g| g.gi_ms),
+				mean(|g| g.gi_trace_ms),
+				mean(|g| g.gi_denoise_ms),
+			));
+		}
+		out
 	}
 
 	/// Record that the chunk pipeline has fully quiesced. The first call
@@ -657,11 +748,11 @@ impl Metrics {
 		}
 	}
 
-	/// One-line, machine-diffable run summary for benchmark exits.
-	/// With run history recorded, percentiles cover the whole run minus a
-	/// warmup prefix (whose worst frame is reported separately); otherwise
-	/// they fall back to the last WINDOW frames. Elapsed/fps/fill are
-	/// measured from the first presented frame.
+	/// The machine-diffable run summary for benchmark exits: one line for the run and, before it,
+	/// one per station a regime marked (see [`Self::mark_station`]). With run history recorded,
+	/// the run's percentiles cover the whole run minus a warmup prefix (whose worst frame is
+	/// reported separately); otherwise they fall back to the last WINDOW frames. Elapsed/fps/fill
+	/// are measured from the first presented frame.
 	pub fn bench_summary(&mut self) -> Option<String> {
 		const WARMUP_FRAMES: usize = 60;
 		let elapsed = self
@@ -676,8 +767,11 @@ impl Metrics {
 		const VSYNC_120HZ_MS: f32 = 8.4;
 		const DROP_MS: f32 = 12.5;
 		let frames = self.run_frames;
+		let gpu = self.run_gpu.take().unwrap_or_default();
+		let mut lines = Vec::new();
 		let (s, warmup, miss) = match self.run_history.take().filter(|h| h.len() > WARMUP_FRAMES) {
 			Some(mut h) => {
+				lines = self.station_lines(&h, &gpu, VSYNC_120HZ_MS, DROP_MS);
 				let worst = h[..WARMUP_FRAMES].iter().fold(0.0f32, |a, &b| a.max(b));
 				let run = &mut h[WARMUP_FRAMES..];
 				let over = run.iter().filter(|&&ms| ms > VSYNC_120HZ_MS).count();
@@ -699,7 +793,7 @@ impl Metrics {
 		let mut mesh = self.run_mesh_jobs;
 		mesh.merge(self.mesh_jobs);
 		let per_sec = |n: u32| n as f32 / elapsed.max(0.001);
-		Some(format!(
+		lines.push(format!(
 			"bench: frames {frames} in {elapsed:.1}s ({:.1} fps) | fill {fill} | avg {:.2} p95 {:.2} p99 {:.2} worst {:.2} ms{warmup}{miss} | hitches {} | resident {} | gen {} jobs avg {:.2} max {:.2} ms ({:.0}/s) | mesh {} jobs avg {:.2} max {:.2} ms ({:.0}/s)",
 			frames as f32 / elapsed.max(0.001),
 			s.avg_ms,
@@ -716,7 +810,8 @@ impl Metrics {
 			mesh.avg_ms(),
 			mesh.max_ms,
 			per_sec(mesh.count),
-		))
+		));
+		Some(lines.join("\n"))
 	}
 
 	/// Fill `out` with the last `n` frame totals, oldest first (for the
@@ -784,7 +879,7 @@ impl Metrics {
 {:.3},{:.3},{:.3},{:.3},{:.3},{:.3},\
 {},{:.2},{:.2},{},{:.2},{:.2},\
 {},{},{},{},{},{},{},{},{},{},{},{},\
-{},{},{},{},{},{},{:.2},{:.1},{}",
+{},{},{},{},{},{},{:.2},{:.1},{},{}",
 				s.avg_ms,
 				s.p95_ms,
 				s.p99_ms,
@@ -841,6 +936,7 @@ impl Metrics {
 				self.stream_budget_ms,
 				r.sky_y,
 				r.emitters,
+				self.station,
 			);
 			let _ = w.flush();
 		}
@@ -961,6 +1057,46 @@ mod tests {
 		m.frame(FrameTimings::default());
 		let line = m.bench_summary().expect("summary");
 		assert!(line.contains("fill n/a"));
+	}
+
+	#[test]
+	fn bench_summary_reports_each_station_at_rest() {
+		let mut m = Metrics::new(None, false);
+		m.record_run_history();
+		// `frame` only records a history entry once it has a previous
+		// frame to measure against, so prime it before the first mark.
+		m.frame(FrameTimings::default());
+		// Station 0: two settle frames, then three at rest.
+		m.mark_station(0, 2);
+		for _ in 0..5 {
+			m.frame(FrameTimings::default());
+		}
+		// Station 1: all settle — nothing at rest to report.
+		m.mark_station(1, 100);
+		for _ in 0..3 {
+			m.frame(FrameTimings::default());
+		}
+		// Station 2: no settle at all.
+		m.mark_station(2, 0);
+		for _ in 0..70 {
+			m.frame(FrameTimings::default());
+		}
+		assert_eq!(m.station, 2, "the gauge follows the latest mark");
+		let text = m.bench_summary().expect("summary");
+		let lines: Vec<&str> = text.lines().collect();
+		assert!(
+			lines[0].starts_with("bench: station 0 frames 3 (settle 2 dropped)"),
+			"{text}"
+		);
+		assert!(
+			lines[1].starts_with("bench: station 2 frames 70 (settle 0 dropped)"),
+			"a station with no rest prints no line: {text}"
+		);
+		assert!(
+			lines[2].starts_with("bench: frames "),
+			"the run line comes last: {text}"
+		);
+		assert_eq!(lines.len(), 3, "{text}");
 	}
 
 	#[test]

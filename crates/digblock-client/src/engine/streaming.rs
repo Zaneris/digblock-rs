@@ -52,6 +52,11 @@ impl Engine {
 		const WALK_PERIOD: f32 = 1.5; // seconds — its peak speed is a walk
 		const WALK_PITCH: f32 = -25.0; // puts the ground just ahead of the eye
 		self.bench.bench_t += TICK;
+		if self.config.stare {
+			// The stare: no motion at all, a few poses held in turn.
+			self.stare_step();
+			return;
+		}
 		if self.config.walk {
 			// Anchored on wherever the camera started, so the walk happens
 			// at spawn — which is where DIG_SHAPES/DIG_VAULT put geometry
