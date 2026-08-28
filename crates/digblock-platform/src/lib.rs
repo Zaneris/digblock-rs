@@ -177,7 +177,8 @@ pub struct RunOptions {
 	/// launcher from its own device detection — the shell has no view of that.
 	pub touch: bool,
 	/// Do not request `TIMESTAMP_QUERY` even where the adapter offers it: the overlay's gpu line
-	/// reads n/a, and the frame runs without the pass-boundary counter sampling the queries cost.
+	/// reads n/a. The web launcher sets this by default — Chrome's pass-boundary counter
+	/// sampling makes macOS's GPU governor downclock a busy GPU (`EngineConfig::web`).
 	pub no_gpu_timer: bool,
 	/// Present at most this many frames a second. On the web a redraw arriving early is skipped
 	/// and the next animation frame asked for; natively the remainder is slept. `None` is the

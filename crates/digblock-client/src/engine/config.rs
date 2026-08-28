@@ -401,9 +401,9 @@ pub struct EngineConfig {
 	/// environment inside core answers None forever on wasm, which is
 	/// exactly the platform whose spikes most need attributing.
 	pub spike_log: bool,
-	/// Ask the device for `TIMESTAMP_QUERY` (the overlay's gpu line). `DIG_NO_GPU_TIMER` /
-	/// `?nogputimer` clears it — the A/B for whether the pass-boundary counter sampling the
-	/// queries cost on some drivers is part of a frame's cost.
+	/// Ask the device for `TIMESTAMP_QUERY` (the overlay's gpu line, the CSV's gpu columns).
+	/// `DIG_GPU_TIMER` / `?gputimer` sets it either way; the web profile ships it OFF — see
+	/// [`Self::web`] for the measurement behind that.
 	pub gpu_timer: bool,
 	/// Present at most this many frames a second (`DIG_FPS_CAP` / `?fpscap`); `None` is the
 	/// display's own pace. A measurement knob on desktop and a real one on a laptop or a
@@ -531,6 +531,15 @@ impl EngineConfig {
 			workers: 0,
 			menu: true,
 			adaptive_stream: true,
+			// No timestamp queries. Chrome's Metal backend samples them at every pass boundary,
+			// which hands the GPU the frame as a dozen small pieces with a drain between each —
+			// and macOS picks the GPU's performance state from whether a command buffer looks
+			// saturating, not from utilization. Measured on an M2 Max: with the queries on, a
+			// 120 fps scene fell within a minute to ~50 fps at 533 MHz / 5 W, the governor
+			// requesting P1 three-quarters of the time for a GPU 91% busy, thermal pressure
+			// nominal; `?gputimer=0` alone held 120 fps at full clock. The native build, whose
+			// wgpu-hal timestamps let passes overlap, is unaffected. `?gputimer=1` opts in.
+			gpu_timer: false,
 			// Everything the main thread does is serialized with the render
 			// loop here, so the per-frame ceilings that desktop can afford
 			// to leave generous have to be real.

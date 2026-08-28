@@ -157,10 +157,10 @@ pub const SPIKELOG: Knob = flag(
 	"DIG_SPIKELOG",
 	"log per-phase breakdowns of over-budget frames",
 );
-pub const NO_GPU_TIMER: Knob = flag(
-	"nogputimer",
-	"DIG_NO_GPU_TIMER",
-	"do not request GPU timestamp queries (the overlay's gpu line reads n/a)",
+pub const GPU_TIMER: Knob = value(
+	"gputimer",
+	"DIG_GPU_TIMER",
+	"GPU timestamp queries, 1 or 0 (desktop defaults on, the web off: see EngineConfig::web)",
 );
 pub const FPS_CAP: Knob = value(
 	"fpscap",
@@ -205,7 +205,7 @@ pub const ALL: &[Knob] = &[
 	GI,
 	SPIKELOG,
 	CHUNK_SLOTS,
-	NO_GPU_TIMER,
+	GPU_TIMER,
 	FPS_CAP,
 ];
 
@@ -371,7 +371,13 @@ pub fn apply(
 		config.pitch.get_or_insert(0.0);
 	}
 	config.spike_log = on(&SPIKELOG);
-	config.gpu_timer = !on(&NO_GPU_TIMER);
+	if let Some(v) = get(&GPU_TIMER) {
+		config.gpu_timer = match v.trim() {
+			"1" | "on" => true,
+			"0" | "off" => false,
+			_ => return Err(format!("{} wants 1 or 0, got {v:?}", GPU_TIMER.name)),
+		};
+	}
 	if let Some(v) = get(&FPS_CAP) {
 		let hz = v
 			.parse::<f32>()
@@ -457,6 +463,7 @@ mod tests {
 			(&CHUNK_SLOTS, "0"),
 			(&FPS_CAP, "-60"),
 			(&FPS_CAP, "sixty"),
+			(&GPU_TIMER, "yes"),
 		] {
 			let mut config = EngineConfig::desktop();
 			let err = apply(&mut config, &|k| (k.name == knob.name).then(|| bad.into()))
