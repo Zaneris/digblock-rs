@@ -23,9 +23,12 @@ pub(super) const STARE_SETTLE_SECS: f32 = 5.0;
 pub(super) const STARE_HOP: i32 = 1088;
 /// The block stood on: the top layer of the world, so the whole column below is in frame.
 pub(super) const STARE_TOP: i32 = digblock_core::chunk::WORLD_VBLOCK - 1;
-/// Straight down, short of the −90° the camera's own `look` clamps at, so the view basis never
-/// degenerates and the frame still holds nothing but the ground.
+/// The pose when the launcher gives none: straight down, short of the −90° the camera's own
+/// `look` clamps at, so the view basis never degenerates and the frame holds nothing but the
+/// ground. `--pitch`/`--yaw` override it — a 45° stare trades the deepest column for a horizon,
+/// the far-field regime where the resolve's distance gating and the sky show up.
 const STARE_PITCH: f32 = -89.0;
+const STARE_YAW: f32 = 0.0;
 /// Frames in a whole stare run, for the launchers' `exit_after_frames` default: the regime ends
 /// itself at the last station's last tick rather than at the flight's 1800.
 pub const STARE_FRAMES: u64 = (STARE_STATIONS as f32 * STARE_SECS / TICK + 0.5) as u64;
@@ -78,8 +81,8 @@ impl Engine {
 			STARE_TOP as f32 + 1.0 + digblock_core::player::EYE_TO_FEET,
 			bz as f32 + 0.5,
 		);
-		self.camera.yaw_deg = 0.0;
-		self.camera.pitch_deg = STARE_PITCH;
+		self.camera.yaw_deg = self.config.yaw.unwrap_or(STARE_YAW);
+		self.camera.pitch_deg = self.config.pitch.unwrap_or(STARE_PITCH).clamp(-89.0, 89.0);
 	}
 }
 

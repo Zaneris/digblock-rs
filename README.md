@@ -19,7 +19,7 @@ just server               # dedicated server alone
 just master               # .NET master alone
 just bot -- --bots 4      # headless bots: pick a server, mint tokens, join
 just bench                # deterministic perf run — scripted flight, CSV + summary
-just bench -- --stare     # the GI worst case: still stares down from the top of the world, per-station summary
+just bench -- --stare     # the GI worst case: still stares down from the top of the world, per-station summary (--pitch/--yaw re-aim it)
 just check                # the gate: fmt, clippy -D warnings, workspace tests (needs Docker)
 just check-ios            # iOS compile gate (no Xcode needed)
 just check-web            # wasm clippy + every shader through real Chrome's WGSL front end
