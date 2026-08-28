@@ -17,11 +17,11 @@ impl GiDraw {
 	) {
 		let cam = [frame.cam_pos[0], frame.cam_pos[1], frame.cam_pos[2]];
 		self.flush_lights(gpu, cam, lights);
-		// Rescan the sky ceiling when the mirror moved (R18).
+		// Re-read the sky ceiling when the mirror moved (R18) — a 32-row
+		// scan the mirror keeps current word by word.
 		if self.coarse_mips_dirty {
 			self.coarse_mips_dirty = false;
-			let (w, h) = ((self.window_chunks * 2) as usize, (WORLD_H / 8) as usize);
-			self.sky_y = sky_ceiling(&self.coarse_mirror, w, h, w);
+			self.sky_y = self.coarse_mirror.sky_y();
 		}
 		// The quantized caster was latched by `patch_frame` (which the
 		// renderer calls before the frame uploads, every frame).
@@ -79,10 +79,17 @@ impl GiDraw {
 			// cursor made convergence sweep the volume as a visible band. The base is reduced
 			// here because `cursor * stride` would overflow u32 in the shader.
 			let base = ((u64::from(c.cursor) * u64::from(c.stride)) % u64::from(c.probes())) as u32;
+			// `sched.z`: where a probe ray starts crossing bricks by summary;
+			// the stub pushes it past MAX_T so no ray ever does.
+			let coarse_from = if self.stub & crate::renderer::stub::GIPROBELOD != 0 {
+				u32::MAX
+			} else {
+				c.coarse_from
+			};
 			data.extend_from_slice(bytemuck::cast_slice(&[
 				base,
 				self.frame,
-				MAX_LIGHTS as u32,
+				coarse_from,
 				c.stride,
 			]));
 			let radius = if ci == 0 { 8.0f32 } else { 16.0 };

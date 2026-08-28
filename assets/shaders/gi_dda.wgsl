@@ -156,6 +156,14 @@ fn gi_ray_skip_brick(r: GiRay, dir: vec3f, step_dir: vec3i, inv: vec3f) -> GiRay
 	return o;
 }
 
+// One uniform per draw from a small per-ray state. Advanced per ACCEPTED candidate in the
+// resolve's reservoir (see `resample_light` for why one draw per candidate is what makes the
+// selection correct) and per brick crossed by summary in every march that rolls `gi_brick_open`.
+fn lcg_next(state: ptr<function, u32>) -> f32 {
+	*state = *state * 1664525u + 1013904223u;
+	return f32(*state >> 8u) * (1.0 / 16777216.0);
+}
+
 // The slack every stop-short margin carries over its own exact bound — the amount by which a
 // ray must miss a surface it is allowed to reach, given that every march STEPS before it
 // tests and a boundary lands exactly on a cell face.

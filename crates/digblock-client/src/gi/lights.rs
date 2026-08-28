@@ -26,9 +26,9 @@ impl GiDraw {
 		// ones whose light is most wrong.
 		const INVAL_MAX: usize = 256;
 		if self.inval_queue.len() >= INVAL_MAX {
-			self.inval_queue.remove(0);
+			self.inval_queue.pop_front();
 		}
-		self.inval_queue.push((pos, moving));
+		self.inval_queue.push_back((pos, moving));
 	}
 
 	/// Rebuild the flattened light list when it changed: the `cap` nearest emitters to the

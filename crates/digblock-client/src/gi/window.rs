@@ -1,6 +1,7 @@
 //! The moving probe window over resident chunks: upload, eviction,
-//! and the derived state F7 clears. `sky`/`emit` ratcheting over a
-//! session is real terrain entering the window, not a leak.
+//! and the derived state F7 clears. Both `sky` and `emit` follow
+//! residency up AND down: eviction prunes the coarse mirror (see
+//! `mirror::CoarseMirror` for why that is safe) as well as the light maps.
 
 use super::*;
 
@@ -58,20 +59,9 @@ impl GiDraw {
 			},
 		);
 		// Keep the CPU mirror in step and mark the sky ceiling stale
-		// (R18); the next `encode` rescans it.
-		{
-			let w = (self.window_chunks * 2) as usize;
-			let h = (WORLD_H / 8) as usize;
-			for (ci, &b) in gi.coarse.iter().enumerate() {
-				let (dz, dy, dx) = (ci / 4, (ci / 2) % 2, ci % 2);
-				let m = ((tz as usize * 2 + dz) * h + (ty as usize * 2 + dy)) * w
-					+ tx as usize * 2
-					+ dx;
-				if self.coarse_mirror[m] != b {
-					self.coarse_mirror[m] = b;
-					self.coarse_mips_dirty = true;
-				}
-			}
+		// (R18); the next `encode` re-reads it.
+		if self.coarse_mirror.write(pos, &gi.coarse) {
+			self.coarse_mips_dirty = true;
 		}
 		let world = (
 			pos.x as f32 * 16.0,
@@ -181,24 +171,27 @@ impl GiDraw {
 		self.lights_dirty |= changed;
 	}
 
-	/// Forget an evicted chunk's emitters: without the prune, `flush_lights` walks stale entries
-	/// every frame, past `MAX_LIGHTS` one can out-sort a live emitter, and a world swap carries
-	/// the previous world's forward. Deliberately does NOT touch the coarse mirror — the window is
-	/// TOROIDAL and much smaller than residency, so an evicted chunk's `rem_euclid` slot is very
-	/// likely owned by a live one — clearing it would erase real occupancy (BENCH.md 2026-08-12).
+	/// Forget an evicted chunk: its emitters — without the prune, `flush_lights` walks stale
+	/// entries every frame, past `MAX_LIGHTS` one can out-sort a live emitter, and a world swap
+	/// carries the previous world's forward — and its coarse words, so the sky ceiling can come
+	/// back down. The mirror prunes only a slot the chunk still owns: the window is TOROIDAL and
+	/// an evicted chunk's `rem_euclid` slot may already hold the chunk that replaced it, and
+	/// clearing that would erase real occupancy (the reason the mirror was once never pruned at
+	/// all, and `sky_y` ratcheted over a session).
 	pub(crate) fn remove_chunk(&mut self, pos: ChunkPos) {
 		if self.emitters.remove(&pos).is_some() | self.surfaces.remove(&pos).is_some() {
 			self.lights_dirty = true;
 		}
+		if self.coarse_mirror.evict(pos) {
+			self.coarse_mips_dirty = true;
+		}
 	}
 
-	/// Drop every piece of GI state that only ever GROWS, so the next upload sweep rebuilds it
-	/// from what is actually resident (F7). A diagnostic, not a fix: the coarse MIRROR is never
-	/// pruned on eviction (see [`Self::remove_chunk`] for why it must not be), so it ratchets as
-	/// a session explores and every ray in the resolve pays for the difference. Pair with
-	/// `gi_redirty_all` on the pipeline — this clears, that re-queues.
+	/// Drop every piece of derived GI state, so the next upload sweep rebuilds it from what is
+	/// actually resident (F7, and an arrival). Pair with `gi_redirty_all` on the pipeline — this
+	/// clears, that re-queues.
 	pub(crate) fn clear_derived_state(&mut self) {
-		self.coarse_mirror.fill(0);
+		self.coarse_mirror.clear();
 		self.coarse_mips_dirty = true;
 		self.emitters.clear();
 		self.surfaces.clear();
@@ -206,11 +199,9 @@ impl GiDraw {
 		self.lights_dirty = true;
 	}
 
-	/// The sky ceiling and the emitter-cell count, for the debug overlay and the CSV. `sky_y`
-	/// ratchets as the world is explored — it reads the coarse mirror, which eviction leaves
-	/// alone — which is exactly why it is worth showing: it is what makes a settled session cost
-	/// more than a fresh one. The emitter count tracks residency instead, since
-	/// [`Self::remove_chunk`] prunes both maps, so a climb in it is real terrain in the window.
+	/// The sky ceiling and the emitter-cell count, for the debug overlay and the CSV. Both track
+	/// residency — [`Self::remove_chunk`] prunes the mirror and both light maps — so a climb in
+	/// either is real terrain in the window, and a settled session costs what a fresh one does.
 	pub(crate) fn debug_state(&self) -> (f32, u32) {
 		(
 			self.sky_y,

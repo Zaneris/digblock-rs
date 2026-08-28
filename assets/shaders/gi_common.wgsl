@@ -66,10 +66,6 @@ fn gi_coarse_w(w: vec2i, y: i32) -> u32 {
 	return textureLoad(gi_coarse, vec3i(w.x >> 3u, y >> 3u, w.y >> 3u), 0).r;
 }
 
-fn gi_coarse_empty_w(w: vec2i, y: i32) -> bool {
-	return gi_coarse_w(w, y) == 0u;
-}
-
 // The brick word's summary (`core::gi::pack_coarse` packs it, `Brick` names the fields): the
 // class most of its blockers wear, and the heightfield-with-a-density `gi_brick_open` reads.
 fn gi_coarse_class(word: u32) -> u32 {
@@ -260,9 +256,11 @@ fn gi_sun_vis(side: i32, sky_y: f32, cam_xz: vec2f, sun: vec4f, p: vec3f, iters:
 		// third, coarser skip mip was MEASURED OUT both orderings: checked first it taxed
 		// every dense iteration of this latency-bound loop, nested it taxed every empty
 		// one, and at terrain altitudes its bricks almost always hold something.) ONE
-		// wrap serves both levels — see gi_coarse_empty_w.
+		// wrap serves both levels — see gi_coarse_w. (Leaving a brick early once the ray
+		// is above every column top its summary records was built and measured out too:
+		// the per-cell compare cost more than the crawl it saved — core::gi::pack_coarse.)
 		let w = gi_wrap2(r.cell.xz, side);
-		if gi_coarse_empty_w(w, r.cell.y) {
+		if gi_coarse_w(w, r.cell.y) == 0u {
 			// Skip lands on the LAST cell inside the empty region; this
 			// loop steps at the top, so `continue` is what crosses out of
 			// it. Every iteration therefore advances at least one cell.
@@ -685,15 +683,11 @@ struct NeeLight {
 	margin: f32,
 }
 
-// One uniform per reservoir update, which is what makes the selection correct. Reusing a single
-// draw for every candidate is the tempting shortcut and it is WRONG: the tests `u < p_i / sum_i`
-// become nested events on one variable, so the last candidate keeps its exact marginal while
-// everything before it is squeezed — equal weights do not come out equal. An LCG advanced per
-// ACCEPTED candidate costs a few ALU on the in-range lights only.
-fn lcg_next(state: ptr<function, u32>) -> f32 {
-	*state = *state * 1664525u + 1013904223u;
-	return f32(*state >> 8u) * (1.0 / 16777216.0);
-}
+// One uniform per reservoir update (gi_dda's `lcg_next`), which is what makes the selection
+// correct. Reusing a single draw for every candidate is the tempting shortcut and it is WRONG:
+// the tests `u < p_i / sum_i` become nested events on one variable, so the last candidate keeps
+// its exact marginal while everything before it is squeezed — equal weights do not come out
+// equal. An LCG advanced per ACCEPTED candidate costs a few ALU on the in-range lights only.
 
 // The cosine a receiver with no usable normal is priced at: exactly the
 // mean of |cos| over a flat, two-sided flake in a uniformly random

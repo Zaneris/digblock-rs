@@ -10,6 +10,7 @@ pub(crate) struct GiConfig {
 	pub stub: u32,
 	pub gather_iters: u32,
 	pub sun_iters: u32,
+	pub rate_blocks: [f32; 2],
 }
 
 impl GiDraw {
@@ -26,6 +27,7 @@ impl GiDraw {
 			stub,
 			gather_iters,
 			sun_iters,
+			rate_blocks,
 		} = cfg;
 		let device = &gpu.device;
 		let queue = &gpu.queue;
@@ -144,46 +146,48 @@ impl GiDraw {
 			cam: &cam_buf,
 		};
 
-		let make_cascade = |dims: (u32, u32, u32), spacing: u32, name: &str| -> Cascade {
-			let atlas = [
-				atlas_tex(device, dims, &format!("gi atlas {name} a")),
-				atlas_tex(device, dims, &format!("gi atlas {name} b")),
-			];
-			let flags = device.create_texture(&wgpu::TextureDescriptor {
-				label: Some(&format!("gi flags {name}")),
-				size: wgpu::Extent3d {
-					width: dims.0,
-					height: dims.1,
-					depth_or_array_layers: dims.2,
-				},
-				mip_level_count: 1,
-				sample_count: 1,
-				dimension: wgpu::TextureDimension::D3,
-				format: wgpu::TextureFormat::R32Uint,
-				usage: wgpu::TextureUsages::STORAGE_BINDING,
-				view_formats: &[],
-			});
-			let uniform_buf = device.create_buffer(&wgpu::BufferDescriptor {
-				label: Some(&format!("gi uniforms {name}")),
-				size: GI_UNIFORM_SIZE,
-				usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-				mapped_at_creation: false,
-			});
-			let bind = probe_binds(device, &bgl, name, &uniform_buf, &atlas, &flags, &world);
-			Cascade {
-				dims,
-				spacing,
-				cursor: 0,
-				stride: schedule_stride(dims.0 * dims.1 * dims.2),
-				uniform_buf,
-				atlas,
-				flags,
-				bind,
-			}
-		};
+		let make_cascade =
+			|dims: (u32, u32, u32), spacing: u32, coarse_from: u32, name: &str| -> Cascade {
+				let atlas = [
+					atlas_tex(device, dims, &format!("gi atlas {name} a")),
+					atlas_tex(device, dims, &format!("gi atlas {name} b")),
+				];
+				let flags = device.create_texture(&wgpu::TextureDescriptor {
+					label: Some(&format!("gi flags {name}")),
+					size: wgpu::Extent3d {
+						width: dims.0,
+						height: dims.1,
+						depth_or_array_layers: dims.2,
+					},
+					mip_level_count: 1,
+					sample_count: 1,
+					dimension: wgpu::TextureDimension::D3,
+					format: wgpu::TextureFormat::R32Uint,
+					usage: wgpu::TextureUsages::STORAGE_BINDING,
+					view_formats: &[],
+				});
+				let uniform_buf = device.create_buffer(&wgpu::BufferDescriptor {
+					label: Some(&format!("gi uniforms {name}")),
+					size: GI_UNIFORM_SIZE,
+					usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+					mapped_at_creation: false,
+				});
+				let bind = probe_binds(device, &bgl, name, &uniform_buf, &atlas, &flags, &world);
+				Cascade {
+					dims,
+					spacing,
+					coarse_from,
+					cursor: 0,
+					stride: schedule_stride(dims.0 * dims.1 * dims.2),
+					uniform_buf,
+					atlas,
+					flags,
+					bind,
+				}
+			};
 		let cascades = [
-			make_cascade(C0_DIMS, C0_SPACING, "c0"),
-			make_cascade(C1_DIMS, 8, "c1"),
+			make_cascade(C0_DIMS, C0_SPACING, 16, "c0"),
+			make_cascade(C1_DIMS, 8, 8, "c1"),
 		];
 		for c in &cascades {
 			for tex in c.atlas.iter().chain([&c.flags]) {
@@ -565,7 +569,7 @@ impl GiDraw {
 			frame: 0,
 			window,
 			coarse,
-			coarse_mirror: coarse_mirror(side),
+			coarse_mirror: CoarseMirror::new(window_chunks),
 			coarse_mips_dirty: false,
 			sky_y: 255.0,
 			window_chunks,
@@ -575,6 +579,7 @@ impl GiDraw {
 			stub,
 			gather_iters,
 			sun_iters,
+			rate_blocks,
 			emitters: FxHashMap::default(),
 			surfaces: FxHashMap::default(),
 			carried: Vec::new(),
@@ -589,7 +594,7 @@ impl GiDraw {
 			lights_reachable: 0,
 			lights_floor: None,
 			light_cap: MAX_LIGHTS,
-			inval_queue: Vec::new(),
+			inval_queue: std::collections::VecDeque::new(),
 			resolve_inval: Vec::new(),
 			resolve_pipeline,
 			resolve_bgl,
@@ -628,7 +633,7 @@ impl GiDraw {
 		let old_coarse = std::mem::replace(&mut self.coarse, coarse);
 		ledger.retire_texture(GpuKind::GiWindow, old_window);
 		ledger.retire_texture(GpuKind::GiWindow, old_coarse);
-		self.coarse_mirror = coarse_mirror(side);
+		self.coarse_mirror = CoarseMirror::new(window_chunks);
 		// As at construction: the ceiling sits at the world top until the
 		// first upload lands, never at the empty mirror's answer.
 		self.coarse_mips_dirty = false;
@@ -716,11 +721,6 @@ fn window_textures(
 	ledger.charge_texture(GpuKind::GiWindow, &window);
 	ledger.charge_texture(GpuKind::GiWindow, &coarse);
 	(window, coarse)
-}
-
-/// The CPU copy of the coarse texture, one word per brick, in its upload order.
-fn coarse_mirror(side: u32) -> Box<[u32]> {
-	vec![0u32; (side / 8 * (WORLD_H / 8) * (side / 8)) as usize].into_boxed_slice()
 }
 
 /// One cascade's probe-update bind groups, per atlas ping.

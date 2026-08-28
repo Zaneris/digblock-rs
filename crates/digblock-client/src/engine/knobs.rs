@@ -172,6 +172,11 @@ pub const CHUNK_SLOTS: Knob = value(
 	"DIG_CHUNK_SLOTS",
 	"override the chunk slot count",
 );
+pub const GI_RATE: Knob = value(
+	"girate",
+	"DIG_GI_RATE",
+	"the GI resolve's adaptive-budget refresh distances as <indirect>,<sun> blocks (0 = every frame)",
+);
 
 /// Every knob, in the order the usage text lists them. The desktop
 /// prints this table for `--knobs` and refuses a `DIG_*` variable
@@ -201,6 +206,7 @@ pub const ALL: &[Knob] = &[
 	SIPHON,
 	CAST,
 	GI_ITERS,
+	GI_RATE,
 	STUB,
 	GI,
 	SPIKELOG,
@@ -319,6 +325,19 @@ pub fn apply(
 			})?;
 		config.gi_gather_iters = gather;
 		config.gi_sun_iters = sun;
+	}
+	if let Some(v) = get(&GI_RATE) {
+		let (ind, sun) = v
+			.split_once(',')
+			.and_then(|(i, s)| Some((i.trim().parse::<f32>().ok()?, s.trim().parse::<f32>().ok()?)))
+			.filter(|(i, s)| i.is_finite() && s.is_finite() && *i >= 0.0 && *s >= 0.0)
+			.ok_or_else(|| {
+				format!(
+					"{} wants <indirect>,<sun> refresh distances in blocks (0 = every frame), got {v:?}",
+					GI_RATE.name
+				)
+			})?;
+		config.gi_rate_blocks = [ind, sun];
 	}
 	if let Some(v) = get(&STUB) {
 		let (mask, bad) = crate::renderer::stub::parse(&v);
@@ -460,6 +479,8 @@ mod tests {
 			(&GI, "both"),
 			(&STUB, "wsun,wnope"),
 			(&GI_ITERS, "4"),
+			(&GI_RATE, "16"),
+			(&GI_RATE, "-1,8"),
 			(&CHUNK_SLOTS, "0"),
 			(&FPS_CAP, "-60"),
 			(&FPS_CAP, "sixty"),

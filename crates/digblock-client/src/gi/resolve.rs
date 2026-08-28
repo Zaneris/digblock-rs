@@ -11,6 +11,16 @@ use super::*;
 pub(crate) const GI_GATHER_ITERS: u32 = 96;
 pub(crate) const GI_SUN_ITERS: u32 = 320;
 
+/// The adaptive ray budget's shipped refresh distances (`gi_resolve.wgsl`'s `refresh_period`):
+/// a lane's trace period grows by one frame per this many blocks of view distance, from every
+/// frame inside it to the lane's own cap. The sun's is the tighter — its march is the frame's
+/// largest and its answer deterministic, so a far interior texel re-asking every frame buys
+/// nothing — and the indirect's the gentler, since its estimate is stochastic. The A/B lever is
+/// `DIG_GI_RATE=<ind>,<sun>`; `0` disables a lane's gating; `DIG_STUB=gisteady` disables both.
+pub(crate) const GI_IND_RATE_BLOCKS: f32 = 16.0;
+pub(crate) const GI_SUN_RATE_BLOCKS: f32 = 8.0;
+const _: () = assert!(GI_IND_RATE_BLOCKS >= 0.0 && GI_SUN_RATE_BLOCKS >= 0.0);
+
 impl GiDraw {
 	/// Build the resolve's group-0 bind (uniform + the depth and
 	/// face-normal taps) against the current targets — called whenever
@@ -176,11 +186,20 @@ impl GiDraw {
 		for col in self.prev_vp {
 			data.extend_from_slice(bytemuck::cast_slice(&col));
 		}
+		// w: 0 no history, 1 history, 2 history AND the camera has not moved since — the shader's
+		// own stillness test is an f32 reprojection round-trip against a fraction-of-a-texel
+		// tolerance, and far from the world origin (a thousand blocks out) that round-trip drifts
+		// past it on a camera that has not moved, capping a resting pixel at N_MOVING and
+		// resampling it every frame. An exact matrix compare here costs nothing and is exact
+		// everywhere.
+		let cam_still = self.history_valid
+			&& self.prev_vp == frame.view_proj
+			&& self.prev_cam == [frame.cam_pos[0], frame.cam_pos[1], frame.cam_pos[2]];
 		data.extend_from_slice(bytemuck::cast_slice(&[
 			self.prev_cam[0],
 			self.prev_cam[1],
 			self.prev_cam[2],
-			f32::from(self.history_valid),
+			f32::from(self.history_valid) + f32::from(cam_still),
 		]));
 		// The EXACT caster, unquantized. Quantization exists so probes
 		// hold still between updates; on a per-pixel ray it is the
@@ -225,8 +244,8 @@ impl GiDraw {
 		data.extend_from_slice(bytemuck::cast_slice(&[
 			self.gather_iters as f32,
 			self.sun_iters as f32,
-			0.0,
-			0.0,
+			self.rate_blocks[0],
+			self.rate_blocks[1],
 		]));
 		gpu.queue.write_buffer(&self.resolve_buf, 0, &data);
 		let attach = |view| {

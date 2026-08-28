@@ -35,7 +35,10 @@ struct GiResolve {
 	// needed.
 	prev_vp: mat4x4f,
 	// xyz last frame's camera, w history valid (0 on the first frame
-	// after a target rebuild, a renderer rebuild, or a sun jump).
+	// after a target rebuild, a renderer rebuild, or a sun jump); 2 when
+	// the camera has not moved since — exact, from the CPU's matrix
+	// compare, where the reprojection round-trip below drifts far from
+	// the world origin.
 	prev_cam: vec4f,
 	// xyz EXACT unquantized dir toward the sun, w above-horizon (0/1).
 	sun_exact: vec4f,
@@ -55,11 +58,14 @@ struct GiResolve {
 	// uses, so the change lands in a small fraction of that time.
 	inval: array<vec4f, 4>,
 	// x the gather ray's iteration budget, y the sun ray's (gi/resolve.rs
-	// owns the shipped values; zw reserved). Budgets, not capacities: each
-	// march's own hard loop bound stays the ceiling, so an over-budget
-	// value runs the full march rather than overrunning anything — and a
-	// budget can only truncate, which silently un-shadows whatever lies
-	// past the cut, so it moves on a MEASURED call, never a hunch.
+	// owns the shipped values). Budgets, not capacities: each march's own
+	// hard loop bound stays the ceiling, so an over-budget value runs the
+	// full march rather than overrunning anything — and a budget can only
+	// truncate, which silently un-shadows whatever lies past the cut, so
+	// it moves on a MEASURED call, never a hunch. z and w are the two
+	// lanes' refresh distances (`refresh_period`): the blocks of view
+	// distance per frame of period, indirect then sun; 0 disables a lane's
+	// gating (gi/resolve.rs's GI_*_RATE_BLOCKS, or DIG_GI_RATE).
 	budget: vec4f,
 }
 
@@ -139,6 +145,57 @@ const PEN_MAX = 12.0;
 // fraction of a texel. Clears that drift with margin, under half the slowest real motion.
 const TRAVEL_EPS = 0.15;
 
+// --- The adaptive ray budget: a pixel with a long, valid history does not need a fresh sample
+// every frame (the probe state machine of DDGI, applied to the screen). Each lane — the indirect
+// (NEE + gather) and the sun — traces this frame with probability 1/period, where the period is
+// a CONTINUOUS function of view distance: a far march is the long one, and the on-screen footprint
+// of its answer shrinks with the same distance, so the near field refreshes every frame and the
+// horizon progressively less. No cascades, no steps. A skipped lane passes its history through
+// untouched and counts no sample. The roll is per 8x8 TILE, not per pixel, so a wave either
+// works or idles — a per-pixel roll would leave the lanes that skipped waiting on the ones that
+// did not, and save nothing.
+
+// Below this history length the indirect lane traces every frame regardless of distance: a young
+// average is still noise, and skipping only makes it stay noise longer. Above N_SUN (the sun's
+// whole history) and below N_MOVING, pinned by `the_rate_floors_nest_the_history_caps`.
+const RATE_N_FULL = 16.0;
+// The indirect lane's longest period. Its estimate is stochastic and the a-trous hides its
+// variance, so it thins out gently: convergence to N_MAX far away takes this many times longer.
+const IND_PERIOD_MAX = 4.0;
+// The sun lane's longest period. Deterministic per world point, so a resting interior texel
+// re-asks a question it already knows the answer to; only the sun's own motion changes it, and
+// `the_far_sun_period_stays_inside_the_cone` bounds that motion per period.
+const SUN_PERIOD_MAX = 16.0;
+// A history tap carrying at least this penumbra width marks an EDGE texel, which traces every
+// frame — gi_atrous's PEN_MIN, pinned by `the_edge_gate_knows_the_filters_penumbra_floor`. Two
+// reasons the edges are never skipped: the sun history's bounded-smear argument (R13) holds only
+// where resampling is lossless, i.e. on a locally constant field; and the a-trous DILATES the
+// penumbra lane by max over its ring, so a skipped trace must never re-feed a dilated width.
+const SUN_EDGE_PEN = 0.5;
+// The smallest difference between two sun taps that counts as a hard edge (see `sun_edge`).
+const SUN_EDGE_EPS = 0.002;
+
+// The period a lane traces at, this far from the camera: one frame within `blocks`, then
+// growing linearly with distance to `max_period`. `blocks` <= 0 disables the gating (period 1).
+fn refresh_period(view_dist: f32, blocks: f32, max_period: f32) -> f32 {
+	if blocks <= 0.0 {
+		return 1.0;
+	}
+	return clamp(view_dist / blocks, 1.0, max_period);
+}
+
+// One uniform per 8x8 half-res tile per frame, shared by every pixel of the tile, so a lane's
+// skip is wave-coherent (see the note above). A different tile hash every frame, so the tiles
+// that trace this frame are not the ones that traced last frame.
+fn tile_roll(uv: vec2i, frame_i: u32) -> f32 {
+	let t = vec2u(uv) >> vec2u(3u);
+	var h = (t.x * 0x9E3779B1u) ^ (t.y * 0x85EBCA77u) ^ (frame_i * 0xC2B2AE3Du);
+	h ^= h >> 15u;
+	h *= 0x2C1B3C6Du;
+	h ^= h >> 12u;
+	return f32(h >> 8u) * (1.0 / 16777216.0);
+}
+
 // R2, the 2-D low-discrepancy sequence (Roberts 2018): the plastic
 // constant's reciprocal powers. Behind one function so a spatiotemporal
 // blue-noise tile can replace it — STBN is measurably better at 1 spp
@@ -194,6 +251,7 @@ const STUB_GINEE = 1024u;
 const STUB_GIFLAT = 2048u;
 const STUB_GILOD = 65536u;
 const STUB_GISCREEN = 131072u;
+const STUB_GISTEADY = 524288u;
 
 fn stubbed(bit: u32) -> bool {
 	return (u32(rz.jitter.w) & bit) != 0u;
@@ -427,20 +485,178 @@ fn fs(i: VsOut) -> FsOut {
 		return o;
 	}
 
+	let view_dist = length(p - rz.cam.xyz);
+	// This texel's world footprint — the penumbra's texel conversion and the grazing history
+	// tolerance both read it. Taken here, ahead of the history fetch it now serves.
+	let texel_world = max(max(length(ddx_p), length(ddy_p)), 1e-4);
+	let lat = sp.xz - rz.cam.xz;
+	let gather_max = gi_lateral_max(f32(side));
+	let far = dot(lat, lat) > gather_max * gather_max;
+
+	// Reproject into last frame. Exact for static geometry, so this needs no motion vectors —
+	// only a validity test. It runs BEFORE the marches now: what it finds decides whether the
+	// marches run at all.
+	var wsum = 0.0;
+	var s_ind = vec3f(0.0);
+	var s_sun = 0.0;
+	var s_wat = 0.0;
+	var s_n = 0.0;
+	var s_pen = 0.0;
+	// The sun taps' range and widest penumbra — the edge gate's two signals.
+	var sun_lo = 1.0;
+	var sun_hi = 0.0;
+	var pen_max = 0.0;
+	var still = false;
+	// Did a same-face history tap fail depth only MARGINALLY? Then the surface is still on
+	// screen and the miss is a grazing fetch the tolerance clipped, not a reveal. The near
+	// ground fails all four taps this way on most walking frames, and priming those pixels from
+	// the cache locks the whole near field at cache lighting. A true reveal differs in KIND: its
+	// tap held the OCCLUDER, whole blocks nearer, so the miss is many multiples of the tolerance.
+	var grazed = false;
+	if rz.prev_cam.w > 0.5 {
+		let pc = rz.prev_vp * vec4f(p, 1.0);
+		if pc.w > 0.0 {
+			let nd = pc.xy / pc.w;
+			let huv = vec2f(nd.x * 0.5 + 0.5, 0.5 - nd.y * 0.5);
+			if all(huv >= vec2f(0.0)) && all(huv <= vec2f(1.0)) {
+				let hdim = vec2f(textureDimensions(hist_indirect));
+				// BILINEAR, per tap validated. A nearest tap smears the image along the
+				// direction of travel: rounding the reprojected position pulls history from
+				// a world point up to half a texel away, biased by the sub-texel phase's
+				// monotonic drift and invisible to both validations below. Below TRAVEL_EPS
+				// the fetch snaps onto the lattice, copying this pixel's own history.
+				let hp_raw = huv * hdim - 0.5;
+				still = rz.prev_cam.w > 1.5 || length(hp_raw + 0.5 - i.pos.xy) < TRAVEL_EPS;
+				let hp = select(hp_raw, i.pos.xy - 0.5, still);
+				let b0 = floor(hp);
+				let f = hp - b0;
+				// Validate on the exact face code AND on the distance the
+				// point WOULD have been at from the old camera — comparing
+				// stored view distances directly would reject the whole
+				// screen the moment the camera moves.
+				let want = length(p - rz.prev_cam.xyz);
+				let base = 0.02 * max(want, 1.0);
+				// Two passes, strict first, so the hot path pays nothing new. Pass 1 exists
+				// for one population: a surface seen nearly edge-on spans MORE depth per
+				// half-res texel than the flat tolerance allows, and churned at n = 1 as a
+				// flicker band. It reruns only on an EMPTY strict pass with a same-face
+				// near-miss, widened per SVGF's fwidth(z), capped at PRIME_MARGIN's reveal gate.
+				for (var relax = 0; relax < 2; relax++) {
+					let tol = select(
+						base,
+						clamp(GRAZE_K * texel_world, base, PRIME_MARGIN * base),
+						relax == 1,
+					);
+					for (var k = 0; k < 4; k++) {
+						let off = vec2f(f32(k & 1), f32(k >> 1u));
+						let w = mix(1.0 - f.x, f.x, off.x) * mix(1.0 - f.y, f.y, off.y);
+						let t = vec2i(b0 + off);
+						if w <= 0.0 || any(t < vec2i(0)) || any(t >= vec2i(hdim)) {
+							continue;
+						}
+						let hi = textureLoad(hist_indirect, t, 0);
+						let hs = textureLoad(hist_sun, t, 0);
+						// g packs the face code together with the history
+						// length — the code validates, the length is what
+						// the accumulator reads (sun.a carries the penumbra
+						// width).
+						let hg = u32(hs.g);
+						if (hg & 255u) != code {
+							continue;
+						}
+						let miss = abs(hi.w - want);
+						if miss > tol {
+							grazed = grazed || miss <= PRIME_MARGIN * base;
+							continue;
+						}
+						wsum += w;
+						s_ind += hi.rgb * w;
+						s_sun += hs.r * w;
+						s_wat += hs.b * w;
+						s_n += f32(hg >> 8u) * w;
+						s_pen += hs.a * w;
+						sun_lo = min(sun_lo, hs.r);
+						sun_hi = max(sun_hi, hs.r);
+						pen_max = max(pen_max, hs.a);
+					}
+					if wsum > 0.0 || !grazed {
+						break;
+					}
+				}
+			}
+		}
+	}
+	// Renormalize over the taps that survived, so a rejected corner
+	// darkens nothing — it just stops voting.
+	let have_hist = wsum > 0.0;
+	var cap = N_MAX;
+	var n_hist = 0.0;
+	var in_inval = false;
+	if have_hist {
+		let inv = 1.0 / wsum;
+		s_ind *= inv;
+		s_sun *= inv;
+		s_wat *= inv;
+		s_n *= inv;
+		s_pen *= inv;
+		// How deep an average this pixel is ALLOWED to keep — two states, not a
+		// curve: reprojection is exact for static geometry, so a long history
+		// costs only the resampling that carries it, and off-lattice that blur
+		// COMPOUNDS at the sub-texel phase's rate. A per-frame RATE was declined
+		// (R13); gi_atrous is what makes the short end affordable.
+		cap = select(N_MOVING, N_MAX, still);
+		// A lighting edit near this surface: the probes are
+		// already re-tracing it, so let the screen follow at
+		// the short-history rate instead of at 1/N_MAX — and
+		// trace every frame while it does.
+		for (var si = 0; si < 4; si++) {
+			let s = rz.inval[si];
+			if s.w > 0.0 && distance(p, s.xyz) < s.w {
+				cap = min(cap, N_MOVING);
+				in_inval = true;
+			}
+		}
+		n_hist = min(min(s_n + 1.0, N_MAX), cap);
+	}
+
+	// THE GATE. Both lanes trace whenever there is no history to carry (a reveal, a graze, the
+	// first frame, a sun jump) or an edit sphere covers the point; past that each lane thins
+	// out with distance on its own period. The sun lane additionally never skips an EDGE texel
+	// — a penumbra or a hard edge among its taps — see SUN_EDGE_PEN. One roll serves both lanes,
+	// so with the shipped periods a tile that traces its sun also traces its gather.
+	let roll = tile_roll(uv, u32(rz.jitter.x));
+	let steady = have_hist && !in_inval && !stubbed(STUB_GISTEADY);
+	var ind_period = 1.0;
+	if steady && n_hist >= RATE_N_FULL {
+		ind_period = refresh_period(view_dist, rz.budget.z, IND_PERIOD_MAX);
+		// Moving, the history is resampled off-lattice every frame and
+		// that blur compounds until a fresh sample lands (R13): never
+		// let it compound more than twice.
+		if !still {
+			ind_period = min(ind_period, 2.0);
+		}
+	}
+	// Taps that differ by less than the sun target can meaningfully carry are the same field:
+	// the a-trous averages equal neighbours and the filtered value may sit an ulp off its inputs.
+	let sun_edge = pen_max >= SUN_EDGE_PEN || sun_hi - sun_lo > SUN_EDGE_EPS;
+	var sun_period = 1.0;
+	if steady && n_hist >= N_SUN && !sun_edge {
+		sun_period = refresh_period(view_dist, rz.budget.w, SUN_PERIOD_MAX);
+	}
+	let trace_ind = roll < 1.0 / ind_period;
+	let trace_sun = roll < 1.0 / sun_period;
+
 	// THE FINAL GATHER: one cosine-weighted ray from this pixel, terminated in the probe cache.
 	// This is where contact darkening comes from — the cascade blend is smooth by construction
 	// and cannot represent it, while a ray travelling a fraction of a block returns a wall's dim
 	// bounce instead of sky. **The reach is `gi_lateral_max` and nothing narrower**: past C1's
 	// coverage the blend is the analytic sky dome, so anything less turned distant grass BLUE.
-	let lat = sp.xz - rz.cam.xz;
-	let gather_max = gi_lateral_max(f32(side));
-	let far = dot(lat, lat) > gather_max * gather_max;
-	var indirect: vec3f;
+	var indirect = vec3f(0.0);
 	var nee = vec3f(0.0);
-	if far {
+	if trace_ind && far {
 		indirect =
 			gi_indirect(side, sp, n, rz.cam.xyz, rz.dims0, rz.dims1, rz.zenith.rgb, rz.horizon.rgb, vec2i(8, 4));
-	} else {
+	} else if trace_ind {
 		// The direct term for local lights — see resample_light. Folded into `indirect` BEFORE
 		// the accumulation below, so temporal blending, the edit spheres and the atrous
 		// machinery all carry it with no new plumbing. The reservoir's seed is an integer
@@ -482,9 +698,18 @@ fn fs(i: VsOut) -> FsOut {
 		} else {
 			let ui = sample2(uv + vec2i(7919, 104729), rz.jitter.x);
 			let rd = cosine_hemi(n, ui);
-			// STUB_GILOD keeps the whole reach at cell level — the pre-R41 gather, for
-			// pricing the brick-as-medium far field against it.
-			let coarse_from = select(GI_BRICK, GI_GATHER_T, stubbed(STUB_GILOD));
+			// Where the ray stops entering bricks and crosses them by summary (R41): a brick's
+			// length of travel — one cosine sample's footprint is the size of its travel — OR
+			// sooner, once this texel itself spans more than a block of world: a half-res texel
+			// that already covers a brick cannot resolve a bounce at cell scale, so the far
+			// field's gather crosses by summary from its first brick (the Lumen/Teardown
+			// footprint rule). The footprint is clamped because the derivative is garbage on a
+			// silhouette. STUB_GILOD keeps the whole reach at cell level — the pre-R41 gather.
+			let coarse_from = select(
+				GI_BRICK / clamp(texel_world, 1.0, 8.0),
+				GI_GATHER_T,
+				stubbed(STUB_GILOD),
+			);
 			let hit = gi_march(
 				side, rz.jitter.z, rz.cam.xz, sp, rd, GI_GATHER_T, i32(rz.budget.x),
 				coarse_from, seed ^ 0x5bd1e995u,
@@ -510,28 +735,29 @@ fn fs(i: VsOut) -> FsOut {
 	sv.water = 0.0;
 	sv.dist = 0.0;
 	sv.thru = vec3f(1.0);
-	if !stubbed(STUB_GISUN) {
+	if trace_sun && !stubbed(STUB_GISUN) {
 		sv = gi_sun_vis(side, rz.jitter.z, rz.cam.xz, sdir, sp, i32(rz.budget.y));
 	}
-	let view_dist = length(p - rz.cam.xyz);
 	// Penumbra width: occluder distance x tan(cone half-angle) is the physical width in blocks;
 	// dividing by this texel's world footprint converts it to half-res texels with both the
 	// projection and the surface's grazing angle accounted for — a grazing texel spans more
 	// world, so the same penumbra is fewer texels there. Lit pixels answer 0; gi_atrous spreads
 	// the width outward from the shadowed side, which lets the lit half of the edge blur too.
-	let texel_world = max(max(length(ddx_p), length(ddy_p)), 1e-4);
-	let pen = clamp(sv.dist * SUN_TAN / texel_world, 0.0, PEN_MAX);
+	// A skipped sun lane writes 0: by the edge gate its taps held nothing wider than
+	// SUN_EDGE_PEN, and the a-trous re-dilates a neighbour's width over it regardless.
+	var pen = 0.0;
+	if trace_sun {
+		pen = clamp(sv.dist * SUN_TAN / texel_world, 0.0, PEN_MAX);
+	}
 
-	// Reproject into last frame. Exact for static geometry, so this needs
-	// no motion vectors — only a validity test.
-	var n_hist = 0.0;
 	// The transmitted sun's CHROMATIC residual rides the rgb indirect lane: acc_sun below
 	// carries the glass filter's luminance (the sun target has no colour lanes) and this adds
 	// exactly the difference, so the two lanes SUM to the full rgb transmission chunk.wgsl
 	// multiplies out and a red pane's pool lands red, not grey. Zero wherever thru is 1,
-	// NEGATIVE in the channels the filter absorbs, and it rides the indirect accumulator.
+	// NEGATIVE in the channels the filter absorbs, and it rides the indirect accumulator — so
+	// it lands only on a frame the indirect lane traces (an untraced sun lane's thru is 1).
 	let thru_lum = dot(sv.thru, vec3f(0.299, 0.587, 0.114));
-	if any(sv.thru != vec3f(1.0)) {
+	if trace_ind && any(sv.thru != vec3f(1.0)) {
 		let ndl = clamp(dot(n, rz.sun_exact.xyz), 0.0, 1.0);
 		// STRENGTH rides the residual explicitly. The sun lane is a bare
 		// visibility fraction that the scene pass scales by
@@ -549,155 +775,63 @@ fn fs(i: VsOut) -> FsOut {
 	var acc = indirect;
 	var acc_sun = sv.vis * thru_lum;
 	var acc_water = sv.water;
-	// Did a same-face history tap fail depth only MARGINALLY? Then the surface is still on
-	// screen and the miss is a grazing fetch the tolerance clipped, not a reveal. The near
-	// ground fails all four taps this way on most walking frames, and priming those pixels from
-	// the cache locks the whole near field at cache lighting. A true reveal differs in KIND: its
-	// tap held the OCCLUDER, whole blocks nearer, so the miss is many multiples of the tolerance.
-	var grazed = false;
-	if rz.prev_cam.w > 0.5 {
-		let pc = rz.prev_vp * vec4f(p, 1.0);
-		if pc.w > 0.0 {
-			let nd = pc.xy / pc.w;
-			let huv = vec2f(nd.x * 0.5 + 0.5, 0.5 - nd.y * 0.5);
-			if all(huv >= vec2f(0.0)) && all(huv <= vec2f(1.0)) {
-				let hdim = vec2f(textureDimensions(hist_indirect));
-				// BILINEAR, per tap validated. A nearest tap smears the image along the
-				// direction of travel: rounding the reprojected position pulls history from
-				// a world point up to half a texel away, biased by the sub-texel phase's
-				// monotonic drift and invisible to both validations below. Below TRAVEL_EPS
-				// the fetch snaps onto the lattice, copying this pixel's own history.
-				let hp_raw = huv * hdim - 0.5;
-				let still = length(hp_raw + 0.5 - i.pos.xy) < TRAVEL_EPS;
-				let hp = select(hp_raw, i.pos.xy - 0.5, still);
-				let b0 = floor(hp);
-				let f = hp - b0;
-				// Validate on the exact face code AND on the distance the
-				// point WOULD have been at from the old camera — comparing
-				// stored view distances directly would reject the whole
-				// screen the moment the camera moves.
-				let want = length(p - rz.prev_cam.xyz);
-				let base = 0.02 * max(want, 1.0);
-				var wsum = 0.0;
-				var s_ind = vec3f(0.0);
-				var s_sun = 0.0;
-				var s_wat = 0.0;
-				var s_n = 0.0;
-				// Two passes, strict first, so the hot path pays nothing new. Pass 1 exists
-				// for one population: a surface seen nearly edge-on spans MORE depth per
-				// half-res texel than the flat tolerance allows, and churned at n = 1 as a
-				// flicker band. It reruns only on an EMPTY strict pass with a same-face
-				// near-miss, widened per SVGF's fwidth(z), capped at PRIME_MARGIN's reveal gate.
-				for (var relax = 0; relax < 2; relax++) {
-					let tol = select(
-						base,
-						clamp(GRAZE_K * texel_world, base, PRIME_MARGIN * base),
-						relax == 1,
-					);
-					for (var k = 0; k < 4; k++) {
-						let off = vec2f(f32(k & 1), f32(k >> 1u));
-						let w = mix(1.0 - f.x, f.x, off.x) * mix(1.0 - f.y, f.y, off.y);
-						let t = vec2i(b0 + off);
-						if w <= 0.0 || any(t < vec2i(0)) || any(t >= vec2i(hdim)) {
-							continue;
-						}
-						let hi = textureLoad(hist_indirect, t, 0);
-						let hs = textureLoad(hist_sun, t, 0);
-						// g packs the face code together with the history
-						// length — the code validates, the length is what
-						// the accumulator reads (sun.a now carries the
-						// penumbra width instead).
-						let hg = u32(hs.g);
-						if (hg & 255u) != code {
-							continue;
-						}
-						let miss = abs(hi.w - want);
-						if miss > tol {
-							grazed = grazed || miss <= PRIME_MARGIN * base;
-							continue;
-						}
-						wsum += w;
-						s_ind += hi.rgb * w;
-						s_sun += hs.r * w;
-						s_wat += hs.b * w;
-						s_n += f32(hg >> 8u) * w;
-					}
-					if wsum > 0.0 || !grazed {
-						break;
-					}
-				}
-				// Renormalize over the taps that survived, so a rejected
-				// corner darkens nothing — it just stops voting.
-				if wsum > 0.0 {
-					let inv = 1.0 / wsum;
-					// How deep an average this pixel is ALLOWED to keep — two states, not a
-					// curve: reprojection is exact for static geometry, so a long history
-					// costs only the resampling that carries it, and off-lattice that blur
-					// COMPOUNDS at the sub-texel phase's rate. A per-frame RATE was declined
-					// (R13); gi_atrous is what makes the short end affordable.
-					var cap = select(N_MOVING, N_MAX, still);
-					// A lighting edit near this surface: the probes are
-					// already re-tracing it, so let the screen follow at
-					// the short-history rate instead of at 1/N_MAX.
-					for (var si = 0; si < 4; si++) {
-						let s = rz.inval[si];
-						if s.w > 0.0 && distance(p, s.xyz) < s.w {
-							cap = min(cap, N_MOVING);
-						}
-					}
-					n_hist = min(min(s_n * inv + 1.0, N_MAX), cap);
-					let a = 1.0 / n_hist;
-					acc = mix(s_ind * inv, indirect, a);
-					// The sun blends at its own, much shorter depth — the
-					// estimate is deterministic, so this converges to the
-					// same answer and only the response time differs. The
-					// water path rides the sun's alpha: it is part of the
-					// same ray.
-					let a_sun = 1.0 / min(n_hist, N_SUN);
-					let sun_now = sv.vis * dot(sv.thru, vec3f(0.299, 0.587, 0.114));
-					acc_sun = mix(s_sun * inv, sun_now, a_sun);
-					acc_water = mix(s_wat * inv, sv.water, a_sun);
-				}
-			}
-		}
-	}
-	if n_hist < 1.0 {
-		if grazed {
-			// The surface never left the screen — the fetch just grazed
-			// the depth tolerance. Restart unbiased at n = 1, exactly the
-			// old behavior: the sample is noisy but centered, gi_atrous
-			// absorbs it, and next frame the fetch usually lands again.
-			n_hist = 1.0;
+	var n_out = n_hist;
+	if have_hist {
+		if trace_ind {
+			acc = mix(s_ind, indirect, 1.0 / n_hist);
 		} else {
-			// Disocclusion: nothing on screen held this surface last frame. Prime the
-			// accumulator from the cascade blend (see N_PRIOR) rather than from the raw
-			// gather, but only where INDIRECT is the light: on sun-lit ground the prime's
-			// bias measured an order of magnitude worse, while in shadow 1-spp speckle IS
-			// the whole signal. The sun channel needs no prime — its ray is deterministic.
-			let sun_lit =
-				sv.vis * clamp(dot(n, rz.sun_exact.xyz), 0.0, 1.0) * rz.sun_exact.w;
-			if sun_lit < PRIME_SUN_MAX {
-				// The CHEAP cache lookup, not the full cascade blend. Priming is bursty —
-				// a camera swing into a cave reveals a hundred thousand pixels in one frame
-				// — and gi_indirect is dozens of loads, which measured a large frame-rate
-				// drop at the resolve's end. A prior decaying out in N_PRIOR frames has no
-				// business being more exact than the term that terminates every gather path.
-				var prior = indirect;
-				if !far {
-					// Plus the deterministic NEE term (already computed):
-					// the cache holds torch light only at probe resolution,
-					// and a cave-mouth reveal beside a torch must not start
-					// its history at a dimmer pool than the one every
-					// following sample will vote for.
-					prior = gi_cache_at(
-						side, sp, n, rz.cam.xyz, rz.dims0, rz.dims1, rz.zenith.rgb, rz.horizon.rgb
-					) + nee;
-				}
-				n_hist = N_PRIOR;
-				acc = mix(prior, indirect, 1.0 / N_PRIOR);
-			} else {
-				n_hist = 1.0;
+			// Carried through untouched: no sample, no count.
+			acc = s_ind;
+			n_out = min(s_n, cap);
+		}
+		// The sun blends at its own, much shorter depth — the
+		// estimate is deterministic, so this converges to the
+		// same answer and only the response time differs. The
+		// water path rides the sun's alpha: it is part of the
+		// same ray.
+		if trace_sun {
+			let a_sun = 1.0 / min(n_hist, N_SUN);
+			acc_sun = mix(s_sun, sv.vis * thru_lum, a_sun);
+			acc_water = mix(s_wat, sv.water, a_sun);
+		} else {
+			acc_sun = s_sun;
+			acc_water = s_wat;
+		}
+	} else if grazed {
+		// The surface never left the screen — the fetch just grazed
+		// the depth tolerance. Restart unbiased at n = 1, exactly the
+		// old behavior: the sample is noisy but centered, gi_atrous
+		// absorbs it, and next frame the fetch usually lands again.
+		n_out = 1.0;
+	} else {
+		// Disocclusion: nothing on screen held this surface last frame. Prime the
+		// accumulator from the cascade blend (see N_PRIOR) rather than from the raw
+		// gather, but only where INDIRECT is the light: on sun-lit ground the prime's
+		// bias measured an order of magnitude worse, while in shadow 1-spp speckle IS
+		// the whole signal. The sun channel needs no prime — its ray is deterministic.
+		let sun_lit =
+			sv.vis * clamp(dot(n, rz.sun_exact.xyz), 0.0, 1.0) * rz.sun_exact.w;
+		if sun_lit < PRIME_SUN_MAX {
+			// The CHEAP cache lookup, not the full cascade blend. Priming is bursty —
+			// a camera swing into a cave reveals a hundred thousand pixels in one frame
+			// — and gi_indirect is dozens of loads, which measured a large frame-rate
+			// drop at the resolve's end. A prior decaying out in N_PRIOR frames has no
+			// business being more exact than the term that terminates every gather path.
+			var prior = indirect;
+			if !far {
+				// Plus the deterministic NEE term (already computed):
+				// the cache holds torch light only at probe resolution,
+				// and a cave-mouth reveal beside a torch must not start
+				// its history at a dimmer pool than the one every
+				// following sample will vote for.
+				prior = gi_cache_at(
+					side, sp, n, rz.cam.xyz, rz.dims0, rz.dims1, rz.zenith.rgb, rz.horizon.rgb
+				) + nee;
 			}
+			n_out = N_PRIOR;
+			acc = mix(prior, indirect, 1.0 / N_PRIOR);
+		} else {
+			n_out = 1.0;
 		}
 	}
 	o.indirect = vec4f(acc, view_dist);
@@ -709,6 +843,6 @@ fn fs(i: VsOut) -> FsOut {
 	// rather than a transmittance so the scene shader can apply
 	// medium_common's per-channel WATER_SIGMA — the same water the view
 	// ray goes through.
-	o.sun = vec4f(acc_sun, f32(code) + 256.0 * round(n_hist), acc_water, pen);
+	o.sun = vec4f(acc_sun, f32(code) + 256.0 * round(n_out), acc_water, pen);
 	return o;
 }

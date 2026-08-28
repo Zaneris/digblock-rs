@@ -130,6 +130,10 @@ pub struct EngineConfig {
 	/// silently un-shadows what lies past the cut (gi/resolve.rs).
 	pub gi_gather_iters: u32,
 	pub gi_sun_iters: u32,
+	/// The resolve's adaptive ray budget: blocks of view distance per frame of trace period,
+	/// indirect then sun (`DIG_GI_RATE`, `?girate=`); 0 disables a lane's gating. Every profile
+	/// ships `gi::resolve`'s `GI_IND_RATE_BLOCKS` / `GI_SUN_RATE_BLOCKS`.
+	pub gi_rate_blocks: [f32; 2],
 	/// Chunk worker threads.
 	pub workers: usize,
 	pub seed: Option<f64>,
@@ -187,16 +191,16 @@ pub struct EngineConfig {
 	/// temporal artifacts from the other end, at eye height and walking pace, where one half-res
 	/// texel covers far more world per pixel. Same harness, second regime.
 	pub walk: bool,
-	/// Flyover speed in blocks/s (`--bench-speed`). Every BENCH.md baseline was taken at the
-	/// default — changing it silently invalidates all of them, so don't. The default is several
-	/// times `WALK_SPEED`, a different STREAMING REGIME rather than merely a faster one: the GI
-	/// upload budget cannot keep up and the classify drain drops entries, so a cost that appears
 	/// The third regime beside the flight and the walk: a still stare straight down from a glass
 	/// block at the top of the world, a few stations of it (`--stare`, `engine/stare.rs`). The
 	/// worst case for the GI resolve — every texel far, through glass, nothing reprojecting — and
 	/// the number the GI work is judged by. Implies `markers: false`: the arrival spiral would
 	/// otherwise sit in the middle of every station's frame.
 	pub stare: bool,
+	/// Flyover speed in blocks/s (`--bench-speed`). Every BENCH.md baseline was taken at the
+	/// default — changing it silently invalidates all of them, so don't. The default is several
+	/// times `WALK_SPEED`, a different STREAMING REGIME rather than merely a faster one: the GI
+	/// upload budget cannot keep up and the classify drain drops entries, so a cost that appears
 	/// only there may be starvation rather than a leak. (`--walk` brings no new terrain in at all.)
 	pub bench_speed: f32,
 	/// Fire the F7 GI drill at this frame (`--gi-drill-at`), so the ratchet
@@ -430,6 +434,7 @@ impl EngineConfig {
 			max_lights: crate::settings::LIGHT_CAP_MAX,
 			gi_gather_iters: crate::gi::GI_GATHER_ITERS,
 			gi_sun_iters: crate::gi::GI_SUN_ITERS,
+			gi_rate_blocks: [crate::gi::GI_IND_RATE_BLOCKS, crate::gi::GI_SUN_RATE_BLOCKS],
 			workers,
 			seed: None,
 			tod: None,
@@ -447,12 +452,12 @@ impl EngineConfig {
 			fly: None,
 			warp: false,
 			walk: false,
+			stare: false,
 			render_scale: 1.0,
 			gfx_defaults_auto: false,
 			gi_scale_div: crate::settings::GI_SCALE_DEFAULT,
 			bench_speed: 30.0,
 			gi_drill_at: None,
-			stare: false,
 			ssr: true,
 			ui_scale: 1.0,
 			music_vol: 1.0,
@@ -592,6 +597,7 @@ impl EngineConfig {
 			stub: self.stub,
 			gi_gather_iters: self.gi_gather_iters,
 			gi_sun_iters: self.gi_sun_iters,
+			gi_rate_blocks: self.gi_rate_blocks,
 		}
 	}
 }

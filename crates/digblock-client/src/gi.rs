@@ -23,12 +23,15 @@ use crate::renderer::FrameUniforms;
 mod build;
 mod debug;
 mod lights;
+mod mirror;
 mod probes;
 mod resolve;
 mod window;
 
+use mirror::CoarseMirror;
+
 pub(crate) use build::GiConfig;
-pub(crate) use resolve::{GI_GATHER_ITERS, GI_SUN_ITERS};
+pub(crate) use resolve::{GI_GATHER_ITERS, GI_IND_RATE_BLOCKS, GI_SUN_ITERS, GI_SUN_RATE_BLOCKS};
 
 pub(crate) const C0_DIMS: (u32, u32, u32) = (32, 24, 32);
 /// C0's probe spacing in blocks — the finest scale the bounce field can
@@ -237,6 +240,11 @@ const SUN_QUANT: f32 = 38.0;
 struct Cascade {
 	dims: (u32, u32, u32),
 	spacing: u32,
+	/// The t (blocks) past which this cascade's probe rays cross a brick by its summary rather
+	/// than entering it (R41 for probes; `gi_probe.wgsl`'s `march`). Two bricks for C0 — its
+	/// probes stand two blocks apart and the near field is what they exist to resolve — and one
+	/// for C1, whose probes are already a brick apart. Rides `sched.z`.
+	coarse_from: u32,
 	cursor: u32,
 	/// Permutation stride for the sweep (see `schedule_stride`).
 	stride: u32,
@@ -287,19 +295,18 @@ pub(crate) struct GiDraw {
 	frame: u32,
 	window: wgpu::Texture,
 	coarse: wgpu::Texture,
-	/// CPU copy of the coarse texture, in upload order (x fastest, z
-	/// slowest) — what the sky ceiling is recomputed from when chunks
-	/// land. One word per coarse brick, so it stays small.
-	coarse_mirror: Box<[u32]>,
-	/// The mirror changed this frame; `sky_y` rescans at the next
+	/// CPU copy of the coarse texture and what it derives (`mirror::CoarseMirror`): the sky
+	/// ceiling, and the slot owners that let eviction prune it.
+	coarse_mirror: CoarseMirror,
+	/// The mirror changed this frame; `sky_y` is re-read at the next
 	/// `encode`.
 	coarse_mips_dirty: bool,
 	/// Highest occupied cell y anywhere in the window, in blocks (R18):
 	/// an ASCENDING ray above this is proven lit/sky in one float
 	/// compare, so the sun march stops at the tallest local hill instead
-	/// of climbing to the top of the world — recomputed with the skip
-	/// mips. Sits at the world ceiling until the first flush
-	/// (conservative: never breaks a ray early on unclassified data).
+	/// of climbing to the top of the world. Sits at the world ceiling
+	/// until the first flush (conservative: never breaks a ray early on
+	/// unclassified data), then follows the mirror up AND down.
 	sky_y: f32,
 	/// XZ extent in chunks (`window_chunks_for`): the toroidal modulus.
 	window_chunks: u32,
@@ -316,6 +323,10 @@ pub(crate) struct GiDraw {
 	/// `rz.budget` the same way the stub mask rides `jitter.w`.
 	gather_iters: u32,
 	sun_iters: u32,
+	/// The adaptive ray budget's refresh distances, indirect then sun
+	/// (`resolve::GI_IND_RATE_BLOCKS` / `GI_SUN_RATE_BLOCKS` unless
+	/// `DIG_GI_RATE` moved them) — ride `rz.budget.zw`.
+	rate_blocks: [f32; 2],
 	emitters: FxHashMap<ChunkPos, Vec<Emitter>>,
 	/// Surface emitters per chunk — a revealed vein's exposed faces, merged
 	/// into rectangles by the MESHER and delivered on its output rather
@@ -371,7 +382,7 @@ pub(crate) struct GiDraw {
 	/// frame), each flagged with whether it came from a MOVING light
 	/// rather than a world edit — see `resolve_inval` for the only thing
 	/// that flag changes.
-	inval_queue: Vec<([f32; 3], bool)>,
+	inval_queue: std::collections::VecDeque<([f32; 3], bool)>,
 	/// Spheres the probe pass consumed, held live so the RESOLVE keeps capping
 	/// screen history around them while the probes re-converge.
 	///
@@ -625,22 +636,6 @@ fn chunk_in_reach(pos: ChunkPos, cam: [f32; 3], reach: f32) -> bool {
 	let dx = axis(pos.x as f32 * n, cam[0]);
 	let dz = axis(pos.z as f32 * n, cam[2]);
 	dx * dx + dz * dz <= reach * reach
-}
-
-/// The window's sky ceiling (R18): the highest coarse brick row holding anything at all, as a cell
-/// y. A non-descending ray above it is proven lit/sky in one float compare, which ends the sun
-/// march at the tallest local hill instead of the top of the world — proving open sky one brick
-/// skip at a time cost a dependent texture load per skip. Negative when the mirror is still empty.
-fn sky_ceiling(mirror: &[u32], w: usize, h: usize, d: usize) -> f32 {
-	(0..h)
-		.rev()
-		.find(|&y| {
-			(0..d).any(|z| {
-				let row = (z * h + y) * w;
-				mirror[row..row + w].iter().any(|&b| b != 0)
-			})
-		})
-		.map_or(-1.0, |y| (y * 8 + 7) as f32)
 }
 
 fn atlas_tex(device: &wgpu::Device, dims: (u32, u32, u32), label: &str) -> wgpu::Texture {

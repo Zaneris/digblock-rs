@@ -68,7 +68,13 @@ pub const BAND_FULL: u8 = 255;
 /// A brick's coarse word: two flags (any ray-blocking cell, any emitting cell) that alone decide
 /// whether a march may SKIP the brick, then the [`Brick`] summary a far gather ray reads to cross
 /// the brick without descending into it. A brick with any blocker has a nonzero summary, so "word
-/// is zero" and "nothing to march" stay one test. `gi_common.wgsl` decodes the same layout.
+/// is zero" and "nothing to march" stay one test. `gi_common.wgsl` and `gi_probe.wgsl` decode the
+/// same layout.
+///
+/// The summary's `hi` looked like an exact skip for the cell-level marches too (a segment above
+/// every column top crosses no blocker), and it was built and MEASURED OUT on the stare bench:
+/// the per-cell compare it adds to the latency-bound loop cost more than the surface-band crawl
+/// it saved, and water — which raises no top — needed a flag bit to veto it. Left out.
 pub fn pack_coarse(blocks_rays: bool, emits: bool, b: Brick) -> u32 {
 	u32::from(blocks_rays)
 		| u32::from(emits) << 1

@@ -716,6 +716,7 @@ mod tests {
 				stub: 0,
 				gi_gather_iters: crate::gi::GI_GATHER_ITERS,
 				gi_sun_iters: crate::gi::GI_SUN_ITERS,
+				gi_rate_blocks: [crate::gi::GI_IND_RATE_BLOCKS, crate::gi::GI_SUN_RATE_BLOCKS],
 			},
 		);
 		if let Some(err) = pollster::block_on(scope.pop()) {

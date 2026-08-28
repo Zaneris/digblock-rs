@@ -21,7 +21,9 @@ struct GiUniforms {
 	zenith: vec4f,
 	horizon: vec4f,
 	// x: this dispatch's PERMUTED base probe index, y: frame counter,
-	// z: light count cap, w: the sweep's permutation stride.
+	// z: the t (blocks) past which a probe ray crosses a brick by its
+	// summary instead of entering it (R41 for probes — gi.rs's
+	// `Cascade::coarse_from`), w: the sweep's permutation stride.
 	sched: vec4u,
 	// Up to 4 edit-invalidation spheres (xyz center, w radius; unused
 	// entries have radius 0), applied by the `inval` entry point.
@@ -107,15 +109,40 @@ fn window_cell_w(w: vec2i, y: i32) -> u32 {
 	return textureLoad(window_tex, vec3i(w.x, y, w.y), 0).r;
 }
 
-fn coarse_empty_w(w: vec2i, y: i32) -> bool {
+// The coarse brick word at a pre-wrapped lateral coordinate — gi_common's
+// `gi_coarse_w` twin. The y guard is the FINE bound.
+fn coarse_w(w: vec2i, y: i32) -> u32 {
 	if y < 0 || y > 255 {
-		return true;
+		return 0u;
 	}
-	return textureLoad(coarse_tex, vec3i(w.x >> 3u, y >> 3u, w.y >> 3u), 0).r == 0u;
+	return textureLoad(coarse_tex, vec3i(w.x >> 3u, y >> 3u, w.y >> 3u), 0).r;
 }
 
 fn window_cell(c: vec3i) -> u32 {
 	return window_cell_w(wrap2(c.xz, i32(gi.cam.w)), c.y);
+}
+
+// The probability a ray crossing a brick over [t0, t1] comes out the other side — gi_common's
+// `gi_brick_open` twin over the same word layout (`core::gi::pack_coarse`): open above the
+// highest column top, the core below the lowest at its density, the band between at its own.
+fn gi_brick_open_w(word: u32, oy: f32, dy: f32, ybase: f32, t0: f32, t1: f32) -> f32 {
+	let lo = ybase + f32((word >> 24u) & 0xfu);
+	let hi = ybase + f32(word >> 28u);
+	let core = f32((word >> 2u) & 0x3fu) / 63.0;
+	let band = f32((word >> 8u) & 0xffu) / 255.0;
+	let l_core = span_len(oy, dy, t0, t1, ybase, lo);
+	let l_band = span_len(oy, dy, t0, t1, lo, hi);
+	return pow(1.0 - core, l_core) * pow(1.0 - band, l_band);
+}
+
+// The length of [t0, t1] over which a ray at height `oy + dy*t` lies in [a, b).
+fn span_len(oy: f32, dy: f32, t0: f32, t1: f32, a: f32, b: f32) -> f32 {
+	if abs(dy) < 1e-6 {
+		return select(0.0, t1 - t0, oy >= a && oy < b);
+	}
+	let ta = (a - oy) / dy;
+	let tb = (b - oy) / dy;
+	return max(min(max(ta, tb), t1) - max(min(ta, tb), t0), 0.0);
 }
 
 // Sky as a GI source: the dome colors, pulled toward their luminance —
@@ -167,6 +194,10 @@ struct Hit {
 	// ended — the point an unproven answer is evaluated at (R32).
 	cell: vec3i,
 	axis: u32,
+	// On a hit, the class struck: the cell's own, or — past `coarse_from`
+	// — the brick's modal one, which is why a caller reads this rather
+	// than the window at `cell` (gi_common's `GiHit.cls` twin).
+	cls: u32,
 	water: f32,
 	// Glass throughput crossed on the way (op 4) — the pinned twin of
 	// gi_common's `GiSunVis.thru`.
@@ -178,10 +209,19 @@ struct Hit {
 }
 
 // March a ray through the window. `max_t` bounds the march; water
-// cells accumulate for transmittance.
-fn march(from_p: vec3f, dir: vec3f, max_t: f32) -> Hit {
+// cells accumulate for transmittance. Past `coarse_from` a brick is no
+// longer entered but crossed by its summary (R41, gi_common's `gi_march`
+// rule): the ray survives with the probability `gi_brick_open` gives,
+// `seed` rolls that, and a stop is a hit in the brick's modal class at
+// its entry cell. A probe's ray is the lowest-frequency sample in the
+// engine — 32 of them fold into six axes and blend over a whole sweep —
+// so the footprint argument holds here with more force than for the
+// gather, and a cascade passes its own distance. Shadow rays pass
+// `max_t`: an occluder is a cell, not a density.
+fn march(from_p: vec3f, dir: vec3f, max_t: f32, coarse_from: f32, seed: u32) -> Hit {
 	var out: Hit;
 	out.hit = false;
+	out.cls = 0u;
 	out.water = 0.0;
 	out.thru = vec3f(1.0);
 	out.sky = false;
@@ -189,6 +229,7 @@ fn march(from_p: vec3f, dir: vec3f, max_t: f32) -> Hit {
 	let inv = 1.0 / max(abs(dir), vec3f(1e-6));
 	var r = gi_ray_init(from_p, dir, inv);
 	let lateral_max = gi_lateral_max(gi.cam.w);
+	var rng = seed;
 	for (var it = 0; it < 256; it++) {
 		// gi.zenith.w carries the sky ceiling (R18): a non-descending ray
 		// above the window's highest occupied cell can hit nothing — the
@@ -208,11 +249,29 @@ fn march(from_p: vec3f, dir: vec3f, max_t: f32) -> Hit {
 		// MAX_T through mostly-air, so this is where it pays most. (A
 		// third, coarser level was measured out — see gi_common's marches.)
 		let w = wrap2(r.cell.xz, i32(gi.cam.w));
-		if coarse_empty_w(w, r.cell.y) {
+		let cw = coarse_w(w, r.cell.y);
+		if cw == 0u {
 			// Skip lands on the last cell inside the empty region, then
 			// steps out under the ordinary tie rule. Both are needed:
 			// this loop steps at the BOTTOM, so `continue` alone would
 			// not advance and the march would stall on its iteration cap.
+			r = gi_ray_skip_brick(r, dir, step_dir, inv);
+			r = gi_ray_step(r, step_dir, inv);
+			continue;
+		}
+		if r.t >= coarse_from {
+			// The brick by its summary — gi_common's `gi_march` twin.
+			// Water and glass inside it go uncounted.
+			let t1 = min(gi_brick_exit(r, dir, step_dir, inv), max_t);
+			let ybase = f32((r.cell.y >> 3u) << 3u);
+			let open = gi_brick_open_w(cw, from_p.y, dir.y, ybase, r.t, t1);
+			if lcg_next(&rng) >= open {
+				out.hit = true;
+				out.cell = r.cell;
+				out.axis = r.axis;
+				out.cls = (cw >> 16u) & 0xffu;
+				return out;
+			}
 			r = gi_ray_skip_brick(r, dir, step_dir, inv);
 			r = gi_ray_step(r, step_dir, inv);
 			continue;
@@ -227,6 +286,7 @@ fn march(from_p: vec3f, dir: vec3f, max_t: f32) -> Hit {
 				out.hit = true;
 				out.cell = r.cell;
 				out.axis = r.axis;
+				out.cls = v;
 				return out;
 			}
 			if op == 3u {
@@ -241,6 +301,7 @@ fn march(from_p: vec3f, dir: vec3f, max_t: f32) -> Hit {
 					out.hit = true;
 					out.cell = r.cell;
 					out.axis = u32(bh.y);
+					out.cls = v;
 					return out;
 				}
 			}
@@ -305,7 +366,8 @@ fn nee(p: vec3f, n: vec3f, rnd: f32) -> vec3f {
 	// `gi_light_margin` derives the margin from where in its cell the light sits,
 	// so it holds for an origin that is not the cell centre — see its comment for
 	// the flame-height torch, and for why a CARRIED light takes zero.
-	let sh = march(p, dir, max(dist - gi_light_margin_of(l), 0.0));
+	let reach = max(dist - gi_light_margin_of(l), 0.0);
+	let sh = march(p, dir, reach, reach, 0u);
 	if sh.hit {
 		return vec3f(0.0);
 	}
@@ -426,9 +488,10 @@ fn prev_omni(g: vec3i) -> vec3f {
 }
 
 // Radiance arriving at the probe from one ray direction. `rnd` selects
-// this ray's NEE sample.
-fn trace_radiance(p: vec3f, dir: vec3f, rnd: f32) -> vec3f {
-	let h = march(p, dir, MAX_T);
+// this ray's NEE sample; `seed` rolls the far bricks it crosses by
+// summary.
+fn trace_radiance(p: vec3f, dir: vec3f, rnd: f32, seed: u32) -> vec3f {
+	let h = march(p, dir, MAX_T, f32(gi.sched.z), seed);
 	// Per-channel now, and from medium_common's measured sigma — the
 	// same constant the view ray uses. This was a grey exponential with
 	// no relationship to the water the eye looks through.
@@ -449,8 +512,10 @@ fn trace_radiance(p: vec3f, dir: vec3f, rnd: f32) -> vec3f {
 			* select(medium_sky_fade(f32(h.cell.y) + 0.5), 1.0, h.sky);
 	}
 	// Hit: emitted + reflected (sun NEE from the hit + last frame's
-	// probe field = the infinite bounce).
-	let v = window_cell(h.cell);
+	// probe field = the infinite bounce). The class comes off the hit,
+	// not the window: past `coarse_from` the cell struck is the brick's
+	// entry cell, usually air, and the class is the brick's modal one.
+	let v = h.cls;
 	let alb = albedo_of(v);
 	if f32(lut[v].y) > 0.0 {
 		// An emitter reaches the cache through `nee` below and nowhere else —
@@ -479,7 +544,7 @@ fn trace_radiance(p: vec3f, dir: vec3f, rnd: f32) -> vec3f {
 	if gi.sun.w > 0.5 {
 		let ndl = max(dot(n, gi.sun.xyz), 0.0);
 		if ndl > 0.0 {
-			let sh = march(hp, gi.sun.xyz, MAX_T);
+			let sh = march(hp, gi.sun.xyz, MAX_T, MAX_T, 0u);
 			if !sh.hit {
 				// Unproven sun (the ray ran out rather than clearing the
 				// ceiling) fades at the receiving surface — the same rule
@@ -531,7 +596,10 @@ fn update_probes(@builtin(workgroup_id) wg: vec3u, @builtin(local_invocation_ind
 		// would sample one emitter over and over and miss the rest
 		// entirely.
 		let rnd = fract(sin(f32(li) * 12.9898 + f32(gi.sched.y) * 78.233) * 43758.5453);
-		ray_rad[li] = trace_radiance(p, dir, rnd);
+		// The far-brick roll's seed: probe, ray and frame, so no two rays
+		// of one update and no two updates of one ray share a sequence.
+		let seed = (pi * 0x9E3779B9u) ^ (li * 0x85EBCA6Bu) ^ (gi.sched.y * 0xC2B2AE35u);
+		ray_rad[li] = trace_radiance(p, dir, rnd, seed);
 	}
 	ray_dir[li] = dir;
 	workgroupBarrier();
@@ -639,7 +707,7 @@ fn cam_light() {
 	if gi.sun.w > 0.5 {
 		// From the camera, not from a snapped lattice point that may sit
 		// on the far side of a wall from it.
-		let h = march(cam, gi.sun.xyz, MAX_T);
+		let h = march(cam, gi.sun.xyz, MAX_T, MAX_T, 0u);
 		if !h.hit {
 			sv = medium_water_tr(h.water) * h.thru
 				* select(medium_sky_fade(cam.y), 1.0, h.sky);

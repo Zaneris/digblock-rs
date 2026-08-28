@@ -55,6 +55,51 @@ fn budgets_fit_the_shaders_capacities() {
 	);
 }
 
+/// The adaptive budget's floors sit between the history caps they gate: a pixel traces every
+/// frame until its indirect history is past N_SUN (so the sun lane, which gates on N_SUN, is
+/// never the more eager of the two) and the floor is under N_MOVING, or a moving pixel would
+/// never thin out at all.
+#[test]
+fn the_rate_floors_nest_the_history_caps() {
+	let src = digblock_assets::shader::GI_RESOLVE;
+	let n_sun = wgsl_f32(src, "N_SUN");
+	let floor = wgsl_f32(src, "RATE_N_FULL");
+	let moving = wgsl_f32(src, "N_MOVING");
+	assert!(
+		n_sun <= floor && floor < moving,
+		"N_SUN {n_sun} <= RATE_N_FULL {floor} < N_MOVING {moving}"
+	);
+	assert!(wgsl_f32(src, "IND_PERIOD_MAX") >= 1.0);
+	assert!(wgsl_f32(src, "SUN_PERIOD_MAX") >= 1.0);
+}
+
+/// The edge gate reads the a-trous's penumbra floor: a tap at or above PEN_MIN is a texel the
+/// filter is reconstructing a penumbra across, and the sun lane must trace it every frame.
+#[test]
+fn the_edge_gate_knows_the_filters_penumbra_floor() {
+	assert_eq!(
+		wgsl_f32(digblock_assets::shader::GI_RESOLVE, "SUN_EDGE_PEN"),
+		wgsl_f32(digblock_assets::shader::GI_ATROUS, "PEN_MIN"),
+	);
+}
+
+/// A far interior texel re-traces its sun every SUN_PERIOD_MAX frames at the shipped distance.
+/// The sun moves meanwhile (`TOD_RATE_DEG_PER_SEC`), and even at a slow 20 fps its travel over
+/// one period must stay inside the cone the ray is jittered in: past that, a texel could wake
+/// up to find its lit/shadowed answer stale by more than the penumbra it sits in.
+#[test]
+fn the_far_sun_period_stays_inside_the_cone() {
+	let src = digblock_assets::shader::GI_RESOLVE;
+	let period = wgsl_f32(src, "SUN_PERIOD_MAX");
+	let slow_fps = 20.0;
+	let travel_deg = digblock_core::sun::TOD_RATE_DEG_PER_SEC * period / slow_fps;
+	let cone_deg = SUN_CONE_COS.acos().to_degrees();
+	assert!(
+		travel_deg < cone_deg,
+		"{travel_deg} deg of sun per period, cone {cone_deg}"
+	);
+}
+
 /// The selection anchor leads the camera by the shader's `LIGHT_RANGE` —
 /// the distance past which a light cannot affect a shaded point — read
 /// out of BOTH declaring shaders rather than restated, exactly like the
@@ -791,24 +836,6 @@ fn a_surface_emitter_packs_its_rectangle_beside_its_position() {
 		[0.0; 4],
 		"and its second half stays zero, so nothing reads a stale extent"
 	);
-}
-
-/// The ceiling must sit at the TOP of the highest occupied brick (a
-/// ceiling one brick low un-shadows every hilltop), and an empty
-/// mirror must answer "nothing anywhere" rather than the world
-/// ceiling (which would disable the early-out forever on an ocean
-/// world).
-#[test]
-fn the_sky_ceiling_tops_the_highest_brick() {
-	let (w, h, d) = (40usize, 32, 40);
-	let mut mirror = vec![0u32; w * h * d];
-	assert_eq!(sky_ceiling(&mirror, w, h, d), -1.0);
-	mirror[(17 * h + 9) * w + 33] = 0b01;
-	assert_eq!(sky_ceiling(&mirror, w, h, d), (9 * 8 + 7) as f32);
-	// A higher EMITTER-only brick raises it too — the ceiling gates
-	// hits of any kind.
-	mirror[(2 * h + 24) * w + 5] = 0b10;
-	assert_eq!(sky_ceiling(&mirror, w, h, d), (24 * 8 + 7) as f32);
 }
 
 /// The sweep must be a PERMUTATION, not merely a shuffle: over one full cycle every probe has to

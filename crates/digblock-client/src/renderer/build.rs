@@ -149,6 +149,7 @@ impl Renderer {
 				stub: config.stub,
 				gather_iters: config.gi_gather_iters,
 				sun_iters: config.gi_sun_iters,
+				rate_blocks: config.gi_rate_blocks,
 			},
 			&mut ledger,
 		);

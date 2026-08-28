@@ -34,6 +34,9 @@ pub(crate) struct RenderConfig {
 	/// `gi_sun_iters`) — see `gi::GI_GATHER_ITERS` for the rule.
 	pub gi_gather_iters: u32,
 	pub gi_sun_iters: u32,
+	/// The resolve's adaptive-budget refresh distances, indirect then sun
+	/// (`EngineConfig::gi_rate_blocks`) — see `gi::resolve::GI_IND_RATE_BLOCKS`.
+	pub gi_rate_blocks: [f32; 2],
 }
 
 /// Cost-stub bits (`DIG_STUB=<name>[,<name>…]`). Each removes one term so a single build can
@@ -103,8 +106,14 @@ pub mod stub {
 	/// A gather hit's sun visibility is marched afresh instead of read back off last frame's
 	/// screen (GI-DESIGN.md R42) — the pre-reuse secondary sun, for pricing the reuse against it.
 	pub const GISCREEN: u32 = 1 << 17;
+	/// Probe rays march their whole reach at cell level instead of crossing far bricks by
+	/// summary (R41 for probes, `Cascade::coarse_from`) — the pre-LOD probe, for pricing it.
+	pub const GIPROBELOD: u32 = 1 << 18;
+	/// The resolve traces every lane of every pixel every frame, history or not — the
+	/// pre-adaptive-budget resolve (`gi_resolve.wgsl`'s gate), for pricing the gating against it.
+	pub const GISTEADY: u32 = 1 << 19;
 
-	const NAMES: [(&str, u32); 18] = [
+	const NAMES: [(&str, u32); 20] = [
 		("wvert", WVERT),
 		("wsun", WSUN),
 		("wssr", WSSR),
@@ -123,6 +132,8 @@ pub mod stub {
 		("noglass", NOGLASS),
 		("gilod", GILOD),
 		("giscreen", GISCREEN),
+		("giprobelod", GIPROBELOD),
+		("gisteady", GISTEADY),
 	];
 
 	/// Comma-separated names → mask. Unknown names are returned so the
