@@ -27,6 +27,8 @@ web-sys = { workspace = true, features = [
 	"HtmlCanvasElement",
 	"CustomEvent",
 	"CustomEventInit",
+	# The overlay's host-memory sample (`performance.memory`).
+	"Performance",
 	# Fullscreen toggle + Android's in-fullscreen orientation lock.
 	"Screen",
 	"ScreenOrientation",

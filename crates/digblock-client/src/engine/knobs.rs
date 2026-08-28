@@ -157,6 +157,16 @@ pub const SPIKELOG: Knob = flag(
 	"DIG_SPIKELOG",
 	"log per-phase breakdowns of over-budget frames",
 );
+pub const NO_GPU_TIMER: Knob = flag(
+	"nogputimer",
+	"DIG_NO_GPU_TIMER",
+	"do not request GPU timestamp queries (the overlay's gpu line reads n/a)",
+);
+pub const FPS_CAP: Knob = value(
+	"fpscap",
+	"DIG_FPS_CAP",
+	"present at most <hz> frames a second (0 = the display's pace)",
+);
 pub const CHUNK_SLOTS: Knob = value(
 	"chunkslots",
 	"DIG_CHUNK_SLOTS",
@@ -195,6 +205,8 @@ pub const ALL: &[Knob] = &[
 	GI,
 	SPIKELOG,
 	CHUNK_SLOTS,
+	NO_GPU_TIMER,
+	FPS_CAP,
 ];
 
 /// The known spellings of a `screen` value, for the error a typo raises.
@@ -359,6 +371,15 @@ pub fn apply(
 		config.pitch.get_or_insert(0.0);
 	}
 	config.spike_log = on(&SPIKELOG);
+	config.gpu_timer = !on(&NO_GPU_TIMER);
+	if let Some(v) = get(&FPS_CAP) {
+		let hz = v
+			.parse::<f32>()
+			.ok()
+			.filter(|hz| hz.is_finite() && *hz >= 0.0)
+			.ok_or_else(|| format!("{} wants a frame rate in Hz, got {v:?}", FPS_CAP.name))?;
+		config.fps_cap = (hz > 0.0).then_some(hz);
+	}
 	if let Some(v) = get(&CHUNK_SLOTS) {
 		config.chunk_slots_override = Some(
 			v.parse::<u32>()
@@ -434,6 +455,8 @@ mod tests {
 			(&STUB, "wsun,wnope"),
 			(&GI_ITERS, "4"),
 			(&CHUNK_SLOTS, "0"),
+			(&FPS_CAP, "-60"),
+			(&FPS_CAP, "sixty"),
 		] {
 			let mut config = EngineConfig::desktop();
 			let err = apply(&mut config, &|k| (k.name == knob.name).then(|| bad.into()))

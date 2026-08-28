@@ -325,6 +325,9 @@ fn main() {
 		eprintln!("{e}");
 		std::process::exit(2);
 	}
+	// The two knobs the SHELL acts on, before a device exists.
+	options.no_gpu_timer = !config.gpu_timer;
+	options.fps_cap = config.fps_cap;
 	// The other half of that rule, and the one the environment needs: the page refuses a `?key` it
 	// does not know, but reading the table out of the environment can only MISS a misspelled
 	// variable, so `DIG_VUALT=1` photographs open terrain and exits 0 — the silent wrong scene this

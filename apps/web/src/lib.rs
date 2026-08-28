@@ -337,6 +337,9 @@ async fn boot() -> Result<(), JsValue> {
 	}
 
 	let workers = config.workers;
+	// The two knobs the SHELL acts on, before a device exists.
+	let no_gpu_timer = !config.gpu_timer;
+	let fps_cap = config.fps_cap;
 	let mut engine = Engine::new(config);
 	if mobile && let Some(insets) = safe_area_insets() {
 		engine.set_safe_area(insets);
@@ -393,6 +396,8 @@ async fn boot() -> Result<(), JsValue> {
 			// reach frame N in the same world state.
 			fixed_dt: param::<f32>(&params, "fixeddt").map(std::time::Duration::from_secs_f32),
 			touch: mobile,
+			no_gpu_timer,
+			fps_cap,
 			..Default::default()
 		},
 	)

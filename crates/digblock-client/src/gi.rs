@@ -15,6 +15,7 @@ use digblock_core::gi::{GiChunk, GiOpacity, opacity};
 use digblock_platform::Gpu;
 use rustc_hash::FxHashMap;
 
+use crate::gpu_ledger::{GpuKind, GpuLedger};
 use crate::gpu_timer::{GpuTimer, Q_GI, Q_GI_TRACE};
 use crate::renderer::FrameUniforms;
 
@@ -702,6 +703,20 @@ impl GiDraw {
 	/// else that leaves last frame's buffers describing another world.
 	pub(crate) fn reset_history(&mut self) {
 		self.history_valid = false;
+	}
+
+	/// Destroy the GI world's textures — the voxel window and coarse
+	/// occupancy, the probe atlases and flags — for a renderer rebuilt on
+	/// a LIVE device (`Renderer::retire`). The small buffers and the bind
+	/// groups go with `self`.
+	pub(crate) fn retire(self, ledger: &mut GpuLedger) {
+		ledger.retire_texture(GpuKind::GiWindow, self.window);
+		ledger.retire_texture(GpuKind::GiWindow, self.coarse);
+		for c in self.cascades {
+			for tex in c.atlas.into_iter().chain([c.flags]) {
+				ledger.retire_texture(GpuKind::GiAtlas, tex);
+			}
+		}
 	}
 
 	/// Patch this frame's uniforms with the GI parameters the direct

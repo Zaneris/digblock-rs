@@ -60,6 +60,10 @@ pub trait Game: 'static {
 	/// blocks inside the acquire, while on the web the idle sits BETWEEN frames. Deriving busy time
 	/// from the frame-to-frame delta instead reads as "always full" on the web.
 	fn frame_started(&mut self) {}
+	/// What the host process holds, where the shell can read it — on the web the wasm linear
+	/// memory and Chrome's JS heap, sampled every few dozen frames. Never called natively.
+	/// Metrics facility; default ignores it.
+	fn set_host_memory(&mut self, _wasm_bytes: u64, _js_heap_bytes: u64) {}
 	/// Never called while suspended.
 	fn update(&mut self, dt: std::time::Duration);
 	/// The game renders into the borrowed swapchain view; every other
@@ -172,6 +176,73 @@ pub struct RunOptions {
 	/// on the web, raises the soft keyboard while the game reports a text field open. Set by the
 	/// launcher from its own device detection — the shell has no view of that.
 	pub touch: bool,
+	/// Do not request `TIMESTAMP_QUERY` even where the adapter offers it: the overlay's gpu line
+	/// reads n/a, and the frame runs without the pass-boundary counter sampling the queries cost.
+	pub no_gpu_timer: bool,
+	/// Present at most this many frames a second. On the web a redraw arriving early is skipped
+	/// and the next animation frame asked for; natively the remainder is slept. `None` is the
+	/// display's pace.
+	pub fps_cap: Option<f32>,
+}
+
+/// The wait a cap of `hz` puts between presents.
+pub fn frame_interval(hz: f32) -> std::time::Duration {
+	std::time::Duration::from_secs_f64(1.0 / f64::from(hz.max(1.0)))
+}
+
+/// Whether a redraw at `now` is too early for a frame due at `due`. Half a millisecond of slack
+/// keeps a 120 Hz animation frame from missing a 60 Hz cap by rounding.
+pub fn cap_holds(now: web_time::Instant, due: web_time::Instant) -> bool {
+	now + std::time::Duration::from_micros(500) < due
+}
+
+/// When the frame after one that passed at `now` against `due` is due: one interval on from the
+/// DEADLINE, not from now, so the frame's own cost never stretches the period — measured from
+/// the present, a 30 Hz cap paced a 6 ms frame at 25. A frame more than an interval late
+/// restarts the schedule from now instead of trying to catch up.
+pub fn next_deadline(
+	now: web_time::Instant,
+	due: web_time::Instant,
+	interval: std::time::Duration,
+) -> web_time::Instant {
+	let from = if now > due + interval { now } else { due };
+	from + interval
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use std::time::Duration;
+	use web_time::Instant;
+
+	#[test]
+	fn a_cap_of_60_presents_every_other_120hz_frame() {
+		let interval = frame_interval(60.0);
+		let vsync = Duration::from_secs_f64(1.0 / 120.0);
+		let t0 = Instant::now();
+		let due = next_deadline(t0, t0, interval);
+		assert!(
+			cap_holds(t0 + vsync, due),
+			"the first 120 Hz frame is early"
+		);
+		assert!(!cap_holds(t0 + vsync * 2, due), "the second lands");
+		assert!(!cap_holds(t0 + vsync * 3, due));
+	}
+
+	#[test]
+	fn the_schedule_runs_from_the_deadline_until_a_frame_falls_a_whole_interval_behind() {
+		let interval = frame_interval(30.0);
+		let t0 = Instant::now();
+		let due = t0 + interval;
+		// Six milliseconds of frame after the deadline: the next is still one interval on.
+		let late = due + Duration::from_millis(6);
+		assert_eq!(next_deadline(late, due, interval), due + interval);
+		assert!(!cap_holds(due, due));
+		assert!(cap_holds(t0 + interval / 2, due));
+		// A stall past a whole interval restarts from now.
+		let stalled = due + interval + Duration::from_millis(1);
+		assert_eq!(next_deadline(stalled, due, interval), stalled + interval);
+	}
 }
 
 /// Why `run` came back with a failure the process should report.

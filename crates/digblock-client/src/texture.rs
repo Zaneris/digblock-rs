@@ -6,6 +6,9 @@
 use digblock_platform::Gpu;
 
 pub(crate) struct BlockTextures {
+	/// The array itself — held so `Renderer::retire` can destroy it; the view alone would only
+	/// keep it alive (`gpu_ledger`).
+	pub texture: wgpu::Texture,
 	pub array_view: wgpu::TextureView,
 	pub sampler: wgpu::Sampler,
 	/// Mean rgb per texture layer (gamma-space, like the atlas) — the
@@ -38,7 +41,7 @@ fn box_downsample(src: &[u8], w: usize, h: usize) -> Vec<u8> {
 }
 
 impl BlockTextures {
-	pub(crate) fn new(gpu: &Gpu) -> Self {
+	pub(crate) fn new(gpu: &Gpu, ledger: &mut crate::gpu_ledger::GpuLedger) -> Self {
 		const SIZE: u32 = 64;
 		let levels = mip_levels(SIZE);
 		let texture = gpu.device.create_texture(&wgpu::TextureDescriptor {
@@ -101,6 +104,7 @@ impl BlockTextures {
 			}
 		}
 
+		ledger.charge_texture(crate::gpu_ledger::GpuKind::Textures, &texture);
 		let array_view = texture.create_view(&wgpu::TextureViewDescriptor {
 			dimension: Some(wgpu::TextureViewDimension::D2Array),
 			..Default::default()
@@ -118,6 +122,7 @@ impl BlockTextures {
 		});
 
 		Self {
+			texture,
 			array_view,
 			sampler,
 			layer_means,

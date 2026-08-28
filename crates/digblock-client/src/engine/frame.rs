@@ -627,7 +627,7 @@ impl Engine {
 			self.bench.pending.encode_ms = ms_since(t_encode);
 			self.bench.metrics.render = stats;
 			self.bench.metrics.gpu = r.gpu_pass_ms();
-			self.bench.metrics.gpu_buffer_bytes = r.gpu_buffer_bytes;
+			self.bench.metrics.gpu_mem = r.ledger.snapshot();
 		}
 		// Occupancy: the whole handler span minus the vsync wait that blocks
 		// inside it on native (and is effectively absent on the web). Closed

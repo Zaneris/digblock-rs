@@ -181,6 +181,10 @@ pub struct NetStats {
 #[derive(Clone, Copy, Default)]
 pub struct PipelineGauges {
 	pub gen_queue: u32,
+	/// Chunks classified-and-queued for the GI voxel window but not yet uploaded. A window that
+	/// is still FILLING traces cheaply — every march exits through empty bricks — so a fast
+	/// frame with this above zero is not the steady state.
+	pub gi_backlog: u32,
 	pub mesh_queue: u32,
 	pub in_flight: u32,
 	/// Generated chunks resident in the pipeline store.
@@ -266,6 +270,31 @@ pub struct WorldStats {
 	pub seed: f64,
 }
 
+/// The client's own accounting of what it has allocated on the GPU (the renderer's ledger):
+/// the live total, the three buckets that make most of it, and everything ever retired.
+/// `retired` is the number to watch at rest — before buffers and textures were destroyed on
+/// retirement it was what a session stranded in the browser's GPU process.
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub struct GpuMemory {
+	pub live: u64,
+	/// Chunk vertex buffers (live and pooled) plus the origin stream.
+	pub mesh: u64,
+	/// The GI voxel window, its coarse occupancy, and the probe atlases.
+	pub gi: u64,
+	/// The size-dependent frame targets and the GI screen history.
+	pub targets: u64,
+	pub retired: u64,
+}
+
+/// What the host process holds, where the platform can read it: on the web the wasm linear
+/// memory (a high-water mark — Rust's allocator never returns pages, so a CLIMB at rest is the
+/// signal, not the level) and Chrome's JS heap. Zero where unknown, natively always.
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub struct HostMemory {
+	pub wasm_bytes: u64,
+	pub js_heap_bytes: u64,
+}
+
 /// Per-frame snapshot for the debug overlay: everything it draws.
 #[derive(Clone, Default)]
 pub struct OverlayStats {
@@ -303,7 +332,8 @@ pub struct OverlayStats {
 	pub render: RenderStats,
 	/// Filled by the engine, not by `Metrics` — see [`WorldStats`].
 	pub world: WorldStats,
-	pub gpu_buffer_bytes: u64,
+	pub gpu_mem: GpuMemory,
+	pub host_mem: HostMemory,
 	pub workers: u32,
 	/// Streaming budget in effect this frame (adaptive on web; the fixed
 	/// config value elsewhere).
@@ -376,7 +406,8 @@ pub struct Metrics {
 	pub net: Option<NetStats>,
 	pub render: RenderStats,
 	pub gpu: Option<GpuPassMs>,
-	pub gpu_buffer_bytes: u64,
+	pub gpu_mem: GpuMemory,
+	pub host_mem: HostMemory,
 	pub workers: u32,
 	/// Streaming budget in effect (last-write gauge; see the engine's
 	/// adaptive controller).
@@ -415,7 +446,8 @@ gpu_prepass_ms,gpu_main_ms,gpu_water_ms,gpu_overlay_ms,\
 gpu_gi_ms,gpu_gi_trace_ms,gpu_gi_denoise_ms,gpu_depth_blit_ms,gpu_viewmodel_ms,gpu_upscale_ms,\
 gen_n,gen_avg_ms,gen_max_ms,mesh_n,mesh_avg_ms,mesh_max_ms,\
 uploads,upl_kb,stale,requeue,evict,sat,resident,gen_q,mesh_q,in_flight,upl_q,evict_q,\
-drawn,culled,water,draws,tris,gpu_bytes,budget_ms,sky_y,emitters,station";
+drawn,culled,water,draws,tris,gpu_bytes,budget_ms,sky_y,emitters,station,\
+gpu_retired,gi_q,host_wasm,host_js";
 
 impl Metrics {
 	/// `spike_log` comes from the launcher: core is env-free by convention,
@@ -473,7 +505,8 @@ impl Metrics {
 			net: None,
 			render: RenderStats::default(),
 			gpu: None,
-			gpu_buffer_bytes: 0,
+			gpu_mem: GpuMemory::default(),
+			host_mem: HostMemory::default(),
 			workers: 0,
 			stream_budget_ms: 0.0,
 			spike_log,
@@ -742,7 +775,8 @@ impl Metrics {
 			// Not a measurement and not `Metrics`' to know: the engine
 			// stamps it on the way to the overlay.
 			world: WorldStats::default(),
-			gpu_buffer_bytes: self.gpu_buffer_bytes,
+			gpu_mem: self.gpu_mem,
+			host_mem: self.host_mem,
 			workers: self.workers,
 			stream_budget_ms: self.stream_budget_ms,
 		}
@@ -834,7 +868,7 @@ impl Metrics {
 			return;
 		};
 		log::info!(
-			"{true_fps:5.1} fps | avg {:5.2} p95 {:5.2} p99 {:5.2} worst {:6.2} ms | busy {:5.2} out {:5.2} | hitch {} drop {} | gen {} up {} ({} KiB) | gen q {} mesh q {} fly {} upl q {} | resident {} | gpu {:.1} MB",
+			"{true_fps:5.1} fps | avg {:5.2} p95 {:5.2} p99 {:5.2} worst {:6.2} ms | busy {:5.2} out {:5.2} | hitch {} drop {} | gen {} up {} ({} KiB) | gen q {} mesh q {} fly {} upl q {} | resident {} | gpu {:.1} MB live {:.1} retired | gi q {}",
 			s.avg_ms,
 			s.p95_ms,
 			s.p99_ms,
@@ -859,7 +893,9 @@ impl Metrics {
 			self.gauges.in_flight,
 			self.gauges.upload_backlog,
 			self.gauges.resident,
-			self.gpu_buffer_bytes as f64 / (1024.0 * 1024.0),
+			self.gpu_mem.live as f64 / (1024.0 * 1024.0),
+			self.gpu_mem.retired as f64 / (1024.0 * 1024.0),
+			self.gauges.gi_backlog,
 		);
 		if let Some(w) = &mut self.csv {
 			use std::io::Write;
@@ -879,7 +915,7 @@ impl Metrics {
 {:.3},{:.3},{:.3},{:.3},{:.3},{:.3},\
 {},{:.2},{:.2},{},{:.2},{:.2},\
 {},{},{},{},{},{},{},{},{},{},{},{},\
-{},{},{},{},{},{},{:.2},{:.1},{},{}",
+{},{},{},{},{},{},{:.2},{:.1},{},{},{},{},{},{}",
 				s.avg_ms,
 				s.p95_ms,
 				s.p99_ms,
@@ -932,11 +968,15 @@ impl Metrics {
 				r.water_draws,
 				r.draw_calls,
 				r.triangles,
-				self.gpu_buffer_bytes,
+				self.gpu_mem.live,
 				self.stream_budget_ms,
 				r.sky_y,
 				r.emitters,
 				self.station,
+				self.gpu_mem.retired,
+				self.gauges.gi_backlog,
+				self.host_mem.wasm_bytes,
+				self.host_mem.js_heap_bytes,
 			);
 			let _ = w.flush();
 		}

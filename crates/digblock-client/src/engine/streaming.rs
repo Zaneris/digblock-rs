@@ -297,6 +297,7 @@ impl Engine {
 			in_flight: m.in_flight,
 			resident: self.pipeline.resident() as u32,
 			upload_backlog: self.stream.pending_uploads.len() as u32,
+			gi_backlog: self.stream.gi_queue.len() as u32,
 			evict_backlog: self.stream.pending_evicts.len() as u32,
 			// Written by pump_net earlier this frame; preserved here
 			// because the gauges are replaced wholesale.

@@ -19,6 +19,7 @@ impl GiDraw {
 		layer_means: &[[u8; 4]],
 		surface_format: wgpu::TextureFormat,
 		cfg: GiConfig,
+		ledger: &mut GpuLedger,
 	) -> Self {
 		let GiConfig {
 			debug_probes,
@@ -29,7 +30,7 @@ impl GiDraw {
 		let device = &gpu.device;
 		let queue = &gpu.queue;
 		let side = window_chunks * 16;
-		let (window, coarse) = window_textures(device, side);
+		let (window, coarse) = window_textures(device, side, ledger);
 		let lut = material_lut(layer_means);
 		let lut_buf = device.create_buffer(&wgpu::BufferDescriptor {
 			label: Some("gi material lut"),
@@ -184,6 +185,11 @@ impl GiDraw {
 			make_cascade(C0_DIMS, C0_SPACING, "c0"),
 			make_cascade(C1_DIMS, 8, "c1"),
 		];
+		for c in &cascades {
+			for tex in c.atlas.iter().chain([&c.flags]) {
+				ledger.charge_texture(GpuKind::GiAtlas, tex);
+			}
+		}
 
 		let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
 			label: Some("gi probe"),
@@ -608,15 +614,20 @@ impl GiDraw {
 	/// groups that name them; the cascades keep their history and the light maps their entries.
 	/// The fresh window is EMPTY, so the caller re-dirties every resident chunk
 	/// (`Pipeline::gi_redirty_all`) — exactly the device-loss rebuild's second half.
-	pub(crate) fn resize_window(&mut self, gpu: &Gpu, window_chunks: u32) {
+	pub(crate) fn resize_window(&mut self, gpu: &Gpu, window_chunks: u32, ledger: &mut GpuLedger) {
 		if window_chunks == self.window_chunks {
 			return;
 		}
 		let device = &gpu.device;
 		let side = window_chunks * 16;
-		let (window, coarse) = window_textures(device, side);
-		self.window = window;
-		self.coarse = coarse;
+		let (window, coarse) = window_textures(device, side, ledger);
+		// The old pair is DESTROYED, not dropped — 100 MiB at draw 20 that a drop would strand
+		// on the web (`gpu_ledger`). Safe here: the frame still reading it is already submitted,
+		// and every bind group naming it is rebuilt below before the next encode.
+		let old_window = std::mem::replace(&mut self.window, window);
+		let old_coarse = std::mem::replace(&mut self.coarse, coarse);
+		ledger.retire_texture(GpuKind::GiWindow, old_window);
+		ledger.retire_texture(GpuKind::GiWindow, old_coarse);
 		self.coarse_mirror = coarse_mirror(side);
 		// As at construction: the ceiling sits at the world top until the
 		// first upload lands, never at the empty mirror's answer.
@@ -668,8 +679,12 @@ struct WorldBinds<'a> {
 }
 
 /// The per-block class ids and the coarse occupancy over them, for a
-/// side in blocks (GI-DESIGN.md "Data model").
-fn window_textures(device: &wgpu::Device, side: u32) -> (wgpu::Texture, wgpu::Texture) {
+/// side in blocks (GI-DESIGN.md "Data model"), charged to the ledger.
+fn window_textures(
+	device: &wgpu::Device,
+	side: u32,
+	ledger: &mut GpuLedger,
+) -> (wgpu::Texture, wgpu::Texture) {
 	let window = device.create_texture(&wgpu::TextureDescriptor {
 		label: Some("gi voxel window"),
 		size: wgpu::Extent3d {
@@ -698,6 +713,8 @@ fn window_textures(device: &wgpu::Device, side: u32) -> (wgpu::Texture, wgpu::Te
 		usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
 		view_formats: &[],
 	});
+	ledger.charge_texture(GpuKind::GiWindow, &window);
+	ledger.charge_texture(GpuKind::GiWindow, &coarse);
 	(window, coarse)
 }
 

@@ -10,6 +10,7 @@ mod engine;
 mod font;
 mod gi;
 mod glass;
+mod gpu_ledger;
 mod gpu_timer;
 mod highlight;
 pub mod hotbar;

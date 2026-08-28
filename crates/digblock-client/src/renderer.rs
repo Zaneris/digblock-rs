@@ -6,6 +6,7 @@ use digblock_core::mesher::{MeshData, quad_indices};
 use digblock_core::metrics::RenderStats;
 use rustc_hash::FxHashMap;
 
+use crate::gpu_ledger::{GpuKind, GpuLedger};
 use crate::gpu_timer::{
 	GpuTimer, Q_DEPTH_BLIT, Q_GI_DENOISE, Q_GI_DENOISE2, Q_MAIN, Q_OVERLAY, Q_PREPASS, Q_UPSCALE,
 	Q_VIEWMODEL, Q_WATER,
@@ -276,10 +277,13 @@ pub(crate) struct Renderer {
 	next_slot: u32,
 	/// Capacity of `origin_buf` in slots.
 	chunk_slots: u32,
-	/// Total vertex-buffer bytes ALLOCATED (live meshes plus everything
-	/// parked in `pool`) — the honest GPU footprint, not the subset a
-	/// mesh currently fills.
-	pub gpu_buffer_bytes: u64,
+	/// Every big allocation this renderer holds, by kind, and everything it has retired — the
+	/// honest GPU footprint (live meshes plus the pool, the targets, the GI world), and the one
+	/// path a retired buffer or texture is destroyed through (`gpu_ledger`).
+	pub(crate) ledger: GpuLedger,
+	/// The block texture array, held for `retire` — the materials bind
+	/// group is what draws with it.
+	block_texture: wgpu::Texture,
 	/// None when the device lacks TIMESTAMP_QUERY.
 	gpu_timer: Option<GpuTimer>,
 	/// RTGI: the voxel window, probe cascades, and the half-res resolve
@@ -380,6 +384,10 @@ struct FrameTargets {
 	/// The scale the targets were built at — part of the rebuild key, so
 	/// moving either slider re-creates them.
 	scale: RenderScale,
+	/// The textures behind every view below, held so a rebuild can DESTROY the old set (see
+	/// `gpu_ledger`) — the views alone would keep them alive on native and strand them on the
+	/// web. Order is unimportant; `retire` takes them all.
+	textures: Vec<wgpu::Texture>,
 	/// Scene-pass depth attachment; resolved into `depth_copy_view` by
 	/// the depth-blit pass before water. (Views keep textures alive.)
 	depth_view: wgpu::TextureView,
@@ -434,6 +442,58 @@ struct FrameTargets {
 	gi_resolve_bg: wgpu::BindGroup,
 	/// One per a-trous iteration, each bound to the pair it reads.
 	gi_atrous_bg: [wgpu::BindGroup; 2],
+}
+
+impl Renderer {
+	/// Destroy everything big this renderer holds, for a rebuild on a LIVE device (a surface
+	/// format change, the drill's simulated device loss). Not for a lost device, whose
+	/// allocations die with it. The last frame that bound any of this is already submitted;
+	/// the replacement renderer binds only its own.
+	pub(crate) fn retire(self) {
+		let Renderer {
+			mut ledger,
+			targets,
+			chunks,
+			pool,
+			origin_buf,
+			gi,
+			block_texture,
+			..
+		} = self;
+		if let Some(t) = targets {
+			t.retire(&mut ledger);
+		}
+		for chunk in chunks {
+			for mesh in [chunk.solid, chunk.water, chunk.translucent]
+				.into_iter()
+				.flatten()
+			{
+				ledger.retire_buffer(GpuKind::ChunkVerts, mesh.buf);
+			}
+		}
+		for buf in pool.into_iter().flatten() {
+			ledger.retire_buffer(GpuKind::ChunkVerts, buf);
+		}
+		ledger.retire_buffer(GpuKind::ChunkOrigins, origin_buf);
+		gi.retire(&mut ledger);
+		ledger.retire_texture(GpuKind::Textures, block_texture);
+		log::info!(
+			"renderer retired: {:.1} MiB destroyed, {:.1} MiB left to the device",
+			ledger.retired() as f64 / (1024.0 * 1024.0),
+			ledger.live_total() as f64 / (1024.0 * 1024.0)
+		);
+	}
+}
+
+impl FrameTargets {
+	/// Destroy the set's textures. The views and bind groups go with `self`; nothing submitted
+	/// after this may bind them, which `ensure_targets` guarantees by building the replacement
+	/// set before the next encode.
+	fn retire(self, ledger: &mut GpuLedger) {
+		for tex in self.textures {
+			ledger.retire_texture(GpuKind::Targets, tex);
+		}
+	}
 }
 
 impl Renderer {

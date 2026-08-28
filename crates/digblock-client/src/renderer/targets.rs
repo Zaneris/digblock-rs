@@ -12,6 +12,12 @@ impl Renderer {
 		if self.targets.as_ref().map(|t| (t.size, t.scale)) == Some((size, scale)) {
 			return;
 		}
+		// The old set goes first, DESTROYED: the last frame that bound it
+		// is already submitted, and nothing binds it again — every group
+		// naming it is rebuilt below before the next encode (`gpu_ledger`).
+		if let Some(old) = self.targets.take() {
+			old.retire(&mut self.ledger);
+		}
 		// `size` stays the SURFACE size — it is the rebuild key, and it is
 		// what the overlay and every UI hit-test use. Only the world's
 		// targets shrink.
@@ -175,13 +181,15 @@ impl Renderer {
 		// here is a validation error, and the reason it is f32 is in
 		// gi::GI_ACC_FORMAT.
 		let acc = crate::gi::GI_ACC_FORMAT;
+		let gi_indirect = [gi_tex(acc, "gi indirect 0"), gi_tex(acc, "gi indirect 1")];
+		let gi_sun = [gi_tex(acc, "gi sun 0"), gi_tex(acc, "gi sun 1")];
 		let gi_indirect_view = [
-			gi_tex(acc, "gi indirect 0").create_view(&Default::default()),
-			gi_tex(acc, "gi indirect 1").create_view(&Default::default()),
+			gi_indirect[0].create_view(&Default::default()),
+			gi_indirect[1].create_view(&Default::default()),
 		];
 		let gi_sun_view = [
-			gi_tex(acc, "gi sun 0").create_view(&Default::default()),
-			gi_tex(acc, "gi sun 1").create_view(&Default::default()),
+			gi_sun[0].create_view(&Default::default()),
+			gi_sun[1].create_view(&Default::default()),
 		];
 		let scene_bg = |i: usize| {
 			gpu.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -218,9 +226,18 @@ impl Renderer {
 		// Fresh textures hold nothing: last frame's screen history went
 		// with them.
 		self.gi.reset_history();
+		let textures: Vec<wgpu::Texture> = [depth, depth_copy, normal_tex, scene, post]
+			.into_iter()
+			.chain(gi_indirect)
+			.chain(gi_sun)
+			.collect();
+		for tex in &textures {
+			self.ledger.charge_texture(GpuKind::Targets, tex);
+		}
 		self.targets = Some(FrameTargets {
 			size,
 			scale,
+			textures,
 			depth_view,
 			depth_copy_view,
 			normal_view,

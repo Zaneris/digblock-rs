@@ -22,7 +22,12 @@ impl Renderer {
 			gpu.queue
 				.write_buffer(&origin_buf, 0, bytemuck::cast_slice(&self.origins));
 		}
-		self.origin_buf = origin_buf;
+		self.ledger
+			.charge_buffer(GpuKind::ChunkOrigins, &origin_buf);
+		// The frame that is still reading the old stream was submitted
+		// before this; the destroy queues behind it (`gpu_ledger`).
+		let old_buf = std::mem::replace(&mut self.origin_buf, origin_buf);
+		self.ledger.retire_buffer(GpuKind::ChunkOrigins, old_buf);
 		self.chunk_slots = new_slots;
 		log::info!(
 			"chunk origin buffer grown: {old} -> {new_slots} slots ({} KiB), {} slots live",
@@ -79,7 +84,7 @@ impl Renderer {
 			usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
 			mapped_at_creation: false,
 		});
-		self.gpu_buffer_bytes += cap;
+		self.ledger.charge_buffer(GpuKind::ChunkVerts, &buf);
 		ChunkMesh {
 			buf,
 			cap,
@@ -90,9 +95,11 @@ impl Renderer {
 	/// Park a retired buffer for reuse, or free it once the pool is at its
 	/// ceiling. Safe to reuse immediately: the next write goes through the
 	/// queue, which orders it behind any in-flight frame still reading it.
+	/// Past the ceiling the buffer is DESTROYED, not dropped: a drop frees
+	/// nothing on the web until the JS wrapper is collected (`gpu_ledger`).
 	pub(super) fn recycle(&mut self, mesh: ChunkMesh) {
 		if self.pool_bytes + mesh.cap > POOL_BYTES_MAX {
-			self.gpu_buffer_bytes = self.gpu_buffer_bytes.saturating_sub(mesh.cap);
+			self.ledger.retire_buffer(GpuKind::ChunkVerts, mesh.buf);
 			return;
 		}
 		let class = (mesh.cap / SIZE_CLASS - 1) as usize;
@@ -198,7 +205,7 @@ impl Renderer {
 	/// RTGI: rebuild the voxel window for a new draw distance — see
 	/// `GiDraw::resize_window`; the caller re-dirties every resident chunk.
 	pub(crate) fn gi_resize_window(&mut self, gpu: &Gpu, window_chunks: u32) {
-		self.gi.resize_window(gpu, window_chunks);
+		self.gi.resize_window(gpu, window_chunks, &mut self.ledger);
 	}
 
 	/// RTGI: queue probe invalidation around an edited cell.

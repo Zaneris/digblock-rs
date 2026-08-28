@@ -80,6 +80,9 @@ pub(crate) fn capture(
 	}
 	drop(data);
 	buffer.unmap();
+	// A drop would free this on native; destroying is the rule for every
+	// retired buffer so the two platforms cannot drift.
+	buffer.destroy();
 
 	if let Some(parent) = path.parent() {
 		let _ = std::fs::create_dir_all(parent);

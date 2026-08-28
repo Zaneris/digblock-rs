@@ -131,6 +131,8 @@ struct App<G: Game> {
 	/// edge, keeping the classic click-to-grab behavior bit-identical.
 	prev_wants_grab: bool,
 	frames_rendered: u64,
+	/// When the next frame is due under `RunOptions::fps_cap`.
+	next_frame_due: Option<Instant>,
 	/// The goodbye has run. There are three doors out — the window's
 	/// close button, a capture exhausting its frames, and the event
 	/// loop's own `exiting` — and the first two are followed by the
@@ -202,6 +204,7 @@ pub(crate) fn run(game: impl Game, options: RunOptions) -> Result<(), crate::Run
 		cursor_grabbed: false,
 		prev_wants_grab: true,
 		frames_rendered: 0,
+		next_frame_due: None,
 		shut_down: false,
 		screenshot_pending: false,
 		launched_at: Instant::now(),
@@ -332,6 +335,7 @@ fn window_attrs(
 async fn init_gpu(
 	window: Arc<Window>,
 	no_vsync: bool,
+	no_gpu_timer: bool,
 ) -> Result<(Gpu, wgpu::Surface<'static>, wgpu::SurfaceConfiguration), String> {
 	// No display handle at the instance: the window carries its own, and
 	// `create_surface` is the only thing here that needs one.
@@ -352,8 +356,13 @@ async fn init_gpu(
 		.await
 		.map_err(|e| format!("no compatible GPU adapter: {e}"))?;
 	log::info!("adapter: {:?}", adapter.get_info());
-	// GPU pass timing (debug/metrics facility) when the adapter has it.
-	let required_features = adapter.features() & wgpu::Features::TIMESTAMP_QUERY;
+	// GPU pass timing (debug/metrics facility) when the adapter has it,
+	// unless the run opted out (`DIG_NO_GPU_TIMER` / `?nogputimer`).
+	let required_features = if no_gpu_timer {
+		wgpu::Features::empty()
+	} else {
+		adapter.features() & wgpu::Features::TIMESTAMP_QUERY
+	};
 	log::info!(
 		"gpu timestamps: {}",
 		required_features.contains(wgpu::Features::TIMESTAMP_QUERY)
@@ -544,9 +553,12 @@ impl<G: Game> App<G> {
 		self.device_lost.store(false, Ordering::Release);
 		#[cfg(not(target_arch = "wasm32"))]
 		{
-			let (gpu, surface, config) =
-				pollster::block_on(init_gpu(window.clone(), self.options.no_vsync))
-					.expect("gpu init");
+			let (gpu, surface, config) = pollster::block_on(init_gpu(
+				window.clone(),
+				self.options.no_vsync,
+				self.options.no_gpu_timer,
+			))
+			.expect("gpu init");
 			self.finish_reinit(window, gpu, surface, config);
 		}
 		#[cfg(target_arch = "wasm32")]
@@ -567,9 +579,12 @@ impl<G: Game> App<G> {
 		);
 		#[cfg(not(target_arch = "wasm32"))]
 		{
-			let (gpu, surface, config) =
-				pollster::block_on(init_gpu(window.clone(), self.options.no_vsync))
-					.expect("gpu init");
+			let (gpu, surface, config) = pollster::block_on(init_gpu(
+				window.clone(),
+				self.options.no_vsync,
+				self.options.no_gpu_timer,
+			))
+			.expect("gpu init");
 			self.finish_init(window, gpu, surface, config, el);
 		}
 		#[cfg(target_arch = "wasm32")]
@@ -591,9 +606,10 @@ impl<G: Game> App<G> {
 	fn spawn_gpu_init(&mut self, window: Arc<Window>, reinit: bool) {
 		let proxy = self.proxy.clone();
 		let no_vsync = self.options.no_vsync;
+		let no_gpu_timer = self.options.no_gpu_timer;
 		let w = window.clone();
 		wasm_bindgen_futures::spawn_local(async move {
-			match init_gpu(w, no_vsync).await {
+			match init_gpu(w, no_vsync, no_gpu_timer).await {
 				Ok((gpu, surface, config)) => {
 					// Fixed contract with the apps/web page (like the canvas
 					// id): the device is in hand, and everything left before
@@ -802,6 +818,26 @@ impl<G: Game> App<G> {
 			self.dispatch(LcEvent::DeviceLost, el);
 			return;
 		}
+		// The frame cap, before the occupancy span opens so a held frame
+		// is not a frame: on the web the redraw is declined and the next
+		// animation frame asked for; natively the remainder is slept.
+		if let Some(hz) = self.options.fps_cap {
+			let interval = crate::frame_interval(hz);
+			let now = Instant::now();
+			let due = self.next_frame_due.unwrap_or(now);
+			if crate::cap_holds(now, due) {
+				#[cfg(target_arch = "wasm32")]
+				{
+					if let AppState::Running(r) = &self.state {
+						r.window.request_redraw();
+					}
+					return;
+				}
+				#[cfg(not(target_arch = "wasm32"))]
+				std::thread::sleep(due - now);
+			}
+			self.next_frame_due = Some(crate::next_deadline(Instant::now(), due, interval));
+		}
 		// Opens the occupancy span; the game closes it inside `render`, so
 		// every scrap of main-thread work lands inside it — not just the
 		// phases that happen to be timed individually.
@@ -943,6 +979,13 @@ impl<G: Game> App<G> {
 
 		if let Some(frame) = frame {
 			r.gpu.queue.present(frame);
+		}
+		// The host's memory, for the overlay's `mem` line: a JS call, so
+		// not every frame.
+		#[cfg(target_arch = "wasm32")]
+		if self.frames_rendered.is_multiple_of(60) {
+			let (wasm, js) = host_memory();
+			self.game.set_host_memory(wasm, js);
 		}
 		// First frame is on screen: tell the page to drop its loading
 		// overlay (fixed contract with apps/web's index.html, like the
@@ -1125,6 +1168,25 @@ impl<G: Game> App<G> {
 			self.grab_cursor(true);
 		}
 	}
+}
+
+/// The wasm linear memory's size and, on Chrome, the JS heap in use (`performance.memory`, a
+/// non-standard field read reflectively; 0 where absent).
+#[cfg(target_arch = "wasm32")]
+fn host_memory() -> (u64, u64) {
+	use wasm_bindgen::JsCast;
+	let wasm = wasm_bindgen::memory()
+		.dyn_into::<js_sys::WebAssembly::Memory>()
+		.ok()
+		.and_then(|m| m.buffer().dyn_into::<js_sys::ArrayBuffer>().ok())
+		.map_or(0, |b| u64::from(b.byte_length()));
+	let js = web_sys::window()
+		.and_then(|w| w.performance())
+		.and_then(|p| js_sys::Reflect::get(&p, &"memory".into()).ok())
+		.and_then(|m| js_sys::Reflect::get(&m, &"usedJSHeapSize".into()).ok())
+		.and_then(|v| v.as_f64())
+		.map_or(0, |v| v as u64);
+	(wasm, js)
 }
 
 /// One side of the fixed contract with the apps/web page (like the canvas

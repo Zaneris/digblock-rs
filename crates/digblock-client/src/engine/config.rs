@@ -401,6 +401,14 @@ pub struct EngineConfig {
 	/// environment inside core answers None forever on wasm, which is
 	/// exactly the platform whose spikes most need attributing.
 	pub spike_log: bool,
+	/// Ask the device for `TIMESTAMP_QUERY` (the overlay's gpu line). `DIG_NO_GPU_TIMER` /
+	/// `?nogputimer` clears it — the A/B for whether the pass-boundary counter sampling the
+	/// queries cost on some drivers is part of a frame's cost.
+	pub gpu_timer: bool,
+	/// Present at most this many frames a second (`DIG_FPS_CAP` / `?fpscap`); `None` is the
+	/// display's own pace. A measurement knob on desktop and a real one on a laptop or a
+	/// 120 Hz browser tab, where halving the presents halves the GPU load — the thermal A/B.
+	pub fps_cap: Option<f32>,
 	/// Mesh bytes handed to the queue per frame. Wall-clock alone cannot bound this on the web:
 	/// `write_buffer` merely RECORDS the copy and Chrome's GPU process performs the staging
 	/// transfer at submit, so the cost lands after everything this engine can measure.
@@ -487,6 +495,8 @@ impl EngineConfig {
 			account: None,
 			legacy_identity: None,
 			spike_log: false,
+			gpu_timer: true,
+			fps_cap: None,
 			upload_bytes_max: UPLOAD_BYTES_MAX_NATIVE,
 			debug_gi: false,
 			debug_gi_probes: false,

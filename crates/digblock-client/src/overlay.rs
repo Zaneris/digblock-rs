@@ -45,6 +45,8 @@ impl std::fmt::Display for MsOrDash {
 /// the widest. `debug_lines_fit_the_column_budget` pins it from both sides: every line must fit,
 /// and the budget must not sit far past the widest, so growing it to paper over a line is out.
 const DEBUG_COLS: usize = 116;
+/// Rows on the debug panel — `debug_lines` fills exactly this many.
+const DEBUG_LINES: usize = 9;
 
 /// Baseline-to-baseline spacing in the debug panel. Never tighter than
 /// the mono face's own line box, so swapping in a taller face can't make
@@ -179,7 +181,11 @@ pub(crate) struct Overlay {
 /// Compose the debug panel's lines. Split out from the drawing so the
 /// column budget can be pinned headless — see
 /// `debug_lines_fit_the_column_budget`.
-fn debug_lines(stats: &OverlayStats, scratch: &mut String, lines: &mut [(u32, String); 8]) {
+fn debug_lines(
+	stats: &OverlayStats,
+	scratch: &mut String,
+	lines: &mut [(u32, String); DEBUG_LINES],
+) {
 	let s = stats;
 	let mut line = |i: usize, color: u32, args: std::fmt::Arguments<'_>| {
 		scratch.clear();
@@ -297,18 +303,48 @@ fn debug_lines(stats: &OverlayStats, scratch: &mut String, lines: &mut [(u32, St
 		5,
 		DIM,
 		format_args!(
-			"draw {:>5} drawn {:>5} culled | water {:>4} calls {:>5} tri {:6.2}M vram {:6.1}M | sky {:>4.0} emit {:>4}",
+			"draw {:>5} drawn {:>5} culled | water {:>4} calls {:>5} tri {:6.2}M | sky {:>4.0} emit {:>4}",
 			r.chunks_drawn,
 			r.chunks_culled,
 			r.water_draws,
 			r.draw_calls,
 			f64::from(r.triangles) / 1.0e6,
-			s.gpu_buffer_bytes as f64 / (1024.0 * 1024.0),
-			// The GI window's sky ceiling and emitter count. Both RATCHET
-			// as the world is explored — see RenderStats::sky_y. If frame
-			// time is degrading over a session, watch these two.
+			// The GI window's sky ceiling and emitter count. Both track
+			// RESIDENCY (eviction prunes them — `GiDraw::debug_state`), so
+			// a climb is terrain in the window, not a session ratchet.
 			r.sky_y,
 			r.emitters
+		),
+	);
+	// Memory. `vram` is the renderer's own ledger of what it holds on the GPU — every big
+	// texture and buffer, not just the meshes — and `retired` everything it has ever destroyed.
+	// At rest both must hold still: before retirement DESTROYED (`gpu_ledger`), `retired` is
+	// what a session stranded in the browser's GPU process. `wasm`/`js` are the host's numbers
+	// on the web (a wasm high-water mark and Chrome's JS heap; n/a natively), and `gi q` the
+	// voxel-window backlog — a window still filling traces cheaply, so a fast frame with it
+	// above zero is not yet the steady state.
+	let m = &s.gpu_mem;
+	let mib = |b: u64| b as f64 / (1024.0 * 1024.0);
+	let host = |b: u64| {
+		if b == 0 {
+			"n/a".to_owned()
+		} else {
+			format!("{:.1}M", mib(b))
+		}
+	};
+	line(
+		6,
+		DIM,
+		format_args!(
+			"mem  vram {:6.1}M (mesh {:6.1} gi {:6.1} tgt {:6.1}) retired {:6.1}M | wasm {:>7} js {:>7} | gi q {:>5}",
+			mib(m.live),
+			mib(m.mesh),
+			mib(m.gi),
+			mib(m.targets),
+			mib(m.retired),
+			host(s.host_mem.wasm_bytes),
+			host(s.host_mem.js_heap_bytes),
+			s.gauges.gi_backlog.min(99999)
 		),
 	);
 	// Connection health. TWO round trips, deliberately, because they answer
@@ -330,7 +366,7 @@ fn debug_lines(stats: &OverlayStats, scratch: &mut String, lines: &mut [(u32, St
 	// sit at 0.0 unless the server is rejecting claims.
 	match &s.net {
 		Some(n) => line(
-			6,
+			7,
 			DIM,
 			format_args!(
 				"net  ping {} rtt {:5.1} +-{:4.1} ms | dn {:6.1} up {:6.1} kB/s | snap {:4.1}/s rep {:4.1}/s | lead {:>2} pend {:>3} rem {:>2}",
@@ -346,7 +382,7 @@ fn debug_lines(stats: &OverlayStats, scratch: &mut String, lines: &mut [(u32, St
 				n.remotes.min(99),
 			),
 		),
-		None => line(6, DIM, format_args!("net  offline")),
+		None => line(7, DIM, format_args!("net  offline")),
 	}
 	// Where this frame was taken. Not a measurement — it is on a performance panel because a
 	// screenshot of a rendering bug is useless without the world it happened in, and every field
@@ -356,7 +392,7 @@ fn debug_lines(stats: &OverlayStats, scratch: &mut String, lines: &mut [(u32, St
 	let w = &s.world;
 	let facing = digblock_core::compass::compass_abbrev(look_dir(w.yaw_deg, w.pitch_deg));
 	line(
-		7,
+		8,
 		DIM,
 		format_args!(
 			"pos {:>9.1} {:>7.1} {:>9.1} facing {:>2} yaw {:>6.1} pitch {:>5.1} | tod {:>5.1} | seed {}",
@@ -716,7 +752,7 @@ impl Overlay {
 
 	fn push_debug_panel(&mut self, size: (u32, u32), stats: &OverlayStats, history: &[f32]) {
 		// Compose the text block first so the backdrop can be sized to it.
-		let mut lines: [(u32, String); 8] = Default::default();
+		let mut lines: [(u32, String); DEBUG_LINES] = Default::default();
 		let mut scratch = std::mem::take(&mut self.line_scratch);
 		debug_lines(stats, &mut scratch, &mut lines);
 		self.line_scratch = scratch;
@@ -1023,7 +1059,17 @@ mod tests {
 			evicted: 9999,
 			upload_saturated: 9999,
 			workers: 99,
-			gpu_buffer_bytes: 999 * 1024 * 1024,
+			gpu_mem: digblock_core::metrics::GpuMemory {
+				live: 9999 * 1024 * 1024,
+				mesh: 9999 * 1024 * 1024,
+				gi: 9999 * 1024 * 1024,
+				targets: 9999 * 1024 * 1024,
+				retired: 9999 * 1024 * 1024,
+			},
+			host_mem: digblock_core::metrics::HostMemory {
+				wasm_bytes: 9999 * 1024 * 1024,
+				js_heap_bytes: 9999 * 1024 * 1024,
+			},
 			stream_budget_ms: 999.9,
 			..Default::default()
 		};
@@ -1044,6 +1090,7 @@ mod tests {
 		stats.gauges.in_flight = 999;
 		stats.gauges.resident = 99999;
 		stats.gauges.upload_bytes = 99999 * 1024;
+		stats.gauges.gi_backlog = u32::MAX;
 		stats.gen_jobs.count = 9999;
 		stats.mesh_jobs.count = 9999;
 		stats.render.chunks_drawn = 99999;
@@ -1094,7 +1141,7 @@ mod tests {
 		assert_eq!(seed_text(42.0), "42", "an ordinary seed reads plainly");
 
 		let mut scratch = String::new();
-		let mut lines: [(u32, String); 8] = Default::default();
+		let mut lines: [(u32, String); DEBUG_LINES] = Default::default();
 		debug_lines(&stats, &mut scratch, &mut lines);
 		for (i, (_, l)) in lines.iter().enumerate() {
 			let n = l.chars().count();
@@ -1121,7 +1168,7 @@ mod tests {
 	fn panel_width_is_independent_of_the_numbers() {
 		let mut scratch = String::new();
 		let widths = |s: &OverlayStats, scratch: &mut String| {
-			let mut lines: [(u32, String); 8] = Default::default();
+			let mut lines: [(u32, String); DEBUG_LINES] = Default::default();
 			debug_lines(s, scratch, &mut lines);
 			lines.map(|(_, l)| l.chars().count())
 		};

@@ -137,7 +137,8 @@ impl Renderer {
 		// Textures + the GI system come before the pipelines: the solid
 		// layout references the GI scene bind-group layout, and GiDraw's
 		// material LUT needs the per-layer means the atlas upload computes.
-		let textures = BlockTextures::new(gpu);
+		let mut ledger = GpuLedger::default();
+		let textures = BlockTextures::new(gpu, &mut ledger);
 		let gi = crate::gi::GiDraw::new(
 			gpu,
 			crate::gi::window_chunks_for(config.draw_dist),
@@ -149,6 +150,7 @@ impl Renderer {
 				gather_iters: config.gi_gather_iters,
 				sun_iters: config.gi_sun_iters,
 			},
+			&mut ledger,
 		);
 
 		// Shared group scheme: 0 = frame, 1 = materials, 2 = GI. For the solids that's the two
@@ -401,7 +403,8 @@ impl Renderer {
 			free_slots: Vec::new(),
 			next_slot: 0,
 			chunk_slots,
-			gpu_buffer_bytes: 0,
+			ledger,
+			block_texture: textures.texture,
 			gpu_timer: GpuTimer::new(gpu),
 			debug_gi: config.debug_gi,
 			stub: config.stub,

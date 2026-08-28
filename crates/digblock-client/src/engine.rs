@@ -1068,6 +1068,13 @@ impl Game for Engine {
 		self.bench.frame_start = Some(web_time::Instant::now());
 	}
 
+	fn set_host_memory(&mut self, wasm_bytes: u64, js_heap_bytes: u64) {
+		self.bench.metrics.host_mem = digblock_core::metrics::HostMemory {
+			wasm_bytes,
+			js_heap_bytes,
+		};
+	}
+
 	fn frame_acquired(&mut self, acquire_wait: Duration) {
 		self.bench.pending.acquire_ms = acquire_wait.as_secs_f32() * 1000.0;
 	}
@@ -1177,8 +1184,16 @@ impl Game for Engine {
 	}
 
 	fn rebuild_gpu_resources(&mut self, gpu: &Gpu, surface_format: wgpu::TextureFormat) {
-		// Device loss: rebuild every device-lifetime object; meshes
-		// stream back in from retained chunk data via the pipeline.
+		// The old renderer's allocations are DESTROYED rather than left to
+		// the drop, which frees nothing on the web (`gpu_ledger`). On a
+		// live device — a format change, the drill's simulated loss — that
+		// is the memory back now; after a real loss the handles belong to
+		// the dead device and destroy is a no-op there, so one path serves
+		// both. Then rebuild every device-lifetime object; meshes stream
+		// back in from retained chunk data via the pipeline.
+		if let Some(old) = self.renderer.take() {
+			old.retire();
+		}
 		self.build_renderer(gpu, surface_format);
 		log::info!("engine: renderer rebuilt (device loss), re-mesh queued");
 	}
