@@ -50,13 +50,6 @@ Debug keys: **F7** re-queue GI · **F8** screenshot · **F9** suspend/resume dri
 | `apps/master`                          | .NET 10 minimal API — accounts, server registry, join tokens. Not in the cargo workspace.                             |
 | `tools/texgen`, `tools/shadercheck`    | Derived-texture generator; the real-Chrome shader gate.                                                               |
 
-## Documentation
-
-`CLAUDE.md` is the orientation map and the invariants that bite if broken. The reasoning lives in the design docs:
-`GI-DESIGN.md` (lighting), `SKILLS-DESIGN.md` (skills, economy, catalog), `AUTH-DESIGN.md` (accounts and the master's
-trust model), `BENCH.md` (every perf measurement, including the ones that refuted a hypothesis), and `DELVE-DESIGN.md` /
-`SOCIAL-DESIGN.md` for work not yet built.
-
 ## iOS
 
 `apps/ios/xcode/DigBlock.xcodeproj` is generated from `project.yml` — edit the yml and rerun `xcodegen` rather than
