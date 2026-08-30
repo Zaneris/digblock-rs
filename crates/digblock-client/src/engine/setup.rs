@@ -360,20 +360,11 @@ impl Engine {
 				digblock_core::skills::total_xp_for(need),
 			);
 		}
-		if let Some(node) = engine.config.debug_node {
-			// The surface twin of the DIG_ORE grant: exactly the Alchemy
-			// level that reveals the kind, read out of the unlock table.
-			// Leystone's chamber needs the ROCK wall cleared too, or the
-			// capture stands in front of a find it cannot legally swing at.
-			let need = digblock_core::unlock::alchemy_reveal(node).unwrap_or(1);
-			engine.skills.set_total(
-				digblock_core::skills::Skill::Alchemy,
-				digblock_core::skills::total_xp_for(need),
-			);
-			engine.skills.set_total(
-				digblock_core::skills::Skill::Mining,
-				digblock_core::skills::total_xp_for(digblock_core::unlock::mine(node)),
-			);
+		if let Some(_node) = engine.config.debug_node {
+			// The surface twin of the DIG_ORE grant: the siphon is the
+			// surface nodes' whole gate now — reveal and draw both — so the
+			// scene is handed one instead of any level.
+			engine.inventory.add(BlockType::EssenceSiphon, 1);
 		}
 		if engine.config.debug_mining > 0 {
 			// Last, so an explicit level overrides the one `debug_ore`

@@ -41,48 +41,55 @@ fn the_reveal_stamp_and_the_dig_path_agree() {
 	// OR-ed across all three lets the springstone box satisfy it alone while the Wood pass
 	// stamps nothing anywhere in the sweep.
 	let mut stamped_host = std::collections::HashSet::new();
-	// Boxes straddling the bands' edges, both reveal axes stepped —
+	// Boxes straddling the bands' edges, both reveal gates stepped —
 	// mixed tiers, edited cells, and the leystone band's seam with the
 	// deep tiers all in one sweep.
-	for (origin, mining, alchemy, edited) in [
-		((-24, 1, -4), max, max, vec![]),
-		((-24, 1, -4), 10, 1, vec![]),
+	for (origin, mining, siphon, edited) in [
+		((-24, 1, -4), max, true, vec![]),
+		((-24, 1, -4), 10, false, vec![]),
 		(
 			(-24, 1, -4),
 			30,
-			7,
+			true,
 			vec![pidx(0, 0, 0) as u16, pidx(3, 4, 5) as u16],
 		),
-		((0, 100, -16), max, max, vec![]),
-		((0, 100, -16), max, 1, vec![]),
-		((0, 120, -16), 1, max, vec![]),
-		((0, 40, -24), 55, 3, vec![]),
+		((0, 100, -16), max, true, vec![]),
+		// The leystone band with no siphon: the deposit stream runs on
+		// Mining alone and the surface tier stays hidden in it.
+		((0, 100, -16), max, false, vec![]),
+		((0, 120, -16), 1, true, vec![]),
+		((0, 40, -24), 55, false, vec![]),
 		// A box holding real SPRINGSTONE beds — found by walking the
 		// seed, and asserted below to still hold one, because a
 		// coordinate that quietly stopped covering the Sand pass is
 		// exactly how the snapshot prefilter survived this test.
-		((8, 146, -400), max, max, vec![]),
-		((8, 146, -400), max, 11, vec![]),
+		((8, 146, -400), max, true, vec![]),
+		((8, 146, -400), max, false, vec![]),
 		// And one holding a real HEARTWOOD trunk, for the same
 		// reason and found the same way. Without it the Wood pass
 		// stamped nothing anywhere in this sweep, so every case
 		// agreed trivially at "neither side sees a node" and the
 		// pass was untested by the test that claims to cover it.
-		// The second entry is the day-one reveal: heartwood is
-		// visible at the level everyone starts at.
-		((-481, 127, -481), max, max, vec![]),
-		((-481, 127, -481), 1, 1, vec![]),
-		// Below every reveal on both axes nothing may be stamped.
-		((-24, 1, -4), 9, 1, vec![]),
+		// The second entry is the day-one reveal: a fresh player who
+		// has just made their siphon sees heartwood at once.
+		((-481, 127, -481), max, true, vec![]),
+		((-481, 127, -481), 1, true, vec![]),
+		// Below every reveal, siphonless, nothing may be stamped.
+		((-24, 1, -4), 9, false, vec![]),
 	] {
 		for host in hosts {
+			let levels = Levels {
+				mining,
+				alchemy: 1,
+				siphon,
+			};
 			let mut input = MeshInput {
 				blocks: Box::new([host as u16; PADDED_VOLUME]),
 				missing: [false; 6],
 				nodes: Some(NodeStamp {
 					seed,
 					origin,
-					levels: Levels { mining, alchemy },
+					levels,
 					hosts: hosts_of(host),
 					edited: edited.clone(),
 				}),
@@ -91,7 +98,6 @@ fn the_reveal_stamp_and_the_dig_path_agree() {
 			if input.blocks.iter().any(|&c| c != host as u16) {
 				stamped_host.insert(host as u16);
 			}
-			let levels = Levels { mining, alchemy };
 			for ly in 0..=span {
 				for lz in 0..=span {
 					for lx in 0..=span {
@@ -103,7 +109,7 @@ fn the_reveal_stamp_and_the_dig_path_agree() {
 								.map_or(host as u16, |o| o as u16);
 						assert_eq!(
 							input.blocks[i], want,
-							"{host:?} ({x},{y},{z}) at mining {mining} / alchemy {alchemy}"
+							"{host:?} ({x},{y},{z}) at mining {mining} / siphon {siphon}"
 						);
 					}
 				}
@@ -155,6 +161,7 @@ fn the_reveal_stamp_leaves_everything_else_alone() {
 				levels: Levels {
 					mining,
 					alchemy: crate::skills::MAX_LEVEL,
+					siphon: true,
 				},
 				hosts: hosts_of(B::Stone),
 				edited: Vec::new(),

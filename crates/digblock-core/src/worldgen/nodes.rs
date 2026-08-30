@@ -2,11 +2,11 @@
 //! not ground.**
 //!
 //! A node is a derived find: a salted hash or a pure worldgen query says where one stands, the
-//! mesh stamp reveals it at a skill level, the siphon draws it in place, and the draw leaves the
-//! kind's own SPENT face. Nothing is stored, so nodes appear retroactively in existing worlds and
-//! the goldens do not move. Seven live faces, two reveal skills: the four ORE tiers in pristine
-//! deep Stone on MINING; Leystone, Heartwood and Springstone on ALCHEMY, so Alchemy owns the
-//! surface hunt the way Mining owns the deep one.
+//! mesh stamp reveals it, the siphon draws it in place, and the draw leaves the kind's own SPENT
+//! face. Nothing is stored, so nodes appear retroactively in existing worlds and the goldens do
+//! not move. Seven live faces, two reveal gates: the four ORE tiers in pristine deep Stone on a
+//! MINING level; Leystone, Heartwood and Springstone on the SIPHON itself — the moment you make
+//! the essence tool, every surface source fades into the world at once.
 //!
 //! **The unedited rule is the anti-dupe**: a node manifests only where the cell still holds its
 //! pristine host and has never been written, and `JournalIndex::record` only ever inserts, so a
@@ -31,36 +31,42 @@ pub const NODES: [BlockType; 7] = [
 	BlockType::Springstone,
 ];
 
-/// The two levels every node question is asked at. A plain pair rather
-/// than a `SkillSet`, because the mesh stamp crosses a worker boundary
-/// carrying levels, not XP totals.
+/// Everything a node question is asked at: the two skill levels, and whether the player holds an
+/// essence siphon — the surface nodes' whole gate. A plain struct rather than a `SkillSet` and
+/// an inventory, because the mesh stamp crosses a worker boundary carrying answers, not state.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Levels {
 	pub mining: u32,
 	pub alchemy: u32,
+	/// Does the pack hold an [`BlockType::EssenceSiphon`]? Owning one IS
+	/// having made one: the siphon is never consumed and never placed, so
+	/// the bit only ever rises within a world.
+	pub siphon: bool,
 }
 
 impl Levels {
 	#[inline]
-	pub fn of(skills: &crate::skills::SkillSet) -> Self {
+	pub fn of(skills: &crate::skills::SkillSet, inventory: &crate::inventory::Inventory) -> Self {
 		Self {
 			mining: skills.level(crate::skills::Skill::Mining),
 			alchemy: skills.level(crate::skills::Skill::Alchemy),
+			siphon: inventory.count(BlockType::EssenceSiphon) > 0,
 		}
 	}
 }
 
-/// Does this player SEE this node kind at all? Each kind answers to exactly one skill's reveal
-/// table; a block in neither table is not a node and is never revealed. Public because it must be
-/// the ONLY spelling of the question — a disjunction instead of this if/else answers the opposite
-/// way for a block in neither table, and the mesh stamp's second pass reverts a claim on exactly
-/// that answer, leaving a tier with no reveal entry in the picture and refused at the dig.
+/// Does this player SEE this node kind at all? Each kind answers to exactly one reveal table —
+/// the ore tiers to a Mining level, the surface nodes to the siphon bit; a block in neither
+/// table is not a node and is never revealed. Public because it must be the ONLY spelling of the
+/// question — a disjunction instead of this if/else answers the opposite way for a block in
+/// neither table, and the mesh stamp's second pass reverts a claim on exactly that answer,
+/// leaving a tier with no reveal entry in the picture and refused at the dig.
 #[inline]
 pub fn reveal_met(node: BlockType, levels: Levels) -> bool {
 	if let Some(need) = crate::unlock::reveal(node) {
 		levels.mining >= need
-	} else if let Some(need) = crate::unlock::alchemy_reveal(node) {
-		levels.alchemy >= need
+	} else if crate::unlock::siphon_reveal(node) {
+		levels.siphon
 	} else {
 		false
 	}

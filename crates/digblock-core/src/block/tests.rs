@@ -679,7 +679,7 @@ fn every_essence_icon_layer_is_its_own_and_never_a_face() {
 	}
 }
 
-/// A surface node (the Alchemy-revealed kind) wears the palette of the
+/// A surface node (the siphon-revealed kind) wears the palette of the
 /// one essence it pays, so the find in the world and the chip on the
 /// screen are one colour. The ore tiers are exempt on purpose: a tier's
 /// flecks are its identity, and several pay the same essence.
@@ -687,7 +687,7 @@ fn every_essence_icon_layer_is_its_own_and_never_a_face() {
 fn a_surface_node_wears_its_essence() {
 	let mut checked = 0;
 	for node in crate::worldgen::nodes::NODES {
-		if crate::unlock::alchemy_reveal(node).is_none() {
+		if !crate::unlock::siphon_reveal(node) {
 			continue;
 		}
 		let units = node.material().map_or(&[][..], |m| m.node_units());

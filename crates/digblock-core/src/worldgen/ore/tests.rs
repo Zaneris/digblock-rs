@@ -180,6 +180,7 @@ fn ore_never_manifests_in_an_edited_cell() {
 	let max = Levels {
 		mining: crate::skills::MAX_LEVEL,
 		alchemy: crate::skills::MAX_LEVEL,
+		siphon: true,
 	};
 	assert!(
 		revealed(
@@ -258,7 +259,7 @@ fn ore_never_manifests_in_an_edited_cell() {
 /// You dig what you can see: below a tier's reveal level the cell is
 /// stone to that player, and stays stone through the dig. The Mining
 /// tiers gate on Mining alone, and the surface tier riding this same
-/// stream gates on Alchemy alone.
+/// stream gates on the siphon alone.
 #[test]
 fn a_tier_is_invisible_below_its_level() {
 	use crate::worldgen::nodes::{Levels, revealed};
@@ -282,61 +283,68 @@ fn a_tier_is_invisible_below_its_level() {
 			Some(ore),
 			"the centre is in the blob"
 		);
-		let at = |mining, alchemy| {
+		let at = |mining, siphon| {
 			revealed(
 				stone,
 				(x, y, z),
 				crate::worldgen::Seed::current(seed),
-				Levels { mining, alchemy },
+				Levels {
+					mining,
+					alchemy: crate::skills::MAX_LEVEL,
+					siphon,
+				},
 				false,
 			)
 		};
-		assert_eq!(at(need - 1, crate::skills::MAX_LEVEL), None, "{ore:?}");
-		assert_eq!(at(need, 1), Some(ore), "{ore:?}");
+		assert_eq!(at(need - 1, true), None, "{ore:?}");
+		assert_eq!(at(need, false), Some(ore), "{ore:?}");
 	}
-	// Leystone: the same stream, the OTHER skill's gate.
+	// Leystone: the same stream, the OTHER gate — the siphon bit, with
+	// both skills maxed to prove no level opens it.
 	let ley = all
 		.iter()
 		.find(|d| d.ore == BlockType::Leystone)
 		.expect("no leystone in the sampled world");
 	let (x, y, z) = (ley.x, ley.y, ley.z);
-	let need = crate::unlock::alchemy_reveal(BlockType::Leystone).expect("a surface node");
-	let at = |mining, alchemy| {
+	assert!(crate::unlock::siphon_reveal(BlockType::Leystone));
+	let at = |mining, siphon| {
 		revealed(
 			stone,
 			(x, y, z),
 			crate::worldgen::Seed::current(seed),
-			Levels { mining, alchemy },
+			Levels {
+				mining,
+				alchemy: crate::skills::MAX_LEVEL,
+				siphon,
+			},
 			false,
 		)
 	};
-	assert_eq!(at(crate::skills::MAX_LEVEL, need - 1), None, "leystone");
-	assert_eq!(at(1, need), Some(BlockType::Leystone), "leystone");
+	assert_eq!(at(crate::skills::MAX_LEVEL, false), None, "leystone");
+	assert_eq!(at(1, true), Some(BlockType::Leystone), "leystone");
 }
 
 /// **Every tier in the stream is reachable by the gate that decides whether the stamp runs at
-/// all.** A player at exactly a tier's reveal level must get past [`lowest_reveal`] /
-/// [`lowest_alchemy_reveal`], or the mesh stamp skips the whole deposit pass while
+/// all.** A player who has just met a tier's reveal must get past [`lowest_reveal`] /
+/// [`siphon_reveals_deposit`], or the mesh stamp skips the whole deposit pass while
 /// `nodes::revealed` reveals the tier anyway — a find you can see and cannot extract. [`ORES`] is
 /// the Mining roster and [`TIERS`] the stream, so a gate naming a tier by hand misses the next one.
 #[test]
 fn the_stamps_gate_admits_every_tier_at_its_own_reveal() {
 	for &(tier, ..) in &TIERS {
-		let (mining, alchemy) = (
-			crate::unlock::reveal(tier),
-			crate::unlock::alchemy_reveal(tier),
-		);
+		let mining = crate::unlock::reveal(tier);
+		let siphon = crate::unlock::siphon_reveal(tier);
 		assert!(
-			mining.is_some() != alchemy.is_some(),
-			"{tier:?} must answer to exactly one reveal skill"
+			mining.is_some() != siphon,
+			"{tier:?} must answer to exactly one reveal gate"
 		);
-		// Level 1 on the axis this tier does NOT use: the gate has to
-		// open on the tier's own axis alone.
+		// Nothing on the gate this tier does NOT use: the stamp has to
+		// open on the tier's own gate alone.
 		let opens = mining.is_some_and(|need| need >= lowest_reveal())
-			|| alchemy.is_some_and(|need| need >= lowest_alchemy_reveal());
+			|| (siphon && siphon_reveals_deposit());
 		assert!(
 			opens,
-			"{tier:?} reveals at a level the stamp's own gate refuses"
+			"{tier:?} reveals at a gate the stamp's own early-out refuses"
 		);
 	}
 }

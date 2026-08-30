@@ -263,17 +263,13 @@ pub fn lowest_reveal() -> u32 {
 		.expect("four tiers")
 }
 
-/// The same question on the other axis: the lowest ALCHEMY level at which any tier in the deposit
-/// stream is visible. Its twin above walks [`ORES`] because Mining's tiers are exactly that list;
-/// this one walks [`TIERS`], because the stream also carries surface nodes [`ORES`] excludes.
-/// Derived rather than naming the one tier that qualifies today: hardcoded, a second
-/// Alchemy-revealed tier would be a find you can see and cannot extract. [`u32::MAX`] if none.
-pub fn lowest_alchemy_reveal() -> u32 {
-	TIERS
-		.iter()
-		.filter_map(|&(b, ..)| crate::unlock::alchemy_reveal(b))
-		.min()
-		.unwrap_or(u32::MAX)
+/// The same question on the other gate: does any tier in the deposit stream reveal on the
+/// SIPHON itself? Its twin above walks [`ORES`] because Mining's tiers are exactly that list;
+/// this one walks [`TIERS`], because the stream also carries surface nodes [`ORES`] excludes
+/// (leystone today). Derived rather than naming the one tier that qualifies: hardcoded, a
+/// second siphon-revealed tier would be a find you can see and cannot extract.
+pub fn siphon_reveals_deposit() -> bool {
+	TIERS.iter().any(|&(b, ..)| crate::unlock::siphon_reveal(b))
 }
 
 /// The nearest deposit within the sense's own reach ([`crate::unlock::prospect_range`], which

@@ -219,7 +219,7 @@ impl MeshInput {
 		// across the whole TIERS table still early-outs the walk for a player who has reached
 		// none of them on either axis, which is mostly the fresh-account case.
 		let any_deposit_visible = stamp.levels.mining >= ore::lowest_reveal()
-			|| stamp.levels.alchemy >= ore::lowest_alchemy_reveal();
+			|| (stamp.levels.siphon && ore::siphon_reveals_deposit());
 		if stamp.hosts.deposits && any_deposit_visible && oy <= ore::MAX_DEPOSIT_Y + ore::MAX_RADIUS
 		{
 			// Pass one: every deposit CLAIMS its cells, revealed or not, in the same grid order

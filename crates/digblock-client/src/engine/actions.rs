@@ -103,7 +103,7 @@ impl Engine {
 			v,
 			cell,
 			self.seed,
-			digblock_core::worldgen::nodes::Levels::of(&self.skills),
+			digblock_core::worldgen::nodes::Levels::of(&self.skills, &self.inventory),
 			self.pipeline.cell_edited(cell.0, cell.1, cell.2),
 			self.hotbar.tool_in_hand(),
 		)

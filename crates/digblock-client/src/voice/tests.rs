@@ -167,6 +167,7 @@ fn samples() -> Vec<Msg> {
 			level: 7,
 		},
 		Msg::VeinsRevealed,
+		Msg::SourcesRevealed,
 		Msg::SiphonInReach,
 		Msg::Connected,
 		Msg::UnrankedServer,
@@ -231,6 +232,7 @@ fn samples() -> Vec<Msg> {
 			| Msg::LevelUp { .. }
 			| Msg::RemoteLevelUp { .. }
 			| Msg::VeinsRevealed
+			| Msg::SourcesRevealed
 			| Msg::SiphonInReach
 			| Msg::Connected
 			| Msg::UnrankedServer

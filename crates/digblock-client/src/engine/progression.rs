@@ -70,6 +70,11 @@ impl Engine {
 						digblock_core::skills::Skill::Alchemy,
 						digblock_core::skills::alchemy_xp(&core_op),
 					);
+					// The craft that matters here is the siphon: making it is
+					// what reveals the surface nodes, so the pipeline learns
+					// about the pack's new tool the moment it exists. A no-op
+					// for every other craft (no gate crossed, no re-mesh).
+					self.sync_node_reveal(true);
 				}
 			}
 		}
@@ -181,23 +186,28 @@ impl Engine {
 		}
 	}
 
-	/// Hand the pipeline the skill levels its node stamp reveals at, and sweep every resident
-	/// chunk when that crosses a threshold on either axis (§5.3 — Mining for the ore tiers,
-	/// Alchemy for the surface nodes). The sweep is `remesh_all`, which only ENQUEUES — the mesh
-	/// heap drains under the ordinary `STREAM_BUDGET_MS`, so the veins fade in around you instead
-	/// of hitching the frame that levelled you up.
+	/// Hand the pipeline the gates its node stamp reveals at, and sweep every resident chunk when
+	/// that crosses one (§5.3 — a Mining threshold for the ore tiers, the siphon bit for the
+	/// surface nodes). The sweep is `remesh_all`, which only ENQUEUES — the mesh heap drains
+	/// under the ordinary `STREAM_BUDGET_MS`, so the finds fade into the world around you instead
+	/// of hitching the frame that opened them.
 	pub(super) fn sync_node_reveal(&mut self, announce: bool) {
-		let levels = digblock_core::worldgen::nodes::Levels::of(&self.skills);
+		let levels = digblock_core::worldgen::nodes::Levels::of(&self.skills, &self.inventory);
+		let was = self.pipeline.levels();
 		if !self.pipeline.set_levels(levels) {
 			return;
 		}
 		self.pipeline.remesh_all();
-		// Only a LEVEL-UP says so. Entering a world, or a join sync
-		// handing over a Mining 60 you already had, crosses the same
-		// thresholds against a fresh pipeline and would announce a
+		// Only a fresh gain says so. Entering a world, or a join sync
+		// handing over a Mining 60 or a siphon you already had, crosses
+		// the same gates against a fresh pipeline and would announce a
 		// discovery you made an hour ago.
 		if announce {
-			self.push_feed(crate::voice::Msg::VeinsRevealed);
+			self.push_feed(if levels.siphon && !was.siphon {
+				crate::voice::Msg::SourcesRevealed
+			} else {
+				crate::voice::Msg::VeinsRevealed
+			});
 		}
 	}
 

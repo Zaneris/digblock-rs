@@ -74,6 +74,7 @@ pub(super) fn line(msg: &Msg) -> String {
 			format!("{who} reached {} level {level}.", skill.name())
 		}
 		Msg::VeinsRevealed => "New veins shimmer into view.".into(),
+		Msg::SourcesRevealed => "The siphon hums: essence sources fade into the world.".into(),
 		Msg::SiphonInReach => format!(
 			"You can make an {}, press {} to open Alchemy.",
 			digblock_core::block::BlockType::EssenceSiphon.name(),

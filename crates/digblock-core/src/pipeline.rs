@@ -562,8 +562,9 @@ impl Pipeline {
 		self.record_local.then_some(&self.edits)
 	}
 
-	/// Set the skill levels the node reveal stamps at, returning true when that crosses some node's
-	/// reveal threshold — on either axis — and every resident chunk therefore has to re-mesh.
+	/// Set the levels the node reveal stamps at, returning true when that crosses some node's
+	/// reveal gate — a Mining threshold, or the siphon bit flipping — and every resident chunk
+	/// therefore has to re-mesh.
 	///
 	/// Only the crossing is reported, so a run of level-ups does not re-mesh once per level; the
 	/// caller decides what to do about it.
@@ -572,8 +573,7 @@ impl Pipeline {
 		crate::worldgen::nodes::NODES.iter().any(|&n| {
 			crate::unlock::reveal(n)
 				.is_some_and(|need| (was.mining < need) != (levels.mining < need))
-				|| crate::unlock::alchemy_reveal(n)
-					.is_some_and(|need| (was.alchemy < need) != (levels.alchemy < need))
+				|| (crate::unlock::siphon_reveal(n) && was.siphon != levels.siphon)
 		})
 	}
 

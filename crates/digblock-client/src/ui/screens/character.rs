@@ -122,10 +122,7 @@ pub(super) fn teasers(skill: Skill) -> Vec<(u32, &'static str)> {
 fn mining_teasers() -> Vec<(u32, &'static str)> {
 	use BlockType as B;
 	vec![
-		(
-			unlock::mine(B::Wood),
-			"timber gives: trees and planed wood",
-		),
+		(unlock::mine(B::Wood), "timber gives: trees and planed wood"),
 		(
 			unlock::mine(B::Stone),
 			"rock gives: gravel, sandstone, stone",
@@ -148,27 +145,22 @@ fn mining_teasers() -> Vec<(u32, &'static str)> {
 	]
 }
 
-/// Alchemy's: the shape and material unlocks, the hand-priced items, the
-/// surface-node reveals, and the three levels that change a bench NUMBER
-/// rather than opening a recipe.
+/// Alchemy's: the shape and material unlocks, the hand-priced items, and
+/// the three levels that change a bench NUMBER rather than opening a
+/// recipe. The surface-node reveals are not rows: they hang on making the
+/// siphon, not on a level.
 fn alch_teasers() -> Vec<(u32, &'static str)> {
 	use BlockType as B;
 	use Material as M;
 	vec![
 		(
 			unlock::shape(ShapeFamily::Stairs),
-			"the stairs shape; leystone reveals: terra in shallow rock",
+			"the stairs shape; the bucket",
 		),
 		(item_at(B::Torch), "the torch"),
-		(
-			mat_at(M::Lumber),
-			"planed lumber and its joinery; springstone reveals: unda under fresh water",
-		),
+		(mat_at(M::Lumber), "planed lumber and its joinery"),
 		(item_at(B::Table), "furniture: the table and the chair"),
-		(
-			mat_at(M::Stone),
-			"clean stone: every learned shape at once",
-		),
+		(mat_at(M::Stone), "clean stone: every learned shape at once"),
 		(mat_at(M::DarkLumber), "dark lumber and stone brick"),
 		(mat_at(M::Sandstone), "sandstone and glass"),
 		(item_at(B::Bed), "the bed: timber and bedding both"),
@@ -232,10 +224,7 @@ fn arcana_teasers() -> Vec<(u32, &'static str)> {
 		(unlock::CAUSEWAY_LONG_AT, "the causeway carries you further"),
 		(port_at(K::Beach), "the shore waystone"),
 		(port_at(K::Mountain), "the mountain waystone"),
-		(
-			unlock::SPHERE_VAST_AT,
-			"the vast sphere: further out again",
-		),
+		(unlock::SPHERE_VAST_AT, "the vast sphere: further out again"),
 		(unlock::KINDLE_CHEAP_AT, "kindle costs less"),
 		(unlock::TELEPORT_SWIFTER_AT, "swifter return"),
 		(
