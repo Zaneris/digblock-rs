@@ -119,7 +119,7 @@ impl Sim {
 			refuse(
 				&out,
 				format!(
-					"client sim {sim_version} (build {build}), server sim {} — update the older side",
+					"client sim {sim_version} (build {build}), server sim {} - update the older side",
 					digblock_core::SIM_VERSION
 				),
 			);

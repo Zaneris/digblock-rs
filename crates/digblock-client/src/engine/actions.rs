@@ -1172,6 +1172,7 @@ impl Engine {
 		if let Some(d) = drop {
 			self.inventory.add(d, broken);
 			self.hotbar.auto_assign(d);
+			self.nudge_siphon();
 		}
 		let (origin, dir) = (self.camera.pos, self.camera.dir());
 		match self.session.client.as_mut() {

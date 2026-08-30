@@ -218,11 +218,12 @@ pub fn functional_ideal(b: BlockType) -> Option<&'static [(Essence, u32)]> {
 /// Today it carries the two vessels, whose whole price it is. The siphon may never cost essence:
 /// every essence in the game is a siphon draw, so an essence-priced siphon deadlocks the currency
 /// (`the_essence_tool_costs_no_essence`). The bucket's RUNG is its whole gate, opening past the
-/// siphon. Wood for both — "dig your way to the trees, fell a few, make your tools" IS the loop.
+/// siphon. Tree matter for both — "dig your way to the trees, fell a few, make your tools" IS
+/// the loop; the siphon asks for the canopy as well as the trunk so one felled tree covers it.
 pub fn functional_feedstock(b: BlockType) -> &'static [(BlockType, u32)] {
 	match b {
 		BlockType::Bucket => &[(BlockType::Wood, 6)],
-		BlockType::EssenceSiphon => &[(BlockType::Wood, 8)],
+		BlockType::EssenceSiphon => &[(BlockType::Wood, 2), (BlockType::Leaves, 5)],
 		// A torch is a whittled stick with a treated head.
 		BlockType::Torch => &[(BlockType::Wood, 1)],
 		// Furniture is joinery: planed timber, worked. `pickup` gates the

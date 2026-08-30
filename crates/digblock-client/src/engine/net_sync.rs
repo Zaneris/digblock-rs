@@ -478,6 +478,7 @@ impl Engine {
 						}
 					}
 					self.inventory = inv;
+					self.nudge_siphon();
 					// New types file bar-first then grid; stale grid slots
 					// clear — same derivation the server runs.
 					digblock_core::inv_grid::reconcile_layout(

@@ -134,6 +134,9 @@ pub(crate) enum Msg {
 		level: u32,
 	},
 	VeinsRevealed,
+	/// The bench's opening invitation: the pack has just come to hold a
+	/// siphon's whole price for the first time, and no siphon.
+	SiphonInReach,
 
 	// ---- the session ----
 	Connected,

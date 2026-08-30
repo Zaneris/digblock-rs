@@ -264,7 +264,7 @@ impl HiscoresView {
 				} else {
 					let last = last_page(v);
 					summary = format!(
-						"page {} of {} — {} ranked",
+						"page {} of {} - {} ranked",
 						v.page,
 						last,
 						group(u64::from(v.total))

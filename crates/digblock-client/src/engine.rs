@@ -20,6 +20,11 @@ use crate::renderer::{FrameScene, FrameUniforms, RenderConfig, Renderer};
 use crate::ui::screens::inventory::InvAction;
 use crate::voice::{Msg, Spell};
 
+/// The alchemy screen's toggle, named in ONE place so the texts that say
+/// "press K" — the menu row's key chip, the siphon-in-reach nudge — can
+/// never name a key the input match stopped answering.
+pub(crate) const ALCHEMY_KEY: Key = Key::K;
+
 mod config;
 pub use config::{DebugScreen, EngineConfig, parse_held_item};
 pub mod knobs;
@@ -242,6 +247,10 @@ pub struct Engine {
 	/// locally and never ride `pending`. `None` until the join sync's
 	/// first inventory, which is state arriving rather than a find.
 	auth_essence: Option<[u32; digblock_core::block::Essence::COUNT]>,
+	/// Whether this session already spoke the siphon-in-reach nudge
+	/// ([`voice::Msg::SiphonInReach`]) — once per world session, and the
+	/// ownership check silences it for good the moment one is made.
+	siphon_nudged: bool,
 	hotbar: Hotbar,
 	/// The spawn structure still owed to an offline world: the stamp's
 	/// writes, drained as their chunks become resident. Named saves only

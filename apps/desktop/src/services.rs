@@ -474,7 +474,7 @@ fn join(
 			.ok()
 			.and_then(|v| v["error"].as_str().map(str::to_string))
 			.unwrap_or_else(|| match status {
-				401 => "your sign-in has expired — sign in again".into(),
+				401 => "your sign-in has expired, sign in again".into(),
 				404 => "that server is no longer listed".into(),
 				_ => format!("join refused (http {status})"),
 			}));

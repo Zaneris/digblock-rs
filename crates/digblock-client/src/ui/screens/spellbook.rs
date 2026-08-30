@@ -149,7 +149,7 @@ impl SpellView {
 			ready: teleport_ready,
 		});
 		rows.push(Row::Info(
-			"a channelled journey back to your spawn — hold still".to_string(),
+			"a channelled journey back to your spawn, hold still".to_string(),
 		));
 		// The illumination family: the wisp from the first level (the
 		// ladder's essence-priced bootstrap), kindle at its rung.
@@ -237,7 +237,7 @@ impl SpellView {
 			} else if !teased {
 				teased = true;
 				rows.push(Row::Info(format!(
-					"next port: LV {} — {}",
+					"next port: LV {} - {}",
 					port.level,
 					port_label(port.idx).to_lowercase()
 				)));
@@ -246,7 +246,7 @@ impl SpellView {
 		rows.push(Row::Space);
 		// The rung teaser rides beneath the roster.
 		if let Some((lvl, what)) = next_rung(level) {
-			rows.push(Row::Info(format!("next: LV {lvl} — {what}")));
+			rows.push(Row::Info(format!("next: LV {lvl} - {what}")));
 		}
 		Self {
 			rows,

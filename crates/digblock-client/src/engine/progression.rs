@@ -114,6 +114,32 @@ impl Engine {
 		self.auth_essence = Some(now);
 	}
 
+	/// The bench's opening invitation, asked wherever the pack GROWS (the
+	/// dig credit, the server's inventory rebase): the first time it
+	/// holds a siphon's whole price and no siphon, say so and name the
+	/// key. Price and gate are read from the tables, so a retune moves
+	/// the nudge with it. Once per world session — owning one silences it
+	/// for good, and a join sync that arrives already affordable speaks
+	/// once and is done.
+	pub(super) fn nudge_siphon(&mut self) {
+		use digblock_core::block::BlockType;
+		let siphon = BlockType::EssenceSiphon;
+		if self.siphon_nudged
+			|| self.inventory.count(siphon) > 0
+			|| !digblock_core::unlock::can_craft(siphon, &self.skills)
+		{
+			return;
+		}
+		let priced = digblock_core::alchemy::craft_feedstock(siphon)
+			.iter()
+			.all(|&(b, n)| self.inventory.count(b) >= n);
+		if !priced {
+			return;
+		}
+		self.siphon_nudged = true;
+		self.push_feed(crate::voice::Msg::SiphonInReach);
+	}
+
 	/// Adopt a new authoritative XP total for one skill: coalesce the delta into a toast, then
 	/// word and sound a level-up. Totals only grow, so a replayed or reordered frame is a no-op.
 	/// Both award paths land here — the server's `XpGain` online, and [`Self::award_xp_offline`]

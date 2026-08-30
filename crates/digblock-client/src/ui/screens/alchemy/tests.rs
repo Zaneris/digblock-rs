@@ -362,16 +362,24 @@ fn family_selection_and_the_single_transmute_button() {
 }
 
 /// The vessels are paid in FEEDSTOCK: once both are open, a player with
-/// timber can make the bucket and the siphon with no essence anywhere —
-/// the whole reason the economy can bootstrap — and the strip names the
-/// missing timber when they cannot. Rigged at the later vessel's own
-/// rung, read off `unlock`, so a move of either keeps the page honest.
+/// a felled tree's matter can make the bucket and the siphon with no
+/// essence anywhere — the whole reason the economy can bootstrap — and
+/// the strip names the missing timber when they cannot. Rigged at the
+/// later vessel's own rung and stocked from the price tables, read off
+/// `unlock` and `alchemy`, so a move or retune of either keeps the page
+/// honest.
 #[test]
-fn the_vessels_craft_from_timber_alone() {
+fn the_vessels_craft_from_feedstock_alone() {
 	let rung = digblock_core::unlock::craft(B::Bucket)
 		.max(digblock_core::unlock::craft(B::EssenceSiphon))
 		.expect("both vessels are crafts");
-	let mut r = rig_at(rung, |inv| inv.add(B::Wood, 20));
+	let mut r = rig_at(rung, |inv| {
+		for v in [B::Bucket, B::EssenceSiphon] {
+			for &(b, n) in &alchemy::craft_feedstock(v) {
+				inv.add(b, n);
+			}
+		}
+	});
 	let tools = center(r.hits.rect_of(family(&r, "Tools")).unwrap());
 	press(&mut r, tools);
 	rebuild(&mut r);

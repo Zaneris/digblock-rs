@@ -1077,13 +1077,11 @@ fn xp_awards_on_dig_and_alchemy_and_persists() {
 			c.msgs
 		);
 
-		// Craft the first vessel from granted timber: its `craft_xp`
+		// Craft the first vessel from granted feedstock: its `craft_xp`
 		// in Alchemy, in wire order with the InventoryFull rebase.
-		let timber: u32 = digblock_core::alchemy::craft_feedstock(BlockType::EssenceSiphon)
-			.iter()
-			.map(|&(_, n)| n)
-			.sum();
-		sim.test_grant(1, BlockType::Wood, timber);
+		for &(b, n) in &digblock_core::alchemy::craft_feedstock(BlockType::EssenceSiphon) {
+			sim.test_grant(1, b, n);
+		}
 		let siphon_xp = digblock_core::skills::craft_xp(BlockType::EssenceSiphon);
 		sim.tick_once(vec![SimEvent::Msg {
 			conn_id: 1,

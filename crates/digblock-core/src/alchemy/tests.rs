@@ -259,7 +259,7 @@ fn the_grid_reproduces_the_shipped_recipes() {
 		(B::Crystal, &[], &[(E::Aether, 18), (E::Ferrum, 9)], 1),
 		// And the vessels, feedstock alone.
 		(B::Bucket, &[(B::Wood, 6)], &[], 1),
-		(B::EssenceSiphon, &[(B::Wood, 8)], &[], 1),
+		(B::EssenceSiphon, &[(B::Wood, 2), (B::Leaves, 5)], &[], 1),
 		// The torch: a stick with a treated head.
 		(
 			B::Torch,

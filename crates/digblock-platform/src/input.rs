@@ -41,6 +41,46 @@ pub enum Key {
 	Other,
 }
 
+impl Key {
+	/// The name a HINT calls a key by ("press K") — UI text, not what the
+	/// OS reports, so it is layout-independent exactly like the bindings.
+	/// Every variant answers: a hint that names an unnameable key is a
+	/// bug at the hint's call site, not a panic here.
+	pub fn label(self) -> &'static str {
+		match self {
+			Key::W => "W",
+			Key::A => "A",
+			Key::S => "S",
+			Key::D => "D",
+			Key::Up => "Up",
+			Key::Down => "Down",
+			Key::Left => "Left",
+			Key::Right => "Right",
+			Key::Space => "Space",
+			Key::Shift => "Shift",
+			Key::Ctrl => "Ctrl",
+			Key::F => "F",
+			Key::I => "I",
+			Key::K => "K",
+			Key::C => "C",
+			Key::H => "H",
+			Key::J => "J",
+			Key::T => "T",
+			Key::Digit(n) => {
+				const DIGITS: [&str; 10] = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"];
+				DIGITS[usize::from(n.min(9))]
+			}
+			Key::Backquote => "`",
+			Key::F7 => "F7",
+			Key::Escape => "Esc",
+			Key::Enter => "Enter",
+			Key::Backspace => "Backspace",
+			Key::Tab => "Tab",
+			Key::Other => "?",
+		}
+	}
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MouseButton {
 	Left,

@@ -74,6 +74,11 @@ pub(super) fn line(msg: &Msg) -> String {
 			format!("{who} reached {} level {level}.", skill.name())
 		}
 		Msg::VeinsRevealed => "New veins shimmer into view.".into(),
+		Msg::SiphonInReach => format!(
+			"You can make an {}, press {} to open Alchemy.",
+			digblock_core::block::BlockType::EssenceSiphon.name(),
+			crate::engine::ALCHEMY_KEY.label()
+		),
 
 		Msg::Connected => "Connected to server.".into(),
 		Msg::UnrankedServer => {
@@ -197,7 +202,7 @@ fn admin(r: &AdminReply) -> String {
 			"spawn is set at {} but unlocked (its cells can be dug)",
 			cell(c)
 		),
-		AdminReply::NoClearSpawnToLock => "no clear spawn to lock — nowhere within range is \
+		AdminReply::NoClearSpawnToLock => "no clear spawn to lock: nowhere within range is \
 			 intact; fill in the excavation and try again"
 			.into(),
 		AdminReply::SpawnAlreadyUnlocked => {

@@ -80,7 +80,11 @@ impl Menu {
 					push(
 						&mut specs,
 						&mut y,
-						RowSpec::item_hint(RowId::RootItem(7), "Alchemy", "K"),
+						RowSpec::item_hint(
+							RowId::RootItem(7),
+							"Alchemy",
+							crate::engine::ALCHEMY_KEY.label(),
+						),
 					);
 					push(
 						&mut specs,

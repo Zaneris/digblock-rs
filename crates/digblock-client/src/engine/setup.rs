@@ -282,6 +282,7 @@ impl Engine {
 			target: None,
 			inventory: Inventory::default(),
 			auth_essence: None,
+			siphon_nudged: false,
 			hotbar: Hotbar::new(),
 			// The startup world is ephemeral (a backdrop, or a capture
 			// scene) — no arrival lock; entering a NAMED save or a server

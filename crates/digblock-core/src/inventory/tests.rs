@@ -289,12 +289,12 @@ fn alchemy_craft_scales_with_level() {
 /// a fresh player's first craft is exactly this.
 #[test]
 fn a_vessel_is_crafted_from_feedstock_alone() {
-	let need: u32 = crate::alchemy::craft_feedstock(BlockType::EssenceSiphon)
-		.iter()
-		.map(|&(_, n)| n)
-		.sum();
+	let feed = crate::alchemy::craft_feedstock(BlockType::EssenceSiphon);
+	let (short, _) = feed[0];
 	let mut inv = Inventory::default();
-	inv.add(BlockType::Wood, need - 1);
+	for &(b, n) in &feed {
+		inv.add(b, if b == short { n - 1 } else { n });
+	}
 	assert!(
 		!apply_alchemy(
 			&mut inv,
@@ -306,8 +306,14 @@ fn a_vessel_is_crafted_from_feedstock_alone() {
 		),
 		"one log short is short"
 	);
-	assert_eq!(inv.count(BlockType::Wood), need - 1, "no partial debit");
-	inv.add(BlockType::Wood, 1);
+	for &(b, n) in &feed {
+		assert_eq!(
+			inv.count(b),
+			if b == short { n - 1 } else { n },
+			"no partial debit"
+		);
+	}
+	inv.add(short, 1);
 	assert!(apply_alchemy(
 		&mut inv,
 		AlchemyOp::Craft {
@@ -321,7 +327,9 @@ fn a_vessel_is_crafted_from_feedstock_alone() {
 		1,
 		"the vessel is owned"
 	);
-	assert_eq!(inv.count(BlockType::Wood), 0, "the timber is spent");
+	for &(b, _) in &feed {
+		assert_eq!(inv.count(b), 0, "the feedstock is spent");
+	}
 	for &e in &Essence::ALL {
 		assert_eq!(inv.sub_count(e), 0, "no essence moved");
 	}

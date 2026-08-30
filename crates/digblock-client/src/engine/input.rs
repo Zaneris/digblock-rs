@@ -230,7 +230,7 @@ impl Engine {
 					);
 				}
 				InputEvent::Key {
-					key: Key::K | Key::Escape,
+					key: ALCHEMY_KEY | Key::Escape,
 					pressed: true,
 				} => self.ui.alch_screen.close(),
 				_ => {
@@ -474,7 +474,7 @@ impl Engine {
 						self.ui.inv_screen.open();
 					}
 				}
-				Key::K => {
+				ALCHEMY_KEY => {
 					if pressed {
 						self.input.keys = HeldKeys::default();
 						self.input.dig_held = false;

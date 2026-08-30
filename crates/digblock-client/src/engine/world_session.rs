@@ -42,6 +42,7 @@ impl Engine {
 		self.skills = Default::default();
 		self.vfx.toasts.clear();
 		self.auth_essence = None;
+		self.siphon_nudged = false;
 		self.reset_world_transients(spawn, true);
 	}
 
@@ -248,6 +249,7 @@ impl Engine {
 		self.skills = Default::default();
 		self.vfx.toasts.clear();
 		self.auth_essence = None;
+		self.siphon_nudged = false;
 		self.session.player_names.clear();
 		self.reset_world_transients(spawn, true);
 		self.save.in_local_save = false;

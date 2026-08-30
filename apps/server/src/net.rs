@@ -576,7 +576,7 @@ async fn verify_join(
 			Ok(verified)
 		}
 		Ok(Ok(Err(VerifyError::Denied))) => {
-			Err("token rejected — request a fresh join from the master server".into())
+			Err("token rejected, request a fresh join from the master server".into())
 		}
 		Ok(Ok(Err(VerifyError::Unavailable(e)))) => {
 			log::warn!("master verify unavailable: {e}");
