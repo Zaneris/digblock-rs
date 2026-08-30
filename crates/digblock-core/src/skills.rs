@@ -335,11 +335,17 @@ pub fn dig_decayed(progress: u32, required: u32, idle: u32) -> u32 {
 // per-action XP is fixed for life. Shared verbatim by the server's
 // chokepoints and the offline engine.
 
-/// Mining XP for a completed dig of `block`, scaled down from its hardness. Zero for the
-/// undiggable — and zero, BY NAME, for foliage and the torch: a trivial break is housekeeping,
-/// and the scale-down alone cannot say so, since its rounding hands even the softest block a
-/// whole point. The FLAT award; where the dig happened is [`depth_xp_permille`]'s business, and
-/// [`dig_award`] puts the two together (its cap keeps a zero-worth block's swing cells at zero).
+/// Mining XP for a completed dig of `block`: a step ladder on the block's WORTH (`xp_ticks`),
+/// with the old hardness scale-down keeping the floor under it. Hand-stepped rather than one
+/// division, because the division under-paid the whole worked middle of the table — soft ground
+/// pays a couple of points, the worked worths (timber, gravel, sandstone) five, and a full
+/// quarry hold seven — while the hold times stay exactly where they were. Keyed on worth and
+/// never on the block's name, so equal worths pay equally and a retune of a row's ticks moves
+/// its award with it. Zero for the undiggable — and zero, BY NAME, for foliage and the torch: a
+/// trivial break is housekeeping, and no worth scale can say so, since the floor hands even the
+/// softest block a whole point. The FLAT award; where the dig happened is
+/// [`depth_xp_permille`]'s business, and [`dig_award`] puts the two together (its cap keeps a
+/// zero-worth block's swing cells at zero).
 pub fn dig_xp(block: BlockType) -> u64 {
 	if block.is_foliage() || block == BlockType::Torch || block.is_conjured() {
 		return 0;
@@ -347,9 +353,14 @@ pub fn dig_xp(block: BlockType) -> u64 {
 	// Diggability is the hold's question; the award is the block's WORTH, which is the hold on
 	// every row but a stubborn one. Reading the hold here would let `block::STUBBORN_HOLD_MULT`
 	// pay a drawn face for essence somebody else already drew.
-	match block.hardness_ticks() {
-		Some(_) => u64::from(block.xp_ticks()).div_ceil(24),
-		None => 0,
+	if block.hardness_ticks().is_none() {
+		return 0;
+	}
+	match block.xp_ticks() {
+		t if t >= 90 => 7,
+		t if t >= 45 => 5,
+		t if t >= 26 => 3,
+		t => u64::from(t).div_ceil(24),
 	}
 }
 
@@ -379,7 +390,7 @@ pub const DEPTH_XP_MAX_PERMILLE: u32 = 1500;
 ///
 /// A wide swing is a reach bonus, not an XP multiplier: the pick already pays for itself in
 /// MATERIAL. Floored at one point per cell by [`dig_award`] — a cell paying nothing reads as a bug.
-pub const PICK_EXTRA_PERMILLE: u32 = 200;
+pub const PICK_EXTRA_PERMILLE: u32 = 300;
 
 /// §5.2's depth reward: the multiplier on a dig's Mining XP for the cell it happened in, in
 /// permille. Flat at and above [`DEPTH_XP_FROM`], then rising LINEARLY with depth to

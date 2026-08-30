@@ -426,8 +426,8 @@ fn a_wide_swing_pays_the_aimed_cell_in_full_and_the_rest_a_fraction() {
 	// The golden: a stone plane at the pick's widest reach, against what
 	// those same nine blocks pay as nine separate holds.
 	let stone = BlockType::Stone;
-	assert_eq!(dig_award(stone, None, 9, y).0, 12);
-	assert_eq!(dig_xp(stone) * 9, 36);
+	assert_eq!(dig_award(stone, None, 9, y).0, 24);
+	assert_eq!(dig_xp(stone) * 9, 63);
 }
 
 /// The ceiling lands on the deepest cell a dig can REACH, not on
