@@ -924,9 +924,10 @@ fn the_page_hides_everything_past_the_next_unlock() {
 	}
 	// Inside TOOLS: the vessels show, the pick and the sigil do not —
 	// the sigil at the cap is exactly the tile a fresh player must
-	// not be stared down by. The two crests gated on ANOTHER skill show
-	// from the first level on purpose: locked behind that skill's badge,
-	// they are the one teaser a player can read the whole ladder.
+	// not be stared down by. The crests gate on the skill they honour,
+	// not the bench, so they never sit on the teaser ladder: each hides
+	// until its own skill masters, or a fresh page opens on a wall of
+	// distant badges.
 	let tools = center(r.hits.rect_of(InvId::Family(idx("Tools"))).unwrap());
 	press(&mut r, tools);
 	rebuild(&mut r);
@@ -938,8 +939,8 @@ fn the_page_hides_everything_past_the_next_unlock() {
 		(B::Bucket, true),
 		(B::EssenceSiphon, true),
 		(B::ResonantPick, false),
-		(B::MinersCrest, true),
-		(B::ArcanistsCrest, true),
+		(B::MinersCrest, false),
+		(B::ArcanistsCrest, false),
 		(B::AlchemistsCrest, false),
 		(B::MastersSigil, false),
 	] {

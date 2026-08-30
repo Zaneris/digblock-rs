@@ -375,9 +375,15 @@ fn next_unlock_level(level: u32) -> Option<u32> {
 /// Is this member on the page at all? Already unlocked, or part of the NEXT unlock — everything
 /// past that stays hidden, so a fresh player reads a short page of what they can do and one tier
 /// of what is coming instead of the whole catalog as a wall of locks. Several items sharing the
-/// next level all show together, since the tier is a LEVEL and not an item.
-fn member_visible(b: BlockType, level: u32, next: Option<u32>) -> bool {
-	unlock::craft(b).is_some_and(|l| l <= level || Some(l) == next)
+/// next level all show together, since the tier is a LEVEL and not an item. A crest gates on the
+/// skill it honours rather than the bench, so it never sits on the teaser ladder at all: it
+/// appears the moment that skill masters, and not a level before — a fresh page must not open on
+/// a wall of distant badges.
+fn member_visible(b: BlockType, skills: &SkillSet, next: Option<u32>) -> bool {
+	if unlock::crest(b).is_some() {
+		return unlock::can_craft(b, skills);
+	}
+	unlock::craft(b).is_some_and(|l| l <= skills.level(Skill::Alchemy) || Some(l) == next)
 }
 
 /// Seconds one cycle of the family tile's member rotation takes. A
@@ -639,7 +645,7 @@ impl AlchScreen {
 		families()
 			.iter()
 			.flat_map(|f| f.members.iter().copied())
-			.filter(move |&m| member_visible(m, view.level, next))
+			.filter(move |&m| member_visible(m, &view.skills, next))
 			.map(move |m| cost_chips(view, m, !unlock::can_craft(m, &view.skills)))
 	}
 
@@ -822,7 +828,7 @@ impl AlchScreen {
 				.members
 				.iter()
 				.copied()
-				.filter(|&m| member_visible(m, view.level, next))
+				.filter(|&m| member_visible(m, &view.skills, next))
 				.collect();
 			if visible.is_empty() {
 				continue;
@@ -879,7 +885,7 @@ impl AlchScreen {
 			let mem_spec = Self::grid_spec_at(&ui.style, (row_x + text_pad, y));
 			let mut col = 0usize;
 			for (j, &item) in family.members.iter().enumerate() {
-				if !member_visible(item, view.level, next) {
+				if !member_visible(item, &view.skills, next) {
 					continue;
 				}
 				let rect = mem_spec.rect(col);

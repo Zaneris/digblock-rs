@@ -134,8 +134,8 @@ pub fn functional(b: BlockType) -> Option<u32> {
 		BlockType::MastersSigil => 99,
 		// The crests' BENCH level. The Alchemist's is its own mastery; the other two ask nothing
 		// of the bench, because their gate is the skill they honour (`crest`) and a mastered
-		// miner with no Alchemy must still be able to make theirs. Visible on the page from the
-		// first level for the same reason, locked behind the skill's own badge.
+		// miner with no Alchemy must still be able to make theirs. The catalog page hides a
+		// crest until that skill masters — it never sits on the Alchemy teaser ladder.
 		BlockType::AlchemistsCrest => MASTERY_AT,
 		BlockType::MinersCrest | BlockType::ArcanistsCrest => 1,
 		_ => return None,
