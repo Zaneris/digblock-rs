@@ -153,11 +153,9 @@ fn alch_teasers() -> Vec<(u32, &'static str)> {
 	use BlockType as B;
 	use Material as M;
 	vec![
-		(
-			unlock::shape(ShapeFamily::Stairs),
-			"the stairs shape; the bucket",
-		),
 		(item_at(B::Torch), "the torch"),
+		(unlock::shape(ShapeFamily::Stairs), "the stairs shape"),
+		(item_at(B::Bucket), "the bucket"),
 		(mat_at(M::Lumber), "planed lumber and its joinery"),
 		(item_at(B::Table), "furniture: the table and the chair"),
 		(mat_at(M::Stone), "clean stone: every learned shape at once"),
@@ -649,16 +647,13 @@ mod tests {
 		// thresholds; past the last Mining gate, Mining shows none.
 		let fresh = texts(&emit(&SkillSet::default())).join("\n");
 		let timber = format!("next: LV {} - timber gives", unlock::mine(BlockType::Wood));
-		let stairs = format!(
-			"next: LV {} - the stairs shape",
-			unlock::shape(ShapeFamily::Stairs)
-		);
+		let torch = format!("next: LV {} - the torch", item_at(BlockType::Torch));
 		let ore = format!(
 			"next: LV {} - emberore reveals",
 			reveal_at(BlockType::Emberore)
 		);
 		assert!(fresh.contains(&timber), "{fresh}");
-		assert!(fresh.contains(&stairs), "{fresh}");
+		assert!(fresh.contains(&torch), "{fresh}");
 		let mut leveled = SkillSet::default();
 		leveled.set_total(
 			Skill::Mining,

@@ -29,7 +29,7 @@ use crate::skills::{MAX_LEVEL, Skill, SkillSet};
 pub fn shape(s: ShapeFamily) -> u32 {
 	match s {
 		ShapeFamily::Block | ShapeFamily::Slab => 1,
-		ShapeFamily::Stairs => 5,
+		ShapeFamily::Stairs => 6,
 		// The door lands WITH the first material that authors one, so the
 		// shape fanfare and the first actual door are the same level-up —
 		// it used to open early, and an unlock that hands you nothing
@@ -95,16 +95,17 @@ pub fn material(m: Material) -> Option<u32> {
 /// exist without the other.
 pub fn functional(b: BlockType) -> Option<u32> {
 	Some(match b {
-		// The water vessel (§13.5) sits a few rungs past the start: at the
-		// first level it shared the catalog's opening line with the siphon
-		// and split the one beat the ladder must not split — "make your
-		// siphon". Still priced in timber alone, so the rung is the whole
-		// gate.
-		BlockType::Bucket => 5,
-		// First light, pre-ore on purpose (§7.3). Its price names Terra,
-		// which is a leystone draw — open from the siphon craft on, so the
-		// rung paces the ladder rather than waiting on a reveal.
-		BlockType::Torch => 10,
+		// The water vessel (§13.5) sits a few rungs past the start, one
+		// past the stairs: at the first level it shared the catalog's
+		// opening line with the siphon and split the one beat the ladder
+		// must not split — "make your siphon". Still priced in timber
+		// alone, so the rung is the whole gate.
+		BlockType::Bucket => 7,
+		// First light, pre-ore on purpose (§7.3), and the first level-up
+		// beat after "make your siphon". Its price names Terra, which is a
+		// leystone draw — open from the siphon craft on, so the rung paces
+		// the ladder rather than waiting on a reveal.
+		BlockType::Torch => 5,
 		// THE essence tool (the redesign made it the skill's identity):
 		// every essence in the game is a siphon draw, so the siphon sits
 		// at the level everyone starts at, gated by its feedstock price

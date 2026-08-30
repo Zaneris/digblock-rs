@@ -901,15 +901,17 @@ fn every_family_sits_in_the_order_its_gates_climb() {
 	assert!(pairs > 0, "the sweep examined nothing");
 }
 
-/// The page shows what is unlocked plus ONE teaser tier — the next
-/// unlock level, all of whose items show together — and hides the
-/// rest, families included. Hiding must not shift identity: tiles
-/// pack left but keep their true indices, so a member's hit id is the
-/// same at every level it is visible at.
+/// The page shows what is unlocked plus ONE teaser tier PER TAB — each
+/// family's own next unlock level, all of whose items show together —
+/// and hides the rest. Every family therefore stands on the page with
+/// one reachable promise; a fully locked one dims under its badge
+/// rather than vanishing. Packing must not shift identity: tiles keep
+/// their true indices, so a member's hit id is the same at every level
+/// it is visible at.
 #[test]
 fn the_page_hides_everything_past_the_next_unlock() {
-	// A fresh player: the slab and the two vessels are unlocked, the
-	// stairs shape is the next tier — and that is the WHOLE page.
+	// A fresh player: every tab is on the page, teasing its own first
+	// rung.
 	let mut r = rig_at(1, |inv| inv.add(B::Wood, 20));
 	let idx = |name: &str| {
 		families()
@@ -917,21 +919,24 @@ fn the_page_hides_everything_past_the_next_unlock() {
 			.position(|f| f.name == name)
 			.unwrap_or_else(|| panic!("no {name} family")) as u8
 	};
-	for name in ["Slabs", "Stairs", "Tools"] {
+	for name in [
+		"Slabs",
+		"Stairs",
+		"Doors",
+		"Blocks",
+		"Lights",
+		"Furniture",
+		"Tools",
+	] {
 		assert!(
 			r.hits.rect_of(InvId::Family(idx(name))).is_some(),
 			"{name} belongs on a fresh page"
 		);
 	}
-	for name in ["Doors", "Blocks", "Lights", "Furniture"] {
-		assert!(
-			r.hits.rect_of(InvId::Family(idx(name))).is_none(),
-			"{name} is past the next unlock and must hide"
-		);
-	}
-	// Inside TOOLS: the vessels show, the pick and the sigil do not —
-	// the sigil at the cap is exactly the tile a fresh player must
-	// not be stared down by.
+	// Inside TOOLS: both vessels show — the siphon unlocked, the bucket
+	// as the tab's own next tier — while the pick and the sigil hide;
+	// the sigil at the cap is exactly the tile a fresh player must not
+	// be stared down by.
 	let tools = center(r.hits.rect_of(InvId::Family(idx("Tools"))).unwrap());
 	press(&mut r, tools);
 	rebuild(&mut r);

@@ -4,11 +4,12 @@
 //! and the page's ONE `TRANSMUTE` button. Matter never becomes essence at a bench: the siphon
 //! draws nodes in the field, and this screen is where the essence is SPENT.
 //!
-//! **The page shows what you have and one tier of what is coming, and nothing else**
-//! ([`member_visible`]): a member draws only if its recipe is unlocked or sits at the catalog's
-//! NEXT unlock level, and a family with nothing on the page hides entirely. Families are DERIVED
-//! from §7.2's shape axis, and `every_craftable_appears_in_exactly_one_family` holds that
-//! derivation to the core catalog, so a new craftable cannot silently miss the screen.
+//! **The page shows what you have and, per tab, one tier of what is coming, and nothing else**
+//! ([`member_visible`]): a member draws only if its recipe is unlocked or sits at its own
+//! FAMILY's next unlock level — every tab keeps one reachable promise on the page, and a fully
+//! locked tab dims under its level badge rather than hiding. Families are DERIVED from §7.2's
+//! shape axis, and `every_craftable_appears_in_exactly_one_family` holds that derivation to the
+//! core catalog, so a new craftable cannot silently miss the screen.
 //!
 //! The button QUEUES a count rather than buying it — answering instantly made the bench's one
 //! immediate action also its fastest XP — and stands as the batch's CANCEL; the bench keeps
@@ -359,21 +360,23 @@ pub fn families() -> &'static [Family] {
 	})
 }
 
-/// The next Alchemy level ABOVE `level` at which anything in the catalog
-/// unlocks — the page's one teaser tier.
-fn next_unlock_level(level: u32) -> Option<u32> {
-	families()
+/// The next Alchemy level ABOVE `level` at which anything in THIS family unlocks — each tab's
+/// own teaser tier, `None` once the family is fully open. Per family rather than one level for
+/// the whole catalog, so every tab keeps one reachable promise on the page: a global tier left
+/// the bucket invisible to a fresh player because the torch's rung came first.
+fn family_next_unlock(f: &Family, level: u32) -> Option<u32> {
+	f.members
 		.iter()
-		.flat_map(|f| f.members.iter())
 		.filter_map(|&b| unlock::craft(b))
 		.filter(|&l| l > level)
 		.min()
 }
 
-/// Is this member on the page at all? Already unlocked, or part of the NEXT unlock — everything
-/// past that stays hidden, so a fresh player reads a short page of what they can do and one tier
-/// of what is coming instead of the whole catalog as a wall of locks. Several items sharing the
-/// next level all show together, since the tier is a LEVEL and not an item.
+/// Is this member on the page at all? Already unlocked, or part of its family's NEXT unlock —
+/// everything past that stays hidden, so a fresh player reads a short page of what they can do
+/// and one tier per tab of what is coming instead of the whole catalog as a wall of locks.
+/// Several items sharing the next level all show together, since the tier is a LEVEL and not an
+/// item.
 fn member_visible(b: BlockType, skills: &SkillSet, next: Option<u32>) -> bool {
 	unlock::craft(b).is_some_and(|l| l <= skills.level(Skill::Alchemy) || Some(l) == next)
 }
@@ -633,11 +636,15 @@ impl AlchScreen {
 	/// MEASURED against and the run the strip EMITS cannot drift — the
 	/// same discipline `holdings_chips` keeps for the readout.
 	fn visible_prices(view: &AlchView) -> impl Iterator<Item = Vec<Chip>> + '_ {
-		let next = next_unlock_level(view.level);
 		families()
 			.iter()
-			.flat_map(|f| f.members.iter().copied())
-			.filter(move |&m| member_visible(m, &view.skills, next))
+			.flat_map(move |f| {
+				let next = family_next_unlock(f, view.level);
+				f.members
+					.iter()
+					.copied()
+					.filter(move |&m| member_visible(m, &view.skills, next))
+			})
 			.map(move |m| cost_chips(view, m, !unlock::can_craft(m, &view.skills)))
 	}
 
@@ -810,12 +817,13 @@ impl AlchScreen {
 		// Family tiles, previews rotating on the shared clock. The selected family wears the WEAK
 		// ring — it's context; the chosen member below gets the strong one. Only families with
 		// something ON the page draw at all — packed left, but keeping their TRUE index in
-		// `InvId::Family`, so hiding never shifts selection state or hit identity. A family whose
-		// only visible members are teasers dims like a locked tile and badges that level.
-		let next = next_unlock_level(view.level);
+		// `InvId::Family`, so hiding never shifts selection state or hit identity (every family
+		// shows until it empties, since each tab teases its own next tier). A family whose only
+		// visible members are teasers dims like a locked tile and badges that level.
 		let fam_spec = Self::grid_spec_at(&ui.style, (row_x + text_pad, y));
 		let mut col = 0usize;
 		for (i, fam) in families().iter().enumerate() {
+			let next = family_next_unlock(fam, view.level);
 			let visible: Vec<BlockType> = fam
 				.members
 				.iter()
@@ -873,6 +881,7 @@ impl AlchScreen {
 		let picked = self.family.map(|f| f.min(families().len() - 1));
 		if let Some(f) = picked {
 			let family = &families()[f];
+			let next = family_next_unlock(family, view.level);
 			let member = self.member.min(family.members.len() - 1);
 			let mem_spec = Self::grid_spec_at(&ui.style, (row_x + text_pad, y));
 			let mut col = 0usize;

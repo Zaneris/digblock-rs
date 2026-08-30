@@ -8,8 +8,8 @@ fn craft_levels_are_pinned() {
 	// The starter timber, in every form you have learned so far — but
 	// not the felled log itself, which grows on a tree.
 	assert_eq!(craft(B::WoodSlab), Some(1));
-	assert_eq!(craft(B::WoodStairs), Some(5), "the stairs SHAPE opens");
-	assert_eq!(craft(B::Torch), Some(10), "light waits for the Earth node");
+	assert_eq!(craft(B::WoodStairs), Some(6), "the stairs SHAPE opens");
+	assert_eq!(craft(B::Torch), Some(5), "light rides the bucket's rung");
 	assert_eq!(
 		craft(B::EssenceSiphon),
 		Some(1),
@@ -285,8 +285,8 @@ fn craft_only_blocks_are_gated_until_they_can_be_made() {
 	// level now follows the material, so a stone shape asks for the
 	// mason's unlock rather than for the shape's own.
 	assert_eq!(pickup(B::WoodSlab), 1, "a level-1 recipe");
-	assert_eq!(pickup(B::WoodStairs), 5);
-	assert_eq!(pickup(B::Torch), 10);
+	assert_eq!(pickup(B::WoodStairs), 6);
+	assert_eq!(pickup(B::Torch), 5);
 	for b in [B::Lumber, B::LumberSlab, B::LumberStairs, B::LumberDoor] {
 		assert_eq!(pickup(b), 12, "{b:?} — the timber set");
 	}
@@ -568,21 +568,21 @@ fn unlock_levels_are_the_threshold_levels() {
 			 prospector's two ranks, mastery — the content tops at 60, and \
 			 the pick's plane at 85 is the tail's one deliberate exception"
 	);
-	// Alchemy: the shape and material unlocks, the hand-priced items,
-	// and the surface-node reveals.
+	// Alchemy: the shape and material unlocks and the hand-priced items —
+	// the surface-node reveals left the ladder for the siphon craft.
 	let alchemy: Vec<u32> = (1..=MAX_LEVEL)
 		.filter(|&l| opens(Skill::Alchemy, l))
 		.collect();
 	assert_eq!(
 		alchemy,
 		vec![
-			5, 10, 12, 14, 15, 18, 21, 24, 27, 28, 30, 33, 36, 40, 50, 99
+			5, 6, 7, 12, 14, 15, 18, 21, 24, 27, 28, 30, 33, 36, 40, 50, 99
 		],
 		"the catalog tops at 50 and 99 is the sigil alone — the tail is \
-			 expansion headroom. 5 and 12 carry the leystone and springstone \
-			 reveals beside their recipes; heartwood and the siphon sit at \
-			 the first level, which is never an unlock, and the old bonus \
-			 lines left with bench extraction"
+			 expansion headroom. The opening run is a rung apiece: the torch, \
+			 the stairs, the bucket; the siphon sits at the first level, which \
+			 is never an unlock, and the old bonus lines left with bench \
+			 extraction"
 	);
 	// Arcana: the seven waystones interleaved with the travel rungs —
 	// ports are the spine the way reveals are Mining's. Return Home and
