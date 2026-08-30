@@ -446,16 +446,16 @@ pub fn field_xp(node: BlockType) -> Option<(u64, u64)> {
 		// purpose: with bench extraction gone, a draw is one of exactly
 		// two ways the skill earns at all, so each has to carry what the
 		// retired drip used to spread over a hoard.
-		BlockType::Emberore => (80, 60),
-		BlockType::Duskstone => (140, 110),
-		BlockType::Glowvein => (220, 170),
-		BlockType::Aetherock => (340, 260),
+		BlockType::Emberore => (60, 60),
+		BlockType::Duskstone => (100, 80),
+		BlockType::Glowvein => (120, 100),
+		BlockType::Aetherock => (180, 140),
 		// The surface ladder, Alchemy-primary, rising with the reveal
 		// order — heartwood is the day-one node, and a handful of hearts
 		// should reach the leystone reveal within the first session.
-		BlockType::Heartwood => (16, 80),
-		BlockType::Leystone => (20, 110),
-		BlockType::Springstone => (24, 150),
+		BlockType::Heartwood => (20, 50),
+		BlockType::Leystone => (24, 60),
+		BlockType::Springstone => (24, 80),
 		_ => return None,
 	})
 }

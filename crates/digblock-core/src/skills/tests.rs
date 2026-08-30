@@ -538,13 +538,14 @@ fn a_field_draw_ignores_the_depth_reward() {
 		(dig_xp(BlockType::Stone), 0),
 	);
 	// Every node kind has a split, and the headline skill follows the
-	// skill that revealed the find: Mining first at a vein, Alchemy
-	// first at a surface node.
+	// skill that revealed the find: Mining first at a vein (an even
+	// split at the entry tier is allowed), Alchemy first at a surface
+	// node.
 	for &node in &crate::worldgen::nodes::NODES {
 		let (mining, alchemy) = field_xp(node).unwrap_or_else(|| panic!("{node:?} pays nothing"));
 		assert!(mining > 0 && alchemy > 0, "{node:?} pays both skills");
 		if crate::unlock::reveal(node).is_some() {
-			assert!(mining > alchemy, "{node:?} is Mining's find");
+			assert!(mining >= alchemy, "{node:?} is Mining's find");
 		} else {
 			assert!(alchemy > mining, "{node:?} is Alchemy's find");
 		}
