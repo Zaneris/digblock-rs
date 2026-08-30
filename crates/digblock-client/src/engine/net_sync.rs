@@ -466,6 +466,10 @@ impl Engine {
 					// flight WHEN THE SERVER'S COUNTS WERE DECODED. Reading
 					// the live pending set here instead would be a different
 					// moment — see `NetEvent::Inventory`.
+					// The join sync's first counts are state arriving, not a
+					// craft happening — remembered here so the reveal below
+					// re-meshes silently for a siphon you already had.
+					let arriving = self.auth_essence.is_none();
 					let mut inv = Inventory::from_wire(&counts);
 					self.adopt_auth_essence(&inv);
 					for (b, n) in pending {
@@ -478,6 +482,11 @@ impl Engine {
 						}
 					}
 					self.inventory = inv;
+					self.nudge_siphon();
+					// The pack is what reveals the surface nodes: a siphon in
+					// these counts for the first time (the server's echo of the
+					// craft) is the moment they fade into the world.
+					self.sync_node_reveal(!arriving);
 					// New types file bar-first then grid; stale grid slots
 					// clear — same derivation the server runs.
 					digblock_core::inv_grid::reconcile_layout(

@@ -71,7 +71,6 @@ fn kind_key(k: IconKind) -> u32 {
 		IconKind::Siphon => 3 << 16,
 		IconKind::Pick => (3 << 16) | 1,
 		IconKind::Sigil => (3 << 16) | 2,
-		IconKind::Crest(s) => (3 << 16) | 3 | (s as u32) << 8,
 		// Nobody holds an essence; a band of its own keeps the order total.
 		IconKind::Essence(e) => (4 << 16) | e as u32,
 	}

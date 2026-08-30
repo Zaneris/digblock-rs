@@ -134,6 +134,12 @@ pub(crate) enum Msg {
 		level: u32,
 	},
 	VeinsRevealed,
+	/// The siphon has just been made: every surface source fades into the
+	/// world at once.
+	SourcesRevealed,
+	/// The bench's opening invitation: the pack has just come to hold a
+	/// siphon's whole price for the first time, and no siphon.
+	SiphonInReach,
 
 	// ---- the session ----
 	Connected,

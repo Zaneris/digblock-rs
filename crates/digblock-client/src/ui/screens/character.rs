@@ -44,7 +44,7 @@ impl CharView {
 						format!("{} / {} XP to LV {}", group(into), group(need), level + 1),
 					)
 				}
-				None => (1.0, format!("{} XP — mastered", group(xp))),
+				None => (1.0, format!("{} XP - mastered", group(xp))),
 			};
 			rows.push(Row::Skill {
 				text: format!("{}   LV {}", skill.name().to_uppercase(), level),
@@ -55,7 +55,7 @@ impl CharView {
 				rows.push(Row::Info(rank_line(r)));
 			}
 			if let Some((lvl, what)) = next_unlock(skill, level) {
-				rows.push(Row::Info(format!("next: LV {lvl} — {what}")));
+				rows.push(Row::Info(format!("next: LV {lvl} - {what}")));
 			}
 			// §5.2's depth reward, on the skill it pays into. Stated as a
 			// live number rather than a rule, because the ramp is what
@@ -122,18 +122,15 @@ pub(super) fn teasers(skill: Skill) -> Vec<(u32, &'static str)> {
 fn mining_teasers() -> Vec<(u32, &'static str)> {
 	use BlockType as B;
 	vec![
-		(
-			unlock::mine(B::Wood),
-			"timber gives — trees and planed wood",
-		),
+		(unlock::mine(B::Wood), "timber gives: trees and planed wood"),
 		(
 			unlock::mine(B::Stone),
-			"rock gives — gravel, sandstone, stone",
+			"rock gives: gravel, sandstone, stone",
 		),
-		(reveal_at(B::Emberore), "emberore reveals — bring a siphon"),
+		(reveal_at(B::Emberore), "emberore reveals: bring a siphon"),
 		(
 			unlock::PROSPECT_FAINT_AT,
-			"prospector's sense — faint, but you hear what you can't see",
+			"prospector's sense: faint, but you hear what you can't see",
 		),
 		(reveal_at(B::Duskstone), "duskstone reveals"),
 		(
@@ -143,38 +140,28 @@ fn mining_teasers() -> Vec<(u32, &'static str)> {
 		(unlock::mine(B::Crystal), "crystal opens"),
 		(unlock::PROSPECT_SHARP_AT, "the prospector's sense sharpens"),
 		(reveal_at(B::Aetherock), "aetherock reveals"),
-		(
-			unlock::MASTERY_AT,
-			"mastery: every vein gives one more; the miner's crest",
-		),
+		(unlock::MASTERY_AT, "mastery: every vein gives one more"),
 		(unlock::PICK_PLANE_AT, "the pick's full nine"),
 	]
 }
 
-/// Alchemy's: the shape and material unlocks, the hand-priced items, the
-/// surface-node reveals, and the three levels that change a bench NUMBER
-/// rather than opening a recipe.
+/// Alchemy's: the shape and material unlocks, the hand-priced items, and
+/// the three levels that change a bench NUMBER rather than opening a
+/// recipe. The surface-node reveals are not rows: they hang on making the
+/// siphon, not on a level.
 fn alch_teasers() -> Vec<(u32, &'static str)> {
 	use BlockType as B;
 	use Material as M;
 	vec![
-		(
-			unlock::shape(ShapeFamily::Stairs),
-			"the stairs shape; leystone reveals — terra in shallow rock",
-		),
 		(item_at(B::Torch), "the torch"),
-		(
-			mat_at(M::Lumber),
-			"planed lumber and its joinery; springstone reveals — unda under fresh water",
-		),
+		(unlock::shape(ShapeFamily::Stairs), "the stairs shape"),
+		(item_at(B::Bucket), "the bucket"),
+		(mat_at(M::Lumber), "planed lumber and its joinery"),
 		(item_at(B::Table), "furniture: the table and the chair"),
-		(
-			mat_at(M::Stone),
-			"clean stone — every learned shape at once",
-		),
+		(mat_at(M::Stone), "clean stone: every learned shape at once"),
 		(mat_at(M::DarkLumber), "dark lumber and stone brick"),
 		(mat_at(M::Sandstone), "sandstone and glass"),
-		(item_at(B::Bed), "the bed — timber and bedding both"),
+		(item_at(B::Bed), "the bed: timber and bedding both"),
 		(unlock::BENCH_FASTER_AT, "a faster bench"),
 		(mat_at(M::RedLumber), "red lumber"),
 		(item_at(B::Lantern), "the lantern"),
@@ -182,21 +169,17 @@ fn alch_teasers() -> Vec<(u32, &'static str)> {
 			mat_at(M::PolishedStone),
 			"polished stone and sandstone brick",
 		),
-		(mat_at(M::Metal), "FERRUM's block — the prestige material"),
+		(mat_at(M::Metal), "FERRUM's block: the prestige material"),
 		(item_at(B::ResonantPick), "the resonant pick"),
 		(mat_at(M::Crystal), "crystal, grown from aether"),
 		(unlock::BENCH_FASTEST_AT, "the fastest bench"),
 		(
 			item_at(B::Aetherlamp),
-			"the aetherlamp — the standing aether sink",
+			"the aetherlamp: the standing aether sink",
 		),
 		(
 			unlock::WASTE_DIP_AT,
-			"the waste dip — your process tightens early",
-		),
-		(
-			item_at(B::AlchemistsCrest),
-			"the alchemist's crest — mastery",
+			"the waste dip: your process tightens early",
 		),
 		(item_at(B::MastersSigil), "the master's sigil"),
 	]
@@ -208,33 +191,29 @@ fn arcana_teasers() -> Vec<(u32, &'static str)> {
 	use digblock_core::worldgen::SurfaceKind as K;
 	vec![
 		(port_at(K::Plains), "the plains waystone hums into reach"),
-		(unlock::KINDLE_AT, "kindle — conjured light in the world"),
+		(unlock::KINDLE_AT, "kindle: conjured light in the world"),
 		(port_at(K::Forest), "the forest waystone"),
 		(
 			unlock::SPHERE_AT,
-			"the sphere — a shell of whatever you hold rises about you",
+			"the sphere: a shell of whatever you hold rises about you",
 		),
 		(
 			unlock::TELEPORT_SWIFT_AT,
-			"swift return — home comes back sooner",
+			"swift return: home comes back sooner",
 		),
 		(
 			unlock::CAUSEWAY_AT,
-			"the causeway — glass carries your step over nothing",
+			"the causeway: glass carries your step over nothing",
 		),
 		(port_at(K::Savanna), "the savanna waystone"),
 		(
-			unlock::ARC_AT,
-			"the mason's arc — one placement lays a line of three",
-		),
-		(
 			unlock::CHANNEL_QUICK_AT,
-			"quickened channels — every cast lands sooner",
+			"quickened channels: every cast lands sooner",
 		),
 		(port_at(K::Taiga), "the taiga waystone"),
 		(
 			unlock::SPHERE_WIDE_AT,
-			"the wide sphere — the shell stands further out",
+			"the wide sphere: the shell stands further out",
 		),
 		(
 			unlock::WISP_BRIGHT_AT,
@@ -242,22 +221,15 @@ fn arcana_teasers() -> Vec<(u32, &'static str)> {
 		),
 		(unlock::CAUSEWAY_LONG_AT, "the causeway carries you further"),
 		(port_at(K::Beach), "the shore waystone"),
-		(unlock::ARC_WIDE_AT, "the arc reaches five"),
 		(port_at(K::Mountain), "the mountain waystone"),
-		(
-			unlock::SPHERE_VAST_AT,
-			"the vast sphere — further out again",
-		),
+		(unlock::SPHERE_VAST_AT, "the vast sphere: further out again"),
 		(unlock::KINDLE_CHEAP_AT, "kindle costs less"),
 		(unlock::TELEPORT_SWIFTER_AT, "swifter return"),
 		(
 			unlock::CAUSEWAY_VAST_AT,
 			"the causeway carries you further again",
 		),
-		(
-			port_at(K::Snow),
-			"the far cold waystone — the last port; the arcanist's crest",
-		),
+		(port_at(K::Snow), "the far cold waystone: the last port"),
 	]
 }
 
@@ -287,7 +259,7 @@ fn item_at(b: BlockType) -> u32 {
 /// feature to exactly the player who most needs telling the bonus is there.
 fn depth_bonus_line(eye_y: i32) -> String {
 	match (skills::depth_xp_permille(eye_y) - 1000) / 10 {
-		0 => "depth bonus: none yet — deeper pays more".to_string(),
+		0 => "depth bonus: none yet, deeper pays more".to_string(),
 		pct => format!("depth bonus: +{pct}% XP per dig"),
 	}
 }
@@ -674,17 +646,14 @@ mod tests {
 		// And the rows actually render: a fresh character teases the first
 		// thresholds; past the last Mining gate, Mining shows none.
 		let fresh = texts(&emit(&SkillSet::default())).join("\n");
-		let timber = format!("next: LV {} — timber gives", unlock::mine(BlockType::Wood));
-		let stairs = format!(
-			"next: LV {} — the stairs shape",
-			unlock::shape(ShapeFamily::Stairs)
-		);
+		let timber = format!("next: LV {} - timber gives", unlock::mine(BlockType::Wood));
+		let torch = format!("next: LV {} - the torch", item_at(BlockType::Torch));
 		let ore = format!(
-			"next: LV {} — emberore reveals",
+			"next: LV {} - emberore reveals",
 			reveal_at(BlockType::Emberore)
 		);
 		assert!(fresh.contains(&timber), "{fresh}");
-		assert!(fresh.contains(&stairs), "{fresh}");
+		assert!(fresh.contains(&torch), "{fresh}");
 		let mut leveled = SkillSet::default();
 		leveled.set_total(
 			Skill::Mining,

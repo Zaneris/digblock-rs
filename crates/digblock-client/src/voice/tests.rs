@@ -167,6 +167,8 @@ fn samples() -> Vec<Msg> {
 			level: 7,
 		},
 		Msg::VeinsRevealed,
+		Msg::SourcesRevealed,
+		Msg::SiphonInReach,
 		Msg::Connected,
 		Msg::UnrankedServer,
 		Msg::LeftServer,
@@ -230,6 +232,8 @@ fn samples() -> Vec<Msg> {
 			| Msg::LevelUp { .. }
 			| Msg::RemoteLevelUp { .. }
 			| Msg::VeinsRevealed
+			| Msg::SourcesRevealed
+			| Msg::SiphonInReach
 			| Msg::Connected
 			| Msg::UnrankedServer
 			| Msg::LeftServer
@@ -261,6 +265,9 @@ fn every_message_has_words_of_its_own() {
 		let line = render(&m).text;
 		assert!(!line.trim().is_empty(), "{m:?} renders to nothing");
 		assert!(!seen.contains(&line), "{m:?} speaks a line already taken");
+		// House style: no em dash in anything the game says. A comma, a
+		// colon or a plain hyphen carries every pause the feed needs.
+		assert!(!line.contains('—'), "{m:?} speaks an em dash: {line}");
 		seen.push(line);
 	}
 }

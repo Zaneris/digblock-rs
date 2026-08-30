@@ -131,10 +131,10 @@ impl Job {
 		match self {
 			Job::Generate { .. } => 19,
 			// The node stamp is a flag byte when absent, and otherwise
-			// seed + origin + both levels + the host mask + count + two
-			// bytes an edited cell.
+			// seed + origin + both levels + the siphon bit + the host mask
+			// + count + two bytes an edited cell.
 			Job::Mesh { input, .. } => {
-				let nodes = input.nodes.as_ref().map_or(1, |o| 36 + o.edited.len() * 2);
+				let nodes = input.nodes.as_ref().map_or(1, |o| 37 + o.edited.len() * 2);
 				26 + nodes + PADDED_VOLUME * 2
 			}
 		}
@@ -182,6 +182,7 @@ impl Job {
 						out.extend_from_slice(&o.origin.2.to_le_bytes());
 						out.extend_from_slice(&o.levels.mining.to_le_bytes());
 						out.extend_from_slice(&o.levels.alchemy.to_le_bytes());
+						out.push(u8::from(o.levels.siphon));
 						// Which hosts the main thread found in the box, one
 						// bit each — the only thing that prunes a pass, so
 						// it has to cross with the levels rather than being
@@ -229,6 +230,7 @@ impl Job {
 						let levels = crate::worldgen::nodes::Levels {
 							mining: r.u32()?,
 							alchemy: r.u32()?,
+							siphon: r.u8()? != 0,
 						};
 						let mask = r.u8()?;
 						let hosts = NodeHosts {
@@ -430,6 +432,7 @@ mod tests {
 					levels: crate::worldgen::nodes::Levels {
 						mining: 47,
 						alchemy: 12,
+						siphon: true,
 					},
 					// A mixed mask, so a bit dropped or shifted in the
 					// codec cannot pass as the value beside it.
@@ -454,9 +457,13 @@ mod tests {
 		assert_eq!(nodes.seed, Seed::current(-8123.5));
 		assert_eq!(nodes.origin, (-32, 64, 4096));
 		assert_eq!(
-			(nodes.levels.mining, nodes.levels.alchemy),
-			(47, 12),
-			"two lookers mesh the same chunk differently, on either axis"
+			(
+				nodes.levels.mining,
+				nodes.levels.alchemy,
+				nodes.levels.siphon
+			),
+			(47, 12, true),
+			"two lookers mesh the same chunk differently, on any of the three gates"
 		);
 		assert_eq!(
 			nodes.hosts,

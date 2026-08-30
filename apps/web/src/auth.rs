@@ -229,7 +229,7 @@ fn error_of(status: u16, body: &str) -> String {
 		.and_then(|v| v["error"].as_str().map(str::to_string))
 		.unwrap_or_else(|| match status {
 			401 => "not signed in".into(),
-			429 => "too many attempts — try again shortly".into(),
+			429 => "too many attempts, try again shortly".into(),
 			_ => format!("http {status}"),
 		})
 }
@@ -342,7 +342,7 @@ pub(crate) async fn dev_sign_in(master_url: &str, subject: &str) -> Result<Sessi
 	let (status, text) = post_json(&format!("{master_url}/api/dev/signin"), None, &body).await?;
 	if status != 200 {
 		return Err(format!(
-			"{} — is the master running with Master__Dev__AuthEnabled=true?",
+			"{} - is the master running with Master__Dev__AuthEnabled=true?",
 			error_of(status, &text)
 		));
 	}

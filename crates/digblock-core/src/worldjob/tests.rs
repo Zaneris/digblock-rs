@@ -383,6 +383,7 @@ fn a_node_host_is_never_sweepable() {
 	let levels = nodes::Levels {
 		mining: 99,
 		alchemy: 99,
+		siphon: true,
 	};
 	let mut candidates: Vec<(i32, i32, i32)> = Vec::new();
 	for x in -400i32..400 {

@@ -601,39 +601,41 @@ fn crossing_a_reveal_threshold_asks_for_a_sweep_and_nothing_else_does() {
 		.iter()
 		.filter_map(|&o| crate::unlock::reveal(o))
 		.collect();
-	let alchemy_thresholds: Vec<u32> = NODES
-		.iter()
-		.filter_map(|&o| crate::unlock::alchemy_reveal(o))
-		.collect();
-	let at = |mining, alchemy| Levels { mining, alchemy };
+	let at = |mining, siphon| Levels {
+		mining,
+		alchemy: 1,
+		siphon,
+	};
 	let mut p = Pipeline::new(Seed::current(0.0), 4, 0);
-	p.set_levels(at(1, 1));
+	p.set_levels(at(1, false));
 	for level in 2..=crate::skills::MAX_LEVEL {
 		assert_eq!(
-			p.set_levels(at(level, 1)),
+			p.set_levels(at(level, false)),
 			mining_thresholds.contains(&level),
 			"Mining stepping to {level}"
 		);
 	}
-	for level in 2..=crate::skills::MAX_LEVEL {
-		assert_eq!(
-			p.set_levels(at(crate::skills::MAX_LEVEL, level)),
-			alchemy_thresholds.contains(&level),
-			"Alchemy stepping to {level}"
-		);
-	}
+	// The siphon bit is the surface nodes' whole gate: flipping it on is
+	// a crossing, and an Alchemy level never is — the alchemy field only
+	// feeds the yield math.
+	assert!(
+		p.set_levels(at(crate::skills::MAX_LEVEL, true)),
+		"the siphon craft sweeps"
+	);
+	let mut alch = p.levels();
+	alch.alchemy = crate::skills::MAX_LEVEL;
+	assert!(!p.set_levels(alch), "an Alchemy level alone never sweeps");
 	// Re-setting the same levels is not a crossing, so a per-frame
 	// caller costs nothing.
-	let max = at(crate::skills::MAX_LEVEL, crate::skills::MAX_LEVEL);
+	let max = alch;
 	assert!(!p.set_levels(max));
-	// And a single jump over every threshold on both axes sweeps
-	// exactly once.
+	// And a single jump over every gate at once sweeps exactly once.
 	let mut q = Pipeline::new(Seed::current(0.0), 4, 0);
 	assert!(q.set_levels(max));
 	assert!(!q.set_levels(max));
-	// Losing levels (a fresh world, a rejoin as somebody else) crosses
+	// Losing it all (a fresh world, a rejoin as somebody else) crosses
 	// back down and re-meshes too — the veins have to go away.
-	assert!(q.set_levels(at(1, 1)));
+	assert!(q.set_levels(at(1, false)));
 }
 
 /// `journal_overlay_survives_evict_and_regen`: with an overlay

@@ -9,6 +9,7 @@ fn maxed() -> Levels {
 	Levels {
 		mining: crate::skills::MAX_LEVEL,
 		alchemy: crate::skills::MAX_LEVEL,
+		siphon: true,
 	}
 }
 
@@ -105,11 +106,11 @@ fn no_node_manifests_in_an_edited_cell() {
 	}
 }
 
-/// You draw what you can see: below its Alchemy reveal a surface node
-/// is its host to that player, and the reveal is the ALCHEMY level —
-/// Mining opens nothing on the surface.
+/// You draw what you can see: without the siphon a surface node is its
+/// host to that player, and the reveal is the SIPHON bit alone — no
+/// level on either skill opens the surface.
 #[test]
-fn surface_nodes_reveal_on_alchemy_alone() {
+fn surface_nodes_reveal_on_the_siphon_alone() {
 	let cases = [
 		(BlockType::Wood, find_heartwood(SEED), BlockType::Heartwood),
 		(
@@ -119,13 +120,24 @@ fn surface_nodes_reveal_on_alchemy_alone() {
 		),
 	];
 	for (host, at, node) in cases {
-		let need = crate::unlock::alchemy_reveal(node).expect("a surface node");
+		assert!(crate::unlock::siphon_reveal(node), "a surface node");
 		let cell = host as u16;
-		let at_lvl = |mining, alchemy| revealed(cell, at, SEED, Levels { mining, alchemy }, false);
-		if need > 1 {
-			assert_eq!(at_lvl(crate::skills::MAX_LEVEL, need - 1), None, "{node:?}");
-		}
-		assert_eq!(at_lvl(1, need), Some(node), "{node:?}");
+		let at_gate = |mining, alchemy, siphon| {
+			revealed(
+				cell,
+				at,
+				SEED,
+				Levels {
+					mining,
+					alchemy,
+					siphon,
+				},
+				false,
+			)
+		};
+		let max = crate::skills::MAX_LEVEL;
+		assert_eq!(at_gate(max, max, false), None, "{node:?}");
+		assert_eq!(at_gate(1, 1, true), Some(node), "{node:?}");
 		assert_eq!(
 			crate::unlock::reveal(node),
 			None,
@@ -141,15 +153,15 @@ fn surface_nodes_reveal_on_alchemy_alone() {
 fn a_revealed_node_needs_the_siphon() {
 	let (host, at, node) = (BlockType::Wood, find_heartwood(SEED), BlockType::Heartwood);
 	let cell = host as u16;
+	// A fresh player WITH their siphon: making it is the reveal, so the
+	// moment the tool exists the find is visible — and "below the
+	// reveal" is the siphonless case, exercised in
+	// `surface_nodes_reveal_on_the_siphon_alone`.
 	let fresh = Levels {
 		mining: 1,
 		alchemy: 1,
+		siphon: true,
 	};
-	// Heartwood reveals at the first level (the economy starts here),
-	// so "below the reveal" is exercised by the OTHER kinds' tests;
-	// here even a fresh player sees it.
-	let need = crate::unlock::alchemy_reveal(node).expect("a surface node");
-	assert_eq!(need, 1, "heartwood is the day-one node");
 	assert_eq!(
 		dig_mode(cell, at, SEED, fresh, false, BlockType::Air),
 		DigMode::NeedsSiphon
@@ -208,8 +220,8 @@ fn every_node_has_a_spent_face_and_nothing_else_does() {
 			// Exactly one reveal table claims each node.
 			assert_ne!(
 				crate::unlock::reveal(b).is_some(),
-				crate::unlock::alchemy_reveal(b).is_some(),
-				"{b:?} must answer to exactly one reveal skill"
+				crate::unlock::siphon_reveal(b),
+				"{b:?} must answer to exactly one reveal gate"
 			);
 		}
 	}

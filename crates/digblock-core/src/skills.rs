@@ -47,9 +47,8 @@ impl Skill {
 	}
 
 	/// The essence that stands for the skill wherever ONE colour has to: the nameplate's mastery
-	/// glyph, and the lead line of its crest's price. Mining's is what the ore tiers pay, Alchemy's
-	/// the day-one node's draw, and Arcana's the glass it writes — the one essence both of its
-	/// conjured-matter spells spend. Read from here so the glyph and the crest cannot disagree.
+	/// glyph. Mining's is what the ore tiers pay, Alchemy's the day-one node's draw, and Arcana's
+	/// the glass it writes — the one essence both of its conjured-matter spells spend.
 	pub fn emblem(self) -> crate::block::Essence {
 		use crate::block::Essence;
 		match self {
@@ -336,11 +335,17 @@ pub fn dig_decayed(progress: u32, required: u32, idle: u32) -> u32 {
 // per-action XP is fixed for life. Shared verbatim by the server's
 // chokepoints and the offline engine.
 
-/// Mining XP for a completed dig of `block`, scaled down from its hardness. Zero for the
-/// undiggable — and zero, BY NAME, for foliage and the torch: a trivial break is housekeeping,
-/// and the scale-down alone cannot say so, since its rounding hands even the softest block a
-/// whole point. The FLAT award; where the dig happened is [`depth_xp_permille`]'s business, and
-/// [`dig_award`] puts the two together (its cap keeps a zero-worth block's swing cells at zero).
+/// Mining XP for a completed dig of `block`: a step ladder on the block's WORTH (`xp_ticks`),
+/// with the old hardness scale-down keeping the floor under it. Hand-stepped rather than one
+/// division, because the division under-paid the whole worked middle of the table — soft ground
+/// pays a couple of points, the worked worths (timber, gravel, sandstone) five, and a full
+/// quarry hold seven — while the hold times stay exactly where they were. Keyed on worth and
+/// never on the block's name, so equal worths pay equally and a retune of a row's ticks moves
+/// its award with it. Zero for the undiggable — and zero, BY NAME, for foliage and the torch: a
+/// trivial break is housekeeping, and no worth scale can say so, since the floor hands even the
+/// softest block a whole point. The FLAT award; where the dig happened is
+/// [`depth_xp_permille`]'s business, and [`dig_award`] puts the two together (its cap keeps a
+/// zero-worth block's swing cells at zero).
 pub fn dig_xp(block: BlockType) -> u64 {
 	if block.is_foliage() || block == BlockType::Torch || block.is_conjured() {
 		return 0;
@@ -348,9 +353,14 @@ pub fn dig_xp(block: BlockType) -> u64 {
 	// Diggability is the hold's question; the award is the block's WORTH, which is the hold on
 	// every row but a stubborn one. Reading the hold here would let `block::STUBBORN_HOLD_MULT`
 	// pay a drawn face for essence somebody else already drew.
-	match block.hardness_ticks() {
-		Some(_) => u64::from(block.xp_ticks()).div_ceil(24),
-		None => 0,
+	if block.hardness_ticks().is_none() {
+		return 0;
+	}
+	match block.xp_ticks() {
+		t if t >= 90 => 7,
+		t if t >= 45 => 5,
+		t if t >= 26 => 3,
+		t => u64::from(t).div_ceil(24),
 	}
 }
 
@@ -380,7 +390,7 @@ pub const DEPTH_XP_MAX_PERMILLE: u32 = 1500;
 ///
 /// A wide swing is a reach bonus, not an XP multiplier: the pick already pays for itself in
 /// MATERIAL. Floored at one point per cell by [`dig_award`] — a cell paying nothing reads as a bug.
-pub const PICK_EXTRA_PERMILLE: u32 = 200;
+pub const PICK_EXTRA_PERMILLE: u32 = 300;
 
 /// §5.2's depth reward: the multiplier on a dig's Mining XP for the cell it happened in, in
 /// permille. Flat at and above [`DEPTH_XP_FROM`], then rising LINEARLY with depth to
@@ -446,16 +456,16 @@ pub fn field_xp(node: BlockType) -> Option<(u64, u64)> {
 		// purpose: with bench extraction gone, a draw is one of exactly
 		// two ways the skill earns at all, so each has to carry what the
 		// retired drip used to spread over a hoard.
-		BlockType::Emberore => (80, 60),
-		BlockType::Duskstone => (140, 110),
-		BlockType::Glowvein => (220, 170),
-		BlockType::Aetherock => (340, 260),
+		BlockType::Emberore => (60, 60),
+		BlockType::Duskstone => (100, 80),
+		BlockType::Glowvein => (120, 100),
+		BlockType::Aetherock => (180, 140),
 		// The surface ladder, Alchemy-primary, rising with the reveal
 		// order — heartwood is the day-one node, and a handful of hearts
 		// should reach the leystone reveal within the first session.
-		BlockType::Heartwood => (16, 80),
-		BlockType::Leystone => (20, 110),
-		BlockType::Springstone => (24, 150),
+		BlockType::Heartwood => (20, 50),
+		BlockType::Leystone => (24, 60),
+		BlockType::Springstone => (24, 80),
 		_ => return None,
 	})
 }
@@ -482,18 +492,6 @@ pub const HOME_XP_STRIDE: f32 = 8.0;
 
 /// The home award's ceiling, per jump.
 pub const HOME_XP_CAP: u64 = 60;
-
-/// Arcana XP for a Mason's Arc placement: the cells the arc laid BEYOND the one the hand would
-/// have placed anyway, so a line that fell back to the ordinary place pays nothing and the
-/// award grows only with the rank's reach. Deliberately the smallest rate on the ladder: every
-/// cell is billed out of the player's own stock, which is what keeps place-spam from being a
-/// faucet, and a rate that outpaid the fares would make the stance Arcana's cheapest rung.
-pub fn arc_xp(cells: usize) -> u64 {
-	cells.saturating_sub(1) as u64 * ARC_XP_PER_EXTRA_CELL
-}
-
-/// Points per cell an arc lays past the first.
-pub const ARC_XP_PER_EXTRA_CELL: u64 = 1;
 
 /// Arcana XP for a PRICED cast, derived from what it drains — the `craft_xp` rule: the award
 /// rides the price, so a fare retune moves its XP with it and zero-cost casts pay zero.

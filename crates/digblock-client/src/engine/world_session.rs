@@ -42,6 +42,7 @@ impl Engine {
 		self.skills = Default::default();
 		self.vfx.toasts.clear();
 		self.auth_essence = None;
+		self.siphon_nudged = false;
 		self.reset_world_transients(spawn, true);
 	}
 
@@ -57,7 +58,6 @@ impl Engine {
 		// already be the next world's, and writing into that one would
 		// scatter the old sphere's cells through it.
 		self.sphere_climbs.clear();
-		self.arc_on = false;
 		self.wisp_left = 0.0;
 		// Forgotten, never lifted: the pipeline may already be the next
 		// world's, and the planks would land in it.
@@ -249,6 +249,7 @@ impl Engine {
 		self.skills = Default::default();
 		self.vfx.toasts.clear();
 		self.auth_essence = None;
+		self.siphon_nudged = false;
 		self.session.player_names.clear();
 		self.reset_world_transients(spawn, true);
 		self.save.in_local_save = false;

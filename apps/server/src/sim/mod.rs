@@ -1117,7 +1117,7 @@ impl Sim {
 			v,
 			cell,
 			self.store.seed(),
-			digblock_core::worldgen::nodes::Levels::of(&client.skills),
+			digblock_core::worldgen::nodes::Levels::of(&client.skills, &client.inventory),
 			self.cell_edited(cell.0, cell.1, cell.2),
 			client.hotbar.tool_in_hand(),
 		)

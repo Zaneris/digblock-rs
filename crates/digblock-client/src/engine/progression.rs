@@ -70,6 +70,11 @@ impl Engine {
 						digblock_core::skills::Skill::Alchemy,
 						digblock_core::skills::alchemy_xp(&core_op),
 					);
+					// The craft that matters here is the siphon: making it is
+					// what reveals the surface nodes, so the pipeline learns
+					// about the pack's new tool the moment it exists. A no-op
+					// for every other craft (no gate crossed, no re-mesh).
+					self.sync_node_reveal(true);
 				}
 			}
 		}
@@ -114,6 +119,32 @@ impl Engine {
 		self.auth_essence = Some(now);
 	}
 
+	/// The bench's opening invitation, asked wherever the pack GROWS (the
+	/// dig credit, the server's inventory rebase): the first time it
+	/// holds a siphon's whole price and no siphon, say so and name the
+	/// key. Price and gate are read from the tables, so a retune moves
+	/// the nudge with it. Once per world session — owning one silences it
+	/// for good, and a join sync that arrives already affordable speaks
+	/// once and is done.
+	pub(super) fn nudge_siphon(&mut self) {
+		use digblock_core::block::BlockType;
+		let siphon = BlockType::EssenceSiphon;
+		if self.siphon_nudged
+			|| self.inventory.count(siphon) > 0
+			|| !digblock_core::unlock::can_craft(siphon, &self.skills)
+		{
+			return;
+		}
+		let priced = digblock_core::alchemy::craft_feedstock(siphon)
+			.iter()
+			.all(|&(b, n)| self.inventory.count(b) >= n);
+		if !priced {
+			return;
+		}
+		self.siphon_nudged = true;
+		self.push_feed(crate::voice::Msg::SiphonInReach);
+	}
+
 	/// Adopt a new authoritative XP total for one skill: coalesce the delta into a toast, then
 	/// word and sound a level-up. Totals only grow, so a replayed or reordered frame is a no-op.
 	/// Both award paths land here — the server's `XpGain` online, and [`Self::award_xp_offline`]
@@ -155,23 +186,28 @@ impl Engine {
 		}
 	}
 
-	/// Hand the pipeline the skill levels its node stamp reveals at, and sweep every resident
-	/// chunk when that crosses a threshold on either axis (§5.3 — Mining for the ore tiers,
-	/// Alchemy for the surface nodes). The sweep is `remesh_all`, which only ENQUEUES — the mesh
-	/// heap drains under the ordinary `STREAM_BUDGET_MS`, so the veins fade in around you instead
-	/// of hitching the frame that levelled you up.
+	/// Hand the pipeline the gates its node stamp reveals at, and sweep every resident chunk when
+	/// that crosses one (§5.3 — a Mining threshold for the ore tiers, the siphon bit for the
+	/// surface nodes). The sweep is `remesh_all`, which only ENQUEUES — the mesh heap drains
+	/// under the ordinary `STREAM_BUDGET_MS`, so the finds fade into the world around you instead
+	/// of hitching the frame that opened them.
 	pub(super) fn sync_node_reveal(&mut self, announce: bool) {
-		let levels = digblock_core::worldgen::nodes::Levels::of(&self.skills);
+		let levels = digblock_core::worldgen::nodes::Levels::of(&self.skills, &self.inventory);
+		let was = self.pipeline.levels();
 		if !self.pipeline.set_levels(levels) {
 			return;
 		}
 		self.pipeline.remesh_all();
-		// Only a LEVEL-UP says so. Entering a world, or a join sync
-		// handing over a Mining 60 you already had, crosses the same
-		// thresholds against a fresh pipeline and would announce a
+		// Only a fresh gain says so. Entering a world, or a join sync
+		// handing over a Mining 60 or a siphon you already had, crosses
+		// the same gates against a fresh pipeline and would announce a
 		// discovery you made an hour ago.
 		if announce {
-			self.push_feed(crate::voice::Msg::VeinsRevealed);
+			self.push_feed(if levels.siphon && !was.siphon {
+				crate::voice::Msg::SourcesRevealed
+			} else {
+				crate::voice::Msg::VeinsRevealed
+			});
 		}
 	}
 

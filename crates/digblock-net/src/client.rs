@@ -583,7 +583,7 @@ impl NetClient {
 					self.failed = true;
 					out.push(NetEvent::Refused {
 						reason: format!(
-							"server world uses terrain {terrain} (build {build}); this client does not carry it — update"
+							"server world uses terrain {terrain} (build {build}); this client does not carry it - update"
 						),
 					});
 					return;
@@ -592,7 +592,7 @@ impl NetClient {
 					self.failed = true;
 					out.push(NetEvent::Refused {
 						reason: format!(
-							"server sim {sim_version} (build {build}), client sim {} — update the older side",
+							"server sim {sim_version} (build {build}), client sim {} - update the older side",
 							digblock_core::SIM_VERSION
 						),
 					});

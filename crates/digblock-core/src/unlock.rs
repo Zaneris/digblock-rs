@@ -2,8 +2,9 @@
 //! hold an unlock number, and no caller compares levels itself.
 //!
 //! - **The levels** — [`shape`] and [`material`] (§7.2's two grid axes), [`functional`] for the
-//!   hand-priced items, plus [`mine`] and the two reveal axes. Each is its axis's sole
-//!   authority; [`craft`] is `max(shape, material)` and [`pickup`] reads `craft` of the drop.
+//!   hand-priced items, plus [`mine`] and the ore reveal axis ([`siphon_reveal`] is the one
+//!   levelless gate: the siphon craft itself). Each is its axis's sole authority; [`craft`] is
+//!   `max(shape, material)` and [`pickup`] reads `craft` of the drop.
 //! - **The questions** — [`can_craft`], [`dig_blocked`], asked identically by client
 //!   prediction, the server's `DigStart` backstop, the bot's target filter and the test
 //!   harness, so all four agree by construction.
@@ -28,7 +29,7 @@ use crate::skills::{MAX_LEVEL, Skill, SkillSet};
 pub fn shape(s: ShapeFamily) -> u32 {
 	match s {
 		ShapeFamily::Block | ShapeFamily::Slab => 1,
-		ShapeFamily::Stairs => 5,
+		ShapeFamily::Stairs => 6,
 		// The door lands WITH the first material that authors one, so the
 		// shape fanfare and the first actual door are the same level-up —
 		// it used to open early, and an unlock that hands you nothing
@@ -94,16 +95,17 @@ pub fn material(m: Material) -> Option<u32> {
 /// exist without the other.
 pub fn functional(b: BlockType) -> Option<u32> {
 	Some(match b {
-		// The water vessel (§13.5) sits a few rungs past the start, beside
-		// the leystone reveal: at the first level it shared the catalog's
+		// The water vessel (§13.5) sits a few rungs past the start, one
+		// past the stairs: at the first level it shared the catalog's
 		// opening line with the siphon and split the one beat the ladder
 		// must not split — "make your siphon". Still priced in timber
 		// alone, so the rung is the whole gate.
-		BlockType::Bucket => 5,
-		// First light, pre-ore on purpose (§7.3) — and past the leystone
-		// reveal, since its price names Terra and Terra is a leystone draw
-		// now.
-		BlockType::Torch => 10,
+		BlockType::Bucket => 7,
+		// First light, pre-ore on purpose (§7.3), and the first level-up
+		// beat after "make your siphon". Its price names Terra, which is a
+		// leystone draw — open from the siphon craft on, so the rung paces
+		// the ladder rather than waiting on a reveal.
+		BlockType::Torch => 5,
 		// THE essence tool (the redesign made it the skill's identity):
 		// every essence in the game is a siphon draw, so the siphon sits
 		// at the level everyone starts at, gated by its feedstock price
@@ -132,36 +134,14 @@ pub fn functional(b: BlockType) -> Option<u32> {
 		// A pure Aether price for a thing that does nothing: the point IS
 		// that it is the last line.
 		BlockType::MastersSigil => 99,
-		// The crests' BENCH level. The Alchemist's is its own mastery; the other two ask nothing
-		// of the bench, because their gate is the skill they honour (`crest`) and a mastered
-		// miner with no Alchemy must still be able to make theirs. Visible on the page from the
-		// first level for the same reason, locked behind the skill's own badge.
-		BlockType::AlchemistsCrest => MASTERY_AT,
-		BlockType::MinersCrest | BlockType::ArcanistsCrest => 1,
-		_ => return None,
-	})
-}
-
-/// The skill a crest honours, for the three rows that are one; `None` for everything else. A
-/// crest may be crafted only once THAT skill has reached [`MASTERY_AT`] — [`can_craft`] asks
-/// here, which is what makes wearing one a claim the wearer earned rather than bought. The
-/// SIGIL is deliberately not a crest: it marks the level cap on the bench ladder alone.
-pub fn crest(b: BlockType) -> Option<Skill> {
-	Some(match b {
-		BlockType::MinersCrest => Skill::Mining,
-		BlockType::AlchemistsCrest => Skill::Alchemy,
-		BlockType::ArcanistsCrest => Skill::Arcana,
 		_ => return None,
 	})
 }
 
 /// The one gate a catalog tile's lock badge names — the skill and the level a player is short
-/// of. For a crest that is the skill it honours at mastery; for everything else the bench level.
+/// of: the bench level, always.
 pub fn craft_gate(b: BlockType) -> Option<(Skill, u32)> {
-	match crest(b) {
-		Some(skill) => Some((skill, MASTERY_AT)),
-		None => craft(b).map(|l| (Skill::Alchemy, l)),
-	}
+	craft(b).map(|l| (Skill::Alchemy, l))
 }
 
 /// Alchemy level that unlocks crafting `b`; `None` = never craftable. **Nothing the world hands
@@ -203,25 +183,17 @@ pub fn reveal(b: BlockType) -> Option<u32> {
 	})
 }
 
-/// The ALCHEMY level a SURFACE node becomes visible at — [`reveal`]'s twin on the other skill,
-/// so Alchemy owns the surface hunt the way Mining owns the deep one. Same stranger-gate
-/// semantics: below it the cell is its host in every respect, and you draw what you can see. A
-/// node answers to exactly ONE of the two reveal tables (pinned in `worldgen::nodes`).
-pub fn alchemy_reveal(b: BlockType) -> Option<u32> {
-	Some(match b {
-		// The day-one node, and necessarily so: every essence in the game
-		// now starts as a draw, so the first node must be visible at the
-		// level everyone starts at or the economy cannot begin. The craft
-		// beat it feeds is the siphon, whose feedstock-only price is what
-		// actually gates the first draw.
-		BlockType::Heartwood => 1,
-		// The Terra node — early, but past the first heartwood draws, so
-		// the surface ladder has an actual first reveal event.
-		BlockType::Leystone => 5,
-		// The Unda node, under water on purpose: reaching it is the trip.
-		BlockType::Springstone => 12,
-		_ => return None,
-	})
+/// The SURFACE nodes the essence siphon itself reveals — [`reveal`]'s twin with no ladder on
+/// it: MAKING the siphon is the gate, not a level, so "make your siphon" and "the world shows
+/// you its sources" are one beat. Same stranger-gate semantics as [`reveal`]: without a siphon
+/// the cell is its host in every respect, and you draw what you can see — which the siphon
+/// requirement already enforces at the dig, so the reveal and the tool are one gate told once.
+/// A node answers to exactly ONE of the two reveal tables (pinned in `worldgen::nodes`).
+pub fn siphon_reveal(b: BlockType) -> bool {
+	matches!(
+		b,
+		BlockType::Heartwood | BlockType::Leystone | BlockType::Springstone
+	)
 }
 
 /// Where the bench first quickens. A level that changes a NUMBER rather
@@ -370,22 +342,6 @@ pub const KINDLE_AT: u32 = 10;
 /// Where Kindle's fare eases, deep beside the last ports.
 pub const KINDLE_CHEAP_AT: u32 = 54;
 
-/// The Mason's Arc: how many cells one placement lays along the face
-/// normal — Arcana's mirror of [`pick_cells`], the placing half of the
-/// pick's breaking. The single cell below the first rank IS the
-/// ordinary place.
-pub fn arc_cells(level: u32) -> usize {
-	match level {
-		l if l >= ARC_WIDE_AT => 5,
-		l if l >= ARC_AT => 3,
-		_ => 1,
-	}
-}
-
-/// The arc's two ranks.
-pub const ARC_AT: u32 = 26;
-pub const ARC_WIDE_AT: u32 = 46;
-
 /// The Sphere's radius in cells for a caster at this Arcana — the shell
 /// `sphere::sets` draws about the head. Zero below the first rank IS
 /// "cannot cast". Three ranks, each a wider sphere and (`sphere_price`) a
@@ -451,17 +407,25 @@ pub fn wisp_secs(level: u32) -> u32 {
 // only the siphon — a second level axis on top of the reveal would be
 // two gates telling one story. (The extraction-level axis this note once
 // defended died twice over: first to a single-entry table, then with
-// bench extraction itself.) What `mine_material` and `draw_material` do
-// is the other half of that same story: they hold a node standing in a
-// cell OUTRIGHT — placed, or regrown — to the level that would have
-// revealed it, at exactly that level and no higher.
+// bench extraction itself.) What `mine_material` does is the other half
+// of that same story: it holds an ORE standing in a cell OUTRIGHT —
+// placed, or regrown — to the level that would have revealed it, at
+// exactly that level and no higher. The surface nodes need no such arm:
+// their reveal is the siphon itself, and only the siphon draws them.
 
 /// §5.1's strength wall: the Mining level below which `b` refuses to be dug at all; the first
 /// level means ungated. TWO gates, and a block waits for the later of them — [`mine_family`] is
 /// the strength ladder every diggable block sits on, and [`mine_material`] is the handful of
 /// substances that additionally have to be EARNED, which can only ever push a block later,
-/// never earlier.
+/// never earlier. The LIVE siphon-revealed faces are the one exemption: the siphon is their
+/// whole gate, and a draw is the tool's act rather than a swing at the host, so the moment you
+/// make it every surface source pays — a strength wall here would show a fresh siphon-holder a
+/// leystone they cannot touch for ten levels. The SPENT face a draw leaves is its own block and
+/// keeps its family's wall as usual.
 pub fn mine(b: BlockType) -> u32 {
+	if siphon_reveal(b) {
+		return 1;
+	}
 	let family = mine_family(b.dig_family());
 	let material = b.material().map_or(1, mine_material);
 	family.max(material)
@@ -476,7 +440,7 @@ fn mine_family(f: crate::block::DigFamily) -> u32 {
 	use crate::block::DigFamily as F;
 	match f {
 		F::Fixed | F::Soft => 1,
-		F::Wood => 3,
+		F::Wood => 2,
 		F::Rock => 10,
 	}
 }
@@ -519,22 +483,6 @@ fn mine_material(m: Material) -> u32 {
 	}
 }
 
-/// [`mine_material`]'s twin on the other ladder: the substances whose reveal is an ALCHEMY
-/// level, which is the three SURFACE nodes. A live face standing in a cell OUTRIGHT is ordinary
-/// chunk data every visitor's mesh shows — `nodes::revealed` answers a stored face ahead of
-/// both reveal gates, and the regrowth sweep writes exactly that. Keyed to [`alchemy_reveal`]
-/// rather than hand-numbered (`no_node_opens_before_the_level_that_reveals_it`).
-fn draw_material(m: Material) -> u32 {
-	use Material as M;
-	match m {
-		M::Heartwood => alchemy_reveal_of(BlockType::Heartwood),
-		M::Leystone => alchemy_reveal_of(BlockType::Leystone),
-		M::Springstone => alchemy_reveal_of(BlockType::Springstone),
-		// Everything else answers only to the recipe half of `pickup`.
-		_ => 1,
-	}
-}
-
 /// [`reveal`] for a block known to be an ore, for use inside
 /// [`mine_material`]'s table. Panics on anything else, which is a
 /// compile-time-shaped mistake made loud at first call rather than
@@ -547,41 +495,32 @@ fn reveal_of(b: BlockType) -> u32 {
 	}
 }
 
-/// [`reveal_of`]'s twin for [`draw_material`]'s table.
-fn alchemy_reveal_of(b: BlockType) -> u32 {
-	match alchemy_reveal(b) {
-		Some(l) => l,
-		None => panic!("{b:?} is in the surface-node gate but has no reveal level"),
-	}
-}
-
 /// The strength wall's Alchemy counterpart: the level below which `b` refuses to be dug on the
-/// other ladder (the first level means ungated). TWO gates, [`mine`]'s shape on this axis: the
-/// RECIPE half says picking it up would hand you an item you cannot make, the [`draw_material`]
-/// half a find you could not have revealed. The recipe half derives from [`craft`], keying on
-/// the DROP and on craft-ONLY, never craftability — `Wood` has a recipe and grows on trees.
+/// other ladder (the first level means ungated) — the RECIPE gate, saying picking it up would
+/// hand you an item you cannot make. It derives from [`craft`], keying on the DROP and on
+/// craft-ONLY, never craftability — `Wood` has a recipe and grows on trees. The surface nodes
+/// need no arm here: a live face — worldgen's or one standing outright, regrown — only ever
+/// yields to the siphon ([`crate::worldgen::nodes::DigMode`]), and the siphon IS their reveal.
 pub fn pickup(b: BlockType) -> u32 {
-	let recipe = match b.dig_drop() {
+	match b.dig_drop() {
 		Some(d) if d.is_crafted_only() => craft(d).unwrap_or(1),
 		_ => 1,
-	};
-	recipe.max(b.material().map_or(1, draw_material))
+	}
 }
 
 // ---- the questions ---------------------------------------------------
 
 /// Does the BENCH open `b` at this Alchemy level? The recipe half of [`can_craft`], alone —
-/// what the bench's own pacing tables ask, since a crest's second gate changes nothing about
-/// how long the bench takes over it.
+/// what the bench's own pacing tables ask.
 pub fn recipe_open(b: BlockType, alchemy: u32) -> bool {
 	craft(b).is_some_and(|need| alchemy >= need)
 }
 
-/// May this player transmute `b` at all? The bench level, AND for a crest the skill it honours
-/// at mastery. False for anything with no recipe, which is what makes `craft_ideal`'s `expect`
-/// sound. Takes the whole skill set so no caller can answer the second gate with the wrong level.
+/// May this player transmute `b` at all? False for anything with no recipe, which is what makes
+/// `craft_ideal`'s `expect` sound. Takes the whole skill set so every gate a future recipe grows
+/// stays answerable here.
 pub fn can_craft(b: BlockType, skills: &SkillSet) -> bool {
-	recipe_open(b, skills.level(Skill::Alchemy)) && crest(b).is_none_or(|s| s.mastered(skills))
+	recipe_open(b, skills.level(Skill::Alchemy))
 }
 
 /// Which gate a dig ran into — the two read differently to a player, and
@@ -675,30 +614,27 @@ pub fn opens(skill: Skill, level: u32) -> bool {
 				|| (b == BlockType::Air
 					&& (prospect_range(level) != prospect_range(level - 1)
 						|| ore_mastery(level) != ore_mastery(level - 1)))
-				// The crest, which mastery hands you the right to make.
-				|| (crest(b) == Some(Skill::Mining) && level == MASTERY_AT)
 		}
-		// A new recipe, or a surface node fading into view.
-		Skill::Alchemy => craft(b) == Some(level) || alchemy_reveal(b) == Some(level),
+		// A new recipe. The surface nodes are not here: they fade in when
+		// the siphon is MADE ([`siphon_reveal`]), not at a level.
+		Skill::Alchemy => craft(b) == Some(level),
 		// A waystone humming into reach, or a travel rung — the home
 		// cooldown stepping down, the channel quickening: levels that
 		// hand you something without handing you an item, on the
 		// prospector/mastery pattern.
 		Skill::Arcana => {
-			(crest(b) == Some(Skill::Arcana) && level == MASTERY_AT)
-				|| b == BlockType::Air
-					&& (crate::worldgen::SurfaceKind::ALL
-						.iter()
-						.any(|&k| waystone(k) == Some(level))
-						|| level == KINDLE_AT
-						|| arc_cells(level) != arc_cells(level - 1)
-						|| sphere_radius(level) != sphere_radius(level - 1)
-						|| causeway_secs(level) != causeway_secs(level - 1)
-						|| teleport_cooldown_secs(level) != teleport_cooldown_secs(level - 1)
-						|| channel_ticks(level) != channel_ticks(level - 1)
-						|| wisp_light(level) != wisp_light(level - 1)
-						|| crate::alchemy::kindle_price(level)
-							!= crate::alchemy::kindle_price(level - 1))
+			b == BlockType::Air
+				&& (crate::worldgen::SurfaceKind::ALL
+					.iter()
+					.any(|&k| waystone(k) == Some(level))
+					|| level == KINDLE_AT
+					|| sphere_radius(level) != sphere_radius(level - 1)
+					|| causeway_secs(level) != causeway_secs(level - 1)
+					|| teleport_cooldown_secs(level) != teleport_cooldown_secs(level - 1)
+					|| channel_ticks(level) != channel_ticks(level - 1)
+					|| wisp_light(level) != wisp_light(level - 1)
+					|| crate::alchemy::kindle_price(level)
+						!= crate::alchemy::kindle_price(level - 1))
 		}
 	})
 }

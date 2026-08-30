@@ -35,8 +35,8 @@ impl Pipeline {
 	/// The node reveal's per-job parcel, or `None` when this chunk cannot show a node at all. The
 	/// edited-cell list is gathered HERE because this is the only place holding the map, and runs
 	/// on the MAIN thread out of the streaming budget — hence both guards: no node source reaching
-	/// the box means no stamp, and the edited-cell walk takes whichever side is smaller. The reveal
-	/// LEVELS are NOT a guard; the host scan is, since a surface node reveals at the start level.
+	/// the box means no stamp, and the edited-cell walk takes whichever side is smaller. The
+	/// reveal gates prune per host below; the host scan then prunes what is left.
 	pub(super) fn node_stamp(
 		&self,
 		pos: ChunkPos,
@@ -55,7 +55,7 @@ impl Pipeline {
 		let reveal_met = |b| crate::worldgen::nodes::reveal_met(b, self.levels);
 		let want_deposits = origin.1 <= ore::MAX_DEPOSIT_Y + ore::MAX_RADIUS
 			&& (self.levels.mining >= ore::lowest_reveal()
-				|| self.levels.alchemy >= ore::lowest_alchemy_reveal());
+				|| (self.levels.siphon && ore::siphon_reveals_deposit()));
 		let want_heartwood = reveal_met(crate::block::BlockType::Heartwood);
 		let want_springs = reveal_met(crate::block::BlockType::Springstone);
 		if !want_deposits && !want_heartwood && !want_springs {

@@ -165,7 +165,7 @@ fn wait_for_callback(
 				"200 OK",
 				page(
 					"You're signed in",
-					"Head back to DigBlock — you can close this tab.",
+					"Head back to DigBlock, you can close this tab.",
 				),
 			),
 			(Some(_), _) => (
@@ -231,7 +231,7 @@ fn error_of(res: &mut ureq::http::Response<ureq::Body>) -> String {
 		.and_then(|v| v["error"].as_str().map(str::to_string))
 		.unwrap_or_else(|| match status {
 			401 => "not signed in".into(),
-			429 => "too many attempts — try again shortly".into(),
+			429 => "too many attempts, try again shortly".into(),
 			_ => format!("http {status}"),
 		})
 }
@@ -340,7 +340,7 @@ pub(crate) fn dev_sign_in(master_url: &str, subject: &str) -> Result<Session, St
 		.map_err(|e| e.to_string())?;
 	if res.status().as_u16() != 200 {
 		return Err(format!(
-			"{} — is the master running with Master__Dev__AuthEnabled=true?",
+			"{} - is the master running with Master__Dev__AuthEnabled=true?",
 			error_of(&mut res)
 		));
 	}

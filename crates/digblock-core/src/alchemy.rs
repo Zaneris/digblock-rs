@@ -201,13 +201,6 @@ pub fn functional_ideal(b: BlockType) -> Option<&'static [(Essence, u32)]> {
 		B::Lantern => &[(E::Ferrum, 8), (E::Terra, 6)],
 		B::Aetherlamp => &[(E::Ferrum, 12), (E::Aether, 3)],
 		B::MastersSigil => &[(E::Aether, 99)],
-		// The crests: each priced in the essences ITS skill draws, led by
-		// the skill's emblem (`Skill::emblem`), so a crest is paid for by
-		// the ladder it marks. One-offs like the sigil, so the figures are
-		// trophies rather than sinks.
-		B::MinersCrest => &[(E::Ferrum, 120), (E::Aether, 6)],
-		B::AlchemistsCrest => &[(E::Vitae, 90), (E::Terra, 60), (E::Unda, 30)],
-		B::ArcanistsCrest => &[(E::Unda, 120), (E::Aether, 6)],
 		// Furniture is a timber feedstock and a living catalyst — chosen,
 		// not measured: a chair is mostly air and still costs a chair.
 		B::Chair => &[(E::Vitae, 2)],
@@ -225,11 +218,12 @@ pub fn functional_ideal(b: BlockType) -> Option<&'static [(Essence, u32)]> {
 /// Today it carries the two vessels, whose whole price it is. The siphon may never cost essence:
 /// every essence in the game is a siphon draw, so an essence-priced siphon deadlocks the currency
 /// (`the_essence_tool_costs_no_essence`). The bucket's RUNG is its whole gate, opening past the
-/// siphon. Wood for both — "dig your way to the trees, fell a few, make your tools" IS the loop.
+/// siphon. Tree matter for both — "dig your way to the trees, fell a few, make your tools" IS
+/// the loop; the siphon asks for the canopy as well as the trunk so one felled tree covers it.
 pub fn functional_feedstock(b: BlockType) -> &'static [(BlockType, u32)] {
 	match b {
 		BlockType::Bucket => &[(BlockType::Wood, 6)],
-		BlockType::EssenceSiphon => &[(BlockType::Wood, 8)],
+		BlockType::EssenceSiphon => &[(BlockType::Wood, 2), (BlockType::Leaves, 5)],
 		// A torch is a whittled stick with a treated head.
 		BlockType::Torch => &[(BlockType::Wood, 1)],
 		// Furniture is joinery: planed timber, worked. `pickup` gates the

@@ -8,8 +8,8 @@ fn craft_levels_are_pinned() {
 	// The starter timber, in every form you have learned so far — but
 	// not the felled log itself, which grows on a tree.
 	assert_eq!(craft(B::WoodSlab), Some(1));
-	assert_eq!(craft(B::WoodStairs), Some(5), "the stairs SHAPE opens");
-	assert_eq!(craft(B::Torch), Some(10), "light waits for the Earth node");
+	assert_eq!(craft(B::WoodStairs), Some(6), "the stairs SHAPE opens");
+	assert_eq!(craft(B::Torch), Some(5), "light rides the bucket's rung");
 	assert_eq!(
 		craft(B::EssenceSiphon),
 		Some(1),
@@ -238,7 +238,7 @@ fn the_strength_wall_is_the_dig_family() {
 		B::Lumber,
 		B::LumberDoor,
 	] {
-		assert_eq!(mine(b), 3, "{b:?} is Wood family");
+		assert_eq!(mine(b), 2, "{b:?} is Wood family");
 	}
 	// Rock last, gravel and sandstone included: gravel used to be the
 	// ungated entry rock and timber has taken that job.
@@ -261,6 +261,13 @@ fn the_strength_wall_is_the_dig_family() {
 	assert_eq!(Some(mine(B::Metal)), material(M::Metal));
 	assert_eq!(Some(mine(B::Crystal)), material(M::Crystal));
 	for b in BlockType::ALL {
+		// The live siphon-revealed faces are the one exemption from the
+		// family wall: the siphon is their whole gate, and only the siphon
+		// draws them (`no_node_opens_before_the_gate_that_reveals_it`).
+		if siphon_reveal(b) {
+			assert_eq!(mine(b), 1, "{b:?} answers to the siphon, not a wall");
+			continue;
+		}
 		assert!(
 			mine(b) >= mine_family(b.dig_family()),
 			"{b:?} dug before its family's strength wall"
@@ -278,8 +285,8 @@ fn craft_only_blocks_are_gated_until_they_can_be_made() {
 	// level now follows the material, so a stone shape asks for the
 	// mason's unlock rather than for the shape's own.
 	assert_eq!(pickup(B::WoodSlab), 1, "a level-1 recipe");
-	assert_eq!(pickup(B::WoodStairs), 5);
-	assert_eq!(pickup(B::Torch), 10);
+	assert_eq!(pickup(B::WoodStairs), 6);
+	assert_eq!(pickup(B::Torch), 5);
 	for b in [B::Lumber, B::LumberSlab, B::LumberStairs, B::LumberDoor] {
 		assert_eq!(pickup(b), 12, "{b:?} — the timber set");
 	}
@@ -301,31 +308,28 @@ fn craft_only_blocks_are_gated_until_they_can_be_made() {
 	assert_eq!(pickup(B::Rubble), 1);
 	// Every gated block really is craft-only, and every craft-only block
 	// really is gated at its own recipe's level — the two tables cannot
-	// drift apart. The surface nodes are the one thing `pickup` walls for
-	// another reason entirely, and
-	// `no_node_opens_before_the_level_that_reveals_it` owns those.
-	let mut nodes = 0;
+	// drift apart. The surface nodes carry no wall here any more: their
+	// reveal is the siphon, and only the siphon draws a live face
+	// (`no_node_opens_before_the_gate_that_reveals_it` owns those).
 	for &b in &BlockType::ALL {
-		if alchemy_reveal(b).is_some() {
-			assert!(b.is_node_block(), "{b:?} has a reveal but is not a node");
-			nodes += 1;
-			continue;
-		}
 		match b.dig_drop().filter(|d| d.is_crafted_only()) {
 			Some(d) => assert_eq!(Some(pickup(b)), craft(d), "{b:?} drops craft-only {d:?}"),
 			None => assert_eq!(pickup(b), 1, "{b:?} is not craft-only"),
 		}
 	}
-	assert!(nodes > 0, "the surface-node arm never fired");
 }
 
 /// A node standing in a cell OUTRIGHT — one the regrowth sweep wrote back, or one somebody placed
 /// — is ordinary chunk data every visitor's mesh shows at any level, because `nodes::revealed`
-/// answers a stored face ahead of both reveal ladders. The dig gates are therefore all that stands
-/// between an arrival and a levelled player's finds: `dig_blocked` must refuse a node one level
-/// short of the ladder that reveals it and not at it. Swept over the roster, so a new one fails.
+/// answers a stored face ahead of both reveal tables. For the ORE tiers the dig gates are all
+/// that stands between an arrival and a levelled player's finds: `dig_blocked` must refuse one
+/// a level short of the Mining ladder that reveals it and not at it. The surface nodes carry no
+/// level wall above their strength one on purpose — their reveal is the siphon, and a live face
+/// only ever yields to the siphon (`DigMode`), so the tool is the whole gate and a wall here
+/// would refuse the day-one draw. Swept over the roster, so a new node fails.
 #[test]
-fn no_node_opens_before_the_level_that_reveals_it() {
+fn no_node_opens_before_the_gate_that_reveals_it() {
+	use BlockType as B;
 	let at = |skill: Skill, level: u32| {
 		let mut s = SkillSet::default();
 		for other in Skill::ALL {
@@ -334,34 +338,51 @@ fn no_node_opens_before_the_level_that_reveals_it() {
 		}
 		s
 	};
-	let (mut visited, mut gated) = (0, 0);
+	let (mut ores, mut surface) = (0, 0);
 	for &n in &crate::worldgen::nodes::NODES {
-		let (skill, need) = match (reveal(n), alchemy_reveal(n)) {
-			(Some(l), None) => (Skill::Mining, l),
-			(None, Some(l)) => (Skill::Alchemy, l),
+		match (reveal(n), siphon_reveal(n)) {
+			(Some(need), false) => {
+				ores += 1;
+				// At the reveal, with the other ladder no obstacle: a gate
+				// ABOVE the reveal would show a find nobody can take.
+				assert_eq!(
+					dig_blocked(n, &at(Skill::Mining, need)),
+					None,
+					"{n:?} is refused at the level that reveals it"
+				);
+				let short = dig_blocked(n, &at(Skill::Mining, need - 1))
+					.unwrap_or_else(|| panic!("{n:?} draws one level below its reveal"));
+				assert_eq!((short.skill, short.level), (Skill::Mining, need), "{n:?}");
+			}
+			(None, true) => {
+				surface += 1;
+				assert_eq!(pickup(n), 1, "{n:?} carries a recipe wall it cannot mean");
+				// No strength wall either: a fresh player who has just made
+				// their siphon draws every surface source at once — only
+				// the SPENT face a draw leaves keeps its family's wall.
+				assert_eq!(
+					dig_blocked(n, &SkillSet::default()),
+					None,
+					"{n:?} refuses the day-one draw"
+				);
+				// The exemption must not leak onto the spent face, which is
+				// its own block on the ordinary strength ladder.
+				let spent = crate::worldgen::nodes::spent_block(n).expect("a node");
+				assert_eq!(
+					mine(spent),
+					mine(match spent.dig_family() {
+						crate::block::DigFamily::Rock => B::Stone,
+						crate::block::DigFamily::Wood => B::Wood,
+						_ => B::Dirt,
+					}),
+					"{spent:?} stepped off its family's wall"
+				);
+			}
 			_ => panic!("{n:?} answers to both reveal tables, or to neither"),
-		};
-		visited += 1;
-		// At the reveal, with the other ladder no obstacle: a gate ABOVE
-		// the reveal would show a find nobody can take.
-		assert_eq!(
-			dig_blocked(n, &at(skill, need)),
-			None,
-			"{n:?} is refused at the level that reveals it"
-		);
-		if need == 1 {
-			continue;
 		}
-		let short = dig_blocked(n, &at(skill, need - 1))
-			.unwrap_or_else(|| panic!("{n:?} draws one level below its reveal"));
-		assert_eq!((short.skill, short.level), (skill, need), "{n:?}");
-		gated += 1;
 	}
-	assert_eq!(visited, crate::worldgen::nodes::NODES.len());
-	assert!(
-		gated > 1,
-		"no node was tested one level short of its reveal"
-	);
+	assert_eq!(ores + surface, crate::worldgen::nodes::NODES.len());
+	assert!(ores > 1 && surface > 1, "both arms have to fire");
 }
 
 /// A craft-only block is one the bench alone produces, so it must have
@@ -542,27 +563,26 @@ fn unlock_levels_are_the_threshold_levels() {
 		.collect();
 	assert_eq!(
 		mining,
-		vec![3, 10, 15, 18, 23, 33, 40, 43, 50, 60, 85],
+		vec![2, 10, 15, 18, 23, 33, 40, 43, 50, 60, 85],
 		"timber and rock, the reveals, metal and crystal, the pick, the \
 			 prospector's two ranks, mastery — the content tops at 60, and \
 			 the pick's plane at 85 is the tail's one deliberate exception"
 	);
-	// Alchemy: the shape and material unlocks, the hand-priced items,
-	// and the surface-node reveals.
+	// Alchemy: the shape and material unlocks and the hand-priced items —
+	// the surface-node reveals left the ladder for the siphon craft.
 	let alchemy: Vec<u32> = (1..=MAX_LEVEL)
 		.filter(|&l| opens(Skill::Alchemy, l))
 		.collect();
 	assert_eq!(
 		alchemy,
 		vec![
-			5, 10, 12, 14, 15, 18, 21, 24, 27, 28, 30, 33, 36, 40, 50, MASTERY_AT, 99
+			5, 6, 7, 12, 14, 15, 18, 21, 24, 27, 28, 30, 33, 36, 40, 50, 99
 		],
-		"the catalog tops at 50; the alchemist's crest crowns the content \
-			 ladder at mastery and 99 is the sigil alone — the tail is \
-			 expansion headroom. 5 and 12 carry the leystone and springstone \
-			 reveals beside their recipes; heartwood and the siphon sit at \
-			 the first level, which is never an unlock, and the old bonus \
-			 lines left with bench extraction"
+		"the catalog tops at 50 and 99 is the sigil alone — the tail is \
+			 expansion headroom. The opening run is a rung apiece: the torch, \
+			 the stairs, the bucket; the siphon sits at the first level, which \
+			 is never an unlock, and the old bonus lines left with bench \
+			 extraction"
 	);
 	// Arcana: the seven waystones interleaved with the travel rungs —
 	// ports are the spine the way reveals are Mining's. Return Home and
@@ -580,14 +600,12 @@ fn unlock_levels_are_the_threshold_levels() {
 			TELEPORT_SWIFT_AT,
 			CAUSEWAY_AT,
 			22,
-			ARC_AT,
 			CHANNEL_QUICK_AT,
 			34,
 			SPHERE_WIDE_AT,
 			WISP_BRIGHT_AT,
 			CAUSEWAY_LONG_AT,
 			42,
-			ARC_WIDE_AT,
 			50,
 			SPHERE_VAST_AT,
 			KINDLE_CHEAP_AT,
@@ -609,10 +627,10 @@ fn unlock_levels_are_the_threshold_levels() {
 	}
 }
 
-/// The earliest level, on whichever ladder owns the node, at which a
-/// node paying `e` can be seen — so the essence can be DRAWN. Derived
-/// from the node tables, never listed: a new faucet moves every pin that
-/// asks this.
+/// The earliest Alchemy level at which a node paying `e` can be seen —
+/// so the essence can be DRAWN. Derived from the node tables, never
+/// listed: a new faucet moves every pin that asks this. A siphon-revealed
+/// node is findable from the level the siphon itself opens at.
 fn essence_findable_at(e: crate::block::Essence) -> Option<u32> {
 	BlockType::ALL
 		.into_iter()
@@ -620,7 +638,11 @@ fn essence_findable_at(e: crate::block::Essence) -> Option<u32> {
 			b.material()
 				.is_some_and(|m| m.node_units().iter().any(|&(x, _)| x == e))
 		})
-		.filter_map(|b| reveal(b).or(alchemy_reveal(b)))
+		.filter_map(|b| match reveal(b) {
+			Some(l) => Some(l),
+			None if siphon_reveal(b) => functional(BlockType::EssenceSiphon),
+			None => None,
+		})
 		.min()
 }
 

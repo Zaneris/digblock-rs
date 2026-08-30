@@ -259,7 +259,7 @@ fn the_grid_reproduces_the_shipped_recipes() {
 		(B::Crystal, &[], &[(E::Aether, 18), (E::Ferrum, 9)], 1),
 		// And the vessels, feedstock alone.
 		(B::Bucket, &[(B::Wood, 6)], &[], 1),
-		(B::EssenceSiphon, &[(B::Wood, 8)], &[], 1),
+		(B::EssenceSiphon, &[(B::Wood, 2), (B::Leaves, 5)], &[], 1),
 		// The torch: a stick with a treated head.
 		(
 			B::Torch,
@@ -482,7 +482,8 @@ fn a_traced_seam_pays_one_more_aether_than_the_same_seam_without_one() {
 /// **Every priced item is buildable by a player who has just earned it**: each essence its recipe
 /// names is paid by a NODE that player can see and draw, each feedstock line by a block the world
 /// hands out below the item's own level. Three rules carry it — the reveal is checked on the
-/// node's OWN axis, since a Mining wall on the host is another skill; `node_yields` excludes the
+/// node's OWN gate (a Mining wall on the host is another skill, and the surface nodes' gate is
+/// the siphon, which a priced item's crafter necessarily holds); `node_yields` excludes the
 /// unreliable Duskstone trace; and feedstock must be world-handed and ungated by Alchemy.
 #[test]
 fn every_price_has_a_source_at_its_own_level() {
@@ -490,17 +491,9 @@ fn every_price_has_a_source_at_its_own_level() {
 		let (Some(level), Some(price)) = (crate::unlock::craft(item), craft_ideal(item)) else {
 			continue;
 		};
-		// A crest opens where its SKILL masters, not where the bench
-		// admits it — that is the level its price must be payable at.
-		let level = match crate::unlock::crest(item) {
-			Some(_) => level.max(crate::unlock::MASTERY_AT),
-			None => level,
-		};
 		for &(essence, _) in &price {
 			let source = crate::worldgen::nodes::NODES.iter().copied().find(|&n| {
-				if crate::unlock::reveal(n).is_some_and(|r| r > level)
-					|| crate::unlock::alchemy_reveal(n).is_some_and(|r| r > level)
-				{
+				if crate::unlock::reveal(n).is_some_and(|r| r > level) {
 					return false;
 				}
 				node_yields(n, level)
@@ -540,10 +533,16 @@ fn essence_faucets_open_where_they_always_did() {
 					.any(|&(y, amount)| y == e && amount > 0)
 			})
 			.filter_map(|&n| {
-				// The node's own reveal, on whichever axis owns it,
-				// against the wall on the host it stands in — a draw is
-				// a hold like any other and `dig_blocked` gates it.
-				let seen = crate::unlock::reveal(n).or(crate::unlock::alchemy_reveal(n))?;
+				// The node's own reveal against the wall on the host it
+				// stands in — a draw is a hold like any other and
+				// `dig_blocked` gates it. A siphon-revealed node is seen
+				// from the first level: the siphon opens at the level
+				// everyone starts at, gated by feedstock alone.
+				let seen = match crate::unlock::reveal(n) {
+					Some(l) => l,
+					None if crate::unlock::siphon_reveal(n) => 1,
+					None => return None,
+				};
 				Some(seen.max(crate::unlock::mine(n)))
 			})
 			.min()
@@ -553,9 +552,13 @@ fn essence_faucets_open_where_they_always_did() {
 	assert_eq!(
 		opens,
 		vec![
-			(Essence::Vitae, 3),
-			(Essence::Terra, 10),
-			(Essence::Unda, 12),
+			// The three surface faucets open on the siphon craft itself:
+			// the reveal is the siphon and the draw carries no strength
+			// wall, so the moment the tool exists all three pay. Only the
+			// deep faucets still wait on the Mining ladder.
+			(Essence::Vitae, 1),
+			(Essence::Terra, 1),
+			(Essence::Unda, 1),
 			(Essence::Ferrum, 15),
 			(Essence::Aether, 33),
 		],

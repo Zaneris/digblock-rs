@@ -2621,106 +2621,33 @@ fn held_item_rides_snapshots() {
 	let _ = &mut c1;
 }
 
-/// The Mason's Arc: one placement lays the FULL line along the face
-/// normal — length read off `unlock::arc_cells`, stock debited per
-/// block — and a line that does not fit places NOTHING (all or nothing,
-/// so both ends always derive one set). Every expectation derived.
+/// The retired Mason's Arc: a `PlaceArc` frame still decodes — the
+/// wire is append-only — and the server refuses it outright. Nothing
+/// is written, nothing is debited and no XP moves.
 #[test]
-fn an_arc_places_a_full_line_or_nothing() {
-	use digblock_core::skills::{Skill, arc_xp, total_xp_for};
-	use digblock_core::unlock::{ARC_AT, arc_cells};
+fn a_legacy_place_arc_is_refused() {
 	let mut sim = flat_sim("arcline");
 	let mut c = connect(&mut sim, 1);
 	wait_live(&mut sim, 1);
-	sim.bench_set_arcana_level(1, ARC_AT);
-	let n = arc_cells(ARC_AT) as u32;
-	assert!(n > 1, "the first rank must widen the line");
-	sim.test_grant(1, BlockType::Stone, n * 2);
+	sim.test_grant(1, BlockType::Stone, 4);
 
 	let pos = sim.test_player(1).unwrap().pos;
-	// Aim down-and-out at open ground: the line grows straight up off
-	// the struck top face.
 	let out = Vec3::new(3.0, -2.0, 0.0).normalize();
 	let hit = raycast(pos, out, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).expect("ground");
-	assert_eq!(hit.normal, (0, 1, 0), "the fixture needs a top face");
-	let arc = |sim: &mut Sim, seq: u32| {
-		sim.tick_once(vec![SimEvent::Msg {
-			conn_id: 1,
-			msg: ClientMsg::EditRequest {
-				seq,
-				tick: 0,
-				origin: pos.to_array(),
-				dir: out.to_array(),
-				kind: EditKind::PlaceArc {
-					block: BlockType::Stone as u16,
-				},
-				cell: [hit.cell.0, hit.cell.1, hit.cell.2],
-				normal: [hit.normal.0 as i8, hit.normal.1 as i8, hit.normal.2 as i8],
-				slot: 0,
-			},
-		}]);
-	};
-	c.drain();
-	c.msgs.clear();
-	arc(&mut sim, 1);
-	for i in 1..=n as i32 {
-		assert_eq!(
-			sim.test_cell_at(hit.cell.0, hit.cell.1 + i, hit.cell.2),
-			Some(BlockType::Stone as u16),
-			"cell {i} of the line"
-		);
-	}
-	// The award is the line's REACH, sent as the new total.
-	c.drain();
-	let arcana_total = total_xp_for(ARC_AT) + arc_xp(n as usize);
-	assert!(
-		c.msgs.iter().any(|m| matches!(
-			m,
-			ServerMsg::XpGain { skill, total } if *skill == Skill::Arcana as u8 && *total == arcana_total
-		)),
-		"an arc pays Arcana for the cells past the first: {:?}",
-		c.msgs
-	);
-	assert_eq!(
-		sim.test_inventory_count(1, BlockType::Stone),
-		n,
-		"one debit per block of the line"
-	);
-
-	// A line that cannot fit places NOTHING: a second clear column with
-	// a cap hung where the line's SECOND cell would go, so the first
-	// cell fits and the whole line still bounces, stock intact.
-	let out2 = Vec3::new(0.0, -2.0, 3.0).normalize();
-	let hit2 = raycast(pos, out2, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).expect("ground 2");
-	assert_eq!(
-		hit2.normal,
-		(0, 1, 0),
-		"the second fixture needs a top face"
-	);
-	sim.test_set_cell(
-		hit2.cell.0,
-		hit2.cell.1 + 2,
-		hit2.cell.2,
-		BlockType::Stone as u16,
-	);
 	c.drain();
 	c.msgs.clear();
 	sim.tick_once(vec![SimEvent::Msg {
 		conn_id: 1,
 		msg: ClientMsg::EditRequest {
-			seq: 2,
+			seq: 1,
 			tick: 0,
 			origin: pos.to_array(),
-			dir: out2.to_array(),
+			dir: out.to_array(),
 			kind: EditKind::PlaceArc {
 				block: BlockType::Stone as u16,
 			},
-			cell: [hit2.cell.0, hit2.cell.1, hit2.cell.2],
-			normal: [
-				hit2.normal.0 as i8,
-				hit2.normal.1 as i8,
-				hit2.normal.2 as i8,
-			],
+			cell: [hit.cell.0, hit.cell.1, hit.cell.2],
+			normal: [hit.normal.0 as i8, hit.normal.1 as i8, hit.normal.2 as i8],
 			slot: 0,
 		},
 	}]);
@@ -2729,21 +2656,26 @@ fn an_arc_places_a_full_line_or_nothing() {
 		c.msgs.iter().any(|m| matches!(
 			m,
 			ServerMsg::EditRejected {
-				reason: RejectReason::Occluded,
+				reason: RejectReason::BadBlock,
 				..
 			}
 		)),
-		"an obstructed line must bounce wholesale: {:?}",
+		"the retired verb bounces: {:?}",
 		c.msgs
 	);
 	assert_eq!(
+		sim.test_cell_at(hit.cell.0, hit.cell.1 + 1, hit.cell.2),
+		Some(BlockType::Air as u16),
+		"nothing is written"
+	);
+	assert_eq!(
 		sim.test_inventory_count(1, BlockType::Stone),
-		n,
-		"a bounced line debits nothing"
+		4,
+		"nothing is debited"
 	);
 	assert!(
 		!c.msgs.iter().any(|m| matches!(m, ServerMsg::XpGain { .. })),
-		"a bounced line pays nothing: {:?}",
+		"nothing is paid: {:?}",
 		c.msgs
 	);
 }

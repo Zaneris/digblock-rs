@@ -362,16 +362,24 @@ fn family_selection_and_the_single_transmute_button() {
 }
 
 /// The vessels are paid in FEEDSTOCK: once both are open, a player with
-/// timber can make the bucket and the siphon with no essence anywhere —
-/// the whole reason the economy can bootstrap — and the strip names the
-/// missing timber when they cannot. Rigged at the later vessel's own
-/// rung, read off `unlock`, so a move of either keeps the page honest.
+/// a felled tree's matter can make the bucket and the siphon with no
+/// essence anywhere — the whole reason the economy can bootstrap — and
+/// the strip names the missing timber when they cannot. Rigged at the
+/// later vessel's own rung and stocked from the price tables, read off
+/// `unlock` and `alchemy`, so a move or retune of either keeps the page
+/// honest.
 #[test]
-fn the_vessels_craft_from_timber_alone() {
+fn the_vessels_craft_from_feedstock_alone() {
 	let rung = digblock_core::unlock::craft(B::Bucket)
 		.max(digblock_core::unlock::craft(B::EssenceSiphon))
 		.expect("both vessels are crafts");
-	let mut r = rig_at(rung, |inv| inv.add(B::Wood, 20));
+	let mut r = rig_at(rung, |inv| {
+		for v in [B::Bucket, B::EssenceSiphon] {
+			for &(b, n) in &alchemy::craft_feedstock(v) {
+				inv.add(b, n);
+			}
+		}
+	});
 	let tools = center(r.hits.rect_of(family(&r, "Tools")).unwrap());
 	press(&mut r, tools);
 	rebuild(&mut r);
@@ -868,8 +876,7 @@ fn every_craftable_appears_in_exactly_one_family() {
 }
 
 /// A family reads left to right in the order its members open — the
-/// level each tile's lock badge names, which for a crest is mastery on
-/// its own skill rather than the bench. The shape families inherit it
+/// level each tile's lock badge names. The shape families inherit it
 /// from the material order; the functional ones are sorted into it, so
 /// a retuned level (the bucket's move past the siphon) moves the tile
 /// rather than stranding it ahead of a cheaper one.
@@ -894,15 +901,17 @@ fn every_family_sits_in_the_order_its_gates_climb() {
 	assert!(pairs > 0, "the sweep examined nothing");
 }
 
-/// The page shows what is unlocked plus ONE teaser tier — the next
-/// unlock level, all of whose items show together — and hides the
-/// rest, families included. Hiding must not shift identity: tiles
-/// pack left but keep their true indices, so a member's hit id is the
-/// same at every level it is visible at.
+/// The page shows what is unlocked plus ONE teaser tier PER TAB — each
+/// family's own next unlock level, all of whose items show together —
+/// and hides the rest. Every family therefore stands on the page with
+/// one reachable promise; a fully locked one dims under its badge
+/// rather than vanishing. Packing must not shift identity: tiles keep
+/// their true indices, so a member's hit id is the same at every level
+/// it is visible at.
 #[test]
 fn the_page_hides_everything_past_the_next_unlock() {
-	// A fresh player: the slab and the two vessels are unlocked, the
-	// stairs shape is the next tier — and that is the WHOLE page.
+	// A fresh player: every tab is on the page, teasing its own first
+	// rung.
 	let mut r = rig_at(1, |inv| inv.add(B::Wood, 20));
 	let idx = |name: &str| {
 		families()
@@ -910,23 +919,24 @@ fn the_page_hides_everything_past_the_next_unlock() {
 			.position(|f| f.name == name)
 			.unwrap_or_else(|| panic!("no {name} family")) as u8
 	};
-	for name in ["Slabs", "Stairs", "Tools"] {
+	for name in [
+		"Slabs",
+		"Stairs",
+		"Doors",
+		"Blocks",
+		"Lights",
+		"Furniture",
+		"Tools",
+	] {
 		assert!(
 			r.hits.rect_of(InvId::Family(idx(name))).is_some(),
 			"{name} belongs on a fresh page"
 		);
 	}
-	for name in ["Doors", "Blocks", "Lights", "Furniture"] {
-		assert!(
-			r.hits.rect_of(InvId::Family(idx(name))).is_none(),
-			"{name} is past the next unlock and must hide"
-		);
-	}
-	// Inside TOOLS: the vessels show, the pick and the sigil do not —
-	// the sigil at the cap is exactly the tile a fresh player must
-	// not be stared down by. The two crests gated on ANOTHER skill show
-	// from the first level on purpose: locked behind that skill's badge,
-	// they are the one teaser a player can read the whole ladder.
+	// Inside TOOLS: both vessels show — the siphon unlocked, the bucket
+	// as the tab's own next tier — while the pick and the sigil hide;
+	// the sigil at the cap is exactly the tile a fresh player must not
+	// be stared down by.
 	let tools = center(r.hits.rect_of(InvId::Family(idx("Tools"))).unwrap());
 	press(&mut r, tools);
 	rebuild(&mut r);
@@ -938,9 +948,6 @@ fn the_page_hides_everything_past_the_next_unlock() {
 		(B::Bucket, true),
 		(B::EssenceSiphon, true),
 		(B::ResonantPick, false),
-		(B::MinersCrest, true),
-		(B::ArcanistsCrest, true),
-		(B::AlchemistsCrest, false),
 		(B::MastersSigil, false),
 	] {
 		assert_eq!(

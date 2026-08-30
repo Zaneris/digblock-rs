@@ -292,14 +292,7 @@ mod tests {
 			digblock_core::skills::Skill::Arcana,
 			digblock_core::skills::total_xp_for(digblock_core::unlock::TELEPORT_SWIFT_AT + 1),
 		);
-		super::spellbook::SpellView::build(
-			&skills,
-			12,
-			&super::spellbook::all_ports(),
-			inv,
-			true,
-			0,
-		)
+		super::spellbook::SpellView::build(&skills, 12, &super::spellbook::all_ports(), inv, 0)
 	}
 
 	/// The sweep's roster is hand-kept, and what keeps it honest is the capture roster every page
