@@ -339,7 +339,8 @@ pub enum EditKind {
 	Collect,
 	/// Use/interact click (door toggle): the interact-aware ray; `normal` may be zero. In v8.
 	Interact,
-	/// A Mason's Arc: `Place` extended `unlock::arc_cells` along the normal, all or nothing.
+	/// RETIRED (the Mason's Arc was removed): no client sends it and a server refuses it;
+	/// kept decodable, the wire being append-only.
 	PlaceArc {
 		block: u16,
 	},

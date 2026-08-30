@@ -490,12 +490,6 @@ fn every_price_has_a_source_at_its_own_level() {
 		let (Some(level), Some(price)) = (crate::unlock::craft(item), craft_ideal(item)) else {
 			continue;
 		};
-		// A crest opens where its SKILL masters, not where the bench
-		// admits it — that is the level its price must be payable at.
-		let level = match crate::unlock::crest(item) {
-			Some(_) => level.max(crate::unlock::MASTERY_AT),
-			None => level,
-		};
 		for &(essence, _) in &price {
 			let source = crate::worldgen::nodes::NODES.iter().copied().find(|&n| {
 				if crate::unlock::reveal(n).is_some_and(|r| r > level)

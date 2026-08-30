@@ -29,15 +29,13 @@ pub enum SpellAction {
 	CastSphere,
 	/// Begin the Causeway's channel, or — with a road standing — take it up: one row for both.
 	ToggleCauseway,
-	/// Flip the Mason's Arc stance.
-	ToggleArc,
 }
 
 /// The non-port spell slots in the `InvId::Spell` space — ports use
-/// `1 + kind index`, which tops out well below these.
+/// `1 + kind index`, which tops out well below these. Slot 102 was the
+/// retired Mason's Arc stance and stays unassigned.
 const SLOT_WISP: u8 = 100;
 const SLOT_KINDLE: u8 = 101;
-const SLOT_ARC: u8 = 102;
 const SLOT_SPHERE: u8 = 103;
 const SLOT_CAUSEWAY: u8 = 104;
 
@@ -100,7 +98,6 @@ pub struct SpellView {
 	wisp_ready: bool,
 	kindle_ready: bool,
 	sphere_ready: bool,
-	arc_shown: bool,
 	causeway_ready: bool,
 	/// The ports a click may cast right now, by `InvId::Spell` slot.
 	castable: Vec<(u8, u8)>,
@@ -135,7 +132,6 @@ impl SpellView {
 		cooldown_secs: u32,
 		ports: &[Port],
 		inventory: &Inventory,
-		arc_on: bool,
 		causeway_secs_left: u32,
 	) -> Self {
 		let level = skills.level(Skill::Arcana);
@@ -212,21 +208,6 @@ impl SpellView {
 				ready: causeway_ready,
 			});
 		}
-		// The arc is a STANCE, not a channel: the row flips it, and the
-		// price is the blocks each line lays.
-		let arc_shown = unlock::arc_cells(level) > 1;
-		if arc_shown {
-			rows.push(Row::Spell {
-				id: InvId::Spell(SLOT_ARC),
-				text: "MASON'S ARC".to_string(),
-				state: State::Text(if arc_on {
-					"ON".to_string()
-				} else {
-					"OFF".to_string()
-				}),
-				ready: true,
-			});
-		}
 		rows.push(Row::Space);
 		// The ports: every unlocked one, plus ONE teaser tier — the
 		// alchemy screen's "what you have and one tier of what is
@@ -273,7 +254,6 @@ impl SpellView {
 			wisp_ready,
 			kindle_ready,
 			sphere_ready,
-			arc_shown,
 			causeway_ready,
 			castable,
 		}
@@ -470,7 +450,6 @@ impl SpellScreen {
 					SLOT_KINDLE if view.kindle_ready => Some(SpellAction::CastKindle),
 					SLOT_SPHERE if view.sphere_ready => Some(SpellAction::CastSphere),
 					SLOT_CAUSEWAY if view.causeway_ready => Some(SpellAction::ToggleCauseway),
-					SLOT_ARC if view.arc_shown => Some(SpellAction::ToggleArc),
 					slot => view
 						.castable
 						.iter()

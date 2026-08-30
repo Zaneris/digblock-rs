@@ -204,10 +204,6 @@ pub struct Engine {
 	/// In-progress hold-to-dig, advanced at the fixed sim rate while
 	/// `dig_held` stays on a valid, unchanged target.
 	dig: Option<DigProgress>,
-	/// The Mason's Arc stance: while on (and the rank is earned), a
-	/// plain placement extends into a full line. A mode, not a buff —
-	/// toggled on the spellbook page, costing only the blocks it lays.
-	arc_on: bool,
 	/// Seconds the wisp's self-light keeps burning; zero = no wisp.
 	/// Session-local on purpose — a buff is not a possession, so nothing
 	/// persists or syncs it, and a world swap puts it out.

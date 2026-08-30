@@ -71,7 +71,8 @@ const LOCKED_TINT: u32 = 0xFF58_5858;
 /// holdings, block counts — derived once so measure and emit agree.
 pub struct AlchView {
 	pub level: u32,
-	/// The whole set, since a crest's gate is a skill other than Alchemy.
+	/// The whole set, so a recipe that grows a gate on another skill
+	/// stays answerable from the view alone.
 	pub skills: SkillSet,
 	/// Progress toward the next level, 0..=1 (full at the cap).
 	pub xp_frac: f32,
@@ -322,9 +323,6 @@ const FUNCTIONAL_FAMILIES: [(&str, &[BlockType]); 3] = [
 			BlockType::EssenceSiphon,
 			BlockType::Bucket,
 			BlockType::ResonantPick,
-			BlockType::MinersCrest,
-			BlockType::ArcanistsCrest,
-			BlockType::AlchemistsCrest,
 			BlockType::MastersSigil,
 		],
 	),
@@ -375,14 +373,8 @@ fn next_unlock_level(level: u32) -> Option<u32> {
 /// Is this member on the page at all? Already unlocked, or part of the NEXT unlock — everything
 /// past that stays hidden, so a fresh player reads a short page of what they can do and one tier
 /// of what is coming instead of the whole catalog as a wall of locks. Several items sharing the
-/// next level all show together, since the tier is a LEVEL and not an item. A crest gates on the
-/// skill it honours rather than the bench, so it never sits on the teaser ladder at all: it
-/// appears the moment that skill masters, and not a level before — a fresh page must not open on
-/// a wall of distant badges.
+/// next level all show together, since the tier is a LEVEL and not an item.
 fn member_visible(b: BlockType, skills: &SkillSet, next: Option<u32>) -> bool {
-	if unlock::crest(b).is_some() {
-		return unlock::can_craft(b, skills);
-	}
 	unlock::craft(b).is_some_and(|l| l <= skills.level(Skill::Alchemy) || Some(l) == next)
 }
 
@@ -1176,11 +1168,6 @@ impl AlchScreen {
 fn strip_tail(view: &AlchView, item: BlockType) -> Option<String> {
 	if !unlock::can_craft(item, &view.skills) {
 		return Some(match unlock::craft_gate(item) {
-			// A crest names the skill it waits on; every other tile is
-			// the bench's own ladder and needs no name.
-			Some((skill, level)) if unlock::crest(item).is_some() => {
-				format!("{} LV {level}", skill.name().to_uppercase())
-			}
 			Some((_, level)) => format!("LV {level}"),
 			None => format!("LV {}", u32::MAX),
 		});

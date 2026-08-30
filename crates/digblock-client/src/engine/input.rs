@@ -313,7 +313,6 @@ impl Engine {
 						self.save.teleport_cooldown.ceil() as u32,
 						&ports,
 						&self.inventory,
-						self.arc_on,
 						self.causeway_left.ceil() as u32,
 					);
 					match self
@@ -355,9 +354,6 @@ impl Engine {
 								self.start_cast(CastTarget::Causeway);
 							}
 						}
-						// A stance flip, not a cast: the page stays open,
-						// showing the new state.
-						Some(SpellAction::ToggleArc) => self.arc_on = !self.arc_on,
 						None => {}
 					}
 				}

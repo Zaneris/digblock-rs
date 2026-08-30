@@ -57,7 +57,6 @@ impl Engine {
 		// already be the next world's, and writing into that one would
 		// scatter the old sphere's cells through it.
 		self.sphere_climbs.clear();
-		self.arc_on = false;
 		self.wisp_left = 0.0;
 		// Forgotten, never lifted: the pipeline may already be the next
 		// world's, and the planks would land in it.

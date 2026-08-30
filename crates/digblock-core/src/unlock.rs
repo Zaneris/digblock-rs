@@ -132,36 +132,14 @@ pub fn functional(b: BlockType) -> Option<u32> {
 		// A pure Aether price for a thing that does nothing: the point IS
 		// that it is the last line.
 		BlockType::MastersSigil => 99,
-		// The crests' BENCH level. The Alchemist's is its own mastery; the other two ask nothing
-		// of the bench, because their gate is the skill they honour (`crest`) and a mastered
-		// miner with no Alchemy must still be able to make theirs. The catalog page hides a
-		// crest until that skill masters — it never sits on the Alchemy teaser ladder.
-		BlockType::AlchemistsCrest => MASTERY_AT,
-		BlockType::MinersCrest | BlockType::ArcanistsCrest => 1,
-		_ => return None,
-	})
-}
-
-/// The skill a crest honours, for the three rows that are one; `None` for everything else. A
-/// crest may be crafted only once THAT skill has reached [`MASTERY_AT`] — [`can_craft`] asks
-/// here, which is what makes wearing one a claim the wearer earned rather than bought. The
-/// SIGIL is deliberately not a crest: it marks the level cap on the bench ladder alone.
-pub fn crest(b: BlockType) -> Option<Skill> {
-	Some(match b {
-		BlockType::MinersCrest => Skill::Mining,
-		BlockType::AlchemistsCrest => Skill::Alchemy,
-		BlockType::ArcanistsCrest => Skill::Arcana,
 		_ => return None,
 	})
 }
 
 /// The one gate a catalog tile's lock badge names — the skill and the level a player is short
-/// of. For a crest that is the skill it honours at mastery; for everything else the bench level.
+/// of: the bench level, always.
 pub fn craft_gate(b: BlockType) -> Option<(Skill, u32)> {
-	match crest(b) {
-		Some(skill) => Some((skill, MASTERY_AT)),
-		None => craft(b).map(|l| (Skill::Alchemy, l)),
-	}
+	craft(b).map(|l| (Skill::Alchemy, l))
 }
 
 /// Alchemy level that unlocks crafting `b`; `None` = never craftable. **Nothing the world hands
@@ -370,22 +348,6 @@ pub const KINDLE_AT: u32 = 10;
 /// Where Kindle's fare eases, deep beside the last ports.
 pub const KINDLE_CHEAP_AT: u32 = 54;
 
-/// The Mason's Arc: how many cells one placement lays along the face
-/// normal — Arcana's mirror of [`pick_cells`], the placing half of the
-/// pick's breaking. The single cell below the first rank IS the
-/// ordinary place.
-pub fn arc_cells(level: u32) -> usize {
-	match level {
-		l if l >= ARC_WIDE_AT => 5,
-		l if l >= ARC_AT => 3,
-		_ => 1,
-	}
-}
-
-/// The arc's two ranks.
-pub const ARC_AT: u32 = 26;
-pub const ARC_WIDE_AT: u32 = 46;
-
 /// The Sphere's radius in cells for a caster at this Arcana — the shell
 /// `sphere::sets` draws about the head. Zero below the first rank IS
 /// "cannot cast". Three ranks, each a wider sphere and (`sphere_price`) a
@@ -571,17 +533,16 @@ pub fn pickup(b: BlockType) -> u32 {
 // ---- the questions ---------------------------------------------------
 
 /// Does the BENCH open `b` at this Alchemy level? The recipe half of [`can_craft`], alone —
-/// what the bench's own pacing tables ask, since a crest's second gate changes nothing about
-/// how long the bench takes over it.
+/// what the bench's own pacing tables ask.
 pub fn recipe_open(b: BlockType, alchemy: u32) -> bool {
 	craft(b).is_some_and(|need| alchemy >= need)
 }
 
-/// May this player transmute `b` at all? The bench level, AND for a crest the skill it honours
-/// at mastery. False for anything with no recipe, which is what makes `craft_ideal`'s `expect`
-/// sound. Takes the whole skill set so no caller can answer the second gate with the wrong level.
+/// May this player transmute `b` at all? False for anything with no recipe, which is what makes
+/// `craft_ideal`'s `expect` sound. Takes the whole skill set so every gate a future recipe grows
+/// stays answerable here.
 pub fn can_craft(b: BlockType, skills: &SkillSet) -> bool {
-	recipe_open(b, skills.level(Skill::Alchemy)) && crest(b).is_none_or(|s| s.mastered(skills))
+	recipe_open(b, skills.level(Skill::Alchemy))
 }
 
 /// Which gate a dig ran into — the two read differently to a player, and
@@ -675,8 +636,6 @@ pub fn opens(skill: Skill, level: u32) -> bool {
 				|| (b == BlockType::Air
 					&& (prospect_range(level) != prospect_range(level - 1)
 						|| ore_mastery(level) != ore_mastery(level - 1)))
-				// The crest, which mastery hands you the right to make.
-				|| (crest(b) == Some(Skill::Mining) && level == MASTERY_AT)
 		}
 		// A new recipe, or a surface node fading into view.
 		Skill::Alchemy => craft(b) == Some(level) || alchemy_reveal(b) == Some(level),
@@ -685,20 +644,18 @@ pub fn opens(skill: Skill, level: u32) -> bool {
 		// hand you something without handing you an item, on the
 		// prospector/mastery pattern.
 		Skill::Arcana => {
-			(crest(b) == Some(Skill::Arcana) && level == MASTERY_AT)
-				|| b == BlockType::Air
-					&& (crate::worldgen::SurfaceKind::ALL
-						.iter()
-						.any(|&k| waystone(k) == Some(level))
-						|| level == KINDLE_AT
-						|| arc_cells(level) != arc_cells(level - 1)
-						|| sphere_radius(level) != sphere_radius(level - 1)
-						|| causeway_secs(level) != causeway_secs(level - 1)
-						|| teleport_cooldown_secs(level) != teleport_cooldown_secs(level - 1)
-						|| channel_ticks(level) != channel_ticks(level - 1)
-						|| wisp_light(level) != wisp_light(level - 1)
-						|| crate::alchemy::kindle_price(level)
-							!= crate::alchemy::kindle_price(level - 1))
+			b == BlockType::Air
+				&& (crate::worldgen::SurfaceKind::ALL
+					.iter()
+					.any(|&k| waystone(k) == Some(level))
+					|| level == KINDLE_AT
+					|| sphere_radius(level) != sphere_radius(level - 1)
+					|| causeway_secs(level) != causeway_secs(level - 1)
+					|| teleport_cooldown_secs(level) != teleport_cooldown_secs(level - 1)
+					|| channel_ticks(level) != channel_ticks(level - 1)
+					|| wisp_light(level) != wisp_light(level - 1)
+					|| crate::alchemy::kindle_price(level)
+						!= crate::alchemy::kindle_price(level - 1))
 		}
 	})
 }

@@ -274,7 +274,6 @@ impl Engine {
 			drawn_cell: None,
 			dig: None,
 			cast: None,
-			arc_on: false,
 			wisp_left: 0.0,
 			causeway_left: 0.0,
 			causeway: Default::default(),
@@ -548,7 +547,6 @@ impl Engine {
 							0,
 							&engine.known_ports(),
 							&engine.inventory,
-							engine.arc_on,
 							engine.causeway_left.ceil() as u32,
 						);
 						if let Some(&(slot, _)) = view.fares().first() {

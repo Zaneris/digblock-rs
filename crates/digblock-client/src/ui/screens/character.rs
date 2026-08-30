@@ -143,10 +143,7 @@ fn mining_teasers() -> Vec<(u32, &'static str)> {
 		(unlock::mine(B::Crystal), "crystal opens"),
 		(unlock::PROSPECT_SHARP_AT, "the prospector's sense sharpens"),
 		(reveal_at(B::Aetherock), "aetherock reveals"),
-		(
-			unlock::MASTERY_AT,
-			"mastery: every vein gives one more; the miner's crest",
-		),
+		(unlock::MASTERY_AT, "mastery: every vein gives one more"),
 		(unlock::PICK_PLANE_AT, "the pick's full nine"),
 	]
 }
@@ -194,10 +191,6 @@ fn alch_teasers() -> Vec<(u32, &'static str)> {
 			unlock::WASTE_DIP_AT,
 			"the waste dip — your process tightens early",
 		),
-		(
-			item_at(B::AlchemistsCrest),
-			"the alchemist's crest — mastery",
-		),
 		(item_at(B::MastersSigil), "the master's sigil"),
 	]
 }
@@ -224,10 +217,6 @@ fn arcana_teasers() -> Vec<(u32, &'static str)> {
 		),
 		(port_at(K::Savanna), "the savanna waystone"),
 		(
-			unlock::ARC_AT,
-			"the mason's arc — one placement lays a line of three",
-		),
-		(
 			unlock::CHANNEL_QUICK_AT,
 			"quickened channels — every cast lands sooner",
 		),
@@ -242,7 +231,6 @@ fn arcana_teasers() -> Vec<(u32, &'static str)> {
 		),
 		(unlock::CAUSEWAY_LONG_AT, "the causeway carries you further"),
 		(port_at(K::Beach), "the shore waystone"),
-		(unlock::ARC_WIDE_AT, "the arc reaches five"),
 		(port_at(K::Mountain), "the mountain waystone"),
 		(
 			unlock::SPHERE_VAST_AT,
@@ -254,10 +242,7 @@ fn arcana_teasers() -> Vec<(u32, &'static str)> {
 			unlock::CAUSEWAY_VAST_AT,
 			"the causeway carries you further again",
 		),
-		(
-			port_at(K::Snow),
-			"the far cold waystone — the last port; the arcanist's crest",
-		),
+		(port_at(K::Snow), "the far cold waystone — the last port"),
 	]
 }
 

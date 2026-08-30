@@ -411,10 +411,6 @@ fn material_roster_is_pinned() {
 			// Conjured matter: a spell's write, never a grid cell — it
 			// has no recipe and no price, only a fare.
 			B::Wardglass,
-			// The crests: held items in the sigil's mold, hand-priced.
-			B::MinersCrest,
-			B::AlchemistsCrest,
-			B::ArcanistsCrest,
 		]
 	);
 }

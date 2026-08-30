@@ -40,7 +40,7 @@ fn rig_at(level: u32, stock: impl Fn(&mut Inventory)) -> Rig {
 fn rig_with_road(level: u32, road_secs: u32, stock: impl Fn(&mut Inventory)) -> Rig {
 	let mut inv = Inventory::default();
 	stock(&mut inv);
-	let view = SpellView::build(&skills_at(level), 0, &all_ports(), &inv, false, road_secs);
+	let view = SpellView::build(&skills_at(level), 0, &all_ports(), &inv, road_secs);
 	let mut r = Rig {
 		screen: SpellScreen::default(),
 		hits: HitMap::default(),

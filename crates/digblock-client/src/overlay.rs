@@ -933,10 +933,9 @@ impl Overlay {
 		let back_h = font::ui().line_h(glyph).max(glyph);
 		let back_dy = (back_h - glyph) / 2.0;
 		// The mastery glyphs: one square per mastered skill after the name,
-		// in the skill's emblem colour — the same colour its crest wears
-		// and its essence chip is painted in, so the three read as one
-		// language. A square rather than a character, since the UI face
-		// promises no symbol glyphs.
+		// in the skill's emblem colour — the same colour its essence chip
+		// is painted in, so the two read as one language. A square rather
+		// than a character, since the UI face promises no symbol glyphs.
 		let mark = (glyph * 0.5).round().max(2.0);
 		let mark_gap = (glyph * 0.2).round().max(1.0);
 		for tag in tags {

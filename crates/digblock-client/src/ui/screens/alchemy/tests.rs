@@ -868,8 +868,7 @@ fn every_craftable_appears_in_exactly_one_family() {
 }
 
 /// A family reads left to right in the order its members open — the
-/// level each tile's lock badge names, which for a crest is mastery on
-/// its own skill rather than the bench. The shape families inherit it
+/// level each tile's lock badge names. The shape families inherit it
 /// from the material order; the functional ones are sorted into it, so
 /// a retuned level (the bucket's move past the siphon) moves the tile
 /// rather than stranding it ahead of a cheaper one.
@@ -924,10 +923,7 @@ fn the_page_hides_everything_past_the_next_unlock() {
 	}
 	// Inside TOOLS: the vessels show, the pick and the sigil do not —
 	// the sigil at the cap is exactly the tile a fresh player must
-	// not be stared down by. The crests gate on the skill they honour,
-	// not the bench, so they never sit on the teaser ladder: each hides
-	// until its own skill masters, or a fresh page opens on a wall of
-	// distant badges.
+	// not be stared down by.
 	let tools = center(r.hits.rect_of(InvId::Family(idx("Tools"))).unwrap());
 	press(&mut r, tools);
 	rebuild(&mut r);
@@ -939,9 +935,6 @@ fn the_page_hides_everything_past_the_next_unlock() {
 		(B::Bucket, true),
 		(B::EssenceSiphon, true),
 		(B::ResonantPick, false),
-		(B::MinersCrest, false),
-		(B::ArcanistsCrest, false),
-		(B::AlchemistsCrest, false),
 		(B::MastersSigil, false),
 	] {
 		assert_eq!(
