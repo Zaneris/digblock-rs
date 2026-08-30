@@ -238,7 +238,7 @@ fn the_strength_wall_is_the_dig_family() {
 		B::Lumber,
 		B::LumberDoor,
 	] {
-		assert_eq!(mine(b), 3, "{b:?} is Wood family");
+		assert_eq!(mine(b), 2, "{b:?} is Wood family");
 	}
 	// Rock last, gravel and sandstone included: gravel used to be the
 	// ungated entry rock and timber has taken that job.
@@ -542,7 +542,7 @@ fn unlock_levels_are_the_threshold_levels() {
 		.collect();
 	assert_eq!(
 		mining,
-		vec![3, 10, 15, 18, 23, 33, 40, 43, 50, 60, 85],
+		vec![2, 10, 15, 18, 23, 33, 40, 43, 50, 60, 85],
 		"timber and rock, the reveals, metal and crystal, the pick, the \
 			 prospector's two ranks, mastery — the content tops at 60, and \
 			 the pick's plane at 85 is the tail's one deliberate exception"

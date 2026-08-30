@@ -438,7 +438,7 @@ fn mine_family(f: crate::block::DigFamily) -> u32 {
 	use crate::block::DigFamily as F;
 	match f {
 		F::Fixed | F::Soft => 1,
-		F::Wood => 3,
+		F::Wood => 2,
 		F::Rock => 10,
 	}
 }
