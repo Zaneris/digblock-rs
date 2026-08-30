@@ -1,5 +1,5 @@
 //! The probe trace and the accumulate/blend pass order. Pass order is
-//! an invariant, not a preference -- `GI-DESIGN.md` `## Invariants`.
+//! an invariant, not a preference.
 
 use super::*;
 

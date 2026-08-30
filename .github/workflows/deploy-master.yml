@@ -15,7 +15,7 @@
 #   - Repo variable: AZURE_RG (the resource group name).
 #   - The container app itself created once (name: digblock-master).
 #
-# STORAGE — accounts live in SQLite at /data/master.db (see AUTH-DESIGN.md).
+# STORAGE — accounts live in SQLite at /data/master.db.
 # The Container App's own filesystem is EPHEMERAL, so without these two the
 # first redeploy silently takes every account with it:
 #   - An Azure Files share mounted at /data, with nobrl in the volume's

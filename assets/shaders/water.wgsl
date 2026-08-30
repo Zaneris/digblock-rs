@@ -201,7 +201,7 @@ fn reflection_color(origin: vec3f, ray: vec3f, dist: f32, weight: f32, sky: vec3
 	// gated on it for the same reason the sun DDA above is gated on its own:
 	// it was running at full cost where it cannot show — head-on, Schlick
 	// bottoms out at its F0 floor, so a look straight down at calm water was
-	// paying the full march for a sliver of a pixel (BENCH.md holds the figure).
+	// paying the full march for a sliver of a pixel.
 	if weight <= MIRROR_MIN_W || frame.water_misc.y < 0.5 || stubbed(STUB_WSSR) {
 		return sky;
 	}

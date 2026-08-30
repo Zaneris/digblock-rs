@@ -171,7 +171,7 @@ blocks! {
 	/// (`nodes::spent_block`) standing, and THAT is what you carry home.
 	///
 	/// All four `seams`: a revealed vein lights the room it opens into, from
-	/// the faces that open into it and no others (GI-DESIGN.md R31).
+	/// the faces that open into it and no others (R31).
 	Emberore = 48 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::EMBERORE, tex::EMBERORE, tex::EMBERORE), 120, DigFamily::Rock), 2)), Material::Emberore),
 	Duskstone = 49 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::DUSKSTONE, tex::DUSKSTONE, tex::DUSKSTONE), 150, DigFamily::Rock), 4)), Material::Duskstone),
 	Glowvein = 50 => mat(glows(seams(dig(props(RenderClass::Opaque, true, tex::GLOWVEIN, tex::GLOWVEIN, tex::GLOWVEIN), 190, DigFamily::Rock), 4)), Material::Glowvein),
@@ -653,7 +653,7 @@ pub struct BlockProps {
 	/// second shape can silently disagree about — `every_shape_of_a_material_agrees_on_light`.
 	pub emissive: bool,
 	/// The level this block CASTS, feeding the GI material LUT and
-	/// `gi.rs`'s light list and nothing else (GI-DESIGN.md). Purely
+	/// `gi.rs`'s light list and nothing else. Purely
 	/// client-side data — what it feeds is derived, never serialized.
 	/// Agrees across a material's shapes for the same reason
 	/// [`Self::emissive`] does.
@@ -1265,7 +1265,7 @@ impl BlockType {
 	/// ONE authority for what a tier looks like — `texgen` paints the flecks and the spent rock's
 	/// dead flecks from it, and the GI material LUT casts the vein's light in the core colour.
 	/// STATED rather than measured: an emitter's tint is normally its texture's mean, but an ore
-	/// texture is a wide grey field with a few flecks, so its mean is stone (GI-DESIGN.md R31).
+	/// texture is a wide grey field with a few flecks, so its mean is stone (R31).
 	#[inline]
 	pub const fn node_flecks(self) -> Option<([u8; 3], [u8; 3])> {
 		Some(match self {

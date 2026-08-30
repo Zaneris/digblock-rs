@@ -39,7 +39,7 @@ use terrain::fields;
 /// Every terrain generator that has ever shipped, in shipping order, and NONE is ever removed. A
 /// world records one when it is created and keeps it for as long as it exists, so a terrain change
 /// adds a row here instead of moving the one existing worlds are standing on — which is the whole
-/// of why a terrain change no longer ends them (COMPAT-DESIGN.md §5.3).
+/// of why a terrain change no longer ends them.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 #[repr(u16)]
 pub enum TerrainVersion {

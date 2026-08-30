@@ -1,5 +1,5 @@
 //! Carried lights: the per-frame list of emitters that hang on a body rather than in a cell
-//! (GI-DESIGN.md R28).
+//! (R28).
 //!
 //! **A carried light is an ordinary entry in the same light list a placed torch uses** — there is
 //! no second lighting path, which is what gives one bounce, hard shadows, water response and a lit

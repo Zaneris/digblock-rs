@@ -1,4 +1,4 @@
-// Shared RTGI sampling core (GI-DESIGN.md), prepended by digblock-assets to every shader that
+// Shared RTGI sampling core, prepended by digblock-assets to every shader that
 // gathers the probe field directly: the GI resolve, water, players and the confetti. Not all from
 // the fragment stage — water gathers per vertex (R17) and the confetti prices a whole flake there
 // (R34), which is why group(2) is bound VERTEX | FRAGMENT.
@@ -214,7 +214,7 @@ fn gi_sun_vis(side: i32, sky_y: f32, cam_xz: vec2f, sun: vec4f, p: vec3f, iters:
 	// window? An unproven exit used to answer "fully lit" too, which deep underground is daylight
 	// through fifty blocks of rock; now it answers the depth fade at the shading point (R32).
 	// Above the ramp's top edge the two answers are identical, so the accepted lateral-exit
-	// tradeoff (GI-DESIGN.md "What is NOT built") is preserved verbatim where it was accepted.
+	// tradeoff is preserved verbatim where it was accepted.
 	var proven = false;
 	let lateral_max = gi_lateral_max(f32(side));
 	// The hard bound tracks the window, not a literal: with the brick skip an empty brick costs
@@ -458,7 +458,7 @@ fn gi_emit(v: u32) -> f32 {
 // is why this is a second accessor rather than a call to `gi_albedo`. An ore face is a wide grey
 // field with a few bright flecks, so its mean is STONE and no weighting recovers the hue; left
 // derived, an ember seam would light a tunnel white. So the ore rows STATE their cast colour and
-// it rides the LUT word above the level (GI-DESIGN.md R31).
+// it rides the LUT word above the level (R31).
 fn gi_emit_tint(v: u32) -> vec3f {
 	let m = gi_lut[v].y >> 8u;
 	return vec3f(f32(m & 0xffu), f32((m >> 8u) & 0xffu), f32((m >> 16u) & 0xffu)) / 255.0;

@@ -12,7 +12,7 @@ pub(crate) struct BlockTextures {
 	pub array_view: wgpu::TextureView,
 	pub sampler: wgpu::Sampler,
 	/// Mean rgb per texture layer (gamma-space, like the atlas) — the
-	/// GI material LUT's albedo source (GI-DESIGN.md): rays never
+	/// GI material LUT's albedo source: rays never
 	/// sample the atlas, they read one color per class.
 	pub layer_means: Vec<[u8; 4]>,
 }

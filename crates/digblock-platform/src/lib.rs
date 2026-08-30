@@ -148,7 +148,7 @@ pub struct RunOptions {
 	/// makes a capture independent of the DESKTOP, since macOS hands a covered window no surface
 	/// texture at all and an unattended run simply stops when the screen locks. Deliberately NOT
 	/// implied by `--screenshot`, because dropping the swapchain drops the present wait and every
-	/// BENCH.md baseline was taken through the surface. Composes with [`Self::auto_drill`].
+	/// bench baseline was taken through the surface. Composes with [`Self::auto_drill`].
 	pub offscreen: bool,
 	/// Logical window size, when a run needs a SPECIFIC one rather than
 	/// winit's default. The GI resolve is a fraction of the surface, so

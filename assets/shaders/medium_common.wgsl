@@ -35,7 +35,7 @@ const WATER_SIGMA = vec3f(0.36, 0.068, 0.030);
 // blue-green haze between the eye and a submerged surface reads.
 const WATER_ALBEDO = 0.35;
 
-// The depth fade for UNPROVEN daylight (GI-DESIGN.md R32): full at the top edge,
+// The depth fade for UNPROVEN daylight (R32): full at the top edge,
 // gone at the bottom. Every place the lighting ANSWERS sky without proving a
 // path to it multiplies by this, so a deep tunnel goes dark; a PROVEN sky escape
 // never takes it. `smoothstep` saturates at the top edge, so the surface world

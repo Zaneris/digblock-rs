@@ -185,7 +185,7 @@ pub fn bar_slot_rect(grid: &GridSpec, i: usize, scale: f32) -> super::Rect {
 /// nothing at all. A PAGE asks this, never the bar: the bar draws after every screen at the
 /// WINDOW's scale, while a page that has stepped the fit ladder is a rung smaller, and a frame has
 /// exactly one text size. So the open page names the bar's slots at its own glyph, and this is the
-/// one place that rule is written down — CLAUDE.md states it as "bar slots included".
+/// one place that rule is written down.
 pub fn hovered_bar_slot(
 	size: (u32, u32),
 	window_scale: f32,

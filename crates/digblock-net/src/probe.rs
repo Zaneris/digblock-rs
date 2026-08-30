@@ -16,7 +16,7 @@ pub struct Ping {
 
 /// Round trips it takes to open a WebTransport session against our server: address validation
 /// (the server's Retry), the TLS handshake, and the HTTP/3 extended CONNECT. Measured, not
-/// derived (BENCH.md 2026-08-25): the opening time is this many times the round trip plus a
+/// derived (2026-08-25): the opening time is this many times the round trip plus a
 /// couple of milliseconds, at every latency and whether or not the browser had a session to
 /// resume. If the server ever stops issuing Retry this drops by one — re-measure, don't reason.
 pub const SESSION_ROUND_TRIPS: u32 = 3;

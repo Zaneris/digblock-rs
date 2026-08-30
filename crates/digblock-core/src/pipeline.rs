@@ -35,7 +35,7 @@ pub struct MeshOutput {
 }
 
 pub enum Job {
-	/// Generate column (x, z)'s whole chunk stack. Not sliced; BENCH.md 2026-08-14 says why not.
+	/// Generate column (x, z)'s whole chunk stack. Not sliced, deliberately (benched 2026-08-14).
 	Generate { x: i32, z: i32, seed: Seed },
 	Mesh {
 		pos: ChunkPos,
@@ -203,7 +203,7 @@ pub struct Pipeline {
 	in_flight_min_d2: Option<i64>,
 	/// Inline job-cost predictor (unused with a worker pool).
 	job_cost: JobCost,
-	/// Chunks whose GI-window region is stale (RTGI; GI-DESIGN.md):
+	/// Chunks whose GI-window region is stale (RTGI):
 	/// arrivals and edits land here, the engine drains via
 	/// `take_gi_dirty` under its upload budget. Tracked unconditionally —
 	/// a set insert is noise, and it stays bounded by the resident set

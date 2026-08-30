@@ -287,7 +287,7 @@ pub(crate) struct Renderer {
 	/// None when the device lacks TIMESTAMP_QUERY.
 	gpu_timer: Option<GpuTimer>,
 	/// RTGI: the voxel window, probe cascades, and the half-res resolve
-	/// — the lighting system (GI-DESIGN.md).
+	/// — the lighting system.
 	gi: crate::gi::GiDraw,
 	/// Draw the voxel-window debug raymarch over the scene (DIG_GI).
 	debug_gi: bool,

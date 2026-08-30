@@ -684,7 +684,7 @@ struct WorldBinds<'a> {
 }
 
 /// The per-block class ids and the coarse occupancy over them, for a
-/// side in blocks (GI-DESIGN.md "Data model"), charged to the ledger.
+/// side in blocks , charged to the ledger.
 fn window_textures(
 	device: &wgpu::Device,
 	side: u32,

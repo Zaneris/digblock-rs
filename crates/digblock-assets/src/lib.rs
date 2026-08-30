@@ -371,7 +371,7 @@ pub mod shader {
 		include_str!("../../../assets/shaders/ink_common.wgsl"),
 		include_str!("../../../assets/shaders/viewmodel.wgsl"),
 	);
-	/// RTGI probe-update compute (GI-DESIGN.md). No frame prelude: the
+	/// RTGI probe-update compute. No frame prelude: the
 	/// compute passes carry their own small GI uniform block, not the
 	/// pinned Frame layout — but they DO take medium_common, which is
 	/// argument-only for exactly this reason, so the sun ray's water

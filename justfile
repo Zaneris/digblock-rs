@@ -11,8 +11,6 @@
 # off, and dev sign-in still works with none of them configured at all.
 set dotenv-load := true
 
-# The scene, capture and attribution flags are catalogued in CLAUDE.md.
-#
 # Desktop client, debug build — opens at the title menu.
 run *ARGS:
 	cargo run -p digblock-desktop -- {{ARGS}}

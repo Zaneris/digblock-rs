@@ -104,7 +104,7 @@ impl Engine {
 		// the config, because the config is a REQUEST. A web pool that
 		// failed to start, hasn't finished its handshake, or has had every
 		// worker written off reports 0 here and streams inline — and a run
-		// that streamed inline must not be recorded in BENCH.md as a
+		// that streamed inline must not be recorded as a
 		// pooled arm, which is what the `?workers=` table is selected by.
 		self.bench.metrics.workers = self.pipeline.worker_count() as u32;
 		// ONE deadline for jobs, drain, evictions and uploads together.
@@ -124,7 +124,7 @@ impl Engine {
 		self.bench.pending.maintain_ms = ms_since(t_maintain);
 		// RTGI: scroll the window to the camera (re-dirtying whatever entered coverage), pull
 		// freshly-dirty chunks into the re-upload queue, then feed the voxel window under a
-		// byte budget AND the shared streaming deadline (GI-DESIGN.md). The clock matters as
+		// byte budget AND the shared streaming deadline. The clock matters as
 		// much as the bytes: `classify_gi` walks every cell of a chunk, and the byte cap alone
 		// permits many chunks in one frame; `GI_UPLOAD_MIN` floors progress.
 		let t_gi = web_time::Instant::now();

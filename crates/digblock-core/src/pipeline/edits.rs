@@ -37,7 +37,7 @@ impl Pipeline {
 		}
 		// COW: clones the cell array only if a worker still holds a snapshot.
 		Arc::make_mut(data).set_cell(lx, ly, lz, cell);
-		// The GI voxel window re-uploads this chunk (RTGI; GI-DESIGN.md).
+		// The GI voxel window re-uploads this chunk (RTGI).
 		// Chunk-granular: the window has no padded shell, so an edit
 		// dirties exactly its own chunk. Edits (unlike arrivals)
 		// also invalidate nearby probes so relight starts immediately.

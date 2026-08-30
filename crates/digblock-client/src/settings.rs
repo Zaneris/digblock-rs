@@ -29,7 +29,7 @@ pub const LIGHT_CAP_MAX: i32 = crate::gi::MAX_LIGHTS as i32;
 /// — `EngineConfig::gfx_defaults_auto`, which is false on every capture path, so the shipped
 /// `Settings::default` stays at the capacity every recorded baseline was taken with. The full
 /// list is the slider's opt-in rather than the default because the cap sweep priced it: the scan
-/// is linear in the list (BENCH.md 2026-08-27), and the top half of it buys picture only where a
+/// is linear in the list (measured 2026-08-27), and the top half of it buys picture only where a
 /// scene actually oversubscribes. On the step grid by construction, so `clamped` cannot move it.
 pub const LIGHT_CAP_DEFAULT: i32 = LIGHT_CAP_MIN + LIGHT_CAP_STEP;
 
@@ -41,7 +41,7 @@ pub const VOL_STEP: f32 = 0.1;
 /// Render-scale bounds. **No slider exposes this today** — render scale is locked at native for
 /// players and only `--render-scale` / `?renderscale=` move it, because the upscale is a plain
 /// bilinear blit: notching it down measured an image delta orders of magnitude worse than the GI
-/// notch that buys the same time (BENCH.md 2026-08-12). The path stays wired so it does not rot;
+/// notch that buys the same time (measured 2026-08-12). The path stays wired so it does not rot;
 /// re-exposing it is a slider row plus an EASU/RCAS filter, which `RENDER_SCALE_STEP` waits for.
 pub const RENDER_SCALE_MIN: f32 = 0.5;
 pub const RENDER_SCALE_MAX: f32 = 1.0;
@@ -51,7 +51,7 @@ pub const RENDER_SCALE_STEP: f32 = 0.05;
 /// DIVISORS rather than a continuous slider, and forced: `chunk.wgsl`'s bilateral upsample is a
 /// 4-tap gather at render resolution, so the render:GI ratio must be a clean integer — which is
 /// also why GI scale is expressed against the RENDER size, not the surface. Full resolution is
-/// deliberately not a rung; it buys almost no picture for the largest step (BENCH.md 2026-08-12).
+/// deliberately not a rung; it buys almost no picture for the largest step (measured 2026-08-12).
 pub const GI_SCALE_DIVISORS: [u32; 3] = [2, 3, 4];
 pub const GI_SCALE_DEFAULT: u32 = 2;
 
@@ -133,7 +133,7 @@ impl Default for Settings {
 /// The `gi_scale_div` to START an interactive session at, from the display's backing scale.
 /// Applied once, and only when the player has expressed no preference — see
 /// `EngineConfig::gfx_defaults_auto`. Which term gives on a dense panel is a measured call: the
-/// interleaved A/B in BENCH.md 2026-08-12 has a render-scale notch and a GI-scale notch buying
+/// interleaved A/B of 2026-08-12 has a render-scale notch and a GI-scale notch buying
 /// the SAME time, the GI notch costing far less picture. So a dense display stays NATIVE.
 pub fn density_gi_div(backing_scale: f32) -> u32 {
 	if backing_scale >= 1.5 {

@@ -439,7 +439,7 @@ struct StationMark {
 
 /// Schema note: columns are only ever APPENDED to a group, never
 /// reordered, but old CSVs still can't be diffed naively against new ones
-/// (`BENCH.md` carries the same warning for the `gpu_water_ms` insertion).
+/// (the `gpu_water_ms` insertion already broke that once).
 const CSV_HEADER: &str = "t_s,fps,avg_ms,p95_ms,p99_ms,worst_ms,hitches,dropped,refresh_ms,\
 busy_ms,out_ms,acq_ms,upd_ms,net_ms,sim_ms,sav_ms,mnt_ms,gi_ms,upl_ms,prep_ms,enc_ms,\
 gpu_prepass_ms,gpu_main_ms,gpu_water_ms,gpu_overlay_ms,\

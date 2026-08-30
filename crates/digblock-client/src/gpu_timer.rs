@@ -18,7 +18,7 @@ pub(crate) const Q_MAIN: u32 = 2;
 pub(crate) const Q_OVERLAY: u32 = 4;
 /// Water pass (blit + prepass + water color), once the main pass splits.
 pub(crate) const Q_WATER: u32 = 6;
-/// RTGI probe-update compute (GI-DESIGN.md).
+/// RTGI probe-update compute.
 pub(crate) const Q_GI: u32 = 8;
 /// The half-res GI trace (probe gather + sun ray).
 pub(crate) const Q_GI_TRACE: u32 = 10;

@@ -33,7 +33,7 @@ const DEPTH: usize = 16;
 /// pool dead on the first frame back from the background, while a sweep counter does not advance.
 const WEDGE_SWEEPS: u32 = 600;
 
-/// Default ceiling on workers, whatever the machine reports. The sweep behind it is in BENCH.md.
+/// Default ceiling on workers, whatever the machine reports.
 ///
 /// The next rung up was measured and DECLINED: it fills faster and still beats the inline path on
 /// p99, but it is the only arm that drops a frame, and absorbing results is pinned to the thread

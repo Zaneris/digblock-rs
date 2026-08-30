@@ -76,7 +76,7 @@ public sealed record VerifyResponse(string DisplayName, Guid AccountId, SkillXp[
 
 // ---- hiscores --------------------------------------------------------------
 // The server half is mirrored by apps/server/src/master.rs, the client half
-// by the two services fillers. SOCIAL-DESIGN.md §1.
+// by the two services fillers.
 
 /// <summary>A trusted server's batch of XP totals (never levels — the master derives those with
 /// the pinned curve). One entry per account, only the skills that moved; a skill index the

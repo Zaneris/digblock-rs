@@ -1,4 +1,4 @@
-// RTGI probe update (GI-DESIGN.md). One workgroup = one probe, its RAYS
+// RTGI probe update. One workgroup = one probe, its RAYS
 // directions DDA-marched through the voxel window; radiance folds into a
 // 6-axis ambient cube blended over time. The atlas is six axis-major
 // Z slabs: probe texel (x,y,z), axis a → (x, y, z + a*dims.z).
@@ -68,7 +68,7 @@ const LIGHT_RANGE: f32 = 24.0;
 // is a gameplay nibble, not a photometric quantity. It is a CEILING rather than a
 // preference — chunk.wgsl's EMISSIVE_GAIN is already clamped by the scene target, so
 // every step of pool brightness eats the margin by which a source out-reads what it
-// casts, and past here the clip fraction turns over. The sweep is in GI-DESIGN.md R26.
+// casts, and past here the clip fraction turns over (R26).
 const LIGHT_GAIN: f32 = 0.75;
 // Where the point model's near field stops being taken literally, in blocks — the
 // pinned twin of gi_resolve's, and the same reasoning: a voxel emitter is not a point,

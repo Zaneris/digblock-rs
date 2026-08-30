@@ -30,7 +30,7 @@
          code exchange was considered and declined: state, PKCE and nonce
          handling are exactly the parts worth not reimplementing. That a
          provider costs one package and one options block is the whole
-         reason the flow was built around handlers. See AUTH-DESIGN.md.
+         reason the flow was built around handlers.
 
        Rate limiting needs no package — AddRateLimiter ships in the ASP.NET
        Core shared framework. -->

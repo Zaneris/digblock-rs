@@ -33,11 +33,11 @@ fn main() {
 		..Default::default()
 	};
 
-	// Deterministic-capture flags; CLAUDE.md's "Capture, bench & metrics flags" is the roster.
+	// Deterministic-capture flags.
 	// The couplings that bite: --fixed-dt is what makes a capture comparable ACROSS BUILDS,
 	// --offscreen is deliberately not implied by --screenshot (it also drops the present wait a
 	// frame-time run measures), --render-scale is dev/capture only, and --bench-speed's default is
-	// every BENCH.md baseline's value — a different STREAMING regime, not merely a faster one.
+	// every bench baseline's value — a different STREAMING regime, not merely a faster one.
 	let mut frames: Option<u32> = None;
 	// Multiplayer goes through the master exclusively: it lists servers, distributes cert pins and
 	// mints the one-time join tokens game servers require, so there is no direct-connect path. The
@@ -134,7 +134,7 @@ fn main() {
 			// WALK_SPEED and is a different STREAMING regime, not just a
 			// faster one: at that pace the GI upload budget cannot keep
 			// up. Drop it to walking pace for a soak that matches how the
-			// game is played. Leave the DEFAULT alone — every BENCH.md
+			// game is played. Leave the DEFAULT alone — every bench
 			// baseline was taken at it.
 			"--bench-speed" => {
 				config.bench_speed = parse_or_die("--bench-speed", args.next());
@@ -192,7 +192,7 @@ fn main() {
 			// surface texture on macOS, so a windowed run stops producing
 			// frames the moment the screen locks. Never implied by
 			// --screenshot — dropping the swapchain drops the present
-			// wait with it, and BENCH.md's baselines were taken through
+			// wait with it, and the bench baselines were taken through
 			// the surface.
 			"--offscreen" => options.offscreen = true,
 			// Borderless fullscreen on the pinned display. The bench's resolve cost is per pixel,

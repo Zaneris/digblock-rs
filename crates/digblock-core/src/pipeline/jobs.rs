@@ -104,7 +104,7 @@ impl Pipeline {
 					landed.push((x, z));
 					// Every arriving chunk dirties its GI-window region —
 					// air ones included, since the toroidal window may hold
-					// a stale previous tenant there (GI-DESIGN.md).
+					// a stale previous tenant there.
 					for cy in 0..crate::chunk::WORLD_VCHUNK {
 						self.gi_dirty.insert(ChunkPos::new(x, cy, z));
 					}

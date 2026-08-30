@@ -1,5 +1,5 @@
 //! Debug capture scenes: the block plans behind `DIG_SHAPES`, `DIG_ORE`,
-//! `DIG_VAULT` and the rest (CLAUDE.md's capture flags).
+//! `DIG_VAULT` and the rest.
 //!
 //! Pure `(spawn, seed) -> Vec<(x, y, z, cell)>` builders with no `Engine`
 //! coupling at all, which is why they live apart from it. Every scene here
@@ -435,7 +435,7 @@ pub(super) fn debug_vault_plan(spawn: Vec3, torch: bool) -> Vec<(i32, i32, i32, 
 }
 
 /// DIG_TUNNEL=1 layout: a long sealed stone tunnel running ahead of the spawn camera, no torch —
-/// the unproven-daylight capture (GI-DESIGN.md R32). The length IS the scene: the far end sits
+/// the unproven-daylight capture (R32). The length IS the scene: the far end sits
 /// beyond the probe cascades' coverage and beyond the gather ray's reach, so every "answer sky on
 /// no data" fallback fires along it, which no room-sized scene can reach. Combine with `--pos` at
 /// a low y for the depth-gated fade; a run above `SKY_FADE_FULL_Y` is the identical control.

@@ -1,4 +1,4 @@
-// RTGI resolve (GI-DESIGN.md): the half-res fullscreen pass that turns probes into per-pixel
+// RTGI resolve: the half-res fullscreen pass that turns probes into per-pixel
 // lighting — the whole replacement for the shadow-map system. World position from the R32F depth
 // copy, face normal from the prepass code, then indirect = the shared gi_common cascade
 // fallthrough, direct = ONE sun-visibility DDA per pixel. The gather core and the group(2) world

@@ -1,4 +1,4 @@
-// GI voxel-window debug raymarch (`DIG_GI=window`; GI-DESIGN.md).
+// GI voxel-window debug raymarch (`DIG_GI=window`).
 // Fullscreen DDA over the R8Uint window: proves the classification,
 // the toroidal addressing, the coarse skip, and the material LUT are
 // all correct before any probe traces them — hits shade as LUT albedo

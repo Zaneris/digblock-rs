@@ -7,7 +7,7 @@ use super::*;
 impl Renderer {
 	/// Encode the frame in one command encoder, fixed order — probes →
 	/// depth prepass → depth blit → GI resolve → scene → water →
-	/// viewmodel → overlay (GI-DESIGN.md).
+	/// viewmodel → overlay.
 	pub(crate) fn render(
 		&mut self,
 		gpu: &Gpu,

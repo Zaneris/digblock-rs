@@ -1,4 +1,4 @@
-//! RTGI probe volume (GI-DESIGN.md). P1 built the voxel window the
+//! RTGI probe volume. P1 built the voxel window the
 //! rays march; P2 makes the probes real: two toroidal 6-axis
 //! ambient-cube cascades (C0 fine and near, C1 coarse and far),
 //! ping-ponged rgba16float atlases updated by an amortized compute
@@ -19,7 +19,7 @@ use crate::gpu_ledger::{GpuKind, GpuLedger};
 use crate::gpu_timer::{GpuTimer, Q_GI, Q_GI_TRACE};
 use crate::renderer::FrameUniforms;
 
-/// C0 probe grid (the near cascade; see GI-DESIGN.md).
+/// C0 probe grid (the near cascade).
 mod build;
 mod debug;
 mod lights;
@@ -45,7 +45,7 @@ const PROBES_PER_DISPATCH: u32 = 512;
 /// World height in blocks — the window's fixed Y extent (an up-ray
 /// always reaches sky; the window never scrolls vertically).
 const WORLD_H: u32 = 256;
-/// Light-list capacity (GI-DESIGN.md): the buffer allocation, the probe uniform and the shader
+/// Light-list capacity: the buffer allocation, the probe uniform and the shader
 /// clamps are all sized to it at compile time. The RUNTIME cap (`Settings::max_lights`) can only
 /// sit at or below it, which is what keeps a slider move a header rewrite instead of a
 /// reallocation. `pub(crate)` so settings derives its slider maximum from the one capacity.
@@ -88,7 +88,7 @@ const SKY_SURFACE_CENTILE: usize = 20;
 
 /// How far out the sky-cull tally samples column tops, in blocks. Deliberately NOT the light
 /// reach: under a saturated cap the selection keeps nothing near the window's edge — the furthest
-/// survivor measured sits just inside this (BENCH.md 2026-08-27) — so terrain past here mostly
+/// survivor measured sits just inside this (measured 2026-08-27) — so terrain past here mostly
 /// votes on lights the ranking already rejects. The price, accepted: an UNDERSUBSCRIBED list
 /// ranges past it, so a deep valley's far lights can be culled by a floor its own columns never
 /// voted on.
@@ -145,7 +145,7 @@ pub(crate) struct Emitter {
 	/// face, merged by `mesher::lights`. `None` is a point source. This is the one thing about an
 	/// entry that changes how the estimator WORKS rather than what it is worth: a point
 	/// approximating a patch of glowing rock is a hotspot at the wall and has no cosine at its own
-	/// surface, so it spills light around the corner of the rock it sits IN (GI-DESIGN.md R31).
+	/// surface, so it spills light around the corner of the rock it sits IN (R31).
 	pub face: Option<Face>,
 }
 
@@ -250,7 +250,7 @@ struct Cascade {
 	stride: u32,
 	uniform_buf: wgpu::Buffer,
 	atlas: [wgpu::Texture; 2],
-	/// Per-probe age, dead bit and relocation code (GI-DESIGN.md "Data model").
+	/// Per-probe age, dead bit and relocation code.
 	flags: wgpu::Texture,
 	/// bind[i]: atlas[i] is prev (sampled), atlas[1-i] is out (written).
 	bind: [wgpu::BindGroup; 2],
@@ -425,7 +425,7 @@ pub(crate) struct GiDraw {
 	debug_probes: bool,
 }
 
-/// The material LUT (GI-DESIGN.md): one entry per class byte, holding everything a ray needs —
+/// The material LUT: one entry per class byte, holding everything a ray needs —
 /// albedo rgb plus the opacity class, the cast-light level (emission colour is the albedo, so a
 /// torch glows its own warm tone), and the two-box occlusion cover of a PARTIAL class
 /// (`core::gi::pack_box`). Full cubes keep the base-id entries; the synthetic shape classes above

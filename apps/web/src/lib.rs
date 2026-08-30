@@ -15,7 +15,7 @@ mod store;
 
 /// A query param that carries a value, absent if the key isn't there. A key that IS there but
 /// doesn't parse is fatal, never a silent fall back to the default: these select bench arms, and a
-/// typo that quietly ran the shipped default gets recorded in BENCH.md as the arm that was asked
+/// typo that quietly ran the shipped default gets recorded as the arm that was asked
 /// for — the rule every other capture knob follows. On wasm the panic hook prints to the console,
 /// which is this platform's version of exiting loudly.
 fn param<T: std::str::FromStr>(p: &web_sys::UrlSearchParams, key: &str) -> Option<T> {

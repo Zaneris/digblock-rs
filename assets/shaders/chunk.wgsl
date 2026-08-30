@@ -1,5 +1,5 @@
 // Solid chunk shader (water has its own fork — water.wgsl).
-// RTGI shading (GI-DESIGN.md): ALL lighting arrives through the half-res GI
+// RTGI shading: ALL lighting arrives through the half-res GI
 // resolve buffers — probe-traced indirect plus a per-pixel DDA sun visibility.
 // This shader upsamples bilaterally and combines
 // tex * (light_color * lambert * sunvis + indirect). Nothing else LIGHTS here;

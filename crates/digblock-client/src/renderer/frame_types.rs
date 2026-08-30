@@ -101,10 +101,10 @@ pub mod stub {
 	/// a pass-level CPU gate like `NOWATER`, not a shader branch).
 	pub const NOGLASS: u32 = 1 << 15;
 	/// The final gather marches its whole reach at cell level instead of crossing far bricks as
-	/// a medium (GI-DESIGN.md R41) — the pre-LOD gather, for pricing the LOD against it.
+	/// a medium (R41) — the pre-LOD gather, for pricing the LOD against it.
 	pub const GILOD: u32 = 1 << 16;
 	/// A gather hit's sun visibility is marched afresh instead of read back off last frame's
-	/// screen (GI-DESIGN.md R42) — the pre-reuse secondary sun, for pricing the reuse against it.
+	/// screen (R42) — the pre-reuse secondary sun, for pricing the reuse against it.
 	pub const GISCREEN: u32 = 1 << 17;
 	/// Probe rays march their whole reach at cell level instead of crossing far bricks by
 	/// summary (R41 for probes, `Cascade::coarse_from`) — the pre-LOD probe, for pricing it.

@@ -124,7 +124,7 @@ pub struct EngineConfig {
 	/// veins can cost a frame.
 	pub max_lights: i32,
 	/// The GI resolve's ray budgets — the frame's two largest, per
-	/// BENCH.md's attribution. Every profile ships `gi::GI_GATHER_ITERS` /
+	/// the bench attribution. Every profile ships `gi::GI_GATHER_ITERS` /
 	/// `GI_SUN_ITERS`; only the A/B levers (`DIG_GI_ITERS`, `?giiters=`)
 	/// move them until a measured tier lands, because a shorter march
 	/// silently un-shadows what lies past the cut (gi/resolve.rs).
@@ -197,7 +197,7 @@ pub struct EngineConfig {
 	/// the number the GI work is judged by. Implies `markers: false`: the arrival spiral would
 	/// otherwise sit in the middle of every station's frame.
 	pub stare: bool,
-	/// Flyover speed in blocks/s (`--bench-speed`). Every BENCH.md baseline was taken at the
+	/// Flyover speed in blocks/s (`--bench-speed`). Every bench baseline was taken at the
 	/// default — changing it silently invalidates all of them, so don't. The default is several
 	/// times `WALK_SPEED`, a different STREAMING REGIME rather than merely a faster one: the GI
 	/// upload budget cannot keep up and the classify drain drops entries, so a cost that appears
@@ -275,8 +275,8 @@ pub struct EngineConfig {
 	pub debug_doors: bool,
 	/// Debug: seal a stone vault around the spawn camera with one torch
 	/// inside — the NEE capture, and any look call about a dim room (a
-	/// roofed room goes DARK and torchlight is what makes it readable;
-	/// GI-DESIGN.md). Set by the desktop launcher from DIG_VAULT.
+	/// roofed room goes DARK and torchlight is what makes it readable).
+	/// Set by the desktop launcher from DIG_VAULT.
 	pub debug_vault: bool,
 	/// DIG_NODE=<heartwood|leystone|springstone>: pose at the nearest
 	/// node of that kind with its Alchemy reveal granted — the surface
@@ -306,14 +306,14 @@ pub struct EngineConfig {
 	/// dome dims). Set by the desktop launcher from DIG_ROOF.
 	pub debug_roof: bool,
 	/// Debug: seal a long stone tunnel ahead of the spawn camera, no torch — the unproven-daylight
-	/// capture (GI-DESIGN.md R32). Its far end sits past the probe cascades' reach and past the
+	/// capture (R32). Its far end sits past the probe cascades' reach and past the
 	/// gather ray's length, which is exactly where every "answer sky on no data" fallback fires; a
 	/// vault is too small to reach any of them. Pair with `--pos` at a low y — the fade is
 	/// depth-gated and the plan keys off the spawn. Set by the desktop launcher from DIG_TUNNEL.
 	pub debug_tunnel: bool,
 	/// Debug: flood an open-topped stone tank around the spawn camera so
-	/// the eye starts SUBMERGED — the underwater capture (GI-DESIGN.md
-	/// P4: sun transmittance through the column dims submerged terrain,
+	/// the eye starts SUBMERGED — the underwater capture (P4: sun
+	/// transmittance through the column dims submerged terrain,
 	/// the surface reads as a plane from below). Set by the desktop
 	/// launcher from DIG_DIVE.
 	pub debug_dive: bool,

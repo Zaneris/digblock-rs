@@ -10,7 +10,7 @@
 //! z = 0 — load-bearing for anything tracing the voxel lattice, since a ray
 //! confined to a plane on an exactly rational slope aliases identically in
 //! every slice of the third axis. Sun rays are jittered per-pixel for exactly
-//! this reason (GI-DESIGN.md).
+//! this reason.
 
 use glam::Vec3;
 

@@ -25,9 +25,8 @@ fn merging_two_of_a_players_careers_takes_the_further_one() {
 	assert_eq!(mine, before);
 }
 
-/// The golden cumulative pin on [`XP_TO_NEXT`] (SKILLS-DESIGN.md §2 for
-/// the shape it buys). If curve tuning is ever wanted, this pin moves
-/// WITH it, deliberately.
+/// The golden cumulative pin on [`XP_TO_NEXT`]. If curve tuning is ever
+/// wanted, this pin moves WITH it, deliberately.
 #[test]
 fn xp_curve_table_is_pinned() {
 	for (level, to_next, cumulative) in [

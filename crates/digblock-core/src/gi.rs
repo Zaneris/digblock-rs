@@ -1,4 +1,4 @@
-//! GI-class classification for the RTGI voxel window (GI-DESIGN.md).
+//! GI-class classification for the RTGI voxel window.
 //!
 //! The window is an R8Uint 3D texture, one texel per block, that the probe rays
 //! march. Classification is a pure function of the cell, so every consumer
@@ -45,7 +45,7 @@ pub struct GiChunk {
 pub const BRICK: usize = 8;
 const BRICK_CELLS: usize = BRICK * BRICK * BRICK;
 
-/// A brick's far-field summary (GI-DESIGN.md R41): a heightfield with a density. Each column of
+/// A brick's far-field summary (R41): a heightfield with a density. Each column of
 /// the brick has a TOP, one above its highest blocker (zero for none); `lo` and `hi` are the
 /// lowest and highest tops. A ray segment above `hi` is open, one below `lo` crosses the CORE at
 /// `core` density, and the band between crosses at `band` density — so a ray skimming flat ground
@@ -388,8 +388,8 @@ pub fn classify_chunk(data: &ChunkData) -> GiChunk {
 				// A SURFACE emitter is not a point source and does not belong in this
 				// list: a vein radiates from the faces it opens into, and most of a vein
 				// opens into nothing. The mesher — already deciding face by face what is
-				// exposed — hands the renderer those rectangles instead (GI-DESIGN.md
-				// R31). A point here as well would light buried rock AND double every cell.
+				// exposed — hands the renderer those rectangles instead (R31). A point
+				// here as well would light buried rock AND double every cell.
 				let emits = b.props().light > 0 && !b.props().surface_light;
 				if emits {
 					emitters.push((x as u8, y as u8, z as u8, class));

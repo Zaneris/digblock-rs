@@ -4,10 +4,10 @@
 use super::*;
 
 /// The resolve's shipped ray budgets — DDA iterations for the per-pixel final gather and the sun
-/// march, the frame's two largest (BENCH.md) and so the tier knob
+/// march, the frame's two largest and so the tier knob
 /// (`EngineConfig::gi_gather_iters`/`gi_sun_iters`). The shaders' loop bounds are CAPACITIES and
-/// stay WGSL literals, held to these by `budgets_fit_the_shaders_capacities`; a retune is measured
-/// against GI-DESIGN.md's bars, since a shorter march silently un-shadows what lies past the cut.
+/// stay WGSL literals, held to these by `budgets_fit_the_shaders_capacities`; a retune is
+/// measured, since a shorter march silently un-shadows what lies past the cut.
 pub(crate) const GI_GATHER_ITERS: u32 = 96;
 pub(crate) const GI_SUN_ITERS: u32 = 320;
 
