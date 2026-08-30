@@ -45,10 +45,27 @@ class RenderParse(unittest.TestCase):
 		self.assertIsNone(values.seed)
 		self.assertEqual(values.admins, ())
 
-	def test_a_file_missing_a_slot_is_refused(self):
-		broken = "\n".join(line for line in fleet.KIT.read_text().splitlines() if "DIGBLOCK_SEED" not in line)
+	def test_a_file_missing_a_required_slot_is_refused(self):
+		broken = "\n".join(line for line in fleet.KIT.read_text().splitlines() if "DIGBLOCK_SERVER_NAME" not in line)
 		with self.assertRaises(fleet.Fatal):
 			fleet.parse(broken)
+
+	def test_a_kit_missing_any_slot_cannot_render(self):
+		broken = "\n".join(line for line in fleet.KIT.read_text().splitlines() if "DIGBLOCK_SEED" not in line)
+		with self.assertRaises(fleet.Fatal):
+			fleet.render(FULL, kit=broken)
+
+	def test_a_file_from_an_older_kit_still_parses(self):
+		"""A host may hold a file pushed before a newer optional slot existed (the world levers,
+		say); apply has to read that file to replace it, so an absent optional parses as off and
+		the next render pushes the fully slotted kit."""
+		for key in fleet.OPTIONAL:
+			with self.subTest(key):
+				old = "\n".join(line for line in fleet.render(BARE).splitlines() if key not in line)
+				self.assertEqual(fleet.parse(old), BARE)
+		with self.assertRaises(fleet.Fatal, msg="a duplicated optional is still mangled, not old"):
+			doubled = fleet.render(BARE) + '\n      #DIGBLOCK_SEED: "42"\n'
+			fleet.parse(doubled)
 
 	def test_a_quote_in_a_name_cannot_reach_yaml(self):
 		with self.assertRaises(fleet.Fatal):

@@ -267,8 +267,8 @@ ENV_LINE = re.compile(r'^(\s*)(#?)(DIGBLOCK_(?:SERVER_NAME|ADVERTISE_HOST|SEED|A
 OPTIONAL = {"DIGBLOCK_ADVERTISE_HOST", "DIGBLOCK_SEED", "DIGBLOCK_ADMIN_IDS", "DIGBLOCK_ARCHIVE_WORLD", "DIGBLOCK_ADOPT_TERRAIN"}
 
 
-def _slots(text: str) -> dict[str, int]:
-	"""Line index of each substitutable line, each required exactly once."""
+def _slots(text: str, *, missing_ok: frozenset[str] = frozenset()) -> dict[str, int]:
+	"""Line index of each substitutable line: at most one apiece, and required unless in `missing_ok`."""
 	found: dict[str, list[int]] = {}
 	for i, line in enumerate(text.splitlines()):
 		if PORT_LINE.match(line):
@@ -280,18 +280,23 @@ def _slots(text: str) -> dict[str, int]:
 	expected = {"port", "image", "DIGBLOCK_SERVER_NAME", *OPTIONAL}
 	for key in expected:
 		n = len(found.get(key, []))
-		if n != 1:
+		if n > 1 or (n == 0 and key not in missing_ok):
 			raise Fatal(f"not a kit-shaped compose.yml: {key} appears {n} times, expected once")
 	return {k: v[0] for k, v in found.items()}
 
 
 def parse(text: str) -> Values:
+	# A host may hold a file pushed by an older kit that predates a newer optional slot, and apply
+	# has to be able to read it to replace it — so an absent optional reads as the commented slot,
+	# while the local kit itself stays fully slotted (render's _slots call is the strict one).
 	lines = text.splitlines()
-	slots = _slots(text)
+	slots = _slots(text, missing_ok=frozenset(OPTIONAL))
 	port = int(PORT_LINE.match(lines[slots["port"]]).group(1))
 	tag = IMAGE_LINE.match(lines[slots["image"]]).group(2)
 
 	def env(key: str) -> str | None:
+		if key not in slots:
+			return None
 		m = ENV_LINE.match(lines[slots[key]])
 		return None if m.group(2) else m.group(4)
 
