@@ -345,6 +345,9 @@ impl Engine {
 			self.hotbar = Hotbar::from_wire(&wire);
 		}
 		self.inv_grid = digblock_core::inv_grid::InvGrid::from_wire(&save.grid);
+		// The spell bar's saved bytes (empty = pre-bar save = empty bar);
+		// unknown ids fall empty on read.
+		self.spell_bar = crate::spellbar::SpellBar::from_wire(&save.spells);
 		digblock_core::inv_grid::reconcile_layout(
 			&self.inventory,
 			&mut self.hotbar,

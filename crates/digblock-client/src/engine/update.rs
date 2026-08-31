@@ -376,6 +376,15 @@ impl Engine {
 					self.session.last_layout_sent = Some((bar.to_vec(), grid.to_vec()));
 				}
 			}
+			// The spell bar's twin: primed by the join-sync SpellBar, so a
+			// pre-sync default cannot overwrite the stored assignments.
+			if let Some(sent) = self.session.sent_spell_bar {
+				let now = self.spell_bar.to_wire();
+				if sent != now {
+					net.send_spell_bar(&now);
+					self.session.sent_spell_bar = Some(now);
+				}
+			}
 		}
 		// Expired messages are kept, not dropped: the chat box shows recent
 		// history while you type, and there is nothing to show if the only
@@ -622,6 +631,7 @@ impl Engine {
 						&self.hotbar.to_wire(),
 						&self.inv_grid.to_wire(),
 						&self.skills.to_wire(),
+						&self.spell_bar.to_wire(),
 						&digblock_persist::PlayerPersist {
 							pos: self.player.pos.to_array(),
 							yaw: self.look.yaw_deg,

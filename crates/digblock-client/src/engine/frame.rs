@@ -317,7 +317,14 @@ impl Engine {
 					&self.inventory,
 					self.causeway_left.ceil() as u32,
 				);
-				self.ui.spellbook.handle_input(&ev, &self.ui.ui_hits, &view);
+				let style = crate::ui::Style::new(self.ui.ui_scale);
+				self.ui.spellbook.handle_input(
+					&ev,
+					&self.ui.ui_hits,
+					&style,
+					&view,
+					&self.spell_bar,
+				);
 			} else if self.ui.char_screen.is_open() {
 				self.ui.char_screen.handle_input(&ev);
 			}
@@ -359,7 +366,24 @@ impl Engine {
 			);
 			let owned_tools = self.owned_tools();
 			// Hoisted before the DrawList borrow: `known_ports` reads self.
-			let ports = self.ui.spellbook.is_open().then(|| self.known_ports());
+			// The spell readiness view is built every in-game frame — the
+			// bar's fades, badges and tooltips need it whether or not the
+			// spellbook is up, and the open book reuses the same view.
+			let ports = self.known_ports();
+			let cooldown = self.save.teleport_cooldown.left().ceil() as u32;
+			let spell_view = crate::ui::screens::spellbook::SpellView::build(
+				&self.skills,
+				cooldown,
+				&ports,
+				&self.inventory,
+				self.causeway_left.ceil() as u32,
+			);
+			let spells = crate::spellbar::SpellBarView::build(
+				&self.spell_bar,
+				&spell_view,
+				cooldown,
+				self.input.safe_area,
+			);
 			let mut ui = crate::ui::Ui {
 				dl: &mut self.ui.ui_dl,
 				hits: &mut self.ui.ui_hits,
@@ -373,6 +397,7 @@ impl Engine {
 					&self.inv_grid,
 					&self.inventory,
 					&hotbar_view,
+					&spells,
 					daylight,
 				);
 			} else if self.ui.alch_screen.is_open() {
@@ -380,7 +405,7 @@ impl Engine {
 					crate::ui::screens::alchemy::AlchView::build(&self.inventory, &self.skills);
 				self.ui
 					.alch_screen
-					.build(&mut ui, size, &view, &hotbar_view, daylight);
+					.build(&mut ui, size, &view, &hotbar_view, &spells, daylight);
 			} else if self.ui.char_screen.is_open() {
 				let view = crate::ui::screens::character::CharView::build(
 					&self.skills,
@@ -389,7 +414,7 @@ impl Engine {
 				);
 				self.ui
 					.char_screen
-					.build(&mut ui, size, &view, &hotbar_view, daylight);
+					.build(&mut ui, size, &view, &hotbar_view, &spells, daylight);
 			} else if self.ui.hiscores.is_open() {
 				let view = crate::ui::screens::hiscores::HiscoresView::build(
 					&self.board,
@@ -397,23 +422,26 @@ impl Engine {
 				);
 				self.ui
 					.hiscores
-					.build(&mut ui, size, &view, &hotbar_view, daylight);
+					.build(&mut ui, size, &view, &hotbar_view, &spells, daylight);
 			} else if self.ui.spellbook.is_open() {
-				let view = crate::ui::screens::spellbook::SpellView::build(
-					&self.skills,
-					self.save.teleport_cooldown.left().ceil() as u32,
-					ports.as_deref().unwrap_or(&[]),
-					&self.inventory,
-					self.causeway_left.ceil() as u32,
+				self.ui.spellbook.build(
+					&mut ui,
+					size,
+					&spell_view,
+					&hotbar_view,
+					&spells,
+					daylight,
 				);
-				self.ui
-					.spellbook
-					.build(&mut ui, size, &view, &hotbar_view, daylight);
 			} else {
 				crate::ui::hud::crosshair(ui.dl, size, ui.style.scale);
 			}
 			crate::ui::hud::hotbar(&mut ui, size, &hotbar_view, |i| {
 				crate::ui::InvId::Bar(i as u8)
+			});
+			// The spell bar right after the item bar, so its hit rects
+			// stand as drop targets under every open page.
+			crate::ui::hud::spell_bar(&mut ui, size, &spells, |i| {
+				crate::ui::InvId::SpellBar(i as u8)
 			});
 			crate::ui::hud::toasts(ui.dl, &ui.style, size, &self.vfx.toasts);
 			// The teleport instant's wash: one full-rect quad over the

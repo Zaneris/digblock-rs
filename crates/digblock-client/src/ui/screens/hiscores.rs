@@ -477,6 +477,7 @@ impl HiscoresScreen {
 		size: (u32, u32),
 		view: &HiscoresView,
 		bar: &HotbarView,
+		spells: &crate::spellbar::SpellBarView,
 		daylight: f32,
 	) {
 		let s = ui.style.scale;
@@ -610,7 +611,9 @@ impl HiscoresScreen {
 		}
 		// Drawn OVER the bar, which draws after it at the window's scale —
 		// so naming its slots is this page's job, at this frame's glyph.
-		if let Some((anchor, name)) = hud::hovered_bar_slot(size, s, bar, self.cursor) {
+		if let Some((anchor, name)) = hud::hovered_bar_slot(size, s, bar, self.cursor)
+			.or_else(|| hud::hovered_spell_slot(size, s, spells, self.cursor))
+		{
 			widgets::tooltip(ui.dl, &ui.style, size, anchor, &name);
 		}
 	}
@@ -645,6 +648,7 @@ mod tests {
 			SIZE,
 			&HiscoresView::build(model, has_master),
 			&empty_bar(),
+			&crate::spellbar::SpellBarView::empty(),
 			1.0,
 		);
 		(dl, hits)

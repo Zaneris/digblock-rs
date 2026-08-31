@@ -56,7 +56,15 @@ fn rig() -> Rig {
 		hits: &mut hits,
 		style,
 	};
-	screen.build(&mut ui, SIZE, &grid, &inv, &bar, 1.0);
+	screen.build(
+		&mut ui,
+		SIZE,
+		&grid,
+		&inv,
+		&bar,
+		&crate::spellbar::SpellBarView::empty(),
+		1.0,
+	);
 	crate::ui::hud::hotbar(&mut ui, SIZE, &bar, |i| InvId::Bar(i as u8));
 	Rig {
 		screen,
@@ -89,7 +97,15 @@ fn emit_at(size: (u32, u32), scale: f32) -> (DrawList, HitMap<InvId>, Style) {
 		hits: &mut hits,
 		style: Style::new(scale),
 	};
-	screen.build(&mut ui, size, &grid, &inv, &empty_bar(), 1.0);
+	screen.build(
+		&mut ui,
+		size,
+		&grid,
+		&inv,
+		&empty_bar(),
+		&crate::spellbar::SpellBarView::empty(),
+		1.0,
+	);
 	let left_holding = ui.style;
 	(dl, hits, left_holding)
 }
@@ -236,7 +252,15 @@ fn the_grid_columns_sit_over_the_bar_slots_they_drop_into() {
 			};
 			// The engine's own frame order: screen first, then the bar,
 			// one hit map serving both.
-			screen.build(&mut ui, size, &grid, &inv, &bar, 1.0);
+			screen.build(
+				&mut ui,
+				size,
+				&grid,
+				&inv,
+				&bar,
+				&crate::spellbar::SpellBarView::empty(),
+				1.0,
+			);
 			crate::ui::hud::hotbar(&mut ui, size, &bar, |i| InvId::Bar(i as u8));
 			// The two conditions, read off the layout rather than
 			// guessed: the ladder did not step, and the grid kept the
@@ -472,7 +496,15 @@ fn ghost_appears_only_mid_drag_and_build_emits_every_slot() {
 		style: r.style,
 	};
 	let inv = Inventory::default();
-	r.screen.build(&mut ui, SIZE, &r.grid, &inv, &r.bar, 1.0);
+	r.screen.build(
+		&mut ui,
+		SIZE,
+		&r.grid,
+		&inv,
+		&r.bar,
+		&crate::spellbar::SpellBarView::empty(),
+		1.0,
+	);
 	assert!(dl.cmds(Layer::Ghost).0.is_empty(), "no ghost before a drag");
 	// Every grid slot has a hit rect (empty ones are drop targets).
 	assert!(hits.rect_of(InvId::Grid(0)).is_some());
@@ -500,7 +532,15 @@ fn ghost_appears_only_mid_drag_and_build_emits_every_slot() {
 		hits: &mut hits,
 		style: r.style,
 	};
-	r.screen.build(&mut ui, SIZE, &r.grid, &inv, &r.bar, 1.0);
+	r.screen.build(
+		&mut ui,
+		SIZE,
+		&r.grid,
+		&inv,
+		&r.bar,
+		&crate::spellbar::SpellBarView::empty(),
+		1.0,
+	);
 	// One cube icon = three projected faces.
 	assert_eq!(dl.cmds(Layer::Ghost).0.len(), 3, "ghost mid-drag");
 }
@@ -543,7 +583,15 @@ fn hovering_a_slot_names_it_and_leaving_clears_it() {
 			hits: &mut hits,
 			style: r.style,
 		};
-		r.screen.build(&mut ui, SIZE, &r.grid, &inv, &r.bar, 1.0);
+		r.screen.build(
+			&mut ui,
+			SIZE,
+			&r.grid,
+			&inv,
+			&r.bar,
+			&crate::spellbar::SpellBarView::empty(),
+			1.0,
+		);
 		ghost_texts(&dl)
 	};
 	// The parked stone, in the grid.
@@ -620,6 +668,7 @@ fn a_name_is_drawn_at_the_page_the_ladder_settled_on() {
 				&grid,
 				&inv,
 				&empty_bar(),
+				&crate::spellbar::SpellBarView::empty(),
 				1.0,
 			);
 			// Only the windows the ladder had to step in can tell a page
@@ -648,6 +697,7 @@ fn a_name_is_drawn_at_the_page_the_ladder_settled_on() {
 				&grid,
 				&inv,
 				&empty_bar(),
+				&crate::spellbar::SpellBarView::empty(),
 				1.0,
 			);
 			let named: Vec<f32> = dl

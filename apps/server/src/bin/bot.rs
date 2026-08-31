@@ -331,6 +331,7 @@ fn run_bot(
 				| NetEvent::AdminCommands { .. }
 				| NetEvent::AdminReply(_)
 				| NetEvent::Layout { .. }
+				| NetEvent::SpellBar { .. }
 				| NetEvent::Skills { .. }
 				| NetEvent::XpGain { .. }
 				| NetEvent::LevelUp { .. }

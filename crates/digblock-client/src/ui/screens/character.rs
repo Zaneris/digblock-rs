@@ -381,6 +381,7 @@ impl CharScreen {
 		size: (u32, u32),
 		view: &CharView,
 		bar: &HotbarView,
+		spells: &crate::spellbar::SpellBarView,
 		daylight: f32,
 	) {
 		let s = ui.style.scale;
@@ -453,7 +454,9 @@ impl CharScreen {
 		// OVER the bar, and the bar is drawn after it at the window's
 		// scale — so naming its slots is this page's job, at this frame's
 		// glyph. No fit ladder here, so `s` IS the window's scale.
-		if let Some((anchor, name)) = hud::hovered_bar_slot(size, s, bar, self.cursor) {
+		if let Some((anchor, name)) = hud::hovered_bar_slot(size, s, bar, self.cursor)
+			.or_else(|| hud::hovered_spell_slot(size, s, spells, self.cursor))
+		{
 			widgets::tooltip(ui.dl, &ui.style, size, anchor, &name);
 		}
 	}
@@ -495,6 +498,7 @@ mod tests {
 			SIZE,
 			&CharView::build(skills, eye_y, &[]),
 			&empty_bar(),
+			&crate::spellbar::SpellBarView::empty(),
 			1.0,
 		);
 		assert!(hits.hit(640.0, 400.0).is_none(), "read-only: no hit rects");

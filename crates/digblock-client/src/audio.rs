@@ -370,6 +370,8 @@ pub(crate) fn feed_sound(msg: &crate::voice::Msg) -> Option<crate::events::UiEve
 		| M::SphereNoBlock
 		| M::SphereBadBlock(_)
 		| M::SphereBlocksShort(_)
+		| M::SpellSlotEmpty
+		| M::TeleportWait(_)
 		| M::ConnectRefused { .. }
 		| M::Disconnected { .. } => Some(crate::events::UiEvent::Refused),
 		// Everything else speaks through its own channel or not at all

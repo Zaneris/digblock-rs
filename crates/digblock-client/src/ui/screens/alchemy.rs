@@ -565,6 +565,7 @@ impl AlchScreen {
 		size: (u32, u32),
 		view: &AlchView,
 		bar: &HotbarView,
+		spells: &crate::spellbar::SpellBarView,
 		daylight: f32,
 	) {
 		let window_scale = ui.style.scale;
@@ -606,7 +607,8 @@ impl AlchScreen {
 		// The bar is drawn after us at the window's scale; naming its
 		// slots from here is what keeps the name at THIS frame's glyph.
 		if hover.is_none() {
-			hover = hud::hovered_bar_slot(size, window_scale, bar, self.cursor);
+			hover = hud::hovered_bar_slot(size, window_scale, bar, self.cursor)
+				.or_else(|| hud::hovered_spell_slot(size, window_scale, spells, self.cursor));
 		}
 		if let Some((anchor, name)) = hover {
 			widgets::tooltip(ui.dl, &ui.style, size, anchor, &name);

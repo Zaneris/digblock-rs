@@ -290,6 +290,10 @@ pub struct Engine {
 	/// one is made.
 	siphon_nudged: bool,
 	hotbar: Hotbar,
+	/// The three spell-slot assignments (the bottom-left bar). Character
+	/// state like the hotbar layout: synced to the server beside it, and
+	/// saved with the offline world.
+	spell_bar: crate::spellbar::SpellBar,
 	/// The spawn structure still owed to an offline world: the stamp's
 	/// writes, drained as their chunks become resident. Named saves only
 	/// — a server stamps its own, and a backdrop world is ephemeral.
@@ -791,6 +795,10 @@ struct NetSession {
 	/// triggers a `ClientMsg::Layout` (before this frame's edits, so the
 	/// server's slot enforcement always sees the current arrangement).
 	last_layout_sent: Option<(Vec<u16>, Vec<u16>)>,
+
+	/// The spell bar's twin of `last_layout_sent`: primed by the
+	/// join-sync `ServerMsg::SpellBar`, and only a difference sends.
+	sent_spell_bar: Option<[u8; crate::spellbar::SPELL_SLOTS]>,
 }
 
 /// Measurement, and the scripted flight `--fly`/`--walk` drive. None
@@ -1253,6 +1261,7 @@ impl Game for Engine {
 					&self.hotbar.to_wire(),
 					&self.inv_grid.to_wire(),
 					&self.skills.to_wire(),
+					&self.spell_bar.to_wire(),
 					&digblock_persist::PlayerPersist {
 						pos: self.player.pos.to_array(),
 						yaw: self.look.yaw_deg,

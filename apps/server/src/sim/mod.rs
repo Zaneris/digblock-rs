@@ -71,6 +71,13 @@ const DGRAM_STALL_SECS: u32 = 5;
 const DRAW_DIST_MIN: i32 = 2;
 const DRAW_DIST_MAX: i32 = 32;
 
+/// The first protocol whose decoder knows `ServerMsg::SpellBar` — the
+/// join sync sends it only to peers whose Hello spoke this or newer.
+const SPELL_BAR_PROTOCOL: u16 = 41;
+/// Cap on the stored spell-bar bytes (the client sends 3 today; the
+/// headroom is for a wider bar, the bound is for a hostile peer).
+const SPELL_BAR_MAX: usize = 16;
+
 /// A connection that passes the preamble but never completes Hello is
 /// dropped after this many ticks — mirrors the preamble deadline. Without
 /// it a stalled handshake camps in the lobby forever: the server's own
@@ -372,6 +379,12 @@ struct Client {
 	/// alone — the light itself is per-viewer GI, computed client-side.
 	/// Session-local, exactly like the client's own copy.
 	wisp_until: Option<u32>,
+	/// The Hello protocol this session spoke — gates join-sync messages
+	/// an older decoder cannot read (`ServerMsg::SpellBar`).
+	protocol: u16,
+	/// Spell-bar bytes, stored VERBATIM (opaque preference data — the
+	/// client validates on read), bounded by [`SPELL_BAR_MAX`].
+	spell_bar: Vec<u8>,
 	/// The tick this client's causeway runs out, and the planks standing
 	/// under it. Session-local like the wisp — the PLANKS are journaled
 	/// cells everyone reads, but only the holder of the trail can retire
@@ -421,6 +434,7 @@ impl Client {
 			pos: Some(self.player.pos.to_array()),
 			last_teleport_tick: self.last_teleport_tick,
 			skills: self.skills.clone(),
+			spells: self.spell_bar.clone(),
 		}
 	}
 }
@@ -1077,6 +1091,15 @@ impl Sim {
 							hotbar,
 							grid,
 						});
+					}
+				}
+				// Inline, not queued: preference bytes with no ordering
+				// relation to the edit stream. Stored verbatim (bounded);
+				// persisted by the next record write-through like the layout.
+				ClientMsg::SpellBar { mut slots } => {
+					if let Some(client) = self.clients.get_mut(&conn_id) {
+						slots.truncate(SPELL_BAR_MAX);
+						client.spell_bar = slots;
 					}
 				}
 			},

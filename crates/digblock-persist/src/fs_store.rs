@@ -49,6 +49,9 @@ struct StateFile {
 	/// Per-skill XP totals; empty in pre-skills saves, which then derive
 	/// every skill at its base level.
 	skills: Vec<(u8, u64)>,
+	/// Spell-bar bytes; empty in saves from before the bar existed.
+	#[serde(default)]
+	spells: Vec<u8>,
 	player: Option<([f32; 3], f32, f32)>,
 }
 
@@ -251,6 +254,7 @@ impl WorldStore for FsWorldStore {
 			hotbar: state.hotbar.clone(),
 			grid: state.grid.clone(),
 			skills: state.skills.clone(),
+			spells: state.spells.clone(),
 			player: state
 				.player
 				.map(|(pos, yaw, pitch)| PlayerPersist { pos, yaw, pitch }),
@@ -285,6 +289,7 @@ impl WorldStore for FsWorldStore {
 		hotbar: &[u16],
 		grid: &[u16],
 		skills: &[(u8, u64)],
+		spells: &[u8],
 		player: &PlayerPersist,
 	) {
 		if let Some(active) = &mut self.active {
@@ -294,6 +299,7 @@ impl WorldStore for FsWorldStore {
 				hotbar: hotbar.to_vec(),
 				grid: grid.to_vec(),
 				skills: skills.to_vec(),
+				spells: spells.to_vec(),
 				player: Some((player.pos, player.yaw, player.pitch)),
 			});
 		}
@@ -366,6 +372,7 @@ mod tests {
 			],
 			&[u16::MAX, 7, u16::MAX],
 			&[(0, 1_068)],
+			&[100, 0, 255],
 			&PlayerPersist {
 				pos: [1.0, 140.0, 2.0],
 				yaw: 90.0,
@@ -385,6 +392,7 @@ mod tests {
 		assert_eq!(save.hotbar[2], u16::MAX - 1, "custom tool slot kept");
 		assert_eq!(save.grid[1], 7, "grid arrangement kept");
 		assert_eq!(save.skills, vec![(0, 1_068)], "skill totals kept");
+		assert_eq!(save.spells, vec![100, 0, 255], "spell bar bytes kept");
 		let p = save.player.unwrap();
 		assert_eq!(p.pos, [1.0, 140.0, 2.0]);
 		assert_eq!((p.yaw, p.pitch), (90.0, -10.0));

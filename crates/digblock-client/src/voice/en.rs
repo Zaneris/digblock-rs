@@ -49,6 +49,8 @@ pub(super) fn line(msg: &Msg, binds: &crate::bindings::Bindings) -> String {
 		Msg::NeedsSiphon => "This vein needs an essence siphon".into(),
 		Msg::DigRefusedByServer => "The server refused that dig".into(),
 		Msg::CastInterrupted => "The channel breaks".into(),
+		Msg::SpellSlotEmpty => "That spell slot is empty. Drag a spell from the spellbook.".into(),
+		Msg::TeleportWait(secs) => format!("Return in {secs}s."),
 		Msg::SpellLocked(s) => format!("{} is beyond your arcana", spell_cap(*s)),
 		// The waystone's fare is a PASSAGE — you are buying the journey,
 		// not the spell — and the conjurings are not, so the sentence

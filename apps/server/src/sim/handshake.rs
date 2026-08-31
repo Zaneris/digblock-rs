@@ -34,6 +34,7 @@ impl Sim {
 			client.hotbar = Hotbar::from_wire(&layout.hotbar);
 			client.grid = InvGrid::from_wire(&layout.grid);
 		}
+		client.spell_bar = record.spells;
 		reconcile_layout(&client.inventory, &mut client.hotbar, &mut client.grid);
 		// Re-send exactly the three frames join sync sent, in the same
 		// order: the client's decode path for each is the standing rebase,
@@ -52,6 +53,16 @@ impl Sim {
 				grid: client.grid.to_wire().to_vec(),
 			},
 		);
+		// The merged spell bar rides behind the layout, exactly as join
+		// sync sends it — and only to a decoder that knows the variant.
+		if client.protocol >= SPELL_BAR_PROTOCOL {
+			send_frame(
+				&out,
+				&ServerMsg::SpellBar {
+					slots: client.spell_bar.clone(),
+				},
+			);
+		}
 		send_frame(
 			&out,
 			&ServerMsg::Skills {
@@ -256,6 +267,17 @@ impl Sim {
 				grid: grid.to_wire().to_vec(),
 			},
 		);
+		// The stored spell bar, right behind the layout it travels with —
+		// but only to a peer whose Hello spoke v41+ (an older decoder
+		// cannot read the variant). Bytes verbatim; the client validates.
+		if protocol >= SPELL_BAR_PROTOCOL {
+			ok &= send_frame(
+				&out,
+				&ServerMsg::SpellBar {
+					slots: record.spells.clone(),
+				},
+			);
+		}
 		// Per-skill XP totals — always sent, even empty (a fresh
 		// identity sits at the base level everywhere), so the client never
 		// guesses.
@@ -367,6 +389,8 @@ impl Sim {
 				last_teleport_tick: record.last_teleport_tick,
 				skills: record.skills,
 				wisp_until: None,
+				protocol,
+				spell_bar: record.spells,
 				causeway_until: None,
 				causeway: Default::default(),
 				causeway_tokens: digblock_net::protocol::CAUSEWAY_BURST,

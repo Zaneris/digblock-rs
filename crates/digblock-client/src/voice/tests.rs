@@ -244,6 +244,8 @@ fn samples() -> Vec<Msg> {
 		all.push(Msg::SpellLocked(s));
 		all.push(Msg::SpellFareShort(s));
 	}
+	all.push(Msg::SpellSlotEmpty);
+	all.push(Msg::TeleportWait(34));
 	for m in &all {
 		match m {
 			Msg::DigRefused(_)
@@ -260,6 +262,8 @@ fn samples() -> Vec<Msg> {
 			| Msg::SphereNoBlock
 			| Msg::SphereBadBlock(_)
 			| Msg::SphereBlocksShort(_)
+			| Msg::SpellSlotEmpty
+			| Msg::TeleportWait(_)
 			| Msg::LevelUp { .. }
 			| Msg::RemoteLevelUp { .. }
 			| Msg::VeinsRevealed

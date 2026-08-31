@@ -37,6 +37,9 @@ pub enum DebugScreen {
 	Spellbook,
 	/// The same page with the cursor on its first FARE chip — the only named thing on it.
 	SpellbookHover,
+	/// The spellbook over a POPULATED spell bar, cursor on the first
+	/// slot: icons, drop targets, and a slot tooltip all photograph.
+	SpellSlots,
 }
 
 impl DebugScreen {
@@ -65,6 +68,7 @@ impl DebugScreen {
 			"transmuting" => Some(Self::Transmuting),
 			"spellbook" => Some(Self::Spellbook),
 			"spellbook-hover" => Some(Self::SpellbookHover),
+			"spell-slots" => Some(Self::SpellSlots),
 			_ => None,
 		}
 	}

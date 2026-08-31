@@ -107,6 +107,11 @@ pub(crate) enum Msg {
 
 	/// A cast channel broken by moving, digging or opening a surface — the spell let go.
 	CastInterrupted,
+	/// A spell hotkey with nothing bound in that slot.
+	SpellSlotEmpty,
+	/// A teleport hotkey pressed while the shared cooldown runs (the
+	/// spellbook shows the same countdown on its rows).
+	TeleportWait(u32),
 	/// A spell beyond the caster's Arcana, and the one they tried.
 	SpellLocked(Spell),
 	/// A spell refused for its fare, before any debit.

@@ -43,7 +43,14 @@ fn rig_at(level: u32, stock: impl Fn(&mut Inventory)) -> Rig {
 		hits: &mut hits,
 		style,
 	};
-	screen.build(&mut ui, SIZE, &view, &empty_bar(), 1.0);
+	screen.build(
+		&mut ui,
+		SIZE,
+		&view,
+		&empty_bar(),
+		&crate::spellbar::SpellBarView::empty(),
+		1.0,
+	);
 	Rig {
 		screen,
 		hits,
@@ -63,7 +70,14 @@ fn rebuild(r: &mut Rig) {
 		hits: &mut hits,
 		style: r.style,
 	};
-	r.screen.build(&mut ui, SIZE, &r.view, &empty_bar(), 1.0);
+	r.screen.build(
+		&mut ui,
+		SIZE,
+		&r.view,
+		&empty_bar(),
+		&crate::spellbar::SpellBarView::empty(),
+		1.0,
+	);
 	r.hits = hits;
 }
 
@@ -81,7 +95,14 @@ fn text_of(r: &Rig) -> String {
 		hits: &mut hits,
 		style: r.style,
 	};
-	r.screen.build(&mut ui, SIZE, &r.view, &empty_bar(), 1.0);
+	r.screen.build(
+		&mut ui,
+		SIZE,
+		&r.view,
+		&empty_bar(),
+		&crate::spellbar::SpellBarView::empty(),
+		1.0,
+	);
 	let (cmds, arena) = dl.cmds(Layer::Content);
 	cmds.iter()
 		.filter_map(|c| match c {
@@ -105,7 +126,14 @@ fn texts_on(r: &Rig, layer: Layer) -> Vec<(f32, f32, f32, u32, String)> {
 		hits: &mut hits,
 		style: r.style,
 	};
-	r.screen.build(&mut ui, SIZE, &r.view, &empty_bar(), 1.0);
+	r.screen.build(
+		&mut ui,
+		SIZE,
+		&r.view,
+		&empty_bar(),
+		&crate::spellbar::SpellBarView::empty(),
+		1.0,
+	);
 	let (cmds, arena) = dl.cmds(layer);
 	cmds.iter()
 		.filter_map(|c| match c {
@@ -461,6 +489,7 @@ fn the_vessels_craft_from_feedstock_alone() {
 		SIZE,
 		&r.view,
 		&empty_bar(),
+		&crate::spellbar::SpellBarView::empty(),
 		1.0,
 	);
 	assert!(
@@ -532,6 +561,7 @@ fn the_strip_never_drops_a_price() {
 						size,
 						&view,
 						&empty_bar(),
+						&crate::spellbar::SpellBarView::empty(),
 						1.0,
 					);
 					let at = format!("{item:?} at {size:?}/{scale}");
@@ -719,7 +749,14 @@ fn panel_sits_above_the_hotbar_and_fits_short_windows() {
 			hits: &mut hits,
 			style: Style::new(scale),
 		};
-		screen.build(&mut ui, size, &view, &empty_bar(), 1.0);
+		screen.build(
+			&mut ui,
+			size,
+			&view,
+			&empty_bar(),
+			&crate::spellbar::SpellBarView::empty(),
+			1.0,
+		);
 		let bar_top = hud::row_grid(size, scale).origin.1;
 		let panel = panel_of(&dl);
 		assert!(panel.y >= 0.0, "panel top on screen at {size:?}/{scale}");
@@ -762,7 +799,14 @@ fn the_essence_readout_never_spills_out_of_its_panel() {
 			hits: &mut hits,
 			style: Style::new(scale),
 		};
-		screen.build(&mut ui, size, &view, &empty_bar(), 1.0);
+		screen.build(
+			&mut ui,
+			size,
+			&view,
+			&empty_bar(),
+			&crate::spellbar::SpellBarView::empty(),
+			1.0,
+		);
 		let panel = panel_of(&dl);
 		// The readout is the run of essence chips: each icon, and the
 		// number sharing its row top. Measured at the command's OWN face
@@ -1099,6 +1143,7 @@ fn every_tile_and_chip_names_itself_on_hover() {
 			SIZE,
 			&r.view,
 			&empty_bar(),
+			&crate::spellbar::SpellBarView::empty(),
 			1.0,
 		);
 		(ghost_texts(&dl), dl)

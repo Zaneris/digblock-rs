@@ -27,6 +27,7 @@ fn save_with_skills(
 		hotbar: Vec::new(),
 		grid: Vec::new(),
 		skills,
+		spells: Vec::new(),
 		player: None,
 	}
 }

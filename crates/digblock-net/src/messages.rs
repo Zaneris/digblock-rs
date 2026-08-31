@@ -462,6 +462,12 @@ pub enum ClientMsg {
 	CastBreak,
 	/// Take the road up now, before its span runs out. No refund: the fare bought the span.
 	CausewayEnd,
+	/// The spell-bar slot assignments (`InvId::Spell` ids, one byte per slot), sent on any change.
+	/// Opaque preference data: the server stores the bytes verbatim, the client validates on read.
+	/// Appended in v41.
+	SpellBar {
+		slots: Vec<u8>,
+	},
 }
 
 /// What a [`ClientMsg::Cast`] winds up toward — shaped for the whole spell roster from day one so
@@ -687,6 +693,11 @@ pub enum ServerMsg {
 		landed: u32,
 		sealed: bool,
 		block: u16,
+	},
+	/// The identity's stored spell-bar assignments, sent right after `Layout` in join sync — but
+	/// only to peers whose Hello spoke v41+ (an older client cannot decode the variant). In v41.
+	SpellBar {
+		slots: Vec<u8>,
 	},
 }
 

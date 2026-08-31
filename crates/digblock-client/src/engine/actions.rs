@@ -240,6 +240,90 @@ impl Engine {
 	/// instead — the countdown is visible there, and a silent no-op
 	/// reads as a broken key. One clock covers Return Home and every
 	/// port, so neither can start while the other's window runs.
+	/// Apply what a spellbook click (or a slot activation) asked for. The
+	/// cast arms close the book — the cast is watched, not menued; a
+	/// closed book closes harmlessly on the hotkey path.
+	pub(super) fn apply_spell_action(&mut self, act: crate::ui::screens::spellbook::SpellAction) {
+		use crate::ui::screens::spellbook::SpellAction as A;
+		match act {
+			A::CastHome => {
+				self.ui.spellbook.close();
+				self.start_cast(CastTarget::Home);
+			}
+			A::CastWaystone(idx) => {
+				self.ui.spellbook.close();
+				self.start_cast(CastTarget::Waystone(idx));
+			}
+			A::CastWisp => {
+				self.ui.spellbook.close();
+				self.start_cast(CastTarget::Wisp);
+			}
+			A::CastKindle => {
+				self.ui.spellbook.close();
+				self.start_cast(CastTarget::Kindle);
+			}
+			A::CastSphere => {
+				self.ui.spellbook.close();
+				self.start_cast(CastTarget::Sphere);
+			}
+			A::ToggleCauseway => {
+				self.ui.spellbook.close();
+				// Taking a road up is not a cast and channels like
+				// nothing: the caster wanting to descend wants it gone now.
+				if self.causeway_left > 0.0 {
+					self.end_causeway();
+					if let Some(net) = self.session.client.as_mut() {
+						net.send_causeway_end();
+					}
+				} else {
+					self.start_cast(CastTarget::Causeway);
+				}
+			}
+			// The bar edits keep the book OPEN — binding two slots in a
+			// row is the normal gesture. Persistence rides the same
+			// change detection the item layout uses (`update`'s sync).
+			A::AssignSlot { slot, spell } => self.spell_bar.assign(slot as usize, spell),
+			A::MoveSlot { from, to } => self.spell_bar.swap(from as usize, to as usize),
+			A::ClearSlot { slot } => self.spell_bar.clear(slot as usize),
+			A::ActivateSlot(k) => self.activate_spell_slot(k as usize),
+		}
+	}
+
+	/// The keybinding seam: a spell-slot key pressed, or the HUD slot
+	/// tapped. Gated on the SAME readiness the spellbook rows enforce; a
+	/// refusal speaks in the feed rather than opening the book mid-play.
+	pub(super) fn activate_spell_slot(&mut self, i: usize) {
+		let Some(id) = self.spell_bar.get(i) else {
+			self.push_feed(Msg::SpellSlotEmpty);
+			return;
+		};
+		if self.cast.is_some() {
+			return;
+		}
+		let ports = self.known_ports();
+		let cooldown = self.save.teleport_cooldown.left().ceil() as u32;
+		let view = crate::ui::screens::spellbook::SpellView::build(
+			&self.skills,
+			cooldown,
+			&ports,
+			&self.inventory,
+			self.causeway_left.ceil() as u32,
+		);
+		if let Some(act) = view.action_for(id) {
+			self.apply_spell_action(act);
+			return;
+		}
+		let spell = crate::spellbar::voice_spell(id);
+		let teleport = id == crate::spellbar::SLOT_HOME || crate::spellbar::port_kind(id).is_some();
+		if view.slot_locked(id) {
+			self.push_feed(Msg::SpellLocked(spell));
+		} else if teleport && cooldown > 0 {
+			self.push_feed(Msg::TeleportWait(cooldown));
+		} else {
+			self.push_feed(Msg::SpellFareShort(spell));
+		}
+	}
+
 	pub(super) fn start_cast(&mut self, target: CastTarget) {
 		if self.cast.is_some() {
 			return;

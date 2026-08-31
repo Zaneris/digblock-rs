@@ -258,6 +258,7 @@ fn entering_a_save_resumes_the_worlds_age() {
 		hotbar: Vec::new(),
 		grid: Vec::new(),
 		skills: Vec::new(),
+		spells: Vec::new(),
 		player: None,
 	};
 	engine.enter_local_world(save);

@@ -307,6 +307,7 @@ impl Engine {
 			auth_essence: None,
 			siphon_nudged: false,
 			hotbar: Hotbar::new(),
+			spell_bar: crate::spellbar::SpellBar::default(),
 			// The startup world is ephemeral (a backdrop, or a capture
 			// scene) — no arrival lock; entering a NAMED save or a server
 			// world replaces this per `world_session`.
@@ -335,6 +336,7 @@ impl Engine {
 				player_names: rustc_hash::FxHashMap::default(),
 				my_player_id: None,
 				last_layout_sent: None,
+				sent_spell_bar: None,
 			},
 			stream: StreamQueues {
 				pending_uploads: std::collections::VecDeque::new(),
@@ -536,7 +538,7 @@ impl Engine {
 						.debug_fill(crate::ui::screens::hiscores::sample_board(None));
 					engine.ui.hiscores.open();
 				}
-				DebugScreen::Spellbook | DebugScreen::SpellbookHover => {
+				DebugScreen::Spellbook | DebugScreen::SpellbookHover | DebugScreen::SpellSlots => {
 					// Past the LAST spell rung the ladder opens below the
 					// ports' tail, so every castable row and the next
 					// teaser all photograph. XP derived from the rung it
@@ -553,6 +555,17 @@ impl Engine {
 						engine.inventory.add_sub(e, 5_000);
 					}
 					engine.ui.spellbook.open();
+					// A populated bar under every spellbook capture: the
+					// icons, the drop targets, and (SpellSlots) a slot's
+					// tooltip all photograph.
+					if screen == DebugScreen::SpellSlots {
+						engine.spell_bar.assign(0, crate::spellbar::SLOT_WISP);
+						engine.spell_bar.assign(1, crate::spellbar::SLOT_HOME);
+						if let Some(port) = crate::ui::screens::spellbook::all_ports().first() {
+							engine.spell_bar.assign(2, 1 + port.idx);
+						}
+						engine.ui.debug_hover = Some(crate::ui::InvId::SpellBar(0));
+					}
 					if screen == DebugScreen::SpellbookHover {
 						// The slot comes from the page's own roster rather
 						// than from a number written down here: `fares`
@@ -627,8 +640,9 @@ impl Engine {
 			},
 		));
 		// Fresh connection: the layout dedup re-primes from the server's
-		// join-sync Layout.
+		// join-sync Layout, the spell bar's from its SpellBar.
 		self.session.last_layout_sent = None;
+		self.session.sent_spell_bar = None;
 		// The server has no fly physics; walk is the only multiplayer mode.
 		self.mode = CameraMode::FirstPerson;
 	}

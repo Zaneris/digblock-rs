@@ -505,6 +505,13 @@ impl Engine {
 						&mut self.inv_grid,
 					);
 				}
+				NetEvent::SpellBar { slots } => {
+					// Join sync: adopt the stored assignments (validated on
+					// read — unknown ids fall empty) and prime the dedup so
+					// the echo does not resend.
+					self.spell_bar = crate::spellbar::SpellBar::from_wire(&slots);
+					self.session.sent_spell_bar = Some(self.spell_bar.to_wire());
+				}
 				NetEvent::Skills { xp } => {
 					// Join sync: adopt wholesale, no toasts — this is
 					// state arriving, not an award happening. The ore
@@ -719,6 +726,7 @@ impl Engine {
 			self.session.correction_offset = Vec3::ZERO;
 			self.session.my_player_id = None;
 			self.session.last_layout_sent = None;
+			self.session.sent_spell_bar = None;
 			// No one left to talk to: discard any half-typed chat line.
 			if self.ui.chat.is_open() {
 				self.ui.chat.handle_input(&InputEvent::Key {

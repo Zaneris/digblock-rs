@@ -26,7 +26,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 const MAGIC: [u8; 4] = *b"DBI1";
-const VERSION: u16 = 10;
+const VERSION: u16 = 11;
 
 /// The version from which the bucket is a CRAFTED tool (SKILLS-DESIGN §13.5). Every record below
 /// it was written when the bucket was owned by everyone — the count machinery just never stored
@@ -54,6 +54,10 @@ const FIRST_VERSION_WITHOUT_ARRIVALS: u16 = 10;
 /// hash. Anything below reads wholly into the quarantine; v6 and up say
 /// which section each record is in. Frozen: it describes bytes on disk.
 const FIRST_ACCOUNT_VERSION: u16 = 5;
+
+/// The version from which a record carries the spell-bar bytes — opaque preference data the sim
+/// stores verbatim (the client validates on read). Records below it read an empty bar.
+const FIRST_SPELLS_VERSION: u16 = 11;
 
 /// The version that carries a quarantine section at all. Below it the
 /// record list simply ends with the account count.
@@ -146,6 +150,9 @@ pub struct PlayerRecord {
 	/// inventories intact — existing players keep their stuff and start the
 	/// skill system at the bottom like everyone else.
 	pub skills: SkillSet,
+	/// Spell-bar bytes, stored VERBATIM (opaque preference data; the
+	/// client validates on read). Empty = pre-v11 record or never set.
+	pub spells: Vec<u8>,
 }
 
 impl PlayerRecord {
@@ -165,6 +172,13 @@ impl PlayerRecord {
 			pos: self.pos.or(old.pos),
 			last_teleport_tick: self.last_teleport_tick.or(old.last_teleport_tick),
 			skills,
+			// The account's own bar when it has one; a legacy character
+			// predates the bar, so "old" only ever contributes emptiness.
+			spells: if self.spells.is_empty() {
+				old.spells.clone()
+			} else {
+				self.spells.clone()
+			},
 		}
 	}
 }
@@ -462,6 +476,10 @@ fn write_record(
 		buf.push(*skill);
 		buf.extend_from_slice(&total.to_le_bytes());
 	}
+	// v11: the spell-bar bytes — u8 length + bytes, the layout blob's shape.
+	let n = rec.spells.len().min(u8::MAX as usize);
+	buf.push(n as u8);
+	buf.extend_from_slice(&rec.spells[..n]);
 }
 
 /// Atomic whole-file replace: tmp + fsync + rename.
@@ -742,6 +760,16 @@ fn read_record(
 		let mut v = vec![0u8; n[0] as usize];
 		r.read_exact(&mut v).map_err(|_| bad("short record"))?;
 	}
+	// v1-v10 records end here: the spell bar reads empty (unassigned).
+	let spells = if version >= FIRST_SPELLS_VERSION {
+		let mut n = [0u8; 1];
+		r.read_exact(&mut n).map_err(|_| bad("short record"))?;
+		let mut v = vec![0u8; n[0] as usize];
+		r.read_exact(&mut v).map_err(|_| bad("short record"))?;
+		v
+	} else {
+		Vec::new()
+	};
 	let mut inventory = Inventory::from_wire(&pairs);
 	if version < FIRST_CRAFTED_BUCKET_VERSION {
 		inventory.add(digblock_core::block::BlockType::Bucket, 1);
@@ -761,6 +789,7 @@ fn read_record(
 			pos,
 			last_teleport_tick,
 			skills,
+			spells,
 		},
 	))
 }

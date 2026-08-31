@@ -65,6 +65,7 @@ fn build(r: &mut Rig) -> DrawList {
 		SIZE,
 		&r.view,
 		&r.bar,
+		&crate::spellbar::SpellBarView::empty(),
 		1.0,
 	);
 	r.hits = hits;
@@ -75,9 +76,44 @@ fn hover(r: &mut Rig, at: (f32, f32)) -> DrawList {
 	r.screen.handle_input(
 		&InputEvent::CursorMoved { x: at.0, y: at.1 },
 		&r.hits,
+		&r.style,
 		&r.view,
+		&crate::spellbar::SpellBar::default(),
 	);
 	build(r)
+}
+
+/// Press and release at `at` — a click, in the drag machine's terms
+/// (the action resolves on the RELEASE, readiness-gated).
+fn click(r: &mut Rig, at: (f32, f32)) -> Option<SpellAction> {
+	let bar = crate::spellbar::SpellBar::default();
+	r.screen.handle_input(
+		&InputEvent::CursorMoved { x: at.0, y: at.1 },
+		&r.hits,
+		&r.style,
+		&r.view,
+		&bar,
+	);
+	r.screen.handle_input(
+		&InputEvent::MouseButton {
+			button: MouseButton::Left,
+			pressed: true,
+		},
+		&r.hits,
+		&r.style,
+		&r.view,
+		&bar,
+	);
+	r.screen.handle_input(
+		&InputEvent::MouseButton {
+			button: MouseButton::Left,
+			pressed: false,
+		},
+		&r.hits,
+		&r.style,
+		&r.view,
+		&bar,
+	)
 }
 
 fn center(rect: Rect) -> (f32, f32) {
@@ -262,23 +298,8 @@ fn clicking_a_fare_casts_its_row() {
 	let (slot, _) = r.view.fares()[0];
 	let row = r.hits.rect_of(InvId::Spell(slot)).expect("a castable row");
 	let chip = r.hits.rect_of(InvId::SpellFare(slot)).expect("its chip");
-	let press = |r: &mut Rig, at: (f32, f32)| {
-		r.screen.handle_input(
-			&InputEvent::CursorMoved { x: at.0, y: at.1 },
-			&r.hits,
-			&r.view,
-		);
-		r.screen.handle_input(
-			&InputEvent::MouseButton {
-				button: MouseButton::Left,
-				pressed: true,
-			},
-			&r.hits,
-			&r.view,
-		)
-	};
-	let on_row = press(&mut r, (row.x + row.w * 0.1, row.y + row.h / 2.0));
-	let on_chip = press(&mut r, center(chip));
+	let on_row = click(&mut r, (row.x + row.w * 0.1, row.y + row.h / 2.0));
+	let on_chip = click(&mut r, center(chip));
 	assert!(
 		matches!(on_row, Some(SpellAction::CastWisp)),
 		"the row casts"
@@ -289,25 +310,10 @@ fn clicking_a_fare_casts_its_row() {
 	);
 }
 
-/// Press this slot's row and report what it asked for.
+/// Click this slot's row and report what it asked for.
 fn press_slot(r: &mut Rig, slot: u8) -> Option<SpellAction> {
 	let row = r.hits.rect_of(InvId::Spell(slot))?;
-	r.screen.handle_input(
-		&InputEvent::CursorMoved {
-			x: row.x + row.w * 0.1,
-			y: row.y + row.h / 2.0,
-		},
-		&r.hits,
-		&r.view,
-	);
-	r.screen.handle_input(
-		&InputEvent::MouseButton {
-			button: MouseButton::Left,
-			pressed: true,
-		},
-		&r.hits,
-		&r.view,
-	)
+	click(r, (row.x + row.w * 0.1, row.y + row.h / 2.0))
 }
 
 /// The causeway's row: absent below its rung, priced at it, and — the
@@ -406,4 +412,152 @@ fn the_fares_stand_in_two_columns() {
 		1,
 		"the amounts do not share a right edge: {ends:?}"
 	);
+}
+
+/// Push the HUD spell bar's drop targets the way the frame does — the
+/// page never draws the bar, it only drops onto the rects the HUD
+/// registered in the shared map.
+fn with_bar_targets(r: &mut Rig) {
+	let grid = hud::spell_grid(SIZE, 1.0, &hud::SafeArea::default());
+	for i in 0..crate::spellbar::SPELL_SLOTS {
+		r.hits.push(grid.rect(i), InvId::SpellBar(i as u8));
+	}
+}
+
+/// Press at `from`, drag past the threshold to `to`, release — the drag
+/// machine's Drop.
+fn drag(
+	r: &mut Rig,
+	bar: &crate::spellbar::SpellBar,
+	from: (f32, f32),
+	to: (f32, f32),
+) -> Option<SpellAction> {
+	r.screen.handle_input(
+		&InputEvent::CursorMoved {
+			x: from.0,
+			y: from.1,
+		},
+		&r.hits,
+		&r.style,
+		&r.view,
+		bar,
+	);
+	r.screen.handle_input(
+		&InputEvent::MouseButton {
+			button: MouseButton::Left,
+			pressed: true,
+		},
+		&r.hits,
+		&r.style,
+		&r.view,
+		bar,
+	);
+	r.screen.handle_input(
+		&InputEvent::CursorMoved { x: to.0, y: to.1 },
+		&r.hits,
+		&r.style,
+		&r.view,
+		bar,
+	);
+	r.screen.handle_input(
+		&InputEvent::MouseButton {
+			button: MouseButton::Left,
+			pressed: false,
+		},
+		&r.hits,
+		&r.style,
+		&r.view,
+		bar,
+	)
+}
+
+/// The drag matrix: a row assigns onto a slot (unready rows included —
+/// placing is not casting), bar-to-bar moves, and off-everything clears.
+#[test]
+fn dragging_rows_and_slots_edits_the_bar() {
+	// Broke on purpose: the wisp row is UNREADY and must still drag.
+	let mut r = rig_at(digblock_core::unlock::SPHERE_AT, |_| {});
+	with_bar_targets(&mut r);
+	let bar = crate::spellbar::SpellBar::default();
+	let grid = hud::spell_grid(SIZE, 1.0, &hud::SafeArea::default());
+	let slot = |i: usize| center(grid.rect(i));
+	let row = r
+		.hits
+		.rect_of(InvId::Spell(crate::spellbar::SLOT_WISP))
+		.expect("the wisp row");
+
+	// Row -> slot 1: assign, even though the row cannot cast right now.
+	assert!(matches!(
+		drag(&mut r, &bar, center(row), slot(1)),
+		Some(SpellAction::AssignSlot { slot: 1, spell }) if spell == crate::spellbar::SLOT_WISP
+	));
+	// And the same drag as a CLICK refuses: readiness still gates casts.
+	assert!(click(&mut r, center(row)).is_none());
+
+	// Bar -> bar: a move (only an occupied slot arms, so build the state).
+	let mut held = crate::spellbar::SpellBar::default();
+	held.assign(1, crate::spellbar::SLOT_WISP);
+	assert!(matches!(
+		drag(&mut r, &held, slot(1), slot(2)),
+		Some(SpellAction::MoveSlot { from: 1, to: 2 })
+	));
+	// Bar -> the page's own panel (off every slot): clear.
+	assert!(matches!(
+		drag(&mut r, &held, slot(1), (SIZE.0 as f32 / 2.0, 40.0)),
+		Some(SpellAction::ClearSlot { slot: 1 })
+	));
+	// An EMPTY slot arms nothing: no action however far it is dragged.
+	assert!(drag(&mut r, &bar, slot(0), slot(2)).is_none());
+}
+
+/// Mid-drag the page draws the spell's glyph at the cursor on Ghost —
+/// the same ghost convention the inventory drag has.
+#[test]
+fn a_drag_shows_its_ghost() {
+	let mut r = rig_at(digblock_core::unlock::SPHERE_AT, |_| {});
+	with_bar_targets(&mut r);
+	let bar = crate::spellbar::SpellBar::default();
+	let row = r
+		.hits
+		.rect_of(InvId::Spell(crate::spellbar::SLOT_WISP))
+		.expect("the wisp row");
+	let from = center(row);
+	r.screen.handle_input(
+		&InputEvent::CursorMoved {
+			x: from.0,
+			y: from.1,
+		},
+		&r.hits,
+		&r.style,
+		&r.view,
+		&bar,
+	);
+	r.screen.handle_input(
+		&InputEvent::MouseButton {
+			button: MouseButton::Left,
+			pressed: true,
+		},
+		&r.hits,
+		&r.style,
+		&r.view,
+		&bar,
+	);
+	r.screen.handle_input(
+		&InputEvent::CursorMoved {
+			x: from.0 + 60.0,
+			y: from.1 + 60.0,
+		},
+		&r.hits,
+		&r.style,
+		&r.view,
+		&bar,
+	);
+	let dl = build(&mut r);
+	let ghosts: Vec<_> = dl
+		.cmds(Layer::Ghost)
+		.0
+		.iter()
+		.filter(|c| matches!(c, Cmd::Icon { .. }))
+		.collect();
+	assert_eq!(ghosts.len(), 1, "one glyph rides the cursor");
 }

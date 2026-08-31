@@ -98,13 +98,21 @@ pub mod tex {
 	pub const ESSENCE_FERRUM: &[u8] = include_bytes!("../../../assets/textures/EssenceFerrum.png");
 	pub const ESSENCE_AETHER: &[u8] = include_bytes!("../../../assets/textures/EssenceAether.png");
 	pub const WARDGLASS: &[u8] = include_bytes!("../../../assets/textures/Wardglass.png");
+	// The spell glyphs: the spell bar's sprites, riding the array for the
+	// essence chips' reason. SpellPort is a near-white tint canvas.
+	pub const SPELL_WISP: &[u8] = include_bytes!("../../../assets/textures/SpellWisp.png");
+	pub const SPELL_KINDLE: &[u8] = include_bytes!("../../../assets/textures/SpellKindle.png");
+	pub const SPELL_SPHERE: &[u8] = include_bytes!("../../../assets/textures/SpellSphere.png");
+	pub const SPELL_CAUSEWAY: &[u8] = include_bytes!("../../../assets/textures/SpellCauseway.png");
+	pub const SPELL_HOME: &[u8] = include_bytes!("../../../assets/textures/SpellHome.png");
+	pub const SPELL_PORT: &[u8] = include_bytes!("../../../assets/textures/SpellPort.png");
 
 	/// Texture-array layer order — the layer index is what block PROPS reference, and
 	/// `digblock_core::block::tex` mirrors this list position for position. The index is RUNTIME
 	/// ONLY (mesh vertex bits, never a wire or save format), so the list may be reordered; what it
 	/// may not do is drift from the core mirror, which would texture blocks with each other's PNGs.
 	/// A `const` assert in digblock-client's `texture.rs` fails the BUILD on a skew.
-	pub const LAYERS: [&[u8]; 58] = [
+	pub const LAYERS: [&[u8]; 64] = [
 		WATER,
 		DIRT,
 		GRASS_SIDE,
@@ -164,6 +172,12 @@ pub mod tex {
 		ESSENCE_FERRUM,
 		ESSENCE_AETHER,
 		WARDGLASS,
+		SPELL_WISP,
+		SPELL_KINDLE,
+		SPELL_SPHERE,
+		SPELL_CAUSEWAY,
+		SPELL_HOME,
+		SPELL_PORT,
 	];
 }
 

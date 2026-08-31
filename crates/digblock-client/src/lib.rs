@@ -31,6 +31,7 @@ pub mod settings;
 mod siphon;
 mod sky;
 mod smoothing;
+pub mod spellbar;
 mod spray;
 mod teleport;
 mod texture;

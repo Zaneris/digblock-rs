@@ -356,6 +356,9 @@ impl Engine {
 					self.input.keys = HeldKeys::default();
 					self.clear_touch_state();
 					self.input.dig_held = false;
+					// Focus loss abandons the drag but keeps the page open
+					// (the inventory's pattern).
+					self.ui.spellbook.cancel_drag();
 				}
 				InputEvent::Key { key, pressed: true }
 					if key == Key::Escape
@@ -364,7 +367,6 @@ impl Engine {
 					self.ui.spellbook.close()
 				}
 				_ => {
-					use crate::ui::screens::spellbook::SpellAction;
 					let ports = self.known_ports();
 					let view = crate::ui::screens::spellbook::SpellView::build(
 						&self.skills,
@@ -373,46 +375,16 @@ impl Engine {
 						&self.inventory,
 						self.causeway_left.ceil() as u32,
 					);
-					match self
-						.ui
-						.spellbook
-						.handle_input(&event, &self.ui.ui_hits, &view)
-					{
-						Some(SpellAction::CastHome) => {
-							self.ui.spellbook.close();
-							self.start_cast(CastTarget::Home);
-						}
-						Some(SpellAction::CastWaystone(idx)) => {
-							self.ui.spellbook.close();
-							self.start_cast(CastTarget::Waystone(idx));
-						}
-						Some(SpellAction::CastWisp) => {
-							self.ui.spellbook.close();
-							self.start_cast(CastTarget::Wisp);
-						}
-						Some(SpellAction::CastKindle) => {
-							self.ui.spellbook.close();
-							self.start_cast(CastTarget::Kindle);
-						}
-						Some(SpellAction::CastSphere) => {
-							self.ui.spellbook.close();
-							self.start_cast(CastTarget::Sphere);
-						}
-						Some(SpellAction::ToggleCauseway) => {
-							self.ui.spellbook.close();
-							// Taking a road up is not a cast and channels
-							// like nothing: the caster wanting to descend
-							// wants it gone now.
-							if self.causeway_left > 0.0 {
-								self.end_causeway();
-								if let Some(net) = self.session.client.as_mut() {
-									net.send_causeway_end();
-								}
-							} else {
-								self.start_cast(CastTarget::Causeway);
-							}
-						}
-						None => {}
+					let style = crate::ui::Style::new(self.ui.ui_scale);
+					let act = self.ui.spellbook.handle_input(
+						&event,
+						&self.ui.ui_hits,
+						&style,
+						&view,
+						&self.spell_bar,
+					);
+					if let Some(act) = act {
+						self.apply_spell_action(act);
 					}
 				}
 			}
@@ -594,6 +566,8 @@ impl Engine {
 									self.hotbar.select_digit(i as u8 + 1);
 								}
 							}
+							// The hotkey's touch twin: tap to cast.
+							HudButton::SpellSlot(i) => self.activate_spell_slot(i as usize),
 						}
 						self.input.hud_touches.push((id, b));
 						return;
@@ -706,8 +680,9 @@ impl Engine {
 				self.input.dig_held = false;
 				self.ui.chat.open();
 			}
-			// Filled by the spell hotbar feature.
-			Action::CastSpell1 | Action::CastSpell2 | Action::CastSpell3 => {}
+			Action::CastSpell1 if pressed => self.activate_spell_slot(0),
+			Action::CastSpell2 if pressed => self.activate_spell_slot(1),
+			Action::CastSpell3 if pressed => self.activate_spell_slot(2),
 			// Filled by the resonant pick's orientation toggle.
 			Action::ToolToggle => {}
 			// Answered by the early intercept at the top of `handle_input`

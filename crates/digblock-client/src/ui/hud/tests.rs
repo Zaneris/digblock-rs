@@ -445,3 +445,48 @@ fn an_essence_toast_carries_its_icon_not_its_name() {
 	);
 	assert!(dl.cmds(Layer::Icons).0.is_empty(), "a skill has no chip");
 }
+
+/// The spell bar's slots are tappable — each rect's center answers its
+/// own `SpellSlot` — and the grid never collides with the item bar or
+/// the thumb cluster, stepping above the bar when the window is narrow.
+#[test]
+fn spell_grid_is_tappable_and_clear_of_everything() {
+	for ((w, h), scale) in TOUCH_SWEEP {
+		for insets in sweep_insets() {
+			let size = (w, h);
+			let spells = spell_grid(size, scale, &insets);
+			let bar = row_grid(size, scale);
+			let overlap = |a: super::super::Rect, b: super::super::Rect| {
+				a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
+			};
+			for i in 0..crate::spellbar::SPELL_SLOTS {
+				let r = spells.rect(i);
+				assert!(r.x >= 0.0 && r.y >= 0.0, "{size:?}x{scale}: off screen");
+				assert!(
+					r.x + r.w <= w as f32 && r.y + r.h <= h as f32,
+					"{size:?}x{scale}: off screen"
+				);
+				assert_eq!(
+					touch_hit(size, scale, &insets, true, r.x + r.w / 2.0, r.y + r.h / 2.0),
+					Some(HudButton::SpellSlot(i as u8)),
+					"{size:?}x{scale}: slot {i} does not answer its tap"
+				);
+				for b in 0..digblock_core::hotbar::HOTBAR_SLOTS {
+					assert!(
+						!overlap(r, bar_slot_rect(&bar, b, scale)),
+						"{size:?}x{scale}: spell slot {i} collides with bar slot {b}"
+					);
+				}
+				for other in [
+					place_button_rect(size, scale, &insets),
+					jump_button_rect(size, scale, &insets),
+				] {
+					assert!(
+						!overlap(r, other),
+						"{size:?}x{scale}: spell slot {i} collides with the thumb cluster"
+					);
+				}
+			}
+		}
+	}
+}
