@@ -774,11 +774,21 @@ impl Engine {
 		// The tutorial's continuous verbs, paused under the open menu
 		// exactly as the panel hides with the HUD.
 		if !self.ui.menu.is_open() {
+			// The bench steps ride the same guide the highlight reads, so
+			// the words, the pulse and the advance can never disagree
+			// about which phase the page is in.
+			let guide = self.ui.alch_screen.guide_to(BlockType::EssenceSiphon);
 			let poll = crate::tutorial::Poll {
 				moved_blocks: Vec2::new(moved.x, moved.z).length(),
 				yaw_deg: self.look.yaw_deg,
 				pitch_deg: self.look.pitch_deg,
 				jumped: std::mem::take(&mut self.tutorial_jumped),
+				bench_open: self.ui.alch_screen.is_open(),
+				tools_picked: matches!(
+					guide,
+					Some(crate::ui::InvId::Craft(_) | crate::ui::InvId::CraftGo)
+				),
+				siphon_picked: matches!(guide, Some(crate::ui::InvId::CraftGo)),
 				owns_siphon: self.inventory.count(BlockType::EssenceSiphon) > 0,
 				siphon_in_hand: self.hotbar.selected_item()
 					== Some(digblock_core::hotbar::HotbarItem::WaterTool)

@@ -526,10 +526,12 @@ impl Engine {
 			);
 			// The jump anchor exists only when the jump-mode setting draws
 			// the button; under the double-tap there is nothing on screen
-			// to point at. The craft step's anchor walks the BENCH instead
-			// of standing still: family tile, then the siphon's tile, then
-			// the TRANSMUTE button, resolved from the page's own selection.
-			let anchor = if view.step == crate::tutorial::StepId::CraftSiphon {
+			// to point at. The bench steps' anchors come from the page's
+			// own guide (family tile, siphon tile, TRANSMUTE button) —
+			// the same phase read the poll advances on, so the pulse and
+			// the words can never point at different tiles.
+			use crate::tutorial::StepId as S;
+			let anchor = if matches!(view.step, S::PickTools | S::PickSiphon | S::CraftSiphon) {
 				self.ui
 					.alch_screen
 					.guide_to(digblock_core::block::BlockType::EssenceSiphon)

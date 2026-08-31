@@ -26,6 +26,9 @@ pub enum StepId {
 	OpenInventory,
 	CloseInventory,
 	// ---- the siphon chapter (SIPHON_STEPS) ----
+	OpenBench,
+	PickTools,
+	PickSiphon,
 	CraftSiphon,
 	SelectSiphon,
 }
@@ -33,7 +36,7 @@ pub enum StepId {
 impl StepId {
 	/// Test sweeps only; shipping code walks the step tables.
 	#[cfg(test)]
-	pub(crate) const ALL: [StepId; 12] = [
+	pub(crate) const ALL: [StepId; 15] = [
 		StepId::Move,
 		StepId::Look,
 		StepId::Jump,
@@ -44,6 +47,9 @@ impl StepId {
 		StepId::OpenMenu,
 		StepId::OpenInventory,
 		StepId::CloseInventory,
+		StepId::OpenBench,
+		StepId::PickTools,
+		StepId::PickSiphon,
 		StepId::CraftSiphon,
 		StepId::SelectSiphon,
 	];
@@ -62,6 +68,9 @@ impl StepId {
 			"menu" => StepId::OpenMenu,
 			"inventory" => StepId::OpenInventory,
 			"close" => StepId::CloseInventory,
+			"bench" => StepId::OpenBench,
+			"tools" => StepId::PickTools,
+			"pick" => StepId::PickSiphon,
 			"craft" => StepId::CraftSiphon,
 			"siphon" => StepId::SelectSiphon,
 			_ => return None,
@@ -101,6 +110,13 @@ pub(crate) enum Trigger {
 	/// player parked on the slot the next step wants must leave it first).
 	HotbarSwitched,
 	HotbarSelected(u8),
+	/// The bench page is open — polled off the screen, so a bench that
+	/// was ALREADY open when the chapter armed satisfies it at once.
+	BenchOpen,
+	/// The bench's Tools family is selected (the guide's second phase).
+	ToolsPicked,
+	/// The siphon is the bench's picked member (the guide's third phase).
+	SiphonPicked,
 	/// The pack holds an essence siphon — polled off the inventory, not
 	/// the craft click, so the server's echo path lands it too.
 	OwnsSiphon,
@@ -186,10 +202,31 @@ pub(crate) const STEPS: [Step; 10] = [
 ];
 
 /// The siphon chapter, armed by the affordability nudge rather than at
-/// world entry. Crafting one advances the first step (and the engine
-/// cuts to the reveal cinematic); the second waits for the siphon to
-/// actually be in hand, cycle included.
-pub(crate) const SIPHON_STEPS: [Step; 2] = [
+/// world entry: the bench walk step by step (each phase polled off the
+/// page's own selection state, the same `guide_to` the highlight
+/// reads), the craft (which cuts to the reveal cinematic), then the
+/// siphon actually in hand, cycle included. The three bench steps'
+/// anchors are resolved dynamically in the frame (the tile indices are
+/// runtime facts of the family tables), so `anchor: None` here.
+pub(crate) const SIPHON_STEPS: [Step; 5] = [
+	Step {
+		id: StepId::OpenBench,
+		trigger: Trigger::BenchOpen,
+		anchor: None,
+		touch_anchor: Some(AnchorId::CornerMenu),
+	},
+	Step {
+		id: StepId::PickTools,
+		trigger: Trigger::ToolsPicked,
+		anchor: None,
+		touch_anchor: None,
+	},
+	Step {
+		id: StepId::PickSiphon,
+		trigger: Trigger::SiphonPicked,
+		anchor: None,
+		touch_anchor: None,
+	},
 	Step {
 		id: StepId::CraftSiphon,
 		trigger: Trigger::OwnsSiphon,
@@ -241,6 +278,9 @@ pub(crate) struct Poll {
 	pub yaw_deg: f32,
 	pub pitch_deg: f32,
 	pub jumped: bool,
+	pub bench_open: bool,
+	pub tools_picked: bool,
+	pub siphon_picked: bool,
 	pub owns_siphon: bool,
 	pub siphon_in_hand: bool,
 }
@@ -364,6 +404,9 @@ impl Tutorial {
 				self.progress >= degrees
 			}
 			Trigger::Jumped => p.jumped,
+			Trigger::BenchOpen => p.bench_open,
+			Trigger::ToolsPicked => p.tools_picked,
+			Trigger::SiphonPicked => p.siphon_picked,
 			Trigger::OwnsSiphon => p.owns_siphon,
 			Trigger::SiphonInHand => p.siphon_in_hand,
 			_ => false,

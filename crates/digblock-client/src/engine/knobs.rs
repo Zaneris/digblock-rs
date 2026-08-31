@@ -74,7 +74,7 @@ pub const TUTORIAL: Knob = value(
 	"tutorial",
 	"DIG_TUTORIAL",
 	"force the walkthrough: on|off|<step> \
-	 (move|look|jump|dig|switch|slot|place|menu|inventory|close|craft|siphon)",
+	 (move|look|jump|dig|switch|slot|place|menu|inventory|close|bench|tools|pick|craft|siphon)",
 );
 pub const BURSTS: Knob = flag(
 	"bursts",

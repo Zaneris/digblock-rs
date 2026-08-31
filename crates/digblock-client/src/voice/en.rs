@@ -132,10 +132,13 @@ pub(super) fn line(msg: &Msg) -> String {
 				S::CloseInventory => {
 					format!("press {} to close your inventory", Key::Escape.label())
 				}
-				S::CraftSiphon => format!(
-					"you can afford an essence siphon: press {} and craft one",
+				S::OpenBench => format!(
+					"you can afford an essence siphon: press {} to open the bench",
 					crate::engine::ALCHEMY_KEY.label()
 				),
+				S::PickTools => "select the tools family".into(),
+				S::PickSiphon => "select the essence siphon".into(),
+				S::CraftSiphon => "press transmute to craft the siphon".into(),
 				S::SelectSiphon => format!(
 					"press {} until the siphon is in hand",
 					Key::Digit(digblock_core::hotbar::HOTBAR_SLOTS as u8).label()
@@ -160,7 +163,12 @@ pub(super) fn line(msg: &Msg) -> String {
 				S::OpenMenu => "tap the corner button to open the menu".into(),
 				S::OpenInventory => "in the menu, tap inventory".into(),
 				S::CloseInventory => "tap the x in the corner to close your inventory".into(),
-				S::CraftSiphon => "you can afford an essence siphon: craft one at the bench".into(),
+				S::OpenBench => {
+					"you can afford an essence siphon: open the bench from the menu".into()
+				}
+				S::PickTools => "tap the tools family".into(),
+				S::PickSiphon => "tap the essence siphon".into(),
+				S::CraftSiphon => "tap transmute to craft the siphon".into(),
 				S::SelectSiphon => "tap the last slot until the siphon is in hand".into(),
 			}
 		}

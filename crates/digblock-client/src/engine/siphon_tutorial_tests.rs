@@ -75,17 +75,37 @@ fn affordable_engine() -> Engine {
 
 #[test]
 fn the_nudge_arms_the_chapter_and_the_pack_walks_it() {
+	use crate::tutorial::StepId as S;
 	let mut engine = affordable_engine();
 	assert!(!engine.tutorial.is_running());
 	engine.nudge_siphon();
-	let view = engine.tutorial.view(false).expect("chapter armed");
-	assert_eq!(view.step, crate::tutorial::StepId::CraftSiphon);
+	let step = |e: &Engine| e.tutorial.view(false).expect("running").step;
+	assert_eq!(step(&engine), S::OpenBench);
+	// The bench walk, phase by phase off the page's own selection: open
+	// it, then land the pick straight on the siphon — the two pick
+	// steps complete on consecutive polls.
+	engine.ui.alch_screen.open();
+	engine.update(Duration::from_millis(16));
+	assert_eq!(step(&engine), S::PickTools);
+	let fi = crate::ui::screens::alchemy::families()
+		.iter()
+		.position(|f| f.members.contains(&BlockType::EssenceSiphon))
+		.expect("the siphon has a family");
+	let mi = crate::ui::screens::alchemy::families()[fi]
+		.members
+		.iter()
+		.position(|&m| m == BlockType::EssenceSiphon)
+		.expect("the siphon is a member");
+	engine.ui.alch_screen.force_pick(Some(fi), mi);
+	engine.update(Duration::from_millis(16));
+	assert_eq!(step(&engine), S::PickSiphon);
+	engine.update(Duration::from_millis(16));
+	assert_eq!(step(&engine), S::CraftSiphon);
 	// The siphon lands in the pack (the craft's outcome, however it
 	// traveled); the engine's own poll advances the step.
 	engine.inventory.add(BlockType::EssenceSiphon, 1);
 	engine.update(Duration::from_millis(16));
-	let view = engine.tutorial.view(false).expect("still running");
-	assert_eq!(view.step, crate::tutorial::StepId::SelectSiphon);
+	assert_eq!(step(&engine), S::SelectSiphon);
 	// In hand: tool slot selected, siphon the active tool.
 	engine.hotbar.select_digit(9);
 	engine

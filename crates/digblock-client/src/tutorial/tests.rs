@@ -45,6 +45,27 @@ fn satisfy(t: &mut Tutorial, id: StepId) -> Option<Advance> {
 		StepId::CloseInventory => {
 			t.observe(&GameEvent::Ui(UiEvent::ScreenClose(ScreenKind::Inventory)))
 		}
+		StepId::OpenBench => t.poll(
+			&Poll {
+				bench_open: true,
+				..Poll::default()
+			},
+			0.016,
+		),
+		StepId::PickTools => t.poll(
+			&Poll {
+				tools_picked: true,
+				..Poll::default()
+			},
+			0.016,
+		),
+		StepId::PickSiphon => t.poll(
+			&Poll {
+				siphon_picked: true,
+				..Poll::default()
+			},
+			0.016,
+		),
 		StepId::CraftSiphon => t.poll(
 			&Poll {
 				owns_siphon: true,
@@ -92,6 +113,9 @@ fn the_table_is_sound_and_the_knob_names_every_step() {
 			StepId::OpenMenu => "menu",
 			StepId::OpenInventory => "inventory",
 			StepId::CloseInventory => "close",
+			StepId::OpenBench => "bench",
+			StepId::PickTools => "tools",
+			StepId::PickSiphon => "pick",
 			StepId::CraftSiphon => "craft",
 			StepId::SelectSiphon => "siphon",
 		};
@@ -221,18 +245,21 @@ fn skip_finishes_from_any_step() {
 fn the_siphon_chapter_arms_and_walks() {
 	let mut t = Tutorial::default();
 	// Inactive: the poll conditions move nothing.
-	assert_eq!(satisfy(&mut t, StepId::CraftSiphon), None);
+	assert_eq!(satisfy(&mut t, StepId::OpenBench), None);
 	t.start_siphon();
 	let view = t.view(false).expect("running");
-	assert_eq!(view.step, StepId::CraftSiphon);
-	assert_eq!(view.total, 2);
+	assert_eq!(view.step, StepId::OpenBench);
+	assert_eq!(view.total, 5);
 	// The wrong condition holds nothing.
 	assert_eq!(satisfy(&mut t, StepId::SelectSiphon), None);
-	assert_eq!(
-		satisfy(&mut t, StepId::CraftSiphon),
-		Some(Advance::Step(StepId::CraftSiphon))
-	);
-	assert_eq!(t.view(false).unwrap().step, StepId::SelectSiphon);
+	for id in [
+		StepId::OpenBench,
+		StepId::PickTools,
+		StepId::PickSiphon,
+		StepId::CraftSiphon,
+	] {
+		assert_eq!(satisfy(&mut t, id), Some(Advance::Step(id)), "{id:?}");
+	}
 	assert_eq!(
 		satisfy(&mut t, StepId::SelectSiphon),
 		Some(Advance::SiphonFinished)

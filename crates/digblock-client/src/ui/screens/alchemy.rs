@@ -421,6 +421,16 @@ impl AlchScreen {
 		self.open
 	}
 
+	/// Test hook: the page open with `family`/`member` picked outright,
+	/// so an engine test can walk the guide phases without synthesizing
+	/// a frame of clicks.
+	#[cfg(test)]
+	pub(crate) fn force_pick(&mut self, family: Option<usize>, member: usize) {
+		self.open = true;
+		self.family = family;
+		self.member = member;
+	}
+
 	/// The tile the tutorial should point at to walk a player toward
 	/// crafting `item`: its family's tile while that family is not
 	/// selected, the member's own tile while it is not the picked one,

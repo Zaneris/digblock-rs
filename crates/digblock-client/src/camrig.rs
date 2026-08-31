@@ -226,7 +226,9 @@ impl DroneRig {
 		clearance: &dyn Fn(Vec3, Vec3, f32, f32) -> f32,
 	) -> CamPose {
 		self.t = (self.t + dt / self.secs).min(1.0);
-		let eye = self.from.lerp(self.to, Curve::InOutCubic.apply(self.t));
+		// Linear on purpose: a drone crosses at constant speed — the
+		// eased ramp reads as the camera hesitating, not as flight.
+		let eye = self.from.lerp(self.to, self.t);
 		let offset = eye - self.target;
 		let dist = offset.length().max(1e-3);
 		let dir = offset / dist;
