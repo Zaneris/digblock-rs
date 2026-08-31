@@ -565,12 +565,12 @@ mod tests {
 		let deepest = (skills::DEPTH_XP_MAX_PERMILLE - 1000) / 10;
 		let all = texts(&emit_at(&skills, skills::DEPTH_XP_TO)).join("\n");
 		assert!(
-			all.contains(&format!("depth bonus: +{deepest}% XP per dig")),
+			all.contains(&format!("Depth bonus: +{deepest}% XP per dig")),
 			"{all}"
 		);
 		// The line belongs to Mining, and there is exactly one of it.
 		let lines = texts(&emit_at(&skills, skills::DEPTH_XP_TO));
-		let at = lines.iter().position(|l| l.starts_with("depth bonus"));
+		let at = lines.iter().position(|l| l.starts_with("Depth bonus"));
 		assert_eq!(
 			lines
 				.iter()

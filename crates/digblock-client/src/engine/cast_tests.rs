@@ -852,13 +852,10 @@ fn a_broken_channel_takes_our_own_climb_and_leaves_a_remote_standing() {
 	let theirs = standing(&e, &plan);
 	assert!(theirs > 0, "the stranger's sphere never climbed");
 
-	// Walking breaks OUR channel.
-	e.input(InputEvent::Key {
-		key: Key::W,
-		pressed: true,
-	});
+	// A dig hold breaks OUR channel.
+	e.input.dig_held = true;
 	tick(&mut e);
-	assert!(e.cast.is_none(), "the step broke the channel");
+	assert!(e.cast.is_none(), "the dig hold broke the channel");
 	assert_eq!(standing(&e, &my_plan), 0, "our own shell stayed up");
 	assert!(
 		standing(&e, &plan) >= theirs,
@@ -1017,12 +1014,9 @@ fn the_offline_award_and_refund_find_our_own_climb() {
 		tick(&mut e);
 	}
 	assert!(standing(&e, &my_plan) > 0, "our own sphere never climbed");
-	e.input(InputEvent::Key {
-		key: Key::W,
-		pressed: true,
-	});
+	e.input.dig_held = true;
 	tick(&mut e);
-	assert!(e.cast.is_none(), "the step broke the channel");
+	assert!(e.cast.is_none(), "the dig hold broke the channel");
 	assert_eq!(
 		balances(&e, level),
 		sphere_fares(level).iter().map(|f| f.1).collect::<Vec<_>>(),
