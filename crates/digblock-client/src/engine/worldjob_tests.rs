@@ -170,7 +170,7 @@ fn an_offline_place_smothers_the_grass_beneath() {
 		cell.1 as f32 + 3.5,
 		cell.2 as f32 + 0.5,
 	);
-	engine.camera.pitch_deg = -89.0;
+	engine.set_look(engine.look.yaw_deg, -89.0);
 	engine.update_target();
 	assert_eq!(
 		engine.target.map(|h| (h.cell, h.normal)),

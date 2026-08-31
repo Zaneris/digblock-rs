@@ -162,6 +162,15 @@ pub(crate) enum Msg {
 	Teleported,
 	ReturnedToSpawn,
 
+	// ---- the tutorial ----
+	/// One step's instruction; `touch` picks the finger wording.
+	TutorialStep {
+		step: crate::tutorial::StepId,
+		touch: bool,
+	},
+	/// The completion line (finished or skipped alike).
+	TutorialDone,
+
 	// ---- text that arrives as text: nothing on this side knows what it says ----
 	ServerNotice {
 		text: String,
@@ -195,6 +204,12 @@ pub(crate) fn render(msg: &Msg) -> Line {
 		}
 		_ => Line::plain(en::line(msg)),
 	}
+}
+
+/// The plain sentence for `msg`, for surfaces that draw one string
+/// (the tutorial panel) rather than an inked [`Line`].
+pub(crate) fn plain(msg: &Msg) -> String {
+	en::line(msg)
 }
 
 /// One catalog row for a caller that holds the advertised pair rather

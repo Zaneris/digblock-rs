@@ -60,6 +60,21 @@ pub const PLAYERBOX: Knob = value(
 	"a fake remote holding <item> (dirt|torch|stairs|slab|door|bucket|bucket-full|siphon|pick|sigil|empty)",
 );
 pub const CONFETTI: Knob = flag("confetti", "DIG_CONFETTI", "the milestone confetti burst");
+pub const ORBIT: Knob = value(
+	"orbit",
+	"DIG_ORBIT",
+	"orbit the aim point: <radius>[,<deg/s>] blocks (cinematic camera scene)",
+);
+pub const TUTORIAL: Knob = value(
+	"tutorial",
+	"DIG_TUTORIAL",
+	"force the walkthrough: on|off|<step> (move|look|jump|dig|slot|place|inventory|alchemy)",
+);
+pub const BURSTS: Knob = flag(
+	"bursts",
+	"DIG_BURSTS",
+	"the burst rack: all four particle kinds thrown a few blocks ahead",
+);
 pub const NO_MARKERS: Knob = flag(
 	"nomarkers",
 	"DIG_NO_MARKERS",
@@ -185,6 +200,9 @@ pub const ALL: &[Knob] = &[
 	SCREEN,
 	PLAYERBOX,
 	CONFETTI,
+	ORBIT,
+	TUTORIAL,
+	BURSTS,
 	NO_MARKERS,
 	SHAPES,
 	DOORS,
@@ -261,6 +279,40 @@ pub fn apply(
 		})?);
 	}
 	config.debug_confetti = on(&CONFETTI);
+	config.debug_bursts = on(&BURSTS);
+	if let Some(v) = get(&TUTORIAL) {
+		use crate::tutorial::{StepId, TutorialOverride};
+		config.debug_tutorial = Some(match v.as_str() {
+			"on" | "1" => TutorialOverride::On,
+			"off" | "0" => TutorialOverride::Off,
+			s => match StepId::parse(s) {
+				Some(step) => TutorialOverride::At(step),
+				None => {
+					return Err(format!(
+						"{} must be on, off, or a step name, got {v:?}",
+						TUTORIAL.name
+					));
+				}
+			},
+		});
+	}
+	if let Some(v) = get(&ORBIT) {
+		let mut parts = v.splitn(2, ',');
+		let radius = parts.next().unwrap_or("").trim().parse::<f32>();
+		let degs = match parts.next() {
+			None => Ok(12.0),
+			Some(d) => d.trim().parse::<f32>(),
+		};
+		match (radius, degs) {
+			(Ok(r), Ok(d)) if r > 0.0 => config.debug_orbit = Some((r, d)),
+			_ => {
+				return Err(format!(
+					"{} must be <radius>[,<deg/s>], got {v:?}",
+					ORBIT.name
+				));
+			}
+		}
+	}
 	config.markers = !on(&NO_MARKERS);
 	config.debug_shapes = on(&SHAPES);
 	config.debug_doors = on(&DOORS);

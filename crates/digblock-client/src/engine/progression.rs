@@ -10,6 +10,18 @@ impl Engine {
 	/// layout sync mirrors the result to the server before the next edit.
 	pub(super) fn apply_inv_action(&mut self, act: InvAction) {
 		use digblock_core::hotbar::HotbarItem;
+		// The drop's destination, for the cue — identity rides the event.
+		let dest = match &act {
+			InvAction::Assign { slot, .. } | InvAction::ClearBar { slot } => {
+				crate::ui::InvId::Bar(*slot as u8)
+			}
+			InvAction::SwapBar { b, .. } => crate::ui::InvId::Bar(*b as u8),
+			InvAction::PlaceGrid { grid_slot, .. } => crate::ui::InvId::Grid(*grid_slot as u16),
+			InvAction::MoveGrid { to, .. } => crate::ui::InvId::Grid(*to as u16),
+		};
+		self.react(crate::events::GameEvent::Ui(
+			crate::events::UiEvent::SlotDrop(dest),
+		));
 		match act {
 			InvAction::Assign { slot, block } => {
 				let _ = self.hotbar.assign(slot, block);
@@ -61,6 +73,7 @@ impl Engine {
 			item: item as u16,
 			count,
 		};
+		self.react(crate::events::GameEvent::Ui(crate::events::UiEvent::Craft));
 		match self.session.client.as_mut() {
 			Some(net) if net.ready() => net.send_alchemy(wire_op),
 			_ => {
@@ -172,11 +185,7 @@ impl Engine {
 			// crossed, not just the one landed on.
 			let unlocked =
 				(old_level + 1..=new_level).any(|l| digblock_core::unlock::opens(skill, l));
-			self.emit(crate::audio::AudioCmd::Sfx {
-				sound: crate::audio::level_sfx(unlocked),
-				pos: None,
-				gain: crate::audio::LEVEL_GAIN,
-			});
+			self.react(crate::events::GameEvent::LeveledUp { unlocked });
 			// Your own confetti, over your own head — first-person, that
 			// is paper falling past the camera. Everyone ELSE gets theirs
 			// from the server's `LevelUp` broadcast.

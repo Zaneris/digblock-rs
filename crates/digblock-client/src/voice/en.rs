@@ -96,6 +96,49 @@ pub(super) fn line(msg: &Msg) -> String {
 
 		// Bracketed and neutral, so a server line cannot be mistaken for
 		// a player's.
+		// The tutorial speaks in the refusals' flat lower case: it is
+		// the game answering your hand, step by step. Key names come from
+		// the engine consts, so a rebinding moves the words with it.
+		Msg::TutorialStep { step, touch: false } => {
+			use crate::tutorial::StepId as S;
+			use digblock_platform::Key;
+			match step {
+				S::Move => format!(
+					"walk around with {} {} {} {}",
+					Key::W.label(),
+					Key::A.label(),
+					Key::S.label(),
+					Key::D.label()
+				),
+				S::Look => "look around with the mouse".into(),
+				S::Jump => format!("jump with {}", Key::Space.label()),
+				S::Dig => "hold the left mouse button on a block to dig it".into(),
+				S::SelectSlot => "press 1 to ready your first hotbar slot".into(),
+				S::Place => "right-click a surface to place what you dug".into(),
+				S::OpenInventory => format!(
+					"press {} to open your pack",
+					crate::engine::INVENTORY_KEY.label()
+				),
+				S::OpenAlchemy => format!(
+					"press {} to open the bench",
+					crate::engine::ALCHEMY_KEY.label()
+				),
+			}
+		}
+		Msg::TutorialStep { step, touch: true } => {
+			use crate::tutorial::StepId as S;
+			match step {
+				S::Move => "drag the left side of the screen to walk".into(),
+				S::Look => "drag the right side of the screen to look".into(),
+				S::Jump => "double-tap the right side to jump".into(),
+				S::Dig => "hold a finger on a block to dig it".into(),
+				S::SelectSlot => "tap your first hotbar slot".into(),
+				S::Place => "aim at a surface and tap the place button".into(),
+				S::OpenInventory => "open the corner menu, then your pack".into(),
+				S::OpenAlchemy => "open the corner menu, then the bench".into(),
+			}
+		}
+		Msg::TutorialDone => "you know the essentials: this world is yours".into(),
 		Msg::ServerNotice { text } => format!("[server] {text}"),
 		Msg::Chat { name, text } => format!("{name}: {text}"),
 		Msg::CommandHint { usage, desc } => command_hint(usage, desc).text,

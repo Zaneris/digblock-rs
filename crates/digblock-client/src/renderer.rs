@@ -308,6 +308,12 @@ pub(crate) struct Renderer {
 	/// Level-up confetti bursts, fed per-frame by the engine (the bursts
 	/// themselves are world state and live there).
 	confetti: crate::confetti::Confetti,
+	/// The generic burst rack (debris/splash/sparkle/poof), fed the same
+	/// way — engine-owned instances, aged in `step`.
+	bursts: crate::bursts::Bursts,
+	/// Mean albedo per block id (top texture layer, the material-LUT
+	/// source) — the debris tint, resolved on the CPU at spawn.
+	block_colors: Vec<[f32; 3]>,
 	/// The Essence Siphon's draw — motes off a vein's face, streaming into
 	/// the tool. Fed per-frame by the engine, which owns the envelope.
 	siphon: crate::siphon::Siphon,
@@ -576,6 +582,15 @@ impl Renderer {
 	/// `sky_y` and the emitter count, for the F7 drill's log line.
 	pub(crate) fn gi_debug_state(&self) -> (f32, u32) {
 		self.gi.debug_state()
+	}
+
+	/// Mean albedo of a block's top texture — the debris tint. White for
+	/// anything without one (tools, air), which never spawns debris.
+	pub(crate) fn block_color(&self, b: digblock_core::block::BlockType) -> [f32; 3] {
+		self.block_colors
+			.get(b as usize)
+			.copied()
+			.unwrap_or([1.0; 3])
 	}
 
 	pub(crate) fn gi_window_chunks(&self) -> i32 {

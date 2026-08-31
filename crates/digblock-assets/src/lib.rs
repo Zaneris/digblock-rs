@@ -300,6 +300,17 @@ pub mod shader {
 		include_str!("../../../assets/shaders/gi_common.wgsl"),
 		include_str!("../../../assets/shaders/confetti.wgsl"),
 	);
+	/// The generic burst rack (debris/splash/sparkle/poof) — confetti's
+	/// prelude exactly, and for confetti's reason: a burst happens where
+	/// somebody is standing, so its direct term runs the shared NEE.
+	pub const BURSTS: &str = concat!(
+		include_str!("../../../assets/shaders/frame_common.wgsl"),
+		include_str!("../../../assets/shaders/medium_common.wgsl"),
+		include_str!("../../../assets/shaders/sky_common.wgsl"),
+		include_str!("../../../assets/shaders/gi_dda.wgsl"),
+		include_str!("../../../assets/shaders/gi_common.wgsl"),
+		include_str!("../../../assets/shaders/bursts.wgsl"),
+	);
 	/// The essence draw — the Essence Siphon's motes and face kindle. No
 	/// sky prelude, unlike its two billboard siblings: it is drawn
 	/// ADDITIVELY, so it takes the medium's transmittance halves and must
@@ -417,7 +428,7 @@ pub mod shader {
 		include_str!("../../../assets/shaders/gi_common.wgsl"),
 	);
 
-	pub const ALL: [(&str, &str); 25] = [
+	pub const ALL: [(&str, &str); 26] = [
 		("chunk.wgsl", CHUNK),
 		("water.wgsl", WATER),
 		("glass.wgsl", GLASS),
@@ -427,6 +438,7 @@ pub mod shader {
 		("depth_blit.wgsl", DEPTH_BLIT),
 		("spray.wgsl", SPRAY),
 		("confetti.wgsl", CONFETTI),
+		("bursts.wgsl", BURSTS),
 		("siphon.wgsl", SIPHON),
 		("teleport.wgsl", TELEPORT),
 		("waystone.wgsl", WAYSTONE),

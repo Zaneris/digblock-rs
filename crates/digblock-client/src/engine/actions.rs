@@ -35,11 +35,32 @@ impl Engine {
 	/// server answers the same question from its own simulated position. Aim rays still come from
 	/// the camera — you hit what you see.
 	pub(super) fn body_pos(&self) -> Vec3 {
-		if self.input.walking {
-			self.player.pos
-		} else {
-			self.camera.pos // fly leaves player.pos stale
+		match self.mode {
+			CameraMode::FirstPerson | CameraMode::Cinematic(_) => self.player.pos,
+			CameraMode::DebugFly => self.camera.pos, // fly leaves player.pos stale
 		}
+	}
+
+	/// The player's PRESENTED eye: what first person is (or would be)
+	/// showing. Streaming, the carried light, and the body-sense probes
+	/// anchor here, so a detached camera cannot drag them along. Today
+	/// every mode answers with the camera; a cinematic rig answers with
+	/// the first-person eye it detached from.
+	pub(super) fn body_anchor(&self) -> Vec3 {
+		match self.mode {
+			CameraMode::FirstPerson | CameraMode::DebugFly => self.camera.pos,
+			CameraMode::Cinematic(_) => self.fp_eye,
+		}
+	}
+
+	/// Adopt a facing outright — both the player's angles and the camera
+	/// showing them, so a restore or an authoritative turn lands this
+	/// frame rather than after the next input copy.
+	pub(super) fn set_look(&mut self, yaw_deg: f32, pitch_deg: f32) {
+		self.look.yaw_deg = yaw_deg;
+		self.look.pitch_deg = pitch_deg.clamp(-89.0, 89.0);
+		self.camera.yaw_deg = self.look.yaw_deg;
+		self.camera.pitch_deg = self.look.pitch_deg;
 	}
 
 	/// May a placement write this cell? Resident, and holding a block the
@@ -55,6 +76,12 @@ impl Engine {
 	/// Recompute the crosshair target (every update — it drives the
 	/// highlight overlay, the dig state machine, and placement).
 	pub(super) fn update_target(&mut self) {
+		// Detached: there is no crosshair over a cinematic, and everything
+		// downstream (highlight, dig, place) is None-tolerant.
+		if matches!(self.mode, CameraMode::Cinematic(_)) {
+			self.target = None;
+			return;
+		}
 		let (origin, dir) = (self.camera.pos, self.camera.dir());
 		let pipeline = &self.pipeline;
 		let cell_at = |x: i32, y: i32, z: i32| pipeline.cell_at(x, y, z);
@@ -217,7 +244,7 @@ impl Engine {
 		if self.cast.is_some() {
 			return;
 		}
-		if target.teleports() && self.save.teleport_cooldown > 0.0 {
+		if target.teleports() && !self.save.teleport_cooldown.ready() {
 			self.input.keys = HeldKeys::default();
 			self.input.dig_held = false;
 			self.ui.spellbook.open();
@@ -236,7 +263,7 @@ impl Engine {
 			id: crate::audio::LOOP_CAST,
 			sound: crate::audio::Sfx::CastLoop,
 			pos: None,
-			gain: 0.45,
+			gain: crate::audio::CAST_LOOP_GAIN,
 		});
 	}
 
@@ -412,7 +439,9 @@ impl Engine {
 	/// be a spell that outruns the cooldown.
 	fn start_teleport_cooldown(&mut self) {
 		let level = self.skills.level(digblock_core::skills::Skill::Arcana);
-		self.save.teleport_cooldown = digblock_core::unlock::teleport_cooldown_secs(level) as f32;
+		self.save
+			.teleport_cooldown
+			.start(digblock_core::unlock::teleport_cooldown_secs(level) as f32);
 	}
 
 	/// How long a Sphere's channel is held past its own length while the
@@ -963,11 +992,7 @@ impl Engine {
 			// the hand comes back up exactly as the water lands in it.
 			if self.water_tool_selected() {
 				self.vfx.view_swing.strike();
-				self.emit(crate::audio::AudioCmd::Sfx {
-					sound: crate::audio::Sfx::Swim,
-					pos: Some(cell_center(hit.cell)),
-					gain: 0.7,
-				});
+				self.react(crate::events::GameEvent::WaterScooped { cell: hit.cell });
 			} else {
 				// A draw rides the SAME voice as a dig, so every stop path already covers
 				// it, and the pitch ramp below reads as a resonance winding up rather than
@@ -979,10 +1004,11 @@ impl Engine {
 					id: crate::audio::LOOP_DIG,
 					sound: crate::audio::dig_voice(extracting, hit.block).0,
 					pos: Some(cell_center(hit.cell)),
-					// Under the dig loop: a sustained hum at a hammer's
-					// level would wear out over a hold that runs longer
-					// than any dig.
-					gain: if extracting { 0.85 } else { 1.0 },
+					gain: if extracting {
+						crate::audio::DRAW_LOOP_GAIN
+					} else {
+						crate::audio::DIG_LOOP_GAIN
+					},
 				});
 			}
 			return;
@@ -1143,25 +1169,14 @@ impl Engine {
 		if extracting.is_some() {
 			self.drawn_cell = Some(hit.cell);
 		}
-		// A filled bucket splashes; everything else ends the way its hold
-		// began, through the pair `audio::dig_voice` owns — a drawn seam
-		// lets go, a broken block breaks. Water's material class is Earth
-		// (the table's total fallback), which is right for nothing it does,
-		// which is why it is the one case answered here.
+		// How the hold ends — scoop splash, seam release, or the break —
+		// is the sound table's business (`audio::sound_for`).
 		let tool = self.water_tool_selected();
-		let extracted = extracting.is_some();
-		let (end, end_gain) = if tool {
-			(crate::audio::Sfx::Splash, 0.5)
-		} else {
-			(
-				crate::audio::dig_voice(extracted, prev).1,
-				if extracted { 0.9 } else { 1.0 },
-			)
-		};
-		self.emit(crate::audio::AudioCmd::Sfx {
-			sound: end,
-			pos: Some(cell_center(hit.cell)),
-			gain: end_gain,
+		self.react(crate::events::GameEvent::DigFinished {
+			cell: hit.cell,
+			block: prev,
+			extracted: extracting.is_some(),
+			scooped: tool,
 		});
 		// No swing is started here: the arc that began with this hold is running out on this
 		// frame, and re-striking it bolts a second stroke onto a finished scoop. An extraction
@@ -1365,16 +1380,9 @@ impl Engine {
 				None => {}
 			}
 		}
-		// A poured source splashes; everything else lands with a thunk.
-		let poured = block == BlockType::Water;
-		self.emit(crate::audio::AudioCmd::Sfx {
-			sound: if poured {
-				crate::audio::Sfx::Splash
-			} else {
-				crate::audio::Sfx::Place
-			},
-			pos: Some(cell_center(target)),
-			gain: if poured { 0.6 } else { 0.9 },
+		self.react(crate::events::GameEvent::Placed {
+			cell: target,
+			poured: block == BlockType::Water,
 		});
 		match self.session.client.as_mut() {
 			Some(net) if net.ready() => {
@@ -1472,11 +1480,7 @@ impl Engine {
 		for &(c, _, v) in &entries {
 			self.pipeline.set_cell(c.0, c.1, c.2, v);
 		}
-		self.emit(crate::audio::AudioCmd::Sfx {
-			sound: crate::audio::Sfx::Place,
-			pos: Some(cell_center(cell)),
-			gain: 0.6,
-		});
+		self.react(crate::events::GameEvent::DoorToggled { cell });
 		let (origin, dir) = (self.camera.pos, self.camera.dir());
 		if let Some(net) = self.session.client.as_mut()
 			&& net.ready()

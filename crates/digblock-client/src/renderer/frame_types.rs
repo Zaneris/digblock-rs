@@ -199,6 +199,8 @@ pub(crate) struct FrameScene<'a> {
 	/// by the engine — the flakes themselves are a pure function of these
 	/// in the shader.
 	pub confetti: &'a [crate::confetti::BurstInstance],
+	/// Live generic bursts (debris/splash/sparkle/poof), same contract.
+	pub bursts: &'a [crate::bursts::BurstInstance],
 	/// The essence draw under the crosshair, if the siphon is working a
 	/// vein. At most one — a player holds one button — and the engine
 	/// owns its envelope, so this outlives the hold by the fade.

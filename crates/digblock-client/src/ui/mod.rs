@@ -3,6 +3,7 @@
 //! screen builds on. GPU consumption lives in `overlay.rs` (quads/text)
 //! and `ui/icons.rs` (block-texture icons); everything here is data.
 
+pub(crate) mod anchors;
 pub mod drag;
 pub mod draw;
 pub mod hit;
@@ -12,6 +13,7 @@ pub mod scale;
 pub mod screens;
 pub mod shaped_icon;
 pub mod theme;
+pub(crate) mod tutorial;
 pub mod widgets;
 
 pub use draw::{DrawList, Layer};
@@ -24,10 +26,15 @@ pub use widgets::{Style, Ui};
 /// at once — cross-fading two 3D icons is a double exposure of their internal faces — and
 /// present passes through exactly 0 at the changeover. Shared by transmute tiles and the hotbar.
 pub fn handover(u: f32) -> (bool, f32) {
+	use digblock_core::ease::Curve;
 	if u < 0.5 {
+		// The outgoing shrink stays linear: a departure should not linger.
 		(false, 1.0 - 2.0 * u)
 	} else {
-		(true, 2.0 * u - 1.0)
+		// The incoming grow rides the hermite: it leaves the handover at
+		// zero SLOPE too (the moment of nothing stays a moment), then
+		// lands softly instead of ramping.
+		(true, Curve::Smooth.apply(2.0 * u - 1.0))
 	}
 }
 

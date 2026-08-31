@@ -312,6 +312,9 @@ enum Setting {
 	Ssr,
 	/// Touch jump verb. Touch-HUD-only row: `acts()` and `view()` skip it in lockstep off-touch.
 	TouchJump,
+	/// The walkthrough toggle; flipping it ON re-arms the tutorial for
+	/// the next world entry, which IS the replay affordance.
+	Tutorial,
 }
 
 #[derive(Clone, Copy)]
@@ -439,6 +442,9 @@ pub(crate) struct Menu {
 	/// [`Menu::take_clipboard`] for why the engine drains it from `input`
 	/// rather than `update`.
 	wants_copy: Option<String>,
+	/// UI sounds raised this frame, drained by the engine like the
+	/// clipboard — the menu is pure and cannot reach the sink itself.
+	pending_sounds: Vec<crate::events::UiEvent>,
 	/// Live settings, edited on the Settings screen.
 	settings: Settings,
 	/// A settings value changed since the engine last drained it.
@@ -482,6 +488,7 @@ impl Menu {
 			wants_character: false,
 			wants_hiscores: false,
 			wants_copy: None,
+			pending_sounds: Vec::new(),
 			settings,
 			settings_dirty: false,
 			cursor: (-1.0, -1.0),
@@ -650,6 +657,20 @@ impl Menu {
 	/// asked for it, or the browser refuses it as unprompted; `update` runs a frame later.
 	pub(crate) fn take_clipboard(&mut self) -> Option<String> {
 		self.wants_copy.take()
+	}
+
+	/// Completion writes through the settings machinery, so the store
+	/// persists it exactly as a slider change would.
+	pub(crate) fn set_show_tutorial(&mut self, on: bool) {
+		if self.settings.show_tutorial != on {
+			self.settings.show_tutorial = on;
+			self.settings_dirty = true;
+		}
+	}
+
+	/// The frame's UI sounds (see the field). Engine drains from `input`.
+	pub(crate) fn take_sounds(&mut self) -> Vec<crate::events::UiEvent> {
+		std::mem::take(&mut self.pending_sounds)
 	}
 
 	pub(crate) fn account(&self) -> Option<&AccountView> {
@@ -928,6 +949,10 @@ impl Menu {
 						self.set_setting_frac(s, frac);
 						return;
 					}
+					// At the CALLERS of `activate`, not inside it — it
+					// recurses (OpenMultiplayer -> StartSignIn) and a
+					// chain is one gesture, one click.
+					self.pending_sounds.push(crate::events::UiEvent::Click);
 					self.activate(act);
 				}
 			}
@@ -980,6 +1005,7 @@ impl Menu {
 			Key::Down => self.set_sel((self.current_sel() + 1).min(sel_max)),
 			Key::Enter => {
 				if let Some(&(_, act)) = self.acts().get(self.current_sel()) {
+					self.pending_sounds.push(crate::events::UiEvent::Click);
 					self.activate(act);
 				}
 			}
@@ -1088,6 +1114,10 @@ impl Menu {
 				st.touch_jump_button = !st.touch_jump_button;
 				true
 			}
+			Setting::Tutorial => {
+				st.show_tutorial = !st.show_tutorial;
+				true
+			}
 		};
 		self.settings_dirty |= changed;
 	}
@@ -1135,7 +1165,7 @@ impl Menu {
 				(std::mem::replace(&mut st.sfx_vol, v) - v).abs() > f32::EPSILON
 			}
 			// Not sliders; a bar click can't reach them.
-			Setting::Ssr | Setting::TouchJump => false,
+			Setting::Ssr | Setting::TouchJump | Setting::Tutorial => false,
 		};
 		self.settings_dirty |= changed;
 	}
@@ -1415,7 +1445,7 @@ impl Menu {
 			Act::SettingRow(s) => {
 				// Enter/click on the toggle row flips it; sliders react to
 				// Left/Right and bar clicks instead.
-				if s == Setting::Ssr {
+				if s == Setting::Ssr || s == Setting::Tutorial {
 					self.adjust_setting(s, 1);
 				}
 			}
@@ -1596,7 +1626,7 @@ const ACCOUNT_BACK: u8 = ACCOUNT_ROWS.len() as u8;
 // says why). Re-exposing it means a row here, a match arm in
 // `adjust_setting` and `set_setting_frac`, a `RowSpec` below, and
 // renumbering every row after it — the indices are positional.
-const SETTINGS_ROWS: [Setting; 8] = [
+const SETTINGS_ROWS: [Setting; 9] = [
 	Setting::DrawDist,
 	// Lighting detail sits next to draw distance: both trade picture for
 	// frame time, and a player hunting fps should find them together
@@ -1609,6 +1639,7 @@ const SETTINGS_ROWS: [Setting; 8] = [
 	Setting::SfxVol,
 	Setting::Ssr,
 	Setting::TouchJump,
+	Setting::Tutorial,
 ];
 
 /// The slider bar's rect within a placed row — the framework's

@@ -378,6 +378,7 @@ fn main() {
 			gi_scale_div: config.gi_scale_div,
 			max_lights: config.max_lights,
 			touch_jump_button: config.touch_jump_button,
+			show_tutorial: config.show_tutorial,
 		});
 		config.draw_dist = saved.draw_dist;
 		config.music_vol = saved.music_vol;
@@ -385,6 +386,7 @@ fn main() {
 		config.ssr = saved.ssr;
 		config.ui_scale = saved.ui_scale;
 		config.touch_jump_button = saved.touch_jump_button;
+		config.show_tutorial = saved.show_tutorial;
 		// A saved value (or a flag, applied after this block) is an
 		// explicit preference; only its absence lets the engine pick.
 		// `settings::load` leaves `base` untouched when the file has no

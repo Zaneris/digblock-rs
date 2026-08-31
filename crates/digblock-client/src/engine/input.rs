@@ -171,6 +171,9 @@ impl Engine {
 				// Same gesture rule as the clipboard: the shell's
 				// fullscreen call is only honoured inside this task.
 				self.input.fullscreen_requested |= self.ui.menu.take_fullscreen();
+				for s in self.ui.menu.take_sounds() {
+					self.react(crate::events::GameEvent::Ui(s));
+				}
 			}
 			return;
 		}
@@ -188,7 +191,7 @@ impl Engine {
 					self.ui.inv_screen.cancel_drag();
 				}
 				InputEvent::Key {
-					key: Key::I | Key::Escape,
+					key: INVENTORY_KEY | Key::Escape,
 					pressed: true,
 				} => self.ui.inv_screen.close(),
 				_ => {
@@ -310,7 +313,7 @@ impl Engine {
 					let ports = self.known_ports();
 					let view = crate::ui::screens::spellbook::SpellView::build(
 						&self.skills,
-						self.save.teleport_cooldown.ceil() as u32,
+						self.save.teleport_cooldown.left().ceil() as u32,
 						&ports,
 						&self.inventory,
 						self.causeway_left.ceil() as u32,
@@ -378,6 +381,9 @@ impl Engine {
 			} else {
 				match self.ui.chat.handle_input(&event) {
 					Some(crate::chat::ChatAction::Send(text)) => {
+						self.react(crate::events::GameEvent::Ui(
+							crate::events::UiEvent::ChatSend,
+						));
 						if let Some(net) = self.session.client.as_mut() {
 							net.send_chat(&text);
 						}
@@ -399,19 +405,38 @@ impl Engine {
 				Key::Space => self.input.keys.up = pressed,
 				Key::Shift => self.input.keys.down = pressed,
 				Key::F => {
+					// A running cinematic ends first: F blends the camera
+					// home. Allowed online too — the detach was pure
+					// presentation, so ending it is.
+					if pressed
+						&& !self.input.fly_key_down
+						&& let CameraMode::Cinematic(cine) = &mut self.mode
+					{
+						cine.leave();
+						self.input.fly_key_down = pressed;
+						return;
+					}
 					// Fly is a single-player debug tool; the server only
 					// simulates walking.
 					if pressed && !self.input.fly_key_down && self.session.client.is_none() {
-						self.input.walking = !self.input.walking;
-						if !self.input.walking {
+						if self.mode.first_person() {
+							self.mode = CameraMode::DebugFly;
 							// Enter fly where the player stands.
 							self.camera.pos = self.player.pos;
 						} else {
+							self.mode = CameraMode::FirstPerson;
 							// Re-enter walk at the camera position.
 							self.player.pos = self.camera.pos;
 							self.session.tick_lerp.reset(self.player.pos);
 						}
-						log::info!("mode: {}", if self.input.walking { "walk" } else { "fly" });
+						log::info!(
+							"mode: {}",
+							if self.mode.first_person() {
+								"walk"
+							} else {
+								"fly"
+							}
+						);
 					}
 					self.input.fly_key_down = pressed;
 				}
@@ -467,11 +492,18 @@ impl Engine {
 						self.ui.menu.open();
 					}
 				}
-				Key::I => {
+				INVENTORY_KEY => {
 					if pressed {
 						self.input.keys = HeldKeys::default();
 						self.input.dig_held = false;
 						self.ui.inv_screen.open();
+					}
+				}
+				Key::Tab => {
+					// The tutorial's skip. Chat owns Tab while typing, and
+					// that path returned long before this match.
+					if pressed && let Some(adv) = self.tutorial.skip() {
+						self.on_tutorial_advance(adv);
 					}
 				}
 				ALCHEMY_KEY => {

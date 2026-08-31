@@ -43,8 +43,7 @@ pub(super) fn block_ahead(block: BlockType) -> (Engine, (i32, i32, i32)) {
 		cell.1 as f32 + 0.5,
 		cell.2 as f32 - 2.5,
 	);
-	engine.camera.yaw_deg = 0.0; // +z
-	engine.camera.pitch_deg = 0.0;
+	engine.set_look(0.0, 0.0); // +z, level
 	(engine, cell)
 }
 

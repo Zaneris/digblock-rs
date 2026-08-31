@@ -293,6 +293,18 @@ impl Menu {
 						),
 					);
 				}
+				push(
+					&mut specs,
+					&mut y,
+					RowSpec::item(
+						RowId::SettingsRow(8),
+						if st.show_tutorial {
+							"Tutorial: On"
+						} else {
+							"Tutorial: Off"
+						},
+					),
+				);
 				y += row_h * 0.5;
 				push(
 					&mut specs,

@@ -41,8 +41,7 @@ fn corridor() -> (Engine, (i32, i32, i32), (i32, i32, i32)) {
 		.set_block(wall.0, wall.1, wall.2, BlockType::Stone)
 		.expect("chunk ready");
 	engine.camera.pos = Vec3::new(x as f32 + 0.5, y as f32 + 0.5, z as f32 - 2.5);
-	engine.camera.yaw_deg = 0.0; // +z
-	engine.camera.pitch_deg = 0.0;
+	engine.set_look(0.0, 0.0); // +z, level
 	// The rig owns its bucket like any player now — crafted rather
 	// than assumed — and reconciling is what equips a first vessel.
 	engine.inventory.add(BlockType::Bucket, 1);

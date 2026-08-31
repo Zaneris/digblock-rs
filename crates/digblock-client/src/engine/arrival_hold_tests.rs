@@ -51,14 +51,14 @@ fn welcome_arms_the_arrival_hold_and_area_ready_releases_it() {
 		"the Welcome was actually processed, not swallowed"
 	);
 	assert!(
-		engine.save.arrival_hold.is_some(),
+		engine.save.arrival_hold.running(),
 		"a join must hold the world until the server says the area is real"
 	);
 
 	server_end.send_reliable(&frame(&ServerMsg::AreaReady));
 	engine.update(Duration::from_millis(16));
 	assert!(
-		engine.save.arrival_hold.is_none(),
+		!engine.save.arrival_hold.running(),
 		"the marker releases the hold"
 	);
 }
@@ -78,7 +78,7 @@ fn the_arrival_hold_times_out_without_the_marker() {
 	server_end.send_reliable(&encode_preamble(PROTOCOL_VERSION));
 	server_end.send_reliable(&frame(&welcome()));
 	engine.update(Duration::from_millis(16));
-	assert!(engine.save.arrival_hold.is_some(), "held on arrival");
+	assert!(engine.save.arrival_hold.running(), "held on arrival");
 
 	// Just past `AREA_SYNC_TIMEOUT_SECS` worth of the frames above.
 	let frames = (digblock_net::protocol::AREA_SYNC_TIMEOUT_SECS / 0.016).ceil() as u32 + 1;
@@ -86,7 +86,7 @@ fn the_arrival_hold_times_out_without_the_marker() {
 		engine.update(Duration::from_millis(16));
 	}
 	assert!(
-		engine.save.arrival_hold.is_none(),
+		!engine.save.arrival_hold.running(),
 		"the wait ran out and the world was entered anyway"
 	);
 }

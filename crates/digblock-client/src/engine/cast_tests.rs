@@ -127,12 +127,12 @@ fn a_completed_channel_takes_channel_ticks_and_starts_the_rung_cooldown() {
 		tick(&mut e);
 	}
 	assert!(e.cast.is_some(), "the channel completed early");
-	assert_eq!(e.save.teleport_cooldown, 0.0);
+	assert_eq!(e.save.teleport_cooldown.left(), 0.0);
 	tick(&mut e);
 	assert!(e.cast.is_none(), "the channel never completed");
 	// The completion started the caster's OWN cooldown rung.
 	let want = digblock_core::unlock::teleport_cooldown_secs(e.skills.level(Skill::Arcana));
-	assert_eq!(e.save.teleport_cooldown.ceil() as u32, want);
+	assert_eq!(e.save.teleport_cooldown.left().ceil() as u32, want);
 	// And a fresh request during the cooldown opens the PAGE (where the
 	// countdown lives) instead of silently doing nothing.
 	cast_home(&mut e);
@@ -348,20 +348,20 @@ fn an_interrupted_channel_fades_rather_than_pops() {
 	for _ in 0..open {
 		tick(&mut e);
 	}
-	assert_eq!(e.vfx.channel_env, 1.0, "the aura never opened");
+	assert_eq!(e.vfx.channel_env.level(), 1.0, "the aura never opened");
 	e.input(InputEvent::Key {
 		key: Key::W,
 		pressed: true,
 	});
 	tick(&mut e);
 	assert!(e.cast.is_none(), "the interrupt did not land");
-	let mut prev = e.vfx.channel_env;
+	let mut prev = e.vfx.channel_env.level();
 	assert!(prev > 0.0, "the aura popped instead of fading");
 	let mut steps = 0u32;
-	while e.vfx.channel_env > 0.0 {
+	while e.vfx.channel_env.level() > 0.0 {
 		tick(&mut e);
-		assert!(e.vfx.channel_env <= prev, "the fade went back up");
-		prev = e.vfx.channel_env;
+		assert!(e.vfx.channel_env.level() <= prev, "the fade went back up");
+		prev = e.vfx.channel_env.level();
 		steps += 1;
 		assert!(steps < 600, "the fade never reaches zero");
 	}
@@ -382,7 +382,8 @@ fn an_interrupt_resets_the_channel() {
 	tick(&mut e);
 	assert!(e.cast.is_none(), "a moving caster kept the channel");
 	assert_eq!(
-		e.save.teleport_cooldown, 0.0,
+		e.save.teleport_cooldown.left(),
+		0.0,
 		"an interrupted channel must not charge the cooldown"
 	);
 	e.input(InputEvent::Key {
@@ -421,7 +422,7 @@ fn one_cooldown_covers_home_and_every_port() {
 		}
 		assert!(e.cast.is_none(), "{first:?} never completed");
 		assert_eq!(
-			e.save.teleport_cooldown.ceil() as u32,
+			e.save.teleport_cooldown.left().ceil() as u32,
 			digblock_core::unlock::teleport_cooldown_secs(level),
 			"{first:?} did not arm the shared clock"
 		);
@@ -456,13 +457,13 @@ fn a_light_spell_neither_waits_on_the_clock_nor_arms_it() {
 		// "still running" is what the cast happened UNDER.
 		let armed = digblock_core::unlock::teleport_cooldown_secs(e.skills.level(Skill::Arcana));
 		let before = armed as f32 / 2.0;
-		e.save.teleport_cooldown = before;
+		e.save.teleport_cooldown.force(before);
 		e.start_cast(target);
 		assert!(e.cast.is_some(), "{target:?} was blocked by the clock");
 		for _ in 0..=need {
 			tick(&mut e);
 		}
-		let left = e.save.teleport_cooldown;
+		let left = e.save.teleport_cooldown.left();
 		assert!(left > 0.0, "the window ran out — the sweep proved nothing");
 		assert!(
 			left < before,
@@ -486,7 +487,7 @@ fn a_kindled_light_stands_at_the_head_on_its_own_clock() {
 	let (essence, fare) = digblock_core::alchemy::kindle_price(level);
 	e.inventory.add_sub(essence, fare);
 	// Look straight down: an aimed kindle would land on the floor cell.
-	e.camera.pitch_deg = -80.0;
+	e.look.pitch_deg = -80.0;
 	let head = digblock_core::kindle::host_cell(e.player.pos);
 	assert!(
 		digblock_core::kindle::hosts(e.pipeline.cell_at(head.0, head.1, head.2)),
@@ -534,7 +535,7 @@ fn a_flying_caster_conjures_where_they_are() {
 	let (essence, fare) = digblock_core::alchemy::kindle_price(level);
 	e.inventory.add_sub(essence, fare);
 	// Fly a few blocks up and along: the camera moves, the body does not.
-	e.input.walking = false;
+	e.mode = crate::engine::CameraMode::DebugFly;
 	let flown = e.player.pos + Vec3::new(3.0, 4.0, -2.0);
 	e.camera.pos = flown;
 	let stale = digblock_core::kindle::host_cell(e.player.pos);

@@ -15,15 +15,38 @@ use digblock_core::touch::{Phase, TouchDriver};
 use digblock_platform::{Game, Gpu, InputEvent, Key, MouseButton, TouchPhase};
 use glam::{Vec2, Vec3};
 
-use crate::camera::FlyCamera;
+use crate::camera::{FlyCamera, LookAngles};
 use crate::renderer::{FrameScene, FrameUniforms, RenderConfig, Renderer};
 use crate::ui::screens::inventory::InvAction;
 use crate::voice::{Msg, Spell};
+
+/// Who drives the camera pose. Presentation only: the player sim's
+/// rules never change with the mode, and the server never hears of it.
+#[derive(Clone, PartialEq, Debug)]
+pub(crate) enum CameraMode {
+	/// Camera = the player's presented eye (the shipping game).
+	FirstPerson,
+	/// Free 6-DoF debug camera; `player.pos` goes stale. F, offline only.
+	DebugFly,
+	/// A rig drives the camera; the player keeps simulating, standing
+	/// still, and `fp_eye` stays the body anchor. Pure presentation.
+	Cinematic(crate::camrig::Cinematic),
+}
+
+impl CameraMode {
+	pub(crate) fn first_person(&self) -> bool {
+		matches!(self, CameraMode::FirstPerson)
+	}
+}
 
 /// The alchemy screen's toggle, named in ONE place so the texts that say
 /// "press K" — the menu row's key chip, the siphon-in-reach nudge — can
 /// never name a key the input match stopped answering.
 pub(crate) const ALCHEMY_KEY: Key = Key::K;
+
+/// The inventory's toggle, hoisted for the same reason: the tutorial's
+/// "press I" line reads it, so the hint can never name a dead key.
+pub(crate) const INVENTORY_KEY: Key = Key::I;
 
 mod config;
 pub use config::{DebugScreen, EngineConfig, parse_held_item};
@@ -32,6 +55,7 @@ pub mod knobs;
 mod actions;
 mod audio_step;
 mod causeway;
+mod events;
 mod frame;
 mod input;
 mod net_sync;
@@ -169,6 +193,18 @@ pub struct Engine {
 	renderer: Option<Renderer>,
 	pipeline: Pipeline,
 	camera: FlyCamera,
+	/// Who drives `camera` this frame (see [`CameraMode`]).
+	mode: CameraMode,
+	/// The player's facing — input writes here; modes copy it out.
+	look: LookAngles,
+	/// The player's PRESENTED eye this frame (what first person shows) —
+	/// the body anchor a detached camera leaves behind.
+	fp_eye: Vec3,
+
+	/// The interactive walkthrough (armed on offline world entry).
+	tutorial: crate::tutorial::Tutorial,
+	/// Did the player jump off the ground this frame (tutorial poll)?
+	tutorial_jumped: bool,
 	player: Player,
 	/// See [`InputState`].
 	input: InputState,
@@ -376,6 +412,21 @@ impl SphereClimb {
 
 /// Client-side hold-to-dig progress (mirrors the server's `DigState`;
 /// purely predictive — the server re-times the interval itself).
+/// Which surfaces were open last frame, plus the hotbar selection — the
+/// delta drives every open/close/select cue from ONE comparison, so no
+/// individual toggle path needs a sound hook.
+#[derive(Clone, Copy, PartialEq)]
+struct UiSnapshot {
+	menu: bool,
+	inv: bool,
+	alch: bool,
+	character: bool,
+	hiscores: bool,
+	spellbook: bool,
+	chat: bool,
+	hotbar: usize,
+}
+
 /// Everything the engine needs to decide what to play. The sink is
 /// injected, and a `None` sink is what covers bench, screenshot,
 /// drill and iOS runs.
@@ -413,6 +464,14 @@ struct AudioState {
 	/// height a splash is scaled by. Reset on ground and in water, so
 	/// walking down a hillside into a lake isn't a plunge.
 	fall_from_y: f32,
+
+	/// Last frame's open-surface snapshot; None until seeded, so the
+	/// surfaces a session starts on never chirp.
+	ui_snapshot: Option<UiSnapshot>,
+
+	/// Frame budgets for `react` cues, reset each `step_audio`.
+	frame_oneshots: u8,
+	frame_remote_edits: u8,
 }
 
 /// Work the pipeline has produced and the renderer has not yet taken.
@@ -467,6 +526,14 @@ struct Vfx {
 	/// rather than an RNG: nothing here needs to be unpredictable.
 	confetti_seq: u32,
 
+	/// Generic bursts (debris/splash/sparkle/poof) — confetti's contract
+	/// exactly: engine-aged instances, each carrying its life in lane 6.
+	bursts: Vec<crate::bursts::BurstInstance>,
+	burst_seq: u32,
+
+	/// Camera feel (shake/kick/pulse); applied on the FINAL view matrix.
+	camera_fx: crate::camera_fx::CameraFx,
+
 	/// The live essence draw, aged by `step_siphon`. World state for the
 	/// same reason confetti is: it names a cell, and a world swap must
 	/// forget it.
@@ -494,7 +561,7 @@ struct Vfx {
 	/// The channel aura's fade envelope: opens while a cast channels,
 	/// dissolves when one ends or breaks — an interrupted channel fades
 	/// rather than pops.
-	channel_env: f32,
+	channel_env: crate::anim::Envelope,
 
 	/// The teleport instant's full-screen flash, decayed in `update`.
 	flash: f32,
@@ -577,7 +644,7 @@ struct SaveSession {
 	/// Return Home and every port, so hops cannot be chained. One gate
 	/// for local and connected play; connected, the server also enforces
 	/// its own copy.
-	teleport_cooldown: f32,
+	teleport_cooldown: crate::anim::Cooldown,
 
 	/// A return-to-spawn is outstanding, so the next teleport that lands
 	/// is ours and says so. Kept apart from the teleport's `look`, which
@@ -592,7 +659,7 @@ struct SaveSession {
 	/// its own, and so a suspended tab resumes with its full wait rather
 	/// than an expired one. Zero releases exactly as the marker does:
 	/// a hold that cannot time out is worse than the artifact it removes.
-	arrival_hold: Option<f32>,
+	arrival_hold: crate::anim::Timer,
 }
 
 /// Held keys, accumulated look, and the touch driver. While ANY UI
@@ -620,9 +687,6 @@ struct InputState {
 
 	/// Shell-forwarded display cutouts the touch HUD keeps clear of.
 	safe_area: crate::ui::hud::SafeArea,
-
-	/// Walk (player physics) vs debug fly camera; F toggles.
-	walking: bool,
 
 	fly_key_down: bool,
 
@@ -1174,8 +1238,8 @@ impl Game for Engine {
 					&self.skills.to_wire(),
 					&digblock_persist::PlayerPersist {
 						pos: self.player.pos.to_array(),
-						yaw: self.camera.yaw_deg,
-						pitch: self.camera.pitch_deg,
+						yaw: self.look.yaw_deg,
+						pitch: self.look.pitch_deg,
 					},
 				);
 			}
@@ -1295,3 +1359,6 @@ mod ore_capture_tests;
 
 #[cfg(test)]
 mod causeway_tests;
+
+#[cfg(test)]
+mod ui_sound_tests;

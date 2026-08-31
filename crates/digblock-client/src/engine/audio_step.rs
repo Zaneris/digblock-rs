@@ -31,6 +31,10 @@ impl Engine {
 		const SPLASH_GAIN_MIN: f32 = 0.3;
 		const SPLASH_GAIN_PER_BLOCK: f32 = 0.06;
 		const SPLASH_GAIN_MAX: f32 = 0.9;
+		// Budgets reset BEFORE the sink check: `react` also throws
+		// particles, which a silent run still owes.
+		self.audio.frame_oneshots = 0;
+		self.audio.frame_remote_edits = 0;
 		if self.audio.sink.is_none() {
 			return;
 		}
@@ -54,7 +58,7 @@ impl Engine {
 			.block_at(bx, feet.floor() as i32, bz)
 			.is_some_and(|b| b.is_water());
 		let wet = submerged || feet_wet;
-		if self.input.walking {
+		if self.mode.first_person() {
 			let moved = Vec3::new(d.x, 0.0, d.z).length();
 			if let Some((m, gain)) = self.audio.footsteps.advance(moved, grounded, below, wet) {
 				self.emit(AudioCmd::Sfx {
@@ -89,7 +93,7 @@ impl Engine {
 			}
 		}
 		self.audio.prev_wet = wet;
-		self.audio.fall_from_y = if grounded || wet || !self.input.walking {
+		self.audio.fall_from_y = if grounded || wet || !self.mode.first_person() {
 			feet
 		} else {
 			self.audio.fall_from_y.max(feet)
@@ -114,7 +118,8 @@ impl Engine {
 			// frame on a question whose answer is a pure function of the
 			// column — and the camera changes column a few times a second
 			// at a walk.
-			let col = (cam.x.floor() as i32, cam.z.floor() as i32);
+			let body = self.body_anchor();
+			let col = (body.x.floor() as i32, body.z.floor() as i32);
 			let h = match self.ambient_height {
 				Some((c, h)) if c == col => h,
 				_ => {
@@ -123,7 +128,7 @@ impl Engine {
 					h
 				}
 			};
-			if cam.y < h as f32 - 6.0 {
+			if body.y < h as f32 - 6.0 {
 				AmbientZone::Cave
 			} else {
 				AmbientZone::Surface
@@ -143,13 +148,14 @@ impl Engine {
 		// POSITIONAL one-shot, a stand-in; swapping this to a new `Sfx` variant is the whole change
 		// when the design's own sourced shimmer exists.
 		let mining = self.skills.level(digblock_core::skills::Skill::Mining);
+		let body = self.body_anchor();
 		let near = digblock_core::unlock::prospector(mining)
 			.then(|| {
 				digblock_core::worldgen::ore::unseen_nearby(
 					(
-						cam.x.floor() as i32,
-						cam.y.floor() as i32,
-						cam.z.floor() as i32,
+						body.x.floor() as i32,
+						body.y.floor() as i32,
+						body.z.floor() as i32,
 					),
 					self.seed.value,
 					mining,

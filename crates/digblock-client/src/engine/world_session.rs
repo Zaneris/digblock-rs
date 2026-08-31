@@ -43,6 +43,7 @@ impl Engine {
 		self.vfx.toasts.clear();
 		self.auth_essence = None;
 		self.siphon_nudged = false;
+		self.tutorial = crate::tutorial::Tutorial::default();
 		self.reset_world_transients(spawn, true);
 	}
 
@@ -103,10 +104,11 @@ impl Engine {
 		// names a cell in the world just left, the teleport light, and
 		// the channel's fade.
 		self.vfx.confetti.clear();
+		self.vfx.bursts.clear();
 		self.vfx.siphon = None;
 		self.vfx.casts.clear();
 		self.vfx.kindled.clear();
-		self.vfx.channel_env = 0.0;
+		self.vfx.channel_env.reset();
 		self.vfx.flash = 0.0;
 		// The arrival marker follows the world's own spawn: the pad's
 		// floor centre under the spawn eye.
@@ -250,6 +252,7 @@ impl Engine {
 		self.vfx.toasts.clear();
 		self.auth_essence = None;
 		self.siphon_nudged = false;
+		self.tutorial = crate::tutorial::Tutorial::default();
 		self.session.player_names.clear();
 		self.reset_world_transients(spawn, true);
 		self.save.in_local_save = false;
@@ -294,8 +297,7 @@ impl Engine {
 		self.player = Player::new(start);
 		self.camera.pos = start;
 		if let Some(p) = save.player {
-			self.camera.yaw_deg = p.yaw;
-			self.camera.pitch_deg = p.pitch.clamp(-89.0, 89.0);
+			self.set_look(p.yaw, p.pitch);
 		}
 		self.inventory = Inventory::from_wire(&save.inventory);
 		// §13.5's migration grant: a save written before the bucket
@@ -340,6 +342,7 @@ impl Engine {
 			&mut self.inv_grid,
 		);
 		self.reset_world_transients(start, !reuse);
+		self.arm_tutorial();
 		// The scheduler's clock is the world's AGE, never this session's.
 		// `worldjob::regrow` salts its roll with the run's SLOT, so a
 		// clock that restarted at zero on every entry replayed the same
@@ -459,8 +462,35 @@ impl Engine {
 	/// Offline arrivals never hold, guaranteed by the CALL SITES: both are `pump_net` arms and an
 	/// offline session produces no `NetEvent`s. Never guard this on `self.session.client` —
 	/// `pump_net` owns it by value for the drain, so `is_some()` reads false on both hold paths.
+	/// Start the walkthrough for this world entry, if this session
+	/// should have one: offline local play, interactively, with the
+	/// setting still on — or whatever `DIG_TUTORIAL` insists.
+	pub(super) fn arm_tutorial(&mut self) {
+		match self.config.debug_tutorial {
+			Some(crate::tutorial::TutorialOverride::Off) => return,
+			Some(crate::tutorial::TutorialOverride::On) => {
+				self.tutorial.start();
+				return;
+			}
+			Some(crate::tutorial::TutorialOverride::At(step)) => {
+				self.tutorial.start_at(step);
+				return;
+			}
+			None => {}
+		}
+		if self.config.show_tutorial
+			&& self.config.interactive
+			&& !self.config.bench
+			&& self.config.debug_screen.is_none()
+		{
+			self.tutorial.start();
+		}
+	}
+
 	pub(super) fn begin_arrival_hold(&mut self) {
-		self.save.arrival_hold = Some(digblock_net::protocol::AREA_SYNC_TIMEOUT_SECS);
+		self.save
+			.arrival_hold
+			.start(digblock_net::protocol::AREA_SYNC_TIMEOUT_SECS);
 	}
 
 	/// Release it, whichever way it ended. Also closes the join's
@@ -468,7 +498,8 @@ impl Engine {
 	/// covers itself from the HUD) and for a hold that timed out with the
 	/// menu already gone.
 	pub(super) fn end_arrival_hold(&mut self) {
-		if self.save.arrival_hold.take().is_some() {
+		if self.save.arrival_hold.running() {
+			self.save.arrival_hold.stop();
 			self.ui.menu.on_welcome();
 			// The pose we are about to start simulating from is the one the
 			// server gave us, now standing on the real world rather than on

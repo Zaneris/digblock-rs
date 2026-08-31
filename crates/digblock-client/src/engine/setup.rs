@@ -80,6 +80,10 @@ impl Engine {
 		if let Some(pitch) = config.pitch {
 			camera.pitch_deg = pitch.clamp(-89.0, 89.0);
 		}
+		let look = LookAngles {
+			yaw_deg: camera.yaw_deg,
+			pitch_deg: camera.pitch_deg,
+		};
 		let mut menu = crate::menu::Menu::new(
 			config.menu,
 			crate::settings::Settings {
@@ -92,6 +96,7 @@ impl Engine {
 				gi_scale_div: config.gi_scale_div,
 				max_lights: config.max_lights,
 				touch_jump_button: config.touch_jump_button,
+				show_tutorial: config.show_tutorial,
 			},
 			config.auto_join.clone(),
 			config.account.clone(),
@@ -135,16 +140,22 @@ impl Engine {
 				music_night: None,
 				prev_wet: true,
 				fall_from_y: spawn.y,
+				ui_snapshot: None,
+				frame_oneshots: 0,
+				frame_remote_edits: 0,
 			},
 			vfx: Vfx {
 				confetti: Vec::new(),
 				confetti_seq: 0,
+				bursts: Vec::new(),
+				burst_seq: 0,
+				camera_fx: crate::camera_fx::CameraFx::default(),
 				siphon: None,
 				casts: Vec::new(),
 				cast_seq: 0,
 				kindled: Vec::new(),
 				kindle_seq: 0,
-				channel_env: 0.0,
+				channel_env: crate::anim::Envelope::default(),
 				flash: 0.0,
 				// The startup world marks its spawn too: the marker is the
 				// pad's identity, and captures photograph it here.
@@ -181,9 +192,9 @@ impl Engine {
 				player_save_accum: 0.0,
 				offline_waystones: digblock_core::waystones::Roster::new(seed),
 				spawn_pos: spawn,
-				teleport_cooldown: 0.0,
+				teleport_cooldown: crate::anim::Cooldown::default(),
 				spawn_return_pending: false,
-				arrival_hold: None,
+				arrival_hold: crate::anim::Timer::default(),
 			},
 			debug_sphere_pending: config.debug_sphere,
 			sphere_climbs: Vec::new(),
@@ -232,6 +243,11 @@ impl Engine {
 			renderer: None,
 			pipeline,
 			camera,
+			mode: CameraMode::FirstPerson,
+			look,
+			fp_eye: spawn,
+			tutorial: crate::tutorial::Tutorial::default(),
+			tutorial_jumped: false,
 			player: Player::new(spawn),
 			input: InputState {
 				touch: TouchDriver::new(),
@@ -240,7 +256,6 @@ impl Engine {
 				hud_jump_held: false,
 				fullscreen_requested: false,
 				safe_area: crate::ui::hud::SafeArea::default(),
-				walking: true,
 				fly_key_down: false,
 				overlay_key_down: false,
 				gi_drill_key_down: false,
@@ -605,7 +620,7 @@ impl Engine {
 		// join-sync Layout.
 		self.session.last_layout_sent = None;
 		// The server has no fly physics; walk is the only multiplayer mode.
-		self.input.walking = true;
+		self.mode = CameraMode::FirstPerson;
 	}
 
 	/// Wire the launcher's master-server services (list fetch, pings, token
@@ -702,6 +717,7 @@ impl Engine {
 	pub(super) fn apply_settings(&mut self, s: crate::settings::Settings) {
 		self.config.ssr = s.ssr;
 		self.config.touch_jump_button = s.touch_jump_button;
+		self.config.show_tutorial = s.show_tutorial;
 		if (s.ui_scale - self.config.ui_scale).abs() > f32::EPSILON {
 			self.config.ui_scale = s.ui_scale;
 			self.recompute_ui_scale();

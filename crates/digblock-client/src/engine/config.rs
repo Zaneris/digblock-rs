@@ -222,6 +222,15 @@ pub struct EngineConfig {
 	/// `debug_screen` makes for the input-only screens. Set by the
 	/// desktop launcher from DIG_CONFETTI.
 	pub debug_confetti: bool,
+	/// DIG_BURSTS: the generic burst rack, one of each kind, on repeat.
+	pub debug_bursts: bool,
+	/// DIG_ORBIT: a slow cinematic orbit of the aim point,
+	/// `(radius, deg/s)`.
+	pub debug_orbit: Option<(f32, f32)>,
+	/// The persisted `Settings::show_tutorial` (launchers mirror it in).
+	pub show_tutorial: bool,
+	/// DIG_TUTORIAL: force the walkthrough on, off, or to one step.
+	pub debug_tutorial: Option<crate::tutorial::TutorialOverride>,
 	/// Draw the standing arrival markers (`waystone_fx`). A capture posed
 	/// within `MARKER_RADIUS` of spawn otherwise has the spiral in frame —
 	/// from above it is a white ball over the terrain under test. Cleared
@@ -459,6 +468,10 @@ impl EngineConfig {
 			player_name: None,
 			debug_playerbox: None,
 			debug_confetti: false,
+			debug_bursts: false,
+			debug_orbit: None,
+			show_tutorial: true,
+			debug_tutorial: None,
 			markers: true,
 			debug_crack: None,
 			debug_siphon: None,

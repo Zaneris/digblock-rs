@@ -216,9 +216,9 @@ impl Engine {
 		y as f32 + 1.0 - digblock_core::player::WATER_SURFACE_DROP - c.y
 	}
 
-	pub(super) fn frame_uniforms(&self) -> FrameUniforms {
+	pub(super) fn frame_uniforms(&self, cam_fx: &crate::camera_fx::CamOffset) -> FrameUniforms {
 		let aspect = self.ui.size.0 as f32 / self.ui.size.1.max(1) as f32;
-		let vp = self.camera.view_proj(aspect);
+		let vp = self.camera.view_proj_with(aspect, cam_fx);
 		let caster = self.sun.caster();
 		let atmos = digblock_core::sky::Atmosphere::sample(self.sun.elevation());
 		// Directions toward the bodies in the sky (opposite the light).

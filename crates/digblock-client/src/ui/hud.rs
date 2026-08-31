@@ -651,6 +651,10 @@ pub fn toasts(
 	let chip_gap = super::theme::CHIP_GAP * scale;
 	for toast in toasts.iter().rev() {
 		let fade = (toast.ttl / TOAST_FADE).clamp(0.0, 1.0);
+		// Entry: slide up out of the bar's shadow over the first beat.
+		let age = TOAST_TTL - toast.ttl;
+		let enter = digblock_core::ease::Curve::OutCubic.apply((age / 0.25).min(1.0));
+		let rise = (1.0 - enter) * line * 0.6;
 		// An XP toast says the skill; an essence toast shows the chip —
 		// an amount of essence is never a word.
 		let (text, icon) = match toast.label {
@@ -662,7 +666,7 @@ pub fn toasts(
 		};
 		let text_w = style.measure(&text);
 		let w = text_w + icon.map_or(0.0, |_| chip_gap + px) + 2.0 * pad_x;
-		let rect = super::Rect::new((size.0 as f32 - w) / 2.0, bottom - line, w, line);
+		let rect = super::Rect::new((size.0 as f32 - w) / 2.0, bottom - line + rise, w, line);
 		dl.quad(Layer::Backdrop, rect, faded(super::theme::FILL_BG, fade));
 		let top = rect.y + (line - px) / 2.0;
 		dl.text(

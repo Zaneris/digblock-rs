@@ -86,15 +86,38 @@ impl Engine {
 		// and the visible torch arrive and leave together through the swap
 		// dip; and read unconditionally, because opening the inventory
 		// puts the hand away, not the torch out.
-		self.vfx.carried.push(
-			CARRIER_SELF,
-			self.camera.pos,
-			self.vfx
-				.view_swap
-				.shown()
-				.and_then(crate::ui::hud::icon_block),
-			self.skills.level(digblock_core::skills::Skill::Mining),
-		);
+		let held_icon = self
+			.vfx
+			.view_swap
+			.shown()
+			.and_then(crate::ui::hud::icon_block);
+		if matches!(self.mode, CameraMode::Cinematic(_)) {
+			// Detached: the body is ON SCREEN, drawn through the remote
+			// path (body + held item rendering already exist there); its
+			// carried light rides that push under the SELF key, so the
+			// torch stays on the body rather than flying with the camera.
+			let d = crate::camera::dir_from(self.look.yaw_deg, 0.0);
+			push_remote(
+				&mut self.vfx.remote_instances,
+				&mut self.vfx.held_instances,
+				&mut self.vfx.carried,
+				&Remote {
+					key: CARRIER_SELF,
+					id: self.session.my_player_id.unwrap_or(0),
+					pos: self.fp_eye,
+					yaw: d.x.atan2(d.z),
+					held: held_icon.map_or(0, |b| b as u16),
+					fx: 0,
+				},
+			);
+		} else {
+			self.vfx.carried.push(
+				CARRIER_SELF,
+				self.body_anchor(),
+				held_icon,
+				self.skills.level(digblock_core::skills::Skill::Mining),
+			);
+		}
 		// The wisp: a second light on the same body while it burns.
 		if self.wisp_left > 0.0 {
 			let (level, whitened) = digblock_core::unlock::wisp_light(
@@ -102,7 +125,7 @@ impl Engine {
 			);
 			self.vfx.carried.push_arcane(
 				carried::CARRIER_WISP,
-				digblock_core::gi::carried_origin(self.camera.pos),
+				digblock_core::gi::carried_origin(self.body_anchor()),
 				level,
 				whitened,
 			);
@@ -164,10 +187,11 @@ impl Engine {
 				},
 			);
 		}
-		self.vfx.carried.finish(self.camera.pos);
-		let frame = self.frame_uniforms();
+		self.vfx.carried.finish(self.body_anchor());
+		let cam_fx = self.vfx.camera_fx.offset();
+		let frame = self.frame_uniforms(&cam_fx);
 		let aspect = size.0 as f32 / size.1.max(1) as f32;
-		let view_proj = self.camera.view_proj(aspect);
+		let view_proj = self.camera.view_proj_with(aspect, &cam_fx);
 		// Name tags: project each nearby remote's head-top to screen px.
 		// No depth (overlay) — tags read through walls within range.
 		const NAMETAG_RANGE: f32 = 32.0;
@@ -285,7 +309,7 @@ impl Engine {
 				let ports = self.known_ports();
 				let view = crate::ui::screens::spellbook::SpellView::build(
 					&self.skills,
-					self.save.teleport_cooldown.ceil() as u32,
+					self.save.teleport_cooldown.left().ceil() as u32,
 					&ports,
 					&self.inventory,
 					self.causeway_left.ceil() as u32,
@@ -374,7 +398,7 @@ impl Engine {
 			} else if self.ui.spellbook.is_open() {
 				let view = crate::ui::screens::spellbook::SpellView::build(
 					&self.skills,
-					self.save.teleport_cooldown.ceil() as u32,
+					self.save.teleport_cooldown.left().ceil() as u32,
 					ports.as_deref().unwrap_or(&[]),
 					&self.inventory,
 					self.causeway_left.ceil() as u32,
@@ -389,6 +413,39 @@ impl Engine {
 				crate::ui::InvId::Bar(i as u8)
 			});
 			crate::ui::hud::toasts(ui.dl, &ui.style, size, &self.vfx.toasts);
+			// The tutorial's prompt panel + anchored highlight. After the
+			// hotbar and screens, so the hit map already carries this
+			// frame's rects; the highlight rides Ghost, over everything.
+			if let Some(view) = self.tutorial.view(self.config.touch_hud) {
+				let text = crate::voice::plain(&crate::voice::Msg::TutorialStep {
+					step: view.step,
+					touch: self.config.touch_hud,
+				});
+				let skip_hint = if self.config.touch_hud {
+					"skip: settings"
+				} else {
+					"skip: tab"
+				};
+				crate::ui::tutorial::panel(
+					ui.dl,
+					&ui.style,
+					size,
+					&self.input.safe_area,
+					&view,
+					&text,
+					skip_hint,
+				);
+				if let Some(a) = view.anchor
+					&& let Some(r) = crate::ui::anchors::anchor_rect(
+						a,
+						ui.hits,
+						size,
+						ui.style.scale,
+						&self.input.safe_area,
+					) {
+					crate::ui::tutorial::highlight(ui.dl, &ui.style, r, self.time_secs);
+				}
+			}
 			// The teleport instant's wash: one full-rect quad over the
 			// whole overlay, gone in under half a second. Ghost is the
 			// topmost layer, which is the point — arrival paints across
@@ -452,7 +509,7 @@ impl Engine {
 		// world behind this is pristine worldgen the journal is about to
 		// overwrite. The menu path covers its own case (the Connecting
 		// screen simply stays up), so this is the in-game one — a teleport.
-		if self.save.arrival_hold.is_some() && in_game {
+		if self.save.arrival_hold.running() && in_game {
 			crate::ui::hud::arrival_cover(
 				&mut self.ui.ui_dl,
 				&crate::ui::Style::new(self.ui.ui_scale),
@@ -487,7 +544,7 @@ impl Engine {
 		// DIG_CAST poses the channel at a fixed progress — standing in a
 		// hold is the one thing a headless run cannot do (the DIG_SIPHON
 		// rule).
-		if self.vfx.channel_env > 0.0 {
+		if self.vfx.channel_env.level() > 0.0 {
 			let progress = self.config.debug_cast.unwrap_or_else(|| {
 				self.cast.as_ref().map_or(1.0, |c| {
 					let need = digblock_core::unlock::channel_ticks(
@@ -502,7 +559,7 @@ impl Engine {
 				feet.to_array(),
 				crate::teleport::Mode::Channel,
 				progress,
-				self.vfx.channel_env,
+				self.vfx.channel_env.level(),
 				3.7,
 			));
 		}
@@ -565,6 +622,8 @@ impl Engine {
 			self.vfx.marker_scratch = scratch;
 		}
 		let sky_floor = self.sky_floor();
+		// Hoisted: the renderer borrow below holds `self` mutably.
+		let body_anchor = self.body_anchor();
 		if let Some(r) = self.renderer.as_mut() {
 			// A carried light that has travelled — or has just gone out —
 			// re-places itself through the same hook a block edit uses, so
@@ -592,13 +651,14 @@ impl Engine {
 				light_cap: self.config.max_lights.max(1) as usize,
 				sky_floor,
 				confetti: &self.vfx.confetti,
+				bursts: &self.vfx.bursts,
 				// The stream ends where the tool's own light hangs, and
 				// the destination is handed over rather than derived in
 				// the shader so the two cannot drift — see `siphon`.
 				siphon: self.vfx.siphon.map(|s| {
 					crate::siphon::instance(
 						s.source.to_array(),
-						digblock_core::gi::carried_origin(self.camera.pos).to_array(),
+						digblock_core::gi::carried_origin(body_anchor).to_array(),
 						s.tint,
 						s.normal,
 						s.progress,

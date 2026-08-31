@@ -28,6 +28,7 @@ impl Renderer {
 			sky_floor,
 			overlay,
 			confetti,
+			bursts,
 			siphon,
 			teleport,
 			markers,
@@ -85,6 +86,7 @@ impl Renderer {
 			glam::Vec3::new(frame.cam_pos[0], frame.cam_pos[1], frame.cam_pos[2]),
 		);
 		let confetti_n = self.confetti.prepare(gpu, confetti);
+		let bursts_n = self.bursts.prepare(gpu, bursts);
 		let siphon_n = self.siphon.prepare(gpu, siphon.as_ref());
 		let teleport_n = self.teleport.prepare(gpu, teleport);
 		let marker_n = self.waystone_fx.prepare(gpu, markers);
@@ -408,6 +410,10 @@ impl Renderer {
 						.draw(&mut pass, confetti_n, self.gi.gather_bind());
 				stats.draw_calls += u32::from(confetti_tris > 0);
 				stats.triangles += confetti_tris;
+				// And the burst rack, through the same groups.
+				let burst_tris = self.bursts.draw(&mut pass, bursts_n, self.gi.gather_bind());
+				stats.draw_calls += u32::from(burst_tris > 0);
+				stats.triangles += burst_tris;
 
 				// The essence draw last of the three, because it is the
 				// only ADDITIVE one: it has to land on top of whatever the

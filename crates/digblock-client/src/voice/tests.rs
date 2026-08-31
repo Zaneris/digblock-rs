@@ -194,7 +194,14 @@ fn samples() -> Vec<Msg> {
 			usage: "/ban <name>".into(),
 			desc: "ban by IP".into(),
 		},
+		Msg::TutorialDone,
 	];
+	// Every tutorial step in both wordings: the sweep's uniqueness check
+	// is what proves the touch words actually differ from the keys'.
+	for step in crate::tutorial::StepId::ALL {
+		all.push(Msg::TutorialStep { step, touch: false });
+		all.push(Msg::TutorialStep { step, touch: true });
+	}
 	// Both spell-named refusals at every spell: the distinctness the
 	// caller asserts is what proves the argument reaches the words, and
 	// a spell whose sentence duplicates another's is the bug this pair
@@ -247,6 +254,8 @@ fn samples() -> Vec<Msg> {
 			| Msg::ServerNotice { .. }
 			| Msg::Chat { .. }
 			| Msg::CommandHint { .. }
+			| Msg::TutorialStep { .. }
+			| Msg::TutorialDone
 			| Msg::Admin(_) => {}
 		}
 	}

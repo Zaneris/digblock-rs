@@ -92,6 +92,9 @@ pub struct Settings {
 	/// Cap on the GI light list, on the [`LIGHT_CAP_STEP`] grid within
 	/// [`LIGHT_CAP_MIN`]..=[`LIGHT_CAP_MAX`].
 	pub max_lights: i32,
+	/// The interactive tutorial arms on the next offline world entry.
+	/// True until finished or skipped; the settings row re-arms it.
+	pub show_tutorial: bool,
 	/// Touch jump verb: the on-screen button instead of the double-tap.
 	/// Only surfaced (and only meaningful) on touch-HUD configs; the row
 	/// is hidden elsewhere but the value travels with the settings like
@@ -124,6 +127,7 @@ impl Default for Settings {
 			// native: captures build this struct, and every recorded
 			// baseline was taken with the whole list.
 			max_lights: LIGHT_CAP_MAX,
+			show_tutorial: true,
 			// The double-tap is the shipped jump — the old Java feel.
 			touch_jump_button: false,
 		}
@@ -202,6 +206,7 @@ mod tests {
 			gi_scale_div: 7,
 			max_lights: i32::MAX,
 			touch_jump_button: false,
+			show_tutorial: true,
 		}
 		.clamped();
 		assert_eq!(s.draw_dist, DRAW_MAX);
@@ -326,6 +331,7 @@ mod tests {
 			gi_scale_div: 3,
 			max_lights: LIGHT_CAP_MIN + LIGHT_CAP_STEP,
 			touch_jump_button: true,
+			show_tutorial: false,
 		};
 		assert_eq!(ok.clone().clamped(), ok);
 	}
