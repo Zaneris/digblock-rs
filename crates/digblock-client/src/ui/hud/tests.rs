@@ -426,7 +426,7 @@ fn an_essence_toast_carries_its_icon_not_its_name() {
 			.collect();
 		assert!(texts.iter().any(|t| t.contains(&toast.amount.to_string())));
 		assert!(
-			!texts.iter().any(|t| t.contains(&e.name().to_uppercase())),
+			!texts.iter().any(|t| t.contains(e.name())),
 			"{e:?} is named in words"
 		);
 		seen += 1;

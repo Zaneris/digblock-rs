@@ -550,12 +550,12 @@ fn hovering_a_slot_names_it_and_leaving_clears_it() {
 	let at = center(r.hits.rect_of(InvId::Grid(1)).unwrap());
 	feed(&mut r, &InputEvent::CursorMoved { x: at.0, y: at.1 });
 	let names = frame(&r);
-	assert_eq!(names, vec![B::Stone.name().to_uppercase()]);
+	assert_eq!(names, vec![B::Stone.name().to_string()]);
 	// The dirt on the bar: named by the PAGE, since the bar draws later
 	// at the window's scale.
 	let at = center(r.hits.rect_of(InvId::Bar(0)).unwrap());
 	feed(&mut r, &InputEvent::CursorMoved { x: at.0, y: at.1 });
-	assert_eq!(frame(&r), vec![B::Dirt.name().to_uppercase()]);
+	assert_eq!(frame(&r), vec![B::Dirt.name().to_string()]);
 	// An empty slot has no name.
 	let at = center(r.hits.rect_of(InvId::Grid(5)).unwrap());
 	feed(&mut r, &InputEvent::CursorMoved { x: at.0, y: at.1 });

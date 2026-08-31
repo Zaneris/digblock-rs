@@ -196,7 +196,7 @@ fn hovering_a_fare_names_its_essence() {
 		let dl = hover(&mut r, at);
 		assert_eq!(
 			ghost_texts(&dl),
-			vec![essence.name().to_uppercase()],
+			vec![essence.name().to_string()],
 			"slot {slot}"
 		);
 		assert_eq!(quads(&dl, Layer::Ghost).len(), 1, "one box behind the name");

@@ -256,7 +256,7 @@ fn a_transmute_batch_drips_instead_of_paying_at_once() {
 	assert_eq!(r.screen.tick(pace * 1.1, &r.view), None);
 	assert_eq!(r.screen.crafting, None, "a queue nobody can pay for ends");
 	rebuild(&mut r);
-	assert!(text_of(&r).contains("CLICK 1"), "the legend is back");
+	assert!(text_of(&r).contains("Click 1"), "the legend is back");
 
 	// The world-exit arm clears outright.
 	r.screen.debug_batch(B::WoodSlab, 3, 0.5);
@@ -1112,7 +1112,7 @@ fn every_tile_and_chip_names_itself_on_hover() {
 		};
 		let at = center(rect);
 		feed(&mut r, &InputEvent::CursorMoved { x: at.0, y: at.1 });
-		assert_eq!(frame(&r).0, vec![fam.name.to_uppercase()], "family {i}");
+		assert_eq!(frame(&r).0, vec![fam.name.to_string()], "family {i}");
 		named += 1;
 		press(&mut r, at);
 		rebuild(&mut r);
@@ -1122,7 +1122,7 @@ fn every_tile_and_chip_names_itself_on_hover() {
 			};
 			let at = center(rect);
 			feed(&mut r, &InputEvent::CursorMoved { x: at.0, y: at.1 });
-			assert_eq!(frame(&r).0, vec![item.name().to_uppercase()], "{item:?}");
+			assert_eq!(frame(&r).0, vec![item.name().to_string()], "{item:?}");
 			named += 1;
 		}
 	}
@@ -1147,7 +1147,7 @@ fn every_tile_and_chip_names_itself_on_hover() {
 	for (rect, e) in chips {
 		let at = center(rect);
 		feed(&mut r, &InputEvent::CursorMoved { x: at.0, y: at.1 });
-		assert_eq!(frame(&r).0, vec![e.name().to_uppercase()], "{e:?} chip");
+		assert_eq!(frame(&r).0, vec![e.name().to_string()], "{e:?} chip");
 		named += 1;
 	}
 	assert!(
