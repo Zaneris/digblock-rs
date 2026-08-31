@@ -231,6 +231,9 @@ pub struct EngineConfig {
 	pub debug_dolly: Option<(f32, f32)>,
 	/// The persisted `Settings::show_tutorial` (launchers mirror it in).
 	pub show_tutorial: bool,
+	/// The persisted `Settings::bindings` (launchers mirror it in; capture
+	/// paths keep the defaults, exactly like every other settings field).
+	pub bindings: crate::bindings::Bindings,
 	/// DIG_TUTORIAL: force the walkthrough on, off, or to one step.
 	pub debug_tutorial: Option<crate::tutorial::TutorialOverride>,
 	/// Draw the standing arrival markers (`waystone_fx`). A capture posed
@@ -474,6 +477,7 @@ impl EngineConfig {
 			debug_orbit: None,
 			debug_dolly: None,
 			show_tutorial: true,
+			bindings: crate::bindings::Bindings::default(),
 			debug_tutorial: None,
 			markers: true,
 			debug_crack: None,

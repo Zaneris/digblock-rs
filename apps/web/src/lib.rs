@@ -176,6 +176,7 @@ async fn boot() -> Result<(), JsValue> {
 		max_lights: config.max_lights,
 		touch_jump_button: config.touch_jump_button,
 		show_tutorial: config.show_tutorial,
+		bindings: config.bindings.clone(),
 	};
 	let saved = if interactive {
 		settings::load(defaults)
@@ -189,6 +190,7 @@ async fn boot() -> Result<(), JsValue> {
 	config.ui_scale = saved.ui_scale;
 	config.touch_jump_button = saved.touch_jump_button;
 	config.show_tutorial = saved.show_tutorial;
+	config.bindings = saved.bindings.clone();
 	// The engine picks these only when NONE was saved, at the first
 	// `set_scale_factor`, where the backing scale is first known (see
 	// `gfx_defaults_auto`). Never on a capture path: those keep the shipped

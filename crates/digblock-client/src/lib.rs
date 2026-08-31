@@ -4,6 +4,7 @@
 
 mod anim;
 pub mod audio;
+pub mod bindings;
 mod bursts;
 mod camera;
 mod camera_fx;

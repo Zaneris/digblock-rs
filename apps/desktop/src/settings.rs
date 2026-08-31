@@ -22,6 +22,10 @@ struct SettingsFile {
 	/// completion under the old model, and this row means a manual switch
 	/// now — the rename discards every stored value of the old meaning.
 	tutorials: Option<bool>,
+	/// Key bindings by stable name ("jump": "space", "" = unbound).
+	/// Unknown action or key names are skipped on read, so a file written
+	/// by a newer build loads here and vice versa.
+	binds: Option<std::collections::BTreeMap<String, String>>,
 }
 
 fn path() -> std::path::PathBuf {
@@ -57,6 +61,13 @@ pub(crate) fn load(base: Settings) -> Settings {
 		max_lights: file.max_lights.unwrap_or(base.max_lights),
 		touch_jump_button: file.touch_jump_button.unwrap_or(base.touch_jump_button),
 		show_tutorial: file.tutorials.unwrap_or(base.show_tutorial),
+		bindings: match &file.binds {
+			Some(map) => digblock_client::bindings::Bindings::from_names(
+				base.bindings,
+				map.iter().map(|(a, k)| (a.as_str(), k.as_str())),
+			),
+			None => base.bindings,
+		},
 	}
 	.clamped()
 }
@@ -75,6 +86,7 @@ pub(crate) fn save(s: &Settings) {
 		max_lights: Some(s.max_lights),
 		touch_jump_button: Some(s.touch_jump_button),
 		tutorials: Some(s.show_tutorial),
+		binds: Some(s.bindings.to_names()),
 	};
 	let path = path();
 	if let Some(parent) = path.parent() {
@@ -92,5 +104,49 @@ pub(crate) fn save(s: &Settings) {
 			"could not persist settings to {} ({e}) — settings are per-run",
 			path.display()
 		);
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use digblock_client::bindings::{Action, Bindings};
+
+	#[test]
+	fn binds_survive_the_json_roundtrip_and_unknowns_degrade() {
+		let mut s = Settings::default();
+		s.bindings
+			.bind(Action::Screenshot, digblock_platform::input::Key::F12);
+		s.bindings.unbind(Action::Fly);
+		let file = SettingsFile {
+			binds: Some(s.bindings.to_names()),
+			..SettingsFile::default()
+		};
+		let json = serde_json::to_string(&file).unwrap();
+		let back: SettingsFile = serde_json::from_str(&json).unwrap();
+		let loaded = Bindings::from_names(
+			Settings::default().bindings,
+			back.binds
+				.as_ref()
+				.unwrap()
+				.iter()
+				.map(|(a, k)| (a.as_str(), k.as_str())),
+		);
+		assert_eq!(loaded, s.bindings);
+
+		// A file from a different build: unknown names load to defaults.
+		let alien: SettingsFile =
+			serde_json::from_str(r#"{"binds": {"warp_drive": "q", "jump": "hyperspace_key"}}"#)
+				.unwrap();
+		let loaded = Bindings::from_names(
+			Settings::default().bindings,
+			alien
+				.binds
+				.as_ref()
+				.unwrap()
+				.iter()
+				.map(|(a, k)| (a.as_str(), k.as_str())),
+		);
+		assert_eq!(loaded, Settings::default().bindings);
 	}
 }

@@ -97,6 +97,7 @@ impl Engine {
 				max_lights: config.max_lights,
 				touch_jump_button: config.touch_jump_button,
 				show_tutorial: config.show_tutorial,
+				bindings: config.bindings.clone(),
 			},
 			config.auto_join.clone(),
 			config.account.clone(),
