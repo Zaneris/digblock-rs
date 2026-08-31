@@ -378,7 +378,7 @@ pub(crate) fn feed_sound(msg: &crate::voice::Msg) -> Option<crate::events::UiEve
 		| M::RemoteLevelUp { .. }
 		| M::VeinsRevealed
 		| M::SourcesRevealed
-		| M::SiphonInReach
+		| M::NowDiggable(_)
 		| M::Connected
 		| M::UnrankedServer
 		| M::LeftServer
@@ -392,6 +392,7 @@ pub(crate) fn feed_sound(msg: &crate::voice::Msg) -> Option<crate::events::UiEve
 		| M::Chat { .. }
 		| M::TutorialStep { .. }
 		| M::TutorialDone
+		| M::TutorialSiphonDone
 		| M::CommandHint { .. } => None,
 	}
 }

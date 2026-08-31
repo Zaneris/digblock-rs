@@ -87,7 +87,18 @@ impl Engine {
 					// what reveals the surface nodes, so the pipeline learns
 					// about the pack's new tool the moment it exists. A no-op
 					// for every other craft (no gate crossed, no re-mesh).
-					self.sync_node_reveal(true);
+					// Under the walkthrough's craft step the remeshes are
+					// DEFERRED: the cinematic lands each subject's pop-in
+					// mid-shot instead of letting the heap race the camera.
+					if self
+						.tutorial
+						.view(false)
+						.is_some_and(|v| v.step == crate::tutorial::StepId::CraftSiphon)
+					{
+						self.defer_node_reveal();
+					} else {
+						self.sync_node_reveal(true);
+					}
 				}
 			}
 		}
@@ -134,11 +145,10 @@ impl Engine {
 
 	/// The bench's opening invitation, asked wherever the pack GROWS (the
 	/// dig credit, the server's inventory rebase): the first time it
-	/// holds a siphon's whole price and no siphon, say so and name the
-	/// key. Price and gate are read from the tables, so a retune moves
-	/// the nudge with it. Once per world session — owning one silences it
-	/// for good, and a join sync that arrives already affordable speaks
-	/// once and is done.
+	/// holds a siphon's whole price and no siphon, the siphon walkthrough
+	/// chapter arms and does the talking. Price and gate are read from
+	/// the tables, so a retune moves the nudge with it. Once per world
+	/// session — owning one silences it for good.
 	pub(super) fn nudge_siphon(&mut self) {
 		use digblock_core::block::BlockType;
 		let siphon = BlockType::EssenceSiphon;
@@ -155,7 +165,7 @@ impl Engine {
 			return;
 		}
 		self.siphon_nudged = true;
-		self.push_feed(crate::voice::Msg::SiphonInReach);
+		self.arm_siphon_tutorial();
 	}
 
 	/// Adopt a new authoritative XP total for one skill: coalesce the delta into a toast, then
@@ -178,6 +188,16 @@ impl Engine {
 				skill,
 				level: new_level,
 			});
+			// Name what the rung actually opened ("you can now dig wood"),
+			// derived from the strength-wall table — every level crossed,
+			// so a coalesced multi-level award skips nothing.
+			if skill == digblock_core::skills::Skill::Mining {
+				for l in old_level + 1..=new_level {
+					if let Some(f) = digblock_core::unlock::family_opened(l) {
+						self.push_feed(crate::voice::Msg::NowDiggable(f));
+					}
+				}
+			}
 			// A level that OPENS something speaks with the bigger voice —
 			// derived from the gate tables, so the two sounds can't drift
 			// from what the level actually did. A multi-level jump (a big
@@ -192,6 +212,32 @@ impl Engine {
 			let eye = self.player.pos;
 			self.throw_confetti(eye);
 			self.sync_node_reveal(true);
+		}
+	}
+
+	/// The scripted half of [`Self::sync_node_reveal`]: flip the stamp
+	/// and speak, but queue NO remesh — the siphon cinematic remeshes
+	/// each subject mid-shot and sweeps the rest when the camera comes
+	/// home ([`Self::finish_reveal`]); if no shot materializes, the
+	/// cinematic starter falls straight back to the full sweep.
+	pub(super) fn defer_node_reveal(&mut self) {
+		let levels = digblock_core::worldgen::nodes::Levels::of(&self.skills, &self.inventory);
+		let was = self.pipeline.levels();
+		if !self.pipeline.set_levels(levels) {
+			return;
+		}
+		self.reveal_finale = true;
+		if levels.siphon && !was.siphon {
+			self.push_feed(crate::voice::Msg::SourcesRevealed);
+		}
+	}
+
+	/// The staged reveal's catch-all: whatever was withheld from the
+	/// resident chunks sweeps in now. Harmless when nothing is owed.
+	pub(super) fn finish_reveal(&mut self) {
+		if std::mem::take(&mut self.reveal_finale) {
+			self.reveal_cues.clear();
+			self.pipeline.remesh_all();
 		}
 	}
 

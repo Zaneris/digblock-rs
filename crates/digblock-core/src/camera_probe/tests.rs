@@ -112,3 +112,32 @@ fn unloaded_cells_do_not_block() {
 		8.0
 	);
 }
+
+/// The embedded-origin probe: starting INSIDE a block (the orbit that
+/// pivots on the heartwood), the march walks out of the leading solid
+/// and then measures to the next wall; a clear origin answers exactly
+/// what the plain probe answers.
+#[test]
+fn an_embedded_origin_escapes_its_own_block_then_measures() {
+	// Solid at x=0 (the subject); a second wall at x=6; air between.
+	let world =
+		|x: i32, _: i32, _: i32| some_cell(if x == 0 || x == 6 { B::Stone } else { B::Air });
+	let origin = Vec3::new(0.5, 0.5, 0.5);
+	let c = clearance_out_of(origin, Vec3::X, 20.0, CAM_RADIUS, &world);
+	// Past its own block, stopped a radius short of the far wall.
+	let want = (6.0 - origin.x) - CAM_RADIUS;
+	assert!(c > 1.0, "never escaped: {c}");
+	assert!((c - want).abs() <= 0.3, "{c} vs {want}");
+	// From clear air the two probes agree bitwise.
+	let open = Vec3::new(2.5, 0.5, 0.5);
+	assert_eq!(
+		clearance_out_of(open, Vec3::X, 20.0, CAM_RADIUS, &world),
+		clearance(open, Vec3::X, 20.0, CAM_RADIUS, &world),
+	);
+	// A ray that never leaves rock has nowhere to stand.
+	let rock = |_: i32, _: i32, _: i32| some_cell(B::Stone);
+	assert_eq!(
+		clearance_out_of(origin, Vec3::X, 8.0, CAM_RADIUS, &rock),
+		0.0
+	);
+}

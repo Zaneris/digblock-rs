@@ -405,21 +405,6 @@ impl Renderer {
 			next_slot: 0,
 			chunk_slots,
 			ledger,
-			block_colors: digblock_core::block::BlockType::ALL
-				.iter()
-				.map(|b| {
-					let m = textures
-						.layer_means
-						.get(b.props().tex_top as usize)
-						.copied()
-						.unwrap_or([255; 4]);
-					[
-						f32::from(m[0]) / 255.0,
-						f32::from(m[1]) / 255.0,
-						f32::from(m[2]) / 255.0,
-					]
-				})
-				.collect(),
 			block_texture: textures.texture,
 			gpu_timer: GpuTimer::new(gpu),
 			debug_gi: config.debug_gi,

@@ -168,7 +168,8 @@ fn samples() -> Vec<Msg> {
 		},
 		Msg::VeinsRevealed,
 		Msg::SourcesRevealed,
-		Msg::SiphonInReach,
+		Msg::NowDiggable(digblock_core::block::DigFamily::Wood),
+		Msg::NowDiggable(digblock_core::block::DigFamily::Rock),
 		Msg::Connected,
 		Msg::UnrankedServer,
 		Msg::LeftServer,
@@ -195,6 +196,7 @@ fn samples() -> Vec<Msg> {
 			desc: "ban by IP".into(),
 		},
 		Msg::TutorialDone,
+		Msg::TutorialSiphonDone,
 	];
 	// Every tutorial step in both wordings: the sweep's uniqueness check
 	// is what proves the touch words actually differ from the keys'.
@@ -256,7 +258,7 @@ fn samples() -> Vec<Msg> {
 			| Msg::RemoteLevelUp { .. }
 			| Msg::VeinsRevealed
 			| Msg::SourcesRevealed
-			| Msg::SiphonInReach
+			| Msg::NowDiggable(_)
 			| Msg::Connected
 			| Msg::UnrankedServer
 			| Msg::LeftServer
@@ -272,6 +274,7 @@ fn samples() -> Vec<Msg> {
 			| Msg::CommandHint { .. }
 			| Msg::TutorialStep { .. }
 			| Msg::TutorialDone
+			| Msg::TutorialSiphonDone
 			| Msg::Admin(_) => {}
 		}
 	}

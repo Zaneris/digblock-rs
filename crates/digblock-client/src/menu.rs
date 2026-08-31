@@ -667,15 +667,6 @@ impl Menu {
 		self.wants_copy.take()
 	}
 
-	/// Completion writes through the settings machinery, so the store
-	/// persists it exactly as a slider change would.
-	pub(crate) fn set_show_tutorial(&mut self, on: bool) {
-		if self.settings.show_tutorial != on {
-			self.settings.show_tutorial = on;
-			self.settings_dirty = true;
-		}
-	}
-
 	/// The frame's UI sounds (see the field). Engine drains from `input`.
 	pub(crate) fn take_sounds(&mut self) -> Vec<crate::events::UiEvent> {
 		std::mem::take(&mut self.pending_sounds)

@@ -205,6 +205,13 @@ pub struct Engine {
 	tutorial: crate::tutorial::Tutorial,
 	/// Did the player jump off the ground this frame (tutorial poll)?
 	tutorial_jumped: bool,
+	/// The staged siphon reveal: cues of (seconds into the cinematic,
+	/// subject cell) still owed a `remesh_near`, the clock they read,
+	/// and whether the world-wide sweep still waits for the camera to
+	/// come home. All idle outside the one scripted cinematic.
+	reveal_cues: Vec<(f32, (i32, i32, i32))>,
+	reveal_clock: f32,
+	reveal_finale: bool,
 	player: Player,
 	/// See [`InputState`].
 	input: InputState,
@@ -283,9 +290,10 @@ pub struct Engine {
 	/// locally and never ride `pending`. `None` until the join sync's
 	/// first inventory, which is state arriving rather than a find.
 	auth_essence: Option<[u32; digblock_core::block::Essence::COUNT]>,
-	/// Whether this session already spoke the siphon-in-reach nudge
-	/// ([`voice::Msg::SiphonInReach`]) — once per world session, and the
-	/// ownership check silences it for good the moment one is made.
+	/// Whether this session already fired the siphon-affordability nudge
+	/// (which arms the siphon walkthrough chapter) — once per world
+	/// session, and the ownership check silences it for good the moment
+	/// one is made.
 	siphon_nudged: bool,
 	hotbar: Hotbar,
 	/// The spawn structure still owed to an offline world: the stamp's
@@ -1365,3 +1373,6 @@ mod ui_sound_tests;
 
 #[cfg(test)]
 mod page_nav_tests;
+
+#[cfg(test)]
+mod siphon_tutorial_tests;

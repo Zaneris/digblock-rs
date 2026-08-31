@@ -272,6 +272,9 @@ impl Engine {
 		// bench captures' default state comparability is preserved (bench
 		// never digs, hotbar renders its fixed default row).
 		let in_game = menu_view.is_none();
+		// A running cinematic owns the whole screen: no crosshair, hotbar,
+		// hand or touch cluster — the shot is the interface.
+		let cinematic = matches!(self.mode, CameraMode::Cinematic(_));
 		// A capture's parked hover: the tile exists in LAST frame's hit
 		// map, so it is fed here, before the clear, as the cursor move it
 		// would have been.
@@ -348,7 +351,7 @@ impl Engine {
 				);
 			}
 		}
-		if in_game {
+		if in_game && !cinematic {
 			let hotbar_view = crate::hotbar::HotbarView::build(
 				&self.hotbar,
 				&self.inventory,
@@ -478,8 +481,28 @@ impl Engine {
 		// of sight with the HUD under the open menu, EXCEPT on the one
 		// step performed inside the menu (open your inventory), where the
 		// panel draws over the menu's own quads.
+		// The cinematic letterbox: two black bars, drawn on Ghost so they
+		// mask whatever world-space overlays reach the frame's edges.
+		if cinematic {
+			let bar = size.1 as f32 * 0.11;
+			let (w, h) = (size.0 as f32, size.1 as f32);
+			let ink = 0xFF00_0000;
+			self.ui.ui_dl.quad(
+				crate::ui::draw::Layer::Ghost,
+				crate::ui::Rect::new(0.0, 0.0, w, bar),
+				ink,
+			);
+			self.ui.ui_dl.quad(
+				crate::ui::draw::Layer::Ghost,
+				crate::ui::Rect::new(0.0, h - bar, w, bar),
+				ink,
+			);
+		}
+		// A running cinematic owns the screen whole: the prompt waits for
+		// the camera to come home.
 		if let Some(view) = self.tutorial.view(self.config.touch_hud)
 			&& (in_game || matches!(view.step, crate::tutorial::StepId::OpenInventory))
+			&& !cinematic
 		{
 			let style = crate::ui::Style::new(self.ui.ui_scale);
 			let text = crate::voice::plain(&crate::voice::Msg::TutorialStep {
@@ -503,10 +526,19 @@ impl Engine {
 			);
 			// The jump anchor exists only when the jump-mode setting draws
 			// the button; under the double-tap there is nothing on screen
-			// to point at.
-			let anchor = view.anchor.filter(|a| {
-				*a != crate::ui::anchors::AnchorId::JumpButton || self.config.touch_jump_button
-			});
+			// to point at. The craft step's anchor walks the BENCH instead
+			// of standing still: family tile, then the siphon's tile, then
+			// the TRANSMUTE button, resolved from the page's own selection.
+			let anchor = if view.step == crate::tutorial::StepId::CraftSiphon {
+				self.ui
+					.alch_screen
+					.guide_to(digblock_core::block::BlockType::EssenceSiphon)
+					.map(crate::ui::anchors::AnchorId::Ui)
+			} else {
+				view.anchor.filter(|a| {
+					*a != crate::ui::anchors::AnchorId::JumpButton || self.config.touch_jump_button
+				})
+			};
 			if let Some(a) = anchor
 				&& let Some(r) = crate::ui::anchors::anchor_rect(
 					a,
@@ -532,8 +564,10 @@ impl Engine {
 		}
 		let highlight_target = if in_game { self.dig_progress() } else { None };
 		// The hand is part of playing, not part of reading a screen: a
-		// menu, the inventory or the alchemy page all put it away.
+		// menu, the inventory, the alchemy page or a cinematic all put it
+		// away.
 		let viewmodel = (in_game
+			&& !cinematic
 			&& !self.ui.inv_screen.is_open()
 			&& !self.ui.alch_screen.is_open()
 			&& !self.ui.char_screen.is_open()

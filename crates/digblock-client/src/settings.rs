@@ -92,8 +92,11 @@ pub struct Settings {
 	/// Cap on the GI light list, on the [`LIGHT_CAP_STEP`] grid within
 	/// [`LIGHT_CAP_MIN`]..=[`LIGHT_CAP_MAX`].
 	pub max_lights: i32,
-	/// The interactive tutorial arms on the next offline world entry.
-	/// True until finished or skipped; the settings row re-arms it.
+	/// The tutorials' manual switch (the settings row). While on, the
+	/// walkthrough arms for every 0-XP character at offline world entry
+	/// (playing past the dig step earns the XP that retires it) and the
+	/// siphon chapter arms at its nudge; switching it off also ends a
+	/// running chapter on the spot. Completion writes nothing here.
 	pub show_tutorial: bool,
 	/// Touch jump verb: the on-screen button instead of the double-tap.
 	/// Only surfaced (and only meaningful) on touch-HUD configs; the row

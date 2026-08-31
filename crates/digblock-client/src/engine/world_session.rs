@@ -53,6 +53,10 @@ impl Engine {
 	pub(super) fn reset_world_transients(&mut self, pos: Vec3, world_replaced: bool) {
 		self.dig = None;
 		self.cast = None;
+		// A staged reveal names cells of the world being left behind.
+		self.reveal_cues.clear();
+		self.reveal_clock = 0.0;
+		self.reveal_finale = false;
 		// The backstop only. A climb is UNWOUND — glass down, fare back —
 		// by `abandon_sphere` at the sites that still have the sphere's own
 		// world under them; by the time a swap gets here the pipeline may
@@ -342,6 +346,11 @@ impl Engine {
 			&mut self.inv_grid,
 		);
 		self.reset_world_transients(start, !reuse);
+		// Fresh per-world-session state, not inherited from wherever this
+		// entry came from (the title path resets these too, but the entry
+		// must not depend on the route taken here).
+		self.siphon_nudged = false;
+		self.tutorial = crate::tutorial::Tutorial::default();
 		self.arm_tutorial();
 		// The scheduler's clock is the world's AGE, never this session's.
 		// `worldjob::regrow` salts its roll with the run's SLOT, so a
@@ -463,8 +472,12 @@ impl Engine {
 	/// offline session produces no `NetEvent`s. Never guard this on `self.session.client` —
 	/// `pump_net` owns it by value for the drain, so `is_some()` reads false on both hold paths.
 	/// Start the walkthrough for this world entry, if this session
-	/// should have one: offline local play, interactively, with the
-	/// setting still on — or whatever `DIG_TUTORIAL` insists.
+	/// should have one: offline local play, interactively, a character
+	/// with no XP at all (every fresh character gets the walkthrough;
+	/// the dig step's own XP award is what retires it for this one),
+	/// with the settings row not switched off — or whatever
+	/// `DIG_TUTORIAL` insists. Runs after the save's skills are adopted,
+	/// which is what makes the zero-XP question answerable.
 	pub(super) fn arm_tutorial(&mut self) {
 		match self.config.debug_tutorial {
 			Some(crate::tutorial::TutorialOverride::Off) => return,
@@ -478,12 +491,37 @@ impl Engine {
 			}
 			None => {}
 		}
-		if self.config.show_tutorial
+		let fresh = digblock_core::skills::Skill::ALL
+			.iter()
+			.all(|&s| self.skills.xp(s) == 0);
+		if fresh
+			&& self.config.show_tutorial
 			&& self.config.interactive
 			&& !self.config.bench
 			&& self.config.debug_screen.is_none()
 		{
 			self.tutorial.start();
+		}
+	}
+
+	/// Arm the siphon chapter at the affordability nudge: offline local
+	/// play, interactively, the settings row and the dev override both
+	/// respected. No XP gate here — the nudge already fires only for a
+	/// player who has never made a siphon, which is its own "still new".
+	pub(super) fn arm_siphon_tutorial(&mut self) {
+		if matches!(
+			self.config.debug_tutorial,
+			Some(crate::tutorial::TutorialOverride::Off)
+		) {
+			return;
+		}
+		if self.session.client.is_none()
+			&& self.config.show_tutorial
+			&& self.config.interactive
+			&& !self.config.bench
+			&& self.config.debug_screen.is_none()
+		{
+			self.tutorial.start_siphon();
 		}
 	}
 

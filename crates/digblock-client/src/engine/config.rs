@@ -227,6 +227,8 @@ pub struct EngineConfig {
 	/// DIG_ORBIT: a slow cinematic orbit of the aim point,
 	/// `(radius, deg/s)`.
 	pub debug_orbit: Option<(f32, f32)>,
+	/// DIG_DOLLY: a tracking dolly past the aim point, `(secs, blocks)`.
+	pub debug_dolly: Option<(f32, f32)>,
 	/// The persisted `Settings::show_tutorial` (launchers mirror it in).
 	pub show_tutorial: bool,
 	/// DIG_TUTORIAL: force the walkthrough on, off, or to one step.
@@ -470,6 +472,7 @@ impl EngineConfig {
 			debug_confetti: false,
 			debug_bursts: false,
 			debug_orbit: None,
+			debug_dolly: None,
 			show_tutorial: true,
 			debug_tutorial: None,
 			markers: true,

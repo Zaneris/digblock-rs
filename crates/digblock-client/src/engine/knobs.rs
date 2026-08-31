@@ -65,10 +65,16 @@ pub const ORBIT: Knob = value(
 	"DIG_ORBIT",
 	"orbit the aim point: <radius>[,<deg/s>] blocks (cinematic camera scene)",
 );
+pub const DOLLY: Knob = value(
+	"dolly",
+	"DIG_DOLLY",
+	"tracking dolly past the aim point: <secs>[,<blocks>] (cinematic camera scene)",
+);
 pub const TUTORIAL: Knob = value(
 	"tutorial",
 	"DIG_TUTORIAL",
-	"force the walkthrough: on|off|<step> (move|look|jump|dig|switch|slot|place|menu|inventory|close)",
+	"force the walkthrough: on|off|<step> \
+	 (move|look|jump|dig|switch|slot|place|menu|inventory|close|craft|siphon)",
 );
 pub const BURSTS: Knob = flag(
 	"bursts",
@@ -201,6 +207,7 @@ pub const ALL: &[Knob] = &[
 	PLAYERBOX,
 	CONFETTI,
 	ORBIT,
+	DOLLY,
 	TUTORIAL,
 	BURSTS,
 	NO_MARKERS,
@@ -309,6 +316,23 @@ pub fn apply(
 				return Err(format!(
 					"{} must be <radius>[,<deg/s>], got {v:?}",
 					ORBIT.name
+				));
+			}
+		}
+	}
+	if let Some(v) = get(&DOLLY) {
+		let mut parts = v.splitn(2, ',');
+		let secs = parts.next().unwrap_or("").trim().parse::<f32>();
+		let blocks = match parts.next() {
+			None => Ok(10.0),
+			Some(d) => d.trim().parse::<f32>(),
+		};
+		match (secs, blocks) {
+			(Ok(s), Ok(b)) if s > 0.0 && b > 0.0 => config.debug_dolly = Some((s, b)),
+			_ => {
+				return Err(format!(
+					"{} must be <secs>[,<blocks>], got {v:?}",
+					DOLLY.name
 				));
 			}
 		}

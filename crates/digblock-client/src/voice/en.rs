@@ -75,11 +75,17 @@ pub(super) fn line(msg: &Msg) -> String {
 		}
 		Msg::VeinsRevealed => "New veins shimmer into view.".into(),
 		Msg::SourcesRevealed => "The siphon hums: essence sources fade into the world.".into(),
-		Msg::SiphonInReach => format!(
-			"You can make an {}, press {} to open Alchemy.",
-			digblock_core::block::BlockType::EssenceSiphon.name(),
-			crate::engine::ALCHEMY_KEY.label()
-		),
+		// Exhaustive over the family, so a future rung cannot ship mute;
+		// the two entry families never level INTO reach, but they still
+		// answer with honest words.
+		Msg::NowDiggable(f) => {
+			use digblock_core::block::DigFamily as F;
+			match f {
+				F::Fixed | F::Soft => "You can now dig the soft ground.".into(),
+				F::Wood => "You can now dig wood.".into(),
+				F::Rock => "You can now dig rock.".into(),
+			}
+		}
 
 		Msg::Connected => "Connected to server.".into(),
 		Msg::UnrankedServer => {
@@ -126,6 +132,14 @@ pub(super) fn line(msg: &Msg) -> String {
 				S::CloseInventory => {
 					format!("press {} to close your inventory", Key::Escape.label())
 				}
+				S::CraftSiphon => format!(
+					"you can afford an essence siphon: press {} and craft one",
+					crate::engine::ALCHEMY_KEY.label()
+				),
+				S::SelectSiphon => format!(
+					"press {} until the siphon is in hand",
+					Key::Digit(digblock_core::hotbar::HOTBAR_SLOTS as u8).label()
+				),
 			}
 		}
 		Msg::TutorialStep {
@@ -146,9 +160,12 @@ pub(super) fn line(msg: &Msg) -> String {
 				S::OpenMenu => "tap the corner button to open the menu".into(),
 				S::OpenInventory => "in the menu, tap inventory".into(),
 				S::CloseInventory => "tap the x in the corner to close your inventory".into(),
+				S::CraftSiphon => "you can afford an essence siphon: craft one at the bench".into(),
+				S::SelectSiphon => "tap the last slot until the siphon is in hand".into(),
 			}
 		}
 		Msg::TutorialDone => "you know the essentials: this world is yours".into(),
+		Msg::TutorialSiphonDone => "that is everything: go siphon some essence".into(),
 		Msg::ServerNotice { text } => format!("[server] {text}"),
 		Msg::Chat { name, text } => format!("{name}: {text}"),
 		Msg::CommandHint { usage, desc } => command_hint(usage, desc).text,

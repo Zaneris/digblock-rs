@@ -421,6 +421,30 @@ impl AlchScreen {
 		self.open
 	}
 
+	/// The tile the tutorial should point at to walk a player toward
+	/// crafting `item`: its family's tile while that family is not
+	/// selected, the member's own tile while it is not the picked one,
+	/// and the TRANSMUTE button once it is. None with the page closed or
+	/// the item in no family. The ids come from the same tables the
+	/// draw pass indexes, so the highlight can never name a wrong tile.
+	pub(crate) fn guide_to(&self, item: BlockType) -> Option<InvId> {
+		if !self.open {
+			return None;
+		}
+		let (fi, family) = families()
+			.iter()
+			.enumerate()
+			.find(|(_, f)| f.members.contains(&item))?;
+		if self.family != Some(fi) {
+			return Some(InvId::Family(fi as u8));
+		}
+		let j = family.members.iter().position(|&m| m == item)?;
+		if self.member != j {
+			return Some(InvId::Craft(j as u8));
+		}
+		Some(InvId::CraftGo)
+	}
+
 	pub fn open(&mut self) {
 		self.open = true;
 		self.shift = false;

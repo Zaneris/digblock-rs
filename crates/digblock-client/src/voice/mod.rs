@@ -137,10 +137,8 @@ pub(crate) enum Msg {
 	/// The siphon has just been made: every surface source fades into the
 	/// world at once.
 	SourcesRevealed,
-	/// The bench's opening invitation: the pack has just come to hold a
-	/// siphon's whole price for the first time, and no siphon.
-	SiphonInReach,
-
+	/// A Mining rung opened a whole dig family (`unlock::family_opened`).
+	NowDiggable(digblock_core::block::DigFamily),
 	// ---- the session ----
 	Connected,
 	/// The server just joined is not on the master's trusted list.
@@ -173,6 +171,8 @@ pub(crate) enum Msg {
 	},
 	/// The completion line (finished or skipped alike).
 	TutorialDone,
+	/// The siphon chapter's completion line.
+	TutorialSiphonDone,
 
 	// ---- text that arrives as text: nothing on this side knows what it says ----
 	ServerNotice {

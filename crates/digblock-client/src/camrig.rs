@@ -81,10 +81,14 @@ impl Boom {
 
 /// A slow orbit about a world point, boom pulled in by the terrain probe
 /// re-run every frame — dug or placed blocks change next frame's answer
-/// with no extra machinery.
+/// with no extra machinery. `center` must sit in clear air (the probe
+/// casts from it); `target` is what the lens holds, and may be a solid
+/// block the center stands beside — the two split exactly so a subject
+/// that IS terrain can still be looked at.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) struct OrbitRig {
 	pub center: Vec3,
+	pub target: Vec3,
 	pub radius: f32,
 	pub height: f32,
 	pub yaw_deg: f32,
@@ -96,6 +100,7 @@ impl OrbitRig {
 	pub(crate) fn new(center: Vec3, radius: f32, height: f32, angular_vel_deg: f32) -> Self {
 		Self {
 			center,
+			target: center,
 			radius: radius.clamp(1.0, ORBIT_RADIUS_MAX),
 			height,
 			yaw_deg: 0.0,
@@ -105,9 +110,17 @@ impl OrbitRig {
 		}
 	}
 
+	/// Start with the boom already run out: for a center that IS the
+	/// subject block, the eased fly-out would crawl the camera through
+	/// it; the pose blend supplies the entry motion instead.
+	pub(crate) fn extended(mut self) -> Self {
+		self.boom = Boom { len: f32::MAX };
+		self
+	}
+
 	/// Advance the azimuth, probe from the CENTER outward (a wall between
 	/// subject and camera pulls the camera in front of it, never behind),
-	/// smooth the boom, look at the center.
+	/// smooth the boom, look at the target.
 	pub(crate) fn step(
 		&mut self,
 		dt: f32,
@@ -120,17 +133,152 @@ impl OrbitRig {
 		let dir = offset / dist;
 		let clear = clearance(self.center, dir, dist, CAM_RADIUS);
 		let len = self.boom.step(clear, dt);
-		CamPose::look_at(self.center + dir * len, self.center)
+		CamPose::look_at(self.center + dir * len, self.target)
 	}
 }
 
-/// The cinematic state machine: blend in from the captured first-person
-/// pose, run the rig, blend back toward the LIVE first-person pose on
-/// leave (the player may have kept moving under a server), then hand the
-/// mode back to first person by returning None.
+/// A tracking dolly: the eye slides `from` -> `to` over `secs` with the
+/// lens CHASING `target` every frame — the classic move for a subject
+/// the camera passes at a distance. Do not run it through (or near
+/// over) the subject: the bearing swings hard as the eye passes, which
+/// is [`DroneRig`]'s job to avoid. The boom probes from the target
+/// toward the eye and starts fully extended (a dolly cuts in rather
+/// than blending out of its subject).
 #[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) struct DollyRig {
+	pub from: Vec3,
+	pub to: Vec3,
+	pub target: Vec3,
+	pub secs: f32,
+	t: f32,
+	boom: Boom,
+}
+
+impl DollyRig {
+	pub(crate) fn new(from: Vec3, to: Vec3, target: Vec3, secs: f32) -> Self {
+		Self {
+			from,
+			to,
+			target,
+			secs: secs.max(0.01),
+			t: 0.0,
+			boom: Boom { len: f32::MAX },
+		}
+	}
+
+	pub(crate) fn step(
+		&mut self,
+		dt: f32,
+		clearance: &dyn Fn(Vec3, Vec3, f32, f32) -> f32,
+	) -> CamPose {
+		self.t = (self.t + dt / self.secs).min(1.0);
+		let eye = self.from.lerp(self.to, Curve::InOutCubic.apply(self.t));
+		let offset = eye - self.target;
+		let dist = offset.length().max(1e-3);
+		let dir = offset / dist;
+		let clear = clearance(self.target, dir, dist, CAM_RADIUS);
+		let len = self.boom.step(clear, dt);
+		CamPose::look_at(self.target + dir * len, self.target)
+	}
+}
+
+/// A drone glide: the same slide with a FIXED gimbal — the frame never
+/// rotates, the world drifts through it, which is what lets the path
+/// pass directly over the subject (a look-at there spins the frame).
+/// The boom probes from `target` toward the eye; an embedded target is
+/// fine under `clearance_out_of`.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) struct DroneRig {
+	pub from: Vec3,
+	pub to: Vec3,
+	pub target: Vec3,
+	pub yaw_deg: f32,
+	pub pitch_deg: f32,
+	pub secs: f32,
+	t: f32,
+	boom: Boom,
+}
+
+impl DroneRig {
+	pub(crate) fn new(
+		from: Vec3,
+		to: Vec3,
+		target: Vec3,
+		secs: f32,
+		yaw_deg: f32,
+		pitch_deg: f32,
+	) -> Self {
+		Self {
+			from,
+			to,
+			target,
+			yaw_deg,
+			pitch_deg: pitch_deg.clamp(-89.0, 89.0),
+			secs: secs.max(0.01),
+			t: 0.0,
+			boom: Boom { len: f32::MAX },
+		}
+	}
+
+	pub(crate) fn step(
+		&mut self,
+		dt: f32,
+		clearance: &dyn Fn(Vec3, Vec3, f32, f32) -> f32,
+	) -> CamPose {
+		self.t = (self.t + dt / self.secs).min(1.0);
+		let eye = self.from.lerp(self.to, Curve::InOutCubic.apply(self.t));
+		let offset = eye - self.target;
+		let dist = offset.length().max(1e-3);
+		let dir = offset / dist;
+		let clear = clearance(self.target, dir, dist, CAM_RADIUS);
+		let len = self.boom.step(clear, dt);
+		CamPose {
+			pos: self.target + dir * len,
+			yaw_deg: self.yaw_deg,
+			pitch_deg: self.pitch_deg,
+		}
+	}
+}
+
+/// One rig a shot can run.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) enum CineRig {
+	Orbit(OrbitRig),
+	Dolly(DollyRig),
+	Drone(DroneRig),
+}
+
+impl CineRig {
+	fn step(&mut self, dt: f32, clearance: &dyn Fn(Vec3, Vec3, f32, f32) -> f32) -> CamPose {
+		match self {
+			CineRig::Orbit(r) => r.step(dt, clearance),
+			CineRig::Dolly(r) => r.step(dt, clearance),
+			CineRig::Drone(r) => r.step(dt, clearance),
+		}
+	}
+}
+
+/// One shot of a sequence: a rig held for `hold` seconds before the CUT
+/// to the next (or the leave blend, on the last). `f32::INFINITY` runs
+/// until something calls `leave` — the dev orbit's mode.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(crate) struct Shot {
+	pub rig: CineRig,
+	pub hold: f32,
+}
+
+/// The cinematic state machine: blend in from the captured first-person
+/// pose, run the shot sequence (hard cuts between shots), blend back
+/// toward the LIVE first-person pose on leave (the player may have kept
+/// moving under a server), then hand the mode back to first person by
+/// returning None.
+#[derive(Clone, PartialEq, Debug)]
 pub(crate) struct Cinematic {
-	pub rig: OrbitRig,
+	shot: Shot,
+	/// Shots still to come; each cuts in when the current hold expires.
+	queue: Vec<Shot>,
+	/// Seconds into the current shot.
+	age: f32,
 	/// Captured first-person pose the entry blends out of.
 	from: CamPose,
 	/// 0..=1 into the rig.
@@ -140,9 +288,26 @@ pub(crate) struct Cinematic {
 }
 
 impl Cinematic {
+	/// A single unbounded orbit — the dev knob's mode, ended by `leave`.
 	pub(crate) fn start(from: CamPose, rig: OrbitRig) -> Self {
+		Self::start_shots(
+			from,
+			vec![Shot {
+				rig: CineRig::Orbit(rig),
+				hold: f32::INFINITY,
+			}],
+		)
+	}
+
+	/// A scripted sequence. `shots` must be non-empty; each shot runs its
+	/// hold and CUTS to the next, and the last one's expiry leaves.
+	pub(crate) fn start_shots(from: CamPose, mut shots: Vec<Shot>) -> Self {
+		assert!(!shots.is_empty(), "a cinematic needs at least one shot");
+		let shot = shots.remove(0);
 		Self {
-			rig,
+			shot,
+			queue: shots,
+			age: 0.0,
 			from,
 			enter: 0.0,
 			leaving: None,
@@ -162,7 +327,19 @@ impl Cinematic {
 		fp: CamPose,
 		clearance: &dyn Fn(Vec3, Vec3, f32, f32) -> f32,
 	) -> Option<CamPose> {
-		let rig_pose = self.rig.step(dt, clearance);
+		self.age += dt;
+		if self.age >= self.shot.hold && self.leaving.is_none() {
+			if self.queue.is_empty() {
+				self.leave();
+			} else {
+				// A hard cut: the next rig takes over whole, no residual
+				// entry blend softening it into the old pose.
+				self.shot = self.queue.remove(0);
+				self.age = 0.0;
+				self.enter = 1.0;
+			}
+		}
+		let rig_pose = self.shot.rig.step(dt, clearance);
 		self.enter = (self.enter + dt / BLEND_SECS).min(1.0);
 		let base = CamPose::blend(self.from, rig_pose, Curve::InOutCubic.apply(self.enter));
 		match &mut self.leaving {

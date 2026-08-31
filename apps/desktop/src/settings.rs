@@ -18,7 +18,10 @@ struct SettingsFile {
 	gi_scale_div: Option<u32>,
 	max_lights: Option<i32>,
 	touch_jump_button: Option<bool>,
-	show_tutorial: Option<bool>,
+	/// Deliberately NOT `show_tutorial`: that key was auto-written false on
+	/// completion under the old model, and this row means a manual switch
+	/// now — the rename discards every stored value of the old meaning.
+	tutorials: Option<bool>,
 }
 
 fn path() -> std::path::PathBuf {
@@ -53,7 +56,7 @@ pub(crate) fn load(base: Settings) -> Settings {
 		gi_scale_div: file.gi_scale_div.unwrap_or(base.gi_scale_div),
 		max_lights: file.max_lights.unwrap_or(base.max_lights),
 		touch_jump_button: file.touch_jump_button.unwrap_or(base.touch_jump_button),
-		show_tutorial: file.show_tutorial.unwrap_or(base.show_tutorial),
+		show_tutorial: file.tutorials.unwrap_or(base.show_tutorial),
 	}
 	.clamped()
 }
@@ -71,7 +74,7 @@ pub(crate) fn save(s: &Settings) {
 		gi_scale_div: Some(s.gi_scale_div),
 		max_lights: Some(s.max_lights),
 		touch_jump_button: Some(s.touch_jump_button),
-		show_tutorial: Some(s.show_tutorial),
+		tutorials: Some(s.show_tutorial),
 	};
 	let path = path();
 	if let Some(parent) = path.parent() {

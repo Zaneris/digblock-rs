@@ -475,6 +475,38 @@ impl Engine {
 			let rig = crate::camrig::OrbitRig::new(center, radius, (radius * 0.4).min(6.0), degs);
 			self.mode = CameraMode::Cinematic(crate::camrig::Cinematic::start(from, rig));
 		}
+		// DIG_DOLLY: a tracking dolly sliding sideways past the aim point
+		// (or a spot ahead), for photographing the chasing lens on a
+		// moving eye. The shot is finite, so a finished pass re-arms and
+		// runs again — every age stays photographable, DIG_CONFETTI's
+		// looping rule.
+		if let Some((secs, blocks)) = self.config.debug_dolly
+			&& self.mode.first_person()
+		{
+			let eye = self.camera.pos;
+			let target = match &self.target {
+				Some(h) => Vec3::from_array(cell_center(h.cell)),
+				None => eye + self.camera.dir() * 6.0,
+			};
+			let d = target - eye;
+			let slide = Vec3::new(d.x, 0.0, d.z)
+				.try_normalize()
+				.unwrap_or(Vec3::Z)
+				.cross(Vec3::Y);
+			let from = crate::camrig::CamPose {
+				pos: eye,
+				yaw_deg: self.look.yaw_deg,
+				pitch_deg: self.look.pitch_deg,
+			};
+			let rig = crate::camrig::DollyRig::new(eye, eye + slide * blocks, target, secs);
+			self.mode = CameraMode::Cinematic(crate::camrig::Cinematic::start_shots(
+				from,
+				vec![crate::camrig::Shot {
+					rig: crate::camrig::CineRig::Dolly(rig),
+					hold: secs,
+				}],
+			));
+		}
 		// The bench drip: a queued transmute batch sends one single-item
 		// Craft per cycle — the server paces the same rhythm out of its
 		// bench bucket. The view is rebuilt here rather than borrowed
@@ -617,6 +649,16 @@ impl Engine {
 		}
 
 		if let CameraMode::Cinematic(_) = self.mode {
+			// The staged reveal: each subject's chunks remesh on cue,
+			// while its own shot is framing it.
+			self.reveal_clock += dt;
+			while let Some(&(at, cell)) = self.reveal_cues.first() {
+				if self.reveal_clock < at {
+					break;
+				}
+				self.reveal_cues.remove(0);
+				self.pipeline.remesh_near(cell, 1);
+			}
 			// The player keeps simulating, standing still: gravity, water
 			// and (online) the input stream continue under the shot. The
 			// touch jump edge is still drained, as first person drains it.
@@ -643,8 +685,11 @@ impl Engine {
 			let pose = {
 				let pipeline = &self.pipeline;
 				let cell_at = |x: i32, y: i32, z: i32| pipeline.cell_at(x, y, z);
+				// `clearance_out_of`, not plain `clearance`: an orbit may
+				// pivot ON a terrain block (the heartwood), and a clear
+				// origin degrades to the plain probe anyway.
 				let clear = |o: Vec3, d: Vec3, m: f32, r: f32| {
-					digblock_core::camera_probe::clearance(o, d, m, r, &cell_at)
+					digblock_core::camera_probe::clearance_out_of(o, d, m, r, &cell_at)
 				};
 				cine.step(dt, fp, &clear)
 			};
@@ -662,6 +707,9 @@ impl Engine {
 					self.camera.pos = fp.pos;
 					self.camera.yaw_deg = fp.yaw_deg;
 					self.camera.pitch_deg = fp.pitch_deg;
+					// Whatever the staged reveal still owes the world
+					// sweeps in now, off camera.
+					self.finish_reveal();
 				}
 			}
 		} else if self.mode.first_person() {
@@ -731,6 +779,10 @@ impl Engine {
 				yaw_deg: self.look.yaw_deg,
 				pitch_deg: self.look.pitch_deg,
 				jumped: std::mem::take(&mut self.tutorial_jumped),
+				owns_siphon: self.inventory.count(BlockType::EssenceSiphon) > 0,
+				siphon_in_hand: self.hotbar.selected_item()
+					== Some(digblock_core::hotbar::HotbarItem::WaterTool)
+					&& self.hotbar.active_tool() == Some(BlockType::EssenceSiphon),
 			};
 			if let Some(adv) = self.tutorial.poll(&poll, dt) {
 				self.on_tutorial_advance(adv);

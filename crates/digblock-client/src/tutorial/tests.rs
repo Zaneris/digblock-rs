@@ -45,21 +45,41 @@ fn satisfy(t: &mut Tutorial, id: StepId) -> Option<Advance> {
 		StepId::CloseInventory => {
 			t.observe(&GameEvent::Ui(UiEvent::ScreenClose(ScreenKind::Inventory)))
 		}
+		StepId::CraftSiphon => t.poll(
+			&Poll {
+				owns_siphon: true,
+				..Poll::default()
+			},
+			0.016,
+		),
+		StepId::SelectSiphon => t.poll(
+			&Poll {
+				siphon_in_hand: true,
+				..Poll::default()
+			},
+			0.016,
+		),
 	}
 }
 
-/// Table invariants: unique ids, and the parse round-trips every one.
+/// Table invariants: unique ids across BOTH chapters, `ALL` in table
+/// order, and the parse round-trips every one.
 #[test]
 fn the_table_is_sound_and_the_knob_names_every_step() {
-	for (i, s) in STEPS.iter().enumerate() {
+	let all: Vec<StepId> = STEPS
+		.iter()
+		.chain(SIPHON_STEPS.iter())
+		.map(|s| s.id)
+		.collect();
+	for (i, id) in all.iter().enumerate() {
 		assert_eq!(
-			STEPS.iter().filter(|o| o.id == s.id).count(),
+			all.iter().filter(|o| *o == id).count(),
 			1,
-			"{:?} appears twice",
-			s.id
+			"{id:?} appears twice"
 		);
-		assert_eq!(STEPS[i].id, StepId::ALL[i], "ALL order matches STEPS");
+		assert_eq!(*id, StepId::ALL[i], "ALL order matches the tables");
 	}
+	assert_eq!(all.len(), StepId::ALL.len());
 	for id in StepId::ALL {
 		let spelled = match id {
 			StepId::Move => "move",
@@ -72,6 +92,8 @@ fn the_table_is_sound_and_the_knob_names_every_step() {
 			StepId::OpenMenu => "menu",
 			StepId::OpenInventory => "inventory",
 			StepId::CloseInventory => "close",
+			StepId::CraftSiphon => "craft",
+			StepId::SelectSiphon => "siphon",
 		};
 		assert_eq!(StepId::parse(spelled), Some(id));
 	}
@@ -175,15 +197,52 @@ fn the_first_look_sample_credits_nothing() {
 	assert_eq!(t.view(false).unwrap().progress, Some(0.5));
 }
 
-/// Skip from any step lands Done and reports Finished exactly once.
+/// Skip from any step lands Done and reports its chapter's finish
+/// exactly once.
 #[test]
 fn skip_finishes_from_any_step() {
 	for id in StepId::ALL {
 		let mut t = Tutorial::default();
 		t.start_at(id);
-		assert_eq!(t.skip(), Some(Advance::Finished), "{id:?}");
+		let want = if SIPHON_STEPS.iter().any(|s| s.id == id) {
+			Advance::SiphonFinished
+		} else {
+			Advance::Finished
+		};
+		assert_eq!(t.skip(), Some(want), "{id:?}");
 		assert_eq!(t.skip(), None, "{id:?} skipped twice");
 	}
+}
+
+/// The siphon chapter: armed by the nudge, walked by the pack and the
+/// bar rather than clicks, and finishing with its own advance. A nudge
+/// landing mid-walkthrough keeps the running chapter's floor.
+#[test]
+fn the_siphon_chapter_arms_and_walks() {
+	let mut t = Tutorial::default();
+	// Inactive: the poll conditions move nothing.
+	assert_eq!(satisfy(&mut t, StepId::CraftSiphon), None);
+	t.start_siphon();
+	let view = t.view(false).expect("running");
+	assert_eq!(view.step, StepId::CraftSiphon);
+	assert_eq!(view.total, 2);
+	// The wrong condition holds nothing.
+	assert_eq!(satisfy(&mut t, StepId::SelectSiphon), None);
+	assert_eq!(
+		satisfy(&mut t, StepId::CraftSiphon),
+		Some(Advance::Step(StepId::CraftSiphon))
+	);
+	assert_eq!(t.view(false).unwrap().step, StepId::SelectSiphon);
+	assert_eq!(
+		satisfy(&mut t, StepId::SelectSiphon),
+		Some(Advance::SiphonFinished)
+	);
+	assert!(!t.is_running());
+	// Mid-walkthrough, the nudge does not steal the floor.
+	let mut t = Tutorial::default();
+	t.start();
+	t.start_siphon();
+	assert_eq!(t.view(false).unwrap().step, StepId::Move);
 }
 
 /// Touch picks the touch anchor when one exists, else the keyboard's.

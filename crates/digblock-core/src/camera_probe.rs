@@ -103,5 +103,38 @@ pub fn clearance(
 	max
 }
 
+/// [`clearance`] for a probe origin EMBEDDED in its own subject — a
+/// camera orbiting a block of terrain pivots on the block itself. The
+/// march first walks OUT of the leading solid (up to `max`), then
+/// measures ordinary clearance from there; the returned length is from
+/// `origin`, so a boom holding it stands in the first air pocket
+/// outside the subject. A clear origin degrades to exactly
+/// [`clearance`], so one closure serves every rig.
+pub fn clearance_out_of(
+	origin: Vec3,
+	dir: Vec3,
+	max: f32,
+	radius: f32,
+	cell_at: &dyn Fn(i32, i32, i32) -> Option<u16>,
+) -> f32 {
+	if !sphere_overlaps_solid(origin, radius, cell_at) {
+		return clearance(origin, dir, max, radius, cell_at);
+	}
+	let dir = dir.normalize_or_zero();
+	if dir == Vec3::ZERO || max <= 0.0 {
+		return 0.0;
+	}
+	let step = radius.max(1e-3);
+	let mut t = 0.0f32;
+	while t < max {
+		t = (t + step).min(max);
+		if !sphere_overlaps_solid(origin + dir * t, radius, cell_at) {
+			return t + clearance(origin + dir * t, dir, max - t, radius, cell_at);
+		}
+	}
+	// The ray never left the solid within reach.
+	0.0
+}
+
 #[cfg(test)]
 mod tests;

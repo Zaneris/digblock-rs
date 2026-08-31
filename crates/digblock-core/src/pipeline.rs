@@ -707,6 +707,26 @@ impl Pipeline {
 		}
 	}
 
+	/// Re-mesh only the chunks within `chunks` Chebyshev distance of one
+	/// WORLD cell — the staged-reveal tool: it lands one subject's
+	/// appearance on cue where [`Self::remesh_all`] floods the heap and
+	/// lets distance decide the moment.
+	pub fn remesh_near(&mut self, cell: (i32, i32, i32), chunks: i32) {
+		let Some(((cx, cy, cz), _)) = crate::chunk::split_world(cell.0, cell.1, cell.2) else {
+			return;
+		};
+		let center = self.center;
+		for (pos, slot) in self.store.iter_mut() {
+			if (pos.x - cx).abs() <= chunks
+				&& (pos.y - cy).abs() <= chunks
+				&& (pos.z - cz).abs() <= chunks
+				&& matches!(&slot.state, ChunkState::Ready(d) if !is_air_chunk(d))
+			{
+				queue_mesh(slot, &mut self.mesh_heap, *pos, center);
+			}
+		}
+	}
+
 	pub fn resident(&self) -> usize {
 		self.store.len()
 	}

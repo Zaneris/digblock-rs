@@ -248,6 +248,9 @@ impl Engine {
 			fp_eye: spawn,
 			tutorial: crate::tutorial::Tutorial::default(),
 			tutorial_jumped: false,
+			reveal_cues: Vec::new(),
+			reveal_clock: 0.0,
+			reveal_finale: false,
 			player: Player::new(spawn),
 			input: InputState {
 				touch: TouchDriver::new(),
@@ -718,6 +721,14 @@ impl Engine {
 		self.config.ssr = s.ssr;
 		self.config.touch_jump_button = s.touch_jump_button;
 		self.config.show_tutorial = s.show_tutorial;
+		// The touch HUD's advertised skip: switching the row off ends a
+		// running chapter on the spot (the row also gates the arming for
+		// the next fresh character, and the siphon nudge's).
+		if !s.show_tutorial
+			&& let Some(adv) = self.tutorial.skip()
+		{
+			self.on_tutorial_advance(adv);
+		}
 		if (s.ui_scale - self.config.ui_scale).abs() > f32::EPSILON {
 			self.config.ui_scale = s.ui_scale;
 			self.recompute_ui_scale();
