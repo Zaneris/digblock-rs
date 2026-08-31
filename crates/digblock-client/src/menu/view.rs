@@ -67,34 +67,34 @@ impl Menu {
 						&mut y,
 						RowSpec::item(RowId::RootItem(0), "Back to Game"),
 					);
+					// Key chips read the live table, so a rebound page key
+					// renames its chip the moment the binding lands.
+					use crate::bindings::Action as A;
+					let chip = |a| self.settings.bindings.label(a);
 					push(
 						&mut specs,
 						&mut y,
-						RowSpec::item_hint(RowId::RootItem(3), "Spellbook", "J"),
+						RowSpec::item_hint(RowId::RootItem(3), "Spellbook", chip(A::OpenSpellbook)),
 					);
 					push(
 						&mut specs,
 						&mut y,
-						RowSpec::item_hint(RowId::RootItem(6), "Inventory", "I"),
+						RowSpec::item_hint(RowId::RootItem(6), "Inventory", chip(A::OpenInventory)),
 					);
 					push(
 						&mut specs,
 						&mut y,
-						RowSpec::item_hint(
-							RowId::RootItem(7),
-							"Alchemy",
-							crate::engine::ALCHEMY_KEY.label(),
-						),
+						RowSpec::item_hint(RowId::RootItem(7), "Alchemy", chip(A::OpenAlchemy)),
 					);
 					push(
 						&mut specs,
 						&mut y,
-						RowSpec::item_hint(RowId::RootItem(9), "Character", "C"),
+						RowSpec::item_hint(RowId::RootItem(9), "Character", chip(A::OpenCharacter)),
 					);
 					push(
 						&mut specs,
 						&mut y,
-						RowSpec::item_hint(RowId::RootItem(12), "Hiscores", "H"),
+						RowSpec::item_hint(RowId::RootItem(12), "Hiscores", chip(A::OpenHiscores)),
 					);
 					if self.connected {
 						push(

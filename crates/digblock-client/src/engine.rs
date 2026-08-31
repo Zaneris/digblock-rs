@@ -39,15 +39,6 @@ impl CameraMode {
 	}
 }
 
-/// The alchemy screen's toggle, named in ONE place so the texts that say
-/// "press K" — the menu row's key chip, the siphon-in-reach nudge — can
-/// never name a key the input match stopped answering.
-pub(crate) const ALCHEMY_KEY: Key = Key::K;
-
-/// The inventory's toggle, hoisted for the same reason: the tutorial's
-/// "press I" line reads it, so the hint can never name a dead key.
-pub(crate) const INVENTORY_KEY: Key = Key::I;
-
 mod config;
 pub use config::{DebugScreen, EngineConfig, parse_held_item};
 pub mod knobs;
@@ -695,6 +686,12 @@ struct InputState {
 	/// The menu's Fullscreen row fired; the shell drains it right after
 	/// this input dispatch, while the gesture is still on the stack.
 	fullscreen_requested: bool,
+
+	/// The live rebindable-key table (the persisted `Settings::bindings`,
+	/// re-copied by `apply_settings`). Every key event resolves through it
+	/// before the fixed fallback arm; the texts that say "press K" read it
+	/// too, so a hint can never name a dead key.
+	bindings: crate::bindings::Bindings,
 
 	/// Shell-forwarded display cutouts the touch HUD keeps clear of.
 	safe_area: crate::ui::hud::SafeArea,

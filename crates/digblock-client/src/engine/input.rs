@@ -4,6 +4,7 @@
 //! every screen, and no screen knows about touch.
 
 use super::*;
+use crate::bindings::{Action, Bindings};
 
 impl Engine {
 	pub(super) fn handle_input(&mut self, event: InputEvent) {
@@ -156,7 +157,7 @@ impl Engine {
 			// Escape key uses, so its bookkeeping runs.
 			if self.ui.menu.hotkeys_reach_through()
 				&& let InputEvent::Key { key, pressed: true } = event
-				&& let Some(kind) = page_hotkey(key)
+				&& let Some(kind) = page_hotkey(&self.input.bindings, key)
 			{
 				self.ui.menu.handle_input(
 					&InputEvent::Key {
@@ -203,7 +204,7 @@ impl Engine {
 		// chat never reaches here with a page up, so typing stays whole.
 		if let Some(cur) = self.open_page()
 			&& let InputEvent::Key { key, pressed: true } = event
-			&& let Some(kind) = page_hotkey(key)
+			&& let Some(kind) = page_hotkey(&self.input.bindings, key)
 			&& kind != cur
 		{
 			self.open_screen(kind);
@@ -222,10 +223,12 @@ impl Engine {
 					self.input.dig_held = false;
 					self.ui.inv_screen.cancel_drag();
 				}
-				InputEvent::Key {
-					key: INVENTORY_KEY | Key::Escape,
-					pressed: true,
-				} => self.ui.inv_screen.close(),
+				InputEvent::Key { key, pressed: true }
+					if key == Key::Escape
+						|| self.input.bindings.action(key) == Some(Action::OpenInventory) =>
+				{
+					self.ui.inv_screen.close()
+				}
 				_ => {
 					let bar = crate::hotbar::HotbarView::build(
 						&self.hotbar,
@@ -264,10 +267,12 @@ impl Engine {
 						&view,
 					);
 				}
-				InputEvent::Key {
-					key: ALCHEMY_KEY | Key::Escape,
-					pressed: true,
-				} => self.ui.alch_screen.close(),
+				InputEvent::Key { key, pressed: true }
+					if key == Key::Escape
+						|| self.input.bindings.action(key) == Some(Action::OpenAlchemy) =>
+				{
+					self.ui.alch_screen.close()
+				}
 				_ => {
 					let view =
 						crate::ui::screens::alchemy::AlchView::build(&self.inventory, &self.skills);
@@ -294,10 +299,12 @@ impl Engine {
 					self.clear_touch_state();
 					self.input.dig_held = false;
 				}
-				InputEvent::Key {
-					key: Key::C | Key::Escape,
-					pressed: true,
-				} => self.ui.char_screen.close(),
+				InputEvent::Key { key, pressed: true }
+					if key == Key::Escape
+						|| self.input.bindings.action(key) == Some(Action::OpenCharacter) =>
+				{
+					self.ui.char_screen.close()
+				}
 				_ => self.ui.char_screen.handle_input(&event),
 			}
 			return;
@@ -312,10 +319,12 @@ impl Engine {
 					self.clear_touch_state();
 					self.input.dig_held = false;
 				}
-				InputEvent::Key {
-					key: Key::H | Key::Escape,
-					pressed: true,
-				} => self.ui.hiscores.close(),
+				InputEvent::Key { key, pressed: true }
+					if key == Key::Escape
+						|| self.input.bindings.action(key) == Some(Action::OpenHiscores) =>
+				{
+					self.ui.hiscores.close()
+				}
 				_ => {
 					if let Some(act) = self.ui.hiscores.handle_input(&event, &self.ui.ui_hits)
 						&& self.board.apply(act)
@@ -336,10 +345,12 @@ impl Engine {
 					self.clear_touch_state();
 					self.input.dig_held = false;
 				}
-				InputEvent::Key {
-					key: Key::J | Key::Escape,
-					pressed: true,
-				} => self.ui.spellbook.close(),
+				InputEvent::Key { key, pressed: true }
+					if key == Key::Escape
+						|| self.input.bindings.action(key) == Some(Action::OpenSpellbook) =>
+				{
+					self.ui.spellbook.close()
+				}
 				_ => {
 					use crate::ui::screens::spellbook::SpellAction;
 					let ports = self.known_ports();
@@ -429,152 +440,76 @@ impl Engine {
 			return;
 		}
 		match event {
-			InputEvent::Key { key, pressed } => match key {
-				Key::W | Key::Up => self.input.keys.w = pressed,
-				Key::S | Key::Down => self.input.keys.s = pressed,
-				Key::A | Key::Left => self.input.keys.a = pressed,
-				Key::D | Key::Right => self.input.keys.d = pressed,
-				Key::Space => self.input.keys.up = pressed,
-				Key::Shift => self.input.keys.down = pressed,
-				Key::F => {
-					// A running cinematic ends first: F blends the camera
-					// home. Allowed online too — the detach was pure
-					// presentation, so ending it is.
-					if pressed
-						&& !self.input.fly_key_down
-						&& let CameraMode::Cinematic(cine) = &mut self.mode
-					{
-						cine.leave();
-						self.input.fly_key_down = pressed;
-						return;
-					}
-					// Fly is a single-player debug tool; the server only
-					// simulates walking.
-					if pressed && !self.input.fly_key_down && self.session.client.is_none() {
-						if self.mode.first_person() {
-							self.mode = CameraMode::DebugFly;
-							// Enter fly where the player stands.
-							self.camera.pos = self.player.pos;
-						} else {
-							self.mode = CameraMode::FirstPerson;
-							// Re-enter walk at the camera position.
-							self.player.pos = self.camera.pos;
-							self.session.tick_lerp.reset(self.player.pos);
+			// The bindings table answers first; a key it does not know
+			// falls through to the FIXED arm (arrow aliases, doors, debug
+			// drills) — so a player's binding shadows a fixed behavior
+			// rather than conflicting with it.
+			InputEvent::Key { key, pressed } => {
+				if let Some(a) = self.input.bindings.action(key) {
+					self.on_action(a, pressed);
+					return;
+				}
+				match key {
+					// Movement aliases: rebinding the walk actions leaves
+					// the arrows walking (they are aliases, not bindings).
+					Key::Up => self.input.keys.w = pressed,
+					Key::Down => self.input.keys.s = pressed,
+					Key::Left => self.input.keys.a = pressed,
+					Key::Right => self.input.keys.d = pressed,
+					Key::Backquote => {
+						if pressed && !self.input.overlay_key_down {
+							self.ui.overlay_visible = !self.ui.overlay_visible;
 						}
-						log::info!(
-							"mode: {}",
-							if self.mode.first_person() {
-								"walk"
-							} else {
-								"fly"
+						self.input.overlay_key_down = pressed;
+					}
+					// F7: the GI ratchet drill. Clears the derived state that
+					// only ever grows (the coarse mirror behind `sky_y`, the
+					// emitter map) and re-queues every resident chunk, so both
+					// rebuild from what is ACTUALLY resident.
+					//
+					// A degradation that develops over minutes of wandering and
+					// never recovers is exactly what a ratchet looks like. If
+					// fps climbs back after this, the cost was stale state and
+					// the fix belongs in eviction; if it does not move, the cost
+					// is the filled window itself and no bookkeeping fix exists.
+					Key::F7 => {
+						if pressed && !self.input.gi_drill_key_down {
+							let (sky_before, emit_before) = self.renderer_gi_state();
+							if let Some(r) = self.renderer.as_mut() {
+								r.gi_clear_derived_state();
 							}
-						);
+							self.pipeline.gi_redirty_all();
+							log::info!(
+								"F7 GI drill: cleared derived state (sky_y {sky_before:.0}, \
+								 {emit_before} emitters) — watch both rebuild"
+							);
+						}
+						self.input.gi_drill_key_down = pressed;
 					}
-					self.input.fly_key_down = pressed;
-				}
-				Key::Digit(n) => {
-					if pressed {
-						// §6: 9 on the already-selected tool slot cycles
-						// the owned roster instead of reselecting it. The
-						// resulting Layout diff carries the new pick to
-						// the server before any edit that uses it.
-						let tool_slot = digblock_core::hotbar::HOTBAR_SLOTS;
-						if n as usize == tool_slot && self.hotbar.selected_index() == tool_slot - 1
-						{
-							let owned = self.owned_tools();
-							self.hotbar.cycle_tool(&owned);
-						} else {
-							self.hotbar.select_digit(n);
+					Key::Escape => {
+						if pressed {
+							self.input.dig_held = false;
+							self.ui.menu.open();
 						}
 					}
-				}
-				Key::Backquote => {
-					if pressed && !self.input.overlay_key_down {
-						self.ui.overlay_visible = !self.ui.overlay_visible;
-					}
-					self.input.overlay_key_down = pressed;
-				}
-				// F7: the GI ratchet drill. Clears the derived state that
-				// only ever grows (the coarse mirror behind `sky_y`, the
-				// emitter map) and re-queues every resident chunk, so both
-				// rebuild from what is ACTUALLY resident.
-				//
-				// A degradation that develops over minutes of wandering and
-				// never recovers is exactly what a ratchet looks like. If
-				// fps climbs back after this, the cost was stale state and
-				// the fix belongs in eviction; if it does not move, the cost
-				// is the filled window itself and no bookkeeping fix exists.
-				Key::F7 => {
-					if pressed && !self.input.gi_drill_key_down {
-						let (sky_before, emit_before) = self.renderer_gi_state();
-						if let Some(r) = self.renderer.as_mut() {
-							r.gi_clear_derived_state();
+					Key::Tab => {
+						// The tutorial's skip. Chat owns Tab while typing, and
+						// that path returned long before this match.
+						if pressed && let Some(adv) = self.tutorial.skip() {
+							self.on_tutorial_advance(adv);
 						}
-						self.pipeline.gi_redirty_all();
-						log::info!(
-							"F7 GI drill: cleared derived state (sky_y {sky_before:.0}, \
-							 {emit_before} emitters) — watch both rebuild"
-						);
 					}
-					self.input.gi_drill_key_down = pressed;
-				}
-				Key::Escape => {
-					if pressed {
-						self.input.dig_held = false;
-						self.ui.menu.open();
-					}
-				}
-				INVENTORY_KEY => {
-					if pressed {
+					// Enter opens the chat alongside whatever OpenChat is
+					// bound to — the fixed door. Multiplayer-only: there is
+					// no one to hear a single-player message.
+					Key::Enter if pressed && self.session.client.is_some() => {
 						self.input.keys = HeldKeys::default();
 						self.input.dig_held = false;
-						self.ui.inv_screen.open();
+						self.ui.chat.open();
 					}
+					_ => {}
 				}
-				Key::Tab => {
-					// The tutorial's skip. Chat owns Tab while typing, and
-					// that path returned long before this match.
-					if pressed && let Some(adv) = self.tutorial.skip() {
-						self.on_tutorial_advance(adv);
-					}
-				}
-				ALCHEMY_KEY => {
-					if pressed {
-						self.input.keys = HeldKeys::default();
-						self.input.dig_held = false;
-						self.ui.alch_screen.open();
-					}
-				}
-				Key::C => {
-					if pressed {
-						self.input.keys = HeldKeys::default();
-						self.input.dig_held = false;
-						self.open_character_screen();
-					}
-				}
-				Key::H => {
-					if pressed {
-						self.input.keys = HeldKeys::default();
-						self.input.dig_held = false;
-						self.open_hiscores_screen();
-					}
-				}
-				Key::J => {
-					if pressed {
-						self.input.keys = HeldKeys::default();
-						self.input.dig_held = false;
-						self.ui.spellbook.open();
-					}
-				}
-				// Chat is multiplayer-only — there is no one to hear a
-				// single-player message.
-				Key::T | Key::Enter if pressed && self.session.client.is_some() => {
-					self.input.keys = HeldKeys::default();
-					self.input.dig_held = false;
-					self.ui.chat.open();
-				}
-				_ => {}
-			},
+			}
 			InputEvent::MouseDelta { dx, dy } => {
 				self.input.look_accum.0 += dx as f32;
 				self.input.look_accum.1 += dy as f32;
@@ -665,6 +600,110 @@ impl Engine {
 		}
 	}
 
+	/// One bound action, pressed or released, during gameplay proper (no
+	/// surface open — every screen returned before the lookup ran).
+	fn on_action(&mut self, a: Action, pressed: bool) {
+		if let Some(digit) = a.hotbar_digit() {
+			if pressed {
+				// §6: the tool slot's digit on the already-selected tool
+				// slot cycles the owned roster instead of reselecting it.
+				// The resulting Layout diff carries the new pick to the
+				// server before any edit that uses it.
+				let tool_slot = digblock_core::hotbar::HOTBAR_SLOTS;
+				if digit as usize == tool_slot && self.hotbar.selected_index() == tool_slot - 1 {
+					let owned = self.owned_tools();
+					self.hotbar.cycle_tool(&owned);
+				} else {
+					self.hotbar.select_digit(digit);
+				}
+			}
+			return;
+		}
+		match a {
+			Action::MoveForward => self.input.keys.w = pressed,
+			Action::MoveBack => self.input.keys.s = pressed,
+			Action::MoveLeft => self.input.keys.a = pressed,
+			Action::MoveRight => self.input.keys.d = pressed,
+			Action::Jump => self.input.keys.up = pressed,
+			Action::Sneak => self.input.keys.down = pressed,
+			Action::Fly => {
+				// A running cinematic ends first: the fly key blends the
+				// camera home. Allowed online too — the detach was pure
+				// presentation, so ending it is.
+				if pressed
+					&& !self.input.fly_key_down
+					&& let CameraMode::Cinematic(cine) = &mut self.mode
+				{
+					cine.leave();
+					self.input.fly_key_down = pressed;
+					return;
+				}
+				// Fly is a single-player debug tool; the server only
+				// simulates walking.
+				if pressed && !self.input.fly_key_down && self.session.client.is_none() {
+					if self.mode.first_person() {
+						self.mode = CameraMode::DebugFly;
+						// Enter fly where the player stands.
+						self.camera.pos = self.player.pos;
+					} else {
+						self.mode = CameraMode::FirstPerson;
+						// Re-enter walk at the camera position.
+						self.player.pos = self.camera.pos;
+						self.session.tick_lerp.reset(self.player.pos);
+					}
+					log::info!(
+						"mode: {}",
+						if self.mode.first_person() {
+							"walk"
+						} else {
+							"fly"
+						}
+					);
+				}
+				self.input.fly_key_down = pressed;
+			}
+			Action::OpenInventory if pressed => {
+				self.input.keys = HeldKeys::default();
+				self.input.dig_held = false;
+				self.ui.inv_screen.open();
+			}
+			Action::OpenAlchemy if pressed => {
+				self.input.keys = HeldKeys::default();
+				self.input.dig_held = false;
+				self.ui.alch_screen.open();
+			}
+			Action::OpenCharacter if pressed => {
+				self.input.keys = HeldKeys::default();
+				self.input.dig_held = false;
+				self.open_character_screen();
+			}
+			Action::OpenHiscores if pressed => {
+				self.input.keys = HeldKeys::default();
+				self.input.dig_held = false;
+				self.open_hiscores_screen();
+			}
+			Action::OpenSpellbook if pressed => {
+				self.input.keys = HeldKeys::default();
+				self.input.dig_held = false;
+				self.ui.spellbook.open();
+			}
+			// Chat is multiplayer-only — there is no one to hear a
+			// single-player message.
+			Action::OpenChat if pressed && self.session.client.is_some() => {
+				self.input.keys = HeldKeys::default();
+				self.input.dig_held = false;
+				self.ui.chat.open();
+			}
+			// Filled by the spell hotbar feature.
+			Action::CastSpell1 | Action::CastSpell2 | Action::CastSpell3 => {}
+			// Filled by the resonant pick's orientation toggle.
+			Action::ToolToggle => {}
+			// Filled by the screenshot seam.
+			Action::Screenshot => {}
+			_ => {}
+		}
+	}
+
 	/// Which of the five pages is up, if any (menu and chat are not
 	/// pages: each owns every key while open).
 	fn open_page(&self) -> Option<crate::events::ScreenKind> {
@@ -707,16 +746,16 @@ impl Engine {
 	}
 }
 
-/// The five pages' toggle keys, one table — the page-to-page hop and the
-/// menu's hotkey reach-through both read it.
-fn page_hotkey(key: Key) -> Option<crate::events::ScreenKind> {
+/// The five pages' toggle keys, resolved through the bindings table —
+/// the page-to-page hop and the menu's hotkey reach-through both read it.
+fn page_hotkey(binds: &Bindings, key: Key) -> Option<crate::events::ScreenKind> {
 	use crate::events::ScreenKind as K;
-	Some(match key {
-		INVENTORY_KEY => K::Inventory,
-		ALCHEMY_KEY => K::Alchemy,
-		Key::C => K::Character,
-		Key::H => K::Hiscores,
-		Key::J => K::Spellbook,
+	Some(match binds.action(key)? {
+		Action::OpenInventory => K::Inventory,
+		Action::OpenAlchemy => K::Alchemy,
+		Action::OpenCharacter => K::Character,
+		Action::OpenHiscores => K::Hiscores,
+		Action::OpenSpellbook => K::Spellbook,
 		_ => return None,
 	})
 }

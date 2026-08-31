@@ -38,6 +38,7 @@ impl Renderer {
 			ui,
 			chat,
 			nametags,
+			binds,
 		} = *scene;
 		self.ensure_targets(gpu, size, scale);
 		// Remote players re-upload every frame (a handful of instances —
@@ -68,6 +69,7 @@ impl Renderer {
 			feed,
 			chat.as_ref(),
 			nametags,
+			binds,
 		);
 		self.ui_icons.prepare(gpu, size, ui);
 		gpu.queue

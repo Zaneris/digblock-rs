@@ -224,6 +224,10 @@ pub(crate) struct FrameScene<'a> {
 	pub chat: Option<crate::chat::ChatView<'a>>,
 	/// Remote-player name tags, already projected to screen pixels.
 	pub nametags: &'a [NameTag],
+	/// The live key bindings — feed messages render at draw time (so a
+	/// language change re-words standing lines), and a hint line must name
+	/// the key the player actually bound.
+	pub binds: &'a crate::bindings::Bindings,
 }
 
 /// One name tag: screen-space anchor (pixels, tag centered on `x`),

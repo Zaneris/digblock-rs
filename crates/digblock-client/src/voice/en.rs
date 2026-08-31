@@ -31,7 +31,7 @@ pub(super) fn command_hint(usage: &str, desc: &str) -> Line {
 	}
 }
 
-pub(super) fn line(msg: &Msg) -> String {
+pub(super) fn line(msg: &Msg, binds: &crate::bindings::Bindings) -> String {
 	match msg {
 		// Names the block and the level that opens it: a refusal that
 		// only says no is one the player has to go and look up. WHICH
@@ -103,44 +103,51 @@ pub(super) fn line(msg: &Msg) -> String {
 		// a player's.
 		// The tutorial names UI elements by their on-screen labels, so
 		// Transmute and Tools carry their button casing. Key names come
-		// from the engine consts, so a rebinding moves the words with it.
+		// from the bindings table, so a rebinding moves the words with it.
 		Msg::TutorialStep {
 			step, touch: false, ..
 		} => {
+			use crate::bindings::Action as A;
 			use crate::tutorial::StepId as S;
 			use digblock_platform::Key;
 			match step {
 				S::Move => format!(
 					"Walk around with {} {} {} {}",
-					Key::W.label(),
-					Key::A.label(),
-					Key::S.label(),
-					Key::D.label()
+					binds.label(A::MoveForward),
+					binds.label(A::MoveLeft),
+					binds.label(A::MoveBack),
+					binds.label(A::MoveRight)
 				),
 				S::Look => "Look around with the mouse".into(),
-				S::Jump => format!("Jump with {}", Key::Space.label()),
+				S::Jump => format!("Jump with {}", binds.label(A::Jump)),
 				S::Dig => "Hold the left mouse button on a block to dig it".into(),
-				S::SwitchSlot => "Press 2 or scroll to try another hotbar slot".into(),
-				S::SelectSlot => "Press 1 to come back to your first slot".into(),
+				S::SwitchSlot => format!(
+					"Press {} or scroll to try another hotbar slot",
+					binds.label(A::HotbarSlot2)
+				),
+				S::SelectSlot => format!(
+					"Press {} to come back to your first slot",
+					binds.label(A::HotbarSlot1)
+				),
 				S::Place => "Right-click a surface to place what you dug".into(),
 				S::OpenMenu => format!("Press {} to open the menu", Key::Escape.label()),
 				S::OpenInventory => format!(
 					"Press {} to open your inventory",
-					crate::engine::INVENTORY_KEY.label()
+					binds.label(A::OpenInventory)
 				),
 				S::CloseInventory => {
 					format!("Press {} to close your inventory", Key::Escape.label())
 				}
 				S::OpenBench => format!(
 					"You can afford an essence siphon: press {} to open the bench",
-					crate::engine::ALCHEMY_KEY.label()
+					binds.label(A::OpenAlchemy)
 				),
 				S::PickTools => "Select the Tools family".into(),
 				S::PickSiphon => "Select the Essence Siphon".into(),
 				S::CraftSiphon => "Press Transmute to craft the siphon".into(),
 				S::SelectSiphon => format!(
 					"Press {} until the siphon is in hand",
-					Key::Digit(digblock_core::hotbar::HOTBAR_SLOTS as u8).label()
+					binds.label(A::HotbarSlot9)
 				),
 			}
 		}

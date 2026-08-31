@@ -3,6 +3,12 @@ use digblock_core::block::{BlockType, Essence};
 use digblock_core::unlock::{self, Kind};
 use digblock_net::messages::{AdminReply, AdminUsage, NoPlayer};
 
+/// Every line here is worded under the DEFAULT bindings; this shadow of
+/// [`super::render`] keeps that choice in one place.
+fn render(msg: &Msg) -> Line {
+	super::render(msg, &crate::bindings::Bindings::default())
+}
+
 /// One sample of every admin reply. The match is what keeps the list
 /// complete: a new variant fails to COMPILE here until it is sampled,
 /// exactly as it fails in `en::admin` until it has words.

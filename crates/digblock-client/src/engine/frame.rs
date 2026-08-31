@@ -505,11 +505,14 @@ impl Engine {
 			&& !cinematic
 		{
 			let style = crate::ui::Style::new(self.ui.ui_scale);
-			let text = crate::voice::plain(&crate::voice::Msg::TutorialStep {
-				step: view.step,
-				touch: self.config.touch_hud,
-				jump_button: self.config.touch_jump_button,
-			});
+			let text = crate::voice::plain(
+				&crate::voice::Msg::TutorialStep {
+					step: view.step,
+					touch: self.config.touch_hud,
+					jump_button: self.config.touch_jump_button,
+				},
+				&self.input.bindings,
+			);
 			let skip_hint = if self.config.touch_hud {
 				"Skip: Settings"
 			} else {
@@ -729,6 +732,7 @@ impl Engine {
 						.view(((self.time_secs * 2.0) as u32).is_multiple_of(2))
 				}),
 				nametags: &self.vfx.nametag_scratch[..self.vfx.nametag_count],
+				binds: &self.input.bindings,
 			};
 			let stats = r.render(gpu, target, &scene);
 			self.bench.pending.encode_ms = ms_since(t_encode);

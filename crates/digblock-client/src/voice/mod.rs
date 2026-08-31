@@ -196,7 +196,7 @@ pub(crate) enum Msg {
 /// `fn line(&Msg) -> Option<String>` beside [`en`] and an arm here that falls back to English, a
 /// partial translation being the normal state of a shipped one. English itself may never be
 /// partial: `en::line` matches exhaustively, so a new variant fails the BUILD until it has words.
-pub(crate) fn render(msg: &Msg) -> Line {
+pub(crate) fn render(msg: &Msg, binds: &crate::bindings::Bindings) -> Line {
 	match msg {
 		// The two divided lines are lifted out rather than given a second
 		// template: `en::command_hint` is the one place the row's words
@@ -205,14 +205,15 @@ pub(crate) fn render(msg: &Msg) -> Line {
 		Msg::CommandHint { usage, desc } | Msg::Admin(AdminReply::CommandHint { usage, desc }) => {
 			en::command_hint(usage, desc)
 		}
-		_ => Line::plain(en::line(msg)),
+		_ => Line::plain(en::line(msg, binds)),
 	}
 }
 
 /// The plain sentence for `msg`, for surfaces that draw one string
-/// (the tutorial panel) rather than an inked [`Line`].
-pub(crate) fn plain(msg: &Msg) -> String {
-	en::line(msg)
+/// (the tutorial panel) rather than an inked [`Line`]. `binds` is what
+/// lets a hint name the key the player actually bound.
+pub(crate) fn plain(msg: &Msg, binds: &crate::bindings::Bindings) -> String {
+	en::line(msg, binds)
 }
 
 /// One catalog row for a caller that holds the advertised pair rather

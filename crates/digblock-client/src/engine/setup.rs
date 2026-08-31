@@ -112,6 +112,7 @@ impl Engine {
 		if config.fullscreen_hint {
 			menu.set_fullscreen_hint();
 		}
+		let bindings = config.bindings.clone();
 		let mut engine = Self {
 			ui: UiState {
 				size: (1, 1),
@@ -260,6 +261,7 @@ impl Engine {
 				hud_touches: Vec::new(),
 				hud_jump_held: false,
 				fullscreen_requested: false,
+				bindings,
 				safe_area: crate::ui::hud::SafeArea::default(),
 				fly_key_down: false,
 				overlay_key_down: false,
@@ -764,6 +766,13 @@ impl Engine {
 		// The light cap rides the frame into `flush_lights`, which tracks
 		// it and re-flushes on a change — storing it IS applying it.
 		self.config.max_lights = s.max_lights;
+		if s.bindings != self.input.bindings {
+			// A key held across a rebind would deliver its release to the
+			// NEW action (or none); drop all held state instead.
+			self.input.bindings = s.bindings.clone();
+			self.input.keys = HeldKeys::default();
+			self.input.dig_held = false;
+		}
 		if let Some(store) = &mut self.settings_store {
 			store(&s);
 		}
