@@ -513,6 +513,12 @@ impl Engine {
 					// level-up.
 					self.skills = digblock_core::skills::SkillSet::from_wire(&xp);
 					self.sync_node_reveal(false);
+					// A character with no light of their own enters their
+					// held evening; the join's InventoryFull landed just
+					// ahead of this frame, and the server's clock keeps
+					// running underneath, tracked from the sun the Welcome
+					// anchored.
+					self.arm_dusk_hold(Some(self.sun.tod));
 				}
 				NetEvent::XpGain { skill, total } => {
 					if let Some(s) = digblock_core::skills::Skill::try_from_index(skill) {
@@ -636,7 +642,13 @@ impl Engine {
 				}
 				// Hard-set: inter-beat drift is microscopic, and after a
 				// paused clock (backgrounded tab) a snap is what we want.
-				NetEvent::TimeOfDay { tod } => self.sun.tod = tod,
+				// An active held dusk consumes the beat instead — it is
+				// what tracks the server's clock while it paints its own.
+				NetEvent::TimeOfDay { tod } => {
+					if !self.dusk_hold.on_server_tod(tod) {
+						self.sun.tod = tod;
+					}
+				}
 				NetEvent::AdminCommands { commands } => self.ui.chat.set_commands(commands),
 				// The catalog is a list and arrives as a dozen replies in
 				// one drain, so it is spoken a couple a second. Every other

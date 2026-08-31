@@ -10,6 +10,7 @@ mod camera_fx;
 mod camrig;
 mod chat;
 mod confetti;
+mod dusk;
 mod engine;
 pub mod events;
 mod font;

@@ -230,7 +230,7 @@ fn a_roof_blocks_noon() {
 fn morning_light_comes_from_the_sunrise_side() {
 	let [morning, _, _] = SPREAD_HOURS;
 	let job = GrassSpread::at_hour(morning, "t-9am");
-	let toward_sun = -Sun::with_tod(tod_of_hour(morning)).sun_dir();
+	let toward_sun = -Sun::with_tod(tod_of_hours(morning)).sun_dir();
 	assert!(toward_sun.x != 0.0, "a morning sun cannot be overhead");
 	let wall = |side: f32| {
 		let mut w = seeded();

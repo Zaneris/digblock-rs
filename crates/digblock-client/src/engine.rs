@@ -232,6 +232,9 @@ pub struct Engine {
 	bench: BenchState,
 	tick_accum: f32,
 	sun: Sun,
+	/// A lightless character's held dusk — paints `sun` while active
+	/// (see [`crate::dusk`]).
+	dusk_hold: crate::dusk::DuskHold,
 	/// Cell whose dig was refused — locally (world floor) or by the
 	/// server (a spawn lock it never told us about). Held until the aim
 	/// moves elsewhere, and load-bearing in two ways: it explains itself

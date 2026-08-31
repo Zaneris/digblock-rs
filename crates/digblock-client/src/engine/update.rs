@@ -179,6 +179,15 @@ impl Engine {
 		// run has a genuinely static sun for the GI to converge against.
 		let fixed_tod = self.config.tod;
 		self.sun.update(dt);
+		// The lightless character's held dusk: released the moment the
+		// pack gains any light-casting item or a wisp burns, and painting
+		// the sun for as long as it stays active (see `dusk.rs`).
+		if self.dusk_hold.waiting_for_light() && (self.wisp_left > 0.0 || self.owns_light()) {
+			self.dusk_hold.light_obtained();
+		}
+		if let Some(tod) = self.dusk_hold.tick(dt) {
+			self.sun.tod = tod;
+		}
 		if let Some(tod) = fixed_tod {
 			self.sun.tod = tod;
 		}

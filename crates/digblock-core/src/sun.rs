@@ -22,6 +22,28 @@ pub const TOD_RATE_DEG_PER_SEC: f32 = 360.0 / DAY_SECS;
 /// server, whose authoritative clock is `tod_of_secs` over its tick
 /// counter.
 pub const TOD_START: f32 = 80.0;
+/// Degrees the sun falls per clock hour: the 24h clock spread evenly
+/// over the full turn.
+pub const DEG_PER_HOUR: f32 = 360.0 / 24.0;
+
+/// 24h clock → sun angle, fractional hours: anchored to the tod
+/// convention above (noon at the origin, midnight at the wrap point)
+/// and falling as the day advances. The admin `/time`, the grass
+/// schedule and the held dusk all speak clock time through this.
+pub fn tod_of_hours(hours: f32) -> f32 {
+	Sun::normalize(180.0 - hours * DEG_PER_HOUR)
+}
+
+/// [`tod_of_hours`] at a clock reading.
+pub fn tod_of_clock(h: u32, m: u32) -> f32 {
+	tod_of_hours(h as f32 + m as f32 / 60.0)
+}
+
+/// The inverse of [`tod_of_clock`], as `(hour, minute)`.
+pub fn clock_of_tod(tod: f32) -> (u32, u32) {
+	let mins = (((180.0 - tod) / DEG_PER_HOUR * 60.0).round() as i64).rem_euclid(24 * 60);
+	((mins / 60) as u32, (mins % 60) as u32)
+}
 
 /// The active light caster (sun by day, moon by night).
 pub struct CasterState {
@@ -70,7 +92,7 @@ impl Sun {
 	}
 
 	/// Wrap an angle into (−180, 180].
-	fn normalize(deg: f32) -> f32 {
+	pub fn normalize(deg: f32) -> f32 {
 		let t = deg.rem_euclid(360.0);
 		if t > 180.0 { t - 360.0 } else { t }
 	}
@@ -180,6 +202,17 @@ mod tests {
 			sun.update(0.1);
 		}
 		assert!((Sun::tod_of_secs(60.0) - sun.tod).abs() < 1e-3);
+	}
+
+	#[test]
+	fn the_clock_and_the_sun_agree_both_ways() {
+		assert_eq!(tod_of_clock(12, 0), 0.0);
+		assert_eq!(tod_of_clock(6, 0), 90.0);
+		assert_eq!(tod_of_clock(18, 0), -90.0);
+		assert_eq!(tod_of_clock(0, 0), 180.0);
+		for (h, m) in [(0, 0), (6, 30), (12, 0), (15, 0), (17, 0), (23, 59)] {
+			assert_eq!(clock_of_tod(tod_of_clock(h, m)), (h, m), "{h:02}:{m:02}");
+		}
 	}
 
 	#[test]

@@ -44,6 +44,9 @@ impl Engine {
 		self.auth_essence = None;
 		self.siphon_nudged = false;
 		self.tutorial = crate::tutorial::Tutorial::default();
+		// The held dusk re-arms only at this join's sync, once its
+		// InventoryFull has said whether the character owns a light.
+		self.dusk_hold = crate::dusk::DuskHold::default();
 		self.reset_world_transients(spawn, true);
 	}
 
@@ -257,6 +260,8 @@ impl Engine {
 		self.auth_essence = None;
 		self.siphon_nudged = false;
 		self.tutorial = crate::tutorial::Tutorial::default();
+		// The backdrop shows an ordinary sky, whoever was just playing.
+		self.dusk_hold = crate::dusk::DuskHold::default();
 		self.session.player_names.clear();
 		self.reset_world_transients(spawn, true);
 		self.save.in_local_save = false;
@@ -352,6 +357,9 @@ impl Engine {
 		self.siphon_nudged = false;
 		self.tutorial = crate::tutorial::Tutorial::default();
 		self.arm_tutorial();
+		// Offline there is no clock but the player's own, so a lightless
+		// character's held dusk simply IS the world clock for a while.
+		self.arm_dusk_hold(None);
 		// The scheduler's clock is the world's AGE, never this session's.
 		// `worldjob::regrow` salts its roll with the run's SLOT, so a
 		// clock that restarted at zero on every entry replayed the same
@@ -501,6 +509,28 @@ impl Engine {
 			&& self.config.debug_screen.is_none()
 		{
 			self.tutorial.start();
+		}
+	}
+
+	/// Does the pack hold any light-casting item? Both the held dusk's
+	/// arming gate and its release poll, so entering with a torch and
+	/// crafting one mid-hold are the same question.
+	pub(super) fn owns_light(&self) -> bool {
+		self.inventory
+			.iter_nonzero()
+			.any(|(b, _)| b.props().light > 0)
+	}
+
+	/// Arm the held dusk for a character who owns no light of their own
+	/// (see `dusk.rs`; a server's day join just shadows its clock until
+	/// dusk). `server` carries the live world clock when a server owns
+	/// one. Runs after the inventory is adopted — that is what makes the
+	/// question answerable; a lit character clears whatever hold was left.
+	pub(super) fn arm_dusk_hold(&mut self, server: Option<f32>) {
+		if self.owns_light() {
+			self.dusk_hold = crate::dusk::DuskHold::default();
+		} else {
+			self.dusk_hold.start(server);
 		}
 	}
 

@@ -248,6 +248,7 @@ impl Engine {
 			fp_eye: spawn,
 			tutorial: crate::tutorial::Tutorial::default(),
 			tutorial_jumped: false,
+			dusk_hold: crate::dusk::DuskHold::default(),
 			reveal_cues: Vec::new(),
 			reveal_clock: 0.0,
 			reveal_finale: false,
