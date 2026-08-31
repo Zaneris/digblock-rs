@@ -340,7 +340,7 @@ impl Engine {
 	}
 
 	/// The channel broke with a Sphere climbing under it: the server
-	/// unwinds on our word (and on its own, if we moved); this end puts
+	/// unwinds on our word (and on its own, if we left); this end puts
 	/// its own climb's record back crown-first, only where the block is
 	/// still ours, and the bill returns.
 	fn break_sphere(&mut self) {
@@ -427,7 +427,7 @@ impl Engine {
 
 	/// Our own climb, if one stands. Every answer that belongs to the
 	/// LOCAL player — the offline award, the refund, the channel's
-	/// stillness hold — asks this rather than "is anything climbing",
+	/// seal hold — asks this rather than "is anything climbing",
 	/// because a remote's sphere is climbing in our world too.
 	pub(super) fn own_sphere(&self) -> Option<&SphereClimb> {
 		let me = self.session.my_player_id;
@@ -448,10 +448,10 @@ impl Engine {
 	/// caster waits for the seal — the bound on [`Self::sphere_seal_grace`].
 	pub(super) const SPHERE_SEAL_GRACE_SECS: f32 = 0.6;
 
-	/// Ticks past its own length that a channel keeps guarding stillness — the Sphere alone, and
-	/// only online. `Cast(Sphere)` goes out as the channel BEGINS, so the server's span ends one upstream
-	/// latency after the caster's own bar fills, and until it does the server still enforces its
-	/// own stillness and unwinds the WHOLE sphere, with no word, for a caster who has walked off.
+	/// Ticks past its own length that a channel is held open — the Sphere alone, and only
+	/// online. `Cast(Sphere)` goes out as the channel BEGINS, so the server's span ends one
+	/// upstream latency after the caster's own bar fills, and the channel waits for that seal
+	/// rather than completing on a climb still short of its crown.
 	/// Offline the seal IS this end's own last tick, so there is nothing to wait for.
 	fn sphere_seal_grace(&self, target: CastTarget) -> u32 {
 		let waiting = target == CastTarget::Sphere
@@ -464,19 +464,13 @@ impl Engine {
 		}
 	}
 
-	/// One fixed-rate step of the cast channel. A channel is STILLNESS:
-	/// any movement intent, a dig hold, or a surface opening resets it
+	/// One fixed-rate step of the cast channel. A caster may walk while
+	/// channelling; a dig hold or a surface opening resets the channel
 	/// outright — the decay mold is a dig's, deliberately not borrowed.
 	pub(super) fn step_cast(&mut self) {
 		let Some(&CastState { target, ticks }) = self.cast.as_ref() else {
 			return;
 		};
-		let keys = &self.input.keys;
-		let moving = keys.w
-			|| keys.a || keys.s
-			|| keys.d || keys.up
-			|| keys.down
-			|| self.input.touch.move_axis() != glam::Vec2::ZERO;
 		let surface = self.ui.menu.is_open()
 			|| self.ui.inv_screen.is_open()
 			|| self.ui.alch_screen.is_open()
@@ -487,7 +481,7 @@ impl Engine {
 		let need = digblock_core::unlock::channel_ticks(
 			self.skills.level(digblock_core::skills::Skill::Arcana),
 		);
-		if moving || surface || self.dig_active() {
+		if surface || self.dig_active() {
 			self.cast = None;
 			self.emit(crate::audio::AudioCmd::LoopStop {
 				id: crate::audio::LOOP_CAST,

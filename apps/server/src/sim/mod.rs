@@ -522,7 +522,7 @@ pub struct Sim {
 	kindled: Vec<Kindled>,
 	/// Every sphere still climbing — at most one per caster. Bill paid and
 	/// plan fixed as the channel began; the climb lasts the channel and
-	/// UNWINDS if the caster breaks it, moves, or leaves.
+	/// UNWINDS if the caster breaks it or leaves.
 	closings: Vec<SphereClosing>,
 	/// Causeway planks whose removal could not land — an unloaded column
 	/// or an unhealthy journal. Held by the SIM because the trail that
@@ -533,8 +533,8 @@ pub struct Sim {
 	owed_planks: std::collections::VecDeque<digblock_core::causeway::Cell>,
 }
 
-/// One sphere climbing about a channelling caster: the cells still to land, who is paying, where
-/// they stood when it began (a step away breaks the channel, the client's contract), and the bill.
+/// One sphere climbing about a channelling caster: the cells still to land, who is paying, and
+/// the bill. The head is fixed as the channel begins; a caster who walks off leaves it climbing.
 /// `plan_len` and `span` are here because the wire carries the climb's PROGRESS, not its cells:
 /// every client re-derives the plan from `head`, `radius` and `block`. The blocks are paid whole as
 /// the channel begins and settled at its end: `debited` less `placed` is what the climb declined.
@@ -543,7 +543,6 @@ struct SphereClosing {
 	by: PlayerId,
 	head: (i32, i32, i32),
 	radius: i32,
-	from: Vec3,
 	block: digblock_core::block::BlockType,
 	essence: digblock_core::block::Essence,
 	fare: u32,

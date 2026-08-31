@@ -268,7 +268,7 @@ pub struct Engine {
 	/// kindle you could not afford drops you off your own causeway.
 	last_cast: Option<CastTarget>,
 	/// In-progress cast channel, advanced at the same fixed rate. A
-	/// channel is stillness: any movement intent, dig hold, or surface
+	/// caster may walk while channelling; a dig hold or surface
 	/// opening resets it — the decay mold is deliberately NOT borrowed
 	/// here (that is a dig's, and later the damage-interrupt's).
 	cast: Option<CastState>,

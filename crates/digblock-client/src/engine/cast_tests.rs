@@ -227,12 +227,9 @@ fn a_broken_sphere_channel_unwinds_and_a_finished_one_seals() {
 		half > 0 && half < air_cells.len(),
 		"halfway through, the shell is climbing"
 	);
-	e.input(InputEvent::Key {
-		key: Key::W,
-		pressed: true,
-	});
+	e.input.dig_held = true;
 	tick(&mut e);
-	assert!(e.cast.is_none(), "the step broke the channel");
+	assert!(e.cast.is_none(), "the dig hold broke the channel");
 	assert_eq!(built(&e, &air_cells), 0, "every block came back down");
 	assert_eq!(
 		balances(&e, level),
@@ -241,15 +238,11 @@ fn a_broken_sphere_channel_unwinds_and_a_finished_one_seals() {
 	);
 	assert_eq!(e.inventory.count(matter()), billed, "and the blocks");
 	assert_eq!(e.wisp_left, 0.0, "a broken channel lights nothing");
-	e.input(InputEvent::Key {
-		key: Key::W,
-		pressed: false,
-	});
+	e.input.dig_held = false;
 
-	// The step moved the head, and the shell about it bills its own
-	// count: the hand is sized for that one now — and HELD again, since
-	// a slot whose count reached zero mid-climb was released, and the
-	// refund lands the type wherever the layout has room.
+	// The refund landed the type wherever the layout had room — a slot
+	// whose count reached zero mid-climb was released — so the hand is
+	// HELD again before the recast.
 	let air_cells = shell_air(&e);
 	let again = air_cells.len() as u32;
 	hold(&mut e, matter(), again.saturating_sub(billed));
@@ -349,11 +342,9 @@ fn an_interrupted_channel_fades_rather_than_pops() {
 		tick(&mut e);
 	}
 	assert_eq!(e.vfx.channel_env.level(), 1.0, "the aura never opened");
-	e.input(InputEvent::Key {
-		key: Key::W,
-		pressed: true,
-	});
+	e.input.dig_held = true;
 	tick(&mut e);
+	e.input.dig_held = false;
 	assert!(e.cast.is_none(), "the interrupt did not land");
 	let mut prev = e.vfx.channel_env.level();
 	assert!(prev > 0.0, "the aura popped instead of fading");
@@ -374,22 +365,27 @@ fn an_interrupt_resets_the_channel() {
 	cast_home(&mut e);
 	tick(&mut e);
 	assert!(e.cast.is_some());
-	// Movement is the interrupt: press-and-hold W for one tick.
+	// Walking is NOT an interrupt: a caster may move while channelling.
 	e.input(InputEvent::Key {
 		key: Key::W,
 		pressed: true,
 	});
 	tick(&mut e);
-	assert!(e.cast.is_none(), "a moving caster kept the channel");
+	assert!(e.cast.is_some(), "a walking caster lost the channel");
+	e.input(InputEvent::Key {
+		key: Key::W,
+		pressed: false,
+	});
+	// A dig hold is: one tick of it resets the channel outright.
+	e.input.dig_held = true;
+	tick(&mut e);
+	assert!(e.cast.is_none(), "a digging caster kept the channel");
 	assert_eq!(
 		e.save.teleport_cooldown.left(),
 		0.0,
 		"an interrupted channel must not charge the cooldown"
 	);
-	e.input(InputEvent::Key {
-		key: Key::W,
-		pressed: false,
-	});
+	e.input.dig_held = false;
 	// A reset is a reset: the next channel starts from nothing and runs
 	// its full length again.
 	let need = digblock_core::unlock::channel_ticks(e.skills.level(Skill::Arcana));
@@ -1045,13 +1041,12 @@ fn the_offline_award_and_refund_find_our_own_climb() {
 	);
 }
 
-/// The Sphere's stillness contract outlives the caster's own channel. `Cast(Sphere)` goes out as
-/// the channel BEGINS, so the server's span starts one upstream latency later and seals that much
-/// after the caster's own bar fills — and until it does, the server is still enforcing stillness
-/// and unwinds the WHOLE sphere, with no refusal and no word, for a caster who walked. So the
-/// channel keeps guarding while a climb stands under it, and the seal releases it.
+/// The Sphere's channel outlives the caster's own bar. `Cast(Sphere)` goes out as the channel
+/// BEGINS, so the server's span starts one upstream latency later and seals that much after the
+/// caster's own bar fills — so the channel keeps holding while a climb stands under it, and the
+/// seal releases it.
 #[test]
-fn a_sphere_channel_guards_stillness_until_the_seal() {
+fn a_sphere_channel_holds_until_the_seal() {
 	let (mut e, _server) = connected();
 	arm_sphere(&mut e);
 	let need = digblock_core::unlock::channel_ticks(e.skills.level(Skill::Arcana));

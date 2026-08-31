@@ -4,12 +4,6 @@
 
 use super::*;
 
-/// How far a channelling caster may drift before the server reads it
-/// as a step: the client breaks its channel on any movement INTENT,
-/// and this is the wider, authoritative copy of the same contract —
-/// generous to a snapshot's jitter, far short of a stride.
-const SPHERE_STILL: f32 = 0.6;
-
 /// Cast attempts one client may make back to back, and the rate the bucket refills at. Sized for
 /// the spellbook rather than for the wire: a channel outlasts the whole burst, so no honest client
 /// can reach it, while the reliable stream admits casts far faster than a spellbook can offer them
@@ -524,7 +518,6 @@ impl Sim {
 		let span = digblock_core::unlock::channel_ticks(level);
 		let plan_len = writes.len();
 		let by = client.id;
-		let from = client.player.pos;
 		let client = self.clients.get_mut(&conn_id).expect("checked above");
 		if !client.inventory.try_take_fares(&[(essence, fare), wisp])
 			|| !client.inventory.try_take(block, debited)
@@ -540,7 +533,6 @@ impl Sim {
 			by,
 			head,
 			radius: r,
-			from,
 			block,
 			essence,
 			fare,
@@ -565,11 +557,12 @@ impl Sim {
 		});
 	}
 
-	/// One tick of every sphere still climbing. A caster who has left, or stepped further than
-	/// [`SPHERE_STILL`] from where they began, has broken the channel whatever their client said.
-	/// Otherwise the tick's cells land, leaving a cell a player has stepped into unwritten rather
-	/// than closed over; the completing tick SEALS the sphere, settles the bill for what the climb
-	/// declined and lights the wisp. Protection is re-asked per tick, never filtered into the plan.
+	/// One tick of every sphere still climbing. A caster who has left the server has broken the
+	/// channel whatever their client said; one merely walking has not — the climb stays anchored
+	/// to the head it began at. The tick's cells land, leaving a cell a player has stepped into
+	/// unwritten rather than closed over; the completing tick SEALS the sphere, settles the bill
+	/// for what the climb declined and lights the wisp. Protection is re-asked per tick, never
+	/// filtered into the plan.
 	pub(super) fn step_closings(&mut self) {
 		// A sphere's cells are journaled edits like any other: an unhealthy
 		// journal stops the climb where it stops fluid and the sweeps,
@@ -581,12 +574,8 @@ impl Sim {
 		let mut i = 0;
 		while i < closings.len() {
 			let w = &closings[i];
-			let still = self
-				.clients
-				.get(&w.conn_id)
-				.filter(|c| c.live)
-				.is_some_and(|c| c.player.pos.distance(w.from) <= SPHERE_STILL);
-			if !still {
+			let present = self.clients.get(&w.conn_id).is_some_and(|c| c.live);
+			if !present {
 				let w = closings.remove(i);
 				self.unwind_sphere(w);
 				continue;
