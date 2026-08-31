@@ -17,7 +17,7 @@ use crate::ui::{HitMap, InvId, Rect, hud, theme};
 
 /// What a click on the page asks the engine to do.
 pub enum SpellAction {
-	/// Begin the Return Home channel.
+	/// Begin the spawn waystone's channel (the journey back to spawn).
 	CastHome,
 	/// Begin the channel for the port at this `SurfaceKind` index.
 	CastWaystone(u8),
@@ -138,19 +138,6 @@ impl SpellView {
 		let teleport_ready = cooldown_secs == 0;
 		let mut castable = Vec::new();
 		let mut rows = vec![Row::Title, Row::Space];
-		rows.push(Row::Spell {
-			id: InvId::Spell(0),
-			text: "Return Home".to_string(),
-			state: State::Text(if teleport_ready {
-				"Ready".to_string()
-			} else {
-				format!("{cooldown_secs}s")
-			}),
-			ready: teleport_ready,
-		});
-		rows.push(Row::Info(
-			"A channelled journey back to your spawn, hold still".to_string(),
-		));
 		// The illumination family: the wisp from the first level (the
 		// ladder's essence-priced bootstrap), kindle at its rung.
 		let (wisp_essence, wisp_fare) = digblock_core::alchemy::wisp_price(level);
@@ -209,6 +196,18 @@ impl SpellView {
 			});
 		}
 		rows.push(Row::Space);
+		// The teleports, the spawn's waystone first: the free recovery
+		// spell heads the roster the ports fill out.
+		rows.push(Row::Spell {
+			id: InvId::Spell(0),
+			text: "Spawn Waystone".to_string(),
+			state: State::Text(if teleport_ready {
+				"Ready".to_string()
+			} else {
+				format!("{cooldown_secs}s")
+			}),
+			ready: teleport_ready,
+		});
 		// The ports: every unlocked one, plus ONE teaser tier — the
 		// alchemy screen's "what you have and one tier of what is
 		// coming".
