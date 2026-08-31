@@ -341,9 +341,8 @@ pub fn chips(
 /// hovered emits it LAST, so it covers what it names. A name WIDER than the window pins to the
 /// left edge and lets its tail run off the right: the start of a name is what identifies it.
 pub fn tooltip(dl: &mut DrawList, style: &Style, size: (u32, u32), anchor: Rect, name: &str) {
-	let text = name.to_uppercase();
 	let glyph = style.glyph;
-	let w = super::theme::text_row_w(style, &text);
+	let w = super::theme::text_row_w(style, name);
 	let h = crate::font::face(style.face).line_h(glyph);
 	let gap = super::theme::TOOLTIP_GAP * style.scale;
 	let (sw, sh) = (size.0 as f32, size.1 as f32);
@@ -366,7 +365,7 @@ pub fn tooltip(dl: &mut DrawList, style: &Style, size: (u32, u32), anchor: Rect,
 		rect.y + (h - glyph) / 2.0,
 		glyph,
 		WHITE,
-		&text,
+		name,
 	);
 }
 
@@ -846,7 +845,7 @@ mod tests {
 							_ => panic!("one name per box"),
 						};
 						let where_ = format!("{name:?} at {size:?}/{s} on {anchor:?}");
-						assert_eq!(text, name.to_uppercase(), "{where_}");
+						assert_eq!(text, name, "{where_}");
 						// Vertically the box always fits: it flips below
 						// its anchor rather than leaving the window.
 						assert!(rect.y >= 0.0 && rect.y + rect.h <= sh, "{where_}: {rect:?}");

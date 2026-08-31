@@ -27,6 +27,11 @@ disabled pre-deployment; the just gates are the gate.
 Workspace lints deny all warnings and `unreachable_pub`, so plain `cargo build` surfaces what CI would. Rust uses hard
 tabs, `max_width = 100` (rustfmt.toml).
 
+**Running test suites requires asking first**, exactly like committing: never launch `just check`, `just test`,
+`just gate`, `just web-e2e`, `cargo test`, or any other test run without the user's go-ahead. Fast static checks are
+always fine unprompted: `cargo fmt`, `cargo clippy`, `cargo check`, `dprint`. The one exception: when executing a large
+multi-step plan that involves committing along the way, run the tests before each of those commits as you go.
+
 ## Comment style
 
 - File-top comments: 15 lines max.

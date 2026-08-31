@@ -689,12 +689,12 @@ impl Menu {
 		});
 		self.screen = Some(match page {
 			TestPage::SignIn => Screen::SignIn(SignInState {
-				status: Some("sign-in timed out".into()),
+				status: Some("Sign-in timed out".into()),
 				then_multiplayer: true,
 			}),
 			TestPage::ChooseName => Screen::ChooseName(NameState {
 				name: "Miner42".into(),
-				checked: Some(("Miner42".into(), false, Some("that name is taken".into()))),
+				checked: Some(("Miner42".into(), false, Some("That name is taken".into()))),
 				checking: None,
 				status: None,
 				claiming: false,
@@ -822,7 +822,7 @@ impl Menu {
 								.collect();
 							b.status = None;
 						}
-						Err(e) => b.status = Some(format!("server list failed: {e}")),
+						Err(e) => b.status = Some(format!("Server list failed: {e}")),
 					}
 					b.fetching = false;
 					b.sel = 0;
@@ -839,7 +839,7 @@ impl Menu {
 						Some(i) => self.activate(Act::JoinRow(i)),
 						None => {
 							if let Some(Screen::Browser(b)) = &mut self.screen {
-								b.status = Some("auto-join: no matching server".into());
+								b.status = Some("Auto-join: no matching server".into());
 							}
 						}
 					}
@@ -1237,7 +1237,7 @@ impl Menu {
 		// Dropping the pending client closes any in-flight transport.
 		self.wants_disconnect = true;
 		if let Some(Screen::Connecting { mut prev, .. }) = self.screen.take() {
-			prev.status = Some("join cancelled".into());
+			prev.status = Some("Join cancelled".into());
 			self.screen = Some(Screen::Browser(prev));
 		}
 	}
@@ -1405,7 +1405,7 @@ impl Menu {
 					self.pending_worlds.push(WorldIntent::Create { name });
 					// The engine enters the new world synchronously (menu
 					// closes via on_world_entered) or reports a status.
-					prev.status = Some("creating world...".into());
+					prev.status = Some("Creating world...".into());
 					self.screen = Some(Screen::Worlds(prev));
 				}
 			}
@@ -1414,7 +1414,7 @@ impl Menu {
 					if let Some(row) = prev.rows.get(idx) {
 						self.pending_worlds
 							.push(WorldIntent::Enter { id: row.id.clone() });
-						prev.status = Some(format!("loading {}...", row.name));
+						prev.status = Some(format!("Loading {}...", row.name));
 					}
 					self.screen = Some(Screen::Worlds(prev));
 				}
@@ -1668,8 +1668,8 @@ fn snap_vol(v: f32, dir: i32) -> f32 {
 fn compat_label(c: Compat) -> Option<&'static str> {
 	match c {
 		Compat::Joinable => None,
-		Compat::PeerOlder => Some("server too old"),
-		Compat::PeerNewer => Some("client too old"),
+		Compat::PeerOlder => Some("Server too old"),
+		Compat::PeerNewer => Some("Client too old"),
 	}
 }
 

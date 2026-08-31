@@ -327,23 +327,20 @@ mod tests {
 			let names = ghost_names(&dl);
 			match name {
 				"inventory-hover" => {
-					assert_eq!(names, vec![BAR_ITEM.name().to_uppercase()]);
+					assert_eq!(names, vec![BAR_ITEM.name()]);
 					checked += 1;
 				}
 				"inventory-grid-hover" => {
-					assert_eq!(names, vec![B::Wood.name().to_uppercase()]);
+					assert_eq!(names, vec![B::Wood.name()]);
 					checked += 1;
 				}
 				"alchemy-hover" => {
-					assert_eq!(
-						names,
-						vec![super::alchemy::families()[0].name.to_uppercase()]
-					);
+					assert_eq!(names, vec![super::alchemy::families()[0].name]);
 					checked += 1;
 				}
 				"spellbook-hover" => {
 					let (_, essence) = spell_view(&stocked()).fares()[0];
-					assert_eq!(names, vec![essence.name().to_uppercase()]);
+					assert_eq!(names, vec![essence.name()]);
 					checked += 1;
 				}
 				_ => assert!(names.is_empty(), "{name} names something unhovered"),
@@ -443,7 +440,7 @@ mod tests {
 		for (page, names) in named {
 			assert_eq!(
 				names,
-				vec![BAR_ITEM.name().to_uppercase()],
+				vec![BAR_ITEM.name()],
 				"{page} does not name the bar slot under the cursor"
 			);
 		}

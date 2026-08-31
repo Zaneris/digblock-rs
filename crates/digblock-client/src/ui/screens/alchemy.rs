@@ -793,7 +793,7 @@ impl AlchScreen {
 			Layer::Content,
 			Rect::new(row_x, *y, row_w, row_h),
 			widgets::RowContent {
-				text: &format!("ALCHEMY   LV {}", view.level),
+				text: &format!("Alchemy   Lv {}", view.level),
 				right: None,
 				bar: Some(view.xp_frac),
 				color: WHITE,
@@ -985,7 +985,7 @@ impl AlchScreen {
 				strip.y + (strip_h - glyph) / 2.0,
 				glyph,
 				DIM,
-				"SELECT A FAMILY",
+				"Select a family",
 			);
 			return;
 		};
@@ -1073,9 +1073,9 @@ impl AlchScreen {
 			InvId::CraftGo,
 			btn,
 			if running.is_some() {
-				"CANCEL"
+				"Cancel"
 			} else {
-				"TRANSMUTE"
+				"Transmute"
 			},
 			running.is_some() || (!locked && batches > 0),
 			btn.contains(cx, cy),
@@ -1085,8 +1085,7 @@ impl AlchScreen {
 		// own progress when it is not: a craft is paced, so it needs somewhere to say how far
 		// along it is and how many are still owed. It names its own item rather than borrowing
 		// the strip's, which follows the SELECTION and may have moved on while the batch runs.
-		let queued =
-			running.map(|(item, left)| format!("{}   ·   {left} LEFT", item.name().to_uppercase()));
+		let queued = running.map(|(item, left)| format!("{}   ·   {left} left", item.name()));
 		widgets::row(
 			ui.dl,
 			&ui.style,
@@ -1094,7 +1093,7 @@ impl AlchScreen {
 			Rect::new(row_x, y, row_w, theme::ROW_H * s),
 			widgets::RowContent {
 				text: queued.as_deref().unwrap_or(&format!(
-					"CLICK {BULK_PLAIN}   ·   SHIFT {BULK_SHIFT}   ·   CTRL {BULK_CTRL}"
+					"Click {BULK_PLAIN}   ·   Shift {BULK_SHIFT}   ·   Ctrl {BULK_CTRL}"
 				)),
 				right: None,
 				bar: queued.is_some().then(|| self.progress.clamp(0.0, 1.0)),
@@ -1211,15 +1210,15 @@ impl AlchScreen {
 fn strip_tail(view: &AlchView, item: BlockType) -> Option<String> {
 	if !unlock::can_craft(item, &view.skills) {
 		return Some(match unlock::craft_gate(item) {
-			Some((_, level)) => format!("LV {level}"),
-			None => format!("LV {}", u32::MAX),
+			Some((_, level)) => format!("Lv {level}"),
+			None => format!("Lv {}", u32::MAX),
 		});
 	}
 	match strip_reason(view, item) {
-		StripReason::AtCap { tool: true } => Some("ALREADY OWNED".to_string()),
-		StripReason::AtCap { tool: false } => Some("ALREADY CHARGED".to_string()),
+		StripReason::AtCap { tool: true } => Some("Already owned".to_string()),
+		StripReason::AtCap { tool: false } => Some("Already charged".to_string()),
 		StripReason::Short { .. } => None,
-		StripReason::NothingToCharge => Some("NOTHING TO CHARGE".to_string()),
+		StripReason::NothingToCharge => Some("Nothing to charge".to_string()),
 		StripReason::Affords(n) => Some(format!("×{n}")),
 	}
 }

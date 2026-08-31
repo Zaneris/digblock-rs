@@ -447,7 +447,7 @@ fn the_vessels_craft_from_feedstock_alone() {
 	assert!(
 		!texts
 			.iter()
-			.any(|(_, _, _, _, t)| t.contains(&B::Wood.name().to_uppercase())),
+			.any(|(_, _, _, _, t)| t.contains(&B::Wood.name())),
 		"a price is chips, not words"
 	);
 	let mut dl = DrawList::default();

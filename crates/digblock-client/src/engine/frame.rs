@@ -233,7 +233,7 @@ impl Engine {
 				Some(n) => tag.text.push_str(n),
 				None => {
 					use std::fmt::Write;
-					let _ = write!(tag.text, "player {}", d.id);
+					let _ = write!(tag.text, "Player {}", d.id);
 				}
 			}
 			tags += 1;
@@ -436,7 +436,7 @@ impl Engine {
 			{
 				use crate::ui::screens::alchemy::BenchJob;
 				let BenchJob::Craft(item, left) = job;
-				let text = format!("BENCH  {} ×{left}", item.name().to_uppercase());
+				let text = format!("Bench  {} ×{left}", item.name());
 				crate::ui::hud::bench_tell(ui.dl, &ui.style, size, &text);
 			}
 			crate::ui::hud::tool_rail(
@@ -511,9 +511,9 @@ impl Engine {
 				jump_button: self.config.touch_jump_button,
 			});
 			let skip_hint = if self.config.touch_hud {
-				"skip: settings"
+				"Skip: Settings"
 			} else {
-				"skip: tab"
+				"Skip: Tab"
 			};
 			crate::ui::tutorial::panel(
 				&mut self.ui.ui_dl,

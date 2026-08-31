@@ -76,14 +76,14 @@ pub fn all_ports() -> Vec<Port> {
 /// screens own their labels.
 fn port_label(idx: u8) -> &'static str {
 	match SurfaceKind::ALL.get(idx as usize) {
-		Some(SurfaceKind::Plains) => "PLAINS WAYSTONE",
-		Some(SurfaceKind::Forest) => "FOREST WAYSTONE",
-		Some(SurfaceKind::Savanna) => "SAVANNA WAYSTONE",
-		Some(SurfaceKind::Taiga) => "TAIGA WAYSTONE",
-		Some(SurfaceKind::Beach) => "SHORE WAYSTONE",
-		Some(SurfaceKind::Mountain) => "MOUNTAIN WAYSTONE",
-		Some(SurfaceKind::Snow) => "FAR COLD WAYSTONE",
-		_ => "WAYSTONE",
+		Some(SurfaceKind::Plains) => "Plains Waystone",
+		Some(SurfaceKind::Forest) => "Forest Waystone",
+		Some(SurfaceKind::Savanna) => "Savanna Waystone",
+		Some(SurfaceKind::Taiga) => "Taiga Waystone",
+		Some(SurfaceKind::Beach) => "Shore Waystone",
+		Some(SurfaceKind::Mountain) => "Mountain Waystone",
+		Some(SurfaceKind::Snow) => "Far Cold Waystone",
+		_ => "Waystone",
 	}
 }
 
@@ -140,16 +140,16 @@ impl SpellView {
 		let mut rows = vec![Row::Title, Row::Space];
 		rows.push(Row::Spell {
 			id: InvId::Spell(0),
-			text: "RETURN HOME".to_string(),
+			text: "Return Home".to_string(),
 			state: State::Text(if teleport_ready {
-				"READY".to_string()
+				"Ready".to_string()
 			} else {
 				format!("{cooldown_secs}s")
 			}),
 			ready: teleport_ready,
 		});
 		rows.push(Row::Info(
-			"a channelled journey back to your spawn, hold still".to_string(),
+			"A channelled journey back to your spawn, hold still".to_string(),
 		));
 		// The illumination family: the wisp from the first level (the
 		// ladder's essence-priced bootstrap), kindle at its rung.
@@ -157,7 +157,7 @@ impl SpellView {
 		let wisp_ready = inventory.sub_count(wisp_essence) >= wisp_fare;
 		rows.push(Row::Spell {
 			id: InvId::Spell(SLOT_WISP),
-			text: "WISP".to_string(),
+			text: "Wisp".to_string(),
 			state: State::fare(wisp_essence, wisp_fare, wisp_ready),
 			ready: wisp_ready,
 		});
@@ -167,7 +167,7 @@ impl SpellView {
 			kindle_ready = inventory.sub_count(k_essence) >= k_fare;
 			rows.push(Row::Spell {
 				id: InvId::Spell(SLOT_KINDLE),
-				text: "KINDLE".to_string(),
+				text: "Kindle".to_string(),
 				state: State::fare(k_essence, k_fare, kindle_ready),
 				ready: kindle_ready,
 			});
@@ -184,7 +184,7 @@ impl SpellView {
 			]);
 			rows.push(Row::Spell {
 				id: InvId::Spell(SLOT_SPHERE),
-				text: "SPHERE".to_string(),
+				text: "Sphere".to_string(),
 				state: State::fare(s_essence, s_fare, sphere_ready),
 				ready: sphere_ready,
 			});
@@ -199,7 +199,7 @@ impl SpellView {
 			causeway_ready = standing || inventory.sub_count(c_essence) >= c_fare;
 			rows.push(Row::Spell {
 				id: InvId::Spell(SLOT_CAUSEWAY),
-				text: "CAUSEWAY".to_string(),
+				text: "Causeway".to_string(),
 				state: if standing {
 					State::Text(format!("{causeway_secs_left}s"))
 				} else {
@@ -237,16 +237,16 @@ impl SpellView {
 			} else if !teased {
 				teased = true;
 				rows.push(Row::Info(format!(
-					"next port: LV {} - {}",
+					"Next port: Lv {} - {}",
 					port.level,
-					port_label(port.idx).to_lowercase()
+					port_label(port.idx)
 				)));
 			}
 		}
 		rows.push(Row::Space);
 		// The rung teaser rides beneath the roster.
 		if let Some((lvl, what)) = next_rung(level) {
-			rows.push(Row::Info(format!("next: LV {lvl} - {what}")));
+			rows.push(Row::Info(format!("Next: Lv {lvl} - {what}")));
 		}
 		Self {
 			rows,
@@ -269,16 +269,16 @@ pub(super) fn next_rung(level: u32) -> Option<(u32, &'static str)> {
 	[
 		(
 			unlock::SPHERE_AT,
-			"a sphere of your held block closes about you",
+			"A sphere of your held block closes about you",
 		),
-		(unlock::TELEPORT_SWIFT_AT, "home comes back sooner"),
-		(unlock::CAUSEWAY_AT, "glass takes your step over nothing"),
-		(unlock::CHANNEL_QUICK_AT, "every channel quickens"),
-		(unlock::SPHERE_WIDE_AT, "the sphere widens"),
-		(unlock::CAUSEWAY_LONG_AT, "the road runs longer"),
-		(unlock::SPHERE_VAST_AT, "the sphere widens again"),
-		(unlock::TELEPORT_SWIFTER_AT, "home comes back sooner still"),
-		(unlock::CAUSEWAY_VAST_AT, "the road runs longer still"),
+		(unlock::TELEPORT_SWIFT_AT, "Home comes back sooner"),
+		(unlock::CAUSEWAY_AT, "Glass takes your step over nothing"),
+		(unlock::CHANNEL_QUICK_AT, "Every channel quickens"),
+		(unlock::SPHERE_WIDE_AT, "The sphere widens"),
+		(unlock::CAUSEWAY_LONG_AT, "The road runs longer"),
+		(unlock::SPHERE_VAST_AT, "The sphere widens again"),
+		(unlock::TELEPORT_SWIFTER_AT, "Home comes back sooner still"),
+		(unlock::CAUSEWAY_VAST_AT, "The road runs longer still"),
 	]
 	.into_iter()
 	.find(|&(lvl, _)| lvl > level)
@@ -340,7 +340,7 @@ impl State {
 fn row_text(row: &Row) -> &str {
 	match row {
 		Row::Space => "",
-		Row::Title => "SPELLBOOK",
+		Row::Title => "Spellbook",
 		Row::Spell { text, .. } => text,
 		Row::Info(t) => t,
 	}

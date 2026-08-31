@@ -183,7 +183,7 @@ impl InvScreen {
 			title_y,
 			ui.style.glyph,
 			WHITE,
-			"INVENTORY",
+			"Inventory",
 		);
 		let icon_px = hud::ICON_PX * s;
 		for i in 0..GRID_SLOTS {

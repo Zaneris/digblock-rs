@@ -2,10 +2,9 @@
 //! cannot ship without words, and every arm free to order its own
 //! arguments — that freedom is the whole point of the enum above it.
 //!
-//! Two voices live here on purpose: the flat lower-case refusals a dig
-//! speaks, and the sentence-case lines the session speaks. A refusal is
-//! the game answering your hand; the rest is the game telling you
-//! something happened.
+//! One voice: sentence case throughout. Refusals stay terse and
+//! unpunctuated (the game answering your hand); announcements keep
+//! their full stops (the game telling you something happened).
 
 use super::{Ink, Line, Msg, Spell};
 use digblock_core::block::Essence;
@@ -45,29 +44,29 @@ pub(super) fn line(msg: &Msg) -> String {
 			req.skill.name(),
 			req.level
 		),
-		Msg::DigProtected => "this block is holding firm".into(),
-		Msg::PlaceProtected => "nothing will stay put here".into(),
-		Msg::NeedsSiphon => "this vein needs an essence siphon".into(),
-		Msg::DigRefusedByServer => "the server refused that dig".into(),
-		Msg::CastInterrupted => "the channel breaks".into(),
-		Msg::SpellLocked(s) => format!("{} is beyond your arcana", spell(*s)),
+		Msg::DigProtected => "This block is holding firm".into(),
+		Msg::PlaceProtected => "Nothing will stay put here".into(),
+		Msg::NeedsSiphon => "This vein needs an essence siphon".into(),
+		Msg::DigRefusedByServer => "The server refused that dig".into(),
+		Msg::CastInterrupted => "The channel breaks".into(),
+		Msg::SpellLocked(s) => format!("{} is beyond your arcana", spell_cap(*s)),
 		// The waystone's fare is a PASSAGE — you are buying the journey,
 		// not the spell — and the conjurings are not, so the sentence
 		// splits on the argument rather than papering over it.
-		Msg::SpellFareShort(Spell::Waystone) => "you cannot pay the passage".into(),
-		Msg::SpellFareShort(s) => format!("you cannot pay for {}", spell(*s)),
+		Msg::SpellFareShort(Spell::Waystone) => "You cannot pay the passage".into(),
+		Msg::SpellFareShort(s) => format!("You cannot pay for {}", spell(*s)),
 		// Spell-blind on purpose: the wire says only that the server
 		// refused. Naming a spell here would name the wrong one.
-		Msg::WaystoneLocked => "that casting is beyond your arcana".into(),
-		Msg::CastCantPay => "you cannot pay that fare".into(),
-		Msg::CastBadTarget => "nothing can be conjured here".into(),
-		Msg::SphereNoBlock => "hold a block to raise the sphere from".into(),
+		Msg::WaystoneLocked => "That casting is beyond your arcana".into(),
+		Msg::CastCantPay => "You cannot pay that fare".into(),
+		Msg::CastBadTarget => "Nothing can be conjured here".into(),
+		Msg::SphereNoBlock => "Hold a block to raise the sphere from".into(),
 		Msg::SphereBadBlock(Some(b)) => format!("{} cannot be raised into a sphere", b.name()),
-		Msg::SphereBadBlock(None) => "that cannot be raised into a sphere".into(),
+		Msg::SphereBadBlock(None) => "That cannot be raised into a sphere".into(),
 		Msg::SphereBlocksShort(Some((b, need, have))) => {
-			format!("the sphere needs {need} {} and you hold {have}", b.name())
+			format!("The sphere needs {need} {} and you hold {have}", b.name())
 		}
-		Msg::SphereBlocksShort(None) => "you do not hold enough blocks for the sphere".into(),
+		Msg::SphereBlocksShort(None) => "You do not hold enough blocks for the sphere".into(),
 
 		Msg::LevelUp { skill, level } => format!("{} is now level {level}.", skill.name()),
 		Msg::RemoteLevelUp { who, skill, level } => {
@@ -102,9 +101,9 @@ pub(super) fn line(msg: &Msg) -> String {
 
 		// Bracketed and neutral, so a server line cannot be mistaken for
 		// a player's.
-		// The tutorial speaks in the refusals' flat lower case: it is
-		// the game answering your hand, step by step. Key names come from
-		// the engine consts, so a rebinding moves the words with it.
+		// The tutorial names UI elements by their on-screen labels, so
+		// Transmute and Tools carry their button casing. Key names come
+		// from the engine consts, so a rebinding moves the words with it.
 		Msg::TutorialStep {
 			step, touch: false, ..
 		} => {
@@ -112,35 +111,35 @@ pub(super) fn line(msg: &Msg) -> String {
 			use digblock_platform::Key;
 			match step {
 				S::Move => format!(
-					"walk around with {} {} {} {}",
+					"Walk around with {} {} {} {}",
 					Key::W.label(),
 					Key::A.label(),
 					Key::S.label(),
 					Key::D.label()
 				),
-				S::Look => "look around with the mouse".into(),
-				S::Jump => format!("jump with {}", Key::Space.label()),
-				S::Dig => "hold the left mouse button on a block to dig it".into(),
-				S::SwitchSlot => "press 2 or scroll to try another hotbar slot".into(),
-				S::SelectSlot => "press 1 to come back to your first slot".into(),
-				S::Place => "right-click a surface to place what you dug".into(),
-				S::OpenMenu => format!("press {} to open the menu", Key::Escape.label()),
+				S::Look => "Look around with the mouse".into(),
+				S::Jump => format!("Jump with {}", Key::Space.label()),
+				S::Dig => "Hold the left mouse button on a block to dig it".into(),
+				S::SwitchSlot => "Press 2 or scroll to try another hotbar slot".into(),
+				S::SelectSlot => "Press 1 to come back to your first slot".into(),
+				S::Place => "Right-click a surface to place what you dug".into(),
+				S::OpenMenu => format!("Press {} to open the menu", Key::Escape.label()),
 				S::OpenInventory => format!(
-					"press {} to open your inventory",
+					"Press {} to open your inventory",
 					crate::engine::INVENTORY_KEY.label()
 				),
 				S::CloseInventory => {
-					format!("press {} to close your inventory", Key::Escape.label())
+					format!("Press {} to close your inventory", Key::Escape.label())
 				}
 				S::OpenBench => format!(
-					"you can afford an essence siphon: press {} to open the bench",
+					"You can afford an essence siphon: press {} to open the bench",
 					crate::engine::ALCHEMY_KEY.label()
 				),
-				S::PickTools => "select the tools family".into(),
-				S::PickSiphon => "select the essence siphon".into(),
-				S::CraftSiphon => "press transmute to craft the siphon".into(),
+				S::PickTools => "Select the Tools family".into(),
+				S::PickSiphon => "Select the Essence Siphon".into(),
+				S::CraftSiphon => "Press Transmute to craft the siphon".into(),
 				S::SelectSiphon => format!(
-					"press {} until the siphon is in hand",
+					"Press {} until the siphon is in hand",
 					Key::Digit(digblock_core::hotbar::HOTBAR_SLOTS as u8).label()
 				),
 			}
@@ -152,28 +151,28 @@ pub(super) fn line(msg: &Msg) -> String {
 		} => {
 			use crate::tutorial::StepId as S;
 			match step {
-				S::Move => "drag the left side of the screen to walk".into(),
-				S::Look => "drag the right side of the screen to look".into(),
-				S::Jump if *jump_button => "tap the jump button".into(),
-				S::Jump => "double-tap the right side to jump".into(),
-				S::Dig => "hold a finger on a block to dig it".into(),
-				S::SwitchSlot => "tap another hotbar slot".into(),
-				S::SelectSlot => "tap your first hotbar slot".into(),
-				S::Place => "aim at a surface and tap the place button".into(),
-				S::OpenMenu => "tap the corner button to open the menu".into(),
-				S::OpenInventory => "in the menu, tap inventory".into(),
-				S::CloseInventory => "tap the x in the corner to close your inventory".into(),
+				S::Move => "Drag the left side of the screen to walk".into(),
+				S::Look => "Drag the right side of the screen to look".into(),
+				S::Jump if *jump_button => "Tap the jump button".into(),
+				S::Jump => "Double-tap the right side to jump".into(),
+				S::Dig => "Hold a finger on a block to dig it".into(),
+				S::SwitchSlot => "Tap another hotbar slot".into(),
+				S::SelectSlot => "Tap your first hotbar slot".into(),
+				S::Place => "Aim at a surface and tap the place button".into(),
+				S::OpenMenu => "Tap the corner button to open the menu".into(),
+				S::OpenInventory => "In the menu, tap Inventory".into(),
+				S::CloseInventory => "Tap the X in the corner to close your inventory".into(),
 				S::OpenBench => {
-					"you can afford an essence siphon: open the bench from the menu".into()
+					"You can afford an essence siphon: open the bench from the menu".into()
 				}
-				S::PickTools => "tap the tools family".into(),
-				S::PickSiphon => "tap the essence siphon".into(),
-				S::CraftSiphon => "tap transmute to craft the siphon".into(),
-				S::SelectSiphon => "tap the last slot until the siphon is in hand".into(),
+				S::PickTools => "Tap the Tools family".into(),
+				S::PickSiphon => "Tap the Essence Siphon".into(),
+				S::CraftSiphon => "Tap Transmute to craft the siphon".into(),
+				S::SelectSiphon => "Tap the last slot until the siphon is in hand".into(),
 			}
 		}
-		Msg::TutorialDone => "you know the essentials: this world is yours".into(),
-		Msg::TutorialSiphonDone => "that is everything: go siphon some essence".into(),
+		Msg::TutorialDone => "You know the essentials: this world is yours".into(),
+		Msg::TutorialSiphonDone => "That is everything: go siphon some essence".into(),
 		Msg::ServerNotice { text } => format!("[server] {text}"),
 		Msg::Chat { name, text } => format!("{name}: {text}"),
 		Msg::CommandHint { usage, desc } => command_hint(usage, desc).text,
@@ -194,31 +193,43 @@ fn spell(s: Spell) -> &'static str {
 	}
 }
 
+/// The same noun phrase opening a sentence, so its article carries the
+/// capital instead of the template bolting one on.
+fn spell_cap(s: Spell) -> &'static str {
+	match s {
+		Spell::Waystone => "That waystone",
+		Spell::Wisp => "The wisp",
+		Spell::Kindle => "Conjured light",
+		Spell::Sphere => "The sphere",
+		Spell::Causeway => "The causeway",
+	}
+}
+
 /// The usage line for one command. The `/give` line names the essences
 /// out of `Essence::ALL` at the moment it is drawn, which is why the
 /// advertisement and `parse_essence` cannot come to disagree — they read
 /// one vocabulary from opposite ends of the wire.
 fn usage(u: AdminUsage) -> String {
 	match u {
-		AdminUsage::Tp => "usage: /tp <x> <z> [n|s|e|w] (~ or ~<d> = relative)".into(),
-		AdminUsage::SetSpawn => "usage: /set-spawn (aim at the block to stand on)".into(),
+		AdminUsage::Tp => "Usage: /tp <x> <z> [n|s|e|w] (~ or ~<d> = relative)".into(),
+		AdminUsage::SetSpawn => "Usage: /set-spawn (aim at the block to stand on)".into(),
 		AdminUsage::SetSpawnDir => {
-			"usage: /set-spawn-dir [n|s|e|w] (no argument = your facing)".into()
+			"Usage: /set-spawn-dir [n|s|e|w] (no argument = your facing)".into()
 		}
-		AdminUsage::LockSpawn => "usage: /lock-spawn [on|off]".into(),
-		AdminUsage::Goto => "usage: /goto <name>".into(),
-		AdminUsage::Bring => "usage: /bring <name>".into(),
+		AdminUsage::LockSpawn => "Usage: /lock-spawn [on|off]".into(),
+		AdminUsage::Goto => "Usage: /goto <name>".into(),
+		AdminUsage::Bring => "Usage: /bring <name>".into(),
 		AdminUsage::Give => {
 			let names = Essence::ALL.map(|e| e.ident()).join("|");
-			format!("usage: /give <name> <{names}> [n]")
+			format!("Usage: /give <name> <{names}> [n]")
 		}
 		AdminUsage::Time => {
-			"usage: /time <hh:mm> (24h; 6:00 sunrise, 12:00 noon, 18:00 sunset)".into()
+			"Usage: /time <hh:mm> (24h; 6:00 sunrise, 12:00 noon, 18:00 sunset)".into()
 		}
-		AdminUsage::Reset => "usage: /reset <name>".into(),
-		AdminUsage::Ban => "usage: /ban <name>".into(),
-		AdminUsage::BanName => "usage: /ban <name> (a player display name)".into(),
-		AdminUsage::Unban => "usage: /unban <name-or-ip>".into(),
+		AdminUsage::Reset => "Usage: /reset <name>".into(),
+		AdminUsage::Ban => "Usage: /ban <name>".into(),
+		AdminUsage::BanName => "Usage: /ban <name> (a player display name)".into(),
+		AdminUsage::Unban => "Usage: /unban <name-or-ip>".into(),
 	}
 }
 
@@ -233,61 +244,65 @@ fn cell(c: &[i32; 3]) -> String {
 	format!("{} {} {}", c[0], c[1], c[2])
 }
 
-/// Admin replies. Lower case and terse like the refusals: this is the
-/// game answering a command, not telling you something happened.
+/// Admin replies. Terse and unpunctuated like the refusals: this is
+/// the game answering a command, not telling you something happened.
 fn admin(r: &AdminReply) -> String {
 	match r {
 		AdminReply::Usage(u) => usage(*u),
 		AdminReply::CommandHint { usage, desc } => command_hint(usage, desc).text,
-		AdminReply::UnknownCommand { typed } => format!("unknown command {typed} - try /help"),
-		AdminReply::CompassHint => "compass: e = sunrise (-x), n = +z".into(),
+		AdminReply::UnknownCommand { typed } => format!("Unknown command {typed} - try /help"),
+		AdminReply::CompassHint => "Compass: e = sunrise (-x), n = +z".into(),
 		AdminReply::NoSuchPlayer { name, why } => match why {
 			NoPlayer::NotAName => format!("{name} is not a player display name"),
 			NoPlayer::StillJoining => format!("{name} is still joining"),
 			NoPlayer::NotOnline => format!("{name} is not online"),
 			NoPlayer::Ambiguous { count } => format!("{count} players named {name}"),
 		},
-		AdminReply::ThatIsYou => "that's you".into(),
-		AdminReply::Teleported { x, z } => format!("teleported to {x} {z}"),
-		AdminReply::TeleportedTo { name } => format!("teleported to {name}"),
-		AdminReply::Brought { name } => format!("brought {name}"),
+		AdminReply::ThatIsYou => "That's you".into(),
+		AdminReply::Teleported { x, z } => format!("Teleported to {x} {z}"),
+		AdminReply::TeleportedTo { name } => format!("Teleported to {name}"),
+		AdminReply::Brought { name } => format!("Brought {name}"),
 		AdminReply::TeleportedYouBy { admin } => format!("{admin} teleported you"),
-		AdminReply::NotLookingAtBlock => "not looking at a block".into(),
+		AdminReply::NotLookingAtBlock => "Not looking at a block".into(),
 		AdminReply::NotLookingAtTopFace => {
-			"not looking at the top of a block - aim at the surface to stand on".into()
+			"Not looking at the top of a block - aim at the surface to stand on".into()
 		}
 		AdminReply::SpawnNotClear { clear, capsule } => format!(
-			"not a valid spawn - needs solid ground {clear} blocks out, \
+			"Not a valid spawn - needs solid ground {clear} blocks out, \
 			 with {capsule} clear and dry above it"
 		),
-		AdminReply::SpawnPointSet { cell: c } => format!("spawn point set to {}", cell(c)),
+		AdminReply::SpawnPointSet { cell: c } => format!("Spawn point set to {}", cell(c)),
 		AdminReply::NotFacingAnywhere => {
-			"not facing anywhere - look along the ground, or name a direction".into()
+			"Not facing anywhere - look along the ground, or name a direction".into()
 		}
-		AdminReply::SpawnFacingSet { compass } => format!("players will spawn facing {compass}"),
+		AdminReply::SpawnFacingSet { compass } => format!("Players will spawn facing {compass}"),
 		AdminReply::SpawnLocked {
 			cell: c,
 			region,
 			already,
 		} => {
 			let [x0, x1, y0, y1, z0, z1] = region;
-			let head = if *already { "already " } else { "" };
+			let head = if *already {
+				"Spawn already locked"
+			} else {
+				"Spawn locked"
+			};
 			format!(
-				"{head}spawn locked at {} (protecting x {x0}..{x1}, y {y0}..{y1}, z {z0}..{z1})",
+				"{head} at {} (protecting x {x0}..{x1}, y {y0}..{y1}, z {z0}..{z1})",
 				cell(c)
 			)
 		}
 		AdminReply::SpawnSetButUnlocked { cell: c } => format!(
-			"spawn is set at {} but unlocked (its cells can be dug)",
+			"Spawn is set at {} but unlocked (its cells can be dug)",
 			cell(c)
 		),
-		AdminReply::NoClearSpawnToLock => "no clear spawn to lock: nowhere within range is \
+		AdminReply::NoClearSpawnToLock => "No clear spawn to lock: nowhere within range is \
 			 intact; fill in the excavation and try again"
 			.into(),
 		AdminReply::SpawnAlreadyUnlocked => {
-			"spawn is unlocked (it moves aside if players dig it out)".into()
+			"Spawn is unlocked (it moves aside if players dig it out)".into()
 		}
-		AdminReply::SpawnUnlocked => "spawn unlocked - its cells are editable again".into(),
+		AdminReply::SpawnUnlocked => "Spawn unlocked - its cells are editable again".into(),
 		AdminReply::NotAnEssence { typed } => {
 			format!("{typed} is not an essence - {}", usage(AdminUsage::Give))
 		}
@@ -305,30 +320,30 @@ fn admin(r: &AdminReply) -> String {
 			} else {
 				String::new()
 			};
-			format!("gave {name} {gained} {what} - now {held}{short}")
+			format!("Gave {name} {gained} {what} - now {held}{short}")
 		}
 		AdminReply::WereGiven { essence: e, gained } => {
-			format!("you were given {gained} {}", essence(*e))
+			format!("You were given {gained} {}", essence(*e))
 		}
-		AdminReply::TimeIs { hour, minute } => format!("time is {hour:02}:{minute:02}"),
-		AdminReply::TimeSet { hour, minute } => format!("time set to {hour:02}:{minute:02}"),
+		AdminReply::TimeIs { hour, minute } => format!("Time is {hour:02}:{minute:02}"),
+		AdminReply::TimeSet { hour, minute } => format!("Time set to {hour:02}:{minute:02}"),
 		AdminReply::ResetPlayer { name } => {
-			format!("reset {name} - skills zeroed, inventory wiped")
+			format!("Reset {name} - skills zeroed, inventory wiped")
 		}
-		AdminReply::YouWereReset => "your skills and inventory were reset".into(),
-		AdminReply::NotBanningYourself => "not banning yourself".into(),
+		AdminReply::YouWereReset => "Your skills and inventory were reset".into(),
+		AdminReply::NotBanningYourself => "Not banning yourself".into(),
 		AdminReply::SharesYourIp { name } => format!("{name} shares your IP - not banning it"),
-		AdminReply::Banned { name, ip } => format!("banned {name} ({ip})"),
-		AdminReply::NoBans => "no bans".into(),
+		AdminReply::Banned { name, ip } => format!("Banned {name} ({ip})"),
+		AdminReply::NoBans => "No bans".into(),
 		AdminReply::BanEntry { name, ip } => format!("{name} - {ip}"),
 		AdminReply::Unbanned { arg, removed } => {
-			format!("unbanned {arg} ({removed} entry(s))")
+			format!("Unbanned {arg} ({removed} entry(s))")
 		}
-		AdminReply::NoBanMatches { arg } => format!("no ban matches {arg}"),
+		AdminReply::NoBanMatches { arg } => format!("No ban matches {arg}"),
 		AdminReply::LegacyCharacterClaimed => {
-			"your pre-account character on this server has been added to your account".into()
+			"Your pre-account character on this server has been added to your account".into()
 		}
-		AdminReply::CommandsAreAdminOnly => "commands are admin-only".into(),
+		AdminReply::CommandsAreAdminOnly => "Commands are admin-only".into(),
 		AdminReply::WithheldOnRankedServer { command } => {
 			format!("{command} is off here: this server's levels reach the hiscores")
 		}
@@ -336,7 +351,7 @@ fn admin(r: &AdminReply) -> String {
 }
 
 pub(super) fn unknown_player(id: PlayerId) -> String {
-	format!("player {id}")
+	format!("Player {id}")
 }
 
 pub(super) fn me() -> String {

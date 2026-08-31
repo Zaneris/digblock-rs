@@ -418,7 +418,7 @@ fn text_edits_name_with_charset_cap_and_backspace() {
 		menu.view(SIZE, 1.0, false)
 			.rows
 			.iter()
-			.any(|r| r.text.contains("name: ted_"))
+			.any(|r| r.text.contains("Name: ted_"))
 	);
 	for _ in 0..100 {
 		menu.handle_text('x');
@@ -427,9 +427,9 @@ fn text_edits_name_with_charset_cap_and_backspace() {
 	let name_row = long
 		.rows
 		.iter()
-		.find(|r| r.text.starts_with("name:"))
+		.find(|r| r.text.starts_with("Name:"))
 		.unwrap();
-	assert!(name_row.text.len() <= "name: ".len() + digblock_net::protocol::MAX_DISPLAY_NAME);
+	assert!(name_row.text.len() <= "Name: ".len() + digblock_net::protocol::MAX_DISPLAY_NAME);
 }
 
 /// The bridge's whole-value restatement and the keystroke path are one
@@ -1094,7 +1094,7 @@ fn the_browser_shows_the_account_name() {
 	assert!(
 		view.rows
 			.iter()
-			.any(|r| r.text.contains("playing as Miner42")),
+			.any(|r| r.text.contains("Playing as Miner42")),
 		"{:?}",
 		view.rows.iter().map(|r| &r.text).collect::<Vec<_>>()
 	);

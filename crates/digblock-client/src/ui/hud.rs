@@ -658,10 +658,7 @@ pub fn toasts(
 		// An XP toast says the skill; an essence toast shows the chip —
 		// an amount of essence is never a word.
 		let (text, icon) = match toast.label {
-			ToastLabel::Xp(skill) => (
-				format!("+{} {}", toast.amount, skill.name().to_uppercase()),
-				None,
-			),
+			ToastLabel::Xp(skill) => (format!("+{} {}", toast.amount, skill.name()), None),
 			ToastLabel::Essence(e) => (format!("+{}", toast.amount), Some(IconKind::Essence(e))),
 		};
 		let text_w = style.measure(&text);
