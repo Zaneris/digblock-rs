@@ -1060,10 +1060,20 @@ impl<G: Game> App<G> {
 	/// what raises the soft keyboard).
 	fn after_game_input(&mut self) {
 		let fullscreen = self.game.take_fullscreen_request();
+		let screenshot = self.game.take_screenshot_request();
 		#[cfg(target_arch = "wasm32")]
 		{
 			if fullscreen {
 				toggle_browser_fullscreen();
+			}
+			// The canvas image is the last PRESENTED frame — one frame old,
+			// invisible in a screenshot — and snapshotting it here keeps the
+			// anchor click inside the keypress's own task (the gesture rule).
+			if screenshot
+				&& let AppState::Running(r) = &self.state
+				&& let Some(canvas) = winit::platform::web::WindowExtWebSys::canvas(&*r.window)
+			{
+				crate::webshot::download_canvas_png(&canvas, self.launched_at.elapsed().as_secs());
 			}
 			let game = &self.game;
 			if let Some(bridge) = &mut self.text_bridge
@@ -1078,7 +1088,13 @@ impl<G: Game> App<G> {
 			}
 		}
 		#[cfg(not(target_arch = "wasm32"))]
-		let _ = fullscreen;
+		{
+			let _ = fullscreen;
+			// The native capture rides the existing render_frame path
+			// (blocking map wait + PNG to shots/); iOS has no keyboard to
+			// fire it, and the flag is simply never read there.
+			self.screenshot_pending |= screenshot;
+		}
 	}
 
 	fn grab_cursor(&mut self, grab: bool) {
@@ -1509,16 +1525,11 @@ impl<G: Game> ApplicationHandler<UserEvent> for App<G> {
 				use winit::keyboard::{KeyCode, PhysicalKey};
 				let pressed = k.state.is_pressed();
 				match k.physical_key {
-					// Debug drills + screenshot — desktop only, press only.
-					// (F9/F10 stay live on the web — surface recreate and
-					// device rebuild are real paths there; F8 needs the
-					// native-only capture module.)
-					PhysicalKey::Code(KeyCode::F8)
-						if pressed
-							&& cfg!(all(not(target_os = "ios"), not(target_arch = "wasm32"))) =>
-					{
-						self.screenshot_pending = true;
-					}
+					// Debug drills — press only. (F9/F10 stay live on the web:
+					// surface recreate and device rebuild are real paths there.
+					// F8 is no longer shell business — the screenshot bind
+					// flows through the engine's key table like any key and
+					// comes back via `take_screenshot_request`.)
 					PhysicalKey::Code(KeyCode::F9) if pressed && cfg!(not(target_os = "ios")) => {
 						log::info!("F9 drill: toggling suspend/resume");
 						self.dispatch(LcEvent::ToggleDrillSuspend, el);

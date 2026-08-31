@@ -8,6 +8,8 @@ use super::*;
 pub enum DebugScreen {
 	/// The startup menu; needs `menu: true` too, which the launcher forces on captures.
 	Menu,
+	/// The menu's Controls (key rebinding) page; same `menu: true` need.
+	Controls,
 	Inventory,
 	Alchemy,
 	/// The same two pages, cursor parked on a NAMED thing: a tooltip is otherwise uncapturable.
@@ -45,6 +47,7 @@ impl DebugScreen {
 	pub fn parse(s: &str) -> Option<Self> {
 		match s.trim().to_ascii_lowercase().as_str() {
 			"menu" => Some(Self::Menu),
+			"controls" => Some(Self::Controls),
 			"inventory" | "inv" => Some(Self::Inventory),
 			"alchemy" | "alch" => Some(Self::Alchemy),
 			"inventory-hover" => Some(Self::InventoryHover),

@@ -38,6 +38,10 @@ web-sys = { workspace = true, features = [
 	"HtmlInputElement",
 	"InputEvent",
 	"KeyboardEvent",
+	# The screenshot download (webshot.rs).
+	"Blob",
+	"Url",
+	"HtmlAnchorElement",
 ] }
 
 [lints]

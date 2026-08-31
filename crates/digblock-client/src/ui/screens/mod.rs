@@ -186,6 +186,11 @@ mod tests {
 			("menu-signin", crate::menu::TestPage::SignIn),
 			("menu-name", crate::menu::TestPage::ChooseName),
 			("menu-account", crate::menu::TestPage::Account),
+			("menu-controls", crate::menu::TestPage::Controls),
+			(
+				"menu-controls-hotbar",
+				crate::menu::TestPage::ControlsHotbar,
+			),
 		] {
 			let mut dl = DrawList::default();
 			let mut menu = crate::menu::Menu::new(true, Default::default(), None, None);
@@ -303,6 +308,7 @@ mod tests {
 		use crate::DebugScreen as D;
 		match d {
 			D::Menu => Some("menu"),
+			D::Controls => Some("menu-controls"),
 			D::Inventory => Some("inventory"),
 			D::InventoryHover => Some("inventory-hover"),
 			D::Alchemy => Some("alchemy"),

@@ -35,7 +35,14 @@ impl Menu {
 		let col_gap = 2.0 * glyph;
 		let text_w = |s: &str| crate::font::ui().measure(s, glyph);
 		let (w, h) = (size.0 as f32, size.1 as f32);
-		let y0 = (h * 0.18).max(8.0);
+		// The Controls page carries the most rows of any screen and starts
+		// near the top so its Back row stays on an 800-tall reference
+		// window; everything else keeps the composed 18% drop.
+		let y0 = if matches!(&self.screen, Some(Screen::Controls { .. })) {
+			(h * 0.06).max(8.0)
+		} else {
+			(h * 0.18).max(8.0)
+		};
 		let mut y = y0;
 		// Two passes: rows are collected with their y first, then placed
 		// once the widest row has set the panel width.
@@ -306,6 +313,14 @@ impl Menu {
 					),
 				);
 				y += row_h * 0.5;
+				// Skipped in lockstep with `acts()`: no keys to rebind on touch.
+				if !self.touch {
+					push(
+						&mut specs,
+						&mut y,
+						RowSpec::item(RowId::SettingsRow(SETTINGS_CONTROLS), "Controls..."),
+					);
+				}
 				push(
 					&mut specs,
 					&mut y,
@@ -324,6 +339,84 @@ impl Menu {
 						..RowSpec::dim("Created by @Zaneris (GitHub/X)")
 					},
 				);
+			}
+			Some(Screen::Controls {
+				capture, status, ..
+			}) => {
+				push(&mut specs, &mut y, RowSpec::title("Controls"));
+				y += row_h * 0.25;
+				let binds = &self.settings.bindings;
+				let right = |a: Action| {
+					if *capture == Some(a) {
+						"Press a key..."
+					} else {
+						binds.label(a)
+					}
+				};
+				// Row indices are POSITIONAL — they must match CONTROLS_MAIN,
+				// which is what `acts()` walks (the SETTINGS_ROWS discipline).
+				for (i, a) in CONTROLS_MAIN.iter().enumerate() {
+					// Breathing room between movement, screens, and the rest.
+					if i == 7 || i == 13 {
+						y += row_h * 0.25;
+					}
+					push(
+						&mut specs,
+						&mut y,
+						RowSpec::item_hint(RowId::ControlsRow(i as u8), a.label(), right(*a)),
+					);
+				}
+				y += row_h * 0.25;
+				push(
+					&mut specs,
+					&mut y,
+					RowSpec::item(RowId::ControlsRow(CONTROLS_HOTBAR_ROW), "Hotbar Keys..."),
+				);
+				push(
+					&mut specs,
+					&mut y,
+					RowSpec::item(RowId::ControlsRow(CONTROLS_RESET), "Reset to Defaults"),
+				);
+				push(
+					&mut specs,
+					&mut y,
+					RowSpec::item(RowId::ControlsRow(CONTROLS_BACK), "Back"),
+				);
+				if let Some(s) = status {
+					push(&mut specs, &mut y, RowSpec::status(s.clone()));
+				}
+				hint(&mut specs, &mut y, "Enter or click rebinds, Esc: back");
+			}
+			Some(Screen::ControlsHotbar {
+				capture, status, ..
+			}) => {
+				push(&mut specs, &mut y, RowSpec::title("Hotbar Keys"));
+				y += row_h * 0.5;
+				let binds = &self.settings.bindings;
+				let right = |a: Action| {
+					if *capture == Some(a) {
+						"Press a key..."
+					} else {
+						binds.label(a)
+					}
+				};
+				for (i, a) in CONTROLS_HOTBAR.iter().enumerate() {
+					push(
+						&mut specs,
+						&mut y,
+						RowSpec::item_hint(RowId::ControlsRow(i as u8), a.label(), right(*a)),
+					);
+				}
+				y += row_h * 0.5;
+				push(
+					&mut specs,
+					&mut y,
+					RowSpec::item(RowId::ControlsRow(CONTROLS_HOTBAR_BACK), "Back"),
+				);
+				if let Some(s) = status {
+					push(&mut specs, &mut y, RowSpec::status(s.clone()));
+				}
+				hint(&mut specs, &mut y, "Enter or click rebinds, Esc: back");
 			}
 			Some(Screen::Browser(b)) => {
 				push(&mut specs, &mut y, RowSpec::title("Multiplayer"));

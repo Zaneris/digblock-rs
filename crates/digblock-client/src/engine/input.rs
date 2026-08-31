@@ -140,6 +140,18 @@ impl Engine {
 			// No UI up: any lingering primary marker is stale.
 			self.input.ui_touch = None;
 		}
+		// The screenshot bind works with the menu and every page open —
+		// the shell-level F8 always did — so it is answered ahead of the
+		// containment gates. Typing surfaces stay exempt: a chat line or a
+		// menu text field owns every key, the screenshot's included.
+		if let InputEvent::Key { key, pressed: true } = event
+			&& !self.ui.chat.is_open()
+			&& !self.ui.menu.wants_all_keys()
+			&& self.input.bindings.action(key) == Some(Action::Screenshot)
+		{
+			self.input.screenshot_requested = true;
+			return;
+		}
 		// Menu open: every input belongs to the menu — gameplay keys must
 		// not leak (typing a name would also walk). FocusLost still clears
 		// held state.
@@ -698,7 +710,8 @@ impl Engine {
 			Action::CastSpell1 | Action::CastSpell2 | Action::CastSpell3 => {}
 			// Filled by the resonant pick's orientation toggle.
 			Action::ToolToggle => {}
-			// Filled by the screenshot seam.
+			// Answered by the early intercept at the top of `handle_input`
+			// (it must fire with menus open too); never reaches here.
 			Action::Screenshot => {}
 			_ => {}
 		}

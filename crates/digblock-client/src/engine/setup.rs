@@ -262,6 +262,7 @@ impl Engine {
 				hud_jump_held: false,
 				fullscreen_requested: false,
 				bindings,
+				screenshot_requested: false,
 				safe_area: crate::ui::hud::SafeArea::default(),
 				fly_key_down: false,
 				overlay_key_down: false,
@@ -452,6 +453,8 @@ impl Engine {
 				// The menu opens itself when `config.menu` is set; the
 				// hand wants a stocked bar and nothing over it.
 				DebugScreen::Menu | DebugScreen::Hand => {}
+				// The open menu, jumped to the Controls page.
+				DebugScreen::Controls => engine.ui.menu.open_controls_screen(),
 				DebugScreen::Bucket { .. } => engine
 					.hotbar
 					.select_digit(digblock_core::hotbar::HOTBAR_SLOTS as u8),

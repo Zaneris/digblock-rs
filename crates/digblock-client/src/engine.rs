@@ -693,6 +693,11 @@ struct InputState {
 	/// too, so a hint can never name a dead key.
 	bindings: crate::bindings::Bindings,
 
+	/// The screenshot bind fired; the shell drains it right after this
+	/// input dispatch (`Game::take_screenshot_request`), inside the
+	/// keypress's own task like the fullscreen request.
+	screenshot_requested: bool,
+
 	/// Shell-forwarded display cutouts the touch HUD keeps clear of.
 	safe_area: crate::ui::hud::SafeArea,
 
@@ -1184,6 +1189,10 @@ impl Game for Engine {
 
 	fn take_fullscreen_request(&mut self) -> bool {
 		std::mem::take(&mut self.input.fullscreen_requested)
+	}
+
+	fn take_screenshot_request(&mut self) -> bool {
+		std::mem::take(&mut self.input.screenshot_requested)
 	}
 
 	fn text_entry_active(&self) -> bool {
