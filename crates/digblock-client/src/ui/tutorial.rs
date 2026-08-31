@@ -96,13 +96,13 @@ pub(crate) fn panel(
 	}
 }
 
-/// A pulsing outline around an anchored element, on the Ghost layer so
-/// it reads over every screen. Four quads; alpha rides `time_secs`.
-pub(crate) fn highlight(dl: &mut super::DrawList, style: &Style, rect: Rect, time_secs: f32) {
-	let t = 0.55 + 0.45 * (time_secs * 4.0).sin();
-	let a = (0xFF as f32 * t) as u32;
-	let color = (a << 24) | 0x00FF_D75A;
-	let s = OUTLINE * style.scale;
+/// One collapse of the attention ring, seconds.
+const PULSE_SECS: f32 = 1.1;
+/// How far outside the target the ring spawns, dip px.
+const PULSE_PAD: f32 = 16.0;
+
+/// Emit one rectangular outline of stroke `s` hugging `rect`'s outside.
+fn outline(dl: &mut super::DrawList, rect: Rect, s: f32, color: u32) {
 	let (x, y, w, h) = (rect.x - s, rect.y - s, rect.w + 2.0 * s, rect.h + 2.0 * s);
 	dl.quad(Layer::Ghost, Rect::new(x, y, w, s), color);
 	dl.quad(Layer::Ghost, Rect::new(x, y + h - s, w, s), color);
@@ -112,4 +112,26 @@ pub(crate) fn highlight(dl: &mut super::DrawList, style: &Style, rect: Rect, tim
 		Rect::new(x + w - s, y + s, s, h - 2.0 * s),
 		color,
 	);
+}
+
+/// The anchored element's highlight, on the Ghost layer so it reads over
+/// every screen: a steady outline marks the target, and a second ring
+/// spawns outside it and collapses inward onto it, brightening as it
+/// lands — motion the eye catches where a stationary blink was missed.
+pub(crate) fn highlight(dl: &mut super::DrawList, style: &Style, rect: Rect, time_secs: f32) {
+	use digblock_core::ease;
+	let s = OUTLINE * style.scale;
+	outline(dl, rect, s, 0xFFFF_D75A);
+	let p = (time_secs / PULSE_SECS).fract();
+	// Fast approach, slow landing; the alpha ramp keeps the far ring
+	// faint so the loop reads as arriving, not blinking.
+	let gap = (1.0 - ease::out_cubic(p)) * PULSE_PAD * style.scale;
+	let a = ease::lerp(0x50 as f32, 0xFF as f32, p) as u32;
+	let ring = Rect::new(
+		rect.x - gap,
+		rect.y - gap,
+		rect.w + 2.0 * gap,
+		rect.h + 2.0 * gap,
+	);
+	outline(dl, ring, s * 0.75, (a << 24) | 0x00FF_D75A);
 }

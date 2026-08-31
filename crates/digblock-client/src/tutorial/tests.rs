@@ -32,15 +32,19 @@ fn satisfy(t: &mut Tutorial, id: StepId) -> Option<Advance> {
 			extracted: false,
 			scooped: false,
 		}),
+		StepId::SwitchSlot => t.observe(&GameEvent::Ui(UiEvent::HotbarSelect(2))),
 		StepId::SelectSlot => t.observe(&GameEvent::Ui(UiEvent::HotbarSelect(0))),
 		StepId::Place => t.observe(&GameEvent::Placed {
 			cell,
 			poured: false,
 		}),
+		StepId::OpenMenu => t.observe(&GameEvent::Ui(UiEvent::ScreenOpen(ScreenKind::Menu))),
 		StepId::OpenInventory => {
 			t.observe(&GameEvent::Ui(UiEvent::ScreenOpen(ScreenKind::Inventory)))
 		}
-		StepId::OpenAlchemy => t.observe(&GameEvent::Ui(UiEvent::ScreenOpen(ScreenKind::Alchemy))),
+		StepId::CloseInventory => {
+			t.observe(&GameEvent::Ui(UiEvent::ScreenClose(ScreenKind::Inventory)))
+		}
 	}
 }
 
@@ -62,10 +66,12 @@ fn the_table_is_sound_and_the_knob_names_every_step() {
 			StepId::Look => "look",
 			StepId::Jump => "jump",
 			StepId::Dig => "dig",
+			StepId::SwitchSlot => "switch",
 			StepId::SelectSlot => "slot",
 			StepId::Place => "place",
+			StepId::OpenMenu => "menu",
 			StepId::OpenInventory => "inventory",
-			StepId::OpenAlchemy => "alchemy",
+			StepId::CloseInventory => "close",
 		};
 		assert_eq!(StepId::parse(spelled), Some(id));
 	}

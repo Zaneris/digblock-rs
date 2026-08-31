@@ -198,10 +198,26 @@ fn samples() -> Vec<Msg> {
 	];
 	// Every tutorial step in both wordings: the sweep's uniqueness check
 	// is what proves the touch words actually differ from the keys'.
+	// `jump_button` stays false across the sweep (only Jump's touch arm
+	// reads it, and a flipped copy of every other step would collide);
+	// the one wording it swaps in is sampled once by itself.
 	for step in crate::tutorial::StepId::ALL {
-		all.push(Msg::TutorialStep { step, touch: false });
-		all.push(Msg::TutorialStep { step, touch: true });
+		all.push(Msg::TutorialStep {
+			step,
+			touch: false,
+			jump_button: false,
+		});
+		all.push(Msg::TutorialStep {
+			step,
+			touch: true,
+			jump_button: false,
+		});
 	}
+	all.push(Msg::TutorialStep {
+		step: crate::tutorial::StepId::Jump,
+		touch: true,
+		jump_button: true,
+	});
 	// Both spell-named refusals at every spell: the distinctness the
 	// caller asserts is what proves the argument reaches the words, and
 	// a spell whose sentence duplicates another's is the bug this pair

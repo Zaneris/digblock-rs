@@ -592,6 +592,14 @@ impl Menu {
 		}
 	}
 
+	/// True on the in-world root page, where the screen hotkeys reach
+	/// through to the pages the rows name. Nothing on this page types, so
+	/// a letter key can't be a keystroke the menu was owed; every deeper
+	/// page (typed names, addresses) keeps every key.
+	pub(crate) fn hotkeys_reach_through(&self) -> bool {
+		matches!(self.screen, Some(Screen::Root { .. })) && self.entered_world
+	}
+
 	/// In-game Escape: reopen at the root (no-op unless enabled).
 	pub(crate) fn open(&mut self) {
 		if self.enabled && self.screen.is_none() {

@@ -413,39 +413,6 @@ impl Engine {
 				crate::ui::InvId::Bar(i as u8)
 			});
 			crate::ui::hud::toasts(ui.dl, &ui.style, size, &self.vfx.toasts);
-			// The tutorial's prompt panel + anchored highlight. After the
-			// hotbar and screens, so the hit map already carries this
-			// frame's rects; the highlight rides Ghost, over everything.
-			if let Some(view) = self.tutorial.view(self.config.touch_hud) {
-				let text = crate::voice::plain(&crate::voice::Msg::TutorialStep {
-					step: view.step,
-					touch: self.config.touch_hud,
-				});
-				let skip_hint = if self.config.touch_hud {
-					"skip: settings"
-				} else {
-					"skip: tab"
-				};
-				crate::ui::tutorial::panel(
-					ui.dl,
-					&ui.style,
-					size,
-					&self.input.safe_area,
-					&view,
-					&text,
-					skip_hint,
-				);
-				if let Some(a) = view.anchor
-					&& let Some(r) = crate::ui::anchors::anchor_rect(
-						a,
-						ui.hits,
-						size,
-						ui.style.scale,
-						&self.input.safe_area,
-					) {
-					crate::ui::tutorial::highlight(ui.dl, &ui.style, r, self.time_secs);
-				}
-			}
 			// The teleport instant's wash: one full-rect quad over the
 			// whole overlay, gone in under half a second. Ghost is the
 			// topmost layer, which is the point — arrival paints across
@@ -503,6 +470,52 @@ impl Engine {
 						to_px(finger),
 					);
 				}
+			}
+		}
+		// The tutorial's prompt panel + anchored highlight. After the
+		// hotbar and screens, so the hit map already carries this frame's
+		// rects; the highlight rides Ghost, over everything. It pauses out
+		// of sight with the HUD under the open menu, EXCEPT on the one
+		// step performed inside the menu (open your inventory), where the
+		// panel draws over the menu's own quads.
+		if let Some(view) = self.tutorial.view(self.config.touch_hud)
+			&& (in_game || matches!(view.step, crate::tutorial::StepId::OpenInventory))
+		{
+			let style = crate::ui::Style::new(self.ui.ui_scale);
+			let text = crate::voice::plain(&crate::voice::Msg::TutorialStep {
+				step: view.step,
+				touch: self.config.touch_hud,
+				jump_button: self.config.touch_jump_button,
+			});
+			let skip_hint = if self.config.touch_hud {
+				"skip: settings"
+			} else {
+				"skip: tab"
+			};
+			crate::ui::tutorial::panel(
+				&mut self.ui.ui_dl,
+				&style,
+				size,
+				&self.input.safe_area,
+				&view,
+				&text,
+				skip_hint,
+			);
+			// The jump anchor exists only when the jump-mode setting draws
+			// the button; under the double-tap there is nothing on screen
+			// to point at.
+			let anchor = view.anchor.filter(|a| {
+				*a != crate::ui::anchors::AnchorId::JumpButton || self.config.touch_jump_button
+			});
+			if let Some(a) = anchor
+				&& let Some(r) = crate::ui::anchors::anchor_rect(
+					a,
+					&self.ui.ui_hits,
+					size,
+					style.scale,
+					&self.input.safe_area,
+				) {
+				crate::ui::tutorial::highlight(&mut self.ui.ui_dl, &style, r, self.time_secs);
 			}
 		}
 		// Last, and over everything: while the arrival hold is up, the

@@ -163,10 +163,13 @@ pub(crate) enum Msg {
 	ReturnedToSpawn,
 
 	// ---- the tutorial ----
-	/// One step's instruction; `touch` picks the finger wording.
+	/// One step's instruction; `touch` picks the finger wording, and
+	/// `jump_button` mirrors the touch jump-mode setting (only the Jump
+	/// step's touch wording reads it: button vs. double-tap).
 	TutorialStep {
 		step: crate::tutorial::StepId,
 		touch: bool,
+		jump_button: bool,
 	},
 	/// The completion line (finished or skipped alike).
 	TutorialDone,

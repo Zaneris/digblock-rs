@@ -19,24 +19,28 @@ pub enum StepId {
 	Look,
 	Jump,
 	Dig,
+	SwitchSlot,
 	SelectSlot,
 	Place,
+	OpenMenu,
 	OpenInventory,
-	OpenAlchemy,
+	CloseInventory,
 }
 
 impl StepId {
 	/// Test sweeps only; shipping code walks STEPS.
 	#[cfg(test)]
-	pub(crate) const ALL: [StepId; 8] = [
+	pub(crate) const ALL: [StepId; 10] = [
 		StepId::Move,
 		StepId::Look,
 		StepId::Jump,
 		StepId::Dig,
+		StepId::SwitchSlot,
 		StepId::SelectSlot,
 		StepId::Place,
+		StepId::OpenMenu,
 		StepId::OpenInventory,
-		StepId::OpenAlchemy,
+		StepId::CloseInventory,
 	];
 
 	/// The knob spelling (`DIG_TUTORIAL=<step>`); None = unknown, and the
@@ -47,10 +51,12 @@ impl StepId {
 			"look" => StepId::Look,
 			"jump" => StepId::Jump,
 			"dig" => StepId::Dig,
+			"switch" => StepId::SwitchSlot,
 			"slot" => StepId::SelectSlot,
 			"place" => StepId::Place,
+			"menu" => StepId::OpenMenu,
 			"inventory" => StepId::OpenInventory,
-			"alchemy" => StepId::OpenAlchemy,
+			"close" => StepId::CloseInventory,
 			_ => return None,
 		})
 	}
@@ -83,6 +89,10 @@ pub(crate) enum Trigger {
 	/// Any block placed.
 	Placed,
 	ScreenOpened(ScreenKind),
+	ScreenClosed(ScreenKind),
+	/// Any hotbar change at all (the events only fire on a change, so a
+	/// player parked on the slot the next step wants must leave it first).
+	HotbarSwitched,
 	HotbarSelected(u8),
 }
 
@@ -96,7 +106,7 @@ pub(crate) struct Step {
 }
 
 /// The walkthrough. Wording lives in `voice::en`, keyed by `id`.
-pub(crate) const STEPS: [Step; 8] = [
+pub(crate) const STEPS: [Step; 10] = [
 	Step {
 		id: StepId::Move,
 		trigger: Trigger::Moved { blocks: 5.0 },
@@ -121,6 +131,14 @@ pub(crate) const STEPS: [Step; 8] = [
 		anchor: None,
 		touch_anchor: None,
 	},
+	// The dig just landed its yield in the SELECTED slot, so "select your
+	// first slot" would already be true: leave it first, then come back.
+	Step {
+		id: StepId::SwitchSlot,
+		trigger: Trigger::HotbarSwitched,
+		anchor: Some(AnchorId::Ui(crate::ui::InvId::Bar(1))),
+		touch_anchor: None,
+	},
 	Step {
 		id: StepId::SelectSlot,
 		trigger: Trigger::HotbarSelected(0),
@@ -134,14 +152,22 @@ pub(crate) const STEPS: [Step; 8] = [
 		touch_anchor: Some(AnchorId::PlaceButton),
 	},
 	Step {
-		id: StepId::OpenInventory,
-		trigger: Trigger::ScreenOpened(ScreenKind::Inventory),
+		id: StepId::OpenMenu,
+		trigger: Trigger::ScreenOpened(ScreenKind::Menu),
 		anchor: None,
 		touch_anchor: Some(AnchorId::CornerMenu),
 	},
+	// Performed from inside the menu (its Inventory row, or the hotkey
+	// reaching through); no anchor, the row is the menu's own geometry.
 	Step {
-		id: StepId::OpenAlchemy,
-		trigger: Trigger::ScreenOpened(ScreenKind::Alchemy),
+		id: StepId::OpenInventory,
+		trigger: Trigger::ScreenOpened(ScreenKind::Inventory),
+		anchor: None,
+		touch_anchor: None,
+	},
+	Step {
+		id: StepId::CloseInventory,
+		trigger: Trigger::ScreenClosed(ScreenKind::Inventory),
 		anchor: None,
 		touch_anchor: Some(AnchorId::CornerMenu),
 	},
@@ -237,10 +263,18 @@ impl Tutorial {
 			(Trigger::Dug, GameEvent::DigFinished { .. }) => true,
 			(Trigger::Placed, GameEvent::Placed { .. }) => true,
 			(Trigger::ScreenOpened(k), GameEvent::Ui(UiEvent::ScreenOpen(o))) => k == *o,
+			(Trigger::ScreenClosed(k), GameEvent::Ui(UiEvent::ScreenClose(o))) => k == *o,
+			(Trigger::HotbarSwitched, GameEvent::Ui(UiEvent::HotbarSelect(_))) => true,
 			(Trigger::HotbarSelected(n), GameEvent::Ui(UiEvent::HotbarSelect(i))) => n == *i,
 			_ => false,
 		};
 		hit.then(|| self.advance())
+	}
+
+	/// Age only the step-done flourish: the frames where the poll verbs
+	/// pause (open menu) but the panel may still be showing.
+	pub(crate) fn tick_celebrate(&mut self, dt: f32) {
+		self.celebrate = (self.celebrate - dt).max(0.0);
 	}
 
 	/// One frame of the continuous verbs; also ages the flourish.

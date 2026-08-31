@@ -99,7 +99,9 @@ pub(super) fn line(msg: &Msg) -> String {
 		// The tutorial speaks in the refusals' flat lower case: it is
 		// the game answering your hand, step by step. Key names come from
 		// the engine consts, so a rebinding moves the words with it.
-		Msg::TutorialStep { step, touch: false } => {
+		Msg::TutorialStep {
+			step, touch: false, ..
+		} => {
 			use crate::tutorial::StepId as S;
 			use digblock_platform::Key;
 			match step {
@@ -113,29 +115,37 @@ pub(super) fn line(msg: &Msg) -> String {
 				S::Look => "look around with the mouse".into(),
 				S::Jump => format!("jump with {}", Key::Space.label()),
 				S::Dig => "hold the left mouse button on a block to dig it".into(),
-				S::SelectSlot => "press 1 to ready your first hotbar slot".into(),
+				S::SwitchSlot => "press 2 or scroll to try another hotbar slot".into(),
+				S::SelectSlot => "press 1 to come back to your first slot".into(),
 				S::Place => "right-click a surface to place what you dug".into(),
+				S::OpenMenu => format!("press {} to open the menu", Key::Escape.label()),
 				S::OpenInventory => format!(
-					"press {} to open your pack",
+					"press {} to open your inventory",
 					crate::engine::INVENTORY_KEY.label()
 				),
-				S::OpenAlchemy => format!(
-					"press {} to open the bench",
-					crate::engine::ALCHEMY_KEY.label()
-				),
+				S::CloseInventory => {
+					format!("press {} to close your inventory", Key::Escape.label())
+				}
 			}
 		}
-		Msg::TutorialStep { step, touch: true } => {
+		Msg::TutorialStep {
+			step,
+			touch: true,
+			jump_button,
+		} => {
 			use crate::tutorial::StepId as S;
 			match step {
 				S::Move => "drag the left side of the screen to walk".into(),
 				S::Look => "drag the right side of the screen to look".into(),
+				S::Jump if *jump_button => "tap the jump button".into(),
 				S::Jump => "double-tap the right side to jump".into(),
 				S::Dig => "hold a finger on a block to dig it".into(),
+				S::SwitchSlot => "tap another hotbar slot".into(),
 				S::SelectSlot => "tap your first hotbar slot".into(),
 				S::Place => "aim at a surface and tap the place button".into(),
-				S::OpenInventory => "open the corner menu, then your pack".into(),
-				S::OpenAlchemy => "open the corner menu, then the bench".into(),
+				S::OpenMenu => "tap the corner button to open the menu".into(),
+				S::OpenInventory => "in the menu, tap inventory".into(),
+				S::CloseInventory => "tap the x in the corner to close your inventory".into(),
 			}
 		}
 		Msg::TutorialDone => "you know the essentials: this world is yours".into(),

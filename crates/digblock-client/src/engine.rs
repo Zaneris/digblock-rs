@@ -1362,3 +1362,6 @@ mod causeway_tests;
 
 #[cfg(test)]
 mod ui_sound_tests;
+
+#[cfg(test)]
+mod page_nav_tests;

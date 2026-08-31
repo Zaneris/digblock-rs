@@ -150,6 +150,25 @@ impl Engine {
 			self.ui.char_screen.close();
 			self.ui.hiscores.close();
 			self.ui.spellbook.close();
+			// On the in-world root page the screen hotkeys reach through to
+			// the same pages the rows name: Escape into the menu, I straight
+			// on into the inventory. The root closes by the same door the
+			// Escape key uses, so its bookkeeping runs.
+			if self.ui.menu.hotkeys_reach_through()
+				&& let InputEvent::Key { key, pressed: true } = event
+				&& let Some(kind) = page_hotkey(key)
+			{
+				self.ui.menu.handle_input(
+					&InputEvent::Key {
+						key: Key::Escape,
+						pressed: true,
+					},
+					self.ui.size,
+					self.ui.ui_scale,
+				);
+				self.open_screen(kind);
+				return;
+			}
 			if matches!(event, InputEvent::FocusLost | InputEvent::PointerLockLost) {
 				self.input.keys = HeldKeys::default();
 				self.clear_touch_state();
@@ -175,6 +194,19 @@ impl Engine {
 					self.react(crate::events::GameEvent::Ui(s));
 				}
 			}
+			return;
+		}
+		// Page to page directly: while one screen is up, another page's
+		// key swaps to it in one press. The open page's OWN key falls
+		// through to its arm and toggles it closed, and Escape still
+		// closes the page first; only a second press opens the menu. The
+		// chat never reaches here with a page up, so typing stays whole.
+		if let Some(cur) = self.open_page()
+			&& let InputEvent::Key { key, pressed: true } = event
+			&& let Some(kind) = page_hotkey(key)
+			&& kind != cur
+		{
+			self.open_screen(kind);
 			return;
 		}
 		// Inventory open: cursor is free; drags go to the screen and the
@@ -632,4 +664,59 @@ impl Engine {
 			}
 		}
 	}
+
+	/// Which of the five pages is up, if any (menu and chat are not
+	/// pages: each owns every key while open).
+	fn open_page(&self) -> Option<crate::events::ScreenKind> {
+		use crate::events::ScreenKind as K;
+		if self.ui.inv_screen.is_open() {
+			Some(K::Inventory)
+		} else if self.ui.alch_screen.is_open() {
+			Some(K::Alchemy)
+		} else if self.ui.char_screen.is_open() {
+			Some(K::Character)
+		} else if self.ui.hiscores.is_open() {
+			Some(K::Hiscores)
+		} else if self.ui.spellbook.is_open() {
+			Some(K::Spellbook)
+		} else {
+			None
+		}
+	}
+
+	/// Close whatever page is up and open `kind`: the page-to-page hop,
+	/// shared by the screen arms and the menu's hotkey reach-through.
+	fn open_screen(&mut self, kind: crate::events::ScreenKind) {
+		use crate::events::ScreenKind as K;
+		self.ui.inv_screen.close();
+		self.ui.alch_screen.close();
+		self.ui.char_screen.close();
+		self.ui.hiscores.close();
+		self.ui.spellbook.close();
+		self.input.keys = HeldKeys::default();
+		self.input.dig_held = false;
+		match kind {
+			K::Inventory => self.ui.inv_screen.open(),
+			K::Alchemy => self.ui.alch_screen.open(),
+			K::Character => self.open_character_screen(),
+			K::Hiscores => self.open_hiscores_screen(),
+			K::Spellbook => self.ui.spellbook.open(),
+			// Not pages: the menu and the chat have their own doors.
+			K::Menu | K::Chat => {}
+		}
+	}
+}
+
+/// The five pages' toggle keys, one table — the page-to-page hop and the
+/// menu's hotkey reach-through both read it.
+fn page_hotkey(key: Key) -> Option<crate::events::ScreenKind> {
+	use crate::events::ScreenKind as K;
+	Some(match key {
+		INVENTORY_KEY => K::Inventory,
+		ALCHEMY_KEY => K::Alchemy,
+		Key::C => K::Character,
+		Key::H => K::Hiscores,
+		Key::J => K::Spellbook,
+		_ => return None,
+	})
 }

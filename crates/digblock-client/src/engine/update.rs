@@ -735,6 +735,10 @@ impl Engine {
 			if let Some(adv) = self.tutorial.poll(&poll, dt) {
 				self.on_tutorial_advance(adv);
 			}
+		} else {
+			// The panel can still be up over the menu (the open-inventory
+			// step); its flourish must not freeze bright.
+			self.tutorial.tick_celebrate(dt);
 		}
 		self.vfx.view_bob.advance(
 			Vec3::new(moved.x, 0.0, moved.z).length(),
