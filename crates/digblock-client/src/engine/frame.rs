@@ -358,7 +358,12 @@ impl Engine {
 				);
 			}
 		}
-		if in_game && !cinematic {
+		// The editor draws its own overlay: crosshair + the side panel, no
+		// hotbar, spell bar or pages.
+		if self.config.debug_editor {
+			crate::ui::hud::crosshair(&mut self.ui.ui_dl, size, self.ui.ui_scale);
+			self.editor_panel(size);
+		} else if in_game && !cinematic {
 			let hotbar_view = crate::hotbar::HotbarView::build(
 				&self.hotbar,
 				&self.inventory,

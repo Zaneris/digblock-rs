@@ -141,7 +141,7 @@ fn shape_faces(b: BlockType, state: u8, y_off: i32, out: &mut Vec<ItemFace>) {
 				.corners
 				.map(|c| [c[0] as i32, c[1] as i32 + y_off, c[2] as i32]),
 			uv: q.uv.map(|c| [c[0] as f32 / 12.0, c[1] as f32 / 12.0]),
-			tex_layer: b.texture(q.dir) as u16,
+			tex_layer: q.tex.unwrap_or(b.texture(q.dir) as u16),
 			// A block that glows says so for its whole self, and the draw
 			// carries that flag already (`icon_block`'s `emissive`). The
 			// per-face bit is for items with no block behind them.

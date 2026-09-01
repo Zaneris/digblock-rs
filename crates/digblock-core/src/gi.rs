@@ -140,7 +140,8 @@ fn summarize_brick(blk: &[bool; BRICK_CELLS], hist: &[u16; 256]) -> Brick {
 /// First class byte the shaped-variant classes occupy: below is a plain block id (or air), from
 /// here up indexes [`shape_classes`]. The window texture is `R8Uint`, so one byte is the whole
 /// budget and this constant is where it is SPLIT. **A shaped material costs a dozen-odd classes**
-/// — a NEW shape family is the expensive case, costing covers in every material at once.
+/// — a NEW shape family is the expensive case, costing covers in every material at once, and a
+/// many-state MULTI-CELL family (parts × facings, each with its own light cover) is the next one.
 /// `shape_classes_fit_the_byte` pins both ends, prints the headroom and holds a margin back.
 pub const SHAPE_CLASS_BASE: u8 = 112;
 

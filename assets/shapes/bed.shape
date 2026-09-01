@@ -1,0 +1,14 @@
+# A bed, canonically HEADED toward +x: a mattress on a low frame with a
+# raised pillow at the head end, so the facing is readable from across a
+# room. One cell for now; the long two-cell frame can arrive with the
+# multi-cell footprint machinery that justifies it.
+version 1
+shape bed
+grid 12
+states facing
+box all  0 3 1   12 6 11   # mattress
+box all  8 6 2   11 8 10   # pillow
+box all  0 0 1   2 3 3     # leg
+box all  0 0 9   2 3 11    # leg
+box all  10 0 1  12 3 3    # leg
+box all  10 0 9  12 3 11   # leg

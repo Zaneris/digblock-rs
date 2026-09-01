@@ -62,6 +62,7 @@ mod worldjobs;
 mod carried;
 use carried::{CARRIER_DEBUG, CARRIER_SELF, Carried, Remote, cell_center, pack_rgb, push_remote};
 mod debug_plans;
+pub(crate) mod editor;
 pub use debug_plans::parse_node_kind;
 use debug_plans::{
 	debug_crack_plan, debug_dive_plan, debug_doors_plan, debug_node_plan, debug_ore_plan,
@@ -371,6 +372,10 @@ pub struct Engine {
 	/// asynchronously; each update retries what's left). Empty = done
 	/// or disabled.
 	debug_shapes_pending: Vec<(i32, i32, i32, u16)>,
+	/// The shape editor's state (DIG_EDITOR / ?editor), None in the game.
+	editor: Option<Box<editor::EditorState>>,
+	/// The editor's injected file store; absent = built-ins only.
+	shape_services: Option<editor::io::ShapeServices>,
 	/// DIG_SPHERE=<r>: a sphere still waiting for every cell it would touch
 	/// to be resident. `None` = landed or disabled.
 	debug_sphere_pending: Option<i32>,

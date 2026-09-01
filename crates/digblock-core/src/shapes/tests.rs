@@ -3,13 +3,13 @@ use super::*;
 #[test]
 fn rotation_is_exact_and_cyclic() {
 	// 4 × 90° = identity, and each step preserves volume.
-	let v0 = raster_volume(&STAIR_BOXES);
+	let v0 = raster_volume(&LEGACY_STAIR_BOXES);
 	for k in 0..=4u8 {
-		let r = rotate_boxes(&STAIR_BOXES, k);
+		let r = rotate_boxes(&LEGACY_STAIR_BOXES, k);
 		assert_eq!(raster_volume(&r), v0, "k={k} preserves volume");
 	}
-	let full = rotate_boxes(&STAIR_BOXES, 4);
-	assert_eq!(&full[..], &STAIR_BOXES[..], "4 rotations = identity");
+	let full = rotate_boxes(&LEGACY_STAIR_BOXES, 4);
+	assert_eq!(&full[..], &LEGACY_STAIR_BOXES[..], "4 rotations = identity");
 }
 
 #[test]
@@ -115,9 +115,12 @@ fn slab_variants() {
 /// cost, same dig — a ceiling slab is not a second, cheaper item.
 #[test]
 fn a_ceiling_slab_is_a_floor_slab_mirrored() {
+	// Validates the .shape FILE: an editor edit breaking the mirror breaks
+	// the equal-volume/equal-cost invariant, and fails here first.
+	let d = def::of(ShapeKind::Slab);
 	for two_thirds in [false, true] {
-		let bottom = SLAB_BOXES[slab_state(two_thirds, false) as usize];
-		let top = SLAB_BOXES[slab_state(two_thirds, true) as usize];
+		let bottom = d.state_boxes(slab_state(two_thirds, false))[0].sub;
+		let top = d.state_boxes(slab_state(two_thirds, true))[0].sub;
 		assert_eq!(bottom.min[1], 12 - top.max[1]);
 		assert_eq!(bottom.max[1], 12 - top.min[1]);
 		assert_eq!(raster_volume(&[bottom]), raster_volume(&[top]));
@@ -349,12 +352,21 @@ fn door_variants() {
 	// The upper closed panel has see-through lites: strictly fewer
 	// filled sub-cells than the uncut lower leaf. The handle adds the
 	// sub-cells it pokes out either side, and each half carries a
-	// small hinge on the leaf's back at the pivot edge.
-	let lower = raster_volume(&[LEAF, HANDLE, HINGE_LOWER]);
-	let mut up_boxes = DOOR_UPPER_BOXES.to_vec();
-	up_boxes.push(HINGE_UPPER);
-	let upper = raster_volume(&up_boxes);
-	assert_eq!(raster_volume(&[LEAF]), 288);
+	// small hinge on the leaf's back at the pivot edge. Sourced from the
+	// .shape FILE, so an editor edit moves these pins, loudly.
+	let d = def::of(ShapeKind::Door);
+	let cell = |cy: i32, pick: fn(def::Roles) -> bool| -> Vec<SubBox> {
+		slice_cell(&d.boxes, (0, cy, 0))
+			.iter()
+			.filter(|b| pick(b.roles))
+			.map(|b| b.sub)
+			.collect()
+	};
+	let lower = raster_volume(&cell(0, |r| r.visual));
+	let upper = raster_volume(&cell(1, |r| r.visual));
+	// The uncut leaf is what physics meets, in either half.
+	assert_eq!(raster_volume(&cell(0, |r| r.collision)), 288);
+	assert_eq!(raster_volume(&cell(1, |r| r.collision)), 288);
 	// The uncut leaf, plus the knob's protrusion either side, plus the
 	// hinge.
 	assert_eq!(lower, 298);
@@ -397,13 +409,32 @@ fn craft_costs_derive_from_collision_volume() {
 	// (uncut leaves — the lites don't discount) plus the handle and
 	// both hinges; a slab prices the PLACED one-third item, so grows
 	// debit one item each.
+	// Ported families price from their .shape FILE, so an editor edit that
+	// moves a box moves the recipe cost and fails here rather than silently.
+	let def_volume = |kind, state: u8| {
+		let boxes: Vec<SubBox> = def::of(kind)
+			.state_boxes(state)
+			.iter()
+			.map(|b| b.sub)
+			.collect();
+		raster_volume(&boxes)
+	};
 	let volume = |s: ShapeFamily| match s {
 		ShapeFamily::Block => SUBS_PER_BLOCK * SUB_UNIT_VOLUME,
-		ShapeFamily::Stairs => raster_volume(&STAIR_BOXES),
+		ShapeFamily::Stairs => def_volume(ShapeKind::Stairs, 0),
+		// A door prices BOTH cells of its footprint, every box (uncut
+		// leaves — the visual-only lites don't discount the collision one).
 		ShapeFamily::Door => {
-			raster_volume(&[LEAF, HANDLE, HINGE_LOWER]) + raster_volume(&[LEAF, HINGE_UPPER])
+			let d = def::of(ShapeKind::Door);
+			let all = |cy: i32| -> Vec<SubBox> {
+				slice_cell(&d.boxes, (0, cy, 0))
+					.iter()
+					.map(|b| b.sub)
+					.collect()
+			};
+			raster_volume(&all(0)) + raster_volume(&all(1))
 		}
-		ShapeFamily::Slab => raster_volume(&SLAB_BOXES[..1]),
+		ShapeFamily::Slab => def_volume(ShapeKind::Slab, 0),
 	};
 	for s in ShapeFamily::ALL {
 		assert_eq!(
@@ -566,4 +597,453 @@ fn interior_quads_exist_and_boundary_rects_are_sane() {
 			assert!(a0 < a1 && a1 <= GRID && b0 < b1 && b1 <= GRID, "{q:?}");
 		}
 	}
+}
+
+// --- .shape port pins ---------------------------------------------------
+//
+// The retired hardcoded geometry, kept verbatim as LEGACY_* pins: each
+// ported family must bake BYTE-IDENTICAL to what these consts built, which
+// is what lets the port ship without a SIM_VERSION bump (collision feeds
+// Player::tick) and with every golden untouched. A pin dies only with the
+// first INTENTIONAL edit to that shape — which then follows the golden
+// discipline instead (re-pin, and bump SIM_VERSION if collision moved).
+
+const LEGACY_TORCH_BOXES: [SubBox; 1] = [SubBox::new([5, 0, 5], [7, 10, 7])];
+
+const LEGACY_STAIR_BOXES: [SubBox; 3] = [
+	SubBox::new([0, 0, 0], [12, 4, 12]),
+	SubBox::new([4, 4, 0], [12, 8, 12]),
+	SubBox::new([8, 8, 0], [12, 12, 12]),
+];
+
+const LEGACY_SLAB_BOXES: [SubBox; 4] = [
+	SubBox::new([0, 0, 0], [12, 4, 12]),
+	SubBox::new([0, 0, 0], [12, 8, 12]),
+	SubBox::new([0, 8, 0], [12, 12, 12]),
+	SubBox::new([0, 4, 0], [12, 12, 12]),
+];
+
+const LEGACY_TABLE_BOXES: [SubBox; 5] = [
+	SubBox::new([0, 10, 0], [12, 12, 12]),
+	SubBox::new([1, 0, 1], [3, 10, 3]),
+	SubBox::new([9, 0, 1], [11, 10, 3]),
+	SubBox::new([1, 0, 9], [3, 10, 11]),
+	SubBox::new([9, 0, 9], [11, 10, 11]),
+];
+
+const LEGACY_CHAIR_BOXES: [SubBox; 6] = [
+	SubBox::new([2, 6, 2], [10, 8, 10]),
+	SubBox::new([8, 8, 2], [10, 12, 10]),
+	SubBox::new([2, 0, 2], [4, 6, 4]),
+	SubBox::new([8, 0, 2], [10, 6, 4]),
+	SubBox::new([2, 0, 8], [4, 6, 10]),
+	SubBox::new([8, 0, 8], [10, 6, 10]),
+];
+
+const LEGACY_BED_BOXES: [SubBox; 6] = [
+	SubBox::new([0, 3, 1], [12, 6, 11]),
+	SubBox::new([8, 6, 2], [11, 8, 10]),
+	SubBox::new([0, 0, 1], [2, 3, 3]),
+	SubBox::new([0, 0, 9], [2, 3, 11]),
+	SubBox::new([10, 0, 1], [12, 3, 3]),
+	SubBox::new([10, 0, 9], [12, 3, 11]),
+];
+
+/// The old `furniture()` assembly, verbatim: all roles share the rotated
+/// boxes, no swung pose, no ramp.
+fn legacy_furniture(canonical: &[SubBox], k: u8) -> ShapeVariant {
+	let boxes = rotate_boxes(canonical, k);
+	let baked = bake(&boxes);
+	ShapeVariant {
+		collision: boxes.clone(),
+		light: boxes.clone(),
+		interaction: boxes,
+		quads: baked.quads,
+		face_masks: baked.face_masks,
+		occludes_full: baked.occludes_full,
+		bounds: baked.bounds,
+		ramp: None,
+	}
+}
+
+/// The old torch assembly, verbatim: walked through (no collision) while
+/// light and the interact ray still meet it.
+fn legacy_torch() -> ShapeVariant {
+	let boxes = LEGACY_TORCH_BOXES.to_vec();
+	let baked = bake(&boxes);
+	ShapeVariant {
+		collision: Vec::new(),
+		light: boxes.clone(),
+		interaction: boxes,
+		quads: baked.quads,
+		face_masks: baked.face_masks,
+		occludes_full: baked.occludes_full,
+		bounds: baked.bounds,
+		ramp: None,
+	}
+}
+
+/// Exact equality across every field, ORDER INCLUDED for the role lists —
+/// collision order reaches the physics sweep, so even a reordering port
+/// is a port that must explain itself.
+fn assert_variant_identical(new: &ShapeVariant, legacy: &ShapeVariant, ctx: &str) {
+	assert_eq!(new.collision, legacy.collision, "{ctx}: collision");
+	assert_eq!(new.light, legacy.light, "{ctx}: light");
+	assert_eq!(new.interaction, legacy.interaction, "{ctx}: interaction");
+	assert_eq!(new.quads, legacy.quads, "{ctx}: quads");
+	assert_eq!(new.face_masks, legacy.face_masks, "{ctx}: face_masks");
+	assert_eq!(new.occludes_full, legacy.occludes_full, "{ctx}: occludes");
+	assert_eq!(new.bounds, legacy.bounds, "{ctx}: bounds");
+	assert_eq!(new.ramp, legacy.ramp, "{ctx}: ramp");
+}
+
+#[test]
+fn ported_families_stay_byte_identical_to_the_legacy_consts() {
+	assert_variant_identical(&TORCHES[0], &legacy_torch(), "torch");
+	assert_variant_identical(
+		&TABLES[0],
+		&legacy_furniture(&LEGACY_TABLE_BOXES, 0),
+		"table",
+	);
+	for f in Facing::ALL {
+		let k = f as u8;
+		assert_variant_identical(
+			&CHAIRS[k as usize],
+			&legacy_furniture(&LEGACY_CHAIR_BOXES, k),
+			&format!("chair k={k}"),
+		);
+		assert_variant_identical(
+			&BEDS[k as usize],
+			&legacy_furniture(&LEGACY_BED_BOXES, k),
+			&format!("bed k={k}"),
+		);
+		// The old STAIRS assembly, verbatim: furniture plus the ramp tag.
+		let mut stair = legacy_furniture(&LEGACY_STAIR_BOXES, k);
+		stair.ramp = Some(f);
+		assert_variant_identical(&STAIRS[k as usize], &stair, &format!("stairs k={k}"));
+	}
+	// The old SLABS assembly, verbatim: one unrotated box per state.
+	for state in 0..4usize {
+		let slab = legacy_furniture(&LEGACY_SLAB_BOXES[state..=state], 0);
+		assert_variant_identical(&SLABS[state], &slab, &format!("slab state {state}"));
+	}
+}
+
+#[test]
+fn every_shape_asset_parses_and_bakes() {
+	// Forces the loader's cross-checks AND every ported family's bake, so
+	// a malformed committed file fails `just check` long before a client
+	// or server boots it.
+	for &(name, src) in def::ASSETS {
+		let d = def::parse(src).unwrap_or_else(|e| panic!("{name}: {e}"));
+		assert_eq!(d.name, name);
+		assert!(def::kind_by_name(name).is_some(), "{name} is a kind");
+	}
+	prewarm();
+}
+
+#[test]
+fn shape_files_round_trip_through_emit() {
+	// parse(emit(parse(x))) is a fixpoint (comments are the one loss).
+	for &(name, src) in def::ASSETS {
+		let d = def::parse(src).unwrap();
+		let text = def::emit(&d);
+		let d2 = def::parse(&text).unwrap_or_else(|e| panic!("{name} re-parse: {e}"));
+		assert_eq!(d, d2, "{name}");
+		assert_eq!(def::emit(&d2), text, "{name}: emit is a fixpoint");
+	}
+}
+
+#[test]
+fn the_shape_grammar_rejects_malformed_input() {
+	let ok = "version 1\nshape chair\ngrid 12\nstates facing\nbox all 0 0 0 12 12 12\n";
+	assert!(def::parse(ok).is_ok());
+	for (broken, why) in [
+		(
+			"shape chair\ngrid 12\nstates none\nbox all 0 0 0 1 1 1\n",
+			"version first",
+		),
+		(
+			"version 2\nshape x\ngrid 12\nstates none\nbox all 0 0 0 1 1 1\n",
+			"unknown version",
+		),
+		(
+			"version 1\nshape x\ngrid 16\nstates none\nbox all 0 0 0 1 1 1\n",
+			"wrong grid",
+		),
+		(
+			"version 1\nshape x\ngrid 12\nbox all 0 0 0 1 1 1\n",
+			"box before states",
+		),
+		(
+			"version 1\ngrid 12\nstates none\nbox all 0 0 0 1 1 1\n",
+			"missing shape",
+		),
+		("version 1\nshape x\ngrid 12\nstates none\n", "no boxes"),
+		(
+			"version 1\nshape x\ngrid 12\nstates none\nbox all 0 0 0 13 1 1\n",
+			"out of range",
+		),
+		(
+			"version 1\nshape x\ngrid 12\nstates none\nbox all 4 0 0 4 1 1\n",
+			"min == max",
+		),
+		(
+			"version 1\nshape x\ngrid 12\nstates none\nbox glow 0 0 0 1 1 1\n",
+			"unknown role",
+		),
+		(
+			"version 1\nshape x\ngrid 12\nstates none\nbox all 0 0 0 1 1 1 side=NOPE\n",
+			"bad texture",
+		),
+		(
+			"version 1\nshape x\ngrid 12\nstates explicit 2\nstate 0\nbox all 0 0 0 1 1 1\n",
+			"missing state section",
+		),
+		(
+			"version 1\nshape x\ngrid 12\nstates explicit 1\nstate 0\nstate 1\n",
+			"extra state section",
+		),
+		(
+			"version 1\nshape x\ngrid 12\nfootprint 2 2 2\nstates none\nbox all 0 0 0 1 1 1\n",
+			"too many parts",
+		),
+		(
+			"version 1\nshape x\ngrid 12\nstates door\nbox all 0 0 0 12 12 12\n",
+			"swing envelope",
+		),
+		(
+			"version 1\nshape x\ngrid 12\nstates none\nramp\nbox all 0 0 0 1 1 1\nwibble\n",
+			"unknown directive",
+		),
+	] {
+		assert!(def::parse(broken).is_err(), "accepted: {why}");
+	}
+}
+
+#[test]
+fn the_shape_grammar_reads_roles_footprints_and_textures() {
+	use crate::block::tex;
+	let src = "version 1\nshape x\ngrid 12\nfootprint 1 2 1\nstates door\n\
+		box visual+interaction 0 9 9 4 11 11 all=METAL\n\
+		box collision+light 1 12 0 3 24 12 top=STONE side=LUMBER_DARK\n";
+	let d = def::parse(src).unwrap();
+	assert_eq!(d.footprint, [1, 2, 1]);
+	assert_eq!(d.states, def::StateModel::Door);
+	let b0 = &d.boxes[0];
+	assert!(b0.roles.visual && b0.roles.interaction);
+	assert!(!b0.roles.collision && !b0.roles.light);
+	assert_eq!(b0.tex, [Some(tex::METAL); 3]);
+	let b1 = &d.boxes[1];
+	assert_eq!(b1.sub, SubBox::new([1, 12, 0], [3, 24, 12]));
+	assert_eq!(b1.tex, [Some(tex::STONE), Some(tex::LUMBER_DARK), None]);
+	// Textures survive emit by NAME.
+	let text = def::emit(&d);
+	assert!(text.contains("all=METAL"), "{text}");
+	assert!(text.contains("top=STONE"), "{text}");
+	assert_eq!(def::parse(&text).unwrap(), d);
+}
+
+#[test]
+fn texture_overrides_split_quads_and_the_later_box_wins() {
+	use crate::block::tex;
+	// Two flush half-slabs, sides overridden differently: no seam exists in
+	// the union, but the side faces may not merge across the texture split.
+	let stone = [Some(tex::STONE); 3];
+	let metal = [Some(tex::METAL); 3];
+	let split = bake_tex(&[
+		(SubBox::new([0, 0, 0], [12, 4, 6]), stone),
+		(SubBox::new([0, 0, 6], [12, 4, 12]), metal),
+	]);
+	let plain = bake(&[SubBox::new([0, 0, 0], [12, 4, 12])]);
+	assert_eq!(
+		split.face_masks, plain.face_masks,
+		"coverage ignores textures"
+	);
+	assert!(
+		split.quads.len() > plain.quads.len(),
+		"the split shows in the quads"
+	);
+	for q in &split.quads {
+		let want = match q.dir {
+			// The z=6 plane splits the West/East/Top/Bottom faces; the two
+			// z boundary faces each belong wholly to one box.
+			Dir::South => stone[0],
+			Dir::North => metal[0],
+			_ => {
+				assert!(q.tex.is_some(), "{q:?} untagged");
+				continue;
+			}
+		};
+		assert_eq!(q.tex, want, "{q:?}");
+	}
+	// Overlap: a later box repaints the sub-cells it covers.
+	let over = bake_tex(&[
+		(SubBox::new([0, 0, 0], [12, 4, 12]), stone),
+		(SubBox::new([0, 0, 6], [12, 4, 12]), metal),
+	]);
+	assert_eq!(over.quads.len(), split.quads.len());
+	for (a, b) in over.quads.iter().zip(&split.quads) {
+		assert_eq!(a, b, "overlap paints the same result as flush boxes");
+	}
+	// And with NO overrides the tagged path is the plain path, bit for bit.
+	for q in &plain.quads {
+		assert_eq!(q.tex, None);
+	}
+}
+
+// --- multi-cell machinery ----------------------------------------------
+
+/// The generic footprint machinery must agree with the door's legacy pair
+/// formula for all 16 states — `door_partner` is now a wrapper over it,
+/// and the server's derived writes ride the same derivation.
+#[test]
+fn object_cells_reproduces_the_door_pair_for_all_16_states() {
+	use crate::chunk::make_cell;
+	let cell = (7, 40, -3);
+	for state in 0..16u8 {
+		let (_, _, upper) = door_parts(state);
+		let legacy = (cell.0, cell.1 + if upper { -1 } else { 1 }, cell.2);
+		assert_eq!(door_partner(cell, state), legacy, "state {state}");
+		let value = make_cell(BlockType::LumberDoor, state);
+		let cells = object_cells(cell, value);
+		assert_eq!(cells.len(), 2, "state {state}");
+		// [0] is the anchor (lower, part 0) wearing part 0's state; [1] the
+		// upper wearing the upper bit — the exact value the server writes.
+		let lower_cell = if upper { legacy } else { cell };
+		assert_eq!(cells[0].0, lower_cell, "state {state}");
+		assert_eq!(cells[1].0, (lower_cell.0, lower_cell.1 + 1, lower_cell.2));
+		assert_eq!(cells[0].1, make_cell(BlockType::LumberDoor, state & 0b0111));
+		assert_eq!(cells[1].1, make_cell(BlockType::LumberDoor, state | 0b1000));
+		assert_eq!(part_index(cells[0].1), 0);
+		assert_eq!(part_index(cells[1].1), 1);
+		// The wire's placement grammar: only the closed anchor is canonical.
+		assert_eq!(place_canonical(value), state & 0b1100 == 0, "state {state}");
+	}
+	assert!(is_multi_cell(BlockType::LumberDoor));
+	assert!(!is_multi_cell(BlockType::Chair));
+	assert!(!is_multi_cell(BlockType::Stone));
+	// Single-cell objects answer themselves.
+	let chair = make_cell(BlockType::Chair, 2);
+	assert_eq!(object_cells(cell, chair), vec![(cell, chair)]);
+	assert!(place_canonical(chair));
+}
+
+/// A rotated multi-cell footprint turns its part offsets with the facing,
+/// and every part agrees on the object's cells whichever part you ask.
+#[test]
+fn part_offsets_turn_with_the_facing_and_agree_from_any_part() {
+	let l = StateLayout {
+		facing: true,
+		open_bit: None,
+		part_shift: 2,
+		footprint: [2, 1, 1],
+	};
+	// Canonical +x: part 1 sits one cell toward +x; each k turns it CCW.
+	assert_eq!(part_offset(&l, 1, 0), (1, 0, 0));
+	assert_eq!(part_offset(&l, 1, 1), (0, 0, 1));
+	assert_eq!(part_offset(&l, 1, 2), (-1, 0, 0));
+	assert_eq!(part_offset(&l, 1, 3), (0, 0, -1));
+	// And a door's derivation is stable from either half.
+	use crate::chunk::make_cell;
+	for state in 0..16u8 {
+		let value = make_cell(BlockType::LumberDoor, state);
+		let cells = object_cells((2, 5, 2), value);
+		for &(c, v) in &cells {
+			assert_eq!(object_cells(c, v), cells, "state {state} from {c:?}");
+		}
+	}
+}
+
+const LEGACY_LEAF: SubBox = SubBox::new([1, 0, 0], [3, 12, 12]);
+const LEGACY_HANDLE: SubBox = SubBox::new([0, 9, 9], [4, 11, 11]);
+const LEGACY_HINGE_LOWER: SubBox = SubBox::new([3, 1, 0], [4, 3, 1]);
+const LEGACY_HINGE_UPPER: SubBox = SubBox::new([3, 9, 0], [4, 11, 1]);
+const LEGACY_DOOR_UPPER_BOXES: [SubBox; 6] = [
+	SubBox::new([1, 0, 0], [3, 2, 12]),
+	SubBox::new([1, 10, 0], [3, 12, 12]),
+	SubBox::new([1, 2, 0], [3, 10, 2]),
+	SubBox::new([1, 2, 10], [3, 10, 12]),
+	SubBox::new([1, 2, 5], [3, 10, 7]),
+	SubBox::new([1, 5, 2], [3, 7, 10]),
+];
+
+/// The old DOORS assembly, verbatim: per-half authored lists, swing before
+/// the facing rotation, collision as the uncut leaf, open = empty
+/// collision/light and a swung interaction.
+fn legacy_door(state: u8) -> ShapeVariant {
+	let (facing, open, upper) = door_parts(state);
+	let k = facing as u8;
+	let mut panel: Vec<SubBox> = if upper {
+		let mut p = LEGACY_DOOR_UPPER_BOXES.to_vec();
+		p.push(LEGACY_HINGE_UPPER);
+		p
+	} else {
+		vec![LEGACY_LEAF, LEGACY_HANDLE, LEGACY_HINGE_LOWER]
+	};
+	let mut slab = vec![LEGACY_LEAF];
+	let mut interact = if upper {
+		vec![LEGACY_LEAF]
+	} else {
+		vec![LEGACY_LEAF, LEGACY_HANDLE]
+	};
+	if open {
+		panel = panel.iter().map(swing_open).collect();
+		slab = slab.iter().map(swing_open).collect();
+		interact = interact.iter().map(swing_open).collect();
+	}
+	let panel = rotate_boxes(&panel, k);
+	let slab = rotate_boxes(&slab, k);
+	let interact = rotate_boxes(&interact, k);
+	let baked = bake(&panel);
+	ShapeVariant {
+		light: if open { Vec::new() } else { slab.clone() },
+		collision: if open { Vec::new() } else { slab },
+		interaction: interact,
+		quads: baked.quads,
+		face_masks: baked.face_masks,
+		occludes_full: baked.occludes_full,
+		bounds: baked.bounds,
+		ramp: None,
+	}
+}
+
+#[test]
+fn the_ported_door_stays_byte_identical_across_all_16_states() {
+	for state in 0..16u8 {
+		assert_variant_identical(
+			&DOORS[state as usize],
+			&legacy_door(state),
+			&format!("door state {state}"),
+		);
+	}
+}
+
+#[test]
+fn preview_overrides_hijack_shape_of_and_clear() {
+	// (Stone, 5) is a pair nothing else asks `shape_of` about — the other
+	// tests run in parallel against the same statics, so this test must
+	// not shadow a variant any of them read.
+	let b = BlockType::Stone;
+	assert!(shape_of(b, 5).is_none(), "unshaped without an override");
+	let list = [def::DefBox {
+		sub: SubBox::new([0, 0, 0], [12, 6, 12]),
+		roles: def::Roles::ALL,
+		tex: [None; 3],
+	}];
+	let v = preview_variant(&list, (0, 0, 0), 0);
+	assert_eq!(v.collision, vec![SubBox::new([0, 0, 0], [12, 6, 12])]);
+	assert!(!v.quads.is_empty());
+	set_preview_override(b, 5, v);
+	let got = shape_of(b, 5).expect("override answers");
+	assert_eq!(got.collision.len(), 1);
+	// A replaced override swaps in place; a slice from another cell of a
+	// footprint is empty geometry but still a variant.
+	set_preview_override(b, 5, preview_variant(&list, (1, 0, 0), 0));
+	assert!(
+		shape_of(b, 5).unwrap().quads.is_empty(),
+		"sliced past the box"
+	);
+	clear_preview_overrides();
+	assert!(shape_of(b, 5).is_none(), "cleared");
 }

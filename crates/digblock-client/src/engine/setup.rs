@@ -10,6 +10,13 @@ impl Engine {
 		// Pay the sub-block variant bakes here rather than in whichever
 		// frame first meshes a door (see `shapes::prewarm`).
 		digblock_core::shapes::prewarm();
+		// The shape editor wants neither the title menu (constructed open
+		// from this flag below) nor the spawn spiral over its pad.
+		let mut config = config;
+		if config.debug_editor {
+			config.menu = false;
+			config.markers = false;
+		}
 		let mut metrics = Metrics::new(config.metrics_csv.as_deref(), config.spike_log);
 		if config.bench {
 			metrics.record_run_history();
@@ -242,6 +249,8 @@ impl Engine {
 				}
 				plan
 			},
+			editor: None,
+			shape_services: None,
 			config,
 			seed,
 			renderer: None,
@@ -609,6 +618,29 @@ impl Engine {
 		for job in digblock_core::worldjob::production() {
 			engine.register_world_job(job);
 		}
+		// The shape editor: a fly camera over a cleared pad, no menu, no
+		// tutorial — `editor_step` replaces the interactive update wholesale.
+		if engine.config.debug_editor {
+			engine.mode = CameraMode::DebugFly;
+			let (bx, by, bz) = (
+				spawn.x.floor() as i32,
+				spawn.y.floor() as i32,
+				spawn.z.floor() as i32,
+			);
+			let origin = (bx + 3, by, bz);
+			engine
+				.debug_shapes_pending
+				.extend(debug_plans::editor_pad_plan(origin));
+			engine.editor = Some(Box::new(editor::EditorState::new(origin)));
+			engine.camera.pos = Vec3::new(
+				origin.0 as f32 - 3.0,
+				origin.1 as f32 + 2.5,
+				origin.2 as f32 + 0.5,
+			);
+			engine.look.yaw_deg = 90.0;
+			engine.look.pitch_deg = -20.0;
+			engine.editor_rebuild_preview();
+		}
 		engine
 	}
 
@@ -693,7 +725,20 @@ impl Engine {
 	/// call before the pool has finished starting — jobs run inline until
 	/// it reports ready.
 	pub fn set_job_dispatch(&mut self, dispatch: Box<dyn digblock_core::pipeline::JobDispatch>) {
+		// The editor meshes inline: its preview overrides live in THIS
+		// module's statics, and a web worker is a separate wasm instance
+		// that would bake the shipped chair instead of the sculpt.
+		if self.config.debug_editor {
+			return;
+		}
 		self.pipeline.set_dispatch(dispatch);
+	}
+
+	/// Attach the shape editor's file store (list/load/save/pick). Absent,
+	/// the editor still runs with built-ins only and save disabled.
+	pub fn set_shape_services(&mut self, services: editor::io::ShapeServices) {
+		let _ = services.cmd_tx.send(editor::io::ShapeIoCmd::List);
+		self.shape_services = Some(services);
 	}
 
 	/// Swap in a fresh chunk pipeline, carrying any job pool across. Every world change

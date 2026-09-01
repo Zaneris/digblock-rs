@@ -1,0 +1,15 @@
+# A chair, canonically BACKED toward +x: seat at mid-height, back rising
+# from it, four legs. Placing uses the look direction unrotated, so a chair
+# dropped while facing +x has its back away and its seat turned toward the
+# placer. The seat sits above AUTO_STEP_MAX, so a walk does not climb onto
+# furniture.
+version 1
+shape chair
+grid 12
+states facing
+box all  2 6 2   10 8 10   # seat
+box all  8 8 2   10 12 10  # back
+box all  2 0 2   4 6 4     # leg
+box all  8 0 2   10 6 4    # leg
+box all  2 0 8   4 6 10    # leg
+box all  8 0 8   10 6 10   # leg

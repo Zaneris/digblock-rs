@@ -19,6 +19,12 @@ impl Engine {
 		if !self.config.interactive {
 			return;
 		}
+		// The shape editor owns the whole vocabulary: movement, look and
+		// mouse plus its own keys — no hotbar, menus, pages or chat.
+		if self.config.debug_editor {
+			self.editor_input(event);
+			return;
+		}
 		// UI surfaces speak pointer. While any is open, the PRIMARY touch
 		// synthesizes cursor + left-button events at this one site, so
 		// iOS gets menu taps, inventory drags, and the extract-slot drag

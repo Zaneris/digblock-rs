@@ -52,6 +52,12 @@ web-sys = { workspace = true, features = [
 	# AudioContext resume on returning to a visible tab (audio.rs).
 	"Document",
 	"VisibilityState",
+	# Shape editor IO: download anchor + file picker (shapes_io.rs).
+	"HtmlAnchorElement",
+	"HtmlInputElement",
+	"HtmlElement",
+	"File",
+	"FileList",
 	# Mobile-device detection (is_mobile_browser).
 	"MediaQueryList",
 	# Safe-area probe (safe_area_insets).

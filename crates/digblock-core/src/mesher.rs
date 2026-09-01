@@ -565,7 +565,7 @@ fn emit_shaped(
 				_ => {}
 			}
 		}
-		let tex = me.texture(q.dir);
+		let tex = q.tex.map_or_else(|| me.texture(q.dir), u32::from);
 		for ci in 0..4usize {
 			let corner = q.corners[ci];
 			out.push(pack(

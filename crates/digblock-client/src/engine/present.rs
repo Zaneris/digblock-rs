@@ -48,6 +48,10 @@ impl Engine {
 	/// the swing leaves standing. Extras are full cubes by construction
 	/// (`breaks_as_extra` refuses slabs and doors).
 	pub(super) fn fill_highlight_targets(&mut self) {
+		if self.config.debug_editor {
+			self.editor_fill_highlights();
+			return;
+		}
 		let mut out = std::mem::take(&mut self.vfx.highlight_scratch);
 		out.clear();
 		if let Some(t) = self.dig_progress() {
