@@ -15,7 +15,48 @@
 	<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 	<meta name="apple-mobile-web-app-title" content="DigBlock">
 	<meta name="mobile-web-app-capable" content="yes">
-	<title>DigBlock</title>
+	<title>DigBlock: voxel mining in your browser</title>
+	<meta name="description" content="DigBlock is a voxel mining game that runs right in your browser: dig, build, and explore procedurally generated worlds lit by real-time global illumination. Solo or multiplayer, nothing to install.">
+	<link rel="canonical" href="https://digblock.net/">
+	<!-- Discord reads theme-color for its embed accent; Android Chrome
+	     tints its toolbar with it, and black matches the game. -->
+	<meta name="theme-color" content="#000000">
+	<link rel="icon" href="/favicon.ico" sizes="32x32">
+	<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+	<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+	<link rel="manifest" href="/manifest.webmanifest">
+	<!-- Link previews (Discord, Slack, iMessage, Facebook, LinkedIn read
+	     og:*; X/Twitter falls back to og:* but twitter:card is required
+	     for it to render a card at all). The image URL must be absolute:
+	     scrapers resolve nothing. -->
+	<meta property="og:type" content="website">
+	<meta property="og:site_name" content="DigBlock">
+	<meta property="og:title" content="DigBlock">
+	<meta property="og:description" content="A voxel mining game in your browser: dig, build, and explore worlds lit by real-time global illumination. Solo or multiplayer, nothing to install.">
+	<meta property="og:url" content="https://digblock.net/">
+	<meta property="og:image" content="https://digblock.net/og.png">
+	<meta property="og:image:width" content="1200">
+	<meta property="og:image:height" content="630">
+	<meta property="og:image:alt" content="A torch lighting a grassy voxel shoreline at dawn in DigBlock">
+	<meta name="twitter:card" content="summary_large_image">
+	<meta name="twitter:title" content="DigBlock">
+	<meta name="twitter:description" content="A voxel mining game in your browser: dig, build, and explore worlds lit by real-time global illumination. Solo or multiplayer, nothing to install.">
+	<meta name="twitter:image" content="https://digblock.net/og.png">
+	<meta name="twitter:image:alt" content="A torch lighting a grassy voxel shoreline at dawn in DigBlock">
+	<script type="application/ld+json">
+	{
+		"@context": "https://schema.org",
+		"@type": "VideoGame",
+		"name": "DigBlock",
+		"url": "https://digblock.net/",
+		"image": "https://digblock.net/og.png",
+		"description": "A voxel mining game that runs in your browser: dig, build, and explore procedurally generated worlds lit by real-time global illumination. Solo or multiplayer, nothing to install.",
+		"genre": ["Sandbox", "Mining", "Voxel"],
+		"playMode": ["SinglePlayer", "MultiPlayer"],
+		"applicationCategory": "Game",
+		"operatingSystem": "Web browser with WebGPU (Chrome, Edge)"
+	}
+	</script>
 	<style>
 		html, body {
 			margin: 0; height: 100%; background: #000;

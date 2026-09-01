@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
+	<!-- The DigBlock grass block; top matches the loader-bar green #7ec850. -->
+	<polygon points="50,10 92,31 50,52 8,31" fill="#7ec850"/>
+	<polygon points="50,10 50,52 8,31" fill="#95d968"/>
+	<polygon points="8,31 50,52 50,55.8 8,34.8" fill="#68ae3e"/>
+	<polygon points="50,52 92,31 92,34.8 50,55.8" fill="#528f30"/>
+	<polygon points="8,34.8 50,55.8 50,94 8,73" fill="#7a4f33"/>
+	<polygon points="50,55.8 92,34.8 92,73 50,94" fill="#5e3d28"/>
+</svg>

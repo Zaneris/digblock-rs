@@ -365,6 +365,9 @@ build-web:
 		-e "s|digblock_web|digblock_web_$stamp|g" \
 		apps/web/index.html > target/web/index.html
 	cp apps/web/_headers target/web/
+	# Favicons, social-embed image, manifest: plain files at the deploy
+	# root, mutable by name (unlike /pkg/*, which is stamped).
+	cp -R apps/web/public/. target/web/
 
 # Compiles every shader with the front end that SHIPS them, by handing
 # them to a headless Chrome. naga (what `cargo test` runs) is the
