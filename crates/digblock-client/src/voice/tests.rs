@@ -246,6 +246,13 @@ fn samples() -> Vec<Msg> {
 	}
 	all.push(Msg::SpellSlotEmpty);
 	all.push(Msg::TeleportWait(34));
+	for o in [
+		digblock_core::pick::DigOrientation::Horizontal,
+		digblock_core::pick::DigOrientation::Vertical,
+		digblock_core::pick::DigOrientation::Plane,
+	] {
+		all.push(Msg::PickOrientation(o));
+	}
 	for m in &all {
 		match m {
 			Msg::DigRefused(_)
@@ -264,6 +271,7 @@ fn samples() -> Vec<Msg> {
 			| Msg::SphereBlocksShort(_)
 			| Msg::SpellSlotEmpty
 			| Msg::TeleportWait(_)
+			| Msg::PickOrientation(_)
 			| Msg::LevelUp { .. }
 			| Msg::RemoteLevelUp { .. }
 			| Msg::VeinsRevealed

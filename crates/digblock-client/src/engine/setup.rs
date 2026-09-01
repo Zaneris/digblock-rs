@@ -168,6 +168,7 @@ impl Engine {
 				)],
 				fx_scratch: Vec::new(),
 				marker_scratch: Vec::new(),
+				highlight_scratch: Vec::new(),
 				view_bob: crate::viewmodel::Bob::default(),
 				view_swing: crate::viewmodel::Swing::default(),
 				view_cast: crate::viewmodel::Cast::default(),
@@ -308,6 +309,7 @@ impl Engine {
 			siphon_nudged: false,
 			hotbar: Hotbar::new(),
 			spell_bar: crate::spellbar::SpellBar::default(),
+			dig_orientation: digblock_core::pick::DigOrientation::default(),
 			// The startup world is ephemeral (a backdrop, or a capture
 			// scene) — no arrival lock; entering a NAMED save or a server
 			// world replaces this per `world_session`.
@@ -337,6 +339,7 @@ impl Engine {
 				my_player_id: None,
 				last_layout_sent: None,
 				sent_spell_bar: None,
+				last_orientation_sent: None,
 			},
 			stream: StreamQueues {
 				pending_uploads: std::collections::VecDeque::new(),
@@ -640,9 +643,11 @@ impl Engine {
 			},
 		));
 		// Fresh connection: the layout dedup re-primes from the server's
-		// join-sync Layout, the spell bar's from its SpellBar.
+		// join-sync Layout, the spell bar's from its SpellBar, and the
+		// orientation re-declares itself unprompted.
 		self.session.last_layout_sent = None;
 		self.session.sent_spell_bar = None;
+		self.session.last_orientation_sent = None;
 		// The server has no fly physics; walk is the only multiplayer mode.
 		self.mode = CameraMode::FirstPerson;
 	}

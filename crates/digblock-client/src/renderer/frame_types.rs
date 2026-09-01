@@ -212,9 +212,10 @@ pub(crate) struct FrameScene<'a> {
 	pub markers: &'a [crate::waystone_fx::MarkerInstance],
 	pub overlay: Option<(&'a OverlayStats, &'a [f32])>,
 	pub feed: &'a [(crate::voice::Msg, f32, u32)],
-	/// Crosshair target for the highlight decal — cell, the shape's own
-	/// box within it, and dig progress (`None` = idle outline).
-	pub target: Option<crate::highlight::HighlightTarget>,
+	/// This frame's highlight targets — the aimed cell first (its own box
+	/// and dig progress), then every extra the pick's swing would take as
+	/// full-cube outlines. Empty = nothing under the crosshair.
+	pub targets: &'a [crate::highlight::HighlightTarget],
 	/// The item in the player's own hand, or `None` (empty slot, a
 	/// screen open, the menu up) to skip the viewmodel pass entirely.
 	pub viewmodel: Option<crate::viewmodel::ViewmodelFrame>,

@@ -112,6 +112,8 @@ pub(crate) enum Msg {
 	/// A teleport hotkey pressed while the shared cooldown runs (the
 	/// spellbook shows the same countdown on its rows).
 	TeleportWait(u32),
+	/// The pick's dig shape after a toggle - the indicator's words.
+	PickOrientation(digblock_core::pick::DigOrientation),
 	/// A spell beyond the caster's Arcana, and the one they tried.
 	SpellLocked(Spell),
 	/// A spell refused for its fare, before any debit.

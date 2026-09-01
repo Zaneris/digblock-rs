@@ -294,6 +294,11 @@ pub struct Engine {
 	/// state like the hotbar layout: synced to the server beside it, and
 	/// saved with the offline world.
 	spell_bar: crate::spellbar::SpellBar,
+	/// The Resonant Pick's declared dig shape, cycled by the tool-ability
+	/// bind (or the indicator's tap). Session state like the selected
+	/// slot — deliberately unpersisted; the default reproduces the
+	/// pre-toggle behavior at every Mining level.
+	dig_orientation: digblock_core::pick::DigOrientation,
 	/// The spawn structure still owed to an offline world: the stamp's
 	/// writes, drained as their chunks become resident. Named saves only
 	/// — a server stamps its own, and a backdrop world is ephemeral.
@@ -580,6 +585,9 @@ struct Vfx {
 	/// allocations, the nametag arrangement).
 	fx_scratch: Vec<crate::teleport::FxInstance>,
 	marker_scratch: Vec<crate::waystone_fx::MarkerInstance>,
+	/// This frame's highlight targets — the aimed cell first, then the
+	/// pick swing's extras (the players/markers scratch convention).
+	highlight_scratch: Vec<crate::highlight::HighlightTarget>,
 
 	/// Held-item animation. Advanced in `update`, NOT in `step_audio` —
 	/// that returns early with no audio sink attached (bench, screenshot,
@@ -799,6 +807,13 @@ struct NetSession {
 	/// The spell bar's twin of `last_layout_sent`: primed by the
 	/// join-sync `ServerMsg::SpellBar`, and only a difference sends.
 	sent_spell_bar: Option<[u8; crate::spellbar::SPELL_SLOTS]>,
+
+	/// The orientation last declared to the server. `None` (fresh
+	/// connection) sends unconditionally once the net is ready — unlike
+	/// the layout there is no server-primed state to wait for, and the
+	/// unconditional first send is what makes a reconnect with a
+	/// non-default shape correct.
+	last_orientation_sent: Option<digblock_core::pick::DigOrientation>,
 }
 
 /// Measurement, and the scripted flight `--fly`/`--walk` drive. None
@@ -1379,6 +1394,9 @@ mod dig_decay_tests;
 
 #[cfg(test)]
 mod cast_tests;
+
+#[cfg(test)]
+mod pick_toggle_tests;
 
 #[cfg(test)]
 mod ore_capture_tests;

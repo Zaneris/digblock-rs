@@ -468,6 +468,13 @@ pub enum ClientMsg {
 	SpellBar {
 		slots: Vec<u8>,
 	},
+	/// The Resonant Pick's declared dig shape (`DigOrientation::to_wire`; unknown bytes read
+	/// Horizontal). Reliable and in-order with `EditRequest`, so a toggle-then-swing in one tick
+	/// is evaluated under the same shape on both ends; the server clamps it against the sender's
+	/// Mining unlock exactly as the client does. Appended in v41.
+	SetDigOrientation {
+		mode: u8,
+	},
 }
 
 /// What a [`ClientMsg::Cast`] winds up toward — shaped for the whole spell roster from day one so

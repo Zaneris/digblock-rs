@@ -33,7 +33,7 @@ impl Renderer {
 			teleport,
 			markers,
 			feed,
-			target: highlight_target,
+			targets: highlight_targets,
 			viewmodel,
 			ui,
 			chat,
@@ -45,7 +45,7 @@ impl Renderer {
 		// cheaper than the change detection it replaces).
 		self.players.set_instances(gpu, players);
 		self.players.set_held(gpu, held);
-		self.highlight.set_target(gpu, highlight_target);
+		self.highlight.set_targets(gpu, highlight_targets);
 		let aspect = size.0 as f32 / size.1.max(1) as f32;
 		self.viewmodel.prepare(gpu, aspect, viewmodel.as_ref());
 		let mut stats = RenderStats {

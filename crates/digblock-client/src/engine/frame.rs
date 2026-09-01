@@ -384,6 +384,14 @@ impl Engine {
 				cooldown,
 				self.input.safe_area,
 			);
+			// Hoisted before the DrawList borrow, like `ports`.
+			let page_open = self.open_page().is_some();
+			let pick_toggle = self.pick_toggle_visible().then(|| {
+				let width = digblock_core::unlock::pick_cells(
+					self.skills.level(digblock_core::skills::Skill::Mining),
+				);
+				self.dig_orientation.clamped(width)
+			});
 			let mut ui = crate::ui::Ui {
 				dl: &mut self.ui.ui_dl,
 				hits: &mut self.ui.ui_hits,
@@ -476,6 +484,20 @@ impl Engine {
 				self.inventory.bucket_full(),
 				self.input.tool_swap.present(),
 			);
+			// The pick-orientation indicator, bottom-right: tappable on
+			// touch, display-only under a locked pointer. Suppressed by an
+			// open page like the thumb cluster - the world verbs mean
+			// nothing under a screen.
+			if let (false, Some(o)) = (page_open, pick_toggle) {
+				crate::ui::hud::pick_toggle(
+					ui.dl,
+					ui.style.scale,
+					size,
+					&self.input.safe_area,
+					self.config.touch_hud,
+					o,
+				);
+			}
 			// The touch HUD draws last so its corner button sits over an
 			// open screen's dim — it is that screen's close control.
 			if self.config.touch_hud {
@@ -595,7 +617,11 @@ impl Engine {
 				"Loading world...",
 			);
 		}
-		let highlight_target = if in_game { self.dig_progress() } else { None };
+		if in_game {
+			self.fill_highlight_targets();
+		} else {
+			self.vfx.highlight_scratch.clear();
+		}
 		// The hand is part of playing, not part of reading a screen: a
 		// menu, the inventory, the alchemy page or a cinematic all put it
 		// away.
@@ -751,7 +777,7 @@ impl Engine {
 					.as_ref()
 					.map(|s| (s, self.vfx.history_scratch.as_slice())),
 				feed: &self.session.feed,
-				target: highlight_target,
+				targets: &self.vfx.highlight_scratch,
 				viewmodel,
 				ui: &self.ui.ui_dl,
 				chat: (in_game && self.ui.chat.is_open()).then(|| {

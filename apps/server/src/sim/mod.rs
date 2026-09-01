@@ -385,6 +385,10 @@ struct Client {
 	/// Spell-bar bytes, stored VERBATIM (opaque preference data — the
 	/// client validates on read), bounded by [`SPELL_BAR_MAX`].
 	spell_bar: Vec<u8>,
+	/// The pick's declared dig shape. Session state like the selected
+	/// slot; the DEFAULT (`Plane`, clamped by the unlock) reproduces the
+	/// pre-toggle behavior for every peer that never sends one.
+	dig_orientation: digblock_core::pick::DigOrientation,
 	/// The tick this client's causeway runs out, and the planks standing
 	/// under it. Session-local like the wisp — the PLANKS are journaled
 	/// cells everyone reads, but only the holder of the trail can retire
@@ -1102,6 +1106,15 @@ impl Sim {
 						client.spell_bar = slots;
 					}
 				}
+				// Queued: a toggle-then-swing in one tick must land
+				// shape-first (wire order, the Layout rule). Over-budget
+				// requests drop silently.
+				ClientMsg::SetDigOrientation { mode } => {
+					if self.action_queue.len() < self.clients.len() * EDIT_BURST as usize + 64 {
+						self.action_queue
+							.push(ClientAction::SetDigOrientation { conn_id, mode });
+					}
+				}
 			},
 			SimEvent::Inputs { conn_id, batch } => self.handle_inputs(conn_id, batch),
 			SimEvent::Disconnected { conn_id } => self.drop_client(conn_id),
@@ -1167,6 +1180,10 @@ impl Sim {
 		}
 		let level = client.skills.level(digblock_core::skills::Skill::Mining);
 		let alchemy = client.skills.level(digblock_core::skills::Skill::Alchemy);
+		let width = digblock_core::unlock::pick_cells(level);
+		// The client mirrors this clamp over the same width, which is what
+		// keeps the two footprints bit-identical.
+		let orientation = client.dig_orientation.clamped(width);
 		let id = digblock_core::chunk::cell_id(hit.cell_value);
 		let credit = hit.block.dig_credit(
 			self.cell_edited(hit.cell.0, hit.cell.1, hit.cell.2),
@@ -1177,12 +1194,8 @@ impl Sim {
 		// `a_protected_cell_refuses_the_whole_pick_swing` pins. The world floor is handled inside
 		// the rule instead — not a policy but a cell no dig can touch, and letting the plane reach
 		// it made the pick refuse every swing at the bottom of a mine.
-		let mut out = digblock_core::pick::cells(
-			hit.cell,
-			hit.normal,
-			dir,
-			digblock_core::unlock::pick_cells(level),
-			|c| {
+		let mut out =
+			digblock_core::pick::cells(hit.cell, hit.normal, dir, width, orientation, |c| {
 				self.store.cell_at(c.0, c.1, c.2).is_some_and(|v| {
 					digblock_core::pick::breaks_as_extra(
 						id,
@@ -1194,8 +1207,7 @@ impl Sim {
 						alchemy,
 					)
 				})
-			},
-		);
+			});
 		out.retain(|&c| c != hit.cell);
 		out
 	}

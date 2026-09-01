@@ -391,6 +391,7 @@ impl Sim {
 				wisp_until: None,
 				protocol,
 				spell_bar: record.spells,
+				dig_orientation: digblock_core::pick::DigOrientation::default(),
 				causeway_until: None,
 				causeway: Default::default(),
 				causeway_tokens: digblock_net::protocol::CAUSEWAY_BURST,

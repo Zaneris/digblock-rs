@@ -230,7 +230,7 @@ fn touch_hit_matches_the_drawn_buttons() {
 				let place = place_button_rect(size, scale, &insets);
 				let jump = jump_button_rect(size, scale, &insets);
 				let center = |r: super::super::Rect| (r.x + r.w / 2.0, r.y + r.h / 2.0);
-				let hit = |x: f32, y: f32| touch_hit(size, scale, &insets, jump_button, x, y);
+				let hit = |x: f32, y: f32| touch_hit(size, scale, &insets, jump_button, true, x, y);
 				let (cx, cy) = center(corner);
 				assert_eq!(hit(cx, cy), Some(HudButton::Corner));
 				let (px, py) = center(place);
@@ -467,7 +467,15 @@ fn spell_grid_is_tappable_and_clear_of_everything() {
 					"{size:?}x{scale}: off screen"
 				);
 				assert_eq!(
-					touch_hit(size, scale, &insets, true, r.x + r.w / 2.0, r.y + r.h / 2.0),
+					touch_hit(
+						size,
+						scale,
+						&insets,
+						true,
+						true,
+						r.x + r.w / 2.0,
+						r.y + r.h / 2.0
+					),
 					Some(HudButton::SpellSlot(i as u8)),
 					"{size:?}x{scale}: slot {i} does not answer its tap"
 				);
@@ -485,6 +493,79 @@ fn spell_grid_is_tappable_and_clear_of_everything() {
 						!overlap(r, other),
 						"{size:?}x{scale}: spell slot {i} collides with the thumb cluster"
 					);
+				}
+			}
+		}
+	}
+}
+
+/// The orientation indicator: its center answers its own tap when live,
+/// a dead one falls through to gameplay, and on touch it stands clear of
+/// the thumb cluster and the two bars in both jump modes.
+#[test]
+fn the_pick_toggle_is_tappable_and_clear() {
+	use digblock_core::pick::DigOrientation;
+	for ((w, h), scale) in TOUCH_SWEEP {
+		for insets in sweep_insets() {
+			for jump_button in [false, true] {
+				let size = (w, h);
+				let r = pick_toggle_rect(size, scale, &insets, true);
+				let (cx, cy) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
+				assert_eq!(
+					touch_hit(size, scale, &insets, jump_button, true, cx, cy),
+					Some(HudButton::PickToggle),
+					"{size:?}x{scale} jump={jump_button}"
+				);
+				assert_eq!(
+					touch_hit(size, scale, &insets, jump_button, false, cx, cy),
+					None,
+					"a hidden indicator must not eat the tap"
+				);
+				let overlap = |a: super::super::Rect, b: super::super::Rect| {
+					a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h
+				};
+				// The jump slot is reserved whether or not the button is
+				// drawn - the indicator must clear it in both modes.
+				let mut others = vec![
+					corner_button_rect(size, scale, &insets),
+					place_button_rect(size, scale, &insets),
+					jump_button_rect(size, scale, &insets),
+				];
+				let bar = row_grid(size, scale);
+				for b in 0..digblock_core::hotbar::HOTBAR_SLOTS {
+					others.push(bar_slot_rect(&bar, b, scale));
+				}
+				let spells = spell_grid(size, scale, &insets);
+				for i in 0..crate::spellbar::SPELL_SLOTS {
+					others.push(spells.rect(i));
+				}
+				for other in others {
+					assert!(
+						!overlap(r, other),
+						"{size:?}x{scale} jump={jump_button}: the indicator collides"
+					);
+				}
+				// The glyph stays inside the button on every shape.
+				for o in [
+					DigOrientation::Horizontal,
+					DigOrientation::Vertical,
+					DigOrientation::Plane,
+				] {
+					let mut dl = DrawList::default();
+					pick_toggle(&mut dl, scale, size, &insets, true, o);
+					for layer in [Layer::Backdrop, Layer::Content] {
+						for cmd in dl.cmds(layer).0 {
+							let Cmd::Quad { rect, .. } = cmd else {
+								panic!("the indicator draws quads only")
+							};
+							assert!(
+								rect.x >= r.x - 0.5
+									&& rect.y >= r.y - 0.5 && rect.x + rect.w <= r.x + r.w + 0.5
+									&& rect.y + rect.h <= r.y + r.h + 0.5,
+								"{o:?}: a glyph quad left the button"
+							);
+						}
+					}
 				}
 			}
 		}

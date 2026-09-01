@@ -51,6 +51,14 @@ pub(super) fn line(msg: &Msg, binds: &crate::bindings::Bindings) -> String {
 		Msg::CastInterrupted => "The channel breaks".into(),
 		Msg::SpellSlotEmpty => "That spell slot is empty. Drag a spell from the spellbook.".into(),
 		Msg::TeleportWait(secs) => format!("Return in {secs}s."),
+		Msg::PickOrientation(o) => {
+			use digblock_core::pick::DigOrientation as O;
+			match o {
+				O::Horizontal => "Pick swing: sideways".into(),
+				O::Vertical => "Pick swing: up and down".into(),
+				O::Plane => "Pick swing: full plane".into(),
+			}
+		}
 		Msg::SpellLocked(s) => format!("{} is beyond your arcana", spell_cap(*s)),
 		// The waystone's fare is a PASSAGE — you are buying the journey,
 		// not the spell — and the conjurings are not, so the sentence

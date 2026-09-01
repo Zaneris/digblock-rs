@@ -376,7 +376,8 @@ pub(crate) fn feed_sound(msg: &crate::voice::Msg) -> Option<crate::events::UiEve
 		| M::Disconnected { .. } => Some(crate::events::UiEvent::Refused),
 		// Everything else speaks through its own channel or not at all
 		// (the level chime is `LeveledUp`'s, never the feed's).
-		M::LevelUp { .. }
+		M::PickOrientation(_)
+		| M::LevelUp { .. }
 		| M::RemoteLevelUp { .. }
 		| M::VeinsRevealed
 		| M::SourcesRevealed

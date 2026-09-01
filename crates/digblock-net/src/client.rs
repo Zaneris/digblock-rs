@@ -963,6 +963,12 @@ impl NetClient {
 		});
 	}
 
+	/// Declare the pick's dig shape — reliable and in-order with edits,
+	/// so a toggle-then-swing lands shape-first on the server.
+	pub fn send_dig_orientation(&mut self, mode: u8) {
+		self.send_msg(&ClientMsg::SetDigOrientation { mode });
+	}
+
 	/// Say goodbye, and give it a moment to leave the machine. Call this on every path where the
 	/// player is knowingly going: without a `Bye` the server waits out QUIC's idle timeout, and
 	/// with one account holding one live connection the player being held is the one trying to

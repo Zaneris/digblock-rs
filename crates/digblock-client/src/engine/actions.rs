@@ -159,13 +159,17 @@ impl Engine {
 		}
 		let level = self.skills.level(digblock_core::skills::Skill::Mining);
 		let alchemy = self.skills.level(digblock_core::skills::Skill::Alchemy);
+		let width = digblock_core::unlock::pick_cells(level);
 		let id = digblock_core::chunk::cell_id(hit.cell_value);
 		let credit = hit.block.dig_credit(self.cell_edited(hit.cell), alchemy);
 		let mut out = digblock_core::pick::cells(
 			hit.cell,
 			hit.normal,
 			self.camera.dir().to_array(),
-			digblock_core::unlock::pick_cells(level),
+			width,
+			// The same clamp the server runs over the same width - the two
+			// footprints stay bit-identical.
+			self.dig_orientation.clamped(width),
 			// The same rule the server runs over its own world — including
 			// the world floor, which `dig_hardness` refuses at exactly the
 			// y `protect::immutable` does. A server's spawn lock is its own
@@ -287,6 +291,39 @@ impl Engine {
 			A::ClearSlot { slot } => self.spell_bar.clear(slot as usize),
 			A::ActivateSlot(k) => self.activate_spell_slot(k as usize),
 		}
+	}
+
+	/// Whether the orientation indicator is on screen: the pick in hand,
+	/// with a swing wide enough for the toggle to mean anything. The
+	/// touch tap and the frame's draw both ask this one predicate.
+	pub(super) fn pick_toggle_visible(&self) -> bool {
+		self.hotbar.tool_in_hand() == BlockType::ResonantPick
+			&& digblock_core::unlock::pick_cells(
+				self.skills.level(digblock_core::skills::Skill::Mining),
+			) > 1
+	}
+
+	/// The tool-ability seam: the bind pressed, or the indicator tapped.
+	/// Cycles the pick's dig shape through what the Mining level has
+	/// opened; a stowed pick or an unwidened swing no-ops silently (the
+	/// indicator is hidden in exactly those states).
+	pub(super) fn cycle_dig_orientation(&mut self) {
+		use digblock_core::pick::DigOrientation as O;
+		let width = digblock_core::unlock::pick_cells(
+			self.skills.level(digblock_core::skills::Skill::Mining),
+		);
+		if width < 3 || self.hotbar.tool_in_hand() != BlockType::ResonantPick {
+			return;
+		}
+		let cur = self.dig_orientation.clamped(width);
+		self.dig_orientation = match (cur, width >= digblock_core::unlock::PICK_PLANE) {
+			(O::Horizontal, _) => O::Vertical,
+			(O::Vertical, true) => O::Plane,
+			_ => O::Horizontal,
+		};
+		// update.rs's per-frame sync carries it to the server; the feed
+		// line is for the desktop, whose indicator is small.
+		self.push_feed(Msg::PickOrientation(self.dig_orientation));
 	}
 
 	/// The keybinding seam: a spell-slot key pressed, or the HUD slot

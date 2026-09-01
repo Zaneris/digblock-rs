@@ -459,6 +459,9 @@ pub enum HudButton {
 	Slot(u8),
 	/// A spell-bar slot: tap to cast (the hotkey's touch twin).
 	SpellSlot(u8),
+	/// The pick-orientation indicator: tap to cycle (the tool-ability
+	/// bind's touch twin; on desktop the indicator is display-only).
+	PickToggle,
 }
 
 // Logical bases, × ui_scale — local to the touch HUD, so they live here
@@ -508,6 +511,73 @@ pub fn jump_button_rect(size: (u32, u32), scale: f32, insets: &SafeArea) -> supe
 	)
 }
 
+/// The pick-orientation indicator, bottom-right: on touch, stacked
+/// above the jump button's slot - ALWAYS that slot, drawn jump button or
+/// not, so flipping the jump setting never relocates a control mid-
+/// session; on desktop, at the place button's spot, which no pointer-
+/// locked session draws. Corner-button sized - visited, not hammered.
+pub fn pick_toggle_rect(
+	size: (u32, u32),
+	scale: f32,
+	insets: &SafeArea,
+	touch: bool,
+) -> super::Rect {
+	let px = CORNER_BTN_PX * scale;
+	if !touch {
+		let place = place_button_rect(size, scale, insets);
+		return super::Rect::new(place.x + place.w - px, place.y + place.h - px, px, px);
+	}
+	let above = jump_button_rect(size, scale, insets);
+	super::Rect::new(
+		above.x + above.w - px,
+		above.y - THUMB_GAP * scale - px,
+		px,
+		px,
+	)
+}
+
+/// Draw the indicator: plain quads that literally diagram the footprint
+/// - three squares in a row, in a column, or the full 3x3 grid.
+pub fn pick_toggle(
+	dl: &mut super::DrawList,
+	scale: f32,
+	size: (u32, u32),
+	insets: &SafeArea,
+	touch: bool,
+	o: digblock_core::pick::DigOrientation,
+) {
+	use digblock_core::pick::DigOrientation as O;
+	let r = pick_toggle_rect(size, scale, insets, touch);
+	dl.quad(Layer::Backdrop, r, super::theme::FILL_BG);
+	// A 3x3 lattice of cell centres inside the rect; the shape says
+	// which of them are filled.
+	let cell = r.w * 0.16;
+	let step = r.w * 0.24;
+	let (cx, cy) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
+	for i in -1i32..=1 {
+		for j in -1i32..=1 {
+			let on = match o {
+				O::Horizontal => j == 0,
+				O::Vertical => i == 0,
+				O::Plane => true,
+			};
+			if !on {
+				continue;
+			}
+			dl.quad(
+				Layer::Content,
+				super::Rect::new(
+					cx + i as f32 * step - cell / 2.0,
+					cy + j as f32 * step - cell / 2.0,
+					cell,
+					cell,
+				),
+				BTN_INK,
+			);
+		}
+	}
+}
+
 /// Which HUD button (if any) a touch at physical `(x, y)` lands on.
 /// `jump_button` mirrors the jump-mode setting: when the double-tap is
 /// the jump, there is no button to hit.
@@ -516,6 +586,7 @@ pub fn touch_hit(
 	scale: f32,
 	insets: &SafeArea,
 	jump_button: bool,
+	pick_toggle: bool,
 	x: f32,
 	y: f32,
 ) -> Option<HudButton> {
@@ -527,6 +598,9 @@ pub fn touch_hit(
 	}
 	if jump_button && jump_button_rect(size, scale, insets).contains(x, y) {
 		return Some(HudButton::Jump);
+	}
+	if pick_toggle && pick_toggle_rect(size, scale, insets, true).contains(x, y) {
+		return Some(HudButton::PickToggle);
 	}
 	let grid = row_grid(size, scale);
 	if let Some(i) = (0..HOTBAR_SLOTS).find(|&i| bar_slot_rect(&grid, i, scale).contains(x, y)) {

@@ -539,6 +539,7 @@ impl Engine {
 						self.ui.ui_scale,
 						&self.input.safe_area,
 						self.config.touch_jump_button,
+						self.pick_toggle_visible(),
 						px,
 						py,
 					) {
@@ -568,6 +569,8 @@ impl Engine {
 							}
 							// The hotkey's touch twin: tap to cast.
 							HudButton::SpellSlot(i) => self.activate_spell_slot(i as usize),
+							// The tool-ability bind's touch twin.
+							HudButton::PickToggle => self.cycle_dig_orientation(),
 						}
 						self.input.hud_touches.push((id, b));
 						return;
@@ -683,8 +686,7 @@ impl Engine {
 			Action::CastSpell1 if pressed => self.activate_spell_slot(0),
 			Action::CastSpell2 if pressed => self.activate_spell_slot(1),
 			Action::CastSpell3 if pressed => self.activate_spell_slot(2),
-			// Filled by the resonant pick's orientation toggle.
-			Action::ToolToggle => {}
+			Action::ToolToggle if pressed => self.cycle_dig_orientation(),
 			// Answered by the early intercept at the top of `handle_input`
 			// (it must fire with menus open too); never reaches here.
 			Action::Screenshot => {}
@@ -694,7 +696,7 @@ impl Engine {
 
 	/// Which of the five pages is up, if any (menu and chat are not
 	/// pages: each owns every key while open).
-	fn open_page(&self) -> Option<crate::events::ScreenKind> {
+	pub(super) fn open_page(&self) -> Option<crate::events::ScreenKind> {
 		use crate::events::ScreenKind as K;
 		if self.ui.inv_screen.is_open() {
 			Some(K::Inventory)

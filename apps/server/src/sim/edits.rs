@@ -52,6 +52,12 @@ pub(super) enum ClientAction {
 		hotbar: Vec<u16>,
 		grid: Vec<u16>,
 	},
+	/// The pick's dig shape rides the same queue: a toggle-then-swing in
+	/// one tick must be evaluated shape-first (wire order).
+	SetDigOrientation {
+		conn_id: u64,
+		mode: u8,
+	},
 }
 
 /// Server-side hold-to-dig record. The cell value is captured at DigStart
@@ -207,6 +213,12 @@ impl Sim {
 					hotbar,
 					grid,
 				} => self.process_layout(conn_id, &hotbar, &grid),
+				ClientAction::SetDigOrientation { conn_id, mode } => {
+					if let Some(client) = self.clients.get_mut(&conn_id) {
+						client.dig_orientation =
+							digblock_core::pick::DigOrientation::from_wire(mode);
+					}
+				}
 			}
 		}
 	}

@@ -385,6 +385,13 @@ impl Engine {
 					self.session.sent_spell_bar = Some(now);
 				}
 			}
+			// The pick's dig shape: no server-primed state to wait for (the
+			// server default matches ours), so a fresh connection declares
+			// it once and every toggle re-declares.
+			if self.session.last_orientation_sent != Some(self.dig_orientation) {
+				net.send_dig_orientation(self.dig_orientation.to_wire());
+				self.session.last_orientation_sent = Some(self.dig_orientation);
+			}
 		}
 		// Expired messages are kept, not dropped: the chat box shows recent
 		// history while you type, and there is nothing to show if the only

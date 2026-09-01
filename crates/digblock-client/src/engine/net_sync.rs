@@ -727,6 +727,7 @@ impl Engine {
 			self.session.my_player_id = None;
 			self.session.last_layout_sent = None;
 			self.session.sent_spell_bar = None;
+			self.session.last_orientation_sent = None;
 			// No one left to talk to: discard any half-typed chat line.
 			if self.ui.chat.is_open() {
 				self.ui.chat.handle_input(&InputEvent::Key {
