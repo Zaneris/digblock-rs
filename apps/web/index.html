@@ -164,15 +164,78 @@
 		const fill = bar.firstElementChild;
 		const status = document.getElementById("status");
 
+		// The wasm path in one place: fetchWasm streams it, and the failure
+		// screen reads the deploy stamp back out of it ("dev" unstamped).
+		const WASM = "./pkg/digblock_web_bg.wasm";
+		const BUILD = WASM.match(/_([0-9a-f]{12})_bg\.wasm$/)?.[1] ?? "dev";
+
+		// The error plus enough stack to place it; wasm panics, DOM
+		// exceptions, and digblock-fatal strings all come through here.
+		const describe = (e) => {
+			if (e instanceof Error) {
+				const stack = (e.stack ?? "").split("\n").slice(0, 6).join("\n");
+				return stack.includes(e.message) ? stack : `${e}\n${stack}`;
+			}
+			return typeof e === "string" ? e : String(e);
+		};
+
+		// Ask WebGPU itself what it has, so the screenshot says which of the
+		// three worlds this is: no WebGPU at all, WebGPU but no usable
+		// adapter (hardware acceleration off, GPU blocklisted), or a named
+		// adapter that failed further in.
+		const gpuReport = async () => {
+			if (!navigator.gpu) {
+				return "gpu: no WebGPU. This game needs an up-to-date browser with WebGPU enabled.";
+			}
+			try {
+				const adapter = await Promise.race([
+					navigator.gpu.requestAdapter(),
+					new Promise((r) => setTimeout(() => r("timeout"), 4000)),
+				]);
+				if (adapter === "timeout") return "gpu: adapter request never settled";
+				if (!adapter) {
+					return "gpu: WebGPU is present, but the browser offered no GPU adapter."
+						+ " Check that hardware acceleration is enabled in browser settings.";
+				}
+				const info = adapter.info
+					?? (adapter.requestAdapterInfo ? await adapter.requestAdapterInfo() : {});
+				const name = [info.vendor, info.architecture, info.device, info.description]
+					.filter(Boolean).join(", ") || "adapter present, no info";
+				return `gpu: ${name}${adapter.isFallbackAdapter ? " (fallback adapter)" : ""}`;
+			} catch (e) {
+				return `gpu: adapter probe failed: ${e?.message ?? e}`;
+			}
+		};
+
+		let failed = false;
 		const fail = (e) => {
-			if (!overlay.isConnected) return;
+			// First error only: an error and its unhandled rejection often
+			// both land here, and the first names the actual cause.
+			if (failed || !overlay.isConnected) return;
+			failed = true;
 			bar.remove();
 			status.remove();
+			const nav = performance.getEntriesByType?.("navigation")?.[0]?.type;
 			const pre = document.createElement("pre");
-			pre.textContent = "DigBlock failed to start.\n"
-				+ "This game needs WebGPU — an up-to-date Chrome, Edge,"
-				+ " or Safari.\n\n" + e;
+			pre.textContent = [
+				"DigBlock failed to start.",
+				"When reporting this, include the whole screen below.",
+				"",
+				describe(e),
+				"",
+				`build ${BUILD} · stage ${stage ?? "running"}`
+					+ ` · ${Math.round(performance.now() / 1000)}s in`
+					+ (nav && nav !== "navigate" ? ` · page ${nav}` : ""),
+				"gpu: checking…",
+				`env: ${navigator.userAgent}`,
+				`${innerWidth}x${innerHeight} @${devicePixelRatio}`
+					+ ` · ${navigator.hardwareConcurrency ?? "?"} cores`
+					+ (navigator.deviceMemory ? ` · ${navigator.deviceMemory}GB` : ""),
+			].join("\n");
 			overlay.appendChild(pre);
+			gpuReport().then((g) => {
+				pre.textContent = pre.textContent.replace("gpu: checking…", g);
+			});
 		};
 		// init() resolves as soon as the event loop is spawned — GPU init is
 		// still in flight and can fail (or panic) afterwards, which surfaces
@@ -325,7 +388,7 @@
 		// re-wrapped Response keeps the original headers, so wasm-bindgen
 		// still takes its instantiateStreaming path.
 		async function fetchWasm() {
-			const resp = await fetch("./pkg/digblock_web_bg.wasm");
+			const resp = await fetch(WASM);
 			if (!resp.ok) throw new Error(`wasm fetch failed: HTTP ${resp.status}`);
 			const total = Number(resp.headers.get("Content-Length")) || 0;
 			if (!total || !resp.body) {
@@ -367,6 +430,7 @@
 				fill.style.width = "";
 				bar.classList.add("indeterminate");
 				status.textContent = "Starting…";
+				nudge("starting");
 			} catch (e) {
 				fail(e);
 				throw e;
