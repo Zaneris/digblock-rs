@@ -390,6 +390,10 @@ pub struct EngineConfig {
 	/// double-tap. A persisted user setting (like `ssr`), mirrored here so
 	/// the frame's intent read needs no settings lookup.
 	pub touch_jump_button: bool,
+	/// Inverted vertical mouse look (push forward to look down). A
+	/// persisted user setting mirrored like `touch_jump_button`; applied
+	/// to mouse deltas only — touch look is direct manipulation.
+	pub invert_mouse_y: bool,
 	/// The shell can toggle browser fullscreen (the web launcher sets it
 	/// from the Fullscreen API's availability): the menu offers the row.
 	pub fullscreen_button: bool,
@@ -515,6 +519,7 @@ impl EngineConfig {
 			menu: false,
 			touch_hud: false,
 			touch_jump_button: false,
+			invert_mouse_y: false,
 			fullscreen_button: false,
 			fullscreen_hint: false,
 			auto_join: None,

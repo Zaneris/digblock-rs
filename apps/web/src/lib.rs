@@ -174,6 +174,7 @@ async fn boot() -> Result<(), JsValue> {
 		render_scale: config.render_scale,
 		gi_scale_div: config.gi_scale_div,
 		max_lights: config.max_lights,
+		invert_mouse_y: config.invert_mouse_y,
 		touch_jump_button: config.touch_jump_button,
 		show_tutorial: config.show_tutorial,
 		bindings: config.bindings.clone(),
@@ -188,6 +189,7 @@ async fn boot() -> Result<(), JsValue> {
 	config.sfx_vol = saved.sfx_vol;
 	config.ssr = saved.ssr;
 	config.ui_scale = saved.ui_scale;
+	config.invert_mouse_y = saved.invert_mouse_y;
 	config.touch_jump_button = saved.touch_jump_button;
 	config.show_tutorial = saved.show_tutorial;
 	config.bindings = saved.bindings.clone();

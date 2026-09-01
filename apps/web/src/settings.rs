@@ -18,6 +18,7 @@ struct SettingsFile {
 	render_scale: Option<f32>,
 	gi_scale_div: Option<u32>,
 	max_lights: Option<i32>,
+	invert_mouse_y: Option<bool>,
 	touch_jump_button: Option<bool>,
 	/// Deliberately NOT `show_tutorial`: that key was auto-written false on
 	/// completion under the old model, and this row means a manual switch
@@ -55,6 +56,7 @@ pub(crate) fn load(base: Settings) -> Settings {
 		render_scale: file.render_scale.unwrap_or(base.render_scale),
 		gi_scale_div: file.gi_scale_div.unwrap_or(base.gi_scale_div),
 		max_lights: file.max_lights.unwrap_or(base.max_lights),
+		invert_mouse_y: file.invert_mouse_y.unwrap_or(base.invert_mouse_y),
 		touch_jump_button: file.touch_jump_button.unwrap_or(base.touch_jump_button),
 		show_tutorial: file.tutorials.unwrap_or(base.show_tutorial),
 		bindings: match &file.binds {
@@ -79,6 +81,7 @@ pub(crate) fn save(s: &Settings) {
 		render_scale: Some(s.render_scale),
 		gi_scale_div: Some(s.gi_scale_div),
 		max_lights: Some(s.max_lights),
+		invert_mouse_y: Some(s.invert_mouse_y),
 		touch_jump_button: Some(s.touch_jump_button),
 		tutorials: Some(s.show_tutorial),
 		binds: Some(s.bindings.to_names()),

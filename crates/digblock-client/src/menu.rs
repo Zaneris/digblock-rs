@@ -330,6 +330,8 @@ enum Setting {
 	Ssr,
 	/// Touch jump verb. Touch-HUD-only row: `acts()` and `view()` skip it in lockstep off-touch.
 	TouchJump,
+	/// Inverted vertical mouse look. Mouse-only row: skipped ON touch, the mirror of TouchJump.
+	InvertY,
 	/// The walkthrough toggle; flipping it ON re-arms the tutorial for
 	/// the next world entry, which IS the replay affordance.
 	Tutorial,
@@ -1236,6 +1238,10 @@ impl Menu {
 				st.touch_jump_button = !st.touch_jump_button;
 				true
 			}
+			Setting::InvertY => {
+				st.invert_mouse_y = !st.invert_mouse_y;
+				true
+			}
 			Setting::Tutorial => {
 				st.show_tutorial = !st.show_tutorial;
 				true
@@ -1287,7 +1293,7 @@ impl Menu {
 				(std::mem::replace(&mut st.sfx_vol, v) - v).abs() > f32::EPSILON
 			}
 			// Not sliders; a bar click can't reach them.
-			Setting::Ssr | Setting::TouchJump | Setting::Tutorial => false,
+			Setting::Ssr | Setting::TouchJump | Setting::Tutorial | Setting::InvertY => false,
 		};
 		self.settings_dirty |= changed;
 	}
@@ -1617,9 +1623,13 @@ impl Menu {
 				}
 			}
 			Act::SettingRow(s) => {
-				// Enter/click on the toggle row flips it; sliders react to
-				// Left/Right and bar clicks instead.
-				if s == Setting::Ssr || s == Setting::Tutorial {
+				// Enter/click on a toggle row flips it; sliders react to
+				// Left/Right and bar clicks instead. TouchJump included:
+				// a tap IS a click, and taps are the only way to reach it.
+				if matches!(
+					s,
+					Setting::Ssr | Setting::Tutorial | Setting::TouchJump | Setting::InvertY
+				) {
 					self.adjust_setting(s, 1);
 				}
 			}
@@ -1744,8 +1754,12 @@ impl Menu {
 			}
 			Some(Screen::Settings { .. }) => {
 				for (i, s) in SETTINGS_ROWS.iter().enumerate() {
-					// Skipped in lockstep with `view()` — see Setting::TouchJump.
+					// Skipped in lockstep with `view()` — see Setting::TouchJump
+					// (and its mirror InvertY: no mouse look to invert on touch).
 					if matches!(s, Setting::TouchJump) && !self.touch {
+						continue;
+					}
+					if matches!(s, Setting::InvertY) && self.touch {
 						continue;
 					}
 					acts.push((RowId::SettingsRow(i as u8), Act::SettingRow(*s)));
@@ -1888,7 +1902,7 @@ const ACCOUNT_BACK: u8 = ACCOUNT_ROWS.len() as u8;
 // says why). Re-exposing it means a row here, a match arm in
 // `adjust_setting` and `set_setting_frac`, a `RowSpec` below, and
 // renumbering every row after it — the indices are positional.
-const SETTINGS_ROWS: [Setting; 9] = [
+const SETTINGS_ROWS: [Setting; 10] = [
 	Setting::DrawDist,
 	// Lighting detail sits next to draw distance: both trade picture for
 	// frame time, and a player hunting fps should find them together
@@ -1902,6 +1916,9 @@ const SETTINGS_ROWS: [Setting; 9] = [
 	Setting::Ssr,
 	Setting::TouchJump,
 	Setting::Tutorial,
+	// Last of the adjustables, right above the Controls door: it is an
+	// input setting, so a player hunting it finds it with the binds.
+	Setting::InvertY,
 ];
 
 /// The slider bar's rect within a placed row — the framework's

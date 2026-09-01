@@ -99,6 +99,12 @@ pub struct Settings {
 	/// also ends a running chapter on the spot. Completion writes
 	/// nothing here.
 	pub show_tutorial: bool,
+	/// Inverted vertical mouse look, the classic flight-stick option:
+	/// pushing the mouse forward looks down. Mouse deltas only; touch
+	/// look is direct manipulation and never inverts, which is why the
+	/// row hides on touch configs (the value still travels with the
+	/// settings, like [`Self::touch_jump_button`] does off-touch).
+	pub invert_mouse_y: bool,
 	/// Touch jump verb: the on-screen button instead of the double-tap.
 	/// Only surfaced (and only meaningful) on touch-HUD configs; the row
 	/// is hidden elsewhere but the value travels with the settings like
@@ -135,6 +141,7 @@ impl Default for Settings {
 			// baseline was taken with the whole list.
 			max_lights: LIGHT_CAP_MAX,
 			show_tutorial: true,
+			invert_mouse_y: false,
 			// The double-tap is the shipped jump — the old Java feel.
 			touch_jump_button: false,
 			bindings: crate::bindings::Bindings::default(),
@@ -219,6 +226,7 @@ mod tests {
 			render_scale: 4.0,
 			gi_scale_div: 7,
 			max_lights: i32::MAX,
+			invert_mouse_y: true,
 			touch_jump_button: false,
 			show_tutorial: true,
 			bindings: custom_binds.clone(),
@@ -347,6 +355,7 @@ mod tests {
 			render_scale: 0.75,
 			gi_scale_div: 3,
 			max_lights: LIGHT_CAP_MIN + LIGHT_CAP_STEP,
+			invert_mouse_y: true,
 			touch_jump_button: true,
 			show_tutorial: false,
 			bindings: crate::bindings::Bindings::default(),

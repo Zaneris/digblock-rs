@@ -232,7 +232,12 @@ impl Engine {
 		}
 
 		const LOOK_SENS: f32 = 0.12; // degrees per raw mouse unit
-		let (lx, ly) = std::mem::take(&mut self.input.look_accum);
+		let (lx, mut ly) = std::mem::take(&mut self.input.look_accum);
+		// Inverted Y flips the MOUSE delta only: touch look is dragging
+		// the world and never inverts.
+		if self.config.invert_mouse_y {
+			ly = -ly;
+		}
 		let touch_look = self.input.touch.take_look();
 		self.look
 			.look(lx * LOOK_SENS + touch_look.x, ly * LOOK_SENS + touch_look.y);

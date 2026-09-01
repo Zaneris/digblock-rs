@@ -312,6 +312,21 @@ impl Menu {
 						},
 					),
 				);
+				// Skipped in lockstep with `acts()` — see Setting::InvertY.
+				if !self.touch {
+					push(
+						&mut specs,
+						&mut y,
+						RowSpec::item(
+							RowId::SettingsRow(9),
+							if st.invert_mouse_y {
+								"Invert Y-Axis: On"
+							} else {
+								"Invert Y-Axis: Off"
+							},
+						),
+					);
+				}
 				y += row_h * 0.5;
 				// Skipped in lockstep with `acts()`: no keys to rebind on touch.
 				if !self.touch {

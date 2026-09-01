@@ -95,6 +95,7 @@ impl Engine {
 				render_scale: config.render_scale,
 				gi_scale_div: config.gi_scale_div,
 				max_lights: config.max_lights,
+				invert_mouse_y: config.invert_mouse_y,
 				touch_jump_button: config.touch_jump_button,
 				show_tutorial: config.show_tutorial,
 				bindings: config.bindings.clone(),
@@ -747,6 +748,7 @@ impl Engine {
 	pub(super) fn apply_settings(&mut self, s: crate::settings::Settings) {
 		self.config.ssr = s.ssr;
 		self.config.touch_jump_button = s.touch_jump_button;
+		self.config.invert_mouse_y = s.invert_mouse_y;
 		self.config.show_tutorial = s.show_tutorial;
 		// The touch HUD's advertised skip: switching the row off ends a
 		// running chapter on the spot (the row also gates the arming for

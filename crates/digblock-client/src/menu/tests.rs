@@ -828,6 +828,15 @@ fn settings_adjust_clamp_and_dirty_once() {
 	menu.handle_key(Key::Left);
 	assert!(menu.take_settings_change().unwrap().ssr);
 
+	// Invert Y-Axis: two rows down (Jump is touch-only and skipped
+	// here, Tutorial sits between), same toggle verbs.
+	menu.handle_key(Key::Down);
+	menu.handle_key(Key::Down);
+	menu.handle_key(Key::Enter);
+	assert!(menu.take_settings_change().unwrap().invert_mouse_y);
+	menu.handle_key(Key::Right);
+	assert!(!menu.take_settings_change().unwrap().invert_mouse_y);
+
 	// Escape returns to Root; the values held.
 	menu.handle_key(Key::Escape);
 	open_settings(&mut menu);
@@ -1694,7 +1703,8 @@ fn touch_hides_the_controls_door() {
 			);
 		}
 	}
-	// Touch: no door, so the pages cannot be reached at all.
+	// Touch: no door, so the pages cannot be reached at all — and no
+	// Invert Y-Axis row either, there being no mouse look to invert.
 	let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
 	menu.set_touch();
 	menu.activate(Act::OpenSettings);
@@ -1702,10 +1712,20 @@ fn touch_hides_the_controls_door() {
 		!menu
 			.acts()
 			.iter()
-			.any(|(_, a)| matches!(a, Act::OpenControls))
+			.any(|(_, a)| matches!(a, Act::OpenControls | Act::SettingRow(Setting::InvertY)))
 	);
 	let view = menu.view(SIZE, 1.0, false);
 	assert!(!view.rows.iter().any(|r| r.text == "Controls..."));
+	assert!(
+		!view
+			.rows
+			.iter()
+			.any(|r| r.text.starts_with("Invert Y-Axis"))
+	);
+	// The lockstep holds on touch too: every listed act has a rect.
+	for (id, _) in menu.acts() {
+		assert!(view.hits.rect_of(id).is_some());
+	}
 }
 
 #[test]
