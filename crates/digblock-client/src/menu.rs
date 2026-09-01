@@ -1818,7 +1818,7 @@ const SETTINGS_BACK: u8 = SETTINGS_CONTROLS + 1;
 /// the hotbar slots, which live on their own sub-page so neither page
 /// outgrows the window at the reference size. Same positional
 /// discipline as `SETTINGS_ROWS`.
-const CONTROLS_MAIN: [Action; 18] = [
+const CONTROLS_MAIN: [Action; 17] = [
 	Action::MoveForward,
 	Action::MoveBack,
 	Action::MoveLeft,
@@ -1831,7 +1831,6 @@ const CONTROLS_MAIN: [Action; 18] = [
 	Action::OpenCharacter,
 	Action::OpenHiscores,
 	Action::OpenSpellbook,
-	Action::OpenChat,
 	Action::CastSpell1,
 	Action::CastSpell2,
 	Action::CastSpell3,

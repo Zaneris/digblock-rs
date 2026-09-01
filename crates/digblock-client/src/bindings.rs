@@ -1,6 +1,7 @@
 //! The keybinding table: every rebindable verb, its saved key, and the
 //! lookup the input dispatch runs per key event. Enter and Escape are
-//! deliberately absent — chat and menu doors never move — and a few keys
+//! deliberately absent — chat and menu doors never move (the Controls
+//! page lists the chat door for completeness, greyed) — and a few keys
 //! (Tab, Backquote, F7, the arrow aliases) keep fixed FALLBACK behavior
 //! that a player's binding shadows rather than conflicts with. Identity
 //! for persistence is always the name string, never a discriminant.
@@ -23,7 +24,6 @@ pub enum Action {
 	OpenCharacter,
 	OpenHiscores,
 	OpenSpellbook,
-	OpenChat,
 	HotbarSlot1,
 	HotbarSlot2,
 	HotbarSlot3,
@@ -41,7 +41,7 @@ pub enum Action {
 }
 
 impl Action {
-	pub const ALL: [Action; 27] = [
+	pub const ALL: [Action; 26] = [
 		Action::MoveForward,
 		Action::MoveBack,
 		Action::MoveLeft,
@@ -54,7 +54,6 @@ impl Action {
 		Action::OpenCharacter,
 		Action::OpenHiscores,
 		Action::OpenSpellbook,
-		Action::OpenChat,
 		Action::HotbarSlot1,
 		Action::HotbarSlot2,
 		Action::HotbarSlot3,
@@ -87,7 +86,6 @@ impl Action {
 			Action::OpenCharacter => "character",
 			Action::OpenHiscores => "hiscores",
 			Action::OpenSpellbook => "spellbook",
-			Action::OpenChat => "chat",
 			Action::HotbarSlot1 => "hotbar_1",
 			Action::HotbarSlot2 => "hotbar_2",
 			Action::HotbarSlot3 => "hotbar_3",
@@ -124,7 +122,6 @@ impl Action {
 			Action::OpenCharacter => "Character",
 			Action::OpenHiscores => "Hiscores",
 			Action::OpenSpellbook => "Spellbook",
-			Action::OpenChat => "Chat",
 			Action::HotbarSlot1 => "Hotbar Slot 1",
 			Action::HotbarSlot2 => "Hotbar Slot 2",
 			Action::HotbarSlot3 => "Hotbar Slot 3",
@@ -156,7 +153,7 @@ impl Action {
 }
 
 /// One saved key per action; `None` is unbound. Lookups are linear scans
-/// over 27 entries, run once per key event.
+/// over 26 entries, run once per key event.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Bindings {
 	keys: [Option<Key>; Action::ALL.len()],
@@ -167,7 +164,7 @@ impl Default for Bindings {
 		let mut b = Bindings {
 			keys: [None; Action::ALL.len()],
 		};
-		let defaults: [(Action, Key); 27] = [
+		let defaults: [(Action, Key); 26] = [
 			(Action::MoveForward, Key::W),
 			(Action::MoveBack, Key::S),
 			(Action::MoveLeft, Key::A),
@@ -180,7 +177,6 @@ impl Default for Bindings {
 			(Action::OpenCharacter, Key::C),
 			(Action::OpenHiscores, Key::H),
 			(Action::OpenSpellbook, Key::J),
-			(Action::OpenChat, Key::T),
 			(Action::HotbarSlot1, Key::Digit(1)),
 			(Action::HotbarSlot2, Key::Digit(2)),
 			(Action::HotbarSlot3, Key::Digit(3)),
@@ -190,10 +186,10 @@ impl Default for Bindings {
 			(Action::HotbarSlot7, Key::Digit(7)),
 			(Action::HotbarSlot8, Key::Digit(8)),
 			(Action::HotbarSlot9, Key::Digit(9)),
-			(Action::CastSpell1, Key::Z),
-			(Action::CastSpell2, Key::X),
-			(Action::CastSpell3, Key::V),
-			(Action::ToolToggle, Key::R),
+			(Action::CastSpell1, Key::E),
+			(Action::CastSpell2, Key::R),
+			(Action::CastSpell3, Key::T),
+			(Action::ToolToggle, Key::Q),
 			(Action::Screenshot, Key::F8),
 		];
 		for (a, k) in defaults {

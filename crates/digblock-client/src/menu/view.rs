@@ -357,7 +357,7 @@ impl Menu {
 				// which is what `acts()` walks (the SETTINGS_ROWS discipline).
 				for (i, a) in CONTROLS_MAIN.iter().enumerate() {
 					// Breathing room between movement, screens, and the rest.
-					if i == 7 || i == 13 {
+					if i == 7 || i == 12 {
 						y += row_h * 0.25;
 					}
 					push(
@@ -365,6 +365,19 @@ impl Menu {
 						&mut y,
 						RowSpec::item_hint(RowId::ControlsRow(i as u8), a.label(), right(*a)),
 					);
+					// The chat door, listed greyed at the end of the screen
+					// group: it is Enter and never moves (Escape's rule), but
+					// a page about keys that omitted it would read as a hole.
+					if *a == Action::OpenSpellbook {
+						push(
+							&mut specs,
+							&mut y,
+							RowSpec {
+								right: Some(("Enter".into(), C_DIM)),
+								..RowSpec::dim("Chat")
+							},
+						);
+					}
 				}
 				y += row_h * 0.25;
 				push(

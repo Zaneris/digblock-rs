@@ -483,9 +483,9 @@ impl Engine {
 							self.on_tutorial_advance(adv);
 						}
 					}
-					// Enter opens the chat alongside whatever OpenChat is
-					// bound to — the fixed door. Multiplayer-only: there is
-					// no one to hear a single-player message.
+					// Enter IS the chat door — fixed, like Escape's menu; the
+					// Controls page lists it greyed. Multiplayer-only: there
+					// is no one to hear a single-player message.
 					Key::Enter if pressed && self.session.client.is_some() => {
 						self.input.keys = HeldKeys::default();
 						self.input.dig_held = false;
@@ -675,13 +675,6 @@ impl Engine {
 				self.input.keys = HeldKeys::default();
 				self.input.dig_held = false;
 				self.ui.spellbook.open();
-			}
-			// Chat is multiplayer-only — there is no one to hear a
-			// single-player message.
-			Action::OpenChat if pressed && self.session.client.is_some() => {
-				self.input.keys = HeldKeys::default();
-				self.input.dig_held = false;
-				self.ui.chat.open();
 			}
 			Action::CastSpell1 if pressed => self.activate_spell_slot(0),
 			Action::CastSpell2 if pressed => self.activate_spell_slot(1),
