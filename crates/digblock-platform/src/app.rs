@@ -1073,7 +1073,7 @@ impl<G: Game> App<G> {
 				&& let AppState::Running(r) = &self.state
 				&& let Some(canvas) = winit::platform::web::WindowExtWebSys::canvas(&*r.window)
 			{
-				crate::webshot::download_canvas_png(&canvas, self.launched_at.elapsed().as_secs());
+				crate::webshot::download_canvas_png(&canvas);
 			}
 			let game = &self.game;
 			if let Some(bridge) = &mut self.text_bridge
