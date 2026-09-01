@@ -41,6 +41,10 @@ pub enum IconKind {
 	Sigil,
 	/// An essence: the one FLAT icon, since a count is not a thing in the world.
 	Essence(digblock_core::block::Essence),
+	/// A spell, by its `InvId::Spell` id — the other flat icon (a cast
+	/// has no geometry to project). Layer and tint resolve through
+	/// [`crate::spellbar::spell_icon`].
+	Spell(u8),
 }
 
 /// The arrival cover: an OPAQUE full-screen fill with one centred line, held over a join or a
@@ -116,7 +120,7 @@ pub fn icon_block(kind: IconKind) -> Option<BlockType> {
 		IconKind::Siphon => Some(BlockType::EssenceSiphon),
 		IconKind::Pick => Some(BlockType::ResonantPick),
 		IconKind::Sigil => Some(BlockType::MastersSigil),
-		IconKind::Essence(_) => None,
+		IconKind::Essence(_) | IconKind::Spell(_) => None,
 	}
 }
 
@@ -132,6 +136,9 @@ pub fn draw_icon(
 ) {
 	match kind {
 		IconKind::Essence(e) => dl.icon(layer, rect, e.icon_tex(), tint),
+		// The caller's tint, not the spell's own: the bar fades a spell
+		// that is not ready, and the drag ghost rides the same path.
+		IconKind::Spell(id) => dl.icon(layer, rect, crate::spellbar::spell_icon(id).0, tint),
 		_ => super::shaped_icon::emit(dl, layer, rect, kind, tint),
 	}
 }
@@ -185,6 +192,100 @@ pub fn hovered_bar_slot(
 		.map(|i| (bar_slot_rect(&grid, i, window_scale), view.slots[i]))
 		.find(|(r, _)| r.contains(cursor.0, cursor.1))
 		.and_then(|(r, slot)| slot.name().map(|n| (r, n)))
+}
+
+/// The spell bar's slot size: subordinate to the item bar's
+/// [`SLOT_PX`], still a finger target.
+pub const SPELL_SLOT_PX: f32 = 48.0;
+pub const SPELL_ICON_PX: f32 = 40.0;
+
+/// The spell bar's grid: bottom-LEFT, safe-area aware, bottom-aligned
+/// with the item bar. When a narrow window would run it into the
+/// centred bar, it steps up above the bar top instead — one pure
+/// function serving draw, hit registration, and `touch_hit`.
+pub fn spell_grid(size: (u32, u32), scale: f32, insets: &SafeArea) -> GridSpec {
+	let cell = SPELL_SLOT_PX * scale;
+	let gap = SLOT_GAP * scale;
+	let cols = crate::spellbar::SPELL_SLOTS;
+	let x = insets.left + BOTTOM_MARGIN * scale;
+	let w = cols as f32 * cell + (cols as f32 - 1.0) * gap;
+	let bar = row_grid(size, scale);
+	let mut y = size.1 as f32 - insets.bottom - BOTTOM_MARGIN * scale - cell;
+	if x + w + BOTTOM_MARGIN * scale > bar.origin.0 {
+		y = bar.origin.1 - THUMB_GAP * scale - cell;
+	}
+	GridSpec {
+		origin: (x, y),
+		cols,
+		cell,
+		gap,
+	}
+}
+
+/// Emit the spell bar: three slots, each icon faded when the spell is
+/// not castable right now, the teleport countdown as a corner badge.
+/// The hit rects under `id_of(i)` are the spellbook's drop targets —
+/// the picture IS the target.
+pub fn spell_bar<Id: Copy + PartialEq>(
+	ui: &mut Ui<'_, Id>,
+	size: (u32, u32),
+	view: &crate::spellbar::SpellBarView,
+	id_of: impl Fn(usize) -> Id,
+) {
+	let scale = ui.style.scale;
+	let grid = spell_grid(size, scale, &view.insets);
+	for (i, slot) in view.slots.iter().enumerate() {
+		let rect = grid.rect(i);
+		let icon = slot.spell.map(|id| {
+			let (_, tint) = crate::spellbar::spell_icon(id);
+			(
+				IconKind::Spell(id),
+				if slot.ready { tint } else { faded(tint, 0.4) },
+			)
+		});
+		widgets::slot(
+			ui,
+			id_of(i),
+			rect,
+			icon,
+			SPELL_ICON_PX * scale,
+			widgets::SlotRing::None,
+			false,
+		);
+		if let Some(badge) = &slot.badge {
+			// The countdown, bottom-right of the slot at the frame glyph
+			// (the one-text-size rule holds).
+			let glyph = ui.style.glyph;
+			let w = crate::font::ui().measure(badge, glyph);
+			let pad = 2.0 * scale;
+			ui.dl.text(
+				Layer::Content,
+				rect.x + rect.w - w - pad,
+				rect.y + rect.h - glyph - pad,
+				glyph,
+				WHITE,
+				badge,
+			);
+		}
+	}
+}
+
+/// The spell slot the cursor is over, and its tooltip — the
+/// [`hovered_bar_slot`] twin, asked by every PAGE drawn over the bar
+/// (gameplay proper has no free cursor to hover with).
+pub fn hovered_spell_slot(
+	size: (u32, u32),
+	window_scale: f32,
+	view: &crate::spellbar::SpellBarView,
+	cursor: (f32, f32),
+) -> Option<(super::Rect, String)> {
+	let grid = spell_grid(size, window_scale, &view.insets);
+	view.slots
+		.iter()
+		.enumerate()
+		.map(|(i, slot)| (grid.rect(i), slot))
+		.find(|(r, _)| r.contains(cursor.0, cursor.1))
+		.and_then(|(r, slot)| (!slot.tooltip.is_empty()).then(|| (r, slot.tooltip.clone())))
 }
 
 /// Emit the hotbar: slot widgets (backdrops, icons, selection border,
@@ -356,6 +457,11 @@ pub enum HudButton {
 	Jump,
 	/// A hotbar slot: tap to select; the tool slot cycles when already selected, as digits do.
 	Slot(u8),
+	/// A spell-bar slot: tap to cast (the hotkey's touch twin).
+	SpellSlot(u8),
+	/// The pick-orientation indicator: tap to cycle (the tool-ability
+	/// bind's touch twin; on desktop the indicator is display-only).
+	PickToggle,
 }
 
 // Logical bases, × ui_scale — local to the touch HUD, so they live here
@@ -405,6 +511,73 @@ pub fn jump_button_rect(size: (u32, u32), scale: f32, insets: &SafeArea) -> supe
 	)
 }
 
+/// The pick-orientation indicator, bottom-right: on touch, stacked
+/// above the jump button's slot - ALWAYS that slot, drawn jump button or
+/// not, so flipping the jump setting never relocates a control mid-
+/// session; on desktop, at the place button's spot, which no pointer-
+/// locked session draws. Corner-button sized - visited, not hammered.
+pub fn pick_toggle_rect(
+	size: (u32, u32),
+	scale: f32,
+	insets: &SafeArea,
+	touch: bool,
+) -> super::Rect {
+	let px = CORNER_BTN_PX * scale;
+	if !touch {
+		let place = place_button_rect(size, scale, insets);
+		return super::Rect::new(place.x + place.w - px, place.y + place.h - px, px, px);
+	}
+	let above = jump_button_rect(size, scale, insets);
+	super::Rect::new(
+		above.x + above.w - px,
+		above.y - THUMB_GAP * scale - px,
+		px,
+		px,
+	)
+}
+
+/// Draw the indicator: plain quads that literally diagram the footprint
+/// - three squares in a row, in a column, or the full 3x3 grid.
+pub fn pick_toggle(
+	dl: &mut super::DrawList,
+	scale: f32,
+	size: (u32, u32),
+	insets: &SafeArea,
+	touch: bool,
+	o: digblock_core::pick::DigOrientation,
+) {
+	use digblock_core::pick::DigOrientation as O;
+	let r = pick_toggle_rect(size, scale, insets, touch);
+	dl.quad(Layer::Backdrop, r, super::theme::FILL_BG);
+	// A 3x3 lattice of cell centres inside the rect; the shape says
+	// which of them are filled.
+	let cell = r.w * 0.16;
+	let step = r.w * 0.24;
+	let (cx, cy) = (r.x + r.w / 2.0, r.y + r.h / 2.0);
+	for i in -1i32..=1 {
+		for j in -1i32..=1 {
+			let on = match o {
+				O::Horizontal => j == 0,
+				O::Vertical => i == 0,
+				O::Plane => true,
+			};
+			if !on {
+				continue;
+			}
+			dl.quad(
+				Layer::Content,
+				super::Rect::new(
+					cx + i as f32 * step - cell / 2.0,
+					cy + j as f32 * step - cell / 2.0,
+					cell,
+					cell,
+				),
+				BTN_INK,
+			);
+		}
+	}
+}
+
 /// Which HUD button (if any) a touch at physical `(x, y)` lands on.
 /// `jump_button` mirrors the jump-mode setting: when the double-tap is
 /// the jump, there is no button to hit.
@@ -413,6 +586,7 @@ pub fn touch_hit(
 	scale: f32,
 	insets: &SafeArea,
 	jump_button: bool,
+	pick_toggle: bool,
 	x: f32,
 	y: f32,
 ) -> Option<HudButton> {
@@ -425,10 +599,17 @@ pub fn touch_hit(
 	if jump_button && jump_button_rect(size, scale, insets).contains(x, y) {
 		return Some(HudButton::Jump);
 	}
+	if pick_toggle && pick_toggle_rect(size, scale, insets, true).contains(x, y) {
+		return Some(HudButton::PickToggle);
+	}
 	let grid = row_grid(size, scale);
-	(0..HOTBAR_SLOTS)
-		.find(|&i| bar_slot_rect(&grid, i, scale).contains(x, y))
-		.map(|i| HudButton::Slot(i as u8))
+	if let Some(i) = (0..HOTBAR_SLOTS).find(|&i| bar_slot_rect(&grid, i, scale).contains(x, y)) {
+		return Some(HudButton::Slot(i as u8));
+	}
+	let spells = spell_grid(size, scale, insets);
+	(0..crate::spellbar::SPELL_SLOTS)
+		.find(|&i| spells.rect(i).contains(x, y))
+		.map(|i| HudButton::SpellSlot(i as u8))
 }
 
 /// A horizontal bar of the glyph stroke, centered spans expressed as
@@ -651,18 +832,19 @@ pub fn toasts(
 	let chip_gap = super::theme::CHIP_GAP * scale;
 	for toast in toasts.iter().rev() {
 		let fade = (toast.ttl / TOAST_FADE).clamp(0.0, 1.0);
+		// Entry: slide up out of the bar's shadow over the first beat.
+		let age = TOAST_TTL - toast.ttl;
+		let enter = digblock_core::ease::Curve::OutCubic.apply((age / 0.25).min(1.0));
+		let rise = (1.0 - enter) * line * 0.6;
 		// An XP toast says the skill; an essence toast shows the chip —
 		// an amount of essence is never a word.
 		let (text, icon) = match toast.label {
-			ToastLabel::Xp(skill) => (
-				format!("+{} {}", toast.amount, skill.name().to_uppercase()),
-				None,
-			),
+			ToastLabel::Xp(skill) => (format!("+{} {}", toast.amount, skill.name()), None),
 			ToastLabel::Essence(e) => (format!("+{}", toast.amount), Some(IconKind::Essence(e))),
 		};
 		let text_w = style.measure(&text);
 		let w = text_w + icon.map_or(0.0, |_| chip_gap + px) + 2.0 * pad_x;
-		let rect = super::Rect::new((size.0 as f32 - w) / 2.0, bottom - line, w, line);
+		let rect = super::Rect::new((size.0 as f32 - w) / 2.0, bottom - line + rise, w, line);
 		dl.quad(Layer::Backdrop, rect, faded(super::theme::FILL_BG, fade));
 		let top = rect.y + (line - px) / 2.0;
 		dl.text(

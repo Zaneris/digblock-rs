@@ -86,15 +86,38 @@ impl Engine {
 		// and the visible torch arrive and leave together through the swap
 		// dip; and read unconditionally, because opening the inventory
 		// puts the hand away, not the torch out.
-		self.vfx.carried.push(
-			CARRIER_SELF,
-			self.camera.pos,
-			self.vfx
-				.view_swap
-				.shown()
-				.and_then(crate::ui::hud::icon_block),
-			self.skills.level(digblock_core::skills::Skill::Mining),
-		);
+		let held_icon = self
+			.vfx
+			.view_swap
+			.shown()
+			.and_then(crate::ui::hud::icon_block);
+		if matches!(self.mode, CameraMode::Cinematic(_)) {
+			// Detached: the body is ON SCREEN, drawn through the remote
+			// path (body + held item rendering already exist there); its
+			// carried light rides that push under the SELF key, so the
+			// torch stays on the body rather than flying with the camera.
+			let d = crate::camera::dir_from(self.look.yaw_deg, 0.0);
+			push_remote(
+				&mut self.vfx.remote_instances,
+				&mut self.vfx.held_instances,
+				&mut self.vfx.carried,
+				&Remote {
+					key: CARRIER_SELF,
+					id: self.session.my_player_id.unwrap_or(0),
+					pos: self.fp_eye,
+					yaw: d.x.atan2(d.z),
+					held: held_icon.map_or(0, |b| b as u16),
+					fx: 0,
+				},
+			);
+		} else {
+			self.vfx.carried.push(
+				CARRIER_SELF,
+				self.body_anchor(),
+				held_icon,
+				self.skills.level(digblock_core::skills::Skill::Mining),
+			);
+		}
 		// The wisp: a second light on the same body while it burns.
 		if self.wisp_left > 0.0 {
 			let (level, whitened) = digblock_core::unlock::wisp_light(
@@ -102,7 +125,7 @@ impl Engine {
 			);
 			self.vfx.carried.push_arcane(
 				carried::CARRIER_WISP,
-				digblock_core::gi::carried_origin(self.camera.pos),
+				digblock_core::gi::carried_origin(self.body_anchor()),
 				level,
 				whitened,
 			);
@@ -164,10 +187,11 @@ impl Engine {
 				},
 			);
 		}
-		self.vfx.carried.finish(self.camera.pos);
-		let frame = self.frame_uniforms();
+		self.vfx.carried.finish(self.body_anchor());
+		let cam_fx = self.vfx.camera_fx.offset();
+		let frame = self.frame_uniforms(&cam_fx);
 		let aspect = size.0 as f32 / size.1.max(1) as f32;
-		let view_proj = self.camera.view_proj(aspect);
+		let view_proj = self.camera.view_proj_with(aspect, &cam_fx);
 		// Name tags: project each nearby remote's head-top to screen px.
 		// No depth (overlay) — tags read through walls within range.
 		const NAMETAG_RANGE: f32 = 32.0;
@@ -209,7 +233,7 @@ impl Engine {
 				Some(n) => tag.text.push_str(n),
 				None => {
 					use std::fmt::Write;
-					let _ = write!(tag.text, "player {}", d.id);
+					let _ = write!(tag.text, "Player {}", d.id);
 				}
 			}
 			tags += 1;
@@ -248,6 +272,9 @@ impl Engine {
 		// bench captures' default state comparability is preserved (bench
 		// never digs, hotbar renders its fixed default row).
 		let in_game = menu_view.is_none();
+		// A running cinematic owns the whole screen: no crosshair, hotbar,
+		// hand or touch cluster — the shot is the interface.
+		let cinematic = matches!(self.mode, CameraMode::Cinematic(_));
 		// A capture's parked hover: the tile exists in LAST frame's hit
 		// map, so it is fed here, before the clear, as the cursor move it
 		// would have been.
@@ -285,12 +312,19 @@ impl Engine {
 				let ports = self.known_ports();
 				let view = crate::ui::screens::spellbook::SpellView::build(
 					&self.skills,
-					self.save.teleport_cooldown.ceil() as u32,
+					self.save.teleport_cooldown.left().ceil() as u32,
 					&ports,
 					&self.inventory,
 					self.causeway_left.ceil() as u32,
 				);
-				self.ui.spellbook.handle_input(&ev, &self.ui.ui_hits, &view);
+				let style = crate::ui::Style::new(self.ui.ui_scale);
+				self.ui.spellbook.handle_input(
+					&ev,
+					&self.ui.ui_hits,
+					&style,
+					&view,
+					&self.spell_bar,
+				);
 			} else if self.ui.char_screen.is_open() {
 				self.ui.char_screen.handle_input(&ev);
 			}
@@ -324,7 +358,7 @@ impl Engine {
 				);
 			}
 		}
-		if in_game {
+		if in_game && !cinematic {
 			let hotbar_view = crate::hotbar::HotbarView::build(
 				&self.hotbar,
 				&self.inventory,
@@ -332,7 +366,32 @@ impl Engine {
 			);
 			let owned_tools = self.owned_tools();
 			// Hoisted before the DrawList borrow: `known_ports` reads self.
-			let ports = self.ui.spellbook.is_open().then(|| self.known_ports());
+			// The spell readiness view is built every in-game frame — the
+			// bar's fades, badges and tooltips need it whether or not the
+			// spellbook is up, and the open book reuses the same view.
+			let ports = self.known_ports();
+			let cooldown = self.save.teleport_cooldown.left().ceil() as u32;
+			let spell_view = crate::ui::screens::spellbook::SpellView::build(
+				&self.skills,
+				cooldown,
+				&ports,
+				&self.inventory,
+				self.causeway_left.ceil() as u32,
+			);
+			let spells = crate::spellbar::SpellBarView::build(
+				&self.spell_bar,
+				&spell_view,
+				cooldown,
+				self.input.safe_area,
+			);
+			// Hoisted before the DrawList borrow, like `ports`.
+			let page_open = self.open_page().is_some();
+			let pick_toggle = self.pick_toggle_visible().then(|| {
+				let width = digblock_core::unlock::pick_cells(
+					self.skills.level(digblock_core::skills::Skill::Mining),
+				);
+				self.dig_orientation.clamped(width)
+			});
 			let mut ui = crate::ui::Ui {
 				dl: &mut self.ui.ui_dl,
 				hits: &mut self.ui.ui_hits,
@@ -346,6 +405,7 @@ impl Engine {
 					&self.inv_grid,
 					&self.inventory,
 					&hotbar_view,
+					&spells,
 					daylight,
 				);
 			} else if self.ui.alch_screen.is_open() {
@@ -353,7 +413,7 @@ impl Engine {
 					crate::ui::screens::alchemy::AlchView::build(&self.inventory, &self.skills);
 				self.ui
 					.alch_screen
-					.build(&mut ui, size, &view, &hotbar_view, daylight);
+					.build(&mut ui, size, &view, &hotbar_view, &spells, daylight);
 			} else if self.ui.char_screen.is_open() {
 				let view = crate::ui::screens::character::CharView::build(
 					&self.skills,
@@ -362,7 +422,7 @@ impl Engine {
 				);
 				self.ui
 					.char_screen
-					.build(&mut ui, size, &view, &hotbar_view, daylight);
+					.build(&mut ui, size, &view, &hotbar_view, &spells, daylight);
 			} else if self.ui.hiscores.is_open() {
 				let view = crate::ui::screens::hiscores::HiscoresView::build(
 					&self.board,
@@ -370,23 +430,26 @@ impl Engine {
 				);
 				self.ui
 					.hiscores
-					.build(&mut ui, size, &view, &hotbar_view, daylight);
+					.build(&mut ui, size, &view, &hotbar_view, &spells, daylight);
 			} else if self.ui.spellbook.is_open() {
-				let view = crate::ui::screens::spellbook::SpellView::build(
-					&self.skills,
-					self.save.teleport_cooldown.ceil() as u32,
-					ports.as_deref().unwrap_or(&[]),
-					&self.inventory,
-					self.causeway_left.ceil() as u32,
+				self.ui.spellbook.build(
+					&mut ui,
+					size,
+					&spell_view,
+					&hotbar_view,
+					&spells,
+					daylight,
 				);
-				self.ui
-					.spellbook
-					.build(&mut ui, size, &view, &hotbar_view, daylight);
 			} else {
 				crate::ui::hud::crosshair(ui.dl, size, ui.style.scale);
 			}
 			crate::ui::hud::hotbar(&mut ui, size, &hotbar_view, |i| {
 				crate::ui::InvId::Bar(i as u8)
+			});
+			// The spell bar right after the item bar, so its hit rects
+			// stand as drop targets under every open page.
+			crate::ui::hud::spell_bar(&mut ui, size, &spells, |i| {
+				crate::ui::InvId::SpellBar(i as u8)
 			});
 			crate::ui::hud::toasts(ui.dl, &ui.style, size, &self.vfx.toasts);
 			// The teleport instant's wash: one full-rect quad over the
@@ -409,7 +472,7 @@ impl Engine {
 			{
 				use crate::ui::screens::alchemy::BenchJob;
 				let BenchJob::Craft(item, left) = job;
-				let text = format!("BENCH  {} ×{left}", item.name().to_uppercase());
+				let text = format!("Bench  {} ×{left}", item.name());
 				crate::ui::hud::bench_tell(ui.dl, &ui.style, size, &text);
 			}
 			crate::ui::hud::tool_rail(
@@ -421,6 +484,20 @@ impl Engine {
 				self.inventory.bucket_full(),
 				self.input.tool_swap.present(),
 			);
+			// The pick-orientation indicator, bottom-right: tappable on
+			// touch, display-only under a locked pointer. Suppressed by an
+			// open page like the thumb cluster - the world verbs mean
+			// nothing under a screen.
+			if let (false, Some(o)) = (page_open, pick_toggle) {
+				crate::ui::hud::pick_toggle(
+					ui.dl,
+					ui.style.scale,
+					size,
+					&self.input.safe_area,
+					self.config.touch_hud,
+					o,
+				);
+			}
 			// The touch HUD draws last so its corner button sits over an
 			// open screen's dim — it is that screen's close control.
 			if self.config.touch_hud {
@@ -448,11 +525,151 @@ impl Engine {
 				}
 			}
 		}
+		// The tutorial's prompt panel + anchored highlight. After the
+		// hotbar and screens, so the hit map already carries this frame's
+		// rects; the highlight rides Ghost, over everything. It pauses out
+		// of sight with the HUD under the open menu, EXCEPT on the one
+		// step performed inside the menu (open your inventory), where the
+		// panel draws over the menu's own quads.
+		// The cinematic letterbox: two black bars, drawn on Ghost so they
+		// mask whatever world-space overlays reach the frame's edges.
+		if cinematic {
+			let bar = size.1 as f32 * 0.11;
+			let (w, h) = (size.0 as f32, size.1 as f32);
+			let ink = 0xFF00_0000;
+			self.ui.ui_dl.quad(
+				crate::ui::draw::Layer::Ghost,
+				crate::ui::Rect::new(0.0, 0.0, w, bar),
+				ink,
+			);
+			self.ui.ui_dl.quad(
+				crate::ui::draw::Layer::Ghost,
+				crate::ui::Rect::new(0.0, h - bar, w, bar),
+				ink,
+			);
+		}
+		// A running cinematic owns the screen whole: the prompt waits for
+		// the camera to come home.
+		// The steps performed from INSIDE the menu (open this page) keep
+		// the prompt up over it; every other step pauses out of sight
+		// with the HUD.
+		use crate::tutorial::StepId as S;
+		if let Some(view) = self.tutorial.view(self.config.touch_hud)
+			&& (in_game || matches!(view.step, S::OpenInventory | S::OpenBench | S::OpenArcana))
+			&& !cinematic
+		{
+			let style = crate::ui::Style::new(self.ui.ui_scale);
+			let text = crate::voice::plain(
+				&crate::voice::Msg::TutorialStep {
+					step: view.step,
+					touch: self.config.touch_hud,
+					jump_button: self.config.touch_jump_button,
+					spell_slot: self.wisp_bar_slot().unwrap_or(0),
+				},
+				&self.input.bindings,
+			);
+			let skip_hint = if self.config.touch_hud {
+				"Skip: Settings"
+			} else {
+				"Skip: Tab"
+			};
+			crate::ui::tutorial::panel(
+				&mut self.ui.ui_dl,
+				&style,
+				size,
+				&self.input.safe_area,
+				&view,
+				&text,
+				skip_hint,
+			);
+			// The jump anchor exists only when the jump-mode setting draws
+			// the button; under the double-tap there is nothing on screen
+			// to point at. The bench steps' anchors come from the page's
+			// own guide (family tile, siphon tile, TRANSMUTE button) —
+			// the same phase read the poll advances on, so the pulse and
+			// the words can never point at different tiles.
+			// With the MENU up on an open-this-page step, the pulse moves
+			// to the page's own row, resolved through the same acts table
+			// the taps run — the corner button reads Back here and must
+			// not pulse toward closing the menu. A submenu has no such
+			// row and gets the words alone.
+			if !in_game {
+				let kind = match view.step {
+					S::OpenInventory => Some(crate::events::ScreenKind::Inventory),
+					S::OpenBench => Some(crate::events::ScreenKind::Alchemy),
+					S::OpenArcana => Some(crate::events::ScreenKind::Spellbook),
+					_ => None,
+				};
+				if let Some(row) = kind.and_then(|k| self.ui.menu.screen_row(k))
+					&& let Some(mv) = &menu_view
+					&& let Some(r) = mv.hits.rect_of(row)
+				{
+					crate::ui::tutorial::highlight(&mut self.ui.ui_dl, &style, r, self.time_secs);
+				}
+			} else if view.step == S::SlotWisp {
+				// The drag step draws a two-ended hint instead of one pulse:
+				// the wisp row (the table's anchor) outlined steady, the first
+				// free bar slot pulsing as the drop target, dots streaming
+				// between them. Both rects are this frame's hits, so a closed
+				// book simply draws nothing.
+				let to_slot = (0..crate::spellbar::SPELL_SLOTS as u8)
+					.find(|&i| self.spell_bar.get(i as usize).is_none())
+					.unwrap_or(0);
+				let rect_of = |a| {
+					crate::ui::anchors::anchor_rect(
+						a,
+						&self.ui.ui_hits,
+						size,
+						style.scale,
+						&self.input.safe_area,
+					)
+				};
+				let from = view.anchor.and_then(rect_of);
+				let to = rect_of(crate::ui::anchors::AnchorId::Ui(
+					crate::ui::InvId::SpellBar(to_slot),
+				));
+				if let (Some(f), Some(t)) = (from, to) {
+					crate::ui::tutorial::drag_hint(
+						&mut self.ui.ui_dl,
+						&style,
+						f,
+						t,
+						self.time_secs,
+					);
+				}
+			} else {
+				let anchor = if matches!(view.step, S::PickTools | S::PickSiphon | S::CraftSiphon) {
+					self.ui
+						.alch_screen
+						.guide_to(digblock_core::block::BlockType::EssenceSiphon)
+						.map(crate::ui::anchors::AnchorId::Ui)
+				} else if view.step == S::CastWisp {
+					// The bar slot the player chose — a runtime fact.
+					self.wisp_bar_slot()
+						.map(|k| crate::ui::anchors::AnchorId::Ui(crate::ui::InvId::SpellBar(k)))
+				} else {
+					view.anchor.filter(|a| {
+						*a != crate::ui::anchors::AnchorId::JumpButton
+							|| self.config.touch_jump_button
+					})
+				};
+				if let Some(a) = anchor
+					&& let Some(r) = crate::ui::anchors::anchor_rect(
+						a,
+						&self.ui.ui_hits,
+						size,
+						style.scale,
+						&self.input.safe_area,
+					) {
+					crate::ui::tutorial::highlight(&mut self.ui.ui_dl, &style, r, self.time_secs);
+				}
+			}
+		}
 		// Last, and over everything: while the arrival hold is up, the
 		// world behind this is pristine worldgen the journal is about to
 		// overwrite. The menu path covers its own case (the Connecting
 		// screen simply stays up), so this is the in-game one — a teleport.
-		if self.save.arrival_hold.is_some() && in_game {
+		if self.save.arrival_hold.running() && in_game {
 			crate::ui::hud::arrival_cover(
 				&mut self.ui.ui_dl,
 				&crate::ui::Style::new(self.ui.ui_scale),
@@ -460,10 +677,16 @@ impl Engine {
 				"Loading world...",
 			);
 		}
-		let highlight_target = if in_game { self.dig_progress() } else { None };
+		if in_game {
+			self.fill_highlight_targets();
+		} else {
+			self.vfx.highlight_scratch.clear();
+		}
 		// The hand is part of playing, not part of reading a screen: a
-		// menu, the inventory or the alchemy page all put it away.
+		// menu, the inventory, the alchemy page or a cinematic all put it
+		// away.
 		let viewmodel = (in_game
+			&& !cinematic
 			&& !self.ui.inv_screen.is_open()
 			&& !self.ui.alch_screen.is_open()
 			&& !self.ui.char_screen.is_open()
@@ -487,7 +710,7 @@ impl Engine {
 		// DIG_CAST poses the channel at a fixed progress — standing in a
 		// hold is the one thing a headless run cannot do (the DIG_SIPHON
 		// rule).
-		if self.vfx.channel_env > 0.0 {
+		if self.vfx.channel_env.level() > 0.0 {
 			let progress = self.config.debug_cast.unwrap_or_else(|| {
 				self.cast.as_ref().map_or(1.0, |c| {
 					let need = digblock_core::unlock::channel_ticks(
@@ -502,7 +725,7 @@ impl Engine {
 				feet.to_array(),
 				crate::teleport::Mode::Channel,
 				progress,
-				self.vfx.channel_env,
+				self.vfx.channel_env.level(),
 				3.7,
 			));
 		}
@@ -565,6 +788,8 @@ impl Engine {
 			self.vfx.marker_scratch = scratch;
 		}
 		let sky_floor = self.sky_floor();
+		// Hoisted: the renderer borrow below holds `self` mutably.
+		let body_anchor = self.body_anchor();
 		if let Some(r) = self.renderer.as_mut() {
 			// A carried light that has travelled — or has just gone out —
 			// re-places itself through the same hook a block edit uses, so
@@ -592,13 +817,14 @@ impl Engine {
 				light_cap: self.config.max_lights.max(1) as usize,
 				sky_floor,
 				confetti: &self.vfx.confetti,
+				bursts: &self.vfx.bursts,
 				// The stream ends where the tool's own light hangs, and
 				// the destination is handed over rather than derived in
 				// the shader so the two cannot drift — see `siphon`.
 				siphon: self.vfx.siphon.map(|s| {
 					crate::siphon::instance(
 						s.source.to_array(),
-						digblock_core::gi::carried_origin(self.camera.pos).to_array(),
+						digblock_core::gi::carried_origin(body_anchor).to_array(),
 						s.tint,
 						s.normal,
 						s.progress,
@@ -611,7 +837,7 @@ impl Engine {
 					.as_ref()
 					.map(|s| (s, self.vfx.history_scratch.as_slice())),
 				feed: &self.session.feed,
-				target: highlight_target,
+				targets: &self.vfx.highlight_scratch,
 				viewmodel,
 				ui: &self.ui.ui_dl,
 				chat: (in_game && self.ui.chat.is_open()).then(|| {
@@ -620,6 +846,7 @@ impl Engine {
 						.view(((self.time_secs * 2.0) as u32).is_multiple_of(2))
 				}),
 				nametags: &self.vfx.nametag_scratch[..self.vfx.nametag_count],
+				binds: &self.input.bindings,
 			};
 			let stats = r.render(gpu, target, &scene);
 			self.bench.pending.encode_ms = ms_since(t_encode);

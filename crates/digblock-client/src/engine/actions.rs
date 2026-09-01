@@ -35,11 +35,32 @@ impl Engine {
 	/// server answers the same question from its own simulated position. Aim rays still come from
 	/// the camera — you hit what you see.
 	pub(super) fn body_pos(&self) -> Vec3 {
-		if self.input.walking {
-			self.player.pos
-		} else {
-			self.camera.pos // fly leaves player.pos stale
+		match self.mode {
+			CameraMode::FirstPerson | CameraMode::Cinematic(_) => self.player.pos,
+			CameraMode::DebugFly => self.camera.pos, // fly leaves player.pos stale
 		}
+	}
+
+	/// The player's PRESENTED eye: what first person is (or would be)
+	/// showing. Streaming, the carried light, and the body-sense probes
+	/// anchor here, so a detached camera cannot drag them along. Today
+	/// every mode answers with the camera; a cinematic rig answers with
+	/// the first-person eye it detached from.
+	pub(super) fn body_anchor(&self) -> Vec3 {
+		match self.mode {
+			CameraMode::FirstPerson | CameraMode::DebugFly => self.camera.pos,
+			CameraMode::Cinematic(_) => self.fp_eye,
+		}
+	}
+
+	/// Adopt a facing outright — both the player's angles and the camera
+	/// showing them, so a restore or an authoritative turn lands this
+	/// frame rather than after the next input copy.
+	pub(super) fn set_look(&mut self, yaw_deg: f32, pitch_deg: f32) {
+		self.look.yaw_deg = yaw_deg;
+		self.look.pitch_deg = pitch_deg.clamp(-89.0, 89.0);
+		self.camera.yaw_deg = self.look.yaw_deg;
+		self.camera.pitch_deg = self.look.pitch_deg;
 	}
 
 	/// May a placement write this cell? Resident, and holding a block the
@@ -55,6 +76,12 @@ impl Engine {
 	/// Recompute the crosshair target (every update — it drives the
 	/// highlight overlay, the dig state machine, and placement).
 	pub(super) fn update_target(&mut self) {
+		// Detached: there is no crosshair over a cinematic, and everything
+		// downstream (highlight, dig, place) is None-tolerant.
+		if matches!(self.mode, CameraMode::Cinematic(_)) {
+			self.target = None;
+			return;
+		}
 		let (origin, dir) = (self.camera.pos, self.camera.dir());
 		let pipeline = &self.pipeline;
 		let cell_at = |x: i32, y: i32, z: i32| pipeline.cell_at(x, y, z);
@@ -132,13 +159,17 @@ impl Engine {
 		}
 		let level = self.skills.level(digblock_core::skills::Skill::Mining);
 		let alchemy = self.skills.level(digblock_core::skills::Skill::Alchemy);
+		let width = digblock_core::unlock::pick_cells(level);
 		let id = digblock_core::chunk::cell_id(hit.cell_value);
 		let credit = hit.block.dig_credit(self.cell_edited(hit.cell), alchemy);
 		let mut out = digblock_core::pick::cells(
 			hit.cell,
 			hit.normal,
 			self.camera.dir().to_array(),
-			digblock_core::unlock::pick_cells(level),
+			width,
+			// The same clamp the server runs over the same width - the two
+			// footprints stay bit-identical.
+			self.dig_orientation.clamped(width),
 			// The same rule the server runs over its own world — including
 			// the world floor, which `dig_hardness` refuses at exactly the
 			// y `protect::immutable` does. A server's spawn lock is its own
@@ -213,11 +244,128 @@ impl Engine {
 	/// instead — the countdown is visible there, and a silent no-op
 	/// reads as a broken key. One clock covers Return Home and every
 	/// port, so neither can start while the other's window runs.
+	/// Apply what a spellbook click (or a slot activation) asked for. The
+	/// cast arms close the book — the cast is watched, not menued; a
+	/// closed book closes harmlessly on the hotkey path.
+	pub(super) fn apply_spell_action(&mut self, act: crate::ui::screens::spellbook::SpellAction) {
+		use crate::ui::screens::spellbook::SpellAction as A;
+		match act {
+			A::CastHome => {
+				self.ui.spellbook.close();
+				self.start_cast(CastTarget::Home);
+			}
+			A::CastWaystone(idx) => {
+				self.ui.spellbook.close();
+				self.start_cast(CastTarget::Waystone(idx));
+			}
+			A::CastWisp => {
+				self.ui.spellbook.close();
+				self.start_cast(CastTarget::Wisp);
+			}
+			A::CastKindle => {
+				self.ui.spellbook.close();
+				self.start_cast(CastTarget::Kindle);
+			}
+			A::CastSphere => {
+				self.ui.spellbook.close();
+				self.start_cast(CastTarget::Sphere);
+			}
+			A::ToggleCauseway => {
+				self.ui.spellbook.close();
+				// Taking a road up is not a cast and channels like
+				// nothing: the caster wanting to descend wants it gone now.
+				if self.causeway_left > 0.0 {
+					self.end_causeway();
+					if let Some(net) = self.session.client.as_mut() {
+						net.send_causeway_end();
+					}
+				} else {
+					self.start_cast(CastTarget::Causeway);
+				}
+			}
+			// The bar edits keep the book OPEN — binding two slots in a
+			// row is the normal gesture. Persistence rides the same
+			// change detection the item layout uses (`update`'s sync).
+			A::AssignSlot { slot, spell } => self.spell_bar.assign(slot as usize, spell),
+			A::MoveSlot { from, to } => self.spell_bar.swap(from as usize, to as usize),
+			A::ClearSlot { slot } => self.spell_bar.clear(slot as usize),
+			A::ActivateSlot(k) => self.activate_spell_slot(k as usize),
+		}
+	}
+
+	/// Whether the orientation indicator is on screen: the pick in hand,
+	/// with a swing wide enough for the toggle to mean anything. The
+	/// touch tap and the frame's draw both ask this one predicate.
+	pub(super) fn pick_toggle_visible(&self) -> bool {
+		self.hotbar.tool_in_hand() == BlockType::ResonantPick
+			&& digblock_core::unlock::pick_cells(
+				self.skills.level(digblock_core::skills::Skill::Mining),
+			) > 1
+	}
+
+	/// The tool-ability seam: the bind pressed, or the indicator tapped.
+	/// Cycles the pick's dig shape through what the Mining level has
+	/// opened; a stowed pick or an unwidened swing no-ops silently (the
+	/// indicator is hidden in exactly those states).
+	pub(super) fn cycle_dig_orientation(&mut self) {
+		use digblock_core::pick::DigOrientation as O;
+		let width = digblock_core::unlock::pick_cells(
+			self.skills.level(digblock_core::skills::Skill::Mining),
+		);
+		if width < 3 || self.hotbar.tool_in_hand() != BlockType::ResonantPick {
+			return;
+		}
+		let cur = self.dig_orientation.clamped(width);
+		self.dig_orientation = match (cur, width >= digblock_core::unlock::PICK_PLANE) {
+			(O::Horizontal, _) => O::Vertical,
+			(O::Vertical, true) => O::Plane,
+			_ => O::Horizontal,
+		};
+		// update.rs's per-frame sync carries it to the server; the feed
+		// line is for the desktop, whose indicator is small.
+		self.push_feed(Msg::PickOrientation(self.dig_orientation));
+	}
+
+	/// The keybinding seam: a spell-slot key pressed, or the HUD slot
+	/// tapped. Gated on the SAME readiness the spellbook rows enforce; a
+	/// refusal speaks in the feed rather than opening the book mid-play.
+	pub(super) fn activate_spell_slot(&mut self, i: usize) {
+		let Some(id) = self.spell_bar.get(i) else {
+			self.push_feed(Msg::SpellSlotEmpty);
+			return;
+		};
+		if self.cast.is_some() {
+			return;
+		}
+		let ports = self.known_ports();
+		let cooldown = self.save.teleport_cooldown.left().ceil() as u32;
+		let view = crate::ui::screens::spellbook::SpellView::build(
+			&self.skills,
+			cooldown,
+			&ports,
+			&self.inventory,
+			self.causeway_left.ceil() as u32,
+		);
+		if let Some(act) = view.action_for(id) {
+			self.apply_spell_action(act);
+			return;
+		}
+		let spell = crate::spellbar::voice_spell(id);
+		let teleport = id == crate::spellbar::SLOT_HOME || crate::spellbar::port_kind(id).is_some();
+		if view.slot_locked(id) {
+			self.push_feed(Msg::SpellLocked(spell));
+		} else if teleport && cooldown > 0 {
+			self.push_feed(Msg::TeleportWait(cooldown));
+		} else {
+			self.push_feed(Msg::SpellFareShort(spell));
+		}
+	}
+
 	pub(super) fn start_cast(&mut self, target: CastTarget) {
 		if self.cast.is_some() {
 			return;
 		}
-		if target.teleports() && self.save.teleport_cooldown > 0.0 {
+		if target.teleports() && !self.save.teleport_cooldown.ready() {
 			self.input.keys = HeldKeys::default();
 			self.input.dig_held = false;
 			self.ui.spellbook.open();
@@ -236,7 +384,7 @@ impl Engine {
 			id: crate::audio::LOOP_CAST,
 			sound: crate::audio::Sfx::CastLoop,
 			pos: None,
-			gain: 0.45,
+			gain: crate::audio::CAST_LOOP_GAIN,
 		});
 	}
 
@@ -313,7 +461,7 @@ impl Engine {
 	}
 
 	/// The channel broke with a Sphere climbing under it: the server
-	/// unwinds on our word (and on its own, if we moved); this end puts
+	/// unwinds on our word (and on its own, if we left); this end puts
 	/// its own climb's record back crown-first, only where the block is
 	/// still ours, and the bill returns.
 	fn break_sphere(&mut self) {
@@ -400,7 +548,7 @@ impl Engine {
 
 	/// Our own climb, if one stands. Every answer that belongs to the
 	/// LOCAL player — the offline award, the refund, the channel's
-	/// stillness hold — asks this rather than "is anything climbing",
+	/// seal hold — asks this rather than "is anything climbing",
 	/// because a remote's sphere is climbing in our world too.
 	pub(super) fn own_sphere(&self) -> Option<&SphereClimb> {
 		let me = self.session.my_player_id;
@@ -412,17 +560,19 @@ impl Engine {
 	/// be a spell that outruns the cooldown.
 	fn start_teleport_cooldown(&mut self) {
 		let level = self.skills.level(digblock_core::skills::Skill::Arcana);
-		self.save.teleport_cooldown = digblock_core::unlock::teleport_cooldown_secs(level) as f32;
+		self.save
+			.teleport_cooldown
+			.start(digblock_core::unlock::teleport_cooldown_secs(level) as f32);
 	}
 
 	/// How long a Sphere's channel is held past its own length while the
 	/// caster waits for the seal — the bound on [`Self::sphere_seal_grace`].
 	pub(super) const SPHERE_SEAL_GRACE_SECS: f32 = 0.6;
 
-	/// Ticks past its own length that a channel keeps guarding stillness — the Sphere alone, and
-	/// only online. `Cast(Sphere)` goes out as the channel BEGINS, so the server's span ends one upstream
-	/// latency after the caster's own bar fills, and until it does the server still enforces its
-	/// own stillness and unwinds the WHOLE sphere, with no word, for a caster who has walked off.
+	/// Ticks past its own length that a channel is held open — the Sphere alone, and only
+	/// online. `Cast(Sphere)` goes out as the channel BEGINS, so the server's span ends one
+	/// upstream latency after the caster's own bar fills, and the channel waits for that seal
+	/// rather than completing on a climb still short of its crown.
 	/// Offline the seal IS this end's own last tick, so there is nothing to wait for.
 	fn sphere_seal_grace(&self, target: CastTarget) -> u32 {
 		let waiting = target == CastTarget::Sphere
@@ -435,19 +585,13 @@ impl Engine {
 		}
 	}
 
-	/// One fixed-rate step of the cast channel. A channel is STILLNESS:
-	/// any movement intent, a dig hold, or a surface opening resets it
+	/// One fixed-rate step of the cast channel. A caster may walk while
+	/// channelling; a dig hold or a surface opening resets the channel
 	/// outright — the decay mold is a dig's, deliberately not borrowed.
 	pub(super) fn step_cast(&mut self) {
 		let Some(&CastState { target, ticks }) = self.cast.as_ref() else {
 			return;
 		};
-		let keys = &self.input.keys;
-		let moving = keys.w
-			|| keys.a || keys.s
-			|| keys.d || keys.up
-			|| keys.down
-			|| self.input.touch.move_axis() != glam::Vec2::ZERO;
 		let surface = self.ui.menu.is_open()
 			|| self.ui.inv_screen.is_open()
 			|| self.ui.alch_screen.is_open()
@@ -458,7 +602,7 @@ impl Engine {
 		let need = digblock_core::unlock::channel_ticks(
 			self.skills.level(digblock_core::skills::Skill::Arcana),
 		);
-		if moving || surface || self.dig_active() {
+		if surface || self.dig_active() {
 			self.cast = None;
 			self.emit(crate::audio::AudioCmd::LoopStop {
 				id: crate::audio::LOOP_CAST,
@@ -963,11 +1107,7 @@ impl Engine {
 			// the hand comes back up exactly as the water lands in it.
 			if self.water_tool_selected() {
 				self.vfx.view_swing.strike();
-				self.emit(crate::audio::AudioCmd::Sfx {
-					sound: crate::audio::Sfx::Swim,
-					pos: Some(cell_center(hit.cell)),
-					gain: 0.7,
-				});
+				self.react(crate::events::GameEvent::WaterScooped { cell: hit.cell });
 			} else {
 				// A draw rides the SAME voice as a dig, so every stop path already covers
 				// it, and the pitch ramp below reads as a resonance winding up rather than
@@ -979,10 +1119,11 @@ impl Engine {
 					id: crate::audio::LOOP_DIG,
 					sound: crate::audio::dig_voice(extracting, hit.block).0,
 					pos: Some(cell_center(hit.cell)),
-					// Under the dig loop: a sustained hum at a hammer's
-					// level would wear out over a hold that runs longer
-					// than any dig.
-					gain: if extracting { 0.85 } else { 1.0 },
+					gain: if extracting {
+						crate::audio::DRAW_LOOP_GAIN
+					} else {
+						crate::audio::DIG_LOOP_GAIN
+					},
 				});
 			}
 			return;
@@ -1143,25 +1284,14 @@ impl Engine {
 		if extracting.is_some() {
 			self.drawn_cell = Some(hit.cell);
 		}
-		// A filled bucket splashes; everything else ends the way its hold
-		// began, through the pair `audio::dig_voice` owns — a drawn seam
-		// lets go, a broken block breaks. Water's material class is Earth
-		// (the table's total fallback), which is right for nothing it does,
-		// which is why it is the one case answered here.
+		// How the hold ends — scoop splash, seam release, or the break —
+		// is the sound table's business (`audio::sound_for`).
 		let tool = self.water_tool_selected();
-		let extracted = extracting.is_some();
-		let (end, end_gain) = if tool {
-			(crate::audio::Sfx::Splash, 0.5)
-		} else {
-			(
-				crate::audio::dig_voice(extracted, prev).1,
-				if extracted { 0.9 } else { 1.0 },
-			)
-		};
-		self.emit(crate::audio::AudioCmd::Sfx {
-			sound: end,
-			pos: Some(cell_center(hit.cell)),
-			gain: end_gain,
+		self.react(crate::events::GameEvent::DigFinished {
+			cell: hit.cell,
+			block: prev,
+			extracted: extracting.is_some(),
+			scooped: tool,
 		});
 		// No swing is started here: the arc that began with this hold is running out on this
 		// frame, and re-striking it bolts a second stroke onto a finished scoop. An extraction
@@ -1365,16 +1495,9 @@ impl Engine {
 				None => {}
 			}
 		}
-		// A poured source splashes; everything else lands with a thunk.
-		let poured = block == BlockType::Water;
-		self.emit(crate::audio::AudioCmd::Sfx {
-			sound: if poured {
-				crate::audio::Sfx::Splash
-			} else {
-				crate::audio::Sfx::Place
-			},
-			pos: Some(cell_center(target)),
-			gain: if poured { 0.6 } else { 0.9 },
+		self.react(crate::events::GameEvent::Placed {
+			cell: target,
+			poured: block == BlockType::Water,
 		});
 		match self.session.client.as_mut() {
 			Some(net) if net.ready() => {
@@ -1472,11 +1595,7 @@ impl Engine {
 		for &(c, _, v) in &entries {
 			self.pipeline.set_cell(c.0, c.1, c.2, v);
 		}
-		self.emit(crate::audio::AudioCmd::Sfx {
-			sound: crate::audio::Sfx::Place,
-			pos: Some(cell_center(cell)),
-			gain: 0.6,
-		});
+		self.react(crate::events::GameEvent::DoorToggled { cell });
 		let (origin, dir) = (self.camera.pos, self.camera.dir());
 		if let Some(net) = self.session.client.as_mut()
 			&& net.ready()

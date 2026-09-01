@@ -1988,7 +1988,10 @@ mod tests {
 	/// record version's suffix since the FORMAT is not what differs.
 	#[test]
 	fn archive_world_rotates_a_foreign_generator_world() {
-		let dir = std::env::temp_dir().join(format!("dbj-gen-{}", std::process::id()));
+		// Not "dbj-gen": `a_stored_world_reports_the_generator_that_made_it`
+		// runs beside this in the same process, and a shared directory has
+		// each test sweeping the other's world out from under it.
+		let dir = std::env::temp_dir().join(format!("dbj-rotate-{}", std::process::id()));
 		let _ = std::fs::remove_dir_all(&dir);
 		let seed = Seed::current(8.0);
 		{

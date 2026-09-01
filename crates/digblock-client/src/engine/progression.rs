@@ -10,6 +10,18 @@ impl Engine {
 	/// layout sync mirrors the result to the server before the next edit.
 	pub(super) fn apply_inv_action(&mut self, act: InvAction) {
 		use digblock_core::hotbar::HotbarItem;
+		// The drop's destination, for the cue — identity rides the event.
+		let dest = match &act {
+			InvAction::Assign { slot, .. } | InvAction::ClearBar { slot } => {
+				crate::ui::InvId::Bar(*slot as u8)
+			}
+			InvAction::SwapBar { b, .. } => crate::ui::InvId::Bar(*b as u8),
+			InvAction::PlaceGrid { grid_slot, .. } => crate::ui::InvId::Grid(*grid_slot as u16),
+			InvAction::MoveGrid { to, .. } => crate::ui::InvId::Grid(*to as u16),
+		};
+		self.react(crate::events::GameEvent::Ui(
+			crate::events::UiEvent::SlotDrop(dest),
+		));
 		match act {
 			InvAction::Assign { slot, block } => {
 				let _ = self.hotbar.assign(slot, block);
@@ -61,6 +73,7 @@ impl Engine {
 			item: item as u16,
 			count,
 		};
+		self.react(crate::events::GameEvent::Ui(crate::events::UiEvent::Craft));
 		match self.session.client.as_mut() {
 			Some(net) if net.ready() => net.send_alchemy(wire_op),
 			_ => {
@@ -74,7 +87,18 @@ impl Engine {
 					// what reveals the surface nodes, so the pipeline learns
 					// about the pack's new tool the moment it exists. A no-op
 					// for every other craft (no gate crossed, no re-mesh).
-					self.sync_node_reveal(true);
+					// Under the walkthrough's craft step the remeshes are
+					// DEFERRED: the cinematic lands each subject's pop-in
+					// mid-shot instead of letting the heap race the camera.
+					if self
+						.tutorial
+						.view(false)
+						.is_some_and(|v| v.step == crate::tutorial::StepId::CraftSiphon)
+					{
+						self.defer_node_reveal();
+					} else {
+						self.sync_node_reveal(true);
+					}
 				}
 			}
 		}
@@ -121,11 +145,10 @@ impl Engine {
 
 	/// The bench's opening invitation, asked wherever the pack GROWS (the
 	/// dig credit, the server's inventory rebase): the first time it
-	/// holds a siphon's whole price and no siphon, say so and name the
-	/// key. Price and gate are read from the tables, so a retune moves
-	/// the nudge with it. Once per world session — owning one silences it
-	/// for good, and a join sync that arrives already affordable speaks
-	/// once and is done.
+	/// holds a siphon's whole price and no siphon, the siphon walkthrough
+	/// chapter arms and does the talking. Price and gate are read from
+	/// the tables, so a retune moves the nudge with it. Once per world
+	/// session — owning one silences it for good.
 	pub(super) fn nudge_siphon(&mut self) {
 		use digblock_core::block::BlockType;
 		let siphon = BlockType::EssenceSiphon;
@@ -142,7 +165,39 @@ impl Engine {
 			return;
 		}
 		self.siphon_nudged = true;
-		self.push_feed(crate::voice::Msg::SiphonInReach);
+		self.arm_nudged_chapter(crate::tutorial::Chapter::Siphon);
+	}
+
+	/// The spellbook's opening invitation, asked every frame (the window
+	/// is a clock, not a pack event): the first time the shown sky sits
+	/// between 21:00 and 03:00 with a wisp's fare in the pack, the wisp
+	/// unslotted and unlit, the wisp walkthrough chapter arms and does
+	/// the talking. Price and window read from the tables and the
+	/// painted sun, so a retune moves the nudge with them. Once per
+	/// world session.
+	pub(super) fn nudge_wisp(&mut self) {
+		if self.wisp_nudged || self.wisp_left > 0.0 || self.wisp_bar_slot().is_some() {
+			return;
+		}
+		let (h, _) = digblock_core::sun::clock_of_tod(self.sun.tod);
+		if (3..21).contains(&h) {
+			return;
+		}
+		let level = self.skills.level(digblock_core::skills::Skill::Arcana);
+		let (essence, fare) = digblock_core::alchemy::wisp_price(level);
+		if self.inventory.sub_count(essence) < fare {
+			return;
+		}
+		self.wisp_nudged = true;
+		self.arm_nudged_chapter(crate::tutorial::Chapter::Wisp);
+	}
+
+	/// The bar slot holding the wisp, if any: the nudge's "already knows
+	/// the bar", the poll's "slotted", the cast step's anchor and its
+	/// wording's key all ask this one place.
+	pub(super) fn wisp_bar_slot(&self) -> Option<u8> {
+		(0..crate::spellbar::SPELL_SLOTS as u8)
+			.find(|&i| self.spell_bar.get(i as usize) == Some(crate::spellbar::SLOT_WISP))
 	}
 
 	/// Adopt a new authoritative XP total for one skill: coalesce the delta into a toast, then
@@ -165,6 +220,16 @@ impl Engine {
 				skill,
 				level: new_level,
 			});
+			// Name what the rung actually opened ("you can now dig wood"),
+			// derived from the strength-wall table — every level crossed,
+			// so a coalesced multi-level award skips nothing.
+			if skill == digblock_core::skills::Skill::Mining {
+				for l in old_level + 1..=new_level {
+					if let Some(f) = digblock_core::unlock::family_opened(l) {
+						self.push_feed(crate::voice::Msg::NowDiggable(f));
+					}
+				}
+			}
 			// A level that OPENS something speaks with the bigger voice —
 			// derived from the gate tables, so the two sounds can't drift
 			// from what the level actually did. A multi-level jump (a big
@@ -172,17 +237,39 @@ impl Engine {
 			// crossed, not just the one landed on.
 			let unlocked =
 				(old_level + 1..=new_level).any(|l| digblock_core::unlock::opens(skill, l));
-			self.emit(crate::audio::AudioCmd::Sfx {
-				sound: crate::audio::level_sfx(unlocked),
-				pos: None,
-				gain: crate::audio::LEVEL_GAIN,
-			});
+			self.react(crate::events::GameEvent::LeveledUp { unlocked });
 			// Your own confetti, over your own head — first-person, that
 			// is paper falling past the camera. Everyone ELSE gets theirs
 			// from the server's `LevelUp` broadcast.
 			let eye = self.player.pos;
 			self.throw_confetti(eye);
 			self.sync_node_reveal(true);
+		}
+	}
+
+	/// The scripted half of [`Self::sync_node_reveal`]: flip the stamp
+	/// and speak, but queue NO remesh — the siphon cinematic remeshes
+	/// each subject mid-shot and sweeps the rest when the camera comes
+	/// home ([`Self::finish_reveal`]); if no shot materializes, the
+	/// cinematic starter falls straight back to the full sweep.
+	pub(super) fn defer_node_reveal(&mut self) {
+		let levels = digblock_core::worldgen::nodes::Levels::of(&self.skills, &self.inventory);
+		let was = self.pipeline.levels();
+		if !self.pipeline.set_levels(levels) {
+			return;
+		}
+		self.reveal_finale = true;
+		if levels.siphon && !was.siphon {
+			self.push_feed(crate::voice::Msg::SourcesRevealed);
+		}
+	}
+
+	/// The staged reveal's catch-all: whatever was withheld from the
+	/// resident chunks sweeps in now. Harmless when nothing is owed.
+	pub(super) fn finish_reveal(&mut self) {
+		if std::mem::take(&mut self.reveal_finale) {
+			self.reveal_cues.clear();
+			self.pipeline.remesh_all();
 		}
 	}
 

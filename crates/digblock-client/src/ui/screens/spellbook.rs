@@ -17,7 +17,7 @@ use crate::ui::{HitMap, InvId, Rect, hud, theme};
 
 /// What a click on the page asks the engine to do.
 pub enum SpellAction {
-	/// Begin the Return Home channel.
+	/// Begin the spawn waystone's channel (the journey back to spawn).
 	CastHome,
 	/// Begin the channel for the port at this `SurfaceKind` index.
 	CastWaystone(u8),
@@ -29,15 +29,20 @@ pub enum SpellAction {
 	CastSphere,
 	/// Begin the Causeway's channel, or — with a road standing — take it up: one row for both.
 	ToggleCauseway,
+	/// A row dragged onto a spell-bar slot (the engine dedupes: one
+	/// spell, one slot).
+	AssignSlot { slot: u8, spell: u8 },
+	/// A bar slot dragged onto another.
+	MoveSlot { from: u8, to: u8 },
+	/// A bar slot dragged off everything: emptied.
+	ClearSlot { slot: u8 },
+	/// A click on a bar slot: cast it (works with the book open too).
+	ActivateSlot(u8),
 }
 
-/// The non-port spell slots in the `InvId::Spell` space — ports use
-/// `1 + kind index`, which tops out well below these. Slot 102 was the
-/// retired Mason's Arc stance and stays unassigned.
-const SLOT_WISP: u8 = 100;
-const SLOT_KINDLE: u8 = 101;
-const SLOT_SPHERE: u8 = 103;
-const SLOT_CAUSEWAY: u8 = 104;
+// The `InvId::Spell` id space is owned by `crate::spellbar` — the slot
+// assignments persist those ids, so one module names them for both.
+use crate::spellbar::{SLOT_CAUSEWAY, SLOT_HOME, SLOT_KINDLE, SLOT_SPHERE, SLOT_WISP};
 
 /// One port as the page lists it — everything derived from the core
 /// tables by [`all_ports`], so the roster and the rules cannot drift.
@@ -73,17 +78,18 @@ pub fn all_ports() -> Vec<Port> {
 }
 
 /// The page's own name for a port — a label, not a `voice` sentence;
-/// screens own their labels.
-fn port_label(idx: u8) -> &'static str {
+/// screens own their labels (the spell bar's tooltips borrow them, so
+/// the bar and the book agree).
+pub(crate) fn port_label(idx: u8) -> &'static str {
 	match SurfaceKind::ALL.get(idx as usize) {
-		Some(SurfaceKind::Plains) => "PLAINS WAYSTONE",
-		Some(SurfaceKind::Forest) => "FOREST WAYSTONE",
-		Some(SurfaceKind::Savanna) => "SAVANNA WAYSTONE",
-		Some(SurfaceKind::Taiga) => "TAIGA WAYSTONE",
-		Some(SurfaceKind::Beach) => "SHORE WAYSTONE",
-		Some(SurfaceKind::Mountain) => "MOUNTAIN WAYSTONE",
-		Some(SurfaceKind::Snow) => "FAR COLD WAYSTONE",
-		_ => "WAYSTONE",
+		Some(SurfaceKind::Plains) => "Plains Waystone",
+		Some(SurfaceKind::Forest) => "Forest Waystone",
+		Some(SurfaceKind::Savanna) => "Savanna Waystone",
+		Some(SurfaceKind::Taiga) => "Taiga Waystone",
+		Some(SurfaceKind::Beach) => "Shore Waystone",
+		Some(SurfaceKind::Mountain) => "Mountain Waystone",
+		Some(SurfaceKind::Snow) => "Far Cold Waystone",
+		_ => "Waystone",
 	}
 }
 
@@ -138,26 +144,13 @@ impl SpellView {
 		let teleport_ready = cooldown_secs == 0;
 		let mut castable = Vec::new();
 		let mut rows = vec![Row::Title, Row::Space];
-		rows.push(Row::Spell {
-			id: InvId::Spell(0),
-			text: "RETURN HOME".to_string(),
-			state: State::Text(if teleport_ready {
-				"READY".to_string()
-			} else {
-				format!("{cooldown_secs}s")
-			}),
-			ready: teleport_ready,
-		});
-		rows.push(Row::Info(
-			"a channelled journey back to your spawn, hold still".to_string(),
-		));
 		// The illumination family: the wisp from the first level (the
 		// ladder's essence-priced bootstrap), kindle at its rung.
 		let (wisp_essence, wisp_fare) = digblock_core::alchemy::wisp_price(level);
 		let wisp_ready = inventory.sub_count(wisp_essence) >= wisp_fare;
 		rows.push(Row::Spell {
 			id: InvId::Spell(SLOT_WISP),
-			text: "WISP".to_string(),
+			text: "Wisp".to_string(),
 			state: State::fare(wisp_essence, wisp_fare, wisp_ready),
 			ready: wisp_ready,
 		});
@@ -167,7 +160,7 @@ impl SpellView {
 			kindle_ready = inventory.sub_count(k_essence) >= k_fare;
 			rows.push(Row::Spell {
 				id: InvId::Spell(SLOT_KINDLE),
-				text: "KINDLE".to_string(),
+				text: "Kindle".to_string(),
 				state: State::fare(k_essence, k_fare, kindle_ready),
 				ready: kindle_ready,
 			});
@@ -184,7 +177,7 @@ impl SpellView {
 			]);
 			rows.push(Row::Spell {
 				id: InvId::Spell(SLOT_SPHERE),
-				text: "SPHERE".to_string(),
+				text: "Sphere".to_string(),
 				state: State::fare(s_essence, s_fare, sphere_ready),
 				ready: sphere_ready,
 			});
@@ -199,7 +192,7 @@ impl SpellView {
 			causeway_ready = standing || inventory.sub_count(c_essence) >= c_fare;
 			rows.push(Row::Spell {
 				id: InvId::Spell(SLOT_CAUSEWAY),
-				text: "CAUSEWAY".to_string(),
+				text: "Causeway".to_string(),
 				state: if standing {
 					State::Text(format!("{causeway_secs_left}s"))
 				} else {
@@ -209,6 +202,18 @@ impl SpellView {
 			});
 		}
 		rows.push(Row::Space);
+		// The teleports, the spawn's waystone first: the free recovery
+		// spell heads the roster the ports fill out.
+		rows.push(Row::Spell {
+			id: InvId::Spell(SLOT_HOME),
+			text: "Spawn Waystone".to_string(),
+			state: State::Text(if teleport_ready {
+				"Ready".to_string()
+			} else {
+				format!("{cooldown_secs}s")
+			}),
+			ready: teleport_ready,
+		});
 		// The ports: every unlocked one, plus ONE teaser tier — the
 		// alchemy screen's "what you have and one tier of what is
 		// coming".
@@ -237,16 +242,16 @@ impl SpellView {
 			} else if !teased {
 				teased = true;
 				rows.push(Row::Info(format!(
-					"next port: LV {} - {}",
+					"Next port: Lv {} - {}",
 					port.level,
-					port_label(port.idx).to_lowercase()
+					port_label(port.idx)
 				)));
 			}
 		}
 		rows.push(Row::Space);
 		// The rung teaser rides beneath the roster.
 		if let Some((lvl, what)) = next_rung(level) {
-			rows.push(Row::Info(format!("next: LV {lvl} - {what}")));
+			rows.push(Row::Info(format!("Next: Lv {lvl} - {what}")));
 		}
 		Self {
 			rows,
@@ -257,6 +262,61 @@ impl SpellView {
 			causeway_ready,
 			castable,
 		}
+	}
+
+	/// What activating a spell id does RIGHT NOW — the readiness-gated
+	/// truth the rows enforce, shared with the spell bar's hotkeys and
+	/// taps so neither surface can promise what the other would refuse.
+	pub fn action_for(&self, slot: u8) -> Option<SpellAction> {
+		match slot {
+			SLOT_HOME if self.teleport_ready => Some(SpellAction::CastHome),
+			SLOT_WISP if self.wisp_ready => Some(SpellAction::CastWisp),
+			SLOT_KINDLE if self.kindle_ready => Some(SpellAction::CastKindle),
+			SLOT_SPHERE if self.sphere_ready => Some(SpellAction::CastSphere),
+			SLOT_CAUSEWAY if self.causeway_ready => Some(SpellAction::ToggleCauseway),
+			slot => self
+				.castable
+				.iter()
+				.find(|&&(s, _)| s == slot)
+				.map(|&(_, idx)| SpellAction::CastWaystone(idx)),
+		}
+	}
+
+	/// A spell the roster does not list at this level — assigned before
+	/// the rung, or never unlockable here.
+	pub fn slot_locked(&self, slot: u8) -> bool {
+		!self
+			.rows
+			.iter()
+			.any(|row| matches!(row, Row::Spell { id: InvId::Spell(s), .. } if *s == slot))
+	}
+
+	/// One spell id as the BAR sees it: castable now, and the reason it
+	/// is not — the row's own words ("34s", a fare shortfall) or "locked"
+	/// for a spell the roster does not list at this level.
+	pub fn slot_info(&self, slot: u8) -> (bool, Option<String>) {
+		let row = self.rows.iter().find_map(|row| match row {
+			Row::Spell {
+				id: InvId::Spell(s),
+				state,
+				ready,
+				..
+			} if *s == slot => Some((state, *ready)),
+			_ => None,
+		});
+		let Some((state, ready)) = row else {
+			return (false, Some("locked".to_string()));
+		};
+		let note = match state {
+			State::Text(t) if !ready => Some(t.clone()),
+			State::Fare {
+				essence,
+				affordable: false,
+				..
+			} => Some(format!("needs {}", essence.name())),
+			_ => None,
+		};
+		(ready, note)
 	}
 }
 
@@ -269,16 +329,16 @@ pub(super) fn next_rung(level: u32) -> Option<(u32, &'static str)> {
 	[
 		(
 			unlock::SPHERE_AT,
-			"a sphere of your held block closes about you",
+			"A sphere of your held block closes about you",
 		),
-		(unlock::TELEPORT_SWIFT_AT, "home comes back sooner"),
-		(unlock::CAUSEWAY_AT, "glass takes your step over nothing"),
-		(unlock::CHANNEL_QUICK_AT, "every channel quickens"),
-		(unlock::SPHERE_WIDE_AT, "the sphere widens"),
-		(unlock::CAUSEWAY_LONG_AT, "the road runs longer"),
-		(unlock::SPHERE_VAST_AT, "the sphere widens again"),
-		(unlock::TELEPORT_SWIFTER_AT, "home comes back sooner still"),
-		(unlock::CAUSEWAY_VAST_AT, "the road runs longer still"),
+		(unlock::TELEPORT_SWIFT_AT, "Home comes back sooner"),
+		(unlock::CAUSEWAY_AT, "Glass takes your step over nothing"),
+		(unlock::CHANNEL_QUICK_AT, "Every channel quickens"),
+		(unlock::SPHERE_WIDE_AT, "The sphere widens"),
+		(unlock::CAUSEWAY_LONG_AT, "The road runs longer"),
+		(unlock::SPHERE_VAST_AT, "The sphere widens again"),
+		(unlock::TELEPORT_SWIFTER_AT, "Home comes back sooner still"),
+		(unlock::CAUSEWAY_VAST_AT, "The road runs longer still"),
 	]
 	.into_iter()
 	.find(|&(lvl, _)| lvl > level)
@@ -340,7 +400,7 @@ impl State {
 fn row_text(row: &Row) -> &str {
 	match row {
 		Row::Space => "",
-		Row::Title => "SPELLBOOK",
+		Row::Title => "Spellbook",
 		Row::Spell { text, .. } => text,
 		Row::Info(t) => t,
 	}
@@ -403,6 +463,8 @@ fn measure_rows(rows: &[Row], style: &Style) -> (f32, f32) {
 pub struct SpellScreen {
 	open: bool,
 	cursor: (f32, f32),
+	/// Row-to-bar drag; the payload is the spell id captured at press.
+	drag: crate::ui::drag::DragState<InvId, u8>,
 }
 
 impl SpellScreen {
@@ -416,21 +478,33 @@ impl SpellScreen {
 
 	pub fn close(&mut self) {
 		self.open = false;
+		self.drag.cancel();
+	}
+
+	/// Abandon an in-flight drag (focus loss — the inventory's pattern).
+	pub fn cancel_drag(&mut self) {
+		self.drag.cancel();
 	}
 
 	/// Clicks resolve against the hit map the last `build` registered —
 	/// the same frame-behind convention every screen shares. Closing
 	/// keys are the ENGINE's (they must also be consumed there); this
-	/// only answers what a pointer asked of the page.
+	/// only answers what a pointer asked of the page. A press arms the
+	/// drag; under the threshold the release is the CLICK, readiness-
+	/// gated through the same [`SpellView::action_for`] truth.
 	pub fn handle_input(
 		&mut self,
 		event: &InputEvent,
 		hits: &HitMap<InvId>,
+		style: &Style,
 		view: &SpellView,
+		bar: &crate::spellbar::SpellBar,
 	) -> Option<SpellAction> {
+		use crate::ui::drag::{DRAG_THRESHOLD_PX, DragEvent};
 		match *event {
 			InputEvent::CursorMoved { x, y } => {
 				self.cursor = (x, y);
+				self.drag.on_move((x, y), DRAG_THRESHOLD_PX * style.scale);
 				None
 			}
 			InputEvent::MouseButton {
@@ -440,23 +514,54 @@ impl SpellScreen {
 				// A fare chip belongs to its row: the separate id exists
 				// so the page can NAME the essence from the geometry that
 				// drew it, not so the price can be clicked at on its own.
-				let slot = match hits.hit(self.cursor.0, self.cursor.1)? {
-					InvId::Spell(slot) | InvId::SpellFare(slot) => slot,
-					_ => return None,
-				};
-				match slot {
-					0 if view.teleport_ready => Some(SpellAction::CastHome),
-					SLOT_WISP if view.wisp_ready => Some(SpellAction::CastWisp),
-					SLOT_KINDLE if view.kindle_ready => Some(SpellAction::CastKindle),
-					SLOT_SPHERE if view.sphere_ready => Some(SpellAction::CastSphere),
-					SLOT_CAUSEWAY if view.causeway_ready => Some(SpellAction::ToggleCauseway),
-					slot => view
-						.castable
-						.iter()
-						.find(|&&(s, _)| s == slot)
-						.map(|&(_, idx)| SpellAction::CastWaystone(idx)),
+				// Every listed row arms a drag — an unready spell may be
+				// PLACED in a slot; only casting is readiness-gated.
+				match hits.hit(self.cursor.0, self.cursor.1) {
+					Some(InvId::Spell(n) | InvId::SpellFare(n)) => {
+						self.drag.on_press(self.cursor, InvId::Spell(n), n);
+					}
+					Some(InvId::SpellBar(k)) => {
+						// An occupied slot drags its spell; an empty one
+						// arms nothing.
+						if let Some(spell) = bar.get(k as usize) {
+							self.drag.on_press(self.cursor, InvId::SpellBar(k), spell);
+						}
+					}
+					_ => {}
 				}
+				None
 			}
+			InputEvent::MouseButton {
+				button: MouseButton::Left,
+				pressed: false,
+			} => match self.drag.on_release(hits) {
+				DragEvent::Click {
+					id: InvId::Spell(n),
+				} => view.action_for(n),
+				DragEvent::Click {
+					id: InvId::SpellBar(k),
+				} => Some(SpellAction::ActivateSlot(k)),
+				DragEvent::Drop {
+					from,
+					payload,
+					to: Some(InvId::SpellBar(k)),
+				} => match from {
+					InvId::SpellBar(j) if j != k => Some(SpellAction::MoveSlot { from: j, to: k }),
+					InvId::SpellBar(_) => None,
+					_ => Some(SpellAction::AssignSlot {
+						slot: k,
+						spell: payload,
+					}),
+				},
+				// Dragged off everything: a bar slot empties; a row
+				// snaps back (it was never "held" anywhere).
+				DragEvent::Drop {
+					from: InvId::SpellBar(j),
+					to: None,
+					..
+				} => Some(SpellAction::ClearSlot { slot: j }),
+				_ => None,
+			},
 			_ => None,
 		}
 	}
@@ -470,6 +575,7 @@ impl SpellScreen {
 		size: (u32, u32),
 		view: &SpellView,
 		bar: &HotbarView,
+		spells: &crate::spellbar::SpellBarView,
 		daylight: f32,
 	) {
 		let s = ui.style.scale;
@@ -565,9 +671,9 @@ impl SpellScreen {
 							cells: &[],
 						},
 					);
-					if *ready {
-						ui.hits.push(rect, *id);
-					}
+					// Unconditionally: an unready row still DRAGS to the bar
+					// (the release gates the click through `action_for`).
+					ui.hits.push(rect, *id);
 					// After the row, so the chip wins the hit test — and
 					// whether or not the row is castable, because the name
 					// it shows is worth having either way.
@@ -579,12 +685,33 @@ impl SpellScreen {
 		}
 		// The bar is drawn after us and this page has no fit ladder, so
 		// `s` IS the window's scale — but the naming still belongs here,
-		// so every page over the bar answers a hover the same way.
+		// so every page over the bar answers a hover the same way (the
+		// spell bar's slots included).
 		if hover.is_none() {
 			hover = hud::hovered_bar_slot(size, s, bar, self.cursor);
 		}
+		if hover.is_none() {
+			hover = hud::hovered_spell_slot(size, s, spells, self.cursor);
+		}
 		if let Some((anchor, name)) = hover {
 			widgets::tooltip(ui.dl, &ui.style, size, anchor, &name);
+		}
+		// The drag ghost, above everything, centred on the finger/cursor.
+		if let Some(&spell) = self.drag.ghost() {
+			let px = hud::SPELL_ICON_PX * s;
+			let (_, tint) = crate::spellbar::spell_icon(spell);
+			hud::draw_icon(
+				ui.dl,
+				Layer::Ghost,
+				Rect::new(
+					self.drag.cursor.0 - px / 2.0,
+					self.drag.cursor.1 - px / 2.0,
+					px,
+					px,
+				),
+				hud::IconKind::Spell(spell),
+				tint,
+			);
 		}
 	}
 }

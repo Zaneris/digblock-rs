@@ -107,6 +107,13 @@ pub(crate) enum Msg {
 
 	/// A cast channel broken by moving, digging or opening a surface — the spell let go.
 	CastInterrupted,
+	/// A spell hotkey with nothing bound in that slot.
+	SpellSlotEmpty,
+	/// A teleport hotkey pressed while the shared cooldown runs (the
+	/// spellbook shows the same countdown on its rows).
+	TeleportWait(u32),
+	/// The pick's dig shape after a toggle - the indicator's words.
+	PickOrientation(digblock_core::pick::DigOrientation),
 	/// A spell beyond the caster's Arcana, and the one they tried.
 	SpellLocked(Spell),
 	/// A spell refused for its fare, before any debit.
@@ -137,10 +144,8 @@ pub(crate) enum Msg {
 	/// The siphon has just been made: every surface source fades into the
 	/// world at once.
 	SourcesRevealed,
-	/// The bench's opening invitation: the pack has just come to hold a
-	/// siphon's whole price for the first time, and no siphon.
-	SiphonInReach,
-
+	/// A Mining rung opened a whole dig family (`unlock::family_opened`).
+	NowDiggable(digblock_core::block::DigFamily),
 	// ---- the session ----
 	Connected,
 	/// The server just joined is not on the master's trusted list.
@@ -161,6 +166,25 @@ pub(crate) enum Msg {
 	},
 	Teleported,
 	ReturnedToSpawn,
+
+	// ---- the tutorial ----
+	/// One step's instruction; `touch` picks the finger wording,
+	/// `jump_button` mirrors the touch jump-mode setting (only the Jump
+	/// step's touch wording reads it: button vs. double-tap), and
+	/// `spell_slot` is the bar slot holding the wisp (only the CastWisp
+	/// step reads it, to name that slot's key).
+	TutorialStep {
+		step: crate::tutorial::StepId,
+		touch: bool,
+		jump_button: bool,
+		spell_slot: u8,
+	},
+	/// The completion line (finished or skipped alike).
+	TutorialDone,
+	/// The siphon chapter's completion line.
+	TutorialSiphonDone,
+	/// The wisp chapter's completion line.
+	TutorialWispDone,
 
 	// ---- text that arrives as text: nothing on this side knows what it says ----
 	ServerNotice {
@@ -184,7 +208,7 @@ pub(crate) enum Msg {
 /// `fn line(&Msg) -> Option<String>` beside [`en`] and an arm here that falls back to English, a
 /// partial translation being the normal state of a shipped one. English itself may never be
 /// partial: `en::line` matches exhaustively, so a new variant fails the BUILD until it has words.
-pub(crate) fn render(msg: &Msg) -> Line {
+pub(crate) fn render(msg: &Msg, binds: &crate::bindings::Bindings) -> Line {
 	match msg {
 		// The two divided lines are lifted out rather than given a second
 		// template: `en::command_hint` is the one place the row's words
@@ -193,8 +217,15 @@ pub(crate) fn render(msg: &Msg) -> Line {
 		Msg::CommandHint { usage, desc } | Msg::Admin(AdminReply::CommandHint { usage, desc }) => {
 			en::command_hint(usage, desc)
 		}
-		_ => Line::plain(en::line(msg)),
+		_ => Line::plain(en::line(msg, binds)),
 	}
+}
+
+/// The plain sentence for `msg`, for surfaces that draw one string
+/// (the tutorial panel) rather than an inked [`Line`]. `binds` is what
+/// lets a hint name the key the player actually bound.
+pub(crate) fn plain(msg: &Msg, binds: &crate::bindings::Bindings) -> String {
+	en::line(msg, binds)
 }
 
 /// One catalog row for a caller that holds the advertised pair rather

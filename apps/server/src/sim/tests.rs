@@ -1740,15 +1740,23 @@ fn a_sphere_closes_about_the_caster_as_a_derived_shell() {
 	assert_eq!(applied_edits(&c), 0, "and the unwind travelled as no edits");
 	c.msgs.clear();
 
-	// A step breaks it too, whatever the client says: the caster moved
-	// further than the server's stillness allows, and the sim unwinds
-	// on its own.
+	// A step does NOT break it: the caster may walk while the channel
+	// runs, and the climb stays anchored to the head it began at.
 	cast_sphere(&mut sim, 1, slot);
 	assert!(shell_built(&sim) > 0, "the second cast climbs");
 	let from = sim.test_player(1).unwrap().pos;
 	sim.test_teleport(1, from + glam::Vec3::new(1.5, 0.0, 0.0));
+	let before_step = shell_built(&sim);
 	sim.tick_once(vec![]);
-	assert_eq!(shell_built(&sim), 0, "a step away unwound the climb");
+	assert!(
+		shell_built(&sim) > before_step,
+		"a step away stopped the climb"
+	);
+	sim.tick_once(vec![SimEvent::Msg {
+		conn_id: 1,
+		msg: ClientMsg::CastBreak,
+	}]);
+	assert_eq!(shell_built(&sim), 0, "the break still unwinds");
 	assert!(untouched(&sim, need), "with the bill back");
 	sim.test_teleport(1, from);
 	c.drain();

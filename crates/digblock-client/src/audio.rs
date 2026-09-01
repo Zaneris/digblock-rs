@@ -43,6 +43,14 @@ pub enum Sfx {
 	TeleportIn,
 	/// The Sphere sealing over its caster — the crown cell of a climb on the channel's own loop.
 	SphereClose,
+	// The UI voice — all placeholders borrowing world samples until
+	// synthesized blips land (assets/sfx/SOURCES.md "Wanted").
+	UiClick,
+	UiOpen,
+	UiClose,
+	UiDrop,
+	UiRefuse,
+	UiChirp,
 }
 
 /// The embedded bytes for a sound — the enum↔asset pairing lives here
@@ -76,11 +84,17 @@ pub fn bytes(s: Sfx) -> &'static [u8] {
 		Sfx::TeleportOut => a::SIPHON_TAKE,
 		Sfx::TeleportIn => a::LEVEL_UNLOCK,
 		Sfx::SphereClose => a::WARD_CLOSE,
+		Sfx::UiClick => a::STEP_STONE,
+		Sfx::UiOpen => a::PLACE,
+		Sfx::UiClose => a::STEP_WOOD,
+		Sfx::UiDrop => a::PLACE,
+		Sfx::UiRefuse => a::BREAK_WOOD,
+		Sfx::UiChirp => a::SIPHON_TAKE,
 	}
 }
 
 /// Every playable [`Sfx`], for filler decode caches and tests.
-pub const ALL_SFX: [Sfx; 24] = [
+pub const ALL_SFX: [Sfx; 30] = [
 	Sfx::DigStone,
 	Sfx::DigEarth,
 	Sfx::DigWood,
@@ -105,6 +119,12 @@ pub const ALL_SFX: [Sfx; 24] = [
 	Sfx::TeleportOut,
 	Sfx::TeleportIn,
 	Sfx::SphereClose,
+	Sfx::UiClick,
+	Sfx::UiOpen,
+	Sfx::UiClose,
+	Sfx::UiDrop,
+	Sfx::UiRefuse,
+	Sfx::UiChirp,
 ];
 
 /// The fanfare a level-up speaks: the plain chime, or the bigger one
@@ -232,6 +252,163 @@ pub fn step_sfx(m: Material) -> Sfx {
 		Material::Wood => Sfx::StepWood,
 	}
 }
+
+/// One event's voice: which sample, how loud, and whether it plays from
+/// the event's world anchor or flat at the ears.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct SoundSpec {
+	pub sfx: Sfx,
+	pub gain: f32,
+	pub positional: bool,
+}
+
+/// THE table: the one place a [`GameEvent`]'s sound is decided, where the
+/// gains used to be magic numbers at nine call sites. Exhaustive on
+/// purpose — a new event fails the BUILD until it has a spec here or an
+/// explicit None. `positional` chooses whether `GameEvent::pos()` is
+/// used; an event's own flags (a teleport that lands in YOUR ears) pick
+/// the branch.
+pub fn sound_for(ev: &crate::events::GameEvent) -> Option<SoundSpec> {
+	use crate::events::GameEvent as E;
+	let spec = |sfx, gain, positional| {
+		Some(SoundSpec {
+			sfx,
+			gain,
+			positional,
+		})
+	};
+	match *ev {
+		// A filled bucket splashes; everything else ends the way its hold
+		// began, through the pair `dig_voice` owns. Water's material class
+		// is Earth (the table's total fallback), which is right for
+		// nothing it does — why the scoop is answered separately.
+		E::DigFinished {
+			block,
+			extracted,
+			scooped,
+			..
+		} => {
+			if scooped {
+				spec(Sfx::Splash, 0.5, true)
+			} else {
+				spec(
+					dig_voice(extracted, block).1,
+					if extracted { 0.9 } else { 1.0 },
+					true,
+				)
+			}
+		}
+		E::WaterScooped { .. } => spec(Sfx::Swim, 0.7, true),
+		E::Placed { poured, .. } => {
+			if poured {
+				spec(Sfx::Splash, 0.6, true)
+			} else {
+				spec(Sfx::Place, 0.9, true)
+			}
+		}
+		E::DoorToggled { .. } => spec(Sfx::Place, 0.6, true),
+		E::TeleportDeparted { .. } => spec(Sfx::TeleportOut, 0.8, true),
+		E::TeleportArrived { own, .. } => spec(Sfx::TeleportIn, 0.7, !own),
+		E::SphereSealed { own, .. } => spec(Sfx::SphereClose, 0.8, !own),
+		// Another player's dig gets the break of what fell, their place a
+		// quiet thunk. Water results and conjured cells stay silent — a
+		// sphere's worth of thunks would drown the spell that speaks for
+		// them.
+		E::RemoteEdit { block, prev, .. } => {
+			let sfx = if block == BlockType::Air {
+				prev.filter(|p| !p.is_water() && *p != BlockType::Air)
+					.map(|p| break_sfx(material_of(p)))
+			} else if !block.is_water() && !block.is_conjured() {
+				Some(Sfx::Place)
+			} else {
+				None
+			};
+			sfx.and_then(|s| spec(s, 0.5, true))
+		}
+		E::LeveledUp { unlocked } => spec(level_sfx(unlocked), LEVEL_GAIN, false),
+		// The tutorial borrows the level chimes: a step is a small win,
+		// the finish a real one.
+		E::TutorialStepDone { .. } => spec(Sfx::LevelUp, 0.5, false),
+		E::TutorialDone => spec(Sfx::LevelUnlock, LEVEL_GAIN, false),
+		// The UI voice: quiet, flat at the ears, one row per moment.
+		E::Ui(u) => {
+			use crate::events::UiEvent as U;
+			let (sfx, gain) = match u {
+				U::Click => (Sfx::UiClick, 0.3),
+				U::ScreenOpen(_) => (Sfx::UiOpen, 0.35),
+				U::ScreenClose(_) => (Sfx::UiClose, 0.3),
+				U::SlotDrop(_) => (Sfx::UiDrop, 0.3),
+				U::HotbarSelect(_) => (Sfx::UiClick, 0.25),
+				U::ChatSend => (Sfx::UiChirp, 0.3),
+				U::Craft => (Sfx::UiChirp, 0.4),
+				U::Refused => (Sfx::UiRefuse, 0.35),
+			};
+			spec(sfx, gain, false)
+		}
+	}
+}
+
+/// The blip a spoken line carries. EXHAUSTIVE over [`crate::voice::Msg`]
+/// (the `en::line` contract): a new line fails the BUILD until it
+/// decides whether it is a refusal. Called inside `push_feed_colored`,
+/// so every refusal blips without touching its ~25 call sites.
+pub(crate) fn feed_sound(msg: &crate::voice::Msg) -> Option<crate::events::UiEvent> {
+	use crate::voice::Msg as M;
+	match msg {
+		// The refusals: something the player asked for was declined.
+		M::DigRefused(_)
+		| M::DigProtected
+		| M::PlaceProtected
+		| M::NeedsSiphon
+		| M::DigRefusedByServer
+		| M::CastInterrupted
+		| M::SpellLocked(_)
+		| M::SpellFareShort(_)
+		| M::WaystoneLocked
+		| M::CastCantPay
+		| M::CastBadTarget
+		| M::SphereNoBlock
+		| M::SphereBadBlock(_)
+		| M::SphereBlocksShort(_)
+		| M::SpellSlotEmpty
+		| M::TeleportWait(_)
+		| M::ConnectRefused { .. }
+		| M::Disconnected { .. } => Some(crate::events::UiEvent::Refused),
+		// Everything else speaks through its own channel or not at all
+		// (the level chime is `LeveledUp`'s, never the feed's).
+		M::PickOrientation(_)
+		| M::LevelUp { .. }
+		| M::RemoteLevelUp { .. }
+		| M::VeinsRevealed
+		| M::SourcesRevealed
+		| M::NowDiggable(_)
+		| M::Connected
+		| M::UnrankedServer
+		| M::LeftServer
+		| M::LeftWorld
+		| M::Joined { .. }
+		| M::Left { .. }
+		| M::Teleported
+		| M::ReturnedToSpawn
+		| M::ServerNotice { .. }
+		| M::Admin(_)
+		| M::Chat { .. }
+		| M::TutorialStep { .. }
+		| M::TutorialDone
+		| M::TutorialSiphonDone
+		| M::TutorialWispDone
+		| M::CommandHint { .. } => None,
+	}
+}
+
+/// Authored gains of the loop voices, which stay at their call sites
+/// (loops are continuous state, not events) but no longer as literals.
+/// The dig hold at full voice; a field draw under it — a sustained hum at
+/// a hammer's level would wear out over a hold that outruns any dig; the
+/// cast channel's wind quietest of all.
+pub const DIG_LOOP_GAIN: f32 = 1.0;
+pub const DRAW_LOOP_GAIN: f32 = 0.85;
+pub const CAST_LOOP_GAIN: f32 = 0.45;
 
 /// Stable handle for a running loop voice.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]

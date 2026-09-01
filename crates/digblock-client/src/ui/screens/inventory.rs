@@ -109,6 +109,7 @@ impl InvScreen {
 	/// `hud::hotbar` so the dim sits under the bar's own backdrops.
 	/// `daylight` fades the full-screen dim only — the panel keeps its
 	/// fixed backdrop.
+	#[allow(clippy::too_many_arguments)]
 	pub fn build(
 		&self,
 		ui: &mut Ui<'_, InvId>,
@@ -116,6 +117,7 @@ impl InvScreen {
 		grid: &InvGrid,
 		inv: &Inventory,
 		bar_view: &HotbarView,
+		spells: &crate::spellbar::SpellBarView,
 		daylight: f32,
 	) {
 		let window_scale = ui.style.scale;
@@ -183,7 +185,7 @@ impl InvScreen {
 			title_y,
 			ui.style.glyph,
 			WHITE,
-			"INVENTORY",
+			"Inventory",
 		);
 		let icon_px = hud::ICON_PX * s;
 		for i in 0..GRID_SLOTS {
@@ -228,7 +230,8 @@ impl InvScreen {
 				.find(|(r, _)| r.contains(cx, cy))
 				.and_then(|(r, b)| b.map(|b| (r, b.name())));
 			let over_bar = || hud::hovered_bar_slot(size, window_scale, bar_view, (cx, cy));
-			if let Some((anchor, name)) = over_grid.or_else(over_bar) {
+			let over_spells = || hud::hovered_spell_slot(size, window_scale, spells, (cx, cy));
+			if let Some((anchor, name)) = over_grid.or_else(over_bar).or_else(over_spells) {
 				widgets::tooltip(ui.dl, &ui.style, size, anchor, &name);
 			}
 		}
@@ -268,12 +271,15 @@ impl InvScreen {
 						SlotView::Block { block, .. } => HotbarItem::Block(*block),
 					},
 					// Other screens' ids never appear while this screen is
-					// open.
+					// open — and the spell bar's slots, which DO stand under
+					// it as the spellbook's drop targets, hold spells this
+					// screen has no business dragging.
 					InvId::Craft(_)
 					| InvId::Family(_)
 					| InvId::CraftGo
 					| InvId::Spell(_)
 					| InvId::SpellFare(_)
+					| InvId::SpellBar(_)
 					| InvId::Board(_)
 					| InvId::BoardPrev
 					| InvId::BoardNext => {

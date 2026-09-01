@@ -639,5 +639,20 @@ pub fn opens(skill: Skill, level: u32) -> bool {
 	})
 }
 
+/// The dig family whose strength wall stands exactly at `level` — what
+/// a Mining level-up just opened, for the fanfare to name ("you can now
+/// dig wood"). Derived from the same table `opens` reads, so a retuned
+/// wall moves the words with it. The substance walls are not here: an
+/// ore's rung is announced by its reveal, never by a dig line.
+pub fn family_opened(level: u32) -> Option<crate::block::DigFamily> {
+	use crate::block::DigFamily as F;
+	if level <= 1 {
+		return None;
+	}
+	[F::Fixed, F::Soft, F::Wood, F::Rock]
+		.into_iter()
+		.find(|&f| mine_family(f) == level)
+}
+
 #[cfg(test)]
 mod tests;

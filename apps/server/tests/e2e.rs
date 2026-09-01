@@ -536,6 +536,7 @@ impl TestClient {
 				| NetEvent::AdminCommands { .. }
 				| NetEvent::AdminReply(_)
 				| NetEvent::Layout { .. }
+				| NetEvent::SpellBar { .. }
 				| NetEvent::XpGain { .. }
 				| NetEvent::LevelUp { .. }
 				| NetEvent::Waystones { .. }

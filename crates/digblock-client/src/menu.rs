@@ -6,6 +6,7 @@
 
 mod view;
 
+use crate::bindings::{Action, Bindings};
 use crate::settings::{
 	DRAW_MAX, DRAW_MIN, DRAW_STEP, GI_SCALE_DIVISORS, LIGHT_CAP_MAX, LIGHT_CAP_MIN, LIGHT_CAP_STEP,
 	Settings, UI_SCALE_MAX, UI_SCALE_MIN, UI_SCALE_STEP, VOL_MAX, VOL_STEP,
@@ -102,6 +103,8 @@ pub(crate) enum TestPage {
 	SignIn,
 	ChooseName,
 	Account,
+	Controls,
+	ControlsHotbar,
 }
 
 /// Menu → launcher requests, serviced on the launcher's thread.
@@ -272,6 +275,21 @@ enum Screen {
 	Settings {
 		sel: usize,
 	},
+	/// The rebindable-keys page (reached from Settings; the entry row is
+	/// hidden on touch, which has no keys to bind). `capture` is the row
+	/// waiting for a keypress; `status` is the last refusal/steal line.
+	Controls {
+		sel: usize,
+		capture: Option<Action>,
+		status: Option<String>,
+	},
+	/// The hotbar-slot keys, split off Controls so neither page outgrows
+	/// the window at the reference size.
+	ControlsHotbar {
+		sel: usize,
+		capture: Option<Action>,
+		status: Option<String>,
+	},
 	/// Singleplayer world list.
 	Worlds(WorldsState),
 	/// New-world name entry (keeps the list for Escape).
@@ -312,9 +330,12 @@ enum Setting {
 	Ssr,
 	/// Touch jump verb. Touch-HUD-only row: `acts()` and `view()` skip it in lockstep off-touch.
 	TouchJump,
+	/// The walkthrough toggle; flipping it ON re-arms the tutorial for
+	/// the next world entry, which IS the replay affordance.
+	Tutorial,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 enum Act {
 	CloseMenu,
 	/// Toggle browser fullscreen — the shell must call inside the activating gesture's dispatch.
@@ -338,6 +359,15 @@ enum Act {
 	OpenSettings,
 	SettingRow(Setting),
 	CloseSettings,
+	OpenControls,
+	OpenControlsHotbar,
+	/// Start a bind capture on this action's row.
+	BindRow(Action),
+	ResetBinds,
+	/// Escape from Controls back to Settings.
+	CloseControls,
+	/// Escape from the hotbar keys back to Controls.
+	CloseControlsHotbar,
 	OpenWorlds,
 	WorldRow(usize),
 	OpenCreate,
@@ -369,8 +399,12 @@ pub(crate) enum RowId {
 	RootItem(u8),
 	Server(usize),
 	Refresh,
-	/// `0..SETTINGS_ROWS.len()` are the settings in screen order; [`SETTINGS_BACK`] is Back.
+	/// `0..SETTINGS_ROWS.len()` are the settings in screen order; then
+	/// [`SETTINGS_CONTROLS`] is the Controls entry and [`SETTINGS_BACK`] is Back.
 	SettingsRow(u8),
+	/// Rows on the Controls pages, top to bottom (each page has its own
+	/// numbering; the two are never on screen together).
+	ControlsRow(u8),
 	/// One saved world in the Singleplayer list.
 	World(usize),
 	/// The "Create New World" row (list) / the name field (create).
@@ -439,6 +473,9 @@ pub(crate) struct Menu {
 	/// [`Menu::take_clipboard`] for why the engine drains it from `input`
 	/// rather than `update`.
 	wants_copy: Option<String>,
+	/// UI sounds raised this frame, drained by the engine like the
+	/// clipboard — the menu is pure and cannot reach the sink itself.
+	pending_sounds: Vec<crate::events::UiEvent>,
 	/// Live settings, edited on the Settings screen.
 	settings: Settings,
 	/// A settings value changed since the engine last drained it.
@@ -482,6 +519,7 @@ impl Menu {
 			wants_character: false,
 			wants_hiscores: false,
 			wants_copy: None,
+			pending_sounds: Vec::new(),
 			settings,
 			settings_dirty: false,
 			cursor: (-1.0, -1.0),
@@ -533,6 +571,25 @@ impl Menu {
 	/// world-name screens — exactly the ones `handle_text` feeds). Drives
 	/// the shells' soft-keyboard bridges through
 	/// `Game::text_entry_active`.
+	/// Every key belongs to the menu right now — a text field is typing,
+	/// or a bind capture is waiting. The engine's screenshot intercept
+	/// (the one gameplay key that fires with the menu open) stands down.
+	pub(crate) fn wants_all_keys(&self) -> bool {
+		self.text_field_open()
+			|| matches!(
+				self.screen,
+				Some(
+					Screen::Controls {
+						capture: Some(_),
+						..
+					} | Screen::ControlsHotbar {
+						capture: Some(_),
+						..
+					}
+				)
+			)
+	}
+
 	pub(crate) fn text_field_open(&self) -> bool {
 		matches!(
 			self.screen,
@@ -583,6 +640,14 @@ impl Menu {
 			Some(Screen::Root { .. }) => self.entered_world,
 			Some(_) => true,
 		}
+	}
+
+	/// True on the in-world root page, where the screen hotkeys reach
+	/// through to the pages the rows name. Nothing on this page types, so
+	/// a letter key can't be a keystroke the menu was owed; every deeper
+	/// page (typed names, addresses) keeps every key.
+	pub(crate) fn hotkeys_reach_through(&self) -> bool {
+		matches!(self.screen, Some(Screen::Root { .. })) && self.entered_world
 	}
 
 	/// In-game Escape: reopen at the root (no-op unless enabled).
@@ -652,6 +717,11 @@ impl Menu {
 		self.wants_copy.take()
 	}
 
+	/// The frame's UI sounds (see the field). Engine drains from `input`.
+	pub(crate) fn take_sounds(&mut self) -> Vec<crate::events::UiEvent> {
+		std::mem::take(&mut self.pending_sounds)
+	}
+
 	pub(crate) fn account(&self) -> Option<&AccountView> {
 		self.account.as_ref()
 	}
@@ -661,6 +731,16 @@ impl Menu {
 	/// signed-in account and a live services thread to arrive at — and a screen the theme tests
 	/// cannot reach is exactly the kind that has regressed unnoticed (see
 	/// `every_screen_draws_text_at_one_size`).
+	/// Jump straight to the Controls page — the capture path
+	/// (`DIG_SCREEN=controls`), which needs a real build, not a test.
+	pub(crate) fn open_controls_screen(&mut self) {
+		self.screen = Some(Screen::Controls {
+			sel: 0,
+			capture: None,
+			status: None,
+		});
+	}
+
 	#[cfg(test)]
 	pub(crate) fn test_open(&mut self, page: TestPage) {
 		self.account = Some(AccountView {
@@ -669,18 +749,30 @@ impl Menu {
 		});
 		self.screen = Some(match page {
 			TestPage::SignIn => Screen::SignIn(SignInState {
-				status: Some("sign-in timed out".into()),
+				status: Some("Sign-in timed out".into()),
 				then_multiplayer: true,
 			}),
 			TestPage::ChooseName => Screen::ChooseName(NameState {
 				name: "Miner42".into(),
-				checked: Some(("Miner42".into(), false, Some("that name is taken".into()))),
+				checked: Some(("Miner42".into(), false, Some("That name is taken".into()))),
 				checking: None,
 				status: None,
 				claiming: false,
 				rename: true,
 			}),
 			TestPage::Account => Screen::Account { sel: 0 },
+			// Mid-capture with a status line: "Press a key..." and the
+			// steal message are exactly the texts the sweeps should see.
+			TestPage::Controls => Screen::Controls {
+				sel: 2,
+				capture: Some(Action::CastSpell1),
+				status: Some("Taken from Fly".into()),
+			},
+			TestPage::ControlsHotbar => Screen::ControlsHotbar {
+				sel: 0,
+				capture: None,
+				status: None,
+			},
 		});
 	}
 
@@ -802,7 +894,7 @@ impl Menu {
 								.collect();
 							b.status = None;
 						}
-						Err(e) => b.status = Some(format!("server list failed: {e}")),
+						Err(e) => b.status = Some(format!("Server list failed: {e}")),
 					}
 					b.fetching = false;
 					b.sel = 0;
@@ -819,7 +911,7 @@ impl Menu {
 						Some(i) => self.activate(Act::JoinRow(i)),
 						None => {
 							if let Some(Screen::Browser(b)) = &mut self.screen {
-								b.status = Some("auto-join: no matching server".into());
+								b.status = Some("Auto-join: no matching server".into());
 							}
 						}
 					}
@@ -917,6 +1009,16 @@ impl Menu {
 				button: MouseButton::Left,
 				pressed: true,
 			} => {
+				// A click during a bind capture cancels it rather than
+				// activating whatever row it lands on.
+				if let Some(
+					Screen::Controls { capture, .. } | Screen::ControlsHotbar { capture, .. },
+				) = &mut self.screen
+					&& capture.is_some()
+				{
+					*capture = None;
+					return;
+				}
 				if let Some(i) = self.act_index_at(self.cursor.0, self.cursor.1, size, scale) {
 					let act = self.acts()[i].1;
 					// A click inside a slider's bar sets the value from the
@@ -928,6 +1030,10 @@ impl Menu {
 						self.set_setting_frac(s, frac);
 						return;
 					}
+					// At the CALLERS of `activate`, not inside it — it
+					// recurses (OpenMultiplayer -> StartSignIn) and a
+					// chain is one gesture, one click.
+					self.pending_sounds.push(crate::events::UiEvent::Click);
 					self.activate(act);
 				}
 			}
@@ -952,6 +1058,8 @@ impl Menu {
 			Some(Screen::Root { sel }) => *sel,
 			Some(Screen::Browser(b)) => b.sel,
 			Some(Screen::Settings { sel }) => *sel,
+			Some(Screen::Controls { sel, .. }) => *sel,
+			Some(Screen::ControlsHotbar { sel, .. }) => *sel,
 			Some(Screen::Worlds(w)) => w.sel,
 			Some(Screen::WorldActions { sel, .. }) => *sel,
 			Some(Screen::ConfirmDelete { sel, .. }) => *sel,
@@ -965,6 +1073,8 @@ impl Menu {
 			Some(Screen::Root { sel: s }) => *s = sel,
 			Some(Screen::Browser(b)) => b.sel = sel,
 			Some(Screen::Settings { sel: s }) => *s = sel,
+			Some(Screen::Controls { sel: s, .. }) => *s = sel,
+			Some(Screen::ControlsHotbar { sel: s, .. }) => *s = sel,
 			Some(Screen::Worlds(w)) => w.sel = sel,
 			Some(Screen::WorldActions { sel: s, .. }) => *s = sel,
 			Some(Screen::ConfirmDelete { sel: s, .. }) => *s = sel,
@@ -974,12 +1084,40 @@ impl Menu {
 	}
 
 	fn handle_key(&mut self, key: Key) {
+		// A bind capture owns the next keypress whole — the same bypass
+		// the text-entry screens use. Escape cancels; a door key is
+		// refused with words; anything else binds, naming a steal victim.
+		if let Some(
+			Screen::Controls {
+				capture, status, ..
+			}
+			| Screen::ControlsHotbar {
+				capture, status, ..
+			},
+		) = &mut self.screen
+			&& let Some(a) = *capture
+		{
+			match key {
+				Key::Escape => *capture = None,
+				k if !Bindings::bindable(k) => {
+					*status = Some("That key cannot be bound".into());
+				}
+				k => {
+					*capture = None;
+					let victim = self.settings.bindings.bind(a, k);
+					self.settings_dirty = true;
+					*status = victim.map(|v| format!("Taken from {}", v.label()));
+				}
+			}
+			return;
+		}
 		let sel_max = self.acts().len().saturating_sub(1);
 		match key {
 			Key::Up => self.set_sel(self.current_sel().saturating_sub(1)),
 			Key::Down => self.set_sel((self.current_sel() + 1).min(sel_max)),
 			Key::Enter => {
 				if let Some(&(_, act)) = self.acts().get(self.current_sel()) {
+					self.pending_sounds.push(crate::events::UiEvent::Click);
 					self.activate(act);
 				}
 			}
@@ -1013,6 +1151,16 @@ impl Menu {
 					self.cancel_connect();
 				}
 				Some(Screen::Settings { .. }) => self.screen = Some(Screen::Root { sel: 0 }),
+				// A capture-active Escape never reaches here — the intercept
+				// above ate it as "cancel the capture".
+				Some(Screen::Controls { .. }) => self.screen = Some(Screen::Settings { sel: 0 }),
+				Some(Screen::ControlsHotbar { .. }) => {
+					self.screen = Some(Screen::Controls {
+						sel: 0,
+						capture: None,
+						status: None,
+					});
+				}
 				Some(Screen::Worlds(_)) => self.screen = Some(Screen::Root { sel: 0 }),
 				Some(Screen::CreateWorld { prev, .. })
 				| Some(Screen::WorldActions { prev, .. })
@@ -1088,6 +1236,10 @@ impl Menu {
 				st.touch_jump_button = !st.touch_jump_button;
 				true
 			}
+			Setting::Tutorial => {
+				st.show_tutorial = !st.show_tutorial;
+				true
+			}
 		};
 		self.settings_dirty |= changed;
 	}
@@ -1135,7 +1287,7 @@ impl Menu {
 				(std::mem::replace(&mut st.sfx_vol, v) - v).abs() > f32::EPSILON
 			}
 			// Not sliders; a bar click can't reach them.
-			Setting::Ssr | Setting::TouchJump => false,
+			Setting::Ssr | Setting::TouchJump | Setting::Tutorial => false,
 		};
 		self.settings_dirty |= changed;
 	}
@@ -1208,7 +1360,7 @@ impl Menu {
 		// Dropping the pending client closes any in-flight transport.
 		self.wants_disconnect = true;
 		if let Some(Screen::Connecting { mut prev, .. }) = self.screen.take() {
-			prev.status = Some("join cancelled".into());
+			prev.status = Some("Join cancelled".into());
 			self.screen = Some(Screen::Browser(prev));
 		}
 	}
@@ -1340,6 +1492,58 @@ impl Menu {
 			}
 			Act::ToggleFullscreen => self.wants_fullscreen = true,
 			Act::OpenSettings => self.screen = Some(Screen::Settings { sel: 0 }),
+			Act::OpenControls => {
+				self.screen = Some(Screen::Controls {
+					sel: 0,
+					capture: None,
+					status: None,
+				});
+			}
+			Act::OpenControlsHotbar => {
+				self.screen = Some(Screen::ControlsHotbar {
+					sel: 0,
+					capture: None,
+					status: None,
+				});
+			}
+			Act::BindRow(a) => {
+				if let Some(
+					Screen::Controls {
+						capture, status, ..
+					}
+					| Screen::ControlsHotbar {
+						capture, status, ..
+					},
+				) = &mut self.screen
+				{
+					*capture = Some(a);
+					*status = None;
+				}
+			}
+			Act::ResetBinds => {
+				self.settings.bindings = Bindings::default();
+				self.settings_dirty = true;
+				if let Some(
+					Screen::Controls {
+						capture, status, ..
+					}
+					| Screen::ControlsHotbar {
+						capture, status, ..
+					},
+				) = &mut self.screen
+				{
+					*capture = None;
+					*status = Some("Defaults restored".into());
+				}
+			}
+			Act::CloseControls => self.screen = Some(Screen::Settings { sel: 0 }),
+			Act::CloseControlsHotbar => {
+				self.screen = Some(Screen::Controls {
+					sel: 0,
+					capture: None,
+					status: None,
+				});
+			}
 			Act::CloseSettings => self.screen = Some(Screen::Root { sel: 0 }),
 			Act::OpenWorlds => {
 				self.pending_worlds.push(WorldIntent::Refresh);
@@ -1376,7 +1580,7 @@ impl Menu {
 					self.pending_worlds.push(WorldIntent::Create { name });
 					// The engine enters the new world synchronously (menu
 					// closes via on_world_entered) or reports a status.
-					prev.status = Some("creating world...".into());
+					prev.status = Some("Creating world...".into());
 					self.screen = Some(Screen::Worlds(prev));
 				}
 			}
@@ -1385,7 +1589,7 @@ impl Menu {
 					if let Some(row) = prev.rows.get(idx) {
 						self.pending_worlds
 							.push(WorldIntent::Enter { id: row.id.clone() });
-						prev.status = Some(format!("loading {}...", row.name));
+						prev.status = Some(format!("Loading {}...", row.name));
 					}
 					self.screen = Some(Screen::Worlds(prev));
 				}
@@ -1415,7 +1619,7 @@ impl Menu {
 			Act::SettingRow(s) => {
 				// Enter/click on the toggle row flips it; sliders react to
 				// Left/Right and bar clicks instead.
-				if s == Setting::Ssr {
+				if s == Setting::Ssr || s == Setting::Tutorial {
 					self.adjust_setting(s, 1);
 				}
 			}
@@ -1457,6 +1661,27 @@ impl Menu {
 	}
 
 	// ---- layout / view ----------------------------------------------------
+
+	/// The row on the CURRENT menu screen that opens `kind`, or None
+	/// when no such row is on it (a submenu, the title, a kind the menu
+	/// has no row for). The tutorial's menu-phase pulse asks this, so
+	/// the guidance rides the same acts table the taps run and can
+	/// never name a wrong row.
+	pub(crate) fn screen_row(&self, kind: crate::events::ScreenKind) -> Option<RowId> {
+		use crate::events::ScreenKind as K;
+		let want = match kind {
+			K::Spellbook => Act::OpenSpellbook,
+			K::Inventory => Act::OpenInventory,
+			K::Alchemy => Act::OpenAlchemy,
+			K::Character => Act::OpenCharacter,
+			K::Hiscores => Act::OpenHiscores,
+			K::Menu | K::Chat => return None,
+		};
+		self.acts()
+			.into_iter()
+			.find(|&(_, a)| a == want)
+			.map(|(id, _)| id)
+	}
 
 	/// Ordered selectable actions for the current screen; the selection
 	/// index and hit-testing both index into this.
@@ -1525,7 +1750,32 @@ impl Menu {
 					}
 					acts.push((RowId::SettingsRow(i as u8), Act::SettingRow(*s)));
 				}
+				// Skipped in lockstep with `view()`: a touch device has no
+				// keys to rebind, so the Controls page has no door there.
+				if !self.touch {
+					acts.push((RowId::SettingsRow(SETTINGS_CONTROLS), Act::OpenControls));
+				}
 				acts.push((RowId::SettingsRow(SETTINGS_BACK), Act::CloseSettings));
+			}
+			Some(Screen::Controls { .. }) => {
+				for (i, a) in CONTROLS_MAIN.iter().enumerate() {
+					acts.push((RowId::ControlsRow(i as u8), Act::BindRow(*a)));
+				}
+				acts.push((
+					RowId::ControlsRow(CONTROLS_HOTBAR_ROW),
+					Act::OpenControlsHotbar,
+				));
+				acts.push((RowId::ControlsRow(CONTROLS_RESET), Act::ResetBinds));
+				acts.push((RowId::ControlsRow(CONTROLS_BACK), Act::CloseControls));
+			}
+			Some(Screen::ControlsHotbar { .. }) => {
+				for (i, a) in CONTROLS_HOTBAR.iter().enumerate() {
+					acts.push((RowId::ControlsRow(i as u8), Act::BindRow(*a)));
+				}
+				acts.push((
+					RowId::ControlsRow(CONTROLS_HOTBAR_BACK),
+					Act::CloseControlsHotbar,
+				));
 			}
 			Some(Screen::Worlds(w)) => {
 				for i in 0..w.rows.len() {
@@ -1579,10 +1829,52 @@ const C_YELLOW: u32 = 0xFF30D0F0;
 const C_RED: u32 = 0xFF4040F0;
 
 /// Settings-screen row order (indices match `RowId::SettingsRow`).
-/// Row index of the Settings screen's Back row: always one past the
-/// adjustable rows. Derived, never a literal — adding a setting used to
-/// mean remembering to bump it in two places or Back stopped clicking.
-const SETTINGS_BACK: u8 = SETTINGS_ROWS.len() as u8;
+/// Row indices past the adjustable rows: the Controls entry, then Back.
+/// Derived, never literals — adding a setting used to mean remembering
+/// to bump them in two places or Back stopped clicking.
+const SETTINGS_CONTROLS: u8 = SETTINGS_ROWS.len() as u8;
+const SETTINGS_BACK: u8 = SETTINGS_CONTROLS + 1;
+
+/// The Controls page's bind rows, in screen order — `Action::ALL` minus
+/// the hotbar slots, which live on their own sub-page so neither page
+/// outgrows the window at the reference size. Same positional
+/// discipline as `SETTINGS_ROWS`.
+const CONTROLS_MAIN: [Action; 17] = [
+	Action::MoveForward,
+	Action::MoveBack,
+	Action::MoveLeft,
+	Action::MoveRight,
+	Action::Jump,
+	Action::Sneak,
+	Action::Fly,
+	Action::OpenInventory,
+	Action::OpenAlchemy,
+	Action::OpenCharacter,
+	Action::OpenHiscores,
+	Action::OpenSpellbook,
+	Action::CastSpell1,
+	Action::CastSpell2,
+	Action::CastSpell3,
+	Action::ToolToggle,
+	Action::Screenshot,
+];
+const CONTROLS_HOTBAR_ROW: u8 = CONTROLS_MAIN.len() as u8;
+const CONTROLS_RESET: u8 = CONTROLS_HOTBAR_ROW + 1;
+const CONTROLS_BACK: u8 = CONTROLS_RESET + 1;
+
+/// The hotbar sub-page's bind rows.
+const CONTROLS_HOTBAR: [Action; 9] = [
+	Action::HotbarSlot1,
+	Action::HotbarSlot2,
+	Action::HotbarSlot3,
+	Action::HotbarSlot4,
+	Action::HotbarSlot5,
+	Action::HotbarSlot6,
+	Action::HotbarSlot7,
+	Action::HotbarSlot8,
+	Action::HotbarSlot9,
+];
+const CONTROLS_HOTBAR_BACK: u8 = CONTROLS_HOTBAR.len() as u8;
 
 /// The Account screen's actions, in screen order. Same positional
 /// discipline as `SETTINGS_ROWS`: `acts()` walks this and `view()` must
@@ -1596,7 +1888,7 @@ const ACCOUNT_BACK: u8 = ACCOUNT_ROWS.len() as u8;
 // says why). Re-exposing it means a row here, a match arm in
 // `adjust_setting` and `set_setting_frac`, a `RowSpec` below, and
 // renumbering every row after it — the indices are positional.
-const SETTINGS_ROWS: [Setting; 8] = [
+const SETTINGS_ROWS: [Setting; 9] = [
 	Setting::DrawDist,
 	// Lighting detail sits next to draw distance: both trade picture for
 	// frame time, and a player hunting fps should find them together
@@ -1609,6 +1901,7 @@ const SETTINGS_ROWS: [Setting; 8] = [
 	Setting::SfxVol,
 	Setting::Ssr,
 	Setting::TouchJump,
+	Setting::Tutorial,
 ];
 
 /// The slider bar's rect within a placed row — the framework's
@@ -1638,8 +1931,8 @@ fn snap_vol(v: f32, dir: i32) -> f32 {
 fn compat_label(c: Compat) -> Option<&'static str> {
 	match c {
 		Compat::Joinable => None,
-		Compat::PeerOlder => Some("server too old"),
-		Compat::PeerNewer => Some("client too old"),
+		Compat::PeerOlder => Some("Server too old"),
+		Compat::PeerNewer => Some("Client too old"),
 	}
 }
 

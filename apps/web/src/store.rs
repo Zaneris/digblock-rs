@@ -58,6 +58,9 @@ struct StateFile {
 	grid: Vec<u16>,
 	/// Per-skill XP totals; empty in pre-skills saves (level 1).
 	skills: Vec<(u8, u64)>,
+	/// Spell-bar bytes; empty in saves from before the bar existed.
+	#[serde(default)]
+	spells: Vec<u8>,
 	player: Option<([f32; 3], f32, f32)>,
 }
 
@@ -448,6 +451,7 @@ impl WorldStore for LocalStorageWorldStore {
 			hotbar: state.hotbar,
 			grid: state.grid,
 			skills: state.skills,
+			spells: state.spells,
 			player: state
 				.player
 				.map(|(pos, yaw, pitch)| PlayerPersist { pos, yaw, pitch }),
@@ -468,6 +472,7 @@ impl WorldStore for LocalStorageWorldStore {
 		hotbar: &[u16],
 		grid: &[u16],
 		skills: &[(u8, u64)],
+		spells: &[u8],
 		player: &PlayerPersist,
 	) {
 		if let Some(active) = &mut self.active {
@@ -477,6 +482,7 @@ impl WorldStore for LocalStorageWorldStore {
 				hotbar: hotbar.to_vec(),
 				grid: grid.to_vec(),
 				skills: skills.to_vec(),
+				spells: spells.to_vec(),
 				player: Some((player.pos, player.yaw, player.pitch)),
 			});
 		}

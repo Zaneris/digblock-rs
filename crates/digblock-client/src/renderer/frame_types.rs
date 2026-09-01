@@ -199,6 +199,8 @@ pub(crate) struct FrameScene<'a> {
 	/// by the engine — the flakes themselves are a pure function of these
 	/// in the shader.
 	pub confetti: &'a [crate::confetti::BurstInstance],
+	/// Live generic bursts (debris/splash/sparkle/poof), same contract.
+	pub bursts: &'a [crate::bursts::BurstInstance],
 	/// The essence draw under the crosshair, if the siphon is working a
 	/// vein. At most one — a player holds one button — and the engine
 	/// owns its envelope, so this outlives the hold by the fade.
@@ -210,9 +212,10 @@ pub(crate) struct FrameScene<'a> {
 	pub markers: &'a [crate::waystone_fx::MarkerInstance],
 	pub overlay: Option<(&'a OverlayStats, &'a [f32])>,
 	pub feed: &'a [(crate::voice::Msg, f32, u32)],
-	/// Crosshair target for the highlight decal — cell, the shape's own
-	/// box within it, and dig progress (`None` = idle outline).
-	pub target: Option<crate::highlight::HighlightTarget>,
+	/// This frame's highlight targets — the aimed cell first (its own box
+	/// and dig progress), then every extra the pick's swing would take as
+	/// full-cube outlines. Empty = nothing under the crosshair.
+	pub targets: &'a [crate::highlight::HighlightTarget],
 	/// The item in the player's own hand, or `None` (empty slot, a
 	/// screen open, the menu up) to skip the viewmodel pass entirely.
 	pub viewmodel: Option<crate::viewmodel::ViewmodelFrame>,
@@ -222,6 +225,10 @@ pub(crate) struct FrameScene<'a> {
 	pub chat: Option<crate::chat::ChatView<'a>>,
 	/// Remote-player name tags, already projected to screen pixels.
 	pub nametags: &'a [NameTag],
+	/// The live key bindings — feed messages render at draw time (so a
+	/// language change re-words standing lines), and a hint line must name
+	/// the key the player actually bound.
+	pub binds: &'a crate::bindings::Bindings,
 }
 
 /// One name tag: screen-space anchor (pixels, tag centered on `x`),

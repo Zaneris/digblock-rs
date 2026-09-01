@@ -35,7 +35,14 @@ impl Menu {
 		let col_gap = 2.0 * glyph;
 		let text_w = |s: &str| crate::font::ui().measure(s, glyph);
 		let (w, h) = (size.0 as f32, size.1 as f32);
-		let y0 = (h * 0.18).max(8.0);
+		// The Controls page carries the most rows of any screen and starts
+		// near the top so its Back row stays on an 800-tall reference
+		// window; everything else keeps the composed 18% drop.
+		let y0 = if matches!(&self.screen, Some(Screen::Controls { .. })) {
+			(h * 0.06).max(8.0)
+		} else {
+			(h * 0.18).max(8.0)
+		};
 		let mut y = y0;
 		// Two passes: rows are collected with their y first, then placed
 		// once the widest row has set the panel width.
@@ -67,34 +74,34 @@ impl Menu {
 						&mut y,
 						RowSpec::item(RowId::RootItem(0), "Back to Game"),
 					);
+					// Key chips read the live table, so a rebound page key
+					// renames its chip the moment the binding lands.
+					use crate::bindings::Action as A;
+					let chip = |a| self.settings.bindings.label(a);
 					push(
 						&mut specs,
 						&mut y,
-						RowSpec::item_hint(RowId::RootItem(3), "Spellbook", "J"),
+						RowSpec::item_hint(RowId::RootItem(3), "Spellbook", chip(A::OpenSpellbook)),
 					);
 					push(
 						&mut specs,
 						&mut y,
-						RowSpec::item_hint(RowId::RootItem(6), "Inventory", "I"),
+						RowSpec::item_hint(RowId::RootItem(6), "Inventory", chip(A::OpenInventory)),
 					);
 					push(
 						&mut specs,
 						&mut y,
-						RowSpec::item_hint(
-							RowId::RootItem(7),
-							"Alchemy",
-							crate::engine::ALCHEMY_KEY.label(),
-						),
+						RowSpec::item_hint(RowId::RootItem(7), "Alchemy", chip(A::OpenAlchemy)),
 					);
 					push(
 						&mut specs,
 						&mut y,
-						RowSpec::item_hint(RowId::RootItem(9), "Character", "C"),
+						RowSpec::item_hint(RowId::RootItem(9), "Character", chip(A::OpenCharacter)),
 					);
 					push(
 						&mut specs,
 						&mut y,
-						RowSpec::item_hint(RowId::RootItem(12), "Hiscores", "H"),
+						RowSpec::item_hint(RowId::RootItem(12), "Hiscores", chip(A::OpenHiscores)),
 					);
 					if self.connected {
 						push(
@@ -133,7 +140,7 @@ impl Menu {
 							&mut y,
 							match &self.account {
 								None => {
-									RowSpec::item_hint(RowId::RootItem(1), "Multiplayer", "sign in")
+									RowSpec::item_hint(RowId::RootItem(1), "Multiplayer", "Sign in")
 								}
 								Some(_) => RowSpec::item(RowId::RootItem(1), "Multiplayer"),
 							},
@@ -145,7 +152,7 @@ impl Menu {
 								RowSpec::item_hint(
 									RowId::RootItem(10),
 									"Account",
-									a.name.as_deref().unwrap_or("no name yet"),
+									a.name.as_deref().unwrap_or("No name yet"),
 								),
 							);
 						}
@@ -183,14 +190,14 @@ impl Menu {
 					&mut specs,
 					&mut y,
 					if self.entered_world {
-						"arrows + enter, esc: back to game"
+						"Arrows + Enter, Esc: back to game"
 					} else {
-						"arrows + enter"
+						"Arrows + Enter"
 					},
 				);
 			}
 			Some(Screen::Settings { .. }) => {
-				push(&mut specs, &mut y, RowSpec::title("SETTINGS"));
+				push(&mut specs, &mut y, RowSpec::title("Settings"));
 				y += row_h * 0.5;
 				let st = &self.settings;
 				push(
@@ -293,13 +300,33 @@ impl Menu {
 						),
 					);
 				}
+				push(
+					&mut specs,
+					&mut y,
+					RowSpec::item(
+						RowId::SettingsRow(8),
+						if st.show_tutorial {
+							"Tutorial: On"
+						} else {
+							"Tutorial: Off"
+						},
+					),
+				);
 				y += row_h * 0.5;
+				// Skipped in lockstep with `acts()`: no keys to rebind on touch.
+				if !self.touch {
+					push(
+						&mut specs,
+						&mut y,
+						RowSpec::item(RowId::SettingsRow(SETTINGS_CONTROLS), "Controls..."),
+					);
+				}
 				push(
 					&mut specs,
 					&mut y,
 					RowSpec::item(RowId::SettingsRow(SETTINGS_BACK), "Back"),
 				);
-				hint(&mut specs, &mut y, "left/right or click adjusts, esc: back");
+				hint(&mut specs, &mut y, "Left/right or click adjusts, Esc: back");
 				y += row_h * 0.5;
 				push(
 					&mut specs,
@@ -313,22 +340,113 @@ impl Menu {
 					},
 				);
 			}
+			Some(Screen::Controls {
+				capture, status, ..
+			}) => {
+				push(&mut specs, &mut y, RowSpec::title("Controls"));
+				y += row_h * 0.25;
+				let binds = &self.settings.bindings;
+				let right = |a: Action| {
+					if *capture == Some(a) {
+						"Press a key..."
+					} else {
+						binds.label(a)
+					}
+				};
+				// Row indices are POSITIONAL — they must match CONTROLS_MAIN,
+				// which is what `acts()` walks (the SETTINGS_ROWS discipline).
+				for (i, a) in CONTROLS_MAIN.iter().enumerate() {
+					// Breathing room between movement, screens, and the rest.
+					if i == 7 || i == 12 {
+						y += row_h * 0.25;
+					}
+					push(
+						&mut specs,
+						&mut y,
+						RowSpec::item_hint(RowId::ControlsRow(i as u8), a.label(), right(*a)),
+					);
+					// The chat door, listed greyed at the end of the screen
+					// group: it is Enter and never moves (Escape's rule), but
+					// a page about keys that omitted it would read as a hole.
+					if *a == Action::OpenSpellbook {
+						push(
+							&mut specs,
+							&mut y,
+							RowSpec {
+								right: Some(("Enter".into(), C_DIM)),
+								..RowSpec::dim("Chat")
+							},
+						);
+					}
+				}
+				y += row_h * 0.25;
+				push(
+					&mut specs,
+					&mut y,
+					RowSpec::item(RowId::ControlsRow(CONTROLS_HOTBAR_ROW), "Hotbar Keys..."),
+				);
+				push(
+					&mut specs,
+					&mut y,
+					RowSpec::item(RowId::ControlsRow(CONTROLS_RESET), "Reset to Defaults"),
+				);
+				push(
+					&mut specs,
+					&mut y,
+					RowSpec::item(RowId::ControlsRow(CONTROLS_BACK), "Back"),
+				);
+				if let Some(s) = status {
+					push(&mut specs, &mut y, RowSpec::status(s.clone()));
+				}
+				hint(&mut specs, &mut y, "Enter or click rebinds, Esc: back");
+			}
+			Some(Screen::ControlsHotbar {
+				capture, status, ..
+			}) => {
+				push(&mut specs, &mut y, RowSpec::title("Hotbar Keys"));
+				y += row_h * 0.5;
+				let binds = &self.settings.bindings;
+				let right = |a: Action| {
+					if *capture == Some(a) {
+						"Press a key..."
+					} else {
+						binds.label(a)
+					}
+				};
+				for (i, a) in CONTROLS_HOTBAR.iter().enumerate() {
+					push(
+						&mut specs,
+						&mut y,
+						RowSpec::item_hint(RowId::ControlsRow(i as u8), a.label(), right(*a)),
+					);
+				}
+				y += row_h * 0.5;
+				push(
+					&mut specs,
+					&mut y,
+					RowSpec::item(RowId::ControlsRow(CONTROLS_HOTBAR_BACK), "Back"),
+				);
+				if let Some(s) = status {
+					push(&mut specs, &mut y, RowSpec::status(s.clone()));
+				}
+				hint(&mut specs, &mut y, "Enter or click rebinds, Esc: back");
+			}
 			Some(Screen::Browser(b)) => {
-				push(&mut specs, &mut y, RowSpec::title("MULTIPLAYER"));
+				push(&mut specs, &mut y, RowSpec::title("Multiplayer"));
 				// Static, not a field: the name belongs to the account now,
 				// so this says who you are rather than asking.
 				if let Some(name) = self.account.as_ref().and_then(|a| a.name.as_deref()) {
 					push(
 						&mut specs,
 						&mut y,
-						RowSpec::dim(format!("playing as {name}")),
+						RowSpec::dim(format!("Playing as {name}")),
 					);
 				}
 				y += row_h * 0.25;
 				if b.fetching && b.rows.is_empty() {
-					push(&mut specs, &mut y, RowSpec::dim("fetching server list..."));
+					push(&mut specs, &mut y, RowSpec::dim("Fetching server list..."));
 				} else if b.rows.is_empty() {
-					push(&mut specs, &mut y, RowSpec::dim("no servers online"));
+					push(&mut specs, &mut y, RowSpec::dim("No servers online"));
 				}
 				// Four columns — name, players, ranked, ping. The count is right-aligned within
 				// its column so the figures stay in step as they climb; the mark stands at one
@@ -409,19 +527,19 @@ impl Menu {
 					push(&mut specs, &mut y, RowSpec::status(status.clone()));
 				}
 				y += row_h * 0.25;
-				hint(&mut specs, &mut y, "type your name, enter joins, esc: back");
+				hint(&mut specs, &mut y, "Type your name, Enter joins, Esc: back");
 			}
 			Some(Screen::Connecting { label, .. }) => {
-				push(&mut specs, &mut y, RowSpec::title("MULTIPLAYER"));
+				push(&mut specs, &mut y, RowSpec::title("Multiplayer"));
 				y += row_h * 0.5;
 				push(&mut specs, &mut y, RowSpec::dim(label.clone()));
-				hint(&mut specs, &mut y, "esc: cancel");
+				hint(&mut specs, &mut y, "Esc: cancel");
 			}
 			Some(Screen::Worlds(w)) => {
-				push(&mut specs, &mut y, RowSpec::title("SINGLEPLAYER"));
+				push(&mut specs, &mut y, RowSpec::title("Singleplayer"));
 				y += row_h * 0.5;
 				if w.rows.is_empty() {
-					push(&mut specs, &mut y, RowSpec::dim("no worlds yet"));
+					push(&mut specs, &mut y, RowSpec::dim("No worlds yet"));
 				}
 				for (i, row) in w.rows.iter().enumerate() {
 					push(
@@ -449,26 +567,26 @@ impl Menu {
 					push(&mut specs, &mut y, RowSpec::status(status.clone()));
 				}
 				y += row_h * 0.25;
-				hint(&mut specs, &mut y, "enter opens, esc: back");
+				hint(&mut specs, &mut y, "Enter opens, Esc: back");
 			}
 			Some(Screen::CreateWorld { name, .. }) => {
-				push(&mut specs, &mut y, RowSpec::title("NEW WORLD"));
+				push(&mut specs, &mut y, RowSpec::title("New World"));
 				y += row_h * 0.5;
 				push(
 					&mut specs,
 					&mut y,
-					RowSpec::field(Some(RowId::CreateWorld), format!("name: {name}"), blink),
+					RowSpec::field(Some(RowId::CreateWorld), format!("Name: {name}"), blink),
 				);
 				y += row_h * 0.25;
-				hint(&mut specs, &mut y, "type a name, enter creates, esc: back");
+				hint(&mut specs, &mut y, "Type a name, Enter creates, Esc: back");
 			}
 			Some(Screen::SignIn(s)) => {
-				push(&mut specs, &mut y, RowSpec::title("SIGN IN"));
+				push(&mut specs, &mut y, RowSpec::title("Sign In"));
 				y += row_h * 0.5;
 				push(
 					&mut specs,
 					&mut y,
-					RowSpec::dim("finish signing in in your browser"),
+					RowSpec::dim("Finish signing in in your browser"),
 				);
 				push(
 					&mut specs,
@@ -494,16 +612,16 @@ impl Menu {
 					&mut specs,
 					&mut y,
 					RowSpec::title(if n.rename {
-						"CHANGE NAME"
+						"Change Name"
 					} else {
-						"CHOOSE A NAME"
+						"Choose a Name"
 					}),
 				);
 				y += row_h * 0.5;
 				push(
 					&mut specs,
 					&mut y,
-					RowSpec::field(Some(RowId::NameField), format!("name: {}", n.name), blink),
+					RowSpec::field(Some(RowId::NameField), format!("Name: {}", n.name), blink),
 				);
 				// The availability line, and only for the text on screen:
 				// a reply that arrives two keystrokes late must not label
@@ -521,13 +639,13 @@ impl Menu {
 						&mut y,
 						RowSpec {
 							color: C_GREEN,
-							..RowSpec::dim("available")
+							..RowSpec::dim("Available")
 						},
 					),
 					(None, Some((_, false, reason))) => push(
 						&mut specs,
 						&mut y,
-						RowSpec::status(reason.clone().unwrap_or_else(|| "taken".into())),
+						RowSpec::status(reason.clone().unwrap_or_else(|| "Taken".into())),
 					),
 					(None, None) => push(&mut specs, &mut y, RowSpec::dim(" ")),
 				}
@@ -536,7 +654,7 @@ impl Menu {
 					&mut specs,
 					&mut y,
 					RowSpec::dim(if n.claiming {
-						"claiming...".to_string()
+						"Claiming...".to_string()
 					} else {
 						// The rule, from the function that enforces it, and then the
 						// key — separately, because only the second half is a keyboard
@@ -554,7 +672,7 @@ impl Menu {
 				);
 			}
 			Some(Screen::Account { .. }) => {
-				push(&mut specs, &mut y, RowSpec::title("ACCOUNT"));
+				push(&mut specs, &mut y, RowSpec::title("Account"));
 				y += row_h * 0.5;
 				let (name, id) = match &self.account {
 					Some(a) => (
@@ -566,7 +684,7 @@ impl Menu {
 				push(
 					&mut specs,
 					&mut y,
-					RowSpec::dim(format!("signed in as {name}")),
+					RowSpec::dim(format!("Signed in as {name}")),
 				);
 				// The id is the thing an operator needs in order to put you
 				// in DIGBLOCK_ADMIN_IDS, so it is on screen in full rather
@@ -613,7 +731,7 @@ impl Menu {
 					push(
 						&mut specs,
 						&mut y,
-						RowSpec::dim("from an old version - can't be entered"),
+						RowSpec::dim("From an old version - can't be entered"),
 					);
 				}
 				push(
@@ -629,7 +747,7 @@ impl Menu {
 			}
 			Some(Screen::ConfirmDelete { prev, idx, .. }) => {
 				let name = prev.rows.get(*idx).map_or("?", |r| r.name.as_str());
-				push(&mut specs, &mut y, RowSpec::title("DELETE WORLD"));
+				push(&mut specs, &mut y, RowSpec::title("Delete World"));
 				y += row_h * 0.5;
 				push(
 					&mut specs,

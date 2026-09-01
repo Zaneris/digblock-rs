@@ -43,7 +43,14 @@ fn rig_at(level: u32, stock: impl Fn(&mut Inventory)) -> Rig {
 		hits: &mut hits,
 		style,
 	};
-	screen.build(&mut ui, SIZE, &view, &empty_bar(), 1.0);
+	screen.build(
+		&mut ui,
+		SIZE,
+		&view,
+		&empty_bar(),
+		&crate::spellbar::SpellBarView::empty(),
+		1.0,
+	);
 	Rig {
 		screen,
 		hits,
@@ -63,7 +70,14 @@ fn rebuild(r: &mut Rig) {
 		hits: &mut hits,
 		style: r.style,
 	};
-	r.screen.build(&mut ui, SIZE, &r.view, &empty_bar(), 1.0);
+	r.screen.build(
+		&mut ui,
+		SIZE,
+		&r.view,
+		&empty_bar(),
+		&crate::spellbar::SpellBarView::empty(),
+		1.0,
+	);
 	r.hits = hits;
 }
 
@@ -81,7 +95,14 @@ fn text_of(r: &Rig) -> String {
 		hits: &mut hits,
 		style: r.style,
 	};
-	r.screen.build(&mut ui, SIZE, &r.view, &empty_bar(), 1.0);
+	r.screen.build(
+		&mut ui,
+		SIZE,
+		&r.view,
+		&empty_bar(),
+		&crate::spellbar::SpellBarView::empty(),
+		1.0,
+	);
 	let (cmds, arena) = dl.cmds(Layer::Content);
 	cmds.iter()
 		.filter_map(|c| match c {
@@ -105,7 +126,14 @@ fn texts_on(r: &Rig, layer: Layer) -> Vec<(f32, f32, f32, u32, String)> {
 		hits: &mut hits,
 		style: r.style,
 	};
-	r.screen.build(&mut ui, SIZE, &r.view, &empty_bar(), 1.0);
+	r.screen.build(
+		&mut ui,
+		SIZE,
+		&r.view,
+		&empty_bar(),
+		&crate::spellbar::SpellBarView::empty(),
+		1.0,
+	);
 	let (cmds, arena) = dl.cmds(layer);
 	cmds.iter()
 		.filter_map(|c| match c {
@@ -256,7 +284,7 @@ fn a_transmute_batch_drips_instead_of_paying_at_once() {
 	assert_eq!(r.screen.tick(pace * 1.1, &r.view), None);
 	assert_eq!(r.screen.crafting, None, "a queue nobody can pay for ends");
 	rebuild(&mut r);
-	assert!(text_of(&r).contains("CLICK 1"), "the legend is back");
+	assert!(text_of(&r).contains("Click 1"), "the legend is back");
 
 	// The world-exit arm clears outright.
 	r.screen.debug_batch(B::WoodSlab, 3, 0.5);
@@ -447,7 +475,7 @@ fn the_vessels_craft_from_feedstock_alone() {
 	assert!(
 		!texts
 			.iter()
-			.any(|(_, _, _, _, t)| t.contains(&B::Wood.name().to_uppercase())),
+			.any(|(_, _, _, _, t)| t.contains(&B::Wood.name())),
 		"a price is chips, not words"
 	);
 	let mut dl = DrawList::default();
@@ -461,6 +489,7 @@ fn the_vessels_craft_from_feedstock_alone() {
 		SIZE,
 		&r.view,
 		&empty_bar(),
+		&crate::spellbar::SpellBarView::empty(),
 		1.0,
 	);
 	assert!(
@@ -532,6 +561,7 @@ fn the_strip_never_drops_a_price() {
 						size,
 						&view,
 						&empty_bar(),
+						&crate::spellbar::SpellBarView::empty(),
 						1.0,
 					);
 					let at = format!("{item:?} at {size:?}/{scale}");
@@ -719,7 +749,14 @@ fn panel_sits_above_the_hotbar_and_fits_short_windows() {
 			hits: &mut hits,
 			style: Style::new(scale),
 		};
-		screen.build(&mut ui, size, &view, &empty_bar(), 1.0);
+		screen.build(
+			&mut ui,
+			size,
+			&view,
+			&empty_bar(),
+			&crate::spellbar::SpellBarView::empty(),
+			1.0,
+		);
 		let bar_top = hud::row_grid(size, scale).origin.1;
 		let panel = panel_of(&dl);
 		assert!(panel.y >= 0.0, "panel top on screen at {size:?}/{scale}");
@@ -762,7 +799,14 @@ fn the_essence_readout_never_spills_out_of_its_panel() {
 			hits: &mut hits,
 			style: Style::new(scale),
 		};
-		screen.build(&mut ui, size, &view, &empty_bar(), 1.0);
+		screen.build(
+			&mut ui,
+			size,
+			&view,
+			&empty_bar(),
+			&crate::spellbar::SpellBarView::empty(),
+			1.0,
+		);
 		let panel = panel_of(&dl);
 		// The readout is the run of essence chips: each icon, and the
 		// number sharing its row top. Measured at the command's OWN face
@@ -1099,6 +1143,7 @@ fn every_tile_and_chip_names_itself_on_hover() {
 			SIZE,
 			&r.view,
 			&empty_bar(),
+			&crate::spellbar::SpellBarView::empty(),
 			1.0,
 		);
 		(ghost_texts(&dl), dl)
@@ -1112,7 +1157,7 @@ fn every_tile_and_chip_names_itself_on_hover() {
 		};
 		let at = center(rect);
 		feed(&mut r, &InputEvent::CursorMoved { x: at.0, y: at.1 });
-		assert_eq!(frame(&r).0, vec![fam.name.to_uppercase()], "family {i}");
+		assert_eq!(frame(&r).0, vec![fam.name.to_string()], "family {i}");
 		named += 1;
 		press(&mut r, at);
 		rebuild(&mut r);
@@ -1122,7 +1167,7 @@ fn every_tile_and_chip_names_itself_on_hover() {
 			};
 			let at = center(rect);
 			feed(&mut r, &InputEvent::CursorMoved { x: at.0, y: at.1 });
-			assert_eq!(frame(&r).0, vec![item.name().to_uppercase()], "{item:?}");
+			assert_eq!(frame(&r).0, vec![item.name().to_string()], "{item:?}");
 			named += 1;
 		}
 	}
@@ -1147,7 +1192,7 @@ fn every_tile_and_chip_names_itself_on_hover() {
 	for (rect, e) in chips {
 		let at = center(rect);
 		feed(&mut r, &InputEvent::CursorMoved { x: at.0, y: at.1 });
-		assert_eq!(frame(&r).0, vec![e.name().to_uppercase()], "{e:?} chip");
+		assert_eq!(frame(&r).0, vec![e.name().to_string()], "{e:?} chip");
 		named += 1;
 	}
 	assert!(
@@ -1211,4 +1256,34 @@ fn the_modifier_keys_queue_the_batch_the_legend_names() {
 			"the legend never mentions {count}: {text}"
 		);
 	}
+}
+
+/// The tutorial guide walks family tile, member tile, TRANSMUTE — and
+/// goes quiet the moment a job is on the bench: the button reads Cancel
+/// then, and the pulse must not invite cancelling the craft it just
+/// asked for. It comes back the moment the bench is idle again.
+#[test]
+fn the_guide_goes_quiet_while_the_bench_works() {
+	let item = B::EssenceSiphon;
+	let mut s = AlchScreen::default();
+	assert_eq!(s.guide_to(item), None, "closed page: no guide");
+	let fi = families()
+		.iter()
+		.position(|f| f.members.contains(&item))
+		.expect("the siphon has a family");
+	let mi = families()[fi]
+		.members
+		.iter()
+		.position(|&m| m == item)
+		.expect("the siphon is a member");
+	s.open();
+	assert_eq!(s.guide_to(item), Some(InvId::Family(fi as u8)));
+	s.force_pick(Some(fi), mi);
+	assert_eq!(s.guide_to(item), Some(InvId::CraftGo));
+	// The press landed: a job on the bench silences the guide.
+	s.debug_batch(item, 1, 0.5);
+	assert_eq!(s.guide_to(item), None, "Cancel must not pulse");
+	// The job ends (picks kept, the mid-batch reopen convention).
+	s.crafting = None;
+	assert_eq!(s.guide_to(item), Some(InvId::CraftGo));
 }

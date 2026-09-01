@@ -944,11 +944,21 @@ pub mod tex {
 	pub const ESSENCE_AETHER: u16 = 56;
 	/// The Causeway's conjured plank.
 	pub const WARDGLASS: u16 = 57;
+	/// The spell glyphs — the spell bar's sprites, worn by no block row,
+	/// riding this array for the essence chips' reason. [`SPELL_PORT`] is
+	/// authored near-white and tinted per biome at draw time, so seven
+	/// ports share one texture.
+	pub const SPELL_WISP: u16 = 58;
+	pub const SPELL_KINDLE: u16 = 59;
+	pub const SPELL_SPHERE: u16 = 60;
+	pub const SPELL_CAUSEWAY: u16 = 61;
+	pub const SPELL_HOME: u16 = 62;
+	pub const SPELL_PORT: u16 = 63;
 
 	/// Layers in the array, i.e. `digblock_assets::tex::LAYERS.len()`.
 	/// Pinned against it by `every_block_texture_layer_is_uploaded` in
 	/// digblock-client, the one crate that can see both.
-	pub const COUNT: u16 = WARDGLASS + 1;
+	pub const COUNT: u16 = SPELL_PORT + 1;
 }
 
 impl BlockType {

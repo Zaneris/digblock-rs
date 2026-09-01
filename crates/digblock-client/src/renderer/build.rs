@@ -424,6 +424,13 @@ impl Renderer {
 				gi.cam_light_buf(),
 				gi.gather_bgl(),
 			),
+			bursts: crate::bursts::Bursts::new(
+				gpu,
+				surface_format,
+				&frame_bgl,
+				gi.cam_light_buf(),
+				gi.gather_bgl(),
+			),
 			siphon: crate::siphon::Siphon::new(gpu, surface_format, &frame_bgl),
 			teleport: crate::teleport::Teleport::new(gpu, surface_format, &frame_bgl),
 			waystone_fx: crate::waystone_fx::WaystoneFx::new(gpu, surface_format, &frame_bgl),

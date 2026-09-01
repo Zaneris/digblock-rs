@@ -308,6 +308,9 @@ pub(crate) struct Renderer {
 	/// Level-up confetti bursts, fed per-frame by the engine (the bursts
 	/// themselves are world state and live there).
 	confetti: crate::confetti::Confetti,
+	/// The generic burst rack (debris/splash/sparkle/poof), fed the same
+	/// way — engine-owned instances, aged in `step`.
+	bursts: crate::bursts::Bursts,
 	/// The Essence Siphon's draw — motes off a vein's face, streaming into
 	/// the tool. Fed per-frame by the engine, which owns the envelope.
 	siphon: crate::siphon::Siphon,

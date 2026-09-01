@@ -99,7 +99,14 @@ mod tests {
 			let build =
 				|alch: &super::alchemy::AlchScreen, dl: &mut DrawList, hits: &mut HitMap<InvId>| {
 					hits.clear();
-					alch.build(&mut Ui { dl, hits, style }, size, &view, &bar, 1.0);
+					alch.build(
+						&mut Ui { dl, hits, style },
+						size,
+						&view,
+						&bar,
+						&crate::spellbar::SpellBarView::empty(),
+						1.0,
+					);
 				};
 			build(&alch, &mut dl, &mut hits);
 			if hover {
@@ -140,7 +147,15 @@ mod tests {
 			             dl: &mut DrawList,
 			             hits: &mut HitMap<InvId>| {
 				hits.clear();
-				screen.build(&mut Ui { dl, hits, style }, size, &grid, &inv, &bar, 1.0);
+				screen.build(
+					&mut Ui { dl, hits, style },
+					size,
+					&grid,
+					&inv,
+					&bar,
+					&crate::spellbar::SpellBarView::empty(),
+					1.0,
+				);
 			};
 			build(&screen, &mut dl, &mut hits);
 			if let Some(id) = hover {
@@ -186,6 +201,11 @@ mod tests {
 			("menu-signin", crate::menu::TestPage::SignIn),
 			("menu-name", crate::menu::TestPage::ChooseName),
 			("menu-account", crate::menu::TestPage::Account),
+			("menu-controls", crate::menu::TestPage::Controls),
+			(
+				"menu-controls-hotbar",
+				crate::menu::TestPage::ControlsHotbar,
+			),
 		] {
 			let mut dl = DrawList::default();
 			let mut menu = crate::menu::Menu::new(true, Default::default(), None, None);
@@ -218,6 +238,7 @@ mod tests {
 				&super::character::sample_ranks(&skills),
 			),
 			&bar,
+			&crate::spellbar::SpellBarView::empty(),
 			1.0,
 		);
 		out.push(("character", dl));
@@ -239,6 +260,7 @@ mod tests {
 			size,
 			&super::hiscores::HiscoresView::build(&board, true),
 			&bar,
+			&crate::spellbar::SpellBarView::empty(),
 			1.0,
 		);
 		out.push(("hiscores", dl));
@@ -257,7 +279,14 @@ mod tests {
 			             dl: &mut DrawList,
 			             hits: &mut HitMap<InvId>| {
 				hits.clear();
-				screen.build(&mut Ui { dl, hits, style }, size, &view, &bar, 1.0);
+				screen.build(
+					&mut Ui { dl, hits, style },
+					size,
+					&view,
+					&bar,
+					&crate::spellbar::SpellBarView::empty(),
+					1.0,
+				);
 			};
 			build(&screen, &mut dl, &mut hits);
 			if hover {
@@ -271,12 +300,66 @@ mod tests {
 						y: r.y + r.h / 2.0,
 					},
 					&hits,
+					&style,
 					&view,
+					&crate::spellbar::SpellBar::default(),
 				);
 				dl = DrawList::default();
 				build(&screen, &mut dl, &mut hits);
 			}
 			out.push((name, dl));
+		}
+
+		// The spellbook over a POPULATED spell bar, cursor parked on the
+		// first slot: the slot tooltip is text no other fixture draws.
+		{
+			let mut spell_bar = crate::spellbar::SpellBar::default();
+			spell_bar.assign(0, crate::spellbar::SLOT_WISP);
+			spell_bar.assign(1, crate::spellbar::SLOT_HOME);
+			let spells = crate::spellbar::SpellBarView::build(
+				&spell_bar,
+				&view,
+				9,
+				crate::ui::hud::SafeArea::default(),
+			);
+			let mut screen = super::spellbook::SpellScreen::default();
+			screen.open();
+			let slot0 = crate::ui::hud::spell_grid(size, s, &spells.insets).rect(0);
+			screen.handle_input(
+				&digblock_platform::InputEvent::CursorMoved {
+					x: slot0.x + slot0.w / 2.0,
+					y: slot0.y + slot0.h / 2.0,
+				},
+				&HitMap::default(),
+				&style,
+				&view,
+				&spell_bar,
+			);
+			let mut dl = DrawList::default();
+			let mut hits: HitMap<InvId> = HitMap::default();
+			screen.build(
+				&mut Ui {
+					dl: &mut dl,
+					hits: &mut hits,
+					style,
+				},
+				size,
+				&view,
+				&bar,
+				&spells,
+				1.0,
+			);
+			crate::ui::hud::spell_bar(
+				&mut Ui {
+					dl: &mut dl,
+					hits: &mut hits,
+					style,
+				},
+				size,
+				&spells,
+				|i| InvId::SpellBar(i as u8),
+			);
+			out.push(("spellbook-slots", dl));
 		}
 
 		out
@@ -303,6 +386,7 @@ mod tests {
 		use crate::DebugScreen as D;
 		match d {
 			D::Menu => Some("menu"),
+			D::Controls => Some("menu-controls"),
 			D::Inventory => Some("inventory"),
 			D::InventoryHover => Some("inventory-hover"),
 			D::Alchemy => Some("alchemy"),
@@ -312,6 +396,7 @@ mod tests {
 			D::Transmute | D::Transmuting => Some("alchemy-transmuting"),
 			D::Spellbook => Some("spellbook"),
 			D::SpellbookHover => Some("spellbook-hover"),
+			D::SpellSlots => Some("spellbook-slots"),
 			// Held-item states, not pages: nothing draws a panel.
 			D::Hand | D::Bucket { .. } | D::Tool(_) | D::Torch => None,
 		}
@@ -327,29 +412,34 @@ mod tests {
 			let names = ghost_names(&dl);
 			match name {
 				"inventory-hover" => {
-					assert_eq!(names, vec![BAR_ITEM.name().to_uppercase()]);
+					assert_eq!(names, vec![BAR_ITEM.name()]);
 					checked += 1;
 				}
 				"inventory-grid-hover" => {
-					assert_eq!(names, vec![B::Wood.name().to_uppercase()]);
+					assert_eq!(names, vec![B::Wood.name()]);
 					checked += 1;
 				}
 				"alchemy-hover" => {
-					assert_eq!(
-						names,
-						vec![super::alchemy::families()[0].name.to_uppercase()]
-					);
+					assert_eq!(names, vec![super::alchemy::families()[0].name]);
 					checked += 1;
 				}
 				"spellbook-hover" => {
 					let (_, essence) = spell_view(&stocked()).fares()[0];
-					assert_eq!(names, vec![essence.name().to_uppercase()]);
+					assert_eq!(names, vec![essence.name()]);
+					checked += 1;
+				}
+				"spellbook-slots" => {
+					// The parked slot holds the wisp; its tooltip is the name.
+					assert_eq!(
+						names,
+						vec![crate::spellbar::spell_name(crate::spellbar::SLOT_WISP).to_string()]
+					);
 					checked += 1;
 				}
 				_ => assert!(names.is_empty(), "{name} names something unhovered"),
 			}
 		}
-		assert_eq!(checked, 4);
+		assert_eq!(checked, 5);
 	}
 
 	/// Every page drawn OVER the hotbar names the slot under the pointer, all five of them. The
@@ -397,7 +487,17 @@ mod tests {
 		screen.handle_input(&moved, &HitMap::default(), &style, &grid, &bar);
 		named.push((
 			"inventory",
-			frame(&mut |ui| screen.build(ui, size, &grid, &inv, &bar, 1.0)),
+			frame(&mut |ui| {
+				screen.build(
+					ui,
+					size,
+					&grid,
+					&inv,
+					&bar,
+					&crate::spellbar::SpellBarView::empty(),
+					1.0,
+				)
+			}),
 		));
 
 		let mut screen = super::alchemy::AlchScreen::default();
@@ -406,7 +506,16 @@ mod tests {
 		screen.handle_input(&moved, &HitMap::default(), &view);
 		named.push((
 			"alchemy",
-			frame(&mut |ui| screen.build(ui, size, &view, &bar, 1.0)),
+			frame(&mut |ui| {
+				screen.build(
+					ui,
+					size,
+					&view,
+					&bar,
+					&crate::spellbar::SpellBarView::empty(),
+					1.0,
+				)
+			}),
 		));
 
 		let mut screen = super::character::CharScreen::default();
@@ -416,7 +525,16 @@ mod tests {
 			super::character::CharView::build(&skills, digblock_core::skills::DEPTH_XP_TO, &[]);
 		named.push((
 			"character",
-			frame(&mut |ui| screen.build(ui, size, &view, &bar, 1.0)),
+			frame(&mut |ui| {
+				screen.build(
+					ui,
+					size,
+					&view,
+					&bar,
+					&crate::spellbar::SpellBarView::empty(),
+					1.0,
+				)
+			}),
 		));
 
 		let mut screen = super::hiscores::HiscoresScreen::default();
@@ -427,23 +545,47 @@ mod tests {
 		let view = super::hiscores::HiscoresView::build(&board, true);
 		named.push((
 			"hiscores",
-			frame(&mut |ui| screen.build(ui, size, &view, &bar, 1.0)),
+			frame(&mut |ui| {
+				screen.build(
+					ui,
+					size,
+					&view,
+					&bar,
+					&crate::spellbar::SpellBarView::empty(),
+					1.0,
+				)
+			}),
 		));
 
 		let mut screen = super::spellbook::SpellScreen::default();
 		screen.open();
 		let view = spell_view(&inv);
-		screen.handle_input(&moved, &HitMap::default(), &view);
+		screen.handle_input(
+			&moved,
+			&HitMap::default(),
+			&style,
+			&view,
+			&crate::spellbar::SpellBar::default(),
+		);
 		named.push((
 			"spellbook",
-			frame(&mut |ui| screen.build(ui, size, &view, &bar, 1.0)),
+			frame(&mut |ui| {
+				screen.build(
+					ui,
+					size,
+					&view,
+					&bar,
+					&crate::spellbar::SpellBarView::empty(),
+					1.0,
+				)
+			}),
 		));
 
 		assert_eq!(named.len(), 5, "every page over the bar is listed");
 		for (page, names) in named {
 			assert_eq!(
 				names,
-				vec![BAR_ITEM.name().to_uppercase()],
+				vec![BAR_ITEM.name()],
 				"{page} does not name the bar slot under the cursor"
 			);
 		}

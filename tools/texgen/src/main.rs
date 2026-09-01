@@ -195,6 +195,16 @@ fn main() {
 		let (core, rim) = e.palette();
 		save_rgba(name, essence_flake(core, rim));
 	}
+	// The spell glyphs — the spell bar's sprites, one per castable shape
+	// plus the two waystone marks (the port one authored near-white as a
+	// tint canvas, coloured per biome at draw time). Rng-free and saved
+	// last, the essence-chip rule.
+	save_rgba("SpellWisp.png", spell_wisp());
+	save_rgba("SpellKindle.png", spell_kindle());
+	save_rgba("SpellSphere.png", spell_sphere());
+	save_rgba("SpellCauseway.png", spell_causeway());
+	save_rgba("SpellHome.png", monolith([150, 150, 158]));
+	save_rgba("SpellPort.png", monolith([236, 239, 244]));
 }
 
 /// A running-bond course: `h`-tall rows offset by half a brick each
@@ -718,6 +728,195 @@ fn load(name: &str) -> RgbImage {
 		"{name} must be 64x64"
 	);
 	img
+}
+
+/// The wisp's glyph: a warm mote — a hot core inside a soft glow, with
+/// four axis rays in a diamond. Transparent field with the glow's RGB
+/// (the essence flake's mip rule). Rng-free.
+fn spell_wisp() -> RgbaImage {
+	let mut out = RgbaImage::new(SIZE, SIZE);
+	let c = SIZE as f32 / 2.0;
+	let warm = [255.0, 208.0, 122.0];
+	let hot = [255.0, 246.0, 216.0];
+	for (x, y, p) in out.enumerate_pixels_mut() {
+		let (dx, dy) = (x as f32 + 0.5 - c, y as f32 + 0.5 - c);
+		let d = (dx * dx + dy * dy).sqrt();
+		let core = (1.0 - d / (c * 0.40)).clamp(0.0, 1.0);
+		// The rays hug an axis and taper toward the rim.
+		let hug = (1.0 - dx.abs().min(dy.abs()) / 2.2).clamp(0.0, 1.0);
+		let ray = hug * (1.0 - d / (c * 0.94)).clamp(0.0, 1.0).powi(2);
+		let a = (core + ray * 0.85).min(1.0);
+		let rgb: Vec<u8> = warm
+			.iter()
+			.zip(hot.iter())
+			.map(|(&w, &h)| clamp8(w + (h - w) * core))
+			.collect();
+		p.0 = [rgb[0], rgb[1], rgb[2], (a * 255.0).round() as u8];
+	}
+	out
+}
+
+/// The kindle's glyph: a standing flame teardrop — orange body, bright
+/// axis, widest below the middle and drawn to a tip. Rng-free.
+fn spell_kindle() -> RgbaImage {
+	let mut out = RgbaImage::new(SIZE, SIZE);
+	let s = SIZE as f32;
+	let c = s / 2.0;
+	// A droplet: a circle with the two tangent lines drawn up to a tip —
+	// rounded base, concave flanks, a fine point.
+	let tip = s * 0.06;
+	let depth = s * 0.56; // tip to circle centre
+	let r = s * 0.27;
+	let cy = tip + depth;
+	let wedge = r / (depth * depth - r * r).sqrt();
+	let body = [255.0, 138.0, 42.0];
+	let bright = [255.0, 228.0, 148.0];
+	for (x, y, p) in out.enumerate_pixels_mut() {
+		let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
+		let dx = (fx - c).abs();
+		let dc = (dx * dx + (fy - cy) * (fy - cy)).sqrt();
+		let circle = (r - dc + 0.5).clamp(0.0, 1.0);
+		let w_line = (fy - tip) * wedge;
+		let in_wedge = if fy > tip && fy < cy {
+			(w_line - dx + 0.5).clamp(0.0, 1.0)
+		} else {
+			0.0
+		};
+		let a = circle.max(in_wedge);
+		// Bright along the axis, body colour at the edge.
+		let w_here = if fy < cy { w_line.max(0.5) } else { r };
+		let axis = (1.0 - dx / w_here).clamp(0.0, 1.0);
+		let rgb: Vec<u8> = body
+			.iter()
+			.zip(bright.iter())
+			.map(|(&b, &h)| clamp8(b + (h - b) * axis.powf(1.6)))
+			.collect();
+		p.0 = [rgb[0], rgb[1], rgb[2], (a * 255.0).round() as u8];
+	}
+	out
+}
+
+/// The sphere's glyph: a hollow shell — a cool ring with a cutaway gap
+/// at the upper right and a faint interior, so it reads as a shell
+/// rather than a disc. Rng-free.
+fn spell_sphere() -> RgbaImage {
+	let mut out = RgbaImage::new(SIZE, SIZE);
+	let c = SIZE as f32 / 2.0;
+	let ring_r = c * 0.72;
+	let thick = c * 0.16;
+	let shell = [168.0, 186.0, 214.0];
+	let rim = [224.0, 236.0, 252.0];
+	for (x, y, p) in out.enumerate_pixels_mut() {
+		let (dx, dy) = (x as f32 + 0.5 - c, y as f32 + 0.5 - c);
+		let d = (dx * dx + dy * dy).sqrt();
+		// The cutaway: a slice of the ring is simply not there.
+		let ang = dy.atan2(dx);
+		let gap = (-1.35..=-0.35).contains(&ang);
+		let on_ring = (thick - (d - ring_r).abs() + 0.5).clamp(0.0, 1.0);
+		let interior = if d < ring_r - thick { 0.12 } else { 0.0 };
+		let a = if gap { interior } else { on_ring.max(interior) };
+		// Lit from the upper left, the flake's convention.
+		let facing = if d > 0.0 {
+			(-0.6 * dx - 0.8 * dy) / d
+		} else {
+			0.0
+		};
+		let lit = (facing * 0.5 + 0.5).clamp(0.0, 1.0);
+		let rgb: Vec<u8> = shell
+			.iter()
+			.zip(rim.iter())
+			.map(|(&s, &r)| clamp8(s + (r - s) * lit))
+			.collect();
+		p.0 = [rgb[0], rgb[1], rgb[2], (a * 255.0).round() as u8];
+	}
+	out
+}
+
+/// The causeway's glyph: three pale glass planks receding up and to the
+/// right — the road, three steps of it. Wardglass palette. Rng-free.
+fn spell_causeway() -> RgbaImage {
+	let mut out = RgbaImage::new(SIZE, SIZE);
+	let s = SIZE as f32;
+	// (centre x, centre y, half width) per plank, front to back.
+	let planks = [
+		(s * 0.32, s * 0.74, s * 0.26),
+		(s * 0.50, s * 0.50, s * 0.21),
+		(s * 0.66, s * 0.28, s * 0.16),
+	];
+	let half_h = s * 0.055;
+	for (x, y, p) in out.enumerate_pixels_mut() {
+		let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
+		let mut a: f32 = 0.0;
+		let mut top = 0.0;
+		for (i, &(cx, cy, hw)) in planks.iter().enumerate() {
+			let inside_x = (hw - (fx - cx).abs() + 0.5).clamp(0.0, 1.0);
+			let inside_y = (half_h - (fy - cy).abs() + 0.5).clamp(0.0, 1.0);
+			let hit = inside_x * inside_y;
+			if hit > a {
+				a = hit;
+				// The nearer planks are the brighter ones.
+				top = 1.0 - i as f32 * 0.18;
+			}
+		}
+		let body = [214.0 * top, 226.0 * top, 240.0 * top];
+		p.0 = [
+			clamp8(body[0]),
+			clamp8(body[1]),
+			clamp8(body[2]),
+			(a * 0.86 * 255.0).round() as u8,
+		];
+	}
+	out
+}
+
+/// A waystone monolith: a tapered standing stone with a rounded cap and
+/// an incised spiral mark — the arrival pad's sign. `body` is the stone
+/// colour; the port glyph is authored near-white and tinted per biome at
+/// draw time, so seven ports share one texture. Rng-free.
+fn monolith(body: [u8; 3]) -> RgbaImage {
+	let mut out = RgbaImage::new(SIZE, SIZE);
+	let s = SIZE as f32;
+	let c = s / 2.0;
+	let (top, bottom) = (s * 0.10, s * 0.94);
+	let (mark_x, mark_y, mark_r) = (c, s * 0.40, s * 0.135);
+	for (x, y, p) in out.enumerate_pixels_mut() {
+		let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
+		let t = ((fy - top) / (bottom - top)).clamp(0.0, 1.0);
+		// Tapered flanks; the cap rounds off over the top tenth.
+		let hw = c * (0.24 + 0.13 * t);
+		let cap = ((fy - top) / (s * 0.10)).clamp(0.0, 1.0);
+		let hw = hw * cap.sqrt();
+		let dx = (fx - c).abs();
+		let inside = (hw - dx + 0.5).clamp(0.0, 1.0);
+		let tall = if fy < top {
+			0.0
+		} else {
+			(bottom - fy + 0.5).clamp(0.0, 1.0)
+		};
+		let a = inside * tall;
+		// The incised spiral: an Archimedean curve unwound two turns
+		// around the mark's centre, darkening the stone where it passes.
+		let (mx, my) = (fx - mark_x, fy - mark_y);
+		let md = (mx * mx + my * my).sqrt();
+		let mut groove: f32 = 0.0;
+		if md < mark_r + 1.0 {
+			let ang = my.atan2(mx);
+			for turn in 0..2 {
+				let theta = ang + std::f32::consts::TAU * turn as f32;
+				let r_here =
+					mark_r * (theta + std::f32::consts::TAU) / (std::f32::consts::TAU * 3.0);
+				groove = groove.max((0.9 - (md - r_here).abs()).clamp(0.0, 1.0));
+			}
+		}
+		// A light catch down the left flank keeps it from reading flat.
+		let flank = ((c - fx) / hw.max(1.0)).clamp(0.0, 1.0) * 0.18;
+		let rgb: Vec<u8> = body
+			.iter()
+			.map(|&b| clamp8(f32::from(b) * (1.0 + flank) * (1.0 - groove * 0.38)))
+			.collect();
+		p.0 = [rgb[0], rgb[1], rgb[2], (a * 255.0).round() as u8];
+	}
+	out
 }
 
 fn save(name: &str, img: RgbImage) {

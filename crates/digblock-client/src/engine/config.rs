@@ -8,6 +8,8 @@ use super::*;
 pub enum DebugScreen {
 	/// The startup menu; needs `menu: true` too, which the launcher forces on captures.
 	Menu,
+	/// The menu's Controls (key rebinding) page; same `menu: true` need.
+	Controls,
 	Inventory,
 	Alchemy,
 	/// The same two pages, cursor parked on a NAMED thing: a tooltip is otherwise uncapturable.
@@ -35,6 +37,9 @@ pub enum DebugScreen {
 	Spellbook,
 	/// The same page with the cursor on its first FARE chip — the only named thing on it.
 	SpellbookHover,
+	/// The spellbook over a POPULATED spell bar, cursor on the first
+	/// slot: icons, drop targets, and a slot tooltip all photograph.
+	SpellSlots,
 }
 
 impl DebugScreen {
@@ -45,6 +50,7 @@ impl DebugScreen {
 	pub fn parse(s: &str) -> Option<Self> {
 		match s.trim().to_ascii_lowercase().as_str() {
 			"menu" => Some(Self::Menu),
+			"controls" => Some(Self::Controls),
 			"inventory" | "inv" => Some(Self::Inventory),
 			"alchemy" | "alch" => Some(Self::Alchemy),
 			"inventory-hover" => Some(Self::InventoryHover),
@@ -62,6 +68,7 @@ impl DebugScreen {
 			"transmuting" => Some(Self::Transmuting),
 			"spellbook" => Some(Self::Spellbook),
 			"spellbook-hover" => Some(Self::SpellbookHover),
+			"spell-slots" => Some(Self::SpellSlots),
 			_ => None,
 		}
 	}
@@ -222,6 +229,20 @@ pub struct EngineConfig {
 	/// `debug_screen` makes for the input-only screens. Set by the
 	/// desktop launcher from DIG_CONFETTI.
 	pub debug_confetti: bool,
+	/// DIG_BURSTS: the generic burst rack, one of each kind, on repeat.
+	pub debug_bursts: bool,
+	/// DIG_ORBIT: a slow cinematic orbit of the aim point,
+	/// `(radius, deg/s)`.
+	pub debug_orbit: Option<(f32, f32)>,
+	/// DIG_DOLLY: a tracking dolly past the aim point, `(secs, blocks)`.
+	pub debug_dolly: Option<(f32, f32)>,
+	/// The persisted `Settings::show_tutorial` (launchers mirror it in).
+	pub show_tutorial: bool,
+	/// The persisted `Settings::bindings` (launchers mirror it in; capture
+	/// paths keep the defaults, exactly like every other settings field).
+	pub bindings: crate::bindings::Bindings,
+	/// DIG_TUTORIAL: force the walkthrough on, off, or to one step.
+	pub debug_tutorial: Option<crate::tutorial::TutorialOverride>,
 	/// Draw the standing arrival markers (`waystone_fx`). A capture posed
 	/// within `MARKER_RADIUS` of spawn otherwise has the spiral in frame —
 	/// from above it is a white ball over the terrain under test. Cleared
@@ -459,6 +480,12 @@ impl EngineConfig {
 			player_name: None,
 			debug_playerbox: None,
 			debug_confetti: false,
+			debug_bursts: false,
+			debug_orbit: None,
+			debug_dolly: None,
+			show_tutorial: true,
+			bindings: crate::bindings::Bindings::default(),
+			debug_tutorial: None,
 			markers: true,
 			debug_crack: None,
 			debug_siphon: None,

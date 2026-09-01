@@ -18,6 +18,10 @@ mod lifecycle;
 // Blocking map wait + filesystem — no wasm analogue.
 #[cfg(not(target_arch = "wasm32"))]
 mod screenshot;
+// The web screenshot: canvas snapshot handed to the browser as a
+// download (the wasm answer to `screenshot`'s PNG-to-disk).
+#[cfg(target_arch = "wasm32")]
+mod webshot;
 
 pub use input::{InputEvent, Key, MouseButton, TouchPhase};
 // For launcher boot code that must let the page paint before a long
@@ -96,6 +100,14 @@ pub trait Game: 'static {
 	/// stack (the only context the Fullscreen API honours). Only the web
 	/// shell acts on it; the default never asks.
 	fn take_fullscreen_request(&mut self) -> bool {
+		false
+	}
+	/// Drained right after each input dispatch: the player pressed the
+	/// screenshot bind. The native shell captures the next frame to a PNG
+	/// on disk; the web shell snapshots the canvas and hands the browser a
+	/// download, inside the same gesture task like the fullscreen request.
+	/// The default never asks, so bench/capture paths are unaffected.
+	fn take_screenshot_request(&mut self) -> bool {
 		false
 	}
 	/// Polled after input dispatches on touch devices: some text field currently accepts produced

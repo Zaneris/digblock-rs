@@ -3,11 +3,13 @@
 
 pub mod alchemy;
 pub mod block;
+pub mod camera_probe;
 pub mod causeway;
 pub mod chunk;
 pub mod compass;
 pub mod decoration;
 pub mod dir;
+pub mod ease;
 pub mod fluid;
 pub mod gi;
 pub mod hotbar;

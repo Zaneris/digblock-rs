@@ -81,6 +81,10 @@ pub struct WorldSave {
 	/// pre-skills save (every skill derives at its base level; nothing
 	/// else is touched).
 	pub skills: Vec<(u8, u64)>,
+	/// Spell-bar slot assignments (`InvId::Spell` ids, one byte per
+	/// slot). Empty = a save from before the bar existed — an empty bar,
+	/// well-defined without a `SAVE_REV` row.
+	pub spells: Vec<u8>,
 	pub player: Option<PlayerPersist>,
 }
 
@@ -97,14 +101,17 @@ pub trait WorldStore {
 	fn open_world(&mut self, id: &str) -> Result<WorldSave, String>;
 	/// One accepted local edit (dig/place/fluid), full cell value.
 	fn append_edit(&mut self, x: i32, y: i32, z: i32, cell: u16);
-	/// Latest inventory + hotbar/grid arrangements (wire-encoded slots)
-	/// + skill XP totals + player state (throttled to disk internally).
+	/// Latest inventory + hotbar/grid arrangements (wire-encoded slots),
+	/// skill XP totals, spell-bar bytes, and player state (throttled to
+	/// disk internally).
+	#[allow(clippy::too_many_arguments)]
 	fn save_player(
 		&mut self,
 		inventory: &[(u16, u32)],
 		hotbar: &[u16],
 		grid: &[u16],
 		skills: &[(u8, u64)],
+		spells: &[u8],
 		player: &PlayerPersist,
 	);
 	/// Per-frame upkeep: bounded flush/compaction work.

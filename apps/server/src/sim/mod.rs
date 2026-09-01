@@ -71,6 +71,13 @@ const DGRAM_STALL_SECS: u32 = 5;
 const DRAW_DIST_MIN: i32 = 2;
 const DRAW_DIST_MAX: i32 = 32;
 
+/// The first protocol whose decoder knows `ServerMsg::SpellBar` — the
+/// join sync sends it only to peers whose Hello spoke this or newer.
+const SPELL_BAR_PROTOCOL: u16 = 41;
+/// Cap on the stored spell-bar bytes (the client sends 3 today; the
+/// headroom is for a wider bar, the bound is for a hostile peer).
+const SPELL_BAR_MAX: usize = 16;
+
 /// A connection that passes the preamble but never completes Hello is
 /// dropped after this many ticks — mirrors the preamble deadline. Without
 /// it a stalled handshake camps in the lobby forever: the server's own
@@ -372,6 +379,16 @@ struct Client {
 	/// alone — the light itself is per-viewer GI, computed client-side.
 	/// Session-local, exactly like the client's own copy.
 	wisp_until: Option<u32>,
+	/// The Hello protocol this session spoke — gates join-sync messages
+	/// an older decoder cannot read (`ServerMsg::SpellBar`).
+	protocol: u16,
+	/// Spell-bar bytes, stored VERBATIM (opaque preference data — the
+	/// client validates on read), bounded by [`SPELL_BAR_MAX`].
+	spell_bar: Vec<u8>,
+	/// The pick's declared dig shape. Session state like the selected
+	/// slot; the DEFAULT (`Plane`, clamped by the unlock) reproduces the
+	/// pre-toggle behavior for every peer that never sends one.
+	dig_orientation: digblock_core::pick::DigOrientation,
 	/// The tick this client's causeway runs out, and the planks standing
 	/// under it. Session-local like the wisp — the PLANKS are journaled
 	/// cells everyone reads, but only the holder of the trail can retire
@@ -421,6 +438,7 @@ impl Client {
 			pos: Some(self.player.pos.to_array()),
 			last_teleport_tick: self.last_teleport_tick,
 			skills: self.skills.clone(),
+			spells: self.spell_bar.clone(),
 		}
 	}
 }
@@ -522,7 +540,7 @@ pub struct Sim {
 	kindled: Vec<Kindled>,
 	/// Every sphere still climbing — at most one per caster. Bill paid and
 	/// plan fixed as the channel began; the climb lasts the channel and
-	/// UNWINDS if the caster breaks it, moves, or leaves.
+	/// UNWINDS if the caster breaks it or leaves.
 	closings: Vec<SphereClosing>,
 	/// Causeway planks whose removal could not land — an unloaded column
 	/// or an unhealthy journal. Held by the SIM because the trail that
@@ -533,8 +551,8 @@ pub struct Sim {
 	owed_planks: std::collections::VecDeque<digblock_core::causeway::Cell>,
 }
 
-/// One sphere climbing about a channelling caster: the cells still to land, who is paying, where
-/// they stood when it began (a step away breaks the channel, the client's contract), and the bill.
+/// One sphere climbing about a channelling caster: the cells still to land, who is paying, and
+/// the bill. The head is fixed as the channel begins; a caster who walks off leaves it climbing.
 /// `plan_len` and `span` are here because the wire carries the climb's PROGRESS, not its cells:
 /// every client re-derives the plan from `head`, `radius` and `block`. The blocks are paid whole as
 /// the channel begins and settled at its end: `debited` less `placed` is what the climb declined.
@@ -543,7 +561,6 @@ struct SphereClosing {
 	by: PlayerId,
 	head: (i32, i32, i32),
 	radius: i32,
-	from: Vec3,
 	block: digblock_core::block::BlockType,
 	essence: digblock_core::block::Essence,
 	fare: u32,
@@ -1080,6 +1097,24 @@ impl Sim {
 						});
 					}
 				}
+				// Inline, not queued: preference bytes with no ordering
+				// relation to the edit stream. Stored verbatim (bounded);
+				// persisted by the next record write-through like the layout.
+				ClientMsg::SpellBar { mut slots } => {
+					if let Some(client) = self.clients.get_mut(&conn_id) {
+						slots.truncate(SPELL_BAR_MAX);
+						client.spell_bar = slots;
+					}
+				}
+				// Queued: a toggle-then-swing in one tick must land
+				// shape-first (wire order, the Layout rule). Over-budget
+				// requests drop silently.
+				ClientMsg::SetDigOrientation { mode } => {
+					if self.action_queue.len() < self.clients.len() * EDIT_BURST as usize + 64 {
+						self.action_queue
+							.push(ClientAction::SetDigOrientation { conn_id, mode });
+					}
+				}
 			},
 			SimEvent::Inputs { conn_id, batch } => self.handle_inputs(conn_id, batch),
 			SimEvent::Disconnected { conn_id } => self.drop_client(conn_id),
@@ -1145,6 +1180,10 @@ impl Sim {
 		}
 		let level = client.skills.level(digblock_core::skills::Skill::Mining);
 		let alchemy = client.skills.level(digblock_core::skills::Skill::Alchemy);
+		let width = digblock_core::unlock::pick_cells(level);
+		// The client mirrors this clamp over the same width, which is what
+		// keeps the two footprints bit-identical.
+		let orientation = client.dig_orientation.clamped(width);
 		let id = digblock_core::chunk::cell_id(hit.cell_value);
 		let credit = hit.block.dig_credit(
 			self.cell_edited(hit.cell.0, hit.cell.1, hit.cell.2),
@@ -1155,12 +1194,8 @@ impl Sim {
 		// `a_protected_cell_refuses_the_whole_pick_swing` pins. The world floor is handled inside
 		// the rule instead — not a policy but a cell no dig can touch, and letting the plane reach
 		// it made the pick refuse every swing at the bottom of a mine.
-		let mut out = digblock_core::pick::cells(
-			hit.cell,
-			hit.normal,
-			dir,
-			digblock_core::unlock::pick_cells(level),
-			|c| {
+		let mut out =
+			digblock_core::pick::cells(hit.cell, hit.normal, dir, width, orientation, |c| {
 				self.store.cell_at(c.0, c.1, c.2).is_some_and(|v| {
 					digblock_core::pick::breaks_as_extra(
 						id,
@@ -1172,8 +1207,7 @@ impl Sim {
 						alchemy,
 					)
 				})
-			},
-		);
+			});
 		out.retain(|&c| c != hit.cell);
 		out
 	}

@@ -418,7 +418,7 @@ fn text_edits_name_with_charset_cap_and_backspace() {
 		menu.view(SIZE, 1.0, false)
 			.rows
 			.iter()
-			.any(|r| r.text.contains("name: ted_"))
+			.any(|r| r.text.contains("Name: ted_"))
 	);
 	for _ in 0..100 {
 		menu.handle_text('x');
@@ -427,9 +427,9 @@ fn text_edits_name_with_charset_cap_and_backspace() {
 	let name_row = long
 		.rows
 		.iter()
-		.find(|r| r.text.starts_with("name:"))
+		.find(|r| r.text.starts_with("Name:"))
 		.unwrap();
-	assert!(name_row.text.len() <= "name: ".len() + digblock_net::protocol::MAX_DISPLAY_NAME);
+	assert!(name_row.text.len() <= "Name: ".len() + digblock_net::protocol::MAX_DISPLAY_NAME);
 }
 
 /// The bridge's whole-value restatement and the keystroke path are one
@@ -1094,7 +1094,7 @@ fn the_browser_shows_the_account_name() {
 	assert!(
 		view.rows
 			.iter()
-			.any(|r| r.text.contains("playing as Miner42")),
+			.any(|r| r.text.contains("Playing as Miner42")),
 		"{:?}",
 		view.rows.iter().map(|r| &r.text).collect::<Vec<_>>()
 	);
@@ -1279,6 +1279,13 @@ fn screen_name(s: &Screen) -> &'static str {
 		Screen::SignIn(_) => "sign in",
 		Screen::ChooseName(_) => "choose name",
 		Screen::Account { .. } => "account",
+		// Desktop-only by construction: their Settings entry row is
+		// skipped on touch in `acts()` and `view()` in lockstep (see
+		// `touch_hides_the_controls_door`), so the touch sweep has no
+		// legitimate way to stand on them and they are absent from
+		// ALL_SCREEN_NAMES on purpose.
+		Screen::Controls { .. } => "controls",
+		Screen::ControlsHotbar { .. } => "controls hotbar",
 	}
 }
 
@@ -1387,6 +1394,8 @@ const ALL_SCREEN_NAMES: &[&str] = &[
 	"sign in",
 	"choose name",
 	"account",
+	// "controls" and "controls hotbar" are deliberately absent: the pages
+	// are desktop-only and unreachable on touch — see `screen_name`.
 ];
 
 #[test]
@@ -1641,4 +1650,204 @@ fn joining_remembers_whether_the_server_is_ranked() {
 				.any(|c| matches!(c, MenuCommand::Join { .. }))
 		);
 	}
+}
+
+/// Straight to the Controls page the way a player gets there.
+fn on_controls() -> Menu {
+	let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
+	menu.activate(Act::OpenSettings);
+	menu.activate(Act::OpenControls);
+	assert!(matches!(menu.screen, Some(Screen::Controls { .. })));
+	menu
+}
+
+#[test]
+fn touch_hides_the_controls_door() {
+	// Desktop: the Settings screen offers Controls, and every act the
+	// page lists has a matching hit rect (the positional lockstep).
+	let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
+	menu.activate(Act::OpenSettings);
+	assert!(
+		menu.acts()
+			.iter()
+			.any(|(_, a)| matches!(a, Act::OpenControls))
+	);
+	for screen in [
+		Some(Screen::Settings { sel: 0 }),
+		Some(Screen::Controls {
+			sel: 0,
+			capture: None,
+			status: None,
+		}),
+		Some(Screen::ControlsHotbar {
+			sel: 0,
+			capture: None,
+			status: None,
+		}),
+	] {
+		menu.screen = screen;
+		let view = menu.view(SIZE, 1.0, false);
+		for (id, _) in menu.acts() {
+			assert!(
+				view.hits.rect_of(id).is_some(),
+				"acts() row {id:?} has no laid-out rect: acts and view drifted"
+			);
+		}
+	}
+	// Touch: no door, so the pages cannot be reached at all.
+	let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
+	menu.set_touch();
+	menu.activate(Act::OpenSettings);
+	assert!(
+		!menu
+			.acts()
+			.iter()
+			.any(|(_, a)| matches!(a, Act::OpenControls))
+	);
+	let view = menu.view(SIZE, 1.0, false);
+	assert!(!view.rows.iter().any(|r| r.text == "Controls..."));
+}
+
+#[test]
+fn a_bind_capture_binds_steals_and_persists() {
+	let mut menu = on_controls();
+	menu.activate(Act::BindRow(Action::Fly));
+	let view = menu.view(SIZE, 1.0, false);
+	assert!(
+		view.rows
+			.iter()
+			.any(|r| r.right.as_ref().is_some_and(|(t, _)| t == "Press a key...")),
+		"the capturing row must say so"
+	);
+	menu.handle_key(Key::G);
+	assert_eq!(menu.settings.bindings.key(Action::Fly), Some(Key::G));
+	assert!(
+		menu.take_settings_change().is_some(),
+		"a bind is a settings change"
+	);
+	// Stealing an occupied key names the victim and unbinds it.
+	menu.activate(Act::BindRow(Action::CastSpell1));
+	menu.handle_key(Key::G);
+	assert_eq!(menu.settings.bindings.key(Action::CastSpell1), Some(Key::G));
+	assert_eq!(menu.settings.bindings.key(Action::Fly), None);
+	match &menu.screen {
+		Some(Screen::Controls { status, .. }) => {
+			assert_eq!(status.as_deref(), Some("Taken from Fly Toggle"));
+		}
+		_ => panic!("left the Controls page"),
+	}
+}
+
+#[test]
+fn escape_cancels_a_capture_without_dirtying() {
+	let mut menu = on_controls();
+	menu.activate(Act::BindRow(Action::Jump));
+	menu.handle_key(Key::Escape);
+	assert!(matches!(
+		menu.screen,
+		Some(Screen::Controls { capture: None, .. })
+	));
+	assert_eq!(menu.settings.bindings.key(Action::Jump), Some(Key::Space));
+	assert!(menu.take_settings_change().is_none());
+	// The SECOND Escape leaves the page (back to Settings).
+	menu.handle_key(Key::Escape);
+	assert!(matches!(menu.screen, Some(Screen::Settings { .. })));
+}
+
+#[test]
+fn a_door_key_is_refused_while_capturing() {
+	let mut menu = on_controls();
+	menu.activate(Act::BindRow(Action::Jump));
+	menu.handle_key(Key::Enter);
+	match &menu.screen {
+		Some(Screen::Controls {
+			capture, status, ..
+		}) => {
+			assert_eq!(*capture, Some(Action::Jump), "still waiting for a key");
+			assert_eq!(status.as_deref(), Some("That key cannot be bound"));
+		}
+		_ => panic!("left the Controls page"),
+	}
+	assert!(menu.take_settings_change().is_none());
+	// The capture is still live: a legal key completes it.
+	menu.handle_key(Key::M);
+	assert_eq!(menu.settings.bindings.key(Action::Jump), Some(Key::M));
+}
+
+#[test]
+fn a_click_cancels_a_capture_instead_of_activating() {
+	let mut menu = on_controls();
+	menu.activate(Act::BindRow(Action::Jump));
+	menu.handle_input(
+		&InputEvent::MouseButton {
+			button: MouseButton::Left,
+			pressed: true,
+		},
+		SIZE,
+		1.0,
+	);
+	assert!(matches!(
+		menu.screen,
+		Some(Screen::Controls { capture: None, .. })
+	));
+	assert_eq!(menu.settings.bindings.key(Action::Jump), Some(Key::Space));
+}
+
+#[test]
+fn reset_restores_the_default_binds() {
+	let mut menu = on_controls();
+	menu.activate(Act::BindRow(Action::Fly));
+	menu.handle_key(Key::G);
+	let _ = menu.take_settings_change();
+	menu.activate(Act::ResetBinds);
+	assert_eq!(menu.settings.bindings, Bindings::default());
+	assert!(menu.take_settings_change().is_some());
+	assert!(!menu.wants_all_keys());
+}
+
+#[test]
+fn the_hotbar_subpage_binds_and_backs_out() {
+	let mut menu = on_controls();
+	menu.activate(Act::OpenControlsHotbar);
+	assert!(matches!(menu.screen, Some(Screen::ControlsHotbar { .. })));
+	menu.activate(Act::BindRow(Action::HotbarSlot1));
+	assert!(menu.wants_all_keys(), "a capture owns every key");
+	menu.handle_key(Key::Q);
+	assert_eq!(
+		menu.settings.bindings.key(Action::HotbarSlot1),
+		Some(Key::Q)
+	);
+	menu.handle_key(Key::Escape);
+	assert!(matches!(menu.screen, Some(Screen::Controls { .. })));
+}
+
+/// The tutorial's menu-phase pulse rides `screen_row`: in a world, the
+/// root screen names the row for each page the tutorial routes through
+/// (paired exactly as the acts table pairs them), while the title root
+/// and a submenu answer None, so the guide goes quiet rather than
+/// pointing at anything else.
+#[test]
+fn screen_row_names_the_page_rows_only_on_the_in_world_root() {
+	use crate::events::ScreenKind as K;
+	let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
+	assert_eq!(menu.screen_row(K::Inventory), None, "title root: no row");
+	menu.set_connected(true);
+	for (kind, want) in [
+		(K::Inventory, Act::OpenInventory),
+		(K::Alchemy, Act::OpenAlchemy),
+		(K::Spellbook, Act::OpenSpellbook),
+	] {
+		let row = menu
+			.screen_row(kind)
+			.expect("the in-world root lists the page");
+		let acts = menu.acts();
+		let &(_, act) = acts.iter().find(|&&(id, _)| id == row).expect("a real row");
+		assert!(act == want, "{kind:?} points at its own row");
+	}
+	// The kinds no menu row opens never name one.
+	assert_eq!(menu.screen_row(K::Menu), None);
+	assert_eq!(menu.screen_row(K::Chat), None);
+	// A submenu: the rows are elsewhere, the guide goes quiet.
+	menu.screen = Some(Screen::Settings { sel: 0 });
+	assert_eq!(menu.screen_row(K::Inventory), None, "no row on a submenu");
 }

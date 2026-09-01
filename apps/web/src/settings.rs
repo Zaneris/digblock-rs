@@ -19,6 +19,14 @@ struct SettingsFile {
 	gi_scale_div: Option<u32>,
 	max_lights: Option<i32>,
 	touch_jump_button: Option<bool>,
+	/// Deliberately NOT `show_tutorial`: that key was auto-written false on
+	/// completion under the old model, and this row means a manual switch
+	/// now — the rename discards every stored value of the old meaning.
+	tutorials: Option<bool>,
+	/// Key bindings by stable name ("jump": "space", "" = unbound).
+	/// Unknown action or key names are skipped on read, so a file written
+	/// by a newer build loads here and vice versa.
+	binds: Option<std::collections::BTreeMap<String, String>>,
 }
 
 fn storage() -> Option<web_sys::Storage> {
@@ -48,6 +56,14 @@ pub(crate) fn load(base: Settings) -> Settings {
 		gi_scale_div: file.gi_scale_div.unwrap_or(base.gi_scale_div),
 		max_lights: file.max_lights.unwrap_or(base.max_lights),
 		touch_jump_button: file.touch_jump_button.unwrap_or(base.touch_jump_button),
+		show_tutorial: file.tutorials.unwrap_or(base.show_tutorial),
+		bindings: match &file.binds {
+			Some(map) => digblock_client::bindings::Bindings::from_names(
+				base.bindings,
+				map.iter().map(|(a, k)| (a.as_str(), k.as_str())),
+			),
+			None => base.bindings,
+		},
 	}
 	.clamped()
 }
@@ -64,6 +80,8 @@ pub(crate) fn save(s: &Settings) {
 		gi_scale_div: Some(s.gi_scale_div),
 		max_lights: Some(s.max_lights),
 		touch_jump_button: Some(s.touch_jump_button),
+		tutorials: Some(s.show_tutorial),
+		binds: Some(s.bindings.to_names()),
 	};
 	let Ok(json) = serde_json::to_string(&file) else {
 		return;

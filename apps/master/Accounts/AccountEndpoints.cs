@@ -90,7 +90,7 @@ public static class AccountEndpoints
             {
                 NameResult.Ok => Results.Ok(new NameSetResponse(session.Account.DisplayName!)),
                 NameResult.Invalid => Results.BadRequest(new ApiError(Names.Requirement)),
-                NameResult.Taken => Results.Conflict(new ApiError("that name is taken")),
+                NameResult.Taken => Results.Conflict(new ApiError("That name is taken")),
                 _ => Results.Json(
                     new ApiError($"you can change your name again in {Days(retry)}"),
                     statusCode: StatusCodes.Status429TooManyRequests),
@@ -107,7 +107,7 @@ public static class AccountEndpoints
                 return Results.Ok(new NameAvailableResponse(name ?? "", false, Names.Requirement));
             var session = await accounts.AuthenticateAsync(Bearer.From(http), ct);
             var free = await accounts.IsNameAvailableAsync(name!, session?.AccountId, ct);
-            return Results.Ok(new NameAvailableResponse(name!, free, free ? null : "that name is taken"));
+            return Results.Ok(new NameAvailableResponse(name!, free, free ? null : "That name is taken"));
         }).RequireCors(Cors.Client).RequireRateLimiting(RateLimits.Lookup);
 
         // Name → account id. Public on purpose: it is how a server operator

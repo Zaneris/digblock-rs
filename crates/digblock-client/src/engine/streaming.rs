@@ -29,12 +29,11 @@ impl Engine {
 			.map_or((0.0, 0), Renderer::gi_debug_state)
 	}
 
+	/// The chunk the streaming and GI discs center on: the BODY, not the
+	/// view — a detached camera must not shift world residency.
 	pub(super) fn camera_chunk(&self) -> ChunkPos {
-		ChunkPos::new(
-			(self.camera.pos.x / 16.0).floor() as i32,
-			0,
-			(self.camera.pos.z / 16.0).floor() as i32,
-		)
+		let a = self.body_anchor();
+		ChunkPos::new((a.x / 16.0).floor() as i32, 0, (a.z / 16.0).floor() as i32)
 	}
 
 	/// One tick of the scripted flight: a constant-speed line with a slow

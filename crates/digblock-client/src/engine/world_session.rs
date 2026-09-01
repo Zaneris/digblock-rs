@@ -43,6 +43,11 @@ impl Engine {
 		self.vfx.toasts.clear();
 		self.auth_essence = None;
 		self.siphon_nudged = false;
+		self.wisp_nudged = false;
+		self.tutorial = crate::tutorial::Tutorial::default();
+		// The held dusk re-arms only at this join's sync, once its
+		// InventoryFull has said whether the character owns a light.
+		self.dusk_hold = crate::dusk::DuskHold::default();
 		self.reset_world_transients(spawn, true);
 	}
 
@@ -52,6 +57,10 @@ impl Engine {
 	pub(super) fn reset_world_transients(&mut self, pos: Vec3, world_replaced: bool) {
 		self.dig = None;
 		self.cast = None;
+		// A staged reveal names cells of the world being left behind.
+		self.reveal_cues.clear();
+		self.reveal_clock = 0.0;
+		self.reveal_finale = false;
 		// The backstop only. A climb is UNWOUND — glass down, fare back —
 		// by `abandon_sphere` at the sites that still have the sphere's own
 		// world under them; by the time a swap gets here the pipeline may
@@ -103,10 +112,11 @@ impl Engine {
 		// names a cell in the world just left, the teleport light, and
 		// the channel's fade.
 		self.vfx.confetti.clear();
+		self.vfx.bursts.clear();
 		self.vfx.siphon = None;
 		self.vfx.casts.clear();
 		self.vfx.kindled.clear();
-		self.vfx.channel_env = 0.0;
+		self.vfx.channel_env.reset();
 		self.vfx.flash = 0.0;
 		// The arrival marker follows the world's own spawn: the pad's
 		// floor centre under the spawn eye.
@@ -250,6 +260,10 @@ impl Engine {
 		self.vfx.toasts.clear();
 		self.auth_essence = None;
 		self.siphon_nudged = false;
+		self.wisp_nudged = false;
+		self.tutorial = crate::tutorial::Tutorial::default();
+		// The backdrop shows an ordinary sky, whoever was just playing.
+		self.dusk_hold = crate::dusk::DuskHold::default();
 		self.session.player_names.clear();
 		self.reset_world_transients(spawn, true);
 		self.save.in_local_save = false;
@@ -294,8 +308,7 @@ impl Engine {
 		self.player = Player::new(start);
 		self.camera.pos = start;
 		if let Some(p) = save.player {
-			self.camera.yaw_deg = p.yaw;
-			self.camera.pitch_deg = p.pitch.clamp(-89.0, 89.0);
+			self.set_look(p.yaw, p.pitch);
 		}
 		self.inventory = Inventory::from_wire(&save.inventory);
 		// §13.5's migration grant: a save written before the bucket
@@ -334,12 +347,25 @@ impl Engine {
 			self.hotbar = Hotbar::from_wire(&wire);
 		}
 		self.inv_grid = digblock_core::inv_grid::InvGrid::from_wire(&save.grid);
+		// The spell bar's saved bytes (empty = pre-bar save = empty bar);
+		// unknown ids fall empty on read.
+		self.spell_bar = crate::spellbar::SpellBar::from_wire(&save.spells);
 		digblock_core::inv_grid::reconcile_layout(
 			&self.inventory,
 			&mut self.hotbar,
 			&mut self.inv_grid,
 		);
 		self.reset_world_transients(start, !reuse);
+		// Fresh per-world-session state, not inherited from wherever this
+		// entry came from (the title path resets these too, but the entry
+		// must not depend on the route taken here).
+		self.siphon_nudged = false;
+		self.wisp_nudged = false;
+		self.tutorial = crate::tutorial::Tutorial::default();
+		self.arm_tutorial();
+		// Offline there is no clock but the player's own, so a lightless
+		// character's held dusk simply IS the world clock for a while.
+		self.arm_dusk_hold(None);
 		// The scheduler's clock is the world's AGE, never this session's.
 		// `worldjob::regrow` salts its roll with the run's SLOT, so a
 		// clock that restarted at zero on every entry replayed the same
@@ -459,8 +485,86 @@ impl Engine {
 	/// Offline arrivals never hold, guaranteed by the CALL SITES: both are `pump_net` arms and an
 	/// offline session produces no `NetEvent`s. Never guard this on `self.session.client` —
 	/// `pump_net` owns it by value for the drain, so `is_some()` reads false on both hold paths.
+	/// Start the walkthrough for this world entry, if this session
+	/// should have one: offline local play, interactively, a character
+	/// with no XP at all (every fresh character gets the walkthrough;
+	/// the dig step's own XP award is what retires it for this one),
+	/// with the settings row not switched off — or whatever
+	/// `DIG_TUTORIAL` insists. Runs after the save's skills are adopted,
+	/// which is what makes the zero-XP question answerable.
+	pub(super) fn arm_tutorial(&mut self) {
+		match self.config.debug_tutorial {
+			Some(crate::tutorial::TutorialOverride::Off) => return,
+			Some(crate::tutorial::TutorialOverride::On) => {
+				self.tutorial.start();
+				return;
+			}
+			Some(crate::tutorial::TutorialOverride::At(step)) => {
+				self.tutorial.start_at(step);
+				return;
+			}
+			None => {}
+		}
+		let fresh = digblock_core::skills::Skill::ALL
+			.iter()
+			.all(|&s| self.skills.xp(s) == 0);
+		if fresh
+			&& self.config.show_tutorial
+			&& self.config.interactive
+			&& !self.config.bench
+			&& self.config.debug_screen.is_none()
+		{
+			self.tutorial.start();
+		}
+	}
+
+	/// Does the pack hold any light-casting item? Both the held dusk's
+	/// arming gate and its release poll, so entering with a torch and
+	/// crafting one mid-hold are the same question.
+	pub(super) fn owns_light(&self) -> bool {
+		self.inventory
+			.iter_nonzero()
+			.any(|(b, _)| b.props().light > 0)
+	}
+
+	/// Arm the held dusk for a character who owns no light of their own
+	/// (see `dusk.rs`; a server's day join just shadows its clock until
+	/// dusk). `server` carries the live world clock when a server owns
+	/// one. Runs after the inventory is adopted — that is what makes the
+	/// question answerable; a lit character clears whatever hold was left.
+	pub(super) fn arm_dusk_hold(&mut self, server: Option<f32>) {
+		if self.owns_light() {
+			self.dusk_hold = crate::dusk::DuskHold::default();
+		} else {
+			self.dusk_hold.start(server);
+		}
+	}
+
+	/// Arm a nudge-armed chapter (siphon, wisp): offline local play,
+	/// interactively, the settings row and the dev override both
+	/// respected. No XP gate here — each nudge already fires only for a
+	/// player new to its subject, which is its own "still new".
+	pub(super) fn arm_nudged_chapter(&mut self, chapter: crate::tutorial::Chapter) {
+		if matches!(
+			self.config.debug_tutorial,
+			Some(crate::tutorial::TutorialOverride::Off)
+		) {
+			return;
+		}
+		if self.session.client.is_none()
+			&& self.config.show_tutorial
+			&& self.config.interactive
+			&& !self.config.bench
+			&& self.config.debug_screen.is_none()
+		{
+			self.tutorial.start_chapter(chapter);
+		}
+	}
+
 	pub(super) fn begin_arrival_hold(&mut self) {
-		self.save.arrival_hold = Some(digblock_net::protocol::AREA_SYNC_TIMEOUT_SECS);
+		self.save
+			.arrival_hold
+			.start(digblock_net::protocol::AREA_SYNC_TIMEOUT_SECS);
 	}
 
 	/// Release it, whichever way it ended. Also closes the join's
@@ -468,7 +572,8 @@ impl Engine {
 	/// covers itself from the HUD) and for a hold that timed out with the
 	/// menu already gone.
 	pub(super) fn end_arrival_hold(&mut self) {
-		if self.save.arrival_hold.take().is_some() {
+		if self.save.arrival_hold.running() {
+			self.save.arrival_hold.stop();
 			self.ui.menu.on_welcome();
 			// The pose we are about to start simulating from is the one the
 			// server gave us, now standing on the real world rather than on

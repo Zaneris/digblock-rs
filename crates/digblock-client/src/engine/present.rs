@@ -41,6 +41,31 @@ impl Engine {
 		Some(boxed(progress))
 	}
 
+	/// Fill this frame's highlight scratch: the aimed target exactly as
+	/// [`Self::dig_progress`] boxes it, then one full-cube outline per
+	/// EXTRA cell the pick's swing would take — `pick_plane` is the same
+	/// footprint the dig sends, so the outline can never promise cells
+	/// the swing leaves standing. Extras are full cubes by construction
+	/// (`breaks_as_extra` refuses slabs and doors).
+	pub(super) fn fill_highlight_targets(&mut self) {
+		let mut out = std::mem::take(&mut self.vfx.highlight_scratch);
+		out.clear();
+		if let Some(t) = self.dig_progress() {
+			out.push(t);
+			if let Some(hit) = self.target.as_ref() {
+				for cell in self.pick_plane(hit) {
+					out.push(crate::highlight::HighlightTarget {
+						cell,
+						lo: [0.0; 3],
+						hi: [1.0; 3],
+						progress: None,
+					});
+				}
+			}
+		}
+		self.vfx.highlight_scratch = out;
+	}
+
 	/// The vein the siphon is drawing from this frame: the hit, the tier, and how far through the
 	/// hold it is. Deliberately narrower than `dig_progress`'s extraction branch, which answers on
 	/// AIM: merely looking at a seam with the siphon out draws nothing, because the stream is the
@@ -216,9 +241,9 @@ impl Engine {
 		y as f32 + 1.0 - digblock_core::player::WATER_SURFACE_DROP - c.y
 	}
 
-	pub(super) fn frame_uniforms(&self) -> FrameUniforms {
+	pub(super) fn frame_uniforms(&self, cam_fx: &crate::camera_fx::CamOffset) -> FrameUniforms {
 		let aspect = self.ui.size.0 as f32 / self.ui.size.1.max(1) as f32;
-		let vp = self.camera.view_proj(aspect);
+		let vp = self.camera.view_proj_with(aspect, cam_fx);
 		let caster = self.sun.caster();
 		let atmos = digblock_core::sky::Atmosphere::sample(self.sun.elevation());
 		// Directions toward the bodies in the sky (opposite the light).

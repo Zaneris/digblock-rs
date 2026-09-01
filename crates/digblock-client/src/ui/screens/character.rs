@@ -41,13 +41,13 @@ impl CharView {
 					let into = xp - skills::total_xp_for(level);
 					(
 						(into as f32 / need as f32).clamp(0.0, 1.0),
-						format!("{} / {} XP to LV {}", group(into), group(need), level + 1),
+						format!("{} / {} XP to Lv {}", group(into), group(need), level + 1),
 					)
 				}
 				None => (1.0, format!("{} XP - mastered", group(xp))),
 			};
 			rows.push(Row::Skill {
-				text: format!("{}   LV {}", skill.name().to_uppercase(), level),
+				text: format!("{}   Lv {}", skill.name(), level),
 				frac,
 			});
 			rows.push(Row::Info(info));
@@ -55,7 +55,7 @@ impl CharView {
 				rows.push(Row::Info(rank_line(r)));
 			}
 			if let Some((lvl, what)) = next_unlock(skill, level) {
-				rows.push(Row::Info(format!("next: LV {lvl} - {what}")));
+				rows.push(Row::Info(format!("Next: Lv {lvl} - {what}")));
 			}
 			// §5.2's depth reward, on the skill it pays into. Stated as a
 			// live number rather than a rule, because the ramp is what
@@ -66,7 +66,7 @@ impl CharView {
 			}
 			rows.push(Row::Space);
 		}
-		rows.push(Row::Info(format!("TOTAL LEVEL {total_level}")));
+		rows.push(Row::Info(format!("Total Level {total_level}")));
 		if let Some(r) = rank_of(None) {
 			rows.push(Row::Info(rank_line(r)));
 		}
@@ -77,7 +77,7 @@ impl CharView {
 /// The board line under a skill (or the total): where this account stands. The number on the
 /// board is what makes the totals above it mean something (SOCIAL-DESIGN §1).
 fn rank_line(r: &RankView) -> String {
-	format!("hiscores: rank {}", group(u64::from(r.rank)))
+	format!("Hiscores: rank {}", group(u64::from(r.rank)))
 }
 
 /// What `DIG_SCREEN=skills` and the screen sweep show for the board lines, since neither run
@@ -122,26 +122,26 @@ pub(super) fn teasers(skill: Skill) -> Vec<(u32, &'static str)> {
 fn mining_teasers() -> Vec<(u32, &'static str)> {
 	use BlockType as B;
 	vec![
-		(unlock::mine(B::Wood), "timber gives: trees and planed wood"),
+		(unlock::mine(B::Wood), "Timber gives: trees and planed wood"),
 		(
 			unlock::mine(B::Stone),
-			"rock gives: gravel, sandstone, stone",
+			"Rock gives: gravel, sandstone, stone",
 		),
-		(reveal_at(B::Emberore), "emberore reveals: bring a siphon"),
+		(reveal_at(B::Emberore), "Emberore reveals: bring a siphon"),
 		(
 			unlock::PROSPECT_FAINT_AT,
-			"prospector's sense: faint, but you hear what you can't see",
+			"Prospector's sense: faint, but you hear what you can't see",
 		),
-		(reveal_at(B::Duskstone), "duskstone reveals"),
+		(reveal_at(B::Duskstone), "Duskstone reveals"),
 		(
 			reveal_at(B::Glowvein),
-			"glowvein reveals; the resonant pick swings wide; ferrum's block opens",
+			"Glowvein reveals; the resonant pick swings wide; ferrum's block opens",
 		),
-		(unlock::mine(B::Crystal), "crystal opens"),
-		(unlock::PROSPECT_SHARP_AT, "the prospector's sense sharpens"),
-		(reveal_at(B::Aetherock), "aetherock reveals"),
-		(unlock::MASTERY_AT, "mastery: every vein gives one more"),
-		(unlock::PICK_PLANE_AT, "the pick's full nine"),
+		(unlock::mine(B::Crystal), "Crystal opens"),
+		(unlock::PROSPECT_SHARP_AT, "The prospector's sense sharpens"),
+		(reveal_at(B::Aetherock), "Aetherock reveals"),
+		(unlock::MASTERY_AT, "Mastery: every vein gives one more"),
+		(unlock::PICK_PLANE_AT, "The pick's full nine"),
 	]
 }
 
@@ -153,35 +153,35 @@ fn alch_teasers() -> Vec<(u32, &'static str)> {
 	use BlockType as B;
 	use Material as M;
 	vec![
-		(item_at(B::Torch), "the torch"),
-		(unlock::shape(ShapeFamily::Stairs), "the stairs shape"),
-		(item_at(B::Bucket), "the bucket"),
-		(mat_at(M::Lumber), "planed lumber and its joinery"),
-		(item_at(B::Table), "furniture: the table and the chair"),
-		(mat_at(M::Stone), "clean stone: every learned shape at once"),
-		(mat_at(M::DarkLumber), "dark lumber and stone brick"),
-		(mat_at(M::Sandstone), "sandstone and glass"),
-		(item_at(B::Bed), "the bed: timber and bedding both"),
-		(unlock::BENCH_FASTER_AT, "a faster bench"),
-		(mat_at(M::RedLumber), "red lumber"),
-		(item_at(B::Lantern), "the lantern"),
+		(item_at(B::Torch), "The torch"),
+		(unlock::shape(ShapeFamily::Stairs), "The stairs shape"),
+		(item_at(B::Bucket), "The bucket"),
+		(mat_at(M::Lumber), "Planed lumber and its joinery"),
+		(item_at(B::Table), "Furniture: the table and the chair"),
+		(mat_at(M::Stone), "Clean stone: every learned shape at once"),
+		(mat_at(M::DarkLumber), "Dark lumber and stone brick"),
+		(mat_at(M::Sandstone), "Sandstone and glass"),
+		(item_at(B::Bed), "The bed: timber and bedding both"),
+		(unlock::BENCH_FASTER_AT, "A faster bench"),
+		(mat_at(M::RedLumber), "Red lumber"),
+		(item_at(B::Lantern), "The lantern"),
 		(
 			mat_at(M::PolishedStone),
-			"polished stone and sandstone brick",
+			"Polished stone and sandstone brick",
 		),
-		(mat_at(M::Metal), "FERRUM's block: the prestige material"),
-		(item_at(B::ResonantPick), "the resonant pick"),
-		(mat_at(M::Crystal), "crystal, grown from aether"),
-		(unlock::BENCH_FASTEST_AT, "the fastest bench"),
+		(mat_at(M::Metal), "Ferrum's block: the prestige material"),
+		(item_at(B::ResonantPick), "The resonant pick"),
+		(mat_at(M::Crystal), "Crystal, grown from aether"),
+		(unlock::BENCH_FASTEST_AT, "The fastest bench"),
 		(
 			item_at(B::Aetherlamp),
-			"the aetherlamp: the standing aether sink",
+			"The aetherlamp: the standing aether sink",
 		),
 		(
 			unlock::WASTE_DIP_AT,
-			"the waste dip: your process tightens early",
+			"The waste dip: your process tightens early",
 		),
-		(item_at(B::MastersSigil), "the master's sigil"),
+		(item_at(B::MastersSigil), "The master's sigil"),
 	]
 }
 
@@ -190,46 +190,46 @@ fn alch_teasers() -> Vec<(u32, &'static str)> {
 fn arcana_teasers() -> Vec<(u32, &'static str)> {
 	use digblock_core::worldgen::SurfaceKind as K;
 	vec![
-		(port_at(K::Plains), "the plains waystone hums into reach"),
-		(unlock::KINDLE_AT, "kindle: conjured light in the world"),
-		(port_at(K::Forest), "the forest waystone"),
+		(port_at(K::Plains), "The plains waystone hums into reach"),
+		(unlock::KINDLE_AT, "Kindle: conjured light in the world"),
+		(port_at(K::Forest), "The forest waystone"),
 		(
 			unlock::SPHERE_AT,
-			"the sphere: a shell of whatever you hold rises about you",
+			"The sphere: a shell of whatever you hold rises about you",
 		),
 		(
 			unlock::TELEPORT_SWIFT_AT,
-			"swift return: home comes back sooner",
+			"Swift return: home comes back sooner",
 		),
 		(
 			unlock::CAUSEWAY_AT,
-			"the causeway: glass carries your step over nothing",
+			"The causeway: glass carries your step over nothing",
 		),
-		(port_at(K::Savanna), "the savanna waystone"),
+		(port_at(K::Savanna), "The savanna waystone"),
 		(
 			unlock::CHANNEL_QUICK_AT,
-			"quickened channels: every cast lands sooner",
+			"Quickened channels: every cast lands sooner",
 		),
-		(port_at(K::Taiga), "the taiga waystone"),
+		(port_at(K::Taiga), "The taiga waystone"),
 		(
 			unlock::SPHERE_WIDE_AT,
-			"the wide sphere: the shell stands further out",
+			"The wide sphere: the shell stands further out",
 		),
 		(
 			unlock::WISP_BRIGHT_AT,
-			"the wisp burns brighter, and longer",
+			"The wisp burns brighter, and longer",
 		),
-		(unlock::CAUSEWAY_LONG_AT, "the causeway carries you further"),
-		(port_at(K::Beach), "the shore waystone"),
-		(port_at(K::Mountain), "the mountain waystone"),
-		(unlock::SPHERE_VAST_AT, "the vast sphere: further out again"),
-		(unlock::KINDLE_CHEAP_AT, "kindle costs less"),
-		(unlock::TELEPORT_SWIFTER_AT, "swifter return"),
+		(unlock::CAUSEWAY_LONG_AT, "The causeway carries you further"),
+		(port_at(K::Beach), "The shore waystone"),
+		(port_at(K::Mountain), "The mountain waystone"),
+		(unlock::SPHERE_VAST_AT, "The vast sphere: further out again"),
+		(unlock::KINDLE_CHEAP_AT, "Kindle costs less"),
+		(unlock::TELEPORT_SWIFTER_AT, "Swifter return"),
 		(
 			unlock::CAUSEWAY_VAST_AT,
-			"the causeway carries you further again",
+			"The causeway carries you further again",
 		),
-		(port_at(K::Snow), "the far cold waystone: the last port"),
+		(port_at(K::Snow), "The far cold waystone: the last port"),
 	]
 }
 
@@ -259,8 +259,8 @@ fn item_at(b: BlockType) -> u32 {
 /// feature to exactly the player who most needs telling the bonus is there.
 fn depth_bonus_line(eye_y: i32) -> String {
 	match (skills::depth_xp_permille(eye_y) - 1000) / 10 {
-		0 => "depth bonus: none yet, deeper pays more".to_string(),
-		pct => format!("depth bonus: +{pct}% XP per dig"),
+		0 => "Depth bonus: none yet, deeper pays more".to_string(),
+		pct => format!("Depth bonus: +{pct}% XP per dig"),
 	}
 }
 
@@ -298,7 +298,7 @@ enum Row {
 fn row_text(row: &Row) -> &str {
 	match row {
 		Row::Space => "",
-		Row::Title => "CHARACTER",
+		Row::Title => "Character",
 		Row::Skill { text, .. } => text,
 		Row::Info(t) => t,
 	}
@@ -381,6 +381,7 @@ impl CharScreen {
 		size: (u32, u32),
 		view: &CharView,
 		bar: &HotbarView,
+		spells: &crate::spellbar::SpellBarView,
 		daylight: f32,
 	) {
 		let s = ui.style.scale;
@@ -453,7 +454,9 @@ impl CharScreen {
 		// OVER the bar, and the bar is drawn after it at the window's
 		// scale — so naming its slots is this page's job, at this frame's
 		// glyph. No fit ladder here, so `s` IS the window's scale.
-		if let Some((anchor, name)) = hud::hovered_bar_slot(size, s, bar, self.cursor) {
+		if let Some((anchor, name)) = hud::hovered_bar_slot(size, s, bar, self.cursor)
+			.or_else(|| hud::hovered_spell_slot(size, s, spells, self.cursor))
+		{
 			widgets::tooltip(ui.dl, &ui.style, size, anchor, &name);
 		}
 	}
@@ -495,6 +498,7 @@ mod tests {
 			SIZE,
 			&CharView::build(skills, eye_y, &[]),
 			&empty_bar(),
+			&crate::spellbar::SpellBarView::empty(),
 			1.0,
 		);
 		assert!(hits.hit(640.0, 400.0).is_none(), "read-only: no hit rects");
@@ -531,9 +535,9 @@ mod tests {
 		for want in [
 			group(0),
 			group(need),
-			format!("LV {AT}"),
-			format!("LV {}", AT + 1),
-			format!("LEVEL {total_level}"),
+			format!("Lv {AT}"),
+			format!("Lv {}", AT + 1),
+			format!("Level {total_level}"),
 		] {
 			assert!(all.contains(&want), "{want:?} missing from:\n{all}");
 		}
@@ -545,11 +549,11 @@ mod tests {
 		let all = texts(&emit(&skills)).join("\n");
 		assert!(all.contains(&group(cap)), "the mastery total: {all}");
 		assert!(
-			all.contains(&format!("LV {}", skills::MAX_LEVEL)),
+			all.contains(&format!("Lv {}", skills::MAX_LEVEL)),
 			"the mastery level: {all}"
 		);
 		assert!(
-			!all.contains(&format!("LV {}", skills::MAX_LEVEL + 1)),
+			!all.contains(&format!("Lv {}", skills::MAX_LEVEL + 1)),
 			"there is nothing past mastery to climb to: {all}"
 		);
 	}
@@ -565,28 +569,28 @@ mod tests {
 		let deepest = (skills::DEPTH_XP_MAX_PERMILLE - 1000) / 10;
 		let all = texts(&emit_at(&skills, skills::DEPTH_XP_TO)).join("\n");
 		assert!(
-			all.contains(&format!("depth bonus: +{deepest}% XP per dig")),
+			all.contains(&format!("Depth bonus: +{deepest}% XP per dig")),
 			"{all}"
 		);
 		// The line belongs to Mining, and there is exactly one of it.
 		let lines = texts(&emit_at(&skills, skills::DEPTH_XP_TO));
-		let at = lines.iter().position(|l| l.starts_with("depth bonus"));
+		let at = lines.iter().position(|l| l.starts_with("Depth bonus"));
 		assert_eq!(
 			lines
 				.iter()
-				.filter(|l| l.starts_with("depth bonus"))
+				.filter(|l| l.starts_with("Depth bonus"))
 				.count(),
 			1,
 			"{lines:?}"
 		);
-		let mining = lines.iter().position(|l| l.starts_with("MINING"));
-		let alchemy = lines.iter().position(|l| l.starts_with("ALCHEMY"));
+		let mining = lines.iter().position(|l| l.starts_with("Mining"));
+		let alchemy = lines.iter().position(|l| l.starts_with("Alchemy"));
 		assert!(mining < at && at < alchemy, "{lines:?}");
 
 		// The waterline and everything above it: the rule, never a zero.
 		for y in [skills::DEPTH_XP_FROM, skills::DEPTH_XP_FROM + 60] {
 			let all = texts(&emit_at(&skills, y)).join("\n");
-			assert!(all.contains("depth bonus: none yet"), "at y {y}: {all}");
+			assert!(all.contains("Depth bonus: none yet"), "at y {y}: {all}");
 		}
 		// And no depth anywhere in the world shows a "+0%".
 		for y in (skills::DEPTH_XP_TO..=skills::DEPTH_XP_FROM + 60).step_by(7) {
@@ -646,10 +650,10 @@ mod tests {
 		// And the rows actually render: a fresh character teases the first
 		// thresholds; past the last Mining gate, Mining shows none.
 		let fresh = texts(&emit(&SkillSet::default())).join("\n");
-		let timber = format!("next: LV {} - timber gives", unlock::mine(BlockType::Wood));
-		let torch = format!("next: LV {} - the torch", item_at(BlockType::Torch));
+		let timber = format!("Next: Lv {} - Timber gives", unlock::mine(BlockType::Wood));
+		let torch = format!("Next: Lv {} - The torch", item_at(BlockType::Torch));
 		let ore = format!(
-			"next: LV {} - emberore reveals",
+			"Next: Lv {} - Emberore reveals",
 			reveal_at(BlockType::Emberore)
 		);
 		assert!(fresh.contains(&timber), "{fresh}");

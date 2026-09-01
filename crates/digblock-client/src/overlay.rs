@@ -683,6 +683,7 @@ impl Overlay {
 		feed: &[(crate::voice::Msg, f32, u32)],
 		chat: Option<&crate::chat::ChatView<'_>>,
 		nametags: &[crate::renderer::NameTag],
+		binds: &crate::bindings::Bindings,
 	) {
 		self.scale = ui_scale;
 		self.glyph = glyph_px(ui_scale);
@@ -709,7 +710,7 @@ impl Overlay {
 			feed_top = self.push_chat_input(size, view);
 		}
 		if !feed.is_empty() {
-			self.push_feed(size, feed, feed_top, chat.is_some());
+			self.push_feed(size, feed, feed_top, chat.is_some(), binds);
 		}
 		self.run_cmds(ui, crate::ui::Layer::Content);
 		self.splits[1] = self.verts.len() as u32;
@@ -825,6 +826,7 @@ impl Overlay {
 		feed: &[(crate::voice::Msg, f32, u32)],
 		top: f32,
 		chat_open: bool,
+		binds: &crate::bindings::Bindings,
 	) {
 		let wrap_w = self.wrap_w(size);
 		let mut y = top;
@@ -832,7 +834,7 @@ impl Overlay {
 			// Rendered HERE, not where it was pushed: a message keeps its
 			// arguments until the frame that draws it, which is what lets
 			// a language change re-word lines already on screen.
-			y = self.push_column_line(&crate::voice::render(msg), wrap_w, y, color, a);
+			y = self.push_column_line(&crate::voice::render(msg, binds), wrap_w, y, color, a);
 		}
 	}
 

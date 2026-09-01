@@ -2,11 +2,18 @@
 //! trait. Never touches winit or the surface — it renders into borrowed
 //! `TextureView`s.
 
+mod anim;
 pub mod audio;
+pub mod bindings;
+mod bursts;
 mod camera;
+mod camera_fx;
+mod camrig;
 mod chat;
 mod confetti;
+mod dusk;
 mod engine;
+pub mod events;
 mod font;
 mod gi;
 mod glass;
@@ -24,9 +31,11 @@ pub mod settings;
 mod siphon;
 mod sky;
 mod smoothing;
+pub mod spellbar;
 mod spray;
 mod teleport;
 mod texture;
+pub mod tutorial;
 pub mod ui;
 mod viewmodel;
 mod voice;

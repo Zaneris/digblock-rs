@@ -18,6 +18,10 @@ use digblock_platform::Gpu;
 /// One instance: cell + progress, box lo + seed, box hi + spare.
 const INSTANCE_BYTES: wgpu::BufferAddress = 48;
 
+/// The most cells one swing can break — the Resonant Pick's full plane —
+/// and so the most outlines one frame draws.
+const MAX_TARGETS: usize = digblock_core::unlock::PICK_PLANE;
+
 /// The crosshair target the decal wraps: the anchor cell, the box around the whole object relative
 /// to it, and the dig progress (`None` = idle outline, no crack). The box comes from
 /// `shapes::object_bounds` — the geometry the mesher actually drew — so a shaped block outlines at
@@ -83,6 +87,8 @@ pub(crate) struct HighlightDraw {
 	outline: crate::pipeline_builder::GuardedPipeline,
 	crack: crate::pipeline_builder::GuardedPipeline,
 	instance_buf: wgpu::Buffer,
+	/// Instances uploaded this frame (players.rs's set_instances shape).
+	count: u32,
 	mode: Mode,
 }
 
@@ -150,7 +156,7 @@ impl HighlightDraw {
 		let crack = build("highlight_crack", digblock_assets::shader::HIGHLIGHT_CRACK);
 		let instance_buf = device.create_buffer(&wgpu::BufferDescriptor {
 			label: Some("highlight instance"),
-			size: INSTANCE_BYTES,
+			size: MAX_TARGETS as wgpu::BufferAddress * INSTANCE_BYTES,
 			usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
 			mapped_at_creation: false,
 		});
@@ -158,43 +164,53 @@ impl HighlightDraw {
 			outline,
 			crack,
 			instance_buf,
+			count: 0,
 			mode: Mode::Off,
 		}
 	}
 
-	/// Upload this frame's target, or clear it.
-	pub(crate) fn set_target(&mut self, gpu: &Gpu, target: Option<HighlightTarget>) {
+	/// Upload this frame's targets — the aimed cell FIRST, then every
+	/// extra the pick's swing will take — or clear them. Past
+	/// [`MAX_TARGETS`] the extras clamp (the swing cannot break more).
+	/// The MODE is the first instance's: only the aimed cell ever cracks,
+	/// and the crack shader gates on per-instance progress, so the extras
+	/// ride the same pipeline as plain outlines.
+	pub(crate) fn set_targets(&mut self, gpu: &Gpu, targets: &[HighlightTarget]) {
 		// The per-frame &mut site is what drives the build verdicts home.
 		self.outline.poll();
 		self.crack.poll();
-		self.mode = match &target {
+		self.mode = match targets.first() {
 			None => Mode::Off,
 			Some(t) => match t.progress {
 				Some(p) if p > 0.0 => Mode::Crack,
 				_ => Mode::Outline,
 			},
 		};
-		let Some(t) = target else {
+		let n = targets.len().min(MAX_TARGETS);
+		self.count = n as u32;
+		if n == 0 {
 			return;
-		};
-		let cell = t.cell;
-		let seed = cell_seed(cell);
-		let data: [f32; 12] = [
-			cell.0 as f32,
-			cell.1 as f32,
-			cell.2 as f32,
-			t.progress.unwrap_or(0.0),
-			t.lo[0],
-			t.lo[1],
-			t.lo[2],
-			seed as f32,
-			t.hi[0],
-			t.hi[1],
-			t.hi[2],
-			0.0,
-		];
+		}
+		let mut data = [0.0f32; MAX_TARGETS * 12];
+		for (t, chunk) in targets.iter().zip(data.chunks_exact_mut(12)) {
+			let seed = cell_seed(t.cell);
+			chunk.copy_from_slice(&[
+				t.cell.0 as f32,
+				t.cell.1 as f32,
+				t.cell.2 as f32,
+				t.progress.unwrap_or(0.0),
+				t.lo[0],
+				t.lo[1],
+				t.lo[2],
+				seed as f32,
+				t.hi[0],
+				t.hi[1],
+				t.hi[2],
+				0.0,
+			]);
+		}
 		gpu.queue
-			.write_buffer(&self.instance_buf, 0, bytemuck::cast_slice(&data));
+			.write_buffer(&self.instance_buf, 0, bytemuck::cast_slice(&data[..n * 12]));
 	}
 
 	/// Draw in the water pass, after the water surfaces (the water frame
@@ -213,10 +229,13 @@ impl HighlightDraw {
 		let Some(pipeline) = pipeline else {
 			return 0;
 		};
+		if self.count == 0 {
+			return 0;
+		}
 		pass.set_pipeline(pipeline);
 		pass.set_vertex_buffer(0, self.instance_buf.slice(..));
-		pass.draw(0..36, 0..1);
-		12
+		pass.draw(0..36, 0..self.count);
+		12 * self.count
 	}
 
 	/// Test hook — see [`crate::pipeline_builder::GuardedPipeline::build_failed`].

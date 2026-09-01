@@ -148,8 +148,7 @@ impl Bob {
 		self.phase = (self.phase + moved / BOB_STRIDE).fract();
 		self.breath = (self.breath + dt / BREATH_SECS).fract();
 		let target = (moved / dt / BOB_FULL_SPEED).clamp(0.0, 1.0);
-		let k = (BOB_ATTACK * dt).min(1.0);
-		self.amp += (target - self.amp) * k;
+		self.amp = digblock_core::ease::exp_decay(self.amp, target, BOB_ATTACK, dt);
 	}
 
 	/// This frame's contribution to the pose.

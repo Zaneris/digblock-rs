@@ -3,6 +3,12 @@ use digblock_core::block::{BlockType, Essence};
 use digblock_core::unlock::{self, Kind};
 use digblock_net::messages::{AdminReply, AdminUsage, NoPlayer};
 
+/// Every line here is worded under the DEFAULT bindings; this shadow of
+/// [`super::render`] keeps that choice in one place.
+fn render(msg: &Msg) -> Line {
+	super::render(msg, &crate::bindings::Bindings::default())
+}
+
 /// One sample of every admin reply. The match is what keeps the list
 /// complete: a new variant fails to COMPILE here until it is sampled,
 /// exactly as it fails in `en::admin` until it has words.
@@ -168,7 +174,8 @@ fn samples() -> Vec<Msg> {
 		},
 		Msg::VeinsRevealed,
 		Msg::SourcesRevealed,
-		Msg::SiphonInReach,
+		Msg::NowDiggable(digblock_core::block::DigFamily::Wood),
+		Msg::NowDiggable(digblock_core::block::DigFamily::Rock),
 		Msg::Connected,
 		Msg::UnrankedServer,
 		Msg::LeftServer,
@@ -194,7 +201,36 @@ fn samples() -> Vec<Msg> {
 			usage: "/ban <name>".into(),
 			desc: "ban by IP".into(),
 		},
+		Msg::TutorialDone,
+		Msg::TutorialSiphonDone,
+		Msg::TutorialWispDone,
 	];
+	// Every tutorial step in both wordings: the sweep's uniqueness check
+	// is what proves the touch words actually differ from the keys'.
+	// `jump_button` stays false across the sweep (only Jump's touch arm
+	// reads it, and a flipped copy of every other step would collide);
+	// the one wording it swaps in is sampled once by itself. `spell_slot`
+	// stays 0 on the same reasoning (only CastWisp's key arm reads it).
+	for step in crate::tutorial::StepId::ALL {
+		all.push(Msg::TutorialStep {
+			step,
+			touch: false,
+			jump_button: false,
+			spell_slot: 0,
+		});
+		all.push(Msg::TutorialStep {
+			step,
+			touch: true,
+			jump_button: false,
+			spell_slot: 0,
+		});
+	}
+	all.push(Msg::TutorialStep {
+		step: crate::tutorial::StepId::Jump,
+		touch: true,
+		jump_button: true,
+		spell_slot: 0,
+	});
 	// Both spell-named refusals at every spell: the distinctness the
 	// caller asserts is what proves the argument reaches the words, and
 	// a spell whose sentence duplicates another's is the bug this pair
@@ -213,6 +249,15 @@ fn samples() -> Vec<Msg> {
 		all.push(Msg::SpellLocked(s));
 		all.push(Msg::SpellFareShort(s));
 	}
+	all.push(Msg::SpellSlotEmpty);
+	all.push(Msg::TeleportWait(34));
+	for o in [
+		digblock_core::pick::DigOrientation::Horizontal,
+		digblock_core::pick::DigOrientation::Vertical,
+		digblock_core::pick::DigOrientation::Plane,
+	] {
+		all.push(Msg::PickOrientation(o));
+	}
 	for m in &all {
 		match m {
 			Msg::DigRefused(_)
@@ -229,11 +274,14 @@ fn samples() -> Vec<Msg> {
 			| Msg::SphereNoBlock
 			| Msg::SphereBadBlock(_)
 			| Msg::SphereBlocksShort(_)
+			| Msg::SpellSlotEmpty
+			| Msg::TeleportWait(_)
+			| Msg::PickOrientation(_)
 			| Msg::LevelUp { .. }
 			| Msg::RemoteLevelUp { .. }
 			| Msg::VeinsRevealed
 			| Msg::SourcesRevealed
-			| Msg::SiphonInReach
+			| Msg::NowDiggable(_)
 			| Msg::Connected
 			| Msg::UnrankedServer
 			| Msg::LeftServer
@@ -247,6 +295,10 @@ fn samples() -> Vec<Msg> {
 			| Msg::ServerNotice { .. }
 			| Msg::Chat { .. }
 			| Msg::CommandHint { .. }
+			| Msg::TutorialStep { .. }
+			| Msg::TutorialDone
+			| Msg::TutorialSiphonDone
+			| Msg::TutorialWispDone
 			| Msg::Admin(_) => {}
 		}
 	}

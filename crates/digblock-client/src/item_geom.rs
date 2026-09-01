@@ -295,9 +295,9 @@ fn build_faces(kind: IconKind, out: &mut Vec<ItemFace>) {
 		IconKind::Siphon => siphon_faces(out),
 		IconKind::Pick => pick_faces(out),
 		IconKind::Sigil => sigil_faces(out),
-		// A chip is a sprite, never geometry: `hud::draw_icon` routes it
-		// to the flat path before this is asked.
-		IconKind::Essence(_) => {}
+		// A chip or a spell glyph is a sprite, never geometry:
+		// `hud::draw_icon` routes both to the flat path before this is asked.
+		IconKind::Essence(_) | IconKind::Spell(_) => {}
 	}
 }
 

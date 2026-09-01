@@ -18,12 +18,14 @@ use super::draw::{Cmd, DrawList, Layer};
 const BUCKET_QUADS: usize = 7;
 const SHAPED_SITES: usize = 2 * SHAPED_COUNT + 1;
 /// Chips: the essence readout, one price's lines, every spell fare and
-/// every live toast, each at worst a cube (a feedstock chip).
+/// every live toast, each at worst a cube (a feedstock chip) — plus the
+/// spell bar's flat sprites and their drag ghost.
 const CHIP_SITES: usize = 2 * digblock_core::block::Essence::COUNT
 	+ digblock_core::alchemy::MAX_COST_LINES
 	+ digblock_core::worldgen::SurfaceKind::ALL.len()
 	+ digblock_core::skills::Skill::COUNT
-	+ 4;
+	+ 4 + crate::spellbar::SPELL_SLOTS
+	+ 1;
 const MAX_ICON_QUADS: usize = (GRID_SLOTS + HOTBAR_SLOTS + 1 + CHIP_SITES) * BUCKET_QUADS
 	+ SHAPED_SITES * 2 * digblock_core::shapes::MAX_SHAPE_QUADS;
 const MAX_ICON_VERTS: usize = MAX_ICON_QUADS * 6;

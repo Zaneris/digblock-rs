@@ -5,6 +5,86 @@
 use super::*;
 
 impl Engine {
+	/// One frame of the fixed-rate player simulation and reconciliation,
+	/// shared verbatim by first person and a detached cinematic (which
+	/// passes a zeroed intent). Ends by computing `fp_eye`, the player's
+	/// presented eye this frame.
+	fn step_player_sim(&mut self, intent: PlayerIntent, dir: Vec3, dt: f32) {
+		self.tick_accum = (self.tick_accum + dt).min(0.25);
+		let pipeline = &self.pipeline;
+		let cell_at = |x: i32, y: i32, z: i32| pipeline.cell_at(x, y, z);
+		// Never simulate through ungenerated terrain: unloaded cells are non-solid, so
+		// ticking before the player's column has generated free-falls through the world —
+		// seconds of fall on web. Hold the sim, dropping the accumulated time, until the
+		// column lands (gen jobs land whole column stacks, so one feet-cell probe is
+		// enough). Outside the world's vertical range no chunk ever loads; let the void fall.
+		let feet_y = (self.player.pos.y - digblock_core::player::EYE_TO_FEET).floor() as i32;
+		let column_loaded = !(0..=digblock_core::chunk::WORLD_VBLOCK).contains(&feet_y)
+			|| cell_at(
+				self.player.pos.x.floor() as i32,
+				feet_y,
+				self.player.pos.z.floor() as i32,
+			)
+			.is_some();
+		// The arrival hold suspends the sim on the same terms an unloaded feet column
+		// does, and for the same reason: the geometry under the player is not the
+		// geometry the server simulates against. Predicting through it reads as being
+		// *moved* after joining — you stand on worldgen, the server stands on the
+		// journal, and the first snapshot settles it visibly.
+		let world_ready = column_loaded && !self.save.arrival_hold.running();
+		if !world_ready {
+			self.tick_accum = 0.0;
+			// Zeroing the accumulator parks the lerp at alpha = 0, which
+			// would draw a whole tick BACKWARDS; hold in place instead.
+			self.session.tick_lerp.reset(self.player.pos);
+		}
+		// Reconcile against the latest snapshot before predicting this
+		// frame's ticks; corrections land as a decaying visual offset,
+		// not a camera snap.
+		if let Some(net) = self.session.client.as_mut().filter(|n| n.ready())
+			&& world_ready
+			&& let Some((tick, state)) = self.session.pending_ack.take()
+		{
+			use digblock_net::predict::Reconciled;
+			let outcome = net
+				.predictor
+				.reconcile(&mut self.player, tick, state, &cell_at);
+			if let Reconciled::Replayed { error } = outcome {
+				self.session.correction_offset += error;
+				// The rewind moved the player by -error; the lerp
+				// anchor has to travel with it or the next frame
+				// interpolates from the pre-rewind position and
+				// re-injects the jump the offset exists to hide.
+				self.session.tick_lerp.rewind(error);
+				self.session.net_corrections += 1;
+				self.session.net_error_accum += error.length();
+			}
+			// The ack that drove this reconcile is also the RTT
+			// sample — the overlay's ping comes from here.
+			net.note_reconciled(outcome);
+		}
+		if world_ready {
+			while self.tick_accum >= TICK {
+				self.tick_accum -= TICK;
+				self.tick_player(intent, dir);
+			}
+			if let Some(net) = self.session.client.as_mut().filter(|n| n.ready()) {
+				net.send_inputs();
+			}
+		}
+		// Sub-second exponential decay; snapped off once imperceptible.
+		self.session.correction_offset =
+			digblock_core::ease::exp_decay3(self.session.correction_offset, Vec3::ZERO, 5.0, dt);
+		if self.session.correction_offset.length_squared() < 1e-6 {
+			self.session.correction_offset = Vec3::ZERO;
+		}
+		self.fp_eye = self
+			.session
+			.tick_lerp
+			.render_pos(self.player.pos, self.tick_accum)
+			+ self.session.correction_offset;
+	}
+
 	/// Open the character screen and ask the master where this account stands — every time,
 	/// since the board moves under you; the screen draws whatever answer it last had until the
 	/// new one lands. Signed out, or with no launcher services, the screen just opens.
@@ -99,6 +179,15 @@ impl Engine {
 		// run has a genuinely static sun for the GI to converge against.
 		let fixed_tod = self.config.tod;
 		self.sun.update(dt);
+		// The lightless character's held dusk: released the moment the
+		// pack gains any light-casting item or a wisp burns, and painting
+		// the sun for as long as it stays active (see `dusk.rs`).
+		if self.dusk_hold.waiting_for_light() && (self.wisp_left > 0.0 || self.owns_light()) {
+			self.dusk_hold.light_obtained();
+		}
+		if let Some(tod) = self.dusk_hold.tick(dt) {
+			self.sun.tod = tod;
+		}
 		if let Some(tod) = fixed_tod {
 			self.sun.tod = tod;
 		}
@@ -145,8 +234,14 @@ impl Engine {
 		const LOOK_SENS: f32 = 0.12; // degrees per raw mouse unit
 		let (lx, ly) = std::mem::take(&mut self.input.look_accum);
 		let touch_look = self.input.touch.take_look();
-		self.camera
+		self.look
 			.look(lx * LOOK_SENS + touch_look.x, ly * LOOK_SENS + touch_look.y);
+		// Both interactive modes present the player's facing; a detached
+		// rig owns the camera's angles itself.
+		if !matches!(self.mode, CameraMode::Cinematic(_)) {
+			self.camera.yaw_deg = self.look.yaw_deg;
+			self.camera.pitch_deg = self.look.pitch_deg;
+		}
 
 		// Menu plumbing: service responses in, commands out, disconnect
 		// intents applied. The world (and any live connection) keeps
@@ -202,7 +297,7 @@ impl Engine {
 		// The home spell's cooldown ticks here; the spellbook page reads
 		// it live. Connected, the server teleports us (Teleported lands
 		// in pump_net); local play resolves and lands immediately.
-		self.save.teleport_cooldown = (self.save.teleport_cooldown - dt).max(0.0);
+		self.save.teleport_cooldown.tick(dt);
 		// The wisp burns down on the same clock, and so does every kindled
 		// light — each on its own countdown, consulting nobody.
 		self.wisp_left = (self.wisp_left - dt).max(0.0);
@@ -281,6 +376,22 @@ impl Engine {
 					self.session.last_layout_sent = Some((bar.to_vec(), grid.to_vec()));
 				}
 			}
+			// The spell bar's twin: primed by the join-sync SpellBar, so a
+			// pre-sync default cannot overwrite the stored assignments.
+			if let Some(sent) = self.session.sent_spell_bar {
+				let now = self.spell_bar.to_wire();
+				if sent != now {
+					net.send_spell_bar(&now);
+					self.session.sent_spell_bar = Some(now);
+				}
+			}
+			// The pick's dig shape: no server-primed state to wait for (the
+			// server default matches ours), so a fresh connection declares
+			// it once and every toggle re-declares.
+			if self.session.last_orientation_sent != Some(self.dig_orientation) {
+				net.send_dig_orientation(self.dig_orientation.to_wire());
+				self.session.last_orientation_sent = Some(self.dig_orientation);
+			}
 		}
 		// Expired messages are kept, not dropped: the chat box shows recent
 		// history while you type, and there is nothing to show if the only
@@ -314,6 +425,11 @@ impl Engine {
 			b[3] += dt;
 		}
 		self.vfx.confetti.retain(|b| b[3] < crate::confetti::LIFE);
+		// Generic bursts: the same contract, each with its own life lane.
+		for b in &mut self.vfx.bursts {
+			b[3] += dt;
+		}
+		self.vfx.bursts.retain(|b| b[3] < b[6]);
 		// Teleport bursts age the same way — the age IS the simulation —
 		// and the channel aura's envelope opens while a cast channels and
 		// dissolves when one ends or breaks, so an interrupt fades rather
@@ -323,17 +439,98 @@ impl Engine {
 		}
 		self.vfx.casts.retain(|fx| fx.age < crate::teleport::LIFE);
 		let channel_live = self.cast.is_some() || self.config.debug_cast.is_some();
-		self.vfx.channel_env = if channel_live {
-			(self.vfx.channel_env + dt / crate::teleport::FADE_IN_SECS).min(1.0)
-		} else {
-			(self.vfx.channel_env - dt / crate::teleport::FADE_OUT_SECS).max(0.0)
-		};
+		self.vfx.channel_env.tick(
+			dt,
+			channel_live,
+			crate::teleport::FADE_IN_SECS,
+			crate::teleport::FADE_OUT_SECS,
+		);
 		self.vfx.flash = (self.vfx.flash - dt * 2.2).max(0.0);
+		self.vfx.camera_fx.tick(dt);
 		// DIG_CONFETTI=1: a burst every couple of seconds a few blocks
 		// ahead, so a capture run can photograph one at every age.
 		if self.config.debug_confetti && self.vfx.confetti.is_empty() {
 			let at = self.camera.pos + self.camera.dir() * 4.0 - Vec3::Y * 0.5;
 			self.throw_confetti(at);
+		}
+		// DIG_BURSTS=1: the four kinds in a rack a few blocks ahead, so a
+		// capture run can photograph each at every age.
+		if self.config.debug_bursts && self.vfx.bursts.is_empty() {
+			let base = self.camera.pos + self.camera.dir() * 4.0 - Vec3::Y * 0.5;
+			let right = self.camera.dir().cross(Vec3::Y).normalize_or_zero();
+			for (i, k) in crate::bursts::BurstKind::ALL.into_iter().enumerate() {
+				let at = base + right * (i as f32 - 1.5) * 1.5;
+				self.spawn_burst(k, at, [0.55, 0.5, 0.45]);
+			}
+		}
+		// DIG_ORBIT: a slow cinematic orbit of the aim point (or a spot a
+		// few blocks ahead), for photographing the terrain-aware boom.
+		// Guarded on first person, so it arms once and a finished blend
+		// (nothing ends this one, but a dev key could) re-arms it.
+		if let Some((radius, degs)) = self.config.debug_orbit
+			&& self.mode.first_person()
+		{
+			let eye = self.camera.pos;
+			let center = match &self.target {
+				Some(h) => Vec3::from_array(cell_center(h.cell)),
+				None => eye + self.camera.dir() * 4.0,
+			};
+			let center = {
+				// A center inside rock degenerates the probe; step up out.
+				let pipeline = &self.pipeline;
+				let cell_at = |x: i32, y: i32, z: i32| pipeline.cell_at(x, y, z);
+				let mut c = center;
+				for _ in 0..4 {
+					if !digblock_core::camera_probe::sphere_overlaps_solid(
+						c,
+						digblock_core::camera_probe::CAM_RADIUS,
+						&cell_at,
+					) {
+						break;
+					}
+					c.y += 0.5;
+				}
+				c
+			};
+			let from = crate::camrig::CamPose {
+				pos: eye,
+				yaw_deg: self.look.yaw_deg,
+				pitch_deg: self.look.pitch_deg,
+			};
+			let rig = crate::camrig::OrbitRig::new(center, radius, (radius * 0.4).min(6.0), degs);
+			self.mode = CameraMode::Cinematic(crate::camrig::Cinematic::start(from, rig));
+		}
+		// DIG_DOLLY: a tracking dolly sliding sideways past the aim point
+		// (or a spot ahead), for photographing the chasing lens on a
+		// moving eye. The shot is finite, so a finished pass re-arms and
+		// runs again — every age stays photographable, DIG_CONFETTI's
+		// looping rule.
+		if let Some((secs, blocks)) = self.config.debug_dolly
+			&& self.mode.first_person()
+		{
+			let eye = self.camera.pos;
+			let target = match &self.target {
+				Some(h) => Vec3::from_array(cell_center(h.cell)),
+				None => eye + self.camera.dir() * 6.0,
+			};
+			let d = target - eye;
+			let slide = Vec3::new(d.x, 0.0, d.z)
+				.try_normalize()
+				.unwrap_or(Vec3::Z)
+				.cross(Vec3::Y);
+			let from = crate::camrig::CamPose {
+				pos: eye,
+				yaw_deg: self.look.yaw_deg,
+				pitch_deg: self.look.pitch_deg,
+			};
+			let rig = crate::camrig::DollyRig::new(eye, eye + slide * blocks, target, secs);
+			self.mode = CameraMode::Cinematic(crate::camrig::Cinematic::start_shots(
+				from,
+				vec![crate::camrig::Shot {
+					rig: crate::camrig::CineRig::Dolly(rig),
+					hold: secs,
+				}],
+			));
 		}
 		// The bench drip: a queued transmute batch sends one single-item
 		// Craft per cycle — the server paces the same rhythm out of its
@@ -441,10 +638,11 @@ impl Engine {
 						&self.hotbar.to_wire(),
 						&self.inv_grid.to_wire(),
 						&self.skills.to_wire(),
+						&self.spell_bar.to_wire(),
 						&digblock_persist::PlayerPersist {
 							pos: self.player.pos.to_array(),
-							yaw: self.camera.yaw_deg,
-							pitch: self.camera.pitch_deg,
+							yaw: self.look.yaw_deg,
+							pitch: self.look.pitch_deg,
 						},
 					);
 				}
@@ -458,8 +656,7 @@ impl Engine {
 		// queue never opens the room join sync reserves, must not be able
 		// to strand a player on a loading screen — the fallback is exactly
 		// the behaviour this replaced.
-		if let Some(left) = self.save.arrival_hold {
-			let left = left - dt;
+		if self.save.arrival_hold.running() {
 			// A connection that ended can never deliver the marker, and the
 			// world we fall back to playing offline is generated, not
 			// synced — so release now rather than making the player watch
@@ -468,18 +665,80 @@ impl Engine {
 			// timeout, `return_to_title`) instead of one hook each.
 			if self.session.client.is_none() {
 				self.end_arrival_hold();
-			} else if left <= 0.0 {
+			} else if self.save.arrival_hold.tick(dt) {
 				log::warn!(
 					"arrival hold: no AreaReady in {:.0}s — entering the world anyway",
 					digblock_net::protocol::AREA_SYNC_TIMEOUT_SECS
 				);
 				self.end_arrival_hold();
-			} else {
-				self.save.arrival_hold = Some(left);
 			}
 		}
 
-		if self.input.walking {
+		if let CameraMode::Cinematic(_) = self.mode {
+			// The staged reveal: each subject's chunks remesh on cue,
+			// while its own shot is framing it.
+			self.reveal_clock += dt;
+			while let Some(&(at, cell)) = self.reveal_cues.first() {
+				if self.reveal_clock < at {
+					break;
+				}
+				self.reveal_cues.remove(0);
+				self.pipeline.remesh_near(cell, 1);
+			}
+			// The player keeps simulating, standing still: gravity, water
+			// and (online) the input stream continue under the shot. The
+			// touch jump edge is still drained, as first person drains it.
+			self.input.touch.take_jump();
+			let dir = crate::camera::dir_from(self.look.yaw_deg, self.look.pitch_deg);
+			self.step_player_sim(
+				PlayerIntent {
+					move_axis: Vec2::ZERO,
+					jump: false,
+				},
+				dir,
+				dt,
+			);
+			let fp = crate::camrig::CamPose {
+				pos: self.fp_eye,
+				yaw_deg: self.look.yaw_deg,
+				pitch_deg: self.look.pitch_deg,
+			};
+			let CameraMode::Cinematic(mut cine) =
+				std::mem::replace(&mut self.mode, CameraMode::FirstPerson)
+			else {
+				unreachable!()
+			};
+			let pose = {
+				let pipeline = &self.pipeline;
+				let cell_at = |x: i32, y: i32, z: i32| pipeline.cell_at(x, y, z);
+				// `clearance_out_of`, not plain `clearance`: an orbit may
+				// pivot ON a terrain block (the heartwood), and a clear
+				// origin degrades to the plain probe anyway.
+				let clear = |o: Vec3, d: Vec3, m: f32, r: f32| {
+					digblock_core::camera_probe::clearance_out_of(o, d, m, r, &cell_at)
+				};
+				cine.step(dt, fp, &clear)
+			};
+			match pose {
+				Some(pose) => {
+					self.camera.pos = pose.pos;
+					self.camera.yaw_deg = pose.yaw_deg;
+					self.camera.pitch_deg = pose.pitch_deg;
+					self.mode = CameraMode::Cinematic(cine);
+				}
+				None => {
+					// Landed: the mode is already FirstPerson again, and
+					// the next frame takes that branch VERBATIM — exact
+					// rest restored by branch switch, never by epsilon.
+					self.camera.pos = fp.pos;
+					self.camera.yaw_deg = fp.yaw_deg;
+					self.camera.pitch_deg = fp.pitch_deg;
+					// Whatever the staged reveal still owes the world
+					// sweeps in now, off camera.
+					self.finish_reveal();
+				}
+			}
+		} else if self.mode.first_person() {
 			// Fixed-rate player simulation (Java feel was tuned per-frame at
 			// that same rate; the accumulator preserves it at any display rate).
 			// Always drained, honoured only in double-tap mode — an undrained
@@ -499,81 +758,13 @@ impl Engine {
 				move_axis: key_axis + self.input.touch.move_axis(),
 				jump,
 			};
+			// The tutorial's jump: intent while standing on something.
+			self.tutorial_jumped |= intent.jump && self.ground_below().1;
 			let dir = self.camera.dir();
-			self.tick_accum = (self.tick_accum + dt).min(0.25);
-			let pipeline = &self.pipeline;
-			let cell_at = |x: i32, y: i32, z: i32| pipeline.cell_at(x, y, z);
-			// Never simulate through ungenerated terrain: unloaded cells are non-solid, so
-			// ticking before the player's column has generated free-falls through the world —
-			// seconds of fall on web. Hold the sim, dropping the accumulated time, until the
-			// column lands (gen jobs land whole column stacks, so one feet-cell probe is
-			// enough). Outside the world's vertical range no chunk ever loads; let the void fall.
-			let feet_y = (self.player.pos.y - digblock_core::player::EYE_TO_FEET).floor() as i32;
-			let column_loaded = !(0..=digblock_core::chunk::WORLD_VBLOCK).contains(&feet_y)
-				|| cell_at(
-					self.player.pos.x.floor() as i32,
-					feet_y,
-					self.player.pos.z.floor() as i32,
-				)
-				.is_some();
-			// The arrival hold suspends the sim on the same terms an unloaded feet column
-			// does, and for the same reason: the geometry under the player is not the
-			// geometry the server simulates against. Predicting through it reads as being
-			// *moved* after joining — you stand on worldgen, the server stands on the
-			// journal, and the first snapshot settles it visibly.
-			let world_ready = column_loaded && self.save.arrival_hold.is_none();
-			if !world_ready {
-				self.tick_accum = 0.0;
-				// Zeroing the accumulator parks the lerp at alpha = 0, which
-				// would draw a whole tick BACKWARDS; hold in place instead.
-				self.session.tick_lerp.reset(self.player.pos);
-			}
-			// Reconcile against the latest snapshot before predicting this
-			// frame's ticks; corrections land as a decaying visual offset,
-			// not a camera snap.
-			if let Some(net) = self.session.client.as_mut().filter(|n| n.ready())
-				&& world_ready
-				&& let Some((tick, state)) = self.session.pending_ack.take()
-			{
-				use digblock_net::predict::Reconciled;
-				let outcome = net
-					.predictor
-					.reconcile(&mut self.player, tick, state, &cell_at);
-				if let Reconciled::Replayed { error } = outcome {
-					self.session.correction_offset += error;
-					// The rewind moved the player by -error; the lerp
-					// anchor has to travel with it or the next frame
-					// interpolates from the pre-rewind position and
-					// re-injects the jump the offset exists to hide.
-					self.session.tick_lerp.rewind(error);
-					self.session.net_corrections += 1;
-					self.session.net_error_accum += error.length();
-				}
-				// The ack that drove this reconcile is also the RTT
-				// sample — the overlay's ping comes from here.
-				net.note_reconciled(outcome);
-			}
-			if world_ready {
-				while self.tick_accum >= TICK {
-					self.tick_accum -= TICK;
-					self.tick_player(intent, dir);
-				}
-				if let Some(net) = self.session.client.as_mut().filter(|n| n.ready()) {
-					net.send_inputs();
-				}
-			}
-			// Sub-second exponential decay; snapped off once imperceptible.
-			self.session.correction_offset *= (-dt / 0.2).exp();
-			if self.session.correction_offset.length_squared() < 1e-6 {
-				self.session.correction_offset = Vec3::ZERO;
-			}
+			self.step_player_sim(intent, dir, dt);
 			// Presentation only: `player.pos` stays the authority for
 			// occupancy, the wire, and the save.
-			self.camera.pos = self
-				.session
-				.tick_lerp
-				.render_pos(self.player.pos, self.tick_accum)
-				+ self.session.correction_offset;
+			self.camera.pos = self.fp_eye;
 		} else {
 			// Debug fly camera.
 			let speed = 24.0 * dt;
@@ -606,6 +797,43 @@ impl Engine {
 		// once, after both — `step_audio` returns early on a silent run
 		// and would otherwise starve the bob of every frame's delta.
 		let moved = self.player.pos - self.audio.prev_player_pos;
+		// The tutorial's continuous verbs, paused under the open menu
+		// exactly as the panel hides with the HUD.
+		if !self.ui.menu.is_open() {
+			// The wisp nudge is a clock window, not a pack event, so it is
+			// asked here every frame rather than where the inventory grows.
+			self.nudge_wisp();
+			// The bench steps ride the same guide the highlight reads, so
+			// the words, the pulse and the advance can never disagree
+			// about which phase the page is in.
+			let guide = self.ui.alch_screen.guide_to(BlockType::EssenceSiphon);
+			let poll = crate::tutorial::Poll {
+				moved_blocks: Vec2::new(moved.x, moved.z).length(),
+				yaw_deg: self.look.yaw_deg,
+				pitch_deg: self.look.pitch_deg,
+				jumped: std::mem::take(&mut self.tutorial_jumped),
+				bench_open: self.ui.alch_screen.is_open(),
+				tools_picked: matches!(
+					guide,
+					Some(crate::ui::InvId::Craft(_) | crate::ui::InvId::CraftGo)
+				),
+				siphon_picked: matches!(guide, Some(crate::ui::InvId::CraftGo)),
+				owns_siphon: self.inventory.count(BlockType::EssenceSiphon) > 0,
+				siphon_in_hand: self.hotbar.selected_item()
+					== Some(digblock_core::hotbar::HotbarItem::WaterTool)
+					&& self.hotbar.active_tool() == Some(BlockType::EssenceSiphon),
+				arcana_open: self.ui.spellbook.is_open(),
+				wisp_slotted: self.wisp_bar_slot().is_some(),
+				wisp_lit: self.wisp_left > 0.0,
+			};
+			if let Some(adv) = self.tutorial.poll(&poll, dt) {
+				self.on_tutorial_advance(adv);
+			}
+		} else {
+			// The panel can still be up over the menu (the open-inventory
+			// step); its flourish must not freeze bright.
+			self.tutorial.tick_celebrate(dt);
+		}
 		self.vfx.view_bob.advance(
 			Vec3::new(moved.x, 0.0, moved.z).length(),
 			dt,
@@ -617,7 +845,7 @@ impl Engine {
 		self.vfx.view_swing.advance(dt);
 		// The casting hand rides the channel's own envelope, so gesture
 		// and aura rise and dissolve together. DIG_CAST holds both.
-		self.vfx.view_cast.advance(dt, self.vfx.channel_env);
+		self.vfx.view_cast.advance(dt, self.vfx.channel_env.level());
 		// At the TAIL on the interactive path, after `reconcile_layout` and
 		// `pump_net`: a slot whose count reached zero is only released by
 		// the reconcile above, so reading the bar ahead of it drew — and
@@ -625,6 +853,7 @@ impl Engine {
 		// scripted-flight arms call this before their own returns instead,
 		// because the hand is part of the frame they capture.
 		self.advance_hand(dt);
+		self.step_ui_sounds();
 		self.step_audio(dt);
 		self.audio.prev_player_pos = self.player.pos;
 		self.bench.pending.update_ms = ms_since(t_update);

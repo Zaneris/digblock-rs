@@ -243,7 +243,7 @@ impl HiscoresView {
 		match model.shown().or_else(|| model.placeholder(has_master)) {
 			Some(v) => {
 				if v.rows.is_empty() {
-					rows.push(Row::Info("nobody here yet".into()));
+					rows.push(Row::Info("Nobody here yet".into()));
 				} else {
 					rows.push(Row::Head);
 					for (i, r) in v.rows.iter().enumerate() {
@@ -260,11 +260,11 @@ impl HiscoresView {
 					}
 				}
 				if loading {
-					summary = "fetching...".into();
+					summary = "Fetching...".into();
 				} else {
 					let last = last_page(v);
 					summary = format!(
-						"page {} of {} - {} ranked",
+						"Page {} of {} - {} ranked",
 						v.page,
 						last,
 						group(u64::from(v.total))
@@ -276,11 +276,11 @@ impl HiscoresView {
 				rows.push(Row::Pager);
 			}
 			None => rows.push(Row::Info(if !has_master {
-				"no master server; run with --master-url".into()
+				"No master server; run with --master-url".into()
 			} else if let Some(e) = &model.error {
-				format!("hiscores failed: {e}")
+				format!("Hiscores failed: {e}")
 			} else {
-				"fetching...".into()
+				"Fetching...".into()
 			})),
 		}
 		Self {
@@ -297,8 +297,8 @@ impl HiscoresView {
 	/// The column captions: the overall board's figures are sums.
 	fn head(&self) -> [&'static str; 4] {
 		match self.skill {
-			None => ["RANK", "NAME", "TOTAL LEVEL", "TOTAL XP"],
-			Some(_) => ["RANK", "NAME", "LEVEL", "XP"],
+			None => ["Rank", "Name", "Total Level", "Total XP"],
+			Some(_) => ["Rank", "Name", "Level", "XP"],
 		}
 	}
 
@@ -335,13 +335,13 @@ impl HiscoresView {
 
 fn tab_label(board: Option<Skill>) -> String {
 	match board {
-		None => "OVERALL".into(),
-		Some(s) => s.name().to_uppercase(),
+		None => "Overall".into(),
+		Some(s) => s.name().into(),
 	}
 }
 
-const PREV: &str = "PREV";
-const NEXT: &str = "NEXT";
+const PREV: &str = "Prev";
+const NEXT: &str = "Next";
 
 fn box_h(row: &Row, scale: f32) -> f32 {
 	match row {
@@ -371,7 +371,7 @@ fn measure_rows(view: &HiscoresView, style: &Style) -> (f32, f32) {
 	for row in &view.rows {
 		let w = match row {
 			Row::Space => 0.0,
-			Row::Title => theme::text_row_w(style, "HISCORES"),
+			Row::Title => theme::text_row_w(style, "Hiscores"),
 			Row::Info(t) => theme::text_row_w(style, t),
 			Row::Tabs => {
 				let widest = (0..TABS)
@@ -477,6 +477,7 @@ impl HiscoresScreen {
 		size: (u32, u32),
 		view: &HiscoresView,
 		bar: &HotbarView,
+		spells: &crate::spellbar::SpellBarView,
 		daylight: f32,
 	) {
 		let s = ui.style.scale;
@@ -510,7 +511,7 @@ impl HiscoresScreen {
 				Row::Title | Row::Info(_) => {
 					let (text, color) = match row {
 						Row::Info(t) => (t.as_str(), DIM),
-						_ => ("HISCORES", WHITE),
+						_ => ("Hiscores", WHITE),
 					};
 					widgets::row(
 						ui.dl,
@@ -610,7 +611,9 @@ impl HiscoresScreen {
 		}
 		// Drawn OVER the bar, which draws after it at the window's scale —
 		// so naming its slots is this page's job, at this frame's glyph.
-		if let Some((anchor, name)) = hud::hovered_bar_slot(size, s, bar, self.cursor) {
+		if let Some((anchor, name)) = hud::hovered_bar_slot(size, s, bar, self.cursor)
+			.or_else(|| hud::hovered_spell_slot(size, s, spells, self.cursor))
+		{
 			widgets::tooltip(ui.dl, &ui.style, size, anchor, &name);
 		}
 	}
@@ -645,6 +648,7 @@ mod tests {
 			SIZE,
 			&HiscoresView::build(model, has_master),
 			&empty_bar(),
+			&crate::spellbar::SpellBarView::empty(),
 			1.0,
 		);
 		(dl, hits)
@@ -696,7 +700,7 @@ mod tests {
 				assert!(all.contains(&want), "{want:?} missing from:\n{all}");
 			}
 		}
-		assert!(all.contains(&format!("page 1 of {last}")), "{all}");
+		assert!(all.contains(&format!("Page 1 of {last}")), "{all}");
 		for tab in 0..TABS {
 			assert!(hits.rect_of(InvId::Board(tab as u8)).is_some(), "tab {tab}");
 		}
@@ -717,9 +721,9 @@ mod tests {
 		assert!(hits.rect_of(InvId::BoardPrev).is_some());
 
 		// Skill and overall boards caption their figures differently.
-		assert!(all.contains("LEVEL") && !all.contains("TOTAL LEVEL"));
+		assert!(all.contains("Level") && !all.contains("Total Level"));
 		let (dl, _) = emit(&showing(sample_board(None)), true);
-		assert!(texts(&dl).join("\n").contains("TOTAL LEVEL"));
+		assert!(texts(&dl).join("\n").contains("Total Level"));
 	}
 
 	/// A tab change keeps the panel the previous page's size until the new page lands — the
@@ -743,7 +747,7 @@ mod tests {
 				r.name
 			);
 		}
-		assert!(all.contains("fetching"), "{all}");
+		assert!(all.contains("Fetching"), "{all}");
 		assert!(
 			hits.rect_of(InvId::BoardNext).is_none(),
 			"nothing to page while loading"
@@ -796,7 +800,7 @@ mod tests {
 		m.answer(Ok(sample_board(Some(Skill::Arcana))));
 		assert!(m.shown().is_none(), "another board's page was shown");
 		let (dl, _) = emit(&m, true);
-		assert!(texts(&dl).join("\n").contains("fetching"), "still waiting");
+		assert!(texts(&dl).join("\n").contains("Fetching"), "still waiting");
 		m.answer(Ok(sample_board(None)));
 		assert!(m.shown().is_some());
 

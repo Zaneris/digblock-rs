@@ -28,22 +28,24 @@ impl Renderer {
 			sky_floor,
 			overlay,
 			confetti,
+			bursts,
 			siphon,
 			teleport,
 			markers,
 			feed,
-			target: highlight_target,
+			targets: highlight_targets,
 			viewmodel,
 			ui,
 			chat,
 			nametags,
+			binds,
 		} = *scene;
 		self.ensure_targets(gpu, size, scale);
 		// Remote players re-upload every frame (a handful of instances —
 		// cheaper than the change detection it replaces).
 		self.players.set_instances(gpu, players);
 		self.players.set_held(gpu, held);
-		self.highlight.set_target(gpu, highlight_target);
+		self.highlight.set_targets(gpu, highlight_targets);
 		let aspect = size.0 as f32 / size.1.max(1) as f32;
 		self.viewmodel.prepare(gpu, aspect, viewmodel.as_ref());
 		let mut stats = RenderStats {
@@ -67,6 +69,7 @@ impl Renderer {
 			feed,
 			chat.as_ref(),
 			nametags,
+			binds,
 		);
 		self.ui_icons.prepare(gpu, size, ui);
 		gpu.queue
@@ -85,6 +88,7 @@ impl Renderer {
 			glam::Vec3::new(frame.cam_pos[0], frame.cam_pos[1], frame.cam_pos[2]),
 		);
 		let confetti_n = self.confetti.prepare(gpu, confetti);
+		let bursts_n = self.bursts.prepare(gpu, bursts);
 		let siphon_n = self.siphon.prepare(gpu, siphon.as_ref());
 		let teleport_n = self.teleport.prepare(gpu, teleport);
 		let marker_n = self.waystone_fx.prepare(gpu, markers);
@@ -408,6 +412,10 @@ impl Renderer {
 						.draw(&mut pass, confetti_n, self.gi.gather_bind());
 				stats.draw_calls += u32::from(confetti_tris > 0);
 				stats.triangles += confetti_tris;
+				// And the burst rack, through the same groups.
+				let burst_tris = self.bursts.draw(&mut pass, bursts_n, self.gi.gather_bind());
+				stats.draw_calls += u32::from(burst_tris > 0);
+				stats.triangles += burst_tris;
 
 				// The essence draw last of the three, because it is the
 				// only ADDITIVE one: it has to land on top of whatever the

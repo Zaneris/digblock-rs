@@ -301,6 +301,7 @@ fn nothing_writes_the_world_floor() {
 			swing_hit.normal,
 			swing.to_array(),
 			digblock_core::unlock::pick_cells(digblock_core::unlock::PICK_PLANE_AT),
+			digblock_core::pick::DigOrientation::default(),
 			|_| true,
 		)
 		.contains(&(px, FLOOR, sz)),
@@ -3081,4 +3082,102 @@ fn a_place_smothers_the_grass_beneath() {
 		Some(BlockType::Grass),
 		"a poured source never smothers"
 	);
+}
+
+/// The declared dig shape reaches the server on the reliable stream and
+/// shapes the swing: Vertical cuts a wall COLUMN where Horizontal cuts
+/// the row, and a Plane declared below its Mining unlock clamps back to
+/// the horizontal row rather than widening the swing.
+#[test]
+fn the_declared_orientation_shapes_the_swing_and_clamps() {
+	use digblock_core::pick::DigOrientation;
+	let mut sim = flat_sim("orientation");
+	let mut c = connect(&mut sim, 1);
+	wait_live(&mut sim, 1);
+	let pos = sim.test_player(1).unwrap().pos;
+	let (sx, sz) = (pos.x.floor() as i32, pos.z.floor() as i32);
+	let base = pos.y.floor() as i32;
+	sim.bench_set_mining_level(1, digblock_core::unlock::PICK_WIDE_AT);
+	sim.bench_set_active_tool(1, BlockType::ResonantPick);
+
+	// A 3x3 stone panel standing a few blocks ahead on +x, centred at
+	// eye height, so both a row and a column fit inside it.
+	let px = sx + 3;
+	let cy = base + 1;
+	let build_panel = |sim: &mut Sim| {
+		for y in (cy - 1)..=(cy + 1) {
+			for z in (sz - 1)..=(sz + 1) {
+				sim.test_set_cell(px, y, z, BlockType::Stone as u16);
+			}
+		}
+	};
+	build_panel(&mut sim);
+	let swing = (Vec3::new(px as f32, cy as f32 + 0.5, sz as f32 + 0.5) - pos).normalize();
+	let hold = BlockType::Stone.hardness_ticks().unwrap() as u32 * 3 + 16;
+
+	// ---- 1. Vertical: the column falls, the row stands ---------------
+	sim.tick_once(vec![SimEvent::Msg {
+		conn_id: 1,
+		msg: ClientMsg::SetDigOrientation {
+			mode: DigOrientation::Vertical.to_wire(),
+		},
+	}]);
+	let mut t = 0;
+	dig_hold(&mut sim, 1, swing, hold, 6, EditKind::Dig, &mut t);
+	c.drain();
+	for y in (cy - 1)..=(cy + 1) {
+		assert_eq!(
+			sim.test_cell_at(px, y, sz),
+			Some(0),
+			"the column cell at y={y} has to fall"
+		);
+	}
+	for z in [sz - 1, sz + 1] {
+		assert_eq!(
+			sim.test_block_at(px, cy, z),
+			Some(BlockType::Stone),
+			"a vertical swing took the row cell at z={z}"
+		);
+	}
+
+	// ---- 2. Plane below its unlock clamps to the horizontal row ------
+	build_panel(&mut sim);
+	sim.tick_once(vec![SimEvent::Msg {
+		conn_id: 1,
+		msg: ClientMsg::SetDigOrientation {
+			mode: DigOrientation::Plane.to_wire(),
+		},
+	}]);
+	dig_hold(&mut sim, 1, swing, hold, 7, EditKind::Dig, &mut t);
+	c.drain();
+	for z in (sz - 1)..=(sz + 1) {
+		assert_eq!(
+			sim.test_cell_at(px, cy, z),
+			Some(0),
+			"the clamped row cell at z={z} has to fall"
+		);
+	}
+	for y in [cy - 1, cy + 1] {
+		assert_eq!(
+			sim.test_block_at(px, y, sz),
+			Some(BlockType::Stone),
+			"a clamped plane still widened past the row (y={y})"
+		);
+	}
+
+	// ---- 3. An unknown byte reads Horizontal -------------------------
+	build_panel(&mut sim);
+	sim.tick_once(vec![SimEvent::Msg {
+		conn_id: 1,
+		msg: ClientMsg::SetDigOrientation { mode: 7 },
+	}]);
+	dig_hold(&mut sim, 1, swing, hold, 8, EditKind::Dig, &mut t);
+	c.drain();
+	for z in (sz - 1)..=(sz + 1) {
+		assert_eq!(
+			sim.test_cell_at(px, cy, z),
+			Some(0),
+			"a junk byte has to dig the shipped row (z={z})"
+		);
+	}
 }

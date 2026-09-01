@@ -129,6 +129,10 @@ pub enum NetEvent {
 		hotbar: Vec<u16>,
 		grid: Vec<u16>,
 	},
+	/// The identity's stored spell-bar assignments (join sync, after `Layout`); validate on read.
+	SpellBar {
+		slots: Vec<u8>,
+	},
 	/// World-clock heartbeat: hard-set the sun's angle, inter-beat drift being below visible.
 	TimeOfDay {
 		tod: f32,
@@ -759,6 +763,7 @@ impl NetClient {
 			ServerMsg::Layout { hotbar, grid } => {
 				out.push(NetEvent::Layout { hotbar, grid });
 			}
+			ServerMsg::SpellBar { slots } => out.push(NetEvent::SpellBar { slots }),
 			ServerMsg::Skills { xp } => out.push(NetEvent::Skills { xp }),
 			ServerMsg::XpGain { skill, total } => out.push(NetEvent::XpGain { skill, total }),
 			ServerMsg::LevelUp {
@@ -948,6 +953,20 @@ impl NetClient {
 			hotbar: hotbar.to_vec(),
 			grid: grid.to_vec(),
 		});
+	}
+
+	/// Send the spell-bar assignments after any change — `Layout`'s
+	/// sibling, on the same reliable stream.
+	pub fn send_spell_bar(&mut self, slots: &[u8]) {
+		self.send_msg(&ClientMsg::SpellBar {
+			slots: slots.to_vec(),
+		});
+	}
+
+	/// Declare the pick's dig shape — reliable and in-order with edits,
+	/// so a toggle-then-swing lands shape-first on the server.
+	pub fn send_dig_orientation(&mut self, mode: u8) {
+		self.send_msg(&ClientMsg::SetDigOrientation { mode });
 	}
 
 	/// Say goodbye, and give it a moment to leave the machine. Call this on every path where the

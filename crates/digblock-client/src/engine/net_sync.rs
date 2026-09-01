@@ -10,8 +10,7 @@ impl Engine {
 	/// pitch levelled. Shared by teleports and the spawn facing an admin
 	/// set, so the two can never disagree about which way `look` points.
 	pub(super) fn face(&mut self, look: Vec3) {
-		self.camera.yaw_deg = look.x.atan2(look.z).to_degrees();
-		self.camera.pitch_deg = 0.0;
+		self.set_look(look.x.atan2(look.z).to_degrees(), 0.0);
 	}
 
 	/// The jump's light and sound, shared by our own teleport and a remote's so the two can never
@@ -38,15 +37,12 @@ impl Engine {
 		if own {
 			self.vfx.flash = 1.0;
 		}
-		self.emit(crate::audio::AudioCmd::Sfx {
-			sound: crate::audio::Sfx::TeleportOut,
-			pos: Some(from.to_array()),
-			gain: 0.8,
+		self.react(crate::events::GameEvent::TeleportDeparted {
+			from: from.to_array(),
 		});
-		self.emit(crate::audio::AudioCmd::Sfx {
-			sound: crate::audio::Sfx::TeleportIn,
-			pos: (!own).then(|| to.to_array()),
-			gain: 0.7,
+		self.react(crate::events::GameEvent::TeleportArrived {
+			to: to.to_array(),
+			own,
 		});
 	}
 
@@ -59,11 +55,7 @@ impl Engine {
 		if own {
 			self.vfx.flash = 0.6;
 		}
-		self.emit(crate::audio::AudioCmd::Sfx {
-			sound: crate::audio::Sfx::SphereClose,
-			pos: (!own).then(|| cell_center(head)),
-			gain: 0.8,
-		});
+		self.react(crate::events::GameEvent::SphereSealed { head, own });
 	}
 
 	/// A Sphere's channel BEGAN. The shell's cells never travel: this end draws the same plan from
@@ -217,6 +209,11 @@ impl Engine {
 	/// Feed line in a specific 0xAABBGGRR color (chat is tinted per
 	/// player, matching the sender's body color).
 	pub(super) fn push_feed_colored(&mut self, msg: crate::voice::Msg, color: u32) {
+		// Every refusal the feed words also blips, from ONE bridge —
+		// `feed_sound` is exhaustive over Msg, so a new line decides.
+		if let Some(u) = crate::audio::feed_sound(&msg) {
+			self.react(crate::events::GameEvent::Ui(u));
+		}
 		if self.session.feed.len() >= FEED_MAX {
 			self.session.feed.remove(0);
 		}
@@ -366,25 +363,11 @@ impl Engine {
 					if let Some(author) = remote_author
 						&& author != digblock_net::protocol::SERVER_ID
 					{
-						let prev = self.pipeline.block_at(cell.0, cell.1, cell.2);
-						let sound = if block == BlockType::Air {
-							prev.filter(|p| !p.is_water() && *p != BlockType::Air)
-								.map(|p| crate::audio::break_sfx(crate::audio::material_of(p)))
-						} else if !block.is_water() && !block.is_conjured() {
-							// A conjured cell makes no sound of its own:
-							// a sphere's worth of thunks would drown the
-							// spell that speaks for them.
-							Some(crate::audio::Sfx::Place)
-						} else {
-							None
-						};
-						if let Some(sound) = sound {
-							self.emit(crate::audio::AudioCmd::Sfx {
-								sound,
-								pos: Some(cell_center(cell)),
-								gain: 0.5,
-							});
-						}
+						self.react(crate::events::GameEvent::RemoteEdit {
+							cell,
+							block,
+							prev: self.pipeline.block_at(cell.0, cell.1, cell.2),
+						});
 					}
 					self.apply_remote_edit(cell, cell_value);
 					// Predictions of ours on this cell are superseded
@@ -522,6 +505,13 @@ impl Engine {
 						&mut self.inv_grid,
 					);
 				}
+				NetEvent::SpellBar { slots } => {
+					// Join sync: adopt the stored assignments (validated on
+					// read — unknown ids fall empty) and prime the dedup so
+					// the echo does not resend.
+					self.spell_bar = crate::spellbar::SpellBar::from_wire(&slots);
+					self.session.sent_spell_bar = Some(self.spell_bar.to_wire());
+				}
 				NetEvent::Skills { xp } => {
 					// Join sync: adopt wholesale, no toasts — this is
 					// state arriving, not an award happening. The ore
@@ -530,6 +520,12 @@ impl Engine {
 					// level-up.
 					self.skills = digblock_core::skills::SkillSet::from_wire(&xp);
 					self.sync_node_reveal(false);
+					// A character with no light of their own enters their
+					// held evening; the join's InventoryFull landed just
+					// ahead of this frame, and the server's clock keeps
+					// running underneath, tracked from the sun the Welcome
+					// anchored.
+					self.arm_dusk_hold(Some(self.sun.tod));
 				}
 				NetEvent::XpGain { skill, total } => {
 					if let Some(s) = digblock_core::skills::Skill::try_from_index(skill) {
@@ -653,7 +649,13 @@ impl Engine {
 				}
 				// Hard-set: inter-beat drift is microscopic, and after a
 				// paused clock (backgrounded tab) a snap is what we want.
-				NetEvent::TimeOfDay { tod } => self.sun.tod = tod,
+				// An active held dusk consumes the beat instead — it is
+				// what tracks the server's clock while it paints its own.
+				NetEvent::TimeOfDay { tod } => {
+					if !self.dusk_hold.on_server_tod(tod) {
+						self.sun.tod = tod;
+					}
+				}
 				NetEvent::AdminCommands { commands } => self.ui.chat.set_commands(commands),
 				// The catalog is a list and arrives as a dozen replies in
 				// one drain, so it is spoken a couple a second. Every other
@@ -724,6 +726,8 @@ impl Engine {
 			self.session.correction_offset = Vec3::ZERO;
 			self.session.my_player_id = None;
 			self.session.last_layout_sent = None;
+			self.session.sent_spell_bar = None;
+			self.session.last_orientation_sent = None;
 			// No one left to talk to: discard any half-typed chat line.
 			if self.ui.chat.is_open() {
 				self.ui.chat.handle_input(&InputEvent::Key {

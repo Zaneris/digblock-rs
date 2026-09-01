@@ -9,6 +9,7 @@ use super::{OutMsg, Sim, client_send};
 use digblock_core::block::Essence;
 use digblock_core::compass::{cardinal, compass};
 use digblock_core::raycast::{REACH, raycast};
+use digblock_core::sun::{clock_of_tod, tod_of_clock};
 use digblock_net::messages::{AdminReply, AdminUsage, NoPlayer, ServerMsg};
 use digblock_net::protocol::validate_name;
 use glam::Vec3;
@@ -120,13 +121,6 @@ pub(super) fn commands_msg(ranked: bool) -> ServerMsg {
 	}
 }
 
-/// 24h clock → sun angle: the clock's hours spread evenly over the full
-/// turn, anchored to the tod convention in `sun.rs` (midnight at its wrap
-/// point, noon at its origin) and falling as the day advances.
-fn tod_of_clock(h: u32, m: u32) -> f32 {
-	180.0 - (h as f32 + m as f32 / 60.0) * 15.0
-}
-
 /// `hh:mm` or a bare hour, 24-hour.
 fn parse_clock(arg: &str) -> Option<(u32, u32)> {
 	let (h, m) = match arg.split_once(':') {
@@ -134,14 +128,6 @@ fn parse_clock(arg: &str) -> Option<(u32, u32)> {
 		None => (arg.parse().ok()?, 0),
 	};
 	(h < 24 && m < 60).then_some((h, m))
-}
-
-/// The inverse of `tod_of_clock`, for the no-argument query.
-/// The inverse of [`tod_of_clock`], as `(hour, minute)`. The colon
-/// between them is punctuation, and punctuation is the client's.
-fn clock_of_tod(tod: f32) -> (u32, u32) {
-	let mins = (((180.0 - tod) / 15.0 * 60.0).round() as i64).rem_euclid(24 * 60);
-	((mins / 60) as u32, (mins % 60) as u32)
 }
 
 /// An essence by name, case-insensitively.
@@ -589,14 +575,17 @@ impl Sim {
 				&mut client.hotbar,
 				&mut client.grid,
 			);
+			// Inventory first, then skills — the join sync's order, which
+			// the client's held-dusk arming depends on: it re-evaluates at
+			// the Skills frame against the inventory already adopted.
+			let counts = client.inventory.to_wire();
+			client_send(client, &ServerMsg::InventoryFull { counts });
 			client_send(
 				client,
 				&ServerMsg::Skills {
 					xp: client.skills.to_wire(),
 				},
 			);
-			let counts = client.inventory.to_wire();
-			client_send(client, &ServerMsg::InventoryFull { counts });
 			client.name.clone()
 		};
 		if let Some(admin) = self.clients.get(&conn_id) {

@@ -133,7 +133,7 @@ fn wait_for_callback(
 	let deadline = Instant::now() + SIGN_IN_TIMEOUT;
 	while Instant::now() < deadline {
 		if cancel.load(Ordering::Relaxed) {
-			return Err("sign-in cancelled".into());
+			return Err("Sign-in cancelled".into());
 		}
 		let (stream, _) = match listener.accept() {
 			Ok(pair) => pair,
@@ -191,13 +191,13 @@ fn wait_for_callback(
 			// aimed a callback at our port. Refuse the whole sign-in
 			// rather than waiting for a "better" one.
 			(Some(_), Some(s)) if s != state => {
-				return Err("sign-in response did not match the request".into());
+				return Err("Sign-in response did not match the request".into());
 			}
 			(Some(code), Some(_)) => return Ok(code),
 			_ => continue, // favicon and friends
 		}
 	}
-	Err("sign-in timed out".into())
+	Err("Sign-in timed out".into())
 }
 
 fn page(title: &str, body: &str) -> String {

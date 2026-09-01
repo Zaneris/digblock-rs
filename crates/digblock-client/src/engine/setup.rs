@@ -80,6 +80,10 @@ impl Engine {
 		if let Some(pitch) = config.pitch {
 			camera.pitch_deg = pitch.clamp(-89.0, 89.0);
 		}
+		let look = LookAngles {
+			yaw_deg: camera.yaw_deg,
+			pitch_deg: camera.pitch_deg,
+		};
 		let mut menu = crate::menu::Menu::new(
 			config.menu,
 			crate::settings::Settings {
@@ -92,6 +96,8 @@ impl Engine {
 				gi_scale_div: config.gi_scale_div,
 				max_lights: config.max_lights,
 				touch_jump_button: config.touch_jump_button,
+				show_tutorial: config.show_tutorial,
+				bindings: config.bindings.clone(),
 			},
 			config.auto_join.clone(),
 			config.account.clone(),
@@ -106,6 +112,7 @@ impl Engine {
 		if config.fullscreen_hint {
 			menu.set_fullscreen_hint();
 		}
+		let bindings = config.bindings.clone();
 		let mut engine = Self {
 			ui: UiState {
 				size: (1, 1),
@@ -135,16 +142,22 @@ impl Engine {
 				music_night: None,
 				prev_wet: true,
 				fall_from_y: spawn.y,
+				ui_snapshot: None,
+				frame_oneshots: 0,
+				frame_remote_edits: 0,
 			},
 			vfx: Vfx {
 				confetti: Vec::new(),
 				confetti_seq: 0,
+				bursts: Vec::new(),
+				burst_seq: 0,
+				camera_fx: crate::camera_fx::CameraFx::default(),
 				siphon: None,
 				casts: Vec::new(),
 				cast_seq: 0,
 				kindled: Vec::new(),
 				kindle_seq: 0,
-				channel_env: 0.0,
+				channel_env: crate::anim::Envelope::default(),
 				flash: 0.0,
 				// The startup world marks its spawn too: the marker is the
 				// pad's identity, and captures photograph it here.
@@ -155,6 +168,7 @@ impl Engine {
 				)],
 				fx_scratch: Vec::new(),
 				marker_scratch: Vec::new(),
+				highlight_scratch: Vec::new(),
 				view_bob: crate::viewmodel::Bob::default(),
 				view_swing: crate::viewmodel::Swing::default(),
 				view_cast: crate::viewmodel::Cast::default(),
@@ -181,9 +195,9 @@ impl Engine {
 				player_save_accum: 0.0,
 				offline_waystones: digblock_core::waystones::Roster::new(seed),
 				spawn_pos: spawn,
-				teleport_cooldown: 0.0,
+				teleport_cooldown: crate::anim::Cooldown::default(),
 				spawn_return_pending: false,
-				arrival_hold: None,
+				arrival_hold: crate::anim::Timer::default(),
 			},
 			debug_sphere_pending: config.debug_sphere,
 			sphere_climbs: Vec::new(),
@@ -232,6 +246,15 @@ impl Engine {
 			renderer: None,
 			pipeline,
 			camera,
+			mode: CameraMode::FirstPerson,
+			look,
+			fp_eye: spawn,
+			tutorial: crate::tutorial::Tutorial::default(),
+			tutorial_jumped: false,
+			dusk_hold: crate::dusk::DuskHold::default(),
+			reveal_cues: Vec::new(),
+			reveal_clock: 0.0,
+			reveal_finale: false,
 			player: Player::new(spawn),
 			input: InputState {
 				touch: TouchDriver::new(),
@@ -239,8 +262,9 @@ impl Engine {
 				hud_touches: Vec::new(),
 				hud_jump_held: false,
 				fullscreen_requested: false,
+				bindings,
+				screenshot_requested: false,
 				safe_area: crate::ui::hud::SafeArea::default(),
-				walking: true,
 				fly_key_down: false,
 				overlay_key_down: false,
 				gi_drill_key_down: false,
@@ -283,7 +307,10 @@ impl Engine {
 			inventory: Inventory::default(),
 			auth_essence: None,
 			siphon_nudged: false,
+			wisp_nudged: false,
 			hotbar: Hotbar::new(),
+			spell_bar: crate::spellbar::SpellBar::default(),
+			dig_orientation: digblock_core::pick::DigOrientation::default(),
 			// The startup world is ephemeral (a backdrop, or a capture
 			// scene) — no arrival lock; entering a NAMED save or a server
 			// world replaces this per `world_session`.
@@ -312,6 +339,8 @@ impl Engine {
 				player_names: rustc_hash::FxHashMap::default(),
 				my_player_id: None,
 				last_layout_sent: None,
+				sent_spell_bar: None,
+				last_orientation_sent: None,
 			},
 			stream: StreamQueues {
 				pending_uploads: std::collections::VecDeque::new(),
@@ -430,6 +459,8 @@ impl Engine {
 				// The menu opens itself when `config.menu` is set; the
 				// hand wants a stocked bar and nothing over it.
 				DebugScreen::Menu | DebugScreen::Hand => {}
+				// The open menu, jumped to the Controls page.
+				DebugScreen::Controls => engine.ui.menu.open_controls_screen(),
 				DebugScreen::Bucket { .. } => engine
 					.hotbar
 					.select_digit(digblock_core::hotbar::HOTBAR_SLOTS as u8),
@@ -511,7 +542,7 @@ impl Engine {
 						.debug_fill(crate::ui::screens::hiscores::sample_board(None));
 					engine.ui.hiscores.open();
 				}
-				DebugScreen::Spellbook | DebugScreen::SpellbookHover => {
+				DebugScreen::Spellbook | DebugScreen::SpellbookHover | DebugScreen::SpellSlots => {
 					// Past the LAST spell rung the ladder opens below the
 					// ports' tail, so every castable row and the next
 					// teaser all photograph. XP derived from the rung it
@@ -528,6 +559,17 @@ impl Engine {
 						engine.inventory.add_sub(e, 5_000);
 					}
 					engine.ui.spellbook.open();
+					// A populated bar under every spellbook capture: the
+					// icons, the drop targets, and (SpellSlots) a slot's
+					// tooltip all photograph.
+					if screen == DebugScreen::SpellSlots {
+						engine.spell_bar.assign(0, crate::spellbar::SLOT_WISP);
+						engine.spell_bar.assign(1, crate::spellbar::SLOT_HOME);
+						if let Some(port) = crate::ui::screens::spellbook::all_ports().first() {
+							engine.spell_bar.assign(2, 1 + port.idx);
+						}
+						engine.ui.debug_hover = Some(crate::ui::InvId::SpellBar(0));
+					}
 					if screen == DebugScreen::SpellbookHover {
 						// The slot comes from the page's own roster rather
 						// than from a number written down here: `fares`
@@ -602,10 +644,13 @@ impl Engine {
 			},
 		));
 		// Fresh connection: the layout dedup re-primes from the server's
-		// join-sync Layout.
+		// join-sync Layout, the spell bar's from its SpellBar, and the
+		// orientation re-declares itself unprompted.
 		self.session.last_layout_sent = None;
+		self.session.sent_spell_bar = None;
+		self.session.last_orientation_sent = None;
 		// The server has no fly physics; walk is the only multiplayer mode.
-		self.input.walking = true;
+		self.mode = CameraMode::FirstPerson;
 	}
 
 	/// Wire the launcher's master-server services (list fetch, pings, token
@@ -702,6 +747,15 @@ impl Engine {
 	pub(super) fn apply_settings(&mut self, s: crate::settings::Settings) {
 		self.config.ssr = s.ssr;
 		self.config.touch_jump_button = s.touch_jump_button;
+		self.config.show_tutorial = s.show_tutorial;
+		// The touch HUD's advertised skip: switching the row off ends a
+		// running chapter on the spot (the row also gates the arming for
+		// the next fresh character, and the siphon nudge's).
+		if !s.show_tutorial
+			&& let Some(adv) = self.tutorial.skip()
+		{
+			self.on_tutorial_advance(adv);
+		}
 		if (s.ui_scale - self.config.ui_scale).abs() > f32::EPSILON {
 			self.config.ui_scale = s.ui_scale;
 			self.recompute_ui_scale();
@@ -735,6 +789,13 @@ impl Engine {
 		// The light cap rides the frame into `flush_lights`, which tracks
 		// it and re-flushes on a change — storing it IS applying it.
 		self.config.max_lights = s.max_lights;
+		if s.bindings != self.input.bindings {
+			// A key held across a rebind would deliver its release to the
+			// NEW action (or none); drop all held state instead.
+			self.input.bindings = s.bindings.clone();
+			self.input.keys = HeldKeys::default();
+			self.input.dig_held = false;
+		}
 		if let Some(store) = &mut self.settings_store {
 			store(&s);
 		}

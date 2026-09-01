@@ -17,7 +17,7 @@ use crate::dir::Dir;
 use crate::gi::{self, GiOpacity};
 use crate::raycast;
 use crate::shapes;
-use crate::sun::{Sun, TOD_START};
+use crate::sun::{Sun, TOD_START, tod_of_hours};
 use crate::worldgen;
 use crate::worldgen::Seed;
 
@@ -25,8 +25,6 @@ use crate::worldgen::Seed;
 /// the morning-to-afternoon arc that east- and west-facing slopes each
 /// get a run with the sun on their side.
 const SPREAD_HOURS: [f32; 3] = [9.0, 12.0, 15.0];
-
-const DEG_PER_HOUR: f32 = 360.0 / 24.0;
 
 /// Chunk radius around each player a sweep covers. Modest on purpose:
 /// within typical residency, so the sun rays mostly read real cells and
@@ -48,12 +46,6 @@ const JITTER_TOD_DEG: f32 = 1.5;
 const JITTER_Z: f32 = 0.03;
 const JITTER_SALT: u64 = 0x0067_7261_7373; // "grass"
 
-/// The sun angle at a clock hour: 0 = noon, 15°/hour, morning positive —
-/// the `sun` module's convention.
-fn tod_of_hour(hour: f32) -> f32 {
-	(12.0 - hour) * DEG_PER_HOUR
-}
-
 /// The day fraction at which `Sun::tod_of_secs` passes `tod` — the
 /// inverse of that formula, so the schedule and the sky cannot drift.
 fn offset_of_tod(tod: f32) -> f32 {
@@ -71,7 +63,7 @@ impl GrassSpread {
 	/// before jitter — such a ray could never rise past the world top,
 	/// and the cap in `apply` divides by its upward slope.
 	pub fn at_hour(hour: f32, name: &'static str) -> Self {
-		let tod = tod_of_hour(hour);
+		let tod = tod_of_hours(hour);
 		assert!(
 			tod.abs() + JITTER_TOD_DEG < 90.0,
 			"{name}: the sun must be above the horizon"

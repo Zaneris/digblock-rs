@@ -105,6 +105,7 @@ fn eviction_spares_the_recently_used() {
 			pos: None,
 			last_teleport_tick: None,
 			skills: SkillSet::default(),
+			spells: Vec::new(),
 		},
 	);
 	// Fill to the cap with strangers, touching the veteran throughout
@@ -147,6 +148,7 @@ fn the_interval_flush_persists_without_blocking_the_caller() {
 				pos: None,
 				last_teleport_tick: None,
 				skills: SkillSet::default(),
+				spells: Vec::new(),
 			},
 		);
 		// Age the flush clock so `maintain` fires this tick.
@@ -204,6 +206,7 @@ fn round_trips_across_reopen() {
 				pos: None,
 				last_teleport_tick: None,
 				skills: SkillSet::default(),
+				spells: Vec::new(),
 			},
 		);
 		s.put(id_b, PlayerRecord::default());
@@ -288,6 +291,9 @@ fn every_format_version_still_reads() {
 		}
 		if (FIRST_ARRIVALS_VERSION..FIRST_VERSION_WITHOUT_ARRIVALS).contains(&version) {
 			bytes.push(0); // no visited waystones
+		}
+		if version >= FIRST_SPELLS_VERSION {
+			bytes.push(0); // empty spell bar
 		}
 		if version >= FIRST_TWO_SECTION_VERSION {
 			bytes.extend_from_slice(&0u32.to_le_bytes()); // empty quarantine
@@ -409,6 +415,7 @@ fn a_claim_merges_into_what_the_account_already_had() {
 		pos: Some([1.0, 2.0, 3.0]),
 		last_teleport_tick: Some(11),
 		skills: SkillSet::default(),
+		spells: Vec::new(),
 	};
 	old.inventory.add(BlockType::Dirt, 5);
 	old.inventory.add(BlockType::Stone, 9);
@@ -522,6 +529,7 @@ fn absent_position_stays_absent() {
 				pos: None,
 				last_teleport_tick: None,
 				skills: SkillSet::default(),
+				spells: Vec::new(),
 			},
 		);
 		s.sync();
@@ -580,6 +588,7 @@ fn a_file_written_at_the_old_grid_width_still_reads() {
 			buf.push(*skill);
 			buf.extend_from_slice(&total.to_le_bytes());
 		}
+		buf.push(0); // empty spell bar (v11+)
 	}
 	buf.extend_from_slice(&0u32.to_le_bytes()); // empty quarantine
 	std::fs::write(&path, &buf).unwrap();
@@ -655,6 +664,7 @@ fn a_wider_stored_grid_truncates_without_desyncing() {
 		buf.push(0); // no position
 		buf.push(0); // no return tick
 		buf.push(0); // no skills
+		buf.push(0); // empty spell bar (v11+)
 	}
 	buf.extend_from_slice(&0u32.to_le_bytes()); // empty quarantine
 	std::fs::write(dir.join("inventories.bin"), &buf).unwrap();
@@ -667,4 +677,28 @@ fn a_wider_stored_grid_truncates_without_desyncing() {
 		4,
 		"the extra words were consumed, not read as the next field"
 	);
+}
+
+/// The spell-bar bytes round-trip verbatim — including values the client
+/// side would call junk, because the store is deliberately opaque — and a
+/// record that never set them reads empty.
+#[test]
+fn spell_bar_bytes_round_trip_opaquely() {
+	let dir = temp_dir("spellbar");
+	let id = key(31);
+	{
+		let mut s = PlayerStore::open(&dir).unwrap();
+		s.put(
+			id,
+			PlayerRecord {
+				spells: vec![100, 0, 200],
+				..PlayerRecord::default()
+			},
+		);
+		s.put(key(32), PlayerRecord::default());
+		s.sync();
+	}
+	let s = PlayerStore::open(&dir).unwrap();
+	assert_eq!(s.get(&id).spells, vec![100, 0, 200]);
+	assert!(s.get(&key(32)).spells.is_empty(), "never set reads empty");
 }

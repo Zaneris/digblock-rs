@@ -1,8 +1,9 @@
 //! The Resonant Pick's break pattern (SKILLS-DESIGN §5.6): one hold, several cells — the plane
 //! perpendicular to the face you hit, a row at the first Mining milestone and the full plane at
-//! the second. The set is derived from the ray on BOTH ends, never chosen by the client, so there
-//! is no cheat surface and no second opinion about which cells an action touched. Two rules make
-//! the rest of the machinery work unchanged:
+//! the second. The set is derived from the ray on BOTH ends plus a declared [`DigOrientation`]
+//! that itself rides the reliable stream and is clamped by both ends — the orientation is chosen,
+//! the cells are not, so there is no cheat surface and no second opinion about which cells an
+//! action touched. Two rules make the rest of the machinery work unchanged:
 //!
 //! - **Every extra cell must pay the SAME credit**, because `PendingEdits::begin_multi` carries
 //!   ONE `inv_delta` for the whole group, which is also what lets a rejection revert it in one
@@ -16,6 +17,52 @@
 use crate::block::BlockType;
 use crate::chunk::cell_id;
 use crate::worldgen::nodes::DigMode;
+
+/// The pick's declared dig shape, cycled by the tool-ability key (or its touch tap). The toggle
+/// always swaps between the face's two in-plane axes — across your look versus along it — one
+/// uniform rule on every face, and it never bores along the normal. Wire form is a bare u8.
+///
+/// The DEFAULT is `Plane`, not `Horizontal`, and the choice is a compatibility statement: before
+/// the toggle existed, width alone decided the shape — a row at the first milestone, the plane at
+/// the second. `Plane` clamped by the unlock reproduces exactly that at every level, so a client
+/// that never touches the toggle (a v40 peer included, which cannot send one) digs what it always
+/// dug.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum DigOrientation {
+	/// A row across the look: the tunnel-widening cut.
+	Horizontal = 0,
+	/// The face's other in-plane axis: a true column on a wall (a doorway cut); on a floor or
+	/// ceiling, the along-your-look row (a trench lengthens instead of widening).
+	Vertical = 1,
+	/// The full plane — [`crate::unlock::PICK_PLANE`] cells, orientation-free by shape.
+	#[default]
+	Plane = 2,
+}
+
+impl DigOrientation {
+	pub fn from_wire(v: u8) -> Self {
+		match v {
+			1 => Self::Vertical,
+			2 => Self::Plane,
+			_ => Self::Horizontal,
+		}
+	}
+
+	pub fn to_wire(self) -> u8 {
+		self as u8
+	}
+
+	/// Degrade against the unlock: `Plane` below the plane width falls to `Horizontal`. BOTH ends
+	/// run this over the same `unlock::pick_cells` width, which is what keeps their footprints
+	/// bit-identical when a client asks for more than its Mining level has opened.
+	pub fn clamped(self, width: usize) -> Self {
+		if self == Self::Plane && width < crate::unlock::PICK_PLANE {
+			Self::Horizontal
+		} else {
+			self
+		}
+	}
+}
 
 /// May this cell join the plane as an EXTRA? Asked of every candidate by both ends over their own
 /// worlds, so the two swings touch the same set; the AIMED cell is never asked, being the only one
@@ -68,34 +115,50 @@ fn row_axis(normal: (i32, i32, i32), dir: [f32; 3]) -> usize {
 
 /// The offsets one hold breaks, target first. `width` is the roster from
 /// [`crate::unlock::pick_cells`]: a single cell (no pick), a row, or the
-/// full plane.
-fn offsets(normal: (i32, i32, i32), dir: [f32; 3], width: usize) -> Vec<(i32, i32, i32)> {
+/// full plane. `Horizontal` emits along `row` and `Vertical` along `up` —
+/// the plane keeps its canonical `row`/`up` walk so its nine cells hold
+/// one byte-identical order whatever the toggle says.
+fn offsets(
+	normal: (i32, i32, i32),
+	dir: [f32; 3],
+	width: usize,
+	o: DigOrientation,
+) -> Vec<(i32, i32, i32)> {
 	let mut out = vec![(0, 0, 0)];
 	if width < 3 {
 		return out;
 	}
 	let n = axis_of(normal);
 	let row = row_axis(normal, dir);
-	// The other in-plane axis, for the full plane.
+	// The other in-plane axis, for the vertical row and the full plane.
 	let up = (0..3).find(|&a| a != n && a != row).unwrap_or(1);
+	// The belt to `clamped`'s suspenders: a Plane that somehow reaches a
+	// row-width call still emits the horizontal row.
+	let plane = width >= crate::unlock::PICK_PLANE && o == DigOrientation::Plane;
 	let mut push = |a: usize, b: Option<usize>, da: i32, db: i32| {
-		let mut o = [0i32; 3];
-		o[a] = da;
+		let mut off = [0i32; 3];
+		off[a] = da;
 		if let Some(b) = b {
-			o[b] = db;
+			off[b] = db;
 		}
-		if o != [0, 0, 0] {
-			out.push((o[0], o[1], o[2]));
+		if off != [0, 0, 0] {
+			out.push((off[0], off[1], off[2]));
 		}
 	};
+	let along = if o == DigOrientation::Vertical {
+		up
+	} else {
+		row
+	};
 	for da in [-1, 1] {
-		push(row, None, da, 0);
+		push(along, None, da, 0);
 	}
-	if width >= 9 {
+	if plane {
+		let across = if along == row { up } else { row };
 		for db in [-1, 1] {
-			push(up, None, db, 0);
+			push(across, None, db, 0);
 			for da in [-1, 1] {
-				push(row, Some(up), da, db);
+				push(along, Some(across), da, db);
 			}
 		}
 	}
@@ -105,15 +168,16 @@ fn offsets(normal: (i32, i32, i32), dir: [f32; 3], width: usize) -> Vec<(i32, i3
 /// The cells one hold breaks, target FIRST and every extra the caller's `extra_ok` accepts — which
 /// should be [`breaks_as_extra`] against that end's own world, and nothing looser. The order is
 /// deterministic and identical on both ends, which is what lets `begin_multi`'s single `inv_delta`
-/// describe the whole group.
+/// describe the whole group; `o` must already be [`DigOrientation::clamped`] against `width`.
 pub fn cells(
 	cell: (i32, i32, i32),
 	normal: (i32, i32, i32),
 	dir: [f32; 3],
 	width: usize,
+	o: DigOrientation,
 	extra_ok: impl Fn((i32, i32, i32)) -> bool,
 ) -> Vec<(i32, i32, i32)> {
-	offsets(normal, dir, width)
+	offsets(normal, dir, width, o)
 		.into_iter()
 		.map(|(dx, dy, dz)| (cell.0 + dx, cell.1 + dy, cell.2 + dz))
 		.filter(|&c| c == cell || extra_ok(c))
@@ -195,23 +259,89 @@ mod tests {
 		assert!(!extra(stone, (0, 40, 0), DigMode::NeedsSiphon, false));
 	}
 
-	/// A wall breaks HORIZONTALLY: three wide is a tunnel, and the
-	/// vertical row it would otherwise cut is a well nobody asked for.
+	/// A wall breaks HORIZONTALLY: three wide is a tunnel — the expected
+	/// vectors are the pre-toggle goldens, pinned byte-identical under
+	/// the DEFAULT orientation clamped at row width.
 	#[test]
 	fn a_three_wide_break_runs_across_the_face() {
+		let o = DigOrientation::default().clamped(3);
+		assert_eq!(
+			o,
+			DigOrientation::Horizontal,
+			"the default clamps to the shipped row"
+		);
 		let look = [0.0, 0.0, 1.0];
 		// Facing +z at a wall: the row runs along x.
-		let out = cells((0, 0, 0), (0, 0, -1), look, 3, |_| true);
+		let out = cells((0, 0, 0), (0, 0, -1), look, 3, o, |_| true);
 		assert_eq!(out, vec![(0, 0, 0), (-1, 0, 0), (1, 0, 0)]);
 		// Facing +x at a wall: along z.
-		let out = cells((0, 0, 0), (-1, 0, 0), [1.0, 0.0, 0.0], 3, |_| true);
+		let out = cells((0, 0, 0), (-1, 0, 0), [1.0, 0.0, 0.0], 3, o, |_| true);
 		assert_eq!(out, vec![(0, 0, 0), (0, 0, -1), (0, 0, 1)]);
 		// Straight down at the floor, walking along x: the row runs
 		// ACROSS the walk, widening the corridor rather than lengthening.
-		let out = cells((0, 0, 0), (0, 1, 0), [1.0, -0.2, 0.0], 3, |_| true);
+		let out = cells((0, 0, 0), (0, 1, 0), [1.0, -0.2, 0.0], 3, o, |_| true);
 		assert_eq!(out, vec![(0, 0, 0), (0, 0, -1), (0, 0, 1)]);
 		// And the same floor walked along z runs along x.
-		let out = cells((0, 0, 0), (0, 1, 0), [0.0, -0.2, 1.0], 3, |_| true);
+		let out = cells((0, 0, 0), (0, 1, 0), [0.0, -0.2, 1.0], 3, o, |_| true);
+		assert_eq!(out, vec![(0, 0, 0), (-1, 0, 0), (1, 0, 0)]);
+	}
+
+	/// The vertical toggle: a true column on a wall — the doorway cut —
+	/// and on a floor or ceiling the ALONG-your-look row, because a ±y
+	/// row there would leave the face plane and bore. One rule on every
+	/// face: the toggle swaps to the face's other in-plane axis.
+	#[test]
+	fn a_vertical_row_is_the_faces_other_axis() {
+		let o = DigOrientation::Vertical;
+		// A wall: the column.
+		let out = cells((0, 0, 0), (0, 0, -1), [0.0, 0.0, 1.0], 3, o, |_| true);
+		assert_eq!(out, vec![(0, 0, 0), (0, -1, 0), (0, 1, 0)]);
+		let out = cells((0, 0, 0), (-1, 0, 0), [1.0, 0.0, 0.0], 3, o, |_| true);
+		assert_eq!(out, vec![(0, 0, 0), (0, -1, 0), (0, 1, 0)]);
+		// A floor walked along x: the trench LENGTHENS (±x), never ±y.
+		let out = cells((0, 0, 0), (0, 1, 0), [1.0, -0.2, 0.0], 3, o, |_| true);
+		assert_eq!(out, vec![(0, 0, 0), (-1, 0, 0), (1, 0, 0)]);
+		// The same floor walked along z lengthens along z.
+		let out = cells((0, 0, 0), (0, 1, 0), [0.0, -0.2, 1.0], 3, o, |_| true);
+		assert_eq!(out, vec![(0, 0, 0), (0, 0, -1), (0, 0, 1)]);
+		for normal in [(0, 1, 0), (0, -1, 0)] {
+			let out = cells((0, 0, 0), normal, [0.7, -0.5, 0.2], 3, o, |_| true);
+			assert!(
+				out.iter().all(|c| c.1 == 0),
+				"{normal:?}: a floor's vertical row bored along the normal"
+			);
+		}
+		// At plane width the toggle still means a ROW: vertical is not
+		// clamped away by the wider unlock.
+		let out = cells((0, 0, 0), (0, 0, -1), [0.0, 0.0, 1.0], 9, o, |_| true);
+		assert_eq!(out, vec![(0, 0, 0), (0, -1, 0), (0, 1, 0)]);
+	}
+
+	/// The clamp table, and the byte-identity it protects: the DEFAULT is
+	/// the plane so a client that never toggles digs what it always dug —
+	/// a row at row width, the plane at plane width.
+	#[test]
+	fn the_clamp_reproduces_the_pre_toggle_shapes() {
+		use DigOrientation as O;
+		assert_eq!(O::default(), O::Plane);
+		assert_eq!(O::Plane.clamped(3), O::Horizontal);
+		assert_eq!(O::Plane.clamped(1), O::Horizontal);
+		assert_eq!(O::Plane.clamped(crate::unlock::PICK_PLANE), O::Plane);
+		assert_eq!(
+			O::Horizontal.clamped(crate::unlock::PICK_PLANE),
+			O::Horizontal
+		);
+		assert_eq!(O::Vertical.clamped(3), O::Vertical);
+		// The wire roundtrip, and the hostile-byte rule.
+		for o in [O::Horizontal, O::Vertical, O::Plane] {
+			assert_eq!(O::from_wire(o.to_wire()), o);
+		}
+		assert_eq!(O::from_wire(7), O::Horizontal);
+		// Belt and suspenders: even UNclamped, a plane ask at row width
+		// emits the horizontal row.
+		let out = cells((0, 0, 0), (0, 0, -1), [0.0, 0.0, 1.0], 3, O::Plane, |_| {
+			true
+		});
 		assert_eq!(out, vec![(0, 0, 0), (-1, 0, 0), (1, 0, 0)]);
 	}
 
@@ -227,7 +357,14 @@ mod tests {
 			(0, 0, 1),
 			(0, 0, -1),
 		] {
-			let out = cells((5, 5, 5), normal, [0.3, -0.9, 0.2], 9, |_| true);
+			let out = cells(
+				(5, 5, 5),
+				normal,
+				[0.3, -0.9, 0.2],
+				9,
+				DigOrientation::default().clamped(9),
+				|_| true,
+			);
 			assert_eq!(out.len(), 9, "{normal:?}");
 			assert_eq!(out[0], (5, 5, 5), "the aimed cell leads");
 			let n = axis_of(normal);
@@ -248,14 +385,35 @@ mod tests {
 	/// aimed cell is always in it however alone it stands.
 	#[test]
 	fn only_matching_neighbours_join_the_group() {
-		let out = cells((0, 0, 0), (0, 0, -1), [0.0, 0.0, 1.0], 9, |c| c.1 == 0);
+		let out = cells(
+			(0, 0, 0),
+			(0, 0, -1),
+			[0.0, 0.0, 1.0],
+			9,
+			DigOrientation::Plane,
+			|c| c.1 == 0,
+		);
 		assert!(out.contains(&(0, 0, 0)) && out.contains(&(1, 0, 0)));
 		assert!(!out.iter().any(|c| c.1 != 0), "a foreign row joined");
 		// Alone in the world, the target still breaks.
-		let out = cells((0, 0, 0), (0, 0, -1), [0.0, 0.0, 1.0], 9, |_| false);
+		let out = cells(
+			(0, 0, 0),
+			(0, 0, -1),
+			[0.0, 0.0, 1.0],
+			9,
+			DigOrientation::Plane,
+			|_| false,
+		);
 		assert_eq!(out, vec![(0, 0, 0)]);
 		// And with no pick at all there is nothing but the target.
-		let out = cells((0, 0, 0), (0, 0, -1), [0.0, 0.0, 1.0], 1, |_| true);
+		let out = cells(
+			(0, 0, 0),
+			(0, 0, -1),
+			[0.0, 0.0, 1.0],
+			1,
+			DigOrientation::Horizontal,
+			|_| true,
+		);
 		assert_eq!(out, vec![(0, 0, 0)]);
 	}
 }

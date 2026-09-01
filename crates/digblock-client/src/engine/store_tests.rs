@@ -62,6 +62,7 @@ impl digblock_persist::WorldStore for MockStore {
 			hotbar: self.0.borrow().open_hotbar.clone(),
 			grid: Vec::new(),
 			skills: Vec::new(),
+			spells: Vec::new(),
 			player: Some(digblock_persist::PlayerPersist {
 				pos: [1.5, 140.0, 2.5],
 				yaw: 90.0,
@@ -78,6 +79,7 @@ impl digblock_persist::WorldStore for MockStore {
 		hotbar: &[u16],
 		_grid: &[u16],
 		_skills: &[(u8, u64)],
+		_spells: &[u8],
 		_player: &digblock_persist::PlayerPersist,
 	) {
 		let mut state = self.0.borrow_mut();
@@ -310,6 +312,7 @@ impl digblock_persist::WorldStore for EchoStore {
 			hotbar: Vec::new(),
 			grid: Vec::new(),
 			skills: Vec::new(),
+			spells: Vec::new(),
 			player: None,
 		})
 	}
@@ -320,6 +323,7 @@ impl digblock_persist::WorldStore for EchoStore {
 		_hotbar: &[u16],
 		_grid: &[u16],
 		_skills: &[(u8, u64)],
+		_spells: &[u8],
 		_player: &digblock_persist::PlayerPersist,
 	) {
 	}

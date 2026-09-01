@@ -15,15 +15,29 @@ use digblock_core::touch::{Phase, TouchDriver};
 use digblock_platform::{Game, Gpu, InputEvent, Key, MouseButton, TouchPhase};
 use glam::{Vec2, Vec3};
 
-use crate::camera::FlyCamera;
+use crate::camera::{FlyCamera, LookAngles};
 use crate::renderer::{FrameScene, FrameUniforms, RenderConfig, Renderer};
 use crate::ui::screens::inventory::InvAction;
 use crate::voice::{Msg, Spell};
 
-/// The alchemy screen's toggle, named in ONE place so the texts that say
-/// "press K" — the menu row's key chip, the siphon-in-reach nudge — can
-/// never name a key the input match stopped answering.
-pub(crate) const ALCHEMY_KEY: Key = Key::K;
+/// Who drives the camera pose. Presentation only: the player sim's
+/// rules never change with the mode, and the server never hears of it.
+#[derive(Clone, PartialEq, Debug)]
+pub(crate) enum CameraMode {
+	/// Camera = the player's presented eye (the shipping game).
+	FirstPerson,
+	/// Free 6-DoF debug camera; `player.pos` goes stale. F, offline only.
+	DebugFly,
+	/// A rig drives the camera; the player keeps simulating, standing
+	/// still, and `fp_eye` stays the body anchor. Pure presentation.
+	Cinematic(crate::camrig::Cinematic),
+}
+
+impl CameraMode {
+	pub(crate) fn first_person(&self) -> bool {
+		matches!(self, CameraMode::FirstPerson)
+	}
+}
 
 mod config;
 pub use config::{DebugScreen, EngineConfig, parse_held_item};
@@ -32,6 +46,7 @@ pub mod knobs;
 mod actions;
 mod audio_step;
 mod causeway;
+mod events;
 mod frame;
 mod input;
 mod net_sync;
@@ -169,6 +184,25 @@ pub struct Engine {
 	renderer: Option<Renderer>,
 	pipeline: Pipeline,
 	camera: FlyCamera,
+	/// Who drives `camera` this frame (see [`CameraMode`]).
+	mode: CameraMode,
+	/// The player's facing — input writes here; modes copy it out.
+	look: LookAngles,
+	/// The player's PRESENTED eye this frame (what first person shows) —
+	/// the body anchor a detached camera leaves behind.
+	fp_eye: Vec3,
+
+	/// The interactive walkthrough (armed on offline world entry).
+	tutorial: crate::tutorial::Tutorial,
+	/// Did the player jump off the ground this frame (tutorial poll)?
+	tutorial_jumped: bool,
+	/// The staged siphon reveal: cues of (seconds into the cinematic,
+	/// subject cell) still owed a `remesh_near`, the clock they read,
+	/// and whether the world-wide sweep still waits for the camera to
+	/// come home. All idle outside the one scripted cinematic.
+	reveal_cues: Vec<(f32, (i32, i32, i32))>,
+	reveal_clock: f32,
+	reveal_finale: bool,
 	player: Player,
 	/// See [`InputState`].
 	input: InputState,
@@ -189,6 +223,9 @@ pub struct Engine {
 	bench: BenchState,
 	tick_accum: f32,
 	sun: Sun,
+	/// A lightless character's held dusk — paints `sun` while active
+	/// (see [`crate::dusk`]).
+	dusk_hold: crate::dusk::DuskHold,
 	/// Cell whose dig was refused — locally (world floor) or by the
 	/// server (a spawn lock it never told us about). Held until the aim
 	/// moves elsewhere, and load-bearing in two ways: it explains itself
@@ -225,7 +262,7 @@ pub struct Engine {
 	/// kindle you could not afford drops you off your own causeway.
 	last_cast: Option<CastTarget>,
 	/// In-progress cast channel, advanced at the same fixed rate. A
-	/// channel is stillness: any movement intent, dig hold, or surface
+	/// caster may walk while channelling; a dig hold or surface
 	/// opening resets it — the decay mold is deliberately NOT borrowed
 	/// here (that is a dig's, and later the damage-interrupt's).
 	cast: Option<CastState>,
@@ -247,11 +284,25 @@ pub struct Engine {
 	/// locally and never ride `pending`. `None` until the join sync's
 	/// first inventory, which is state arriving rather than a find.
 	auth_essence: Option<[u32; digblock_core::block::Essence::COUNT]>,
-	/// Whether this session already spoke the siphon-in-reach nudge
-	/// ([`voice::Msg::SiphonInReach`]) — once per world session, and the
-	/// ownership check silences it for good the moment one is made.
+	/// Whether this session already fired the siphon-affordability nudge
+	/// (which arms the siphon walkthrough chapter) — once per world
+	/// session, and the ownership check silences it for good the moment
+	/// one is made.
 	siphon_nudged: bool,
+	/// Its wisp twin: whether this session already fired the
+	/// wisp-affordability nudge (which arms the wisp chapter) — once per
+	/// world session, asked every frame since its window is the clock's.
+	wisp_nudged: bool,
 	hotbar: Hotbar,
+	/// The three spell-slot assignments (the bottom-left bar). Character
+	/// state like the hotbar layout: synced to the server beside it, and
+	/// saved with the offline world.
+	spell_bar: crate::spellbar::SpellBar,
+	/// The Resonant Pick's declared dig shape, cycled by the tool-ability
+	/// bind (or the indicator's tap). Session state like the selected
+	/// slot — deliberately unpersisted; the default reproduces the
+	/// pre-toggle behavior at every Mining level.
+	dig_orientation: digblock_core::pick::DigOrientation,
 	/// The spawn structure still owed to an offline world: the stamp's
 	/// writes, drained as their chunks become resident. Named saves only
 	/// — a server stamps its own, and a backdrop world is ephemeral.
@@ -376,6 +427,21 @@ impl SphereClimb {
 
 /// Client-side hold-to-dig progress (mirrors the server's `DigState`;
 /// purely predictive — the server re-times the interval itself).
+/// Which surfaces were open last frame, plus the hotbar selection — the
+/// delta drives every open/close/select cue from ONE comparison, so no
+/// individual toggle path needs a sound hook.
+#[derive(Clone, Copy, PartialEq)]
+struct UiSnapshot {
+	menu: bool,
+	inv: bool,
+	alch: bool,
+	character: bool,
+	hiscores: bool,
+	spellbook: bool,
+	chat: bool,
+	hotbar: usize,
+}
+
 /// Everything the engine needs to decide what to play. The sink is
 /// injected, and a `None` sink is what covers bench, screenshot,
 /// drill and iOS runs.
@@ -413,6 +479,14 @@ struct AudioState {
 	/// height a splash is scaled by. Reset on ground and in water, so
 	/// walking down a hillside into a lake isn't a plunge.
 	fall_from_y: f32,
+
+	/// Last frame's open-surface snapshot; None until seeded, so the
+	/// surfaces a session starts on never chirp.
+	ui_snapshot: Option<UiSnapshot>,
+
+	/// Frame budgets for `react` cues, reset each `step_audio`.
+	frame_oneshots: u8,
+	frame_remote_edits: u8,
 }
 
 /// Work the pipeline has produced and the renderer has not yet taken.
@@ -467,6 +541,14 @@ struct Vfx {
 	/// rather than an RNG: nothing here needs to be unpredictable.
 	confetti_seq: u32,
 
+	/// Generic bursts (debris/splash/sparkle/poof) — confetti's contract
+	/// exactly: engine-aged instances, each carrying its life in lane 6.
+	bursts: Vec<crate::bursts::BurstInstance>,
+	burst_seq: u32,
+
+	/// Camera feel (shake/kick/pulse); applied on the FINAL view matrix.
+	camera_fx: crate::camera_fx::CameraFx,
+
 	/// The live essence draw, aged by `step_siphon`. World state for the
 	/// same reason confetti is: it names a cell, and a world swap must
 	/// forget it.
@@ -494,7 +576,7 @@ struct Vfx {
 	/// The channel aura's fade envelope: opens while a cast channels,
 	/// dissolves when one ends or breaks — an interrupted channel fades
 	/// rather than pops.
-	channel_env: f32,
+	channel_env: crate::anim::Envelope,
 
 	/// The teleport instant's full-screen flash, decayed in `update`.
 	flash: f32,
@@ -507,6 +589,9 @@ struct Vfx {
 	/// allocations, the nametag arrangement).
 	fx_scratch: Vec<crate::teleport::FxInstance>,
 	marker_scratch: Vec<crate::waystone_fx::MarkerInstance>,
+	/// This frame's highlight targets — the aimed cell first, then the
+	/// pick swing's extras (the players/markers scratch convention).
+	highlight_scratch: Vec<crate::highlight::HighlightTarget>,
 
 	/// Held-item animation. Advanced in `update`, NOT in `step_audio` —
 	/// that returns early with no audio sink attached (bench, screenshot,
@@ -577,7 +662,7 @@ struct SaveSession {
 	/// Return Home and every port, so hops cannot be chained. One gate
 	/// for local and connected play; connected, the server also enforces
 	/// its own copy.
-	teleport_cooldown: f32,
+	teleport_cooldown: crate::anim::Cooldown,
 
 	/// A return-to-spawn is outstanding, so the next teleport that lands
 	/// is ours and says so. Kept apart from the teleport's `look`, which
@@ -592,7 +677,7 @@ struct SaveSession {
 	/// its own, and so a suspended tab resumes with its full wait rather
 	/// than an expired one. Zero releases exactly as the marker does:
 	/// a hold that cannot time out is worse than the artifact it removes.
-	arrival_hold: Option<f32>,
+	arrival_hold: crate::anim::Timer,
 }
 
 /// Held keys, accumulated look, and the touch driver. While ANY UI
@@ -618,11 +703,19 @@ struct InputState {
 	/// this input dispatch, while the gesture is still on the stack.
 	fullscreen_requested: bool,
 
+	/// The live rebindable-key table (the persisted `Settings::bindings`,
+	/// re-copied by `apply_settings`). Every key event resolves through it
+	/// before the fixed fallback arm; the texts that say "press K" read it
+	/// too, so a hint can never name a dead key.
+	bindings: crate::bindings::Bindings,
+
+	/// The screenshot bind fired; the shell drains it right after this
+	/// input dispatch (`Game::take_screenshot_request`), inside the
+	/// keypress's own task like the fullscreen request.
+	screenshot_requested: bool,
+
 	/// Shell-forwarded display cutouts the touch HUD keeps clear of.
 	safe_area: crate::ui::hud::SafeArea,
-
-	/// Walk (player physics) vs debug fly camera; F toggles.
-	walking: bool,
 
 	fly_key_down: bool,
 
@@ -714,6 +807,17 @@ struct NetSession {
 	/// triggers a `ClientMsg::Layout` (before this frame's edits, so the
 	/// server's slot enforcement always sees the current arrangement).
 	last_layout_sent: Option<(Vec<u16>, Vec<u16>)>,
+
+	/// The spell bar's twin of `last_layout_sent`: primed by the
+	/// join-sync `ServerMsg::SpellBar`, and only a difference sends.
+	sent_spell_bar: Option<[u8; crate::spellbar::SPELL_SLOTS]>,
+
+	/// The orientation last declared to the server. `None` (fresh
+	/// connection) sends unconditionally once the net is ready — unlike
+	/// the layout there is no server-primed state to wait for, and the
+	/// unconditional first send is what makes a reconnect with a
+	/// non-default shape correct.
+	last_orientation_sent: Option<digblock_core::pick::DigOrientation>,
 }
 
 /// Measurement, and the scripted flight `--fly`/`--walk` drive. None
@@ -1114,6 +1218,10 @@ impl Game for Engine {
 		std::mem::take(&mut self.input.fullscreen_requested)
 	}
 
+	fn take_screenshot_request(&mut self) -> bool {
+		std::mem::take(&mut self.input.screenshot_requested)
+	}
+
 	fn text_entry_active(&self) -> bool {
 		self.config.interactive && (self.ui.chat.is_open() || self.ui.menu.text_field_open())
 	}
@@ -1172,10 +1280,11 @@ impl Game for Engine {
 					&self.hotbar.to_wire(),
 					&self.inv_grid.to_wire(),
 					&self.skills.to_wire(),
+					&self.spell_bar.to_wire(),
 					&digblock_persist::PlayerPersist {
 						pos: self.player.pos.to_array(),
-						yaw: self.camera.yaw_deg,
-						pitch: self.camera.pitch_deg,
+						yaw: self.look.yaw_deg,
+						pitch: self.look.pitch_deg,
 					},
 				);
 			}
@@ -1291,7 +1400,21 @@ mod dig_decay_tests;
 mod cast_tests;
 
 #[cfg(test)]
+mod pick_toggle_tests;
+
+#[cfg(test)]
 mod ore_capture_tests;
 
 #[cfg(test)]
 mod causeway_tests;
+
+#[cfg(test)]
+mod ui_sound_tests;
+
+#[cfg(test)]
+mod page_nav_tests;
+
+#[cfg(test)]
+mod siphon_tutorial_tests;
+#[cfg(test)]
+mod wisp_tutorial_tests;

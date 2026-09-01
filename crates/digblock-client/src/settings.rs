@@ -92,11 +92,21 @@ pub struct Settings {
 	/// Cap on the GI light list, on the [`LIGHT_CAP_STEP`] grid within
 	/// [`LIGHT_CAP_MIN`]..=[`LIGHT_CAP_MAX`].
 	pub max_lights: i32,
+	/// The tutorials' manual switch (the settings row). While on, the
+	/// walkthrough arms for every 0-XP character at offline world entry
+	/// (playing past the dig step earns the XP that retires it) and the
+	/// siphon and wisp chapters arm at their nudges; switching it off
+	/// also ends a running chapter on the spot. Completion writes
+	/// nothing here.
+	pub show_tutorial: bool,
 	/// Touch jump verb: the on-screen button instead of the double-tap.
 	/// Only surfaced (and only meaningful) on touch-HUD configs; the row
 	/// is hidden elsewhere but the value travels with the settings like
 	/// any other, so a tablet and a desktop browser share one store.
 	pub touch_jump_button: bool,
+	/// The rebindable-key table (the Controls page). Persisted by name
+	/// strings in the launcher mirrors, never by discriminant.
+	pub bindings: crate::bindings::Bindings,
 }
 // There is no `name` here any more. It used to be the last multiplayer
 // display name, re-typed per join and remembered as a convenience; a name
@@ -124,8 +134,10 @@ impl Default for Settings {
 			// native: captures build this struct, and every recorded
 			// baseline was taken with the whole list.
 			max_lights: LIGHT_CAP_MAX,
+			show_tutorial: true,
 			// The double-tap is the shipped jump — the old Java feel.
 			touch_jump_button: false,
+			bindings: crate::bindings::Bindings::default(),
 		}
 	}
 }
@@ -182,6 +194,10 @@ impl Settings {
 		if !GI_SCALE_DIVISORS.contains(&self.gi_scale_div) {
 			self.gi_scale_div = GI_SCALE_DEFAULT;
 		}
+		// A hand-edited file can bind a door key or one key twice; the
+		// table normalizes itself (drop the door, first action keeps a
+		// duplicated key).
+		self.bindings.sanitize();
 		self
 	}
 }
@@ -192,6 +208,8 @@ mod tests {
 
 	#[test]
 	fn clamped_normalizes_everything() {
+		let mut custom_binds = crate::bindings::Bindings::default();
+		custom_binds.unbind(crate::bindings::Action::Fly);
 		let s = Settings {
 			draw_dist: 100,
 			music_vol: -3.0,
@@ -202,8 +220,12 @@ mod tests {
 			gi_scale_div: 7,
 			max_lights: i32::MAX,
 			touch_jump_button: false,
+			show_tutorial: true,
+			bindings: custom_binds.clone(),
 		}
 		.clamped();
+		// A sane table rides clamped() untouched, custom holes included.
+		assert_eq!(s.bindings, custom_binds);
 		assert_eq!(s.draw_dist, DRAW_MAX);
 		assert_eq!(s.music_vol, 0.0);
 		assert_eq!(s.sfx_vol, 1.0);
@@ -326,6 +348,8 @@ mod tests {
 			gi_scale_div: 3,
 			max_lights: LIGHT_CAP_MIN + LIGHT_CAP_STEP,
 			touch_jump_button: true,
+			show_tutorial: false,
+			bindings: crate::bindings::Bindings::default(),
 		};
 		assert_eq!(ok.clone().clamped(), ok);
 	}

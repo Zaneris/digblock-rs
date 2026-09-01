@@ -421,6 +421,42 @@ impl AlchScreen {
 		self.open
 	}
 
+	/// Test hook: the page open with `family`/`member` picked outright,
+	/// so an engine test can walk the guide phases without synthesizing
+	/// a frame of clicks.
+	#[cfg(test)]
+	pub(crate) fn force_pick(&mut self, family: Option<usize>, member: usize) {
+		self.open = true;
+		self.family = family;
+		self.member = member;
+	}
+
+	/// The tile the tutorial should point at to walk a player toward
+	/// crafting `item`: its family's tile while that family is not
+	/// selected, the member's own tile while it is not the picked one,
+	/// and the TRANSMUTE button once it is. None with the page closed,
+	/// the item in no family, or a job on the bench — the press landed
+	/// and the button now reads Cancel, which the pulse must not point
+	/// at. The ids come from the same tables the draw pass indexes, so
+	/// the highlight can never name a wrong tile.
+	pub(crate) fn guide_to(&self, item: BlockType) -> Option<InvId> {
+		if !self.open || self.crafting.is_some() {
+			return None;
+		}
+		let (fi, family) = families()
+			.iter()
+			.enumerate()
+			.find(|(_, f)| f.members.contains(&item))?;
+		if self.family != Some(fi) {
+			return Some(InvId::Family(fi as u8));
+		}
+		let j = family.members.iter().position(|&m| m == item)?;
+		if self.member != j {
+			return Some(InvId::Craft(j as u8));
+		}
+		Some(InvId::CraftGo)
+	}
+
 	pub fn open(&mut self) {
 		self.open = true;
 		self.shift = false;
@@ -531,6 +567,7 @@ impl AlchScreen {
 		size: (u32, u32),
 		view: &AlchView,
 		bar: &HotbarView,
+		spells: &crate::spellbar::SpellBarView,
 		daylight: f32,
 	) {
 		let window_scale = ui.style.scale;
@@ -572,7 +609,8 @@ impl AlchScreen {
 		// The bar is drawn after us at the window's scale; naming its
 		// slots from here is what keeps the name at THIS frame's glyph.
 		if hover.is_none() {
-			hover = hud::hovered_bar_slot(size, window_scale, bar, self.cursor);
+			hover = hud::hovered_bar_slot(size, window_scale, bar, self.cursor)
+				.or_else(|| hud::hovered_spell_slot(size, window_scale, spells, self.cursor));
 		}
 		if let Some((anchor, name)) = hover {
 			widgets::tooltip(ui.dl, &ui.style, size, anchor, &name);
@@ -759,7 +797,7 @@ impl AlchScreen {
 			Layer::Content,
 			Rect::new(row_x, *y, row_w, row_h),
 			widgets::RowContent {
-				text: &format!("ALCHEMY   LV {}", view.level),
+				text: &format!("Alchemy   Lv {}", view.level),
 				right: None,
 				bar: Some(view.xp_frac),
 				color: WHITE,
@@ -951,7 +989,7 @@ impl AlchScreen {
 				strip.y + (strip_h - glyph) / 2.0,
 				glyph,
 				DIM,
-				"SELECT A FAMILY",
+				"Select a family",
 			);
 			return;
 		};
@@ -1039,9 +1077,9 @@ impl AlchScreen {
 			InvId::CraftGo,
 			btn,
 			if running.is_some() {
-				"CANCEL"
+				"Cancel"
 			} else {
-				"TRANSMUTE"
+				"Transmute"
 			},
 			running.is_some() || (!locked && batches > 0),
 			btn.contains(cx, cy),
@@ -1051,8 +1089,7 @@ impl AlchScreen {
 		// own progress when it is not: a craft is paced, so it needs somewhere to say how far
 		// along it is and how many are still owed. It names its own item rather than borrowing
 		// the strip's, which follows the SELECTION and may have moved on while the batch runs.
-		let queued =
-			running.map(|(item, left)| format!("{}   ·   {left} LEFT", item.name().to_uppercase()));
+		let queued = running.map(|(item, left)| format!("{}   ·   {left} left", item.name()));
 		widgets::row(
 			ui.dl,
 			&ui.style,
@@ -1060,7 +1097,7 @@ impl AlchScreen {
 			Rect::new(row_x, y, row_w, theme::ROW_H * s),
 			widgets::RowContent {
 				text: queued.as_deref().unwrap_or(&format!(
-					"CLICK {BULK_PLAIN}   ·   SHIFT {BULK_SHIFT}   ·   CTRL {BULK_CTRL}"
+					"Click {BULK_PLAIN}   ·   Shift {BULK_SHIFT}   ·   Ctrl {BULK_CTRL}"
 				)),
 				right: None,
 				bar: queued.is_some().then(|| self.progress.clamp(0.0, 1.0)),
@@ -1177,15 +1214,15 @@ impl AlchScreen {
 fn strip_tail(view: &AlchView, item: BlockType) -> Option<String> {
 	if !unlock::can_craft(item, &view.skills) {
 		return Some(match unlock::craft_gate(item) {
-			Some((_, level)) => format!("LV {level}"),
-			None => format!("LV {}", u32::MAX),
+			Some((_, level)) => format!("Lv {level}"),
+			None => format!("Lv {}", u32::MAX),
 		});
 	}
 	match strip_reason(view, item) {
-		StripReason::AtCap { tool: true } => Some("ALREADY OWNED".to_string()),
-		StripReason::AtCap { tool: false } => Some("ALREADY CHARGED".to_string()),
+		StripReason::AtCap { tool: true } => Some("Already owned".to_string()),
+		StripReason::AtCap { tool: false } => Some("Already charged".to_string()),
 		StripReason::Short { .. } => None,
-		StripReason::NothingToCharge => Some("NOTHING TO CHARGE".to_string()),
+		StripReason::NothingToCharge => Some("Nothing to charge".to_string()),
 		StripReason::Affords(n) => Some(format!("×{n}")),
 	}
 }
