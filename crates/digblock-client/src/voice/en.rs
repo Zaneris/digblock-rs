@@ -115,7 +115,10 @@ pub(super) fn line(msg: &Msg, binds: &crate::bindings::Bindings) -> String {
 		// Transmute and Tools carry their button casing. Key names come
 		// from the bindings table, so a rebinding moves the words with it.
 		Msg::TutorialStep {
-			step, touch: false, ..
+			step,
+			touch: false,
+			spell_slot,
+			..
 		} => {
 			use crate::bindings::Action as A;
 			use crate::tutorial::StepId as S;
@@ -159,12 +162,29 @@ pub(super) fn line(msg: &Msg, binds: &crate::bindings::Bindings) -> String {
 					"Press {} until the siphon is in hand",
 					binds.label(A::HotbarSlot9)
 				),
+				S::OpenArcana => format!(
+					"The night is dark and you can afford a wisp: press {} to open your spellbook",
+					binds.label(A::OpenSpellbook)
+				),
+				S::SlotWisp => "Drag Wisp onto a spell bar slot".into(),
+				S::CloseArcana => {
+					format!("Press {} to close your spellbook", Key::Escape.label())
+				}
+				S::CastWisp => format!(
+					"Press {} to light your wisp",
+					binds.label(match spell_slot {
+						1 => A::CastSpell2,
+						2 => A::CastSpell3,
+						_ => A::CastSpell1,
+					})
+				),
 			}
 		}
 		Msg::TutorialStep {
 			step,
 			touch: true,
 			jump_button,
+			..
 		} => {
 			use crate::tutorial::StepId as S;
 			match step {
@@ -186,10 +206,18 @@ pub(super) fn line(msg: &Msg, binds: &crate::bindings::Bindings) -> String {
 				S::PickSiphon => "Tap the Essence Siphon".into(),
 				S::CraftSiphon => "Tap Transmute to craft the siphon".into(),
 				S::SelectSiphon => "Tap the last slot until the siphon is in hand".into(),
+				S::OpenArcana => {
+					"The night is dark and you can afford a wisp: open your spellbook from the menu"
+						.into()
+				}
+				S::SlotWisp => "Drag the Wisp row onto your spell bar".into(),
+				S::CloseArcana => "Tap the X in the corner to close your spellbook".into(),
+				S::CastWisp => "Tap the wisp in your spell bar to light it".into(),
 			}
 		}
 		Msg::TutorialDone => "You know the essentials: this world is yours".into(),
 		Msg::TutorialSiphonDone => "That is everything: go siphon some essence".into(),
+		Msg::TutorialWispDone => "Your wisp burns: cast it whenever the dark closes in".into(),
 		Msg::ServerNotice { text } => format!("[server] {text}"),
 		Msg::Chat { name, text } => format!("{name}: {text}"),
 		Msg::CommandHint { usage, desc } => command_hint(usage, desc).text,

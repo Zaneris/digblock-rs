@@ -135,3 +135,39 @@ pub(crate) fn highlight(dl: &mut super::DrawList, style: &Style, rect: Rect, tim
 	);
 	outline(dl, ring, s * 0.75, (a << 24) | 0x00FF_D75A);
 }
+
+/// Dots streaming along the drag path, this many at a time.
+const DRAG_DOTS: u32 = 5;
+/// One dot's journey source-to-target, seconds.
+const DRAG_TRAVEL_SECS: f32 = 1.4;
+/// A dot's side, dip px.
+const DRAG_DOT: f32 = 5.0;
+
+/// The drag gesture's hint, for a step done by dragging one element
+/// onto another: the source wears the steady outline, the target the
+/// collapsing ring, and a stream of dots runs center to center —
+/// brightening as they arrive, so the direction reads at a glance.
+pub(crate) fn drag_hint(
+	dl: &mut super::DrawList,
+	style: &Style,
+	from: Rect,
+	to: Rect,
+	time_secs: f32,
+) {
+	use digblock_core::ease;
+	outline(dl, from, OUTLINE * style.scale, 0xFFFF_D75A);
+	highlight(dl, style, to, time_secs);
+	let (ax, ay) = (from.x + from.w / 2.0, from.y + from.h / 2.0);
+	let (bx, by) = (to.x + to.w / 2.0, to.y + to.h / 2.0);
+	let side = DRAG_DOT * style.scale;
+	for i in 0..DRAG_DOTS {
+		let p = (time_secs / DRAG_TRAVEL_SECS + i as f32 / DRAG_DOTS as f32).fract();
+		let (x, y) = (ease::lerp(ax, bx, p), ease::lerp(ay, by, p));
+		let a = ease::lerp(0x50 as f32, 0xFF as f32, p) as u32;
+		dl.quad(
+			Layer::Ghost,
+			Rect::new(x - side / 2.0, y - side / 2.0, side, side),
+			(a << 24) | 0x00FF_D75A,
+		);
+	}
+}

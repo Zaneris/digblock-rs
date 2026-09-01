@@ -335,7 +335,7 @@ enum Setting {
 	Tutorial,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 enum Act {
 	CloseMenu,
 	/// Toggle browser fullscreen — the shell must call inside the activating gesture's dispatch.
@@ -1661,6 +1661,27 @@ impl Menu {
 	}
 
 	// ---- layout / view ----------------------------------------------------
+
+	/// The row on the CURRENT menu screen that opens `kind`, or None
+	/// when no such row is on it (a submenu, the title, a kind the menu
+	/// has no row for). The tutorial's menu-phase pulse asks this, so
+	/// the guidance rides the same acts table the taps run and can
+	/// never name a wrong row.
+	pub(crate) fn screen_row(&self, kind: crate::events::ScreenKind) -> Option<RowId> {
+		use crate::events::ScreenKind as K;
+		let want = match kind {
+			K::Spellbook => Act::OpenSpellbook,
+			K::Inventory => Act::OpenInventory,
+			K::Alchemy => Act::OpenAlchemy,
+			K::Character => Act::OpenCharacter,
+			K::Hiscores => Act::OpenHiscores,
+			K::Menu | K::Chat => return None,
+		};
+		self.acts()
+			.into_iter()
+			.find(|&(_, a)| a == want)
+			.map(|(id, _)| id)
+	}
 
 	/// Ordered selectable actions for the current screen; the selection
 	/// index and hit-testing both index into this.

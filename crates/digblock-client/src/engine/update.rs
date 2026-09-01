@@ -800,6 +800,9 @@ impl Engine {
 		// The tutorial's continuous verbs, paused under the open menu
 		// exactly as the panel hides with the HUD.
 		if !self.ui.menu.is_open() {
+			// The wisp nudge is a clock window, not a pack event, so it is
+			// asked here every frame rather than where the inventory grows.
+			self.nudge_wisp();
 			// The bench steps ride the same guide the highlight reads, so
 			// the words, the pulse and the advance can never disagree
 			// about which phase the page is in.
@@ -819,6 +822,9 @@ impl Engine {
 				siphon_in_hand: self.hotbar.selected_item()
 					== Some(digblock_core::hotbar::HotbarItem::WaterTool)
 					&& self.hotbar.active_tool() == Some(BlockType::EssenceSiphon),
+				arcana_open: self.ui.spellbook.is_open(),
+				wisp_slotted: self.wisp_bar_slot().is_some(),
+				wisp_lit: self.wisp_left > 0.0,
 			};
 			if let Some(adv) = self.tutorial.poll(&poll, dt) {
 				self.on_tutorial_advance(adv);

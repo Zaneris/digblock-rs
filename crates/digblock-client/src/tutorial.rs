@@ -31,12 +31,17 @@ pub enum StepId {
 	PickSiphon,
 	CraftSiphon,
 	SelectSiphon,
+	// ---- the wisp chapter (WISP_STEPS) ----
+	OpenArcana,
+	SlotWisp,
+	CloseArcana,
+	CastWisp,
 }
 
 impl StepId {
 	/// Test sweeps only; shipping code walks the step tables.
 	#[cfg(test)]
-	pub(crate) const ALL: [StepId; 15] = [
+	pub(crate) const ALL: [StepId; 19] = [
 		StepId::Move,
 		StepId::Look,
 		StepId::Jump,
@@ -52,6 +57,10 @@ impl StepId {
 		StepId::PickSiphon,
 		StepId::CraftSiphon,
 		StepId::SelectSiphon,
+		StepId::OpenArcana,
+		StepId::SlotWisp,
+		StepId::CloseArcana,
+		StepId::CastWisp,
 	];
 
 	/// The knob spelling (`DIG_TUTORIAL=<step>`); None = unknown, and the
@@ -73,6 +82,10 @@ impl StepId {
 			"pick" => StepId::PickSiphon,
 			"craft" => StepId::CraftSiphon,
 			"siphon" => StepId::SelectSiphon,
+			"arcana" => StepId::OpenArcana,
+			"wispbar" => StepId::SlotWisp,
+			"closebook" => StepId::CloseArcana,
+			"wisp" => StepId::CastWisp,
 			_ => return None,
 		})
 	}
@@ -122,6 +135,13 @@ pub(crate) enum Trigger {
 	OwnsSiphon,
 	/// The tool slot is selected with the siphon as the active tool.
 	SiphonInHand,
+	/// The spellbook is open — polled, so an already-open book counts.
+	ArcanaOpen,
+	/// The wisp sits in a spell-bar slot, however it got there.
+	WispSlotted,
+	/// Our wisp is burning (the cast's completion, whichever surface
+	/// started it).
+	WispLit,
 }
 
 pub(crate) struct Step {
@@ -186,12 +206,14 @@ pub(crate) const STEPS: [Step; 10] = [
 		touch_anchor: Some(AnchorId::CornerMenu),
 	},
 	// Performed from inside the menu (its Inventory row, or the hotkey
-	// reaching through); no anchor, the row is the menu's own geometry.
+	// reaching through). No keyboard anchor; with the menu open the
+	// frame pulses the row itself (the menu's own geometry), and the
+	// touch anchor covers a player who closed the menu back out.
 	Step {
 		id: StepId::OpenInventory,
 		trigger: Trigger::ScreenOpened(ScreenKind::Inventory),
 		anchor: None,
-		touch_anchor: None,
+		touch_anchor: Some(AnchorId::CornerMenu),
 	},
 	Step {
 		id: StepId::CloseInventory,
@@ -243,15 +265,76 @@ pub(crate) const SIPHON_STEPS: [Step; 5] = [
 	},
 ];
 
+/// The wisp chapter, armed by its own nudge (the pack can pay a wisp's
+/// fare inside the night window): open the spellbook, drag the wisp row
+/// onto the bar (the frame draws the drag hint between the row and the
+/// first free slot), close the book, then light it from the bar. The
+/// drop target and the cast step's bar-slot anchor are runtime facts of
+/// where the player put it, so the frame resolves them; `anchor: None`.
+pub(crate) const WISP_STEPS: [Step; 4] = [
+	Step {
+		id: StepId::OpenArcana,
+		trigger: Trigger::ArcanaOpen,
+		anchor: None,
+		touch_anchor: Some(AnchorId::CornerMenu),
+	},
+	Step {
+		id: StepId::SlotWisp,
+		trigger: Trigger::WispSlotted,
+		anchor: Some(AnchorId::Ui(crate::ui::InvId::Spell(
+			crate::spellbar::SLOT_WISP,
+		))),
+		touch_anchor: None,
+	},
+	Step {
+		id: StepId::CloseArcana,
+		trigger: Trigger::ScreenClosed(ScreenKind::Spellbook),
+		anchor: None,
+		touch_anchor: Some(AnchorId::CornerMenu),
+	},
+	Step {
+		id: StepId::CastWisp,
+		trigger: Trigger::WispLit,
+		anchor: None,
+		touch_anchor: None,
+	},
+];
+
+/// The chapters, each an ordered step table: the walkthrough armed at
+/// world entry, the others by their own nudges.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Chapter {
+	Walkthrough,
+	Siphon,
+	Wisp,
+}
+
+impl Chapter {
+	fn steps(self) -> &'static [Step] {
+		match self {
+			Chapter::Walkthrough => &STEPS,
+			Chapter::Siphon => &SIPHON_STEPS,
+			Chapter::Wisp => &WISP_STEPS,
+		}
+	}
+
+	/// Its own completion advance: the wording differs per chapter, and
+	/// only the walkthrough's is the settings row's business.
+	fn finished(self) -> Advance {
+		match self {
+			Chapter::Walkthrough => Advance::Finished,
+			Chapter::Siphon => Advance::SiphonFinished,
+			Chapter::Wisp => Advance::WispFinished,
+		}
+	}
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 enum State {
 	#[default]
 	Inactive,
 	Running {
-		step: u8,
-	},
-	/// The siphon chapter (SIPHON_STEPS), armed by the nudge.
-	Siphon {
+		chapter: Chapter,
 		step: u8,
 	},
 	Done,
@@ -261,6 +344,9 @@ enum State {
 #[derive(Default)]
 pub(crate) struct Tutorial {
 	state: State,
+	/// Chapters armed while another still ran: held here in arrival
+	/// order, each begun the moment the floor frees.
+	queued: Vec<Chapter>,
 	/// Current step's accumulator (blocks for Moved, degrees for Looked).
 	progress: f32,
 	/// Seconds left of the step-done flourish on the panel.
@@ -283,6 +369,9 @@ pub(crate) struct Poll {
 	pub siphon_picked: bool,
 	pub owns_siphon: bool,
 	pub siphon_in_hand: bool,
+	pub arcana_open: bool,
+	pub wisp_slotted: bool,
+	pub wisp_lit: bool,
 }
 
 /// What advancing produced, for the engine to react to.
@@ -293,6 +382,8 @@ pub(crate) enum Advance {
 	/// The siphon chapter's own end: its wording differs, and the
 	/// walkthrough's completion setting is not its business.
 	SiphonFinished,
+	/// The wisp chapter's own end, on the same terms.
+	WispFinished,
 }
 
 /// Everything presentation needs for the current step.
@@ -311,63 +402,77 @@ const CELEBRATE_SECS: f32 = 0.8;
 
 impl Tutorial {
 	pub(crate) fn start(&mut self) {
-		self.state = State::Running { step: 0 };
-		self.progress = 0.0;
-	}
-
-	/// Arm the siphon chapter (the nudge moment: the pack can afford
-	/// one). A chapter already running keeps the floor.
-	pub(crate) fn start_siphon(&mut self) {
-		if self.is_running() {
-			return;
-		}
-		self.state = State::Siphon { step: 0 };
-		self.progress = 0.0;
-	}
-
-	/// Dev knob: jump straight to one step, in whichever table holds it.
-	pub(crate) fn start_at(&mut self, id: StepId) {
-		self.state = if let Some(i) = STEPS.iter().position(|s| s.id == id) {
-			State::Running { step: i as u8 }
-		} else {
-			let i = SIPHON_STEPS
-				.iter()
-				.position(|s| s.id == id)
-				.expect("id in a step table");
-			State::Siphon { step: i as u8 }
+		self.state = State::Running {
+			chapter: Chapter::Walkthrough,
+			step: 0,
 		};
 		self.progress = 0.0;
 	}
 
+	/// Arm a nudged chapter. The running one keeps the floor and the
+	/// newcomer queues behind it instead of being lost; arming the
+	/// chapter that is already up (or already queued) changes nothing.
+	pub(crate) fn start_chapter(&mut self, c: Chapter) {
+		match self.state {
+			State::Running { chapter, .. } if chapter == c => {}
+			State::Running { .. } => {
+				if !self.queued.contains(&c) {
+					self.queued.push(c);
+				}
+			}
+			State::Inactive | State::Done => {
+				self.state = State::Running {
+					chapter: c,
+					step: 0,
+				};
+				self.progress = 0.0;
+			}
+		}
+	}
+
+	/// Dev knob: jump straight to one step, in whichever table holds it.
+	pub(crate) fn start_at(&mut self, id: StepId) {
+		let (chapter, i) = [Chapter::Walkthrough, Chapter::Siphon, Chapter::Wisp]
+			.into_iter()
+			.find_map(|c| Some((c, c.steps().iter().position(|s| s.id == id)?)))
+			.expect("id in a step table");
+		self.state = State::Running {
+			chapter,
+			step: i as u8,
+		};
+		self.progress = 0.0;
+	}
+
+	/// Test assertions only; shipping code reads `view`.
+	#[cfg(test)]
 	pub(crate) fn is_running(&self) -> bool {
 		self.current().is_some()
 	}
 
-	/// The active chapter's table and step, or None at rest.
-	fn current(&self) -> Option<(&'static [Step], u8)> {
+	/// The active chapter and step, or None at rest.
+	fn current(&self) -> Option<(Chapter, u8)> {
 		match self.state {
-			State::Running { step } => Some((&STEPS[..], step)),
-			State::Siphon { step } => Some((&SIPHON_STEPS[..], step)),
+			State::Running { chapter, step } => Some((chapter, step)),
 			State::Inactive | State::Done => None,
 		}
 	}
 
 	/// Abandon the running chapter; completion lands exactly as finishing.
+	/// Queued chapters go with it: skipping means no more tutoring.
 	pub(crate) fn skip(&mut self) -> Option<Advance> {
-		let adv = match self.state {
-			State::Running { .. } => Advance::Finished,
-			State::Siphon { .. } => Advance::SiphonFinished,
-			State::Inactive | State::Done => return None,
+		self.queued.clear();
+		let State::Running { chapter, .. } = self.state else {
+			return None;
 		};
 		self.state = State::Done;
-		Some(adv)
+		Some(chapter.finished())
 	}
 
 	/// A gameplay moment happened; advance if it is what the current step
 	/// asked for. Fires each step's Advance exactly once.
 	pub(crate) fn observe(&mut self, ev: &GameEvent) -> Option<Advance> {
-		let (steps, step) = self.current()?;
-		let hit = match (steps[step as usize].trigger, ev) {
+		let (chapter, step) = self.current()?;
+		let hit = match (chapter.steps()[step as usize].trigger, ev) {
 			(Trigger::Dug, GameEvent::DigFinished { .. }) => true,
 			(Trigger::Placed, GameEvent::Placed { .. }) => true,
 			(Trigger::ScreenOpened(k), GameEvent::Ui(UiEvent::ScreenOpen(o))) => k == *o,
@@ -393,8 +498,8 @@ impl Tutorial {
 			None => 0.0,
 		};
 		self.prev_look = Some((p.yaw_deg, p.pitch_deg));
-		let (steps, step) = self.current()?;
-		let hit = match steps[step as usize].trigger {
+		let (chapter, step) = self.current()?;
+		let hit = match chapter.steps()[step as usize].trigger {
 			Trigger::Moved { blocks } => {
 				self.progress += p.moved_blocks;
 				self.progress >= blocks
@@ -409,6 +514,9 @@ impl Tutorial {
 			Trigger::SiphonPicked => p.siphon_picked,
 			Trigger::OwnsSiphon => p.owns_siphon,
 			Trigger::SiphonInHand => p.siphon_in_hand,
+			Trigger::ArcanaOpen => p.arcana_open,
+			Trigger::WispSlotted => p.wisp_slotted,
+			Trigger::WispLit => p.wisp_lit,
 			_ => false,
 		};
 		hit.then(|| self.advance())
@@ -417,12 +525,12 @@ impl Tutorial {
 	/// What to show, or None while inactive/done. `touch` picks the
 	/// finger anchors over the keyboard ones.
 	pub(crate) fn view(&self, touch: bool) -> Option<TutorialView> {
-		let (steps, step) = self.current()?;
-		let s = &steps[step as usize];
+		let (chapter, step) = self.current()?;
+		let s = &chapter.steps()[step as usize];
 		Some(TutorialView {
 			step: s.id,
 			index: step,
-			total: steps.len() as u8,
+			total: chapter.steps().len() as u8,
 			anchor: if touch {
 				s.touch_anchor.or(s.anchor)
 			} else {
@@ -438,26 +546,28 @@ impl Tutorial {
 	}
 
 	fn advance(&mut self) -> Advance {
-		let siphon = matches!(self.state, State::Siphon { .. });
-		let Some((steps, step)) = self.current() else {
+		let Some((chapter, step)) = self.current() else {
 			unreachable!("advance is only reached from a running chapter");
 		};
-		let done = steps[step as usize].id;
+		let done = chapter.steps()[step as usize].id;
 		self.progress = 0.0;
 		self.celebrate = CELEBRATE_SECS;
-		if step as usize + 1 >= steps.len() {
-			self.state = State::Done;
-			if siphon {
-				Advance::SiphonFinished
+		if step as usize + 1 >= chapter.steps().len() {
+			// A chapter queued behind this one takes the floor the moment
+			// it frees; the finish still reports as usual.
+			self.state = if self.queued.is_empty() {
+				State::Done
 			} else {
-				Advance::Finished
-			}
+				State::Running {
+					chapter: self.queued.remove(0),
+					step: 0,
+				}
+			};
+			chapter.finished()
 		} else {
-			let step = step + 1;
-			self.state = if siphon {
-				State::Siphon { step }
-			} else {
-				State::Running { step }
+			self.state = State::Running {
+				chapter,
+				step: step + 1,
 			};
 			Advance::Step(done)
 		}

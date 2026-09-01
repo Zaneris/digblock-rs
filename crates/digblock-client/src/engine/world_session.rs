@@ -43,6 +43,7 @@ impl Engine {
 		self.vfx.toasts.clear();
 		self.auth_essence = None;
 		self.siphon_nudged = false;
+		self.wisp_nudged = false;
 		self.tutorial = crate::tutorial::Tutorial::default();
 		// The held dusk re-arms only at this join's sync, once its
 		// InventoryFull has said whether the character owns a light.
@@ -259,6 +260,7 @@ impl Engine {
 		self.vfx.toasts.clear();
 		self.auth_essence = None;
 		self.siphon_nudged = false;
+		self.wisp_nudged = false;
 		self.tutorial = crate::tutorial::Tutorial::default();
 		// The backdrop shows an ordinary sky, whoever was just playing.
 		self.dusk_hold = crate::dusk::DuskHold::default();
@@ -358,6 +360,7 @@ impl Engine {
 		// entry came from (the title path resets these too, but the entry
 		// must not depend on the route taken here).
 		self.siphon_nudged = false;
+		self.wisp_nudged = false;
 		self.tutorial = crate::tutorial::Tutorial::default();
 		self.arm_tutorial();
 		// Offline there is no clock but the player's own, so a lightless
@@ -537,11 +540,11 @@ impl Engine {
 		}
 	}
 
-	/// Arm the siphon chapter at the affordability nudge: offline local
-	/// play, interactively, the settings row and the dev override both
-	/// respected. No XP gate here — the nudge already fires only for a
-	/// player who has never made a siphon, which is its own "still new".
-	pub(super) fn arm_siphon_tutorial(&mut self) {
+	/// Arm a nudge-armed chapter (siphon, wisp): offline local play,
+	/// interactively, the settings row and the dev override both
+	/// respected. No XP gate here — each nudge already fires only for a
+	/// player new to its subject, which is its own "still new".
+	pub(super) fn arm_nudged_chapter(&mut self, chapter: crate::tutorial::Chapter) {
 		if matches!(
 			self.config.debug_tutorial,
 			Some(crate::tutorial::TutorialOverride::Off)
@@ -554,7 +557,7 @@ impl Engine {
 			&& !self.config.bench
 			&& self.config.debug_screen.is_none()
 		{
-			self.tutorial.start_siphon();
+			self.tutorial.start_chapter(chapter);
 		}
 	}
 

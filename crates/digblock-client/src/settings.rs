@@ -95,8 +95,9 @@ pub struct Settings {
 	/// The tutorials' manual switch (the settings row). While on, the
 	/// walkthrough arms for every 0-XP character at offline world entry
 	/// (playing past the dig step earns the XP that retires it) and the
-	/// siphon chapter arms at its nudge; switching it off also ends a
-	/// running chapter on the spot. Completion writes nothing here.
+	/// siphon and wisp chapters arm at their nudges; switching it off
+	/// also ends a running chapter on the spot. Completion writes
+	/// nothing here.
 	pub show_tutorial: bool,
 	/// Touch jump verb: the on-screen button instead of the double-tap.
 	/// Only surfaced (and only meaningful) on touch-HUD configs; the row

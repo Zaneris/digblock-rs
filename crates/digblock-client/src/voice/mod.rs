@@ -168,18 +168,23 @@ pub(crate) enum Msg {
 	ReturnedToSpawn,
 
 	// ---- the tutorial ----
-	/// One step's instruction; `touch` picks the finger wording, and
+	/// One step's instruction; `touch` picks the finger wording,
 	/// `jump_button` mirrors the touch jump-mode setting (only the Jump
-	/// step's touch wording reads it: button vs. double-tap).
+	/// step's touch wording reads it: button vs. double-tap), and
+	/// `spell_slot` is the bar slot holding the wisp (only the CastWisp
+	/// step reads it, to name that slot's key).
 	TutorialStep {
 		step: crate::tutorial::StepId,
 		touch: bool,
 		jump_button: bool,
+		spell_slot: u8,
 	},
 	/// The completion line (finished or skipped alike).
 	TutorialDone,
 	/// The siphon chapter's completion line.
 	TutorialSiphonDone,
+	/// The wisp chapter's completion line.
+	TutorialWispDone,
 
 	// ---- text that arrives as text: nothing on this side knows what it says ----
 	ServerNotice {

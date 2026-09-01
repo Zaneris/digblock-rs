@@ -289,6 +289,10 @@ pub struct Engine {
 	/// session, and the ownership check silences it for good the moment
 	/// one is made.
 	siphon_nudged: bool,
+	/// Its wisp twin: whether this session already fired the
+	/// wisp-affordability nudge (which arms the wisp chapter) — once per
+	/// world session, asked every frame since its window is the clock's.
+	wisp_nudged: bool,
 	hotbar: Hotbar,
 	/// The three spell-slot assignments (the bottom-left bar). Character
 	/// state like the hotbar layout: synced to the server beside it, and
@@ -1412,3 +1416,5 @@ mod page_nav_tests;
 
 #[cfg(test)]
 mod siphon_tutorial_tests;
+#[cfg(test)]
+mod wisp_tutorial_tests;

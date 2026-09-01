@@ -434,11 +434,13 @@ impl AlchScreen {
 	/// The tile the tutorial should point at to walk a player toward
 	/// crafting `item`: its family's tile while that family is not
 	/// selected, the member's own tile while it is not the picked one,
-	/// and the TRANSMUTE button once it is. None with the page closed or
-	/// the item in no family. The ids come from the same tables the
-	/// draw pass indexes, so the highlight can never name a wrong tile.
+	/// and the TRANSMUTE button once it is. None with the page closed,
+	/// the item in no family, or a job on the bench — the press landed
+	/// and the button now reads Cancel, which the pulse must not point
+	/// at. The ids come from the same tables the draw pass indexes, so
+	/// the highlight can never name a wrong tile.
 	pub(crate) fn guide_to(&self, item: BlockType) -> Option<InvId> {
-		if !self.open {
+		if !self.open || self.crafting.is_some() {
 			return None;
 		}
 		let (fi, family) = families()

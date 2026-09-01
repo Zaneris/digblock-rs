@@ -1820,3 +1820,34 @@ fn the_hotbar_subpage_binds_and_backs_out() {
 	menu.handle_key(Key::Escape);
 	assert!(matches!(menu.screen, Some(Screen::Controls { .. })));
 }
+
+/// The tutorial's menu-phase pulse rides `screen_row`: in a world, the
+/// root screen names the row for each page the tutorial routes through
+/// (paired exactly as the acts table pairs them), while the title root
+/// and a submenu answer None, so the guide goes quiet rather than
+/// pointing at anything else.
+#[test]
+fn screen_row_names_the_page_rows_only_on_the_in_world_root() {
+	use crate::events::ScreenKind as K;
+	let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
+	assert_eq!(menu.screen_row(K::Inventory), None, "title root: no row");
+	menu.set_connected(true);
+	for (kind, want) in [
+		(K::Inventory, Act::OpenInventory),
+		(K::Alchemy, Act::OpenAlchemy),
+		(K::Spellbook, Act::OpenSpellbook),
+	] {
+		let row = menu
+			.screen_row(kind)
+			.expect("the in-world root lists the page");
+		let acts = menu.acts();
+		let &(_, act) = acts.iter().find(|&&(id, _)| id == row).expect("a real row");
+		assert!(act == want, "{kind:?} points at its own row");
+	}
+	// The kinds no menu row opens never name one.
+	assert_eq!(menu.screen_row(K::Menu), None);
+	assert_eq!(menu.screen_row(K::Chat), None);
+	// A submenu: the rows are elsewhere, the guide goes quiet.
+	menu.screen = Some(Screen::Settings { sel: 0 });
+	assert_eq!(menu.screen_row(K::Inventory), None, "no row on a submenu");
+}

@@ -550,8 +550,12 @@ impl Engine {
 		}
 		// A running cinematic owns the screen whole: the prompt waits for
 		// the camera to come home.
+		// The steps performed from INSIDE the menu (open this page) keep
+		// the prompt up over it; every other step pauses out of sight
+		// with the HUD.
+		use crate::tutorial::StepId as S;
 		if let Some(view) = self.tutorial.view(self.config.touch_hud)
-			&& (in_game || matches!(view.step, crate::tutorial::StepId::OpenInventory))
+			&& (in_game || matches!(view.step, S::OpenInventory | S::OpenBench | S::OpenArcana))
 			&& !cinematic
 		{
 			let style = crate::ui::Style::new(self.ui.ui_scale);
@@ -560,6 +564,7 @@ impl Engine {
 					step: view.step,
 					touch: self.config.touch_hud,
 					jump_button: self.config.touch_jump_button,
+					spell_slot: self.wisp_bar_slot().unwrap_or(0),
 				},
 				&self.input.bindings,
 			);
@@ -583,26 +588,81 @@ impl Engine {
 			// own guide (family tile, siphon tile, TRANSMUTE button) —
 			// the same phase read the poll advances on, so the pulse and
 			// the words can never point at different tiles.
-			use crate::tutorial::StepId as S;
-			let anchor = if matches!(view.step, S::PickTools | S::PickSiphon | S::CraftSiphon) {
-				self.ui
-					.alch_screen
-					.guide_to(digblock_core::block::BlockType::EssenceSiphon)
-					.map(crate::ui::anchors::AnchorId::Ui)
+			// With the MENU up on an open-this-page step, the pulse moves
+			// to the page's own row, resolved through the same acts table
+			// the taps run — the corner button reads Back here and must
+			// not pulse toward closing the menu. A submenu has no such
+			// row and gets the words alone.
+			if !in_game {
+				let kind = match view.step {
+					S::OpenInventory => Some(crate::events::ScreenKind::Inventory),
+					S::OpenBench => Some(crate::events::ScreenKind::Alchemy),
+					S::OpenArcana => Some(crate::events::ScreenKind::Spellbook),
+					_ => None,
+				};
+				if let Some(row) = kind.and_then(|k| self.ui.menu.screen_row(k))
+					&& let Some(mv) = &menu_view
+					&& let Some(r) = mv.hits.rect_of(row)
+				{
+					crate::ui::tutorial::highlight(&mut self.ui.ui_dl, &style, r, self.time_secs);
+				}
+			} else if view.step == S::SlotWisp {
+				// The drag step draws a two-ended hint instead of one pulse:
+				// the wisp row (the table's anchor) outlined steady, the first
+				// free bar slot pulsing as the drop target, dots streaming
+				// between them. Both rects are this frame's hits, so a closed
+				// book simply draws nothing.
+				let to_slot = (0..crate::spellbar::SPELL_SLOTS as u8)
+					.find(|&i| self.spell_bar.get(i as usize).is_none())
+					.unwrap_or(0);
+				let rect_of = |a| {
+					crate::ui::anchors::anchor_rect(
+						a,
+						&self.ui.ui_hits,
+						size,
+						style.scale,
+						&self.input.safe_area,
+					)
+				};
+				let from = view.anchor.and_then(rect_of);
+				let to = rect_of(crate::ui::anchors::AnchorId::Ui(
+					crate::ui::InvId::SpellBar(to_slot),
+				));
+				if let (Some(f), Some(t)) = (from, to) {
+					crate::ui::tutorial::drag_hint(
+						&mut self.ui.ui_dl,
+						&style,
+						f,
+						t,
+						self.time_secs,
+					);
+				}
 			} else {
-				view.anchor.filter(|a| {
-					*a != crate::ui::anchors::AnchorId::JumpButton || self.config.touch_jump_button
-				})
-			};
-			if let Some(a) = anchor
-				&& let Some(r) = crate::ui::anchors::anchor_rect(
-					a,
-					&self.ui.ui_hits,
-					size,
-					style.scale,
-					&self.input.safe_area,
-				) {
-				crate::ui::tutorial::highlight(&mut self.ui.ui_dl, &style, r, self.time_secs);
+				let anchor = if matches!(view.step, S::PickTools | S::PickSiphon | S::CraftSiphon) {
+					self.ui
+						.alch_screen
+						.guide_to(digblock_core::block::BlockType::EssenceSiphon)
+						.map(crate::ui::anchors::AnchorId::Ui)
+				} else if view.step == S::CastWisp {
+					// The bar slot the player chose — a runtime fact.
+					self.wisp_bar_slot()
+						.map(|k| crate::ui::anchors::AnchorId::Ui(crate::ui::InvId::SpellBar(k)))
+				} else {
+					view.anchor.filter(|a| {
+						*a != crate::ui::anchors::AnchorId::JumpButton
+							|| self.config.touch_jump_button
+					})
+				};
+				if let Some(a) = anchor
+					&& let Some(r) = crate::ui::anchors::anchor_rect(
+						a,
+						&self.ui.ui_hits,
+						size,
+						style.scale,
+						&self.input.safe_area,
+					) {
+					crate::ui::tutorial::highlight(&mut self.ui.ui_dl, &style, r, self.time_secs);
+				}
 			}
 		}
 		// Last, and over everything: while the arrival hold is up, the

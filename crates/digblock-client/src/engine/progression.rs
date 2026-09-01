@@ -165,7 +165,39 @@ impl Engine {
 			return;
 		}
 		self.siphon_nudged = true;
-		self.arm_siphon_tutorial();
+		self.arm_nudged_chapter(crate::tutorial::Chapter::Siphon);
+	}
+
+	/// The spellbook's opening invitation, asked every frame (the window
+	/// is a clock, not a pack event): the first time the shown sky sits
+	/// between 21:00 and 03:00 with a wisp's fare in the pack, the wisp
+	/// unslotted and unlit, the wisp walkthrough chapter arms and does
+	/// the talking. Price and window read from the tables and the
+	/// painted sun, so a retune moves the nudge with them. Once per
+	/// world session.
+	pub(super) fn nudge_wisp(&mut self) {
+		if self.wisp_nudged || self.wisp_left > 0.0 || self.wisp_bar_slot().is_some() {
+			return;
+		}
+		let (h, _) = digblock_core::sun::clock_of_tod(self.sun.tod);
+		if (3..21).contains(&h) {
+			return;
+		}
+		let level = self.skills.level(digblock_core::skills::Skill::Arcana);
+		let (essence, fare) = digblock_core::alchemy::wisp_price(level);
+		if self.inventory.sub_count(essence) < fare {
+			return;
+		}
+		self.wisp_nudged = true;
+		self.arm_nudged_chapter(crate::tutorial::Chapter::Wisp);
+	}
+
+	/// The bar slot holding the wisp, if any: the nudge's "already knows
+	/// the bar", the poll's "slotted", the cast step's anchor and its
+	/// wording's key all ask this one place.
+	pub(super) fn wisp_bar_slot(&self) -> Option<u8> {
+		(0..crate::spellbar::SPELL_SLOTS as u8)
+			.find(|&i| self.spell_bar.get(i as usize) == Some(crate::spellbar::SLOT_WISP))
 	}
 
 	/// Adopt a new authoritative XP total for one skill: coalesce the delta into a toast, then

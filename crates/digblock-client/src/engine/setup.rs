@@ -307,6 +307,7 @@ impl Engine {
 			inventory: Inventory::default(),
 			auth_essence: None,
 			siphon_nudged: false,
+			wisp_nudged: false,
 			hotbar: Hotbar::new(),
 			spell_bar: crate::spellbar::SpellBar::default(),
 			dig_orientation: digblock_core::pick::DigOrientation::default(),

@@ -1257,3 +1257,33 @@ fn the_modifier_keys_queue_the_batch_the_legend_names() {
 		);
 	}
 }
+
+/// The tutorial guide walks family tile, member tile, TRANSMUTE — and
+/// goes quiet the moment a job is on the bench: the button reads Cancel
+/// then, and the pulse must not invite cancelling the craft it just
+/// asked for. It comes back the moment the bench is idle again.
+#[test]
+fn the_guide_goes_quiet_while_the_bench_works() {
+	let item = B::EssenceSiphon;
+	let mut s = AlchScreen::default();
+	assert_eq!(s.guide_to(item), None, "closed page: no guide");
+	let fi = families()
+		.iter()
+		.position(|f| f.members.contains(&item))
+		.expect("the siphon has a family");
+	let mi = families()[fi]
+		.members
+		.iter()
+		.position(|&m| m == item)
+		.expect("the siphon is a member");
+	s.open();
+	assert_eq!(s.guide_to(item), Some(InvId::Family(fi as u8)));
+	s.force_pick(Some(fi), mi);
+	assert_eq!(s.guide_to(item), Some(InvId::CraftGo));
+	// The press landed: a job on the bench silences the guide.
+	s.debug_batch(item, 1, 0.5);
+	assert_eq!(s.guide_to(item), None, "Cancel must not pulse");
+	// The job ends (picks kept, the mid-batch reopen convention).
+	s.crafting = None;
+	assert_eq!(s.guide_to(item), Some(InvId::CraftGo));
+}

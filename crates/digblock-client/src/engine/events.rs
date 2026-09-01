@@ -79,6 +79,10 @@ impl Engine {
 				self.push_feed(crate::voice::Msg::TutorialSiphonDone);
 				self.react(crate::events::GameEvent::TutorialDone);
 			}
+			crate::tutorial::Advance::WispFinished => {
+				self.push_feed(crate::voice::Msg::TutorialWispDone);
+				self.react(crate::events::GameEvent::TutorialDone);
+			}
 		}
 	}
 

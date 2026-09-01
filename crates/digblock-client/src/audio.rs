@@ -396,6 +396,7 @@ pub(crate) fn feed_sound(msg: &crate::voice::Msg) -> Option<crate::events::UiEve
 		| M::TutorialStep { .. }
 		| M::TutorialDone
 		| M::TutorialSiphonDone
+		| M::TutorialWispDone
 		| M::CommandHint { .. } => None,
 	}
 }

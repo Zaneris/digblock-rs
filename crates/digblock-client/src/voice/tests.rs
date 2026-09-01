@@ -203,28 +203,33 @@ fn samples() -> Vec<Msg> {
 		},
 		Msg::TutorialDone,
 		Msg::TutorialSiphonDone,
+		Msg::TutorialWispDone,
 	];
 	// Every tutorial step in both wordings: the sweep's uniqueness check
 	// is what proves the touch words actually differ from the keys'.
 	// `jump_button` stays false across the sweep (only Jump's touch arm
 	// reads it, and a flipped copy of every other step would collide);
-	// the one wording it swaps in is sampled once by itself.
+	// the one wording it swaps in is sampled once by itself. `spell_slot`
+	// stays 0 on the same reasoning (only CastWisp's key arm reads it).
 	for step in crate::tutorial::StepId::ALL {
 		all.push(Msg::TutorialStep {
 			step,
 			touch: false,
 			jump_button: false,
+			spell_slot: 0,
 		});
 		all.push(Msg::TutorialStep {
 			step,
 			touch: true,
 			jump_button: false,
+			spell_slot: 0,
 		});
 	}
 	all.push(Msg::TutorialStep {
 		step: crate::tutorial::StepId::Jump,
 		touch: true,
 		jump_button: true,
+		spell_slot: 0,
 	});
 	// Both spell-named refusals at every spell: the distinctness the
 	// caller asserts is what proves the argument reaches the words, and
@@ -293,6 +298,7 @@ fn samples() -> Vec<Msg> {
 			| Msg::TutorialStep { .. }
 			| Msg::TutorialDone
 			| Msg::TutorialSiphonDone
+			| Msg::TutorialWispDone
 			| Msg::Admin(_) => {}
 		}
 	}
