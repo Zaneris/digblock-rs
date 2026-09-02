@@ -90,3 +90,43 @@ fn the_arrival_hold_times_out_without_the_marker() {
 		"the wait ran out and the world was entered anyway"
 	);
 }
+
+/// A server join arms the walkthrough exactly as a save entry does: the join's `Skills` is
+/// the moment the zero-XP question has the server's answer. Fresh lights it; any XP leaves it
+/// dark. Driven through the real event path, because `swap_world` resets the tutorial and the
+/// arm has to happen AFTER that, once the skills land.
+#[test]
+fn a_server_join_arms_the_walkthrough_for_a_fresh_character() {
+	for (xp, expect) in [
+		(Vec::new(), true),
+		(
+			vec![(digblock_core::skills::Skill::Mining as u8, 5u64)],
+			false,
+		),
+	] {
+		let mut config = EngineConfig::desktop();
+		config.menu = true;
+		config.workers = 0;
+		config.seed = Some(3.0);
+		let mut engine = Engine::new(config);
+
+		let (client_end, mut server_end) = digblock_net::loopback::loopback_pair();
+		engine.set_transport_with_token(Box::new(client_end), [0; 16]);
+		server_end.send_reliable(&encode_preamble(PROTOCOL_VERSION));
+		server_end.send_reliable(&frame(&welcome()));
+		engine.update(Duration::from_millis(16));
+		assert_eq!(engine.seed, Seed::current(11.0), "joined");
+		assert!(
+			!engine.tutorial.is_running(),
+			"nothing to arm on before the skills land"
+		);
+
+		server_end.send_reliable(&frame(&ServerMsg::Skills { xp }));
+		engine.update(Duration::from_millis(16));
+		assert_eq!(
+			engine.tutorial.is_running(),
+			expect,
+			"the join's Skills decides the walkthrough (fresh = {expect})"
+		);
+	}
+}
