@@ -776,9 +776,10 @@ impl Engine {
 			),
 			(
 				format!(
-					"file: {fname}{}  [{}]",
-					if builtin { " (built-in)" } else { "" },
+					"file {}/{}: {fname}{}",
 					ed.file_sel + 1,
+					ed.files.len(),
+					if builtin { " (built-in)" } else { "" },
 				),
 				true,
 			),
@@ -787,7 +788,10 @@ impl Engine {
 			("LMB remove  RMB place  1-6 resolution".into(), false),
 			("F roles  T texture  R rotate  B boxes".into(), false),
 			("7/8/9 footprint  M states  , . state  G ramp".into(), false),
-			("[ ] file  Enter load  N name  Ctrl+S save".into(), false),
+			(
+				"[ and ] cycle file  Enter load  N name  Ctrl+S save".into(),
+				false,
+			),
 			("O import  Ctrl+Z/Y undo/redo".into(), false),
 		];
 		let scale = self.ui.ui_scale;

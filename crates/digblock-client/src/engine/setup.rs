@@ -16,6 +16,12 @@ impl Engine {
 		if config.debug_editor {
 			config.menu = false;
 			config.markers = false;
+			// A frozen late-afternoon sun: warm, angled light that reads the
+			// sculpt's relief, and no day cycle drifting toward night mid-edit.
+			// An explicit --tod / ?tod still wins.
+			if config.tod.is_none() {
+				config.tod = Some(digblock_core::sun::tod_of_clock(17, 0));
+			}
 		}
 		let mut metrics = Metrics::new(config.metrics_csv.as_deref(), config.spike_log);
 		if config.bench {
