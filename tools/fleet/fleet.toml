@@ -3,7 +3,7 @@
 # the hosts currently hold in this same shape. A seed change starts a
 # fresh world and a port change renames the compose project, so `apply`
 # refuses both without --i-mean-it.
-version = "0.9.0"
+version = "0.9.1"
 
 [hosts.a]
 addr = "148.113.183.210"
