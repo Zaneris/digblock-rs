@@ -3235,12 +3235,25 @@ fn place_refused_when_the_chunk_slot_budget_is_spent() {
 	}
 	assert_eq!(need, 0, "ran out of cells under the surface");
 
+	// Stone first so it takes slot 0; the stairs land in slot 1.
+	sim.test_grant(1, BlockType::Stone, 1);
 	sim.test_grant(1, BlockType::StoneStairs, 1);
-	let target = place_cell(&mut sim, &mut c, 1, BlockType::StoneStairs as u16);
+	let pos = sim.test_player(1).unwrap().pos;
+	// The column beside the player's own, or the stair is inside them.
+	let ground = (pos.x.floor() as i32 + 1, ground, pos.z.floor() as i32);
+	let target = (ground.0, ground.1 + 1, ground.2);
 	assert_eq!(
 		target.1.div_euclid(16),
 		cy,
 		"the place lands in the filled chunk"
+	);
+	place_aimed(
+		&mut sim,
+		&mut c,
+		1,
+		BlockType::StoneStairs as u16,
+		top_point(ground, 12),
+		1,
 	);
 	assert!(
 		c.msgs.iter().any(|m| matches!(
@@ -3264,11 +3277,19 @@ fn place_refused_when_the_chunk_slot_budget_is_spent() {
 		"refused before the stock gate"
 	);
 	// A full block costs nothing and still goes in.
-	sim.test_grant(1, BlockType::Stone, 1);
-	let target = place_cell(&mut sim, &mut c, 2, BlockType::Stone as u16);
+	place_aimed(
+		&mut sim,
+		&mut c,
+		2,
+		BlockType::Stone as u16,
+		top_point(ground, 12),
+		0,
+	);
 	assert_eq!(
 		sim.test_cell_at(target.0, target.1, target.2),
-		Some(BlockType::Stone as u16)
+		Some(BlockType::Stone as u16),
+		"{:?}",
+		c.msgs
 	);
 	shapes::clear_preview_overrides();
 }

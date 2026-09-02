@@ -1147,14 +1147,18 @@ fn a_wall_beside_the_ramp_hides_that_side_triangle() {
 
 #[test]
 fn a_hollow_support_falls_back_to_one_filler_triangle_per_step() {
-	// A diagonal string of single cells: the ramp still joins, but there
-	// is no solid wedge under it to draw as one triangle.
+	// A diagonal string of single cells: a tread run on top and a soffit
+	// run underneath both join, but with no solid wedge behind either,
+	// only the first two steps merge with their one support cell into a
+	// triangle; every step past that gets its own filler, per side.
 	let boxes: Vec<SubBox> = (0..12u8)
 		.map(|i| SubBox::new([i, i, 0], [i + 1, i + 1, GRID]))
 		.collect();
 	let b = bake(&boxes);
-	assert_eq!(ramps(&b).len(), 1);
-	assert_eq!(tris(&b), 22);
+	let mut dirs: Vec<Dir> = ramps(&b).iter().map(|q| q.dir).collect();
+	dirs.sort_by_key(|d| *d as u8);
+	assert_eq!(dirs, [Dir::Bottom, Dir::Top]);
+	assert_eq!(tris(&b), 2 * 2 * (1 + 9));
 }
 
 #[test]
@@ -1260,7 +1264,8 @@ fn a_wall_run_joins_facing_the_other_way_too() {
 #[test]
 fn a_thin_diagonal_wall_gets_a_ramp_on_both_faces() {
 	// One cell thick in plan: both sawtooth faces join, and with nothing
-	// solid behind either, every step gets its own filler on top and below.
+	// solid behind either, each side gets one merged triangle over the
+	// first two steps and a filler per step after, on top and below.
 	let boxes: Vec<SubBox> = (0..12u8)
 		.map(|k| SubBox::new([k, 0, k], [k + 1, GRID, k + 1]))
 		.collect();
@@ -1268,7 +1273,7 @@ fn a_thin_diagonal_wall_gets_a_ramp_on_both_faces() {
 	let mut dirs: Vec<Dir> = ramps(&b).iter().map(|q| q.dir).collect();
 	dirs.sort_by_key(|d| *d as u8);
 	assert_eq!(dirs, [Dir::North, Dir::South]);
-	assert_eq!(tris(&b), 2 * 2 * 11);
+	assert_eq!(tris(&b), 2 * 2 * (1 + 9));
 	assert_winds_outward(&b);
 }
 

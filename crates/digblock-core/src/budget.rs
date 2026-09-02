@@ -80,7 +80,8 @@ mod tests {
 	use crate::shapes::{Facing, door_state, shape_of};
 
 	fn entries(d: &ChunkData) -> u32 {
-		let m = mesh_chunk(&MeshInput::build(d, |_, _, _| Src::Missing));
+		// Air all round, so border faces show (a missing neighbour hides them).
+		let m = mesh_chunk(&MeshInput::build(d, |_, _, _| Src::Air));
 		(m.solid.len() / 8) as u32
 	}
 
