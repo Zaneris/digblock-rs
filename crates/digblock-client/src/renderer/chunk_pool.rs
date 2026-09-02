@@ -213,6 +213,17 @@ impl Renderer {
 		self.gi.invalidate(pos);
 	}
 
+	/// RTGI: the shape editor's live cover for one preview part — see
+	/// `GiDraw::write_cover`.
+	pub(crate) fn gi_write_cover(
+		&self,
+		gpu: &Gpu,
+		slot: u8,
+		cover: Option<&digblock_core::gi::Cover>,
+	) {
+		self.gi.write_cover(gpu, slot, cover);
+	}
+
 	/// The same, for a light a player is CARRYING that has moved or gone
 	/// out. Identical to the probes; the two are told apart only so a
 	/// walking carrier's stream cannot evict a world edit from the

@@ -28,6 +28,52 @@ fn the_light_reach_matches_the_shaders_bound() {
 	}
 }
 
+/// The cover mask's bit order and the sub-cell march's step bound, read out of gi_dda.wgsl rather
+/// than restated: the CPU packs bit `(y*12 + z)*12 + x` (`mask_bits_match_the_shader_decode`),
+/// and only agreement makes the two halves one thing. The step bound must hold the most
+/// sub-cells one ray can cross in a 12³ grid, or a grazing ray would silently pass a tread.
+#[test]
+fn the_mask_bit_order_matches_the_shader() {
+	let src = digblock_assets::shader::GI_DDA;
+	let body = src
+		.split("fn gi_sub_bit(c: vec3i) -> u32 {")
+		.nth(1)
+		.expect("gi_dda.wgsl must declare gi_sub_bit(c)");
+	let expr = body
+		.split(';')
+		.next()
+		.expect("gi_sub_bit must have a return")
+		.replace("return", "")
+		.replace(char::is_whitespace, "");
+	assert_eq!(expr, "u32((c.y*12+c.z)*12+c.x)", "gi_sub_bit changed shape");
+	let steps: u32 = src
+		.split("const GI_SUB_STEPS = ")
+		.nth(1)
+		.and_then(|s| s.split(';').next())
+		.and_then(|s| s.trim().parse().ok())
+		.expect("gi_dda.wgsl must declare GI_SUB_STEPS as a literal");
+	assert!(
+		steps >= 3 * 12 - 2,
+		"{steps} sub-steps cannot cross a cell corner to corner"
+	);
+	let struct_words = |name: &str, src: &str| -> usize {
+		src.split(&format!("struct {name} {{"))
+			.nth(1)
+			.and_then(|s| s.split("mask: array<u32, ").nth(1))
+			.and_then(|s| s.split('>').next())
+			.and_then(|s| s.trim().parse().ok())
+			.unwrap_or_else(|| panic!("{name} must carry a mask of a literal word count"))
+	};
+	assert_eq!(
+		struct_words("GiCover", digblock_assets::shader::GI_COMMON),
+		digblock_core::gi::COVER_WORDS
+	);
+	assert_eq!(
+		struct_words("Cover", digblock_assets::shader::GI_PROBE),
+		digblock_core::gi::COVER_WORDS
+	);
+}
+
 /// The shipped ray budgets must fit inside the marches' own hard loop
 /// bounds, read out of gi_common.wgsl rather than restated: a budget past
 /// the capacity would be silently truncated by the loop, so the shipped
@@ -1016,7 +1062,7 @@ fn the_disocclusion_prior_stays_under_the_caps() {
 }
 
 /// The cover table's packed sub-box words must decode in the shader to the twelfths the shape
-/// authored — `gi_boxes_hit` unpacks the min triple and then the max triple out of one word. The
+/// authored — `gi_box_span` unpacks the min triple and then the max triple out of one word. The
 /// core side pins the same format from the packer's end (`box_pack_matches_the_shader_decode`);
 /// this end pins that the table actually carries the covers, entry 0 the no-box sentinel, and
 /// that the LUT is one row per LOOK — the torch's row carrying the torch's light, since the
@@ -1026,10 +1072,30 @@ fn the_cover_table_carries_every_cover_and_the_lut_every_look() {
 	let covers = cover_table();
 	let palette = digblock_core::gi::covers();
 	assert!(!palette.is_empty());
-	assert_eq!(covers[0], [0, 0], "entry 0 is the no-box sentinel");
+	assert_eq!(
+		covers[0], [0; COVER_ENTRY_WORDS],
+		"entry 0 is the no-box sentinel"
+	);
 	for (i, c) in palette.iter().enumerate() {
-		assert_ne!(covers[i + 1][0], 0, "cover {i} lost its first box");
-		assert_eq!(covers[i + 1][1] != 0, c.boxes[1].is_some(), "cover {i}");
+		assert_ne!(covers[i + 1][0], 0, "cover {i} lost its bounds");
+		assert_eq!(
+			covers[i + 1][1],
+			0,
+			"cover {i}: the pad keeps the mask at word 2"
+		);
+		assert_eq!(
+			&covers[i + 1][2..],
+			&c.mask[..],
+			"cover {i}: the mask rides verbatim"
+		);
+	}
+	// The editor's slots are left for `write_cover`.
+	for slot in 0..digblock_core::gi::PREVIEW_COVER_SLOTS as u8 {
+		let at = usize::from(digblock_core::gi::preview_cover_slot(slot));
+		assert_eq!(
+			covers[at], [0; COVER_ENTRY_WORDS],
+			"slot {slot} starts empty"
+		);
 	}
 	let lut = material_lut(&[]);
 	assert_eq!(lut[0], [0; 4], "row 0 is air");

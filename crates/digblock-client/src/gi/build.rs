@@ -45,7 +45,7 @@ impl GiDraw {
 		let covers = cover_table();
 		let covers_buf = device.create_buffer(&wgpu::BufferDescriptor {
 			label: Some("gi cover table"),
-			size: (256 * 8) as u64,
+			size: (256 * COVER_ENTRY_WORDS * 4) as u64,
 			usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
 			mapped_at_creation: false,
 		});

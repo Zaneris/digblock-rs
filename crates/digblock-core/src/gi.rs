@@ -6,12 +6,13 @@
 //! over the roster so it grows with what is DISTINCT rather than with the block
 //! count: `.r` is the cell's LOOK (everything a ray needs to shade or pass a
 //! cell — albedo texture, cast light, opacity — the render side's material LUT
-//! is one row per look) and `.g` is its COVER (the two-box occlusion of a
-//! shaped cell: `shapes::light_boxes` box 0 exactly, then the AABB union of the
-//! rest; a cover can only ever OVER-block, never under). Cover 0 is a full cell;
-//! look 0 is air. A shaped cell shares its cube's look, so a slab in a new
-//! material costs no look and no cover, and a state with no light boxes — an
-//! open door — classifies as air.
+//! is one row per look) and `.g` is its COVER (the occlusion of a shaped cell:
+//! the exact twelfths raster of `shapes::light_boxes`, plus the box bounding it
+//! for the marches' cheap reject). Cover 0 is a full cell; look 0 is air. A
+//! shaped cell shares its cube's look, so a slab in a new material costs no
+//! look and no cover, and a state with no light boxes — an open door —
+//! classifies as air. The top `PREVIEW_COVER_SLOTS` covers are the shape
+//! editor's, rewritten live so a sculpt in progress occludes as itself.
 
 use std::sync::LazyLock;
 
@@ -218,10 +219,55 @@ pub fn looks() -> &'static [Look] {
 	&LOOKS.0
 }
 
-/// One cover: the ≤2-box occlusion of a shaped cell, in sub-grid units.
+/// Words in one cover's occupancy mask: every twelfth of the cell, one bit each.
+pub const COVER_WORDS: usize = (shapes::GRID as usize).pow(3).div_ceil(32);
+
+/// Words per cover-table entry: the packed bounds, a pad word that keeps
+/// the mask at word 2, then the mask. The GPU table's stride.
+pub const COVER_ENTRY_WORDS: usize = 2 + COVER_WORDS;
+
+/// One cover: the exact twelfths occupancy of a shaped cell's light boxes,
+/// and the box bounding it. Bit `shapes::occ_idx(x, y, z)` of the mask
+/// (word `i >> 5`, bit `i & 31`) is a filled twelfth — gi_common's
+/// `gi_cover_march` decodes this layout, pinned by
+/// `mask_bits_match_the_shader_decode`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Cover {
-	pub boxes: [Option<SubBox>; 2],
+	pub bounds: SubBox,
+	pub mask: [u32; COVER_WORDS],
+}
+
+impl Cover {
+	/// The cover of a light-box list; `None` for an empty one, which is
+	/// no cover at all (an open door classifies as air).
+	pub fn from_light_boxes(boxes: &[SubBox]) -> Option<Cover> {
+		let bounds = union_box(boxes)?;
+		let mut mask = [0u32; COVER_WORDS];
+		for (i, &filled) in shapes::rasterize(boxes).iter().enumerate() {
+			if filled {
+				mask[i >> 5] |= 1 << (i & 31);
+			}
+		}
+		Some(Cover { bounds, mask })
+	}
+
+	/// Whether twelfth (x, y, z) is filled.
+	pub fn filled(&self, x: u8, y: u8, z: u8) -> bool {
+		let i = shapes::occ_idx(i32::from(x), i32::from(y), i32::from(z));
+		(self.mask[i >> 5] >> (i & 31)) & 1 != 0
+	}
+}
+
+/// Cover slots the shape editor rewrites live, one per footprint part, at
+/// the top of the palette: the palette is built once from the shipped
+/// roster, and a sculpt in progress must occlude as itself, not as the
+/// block whose registry entry it borrows.
+pub const PREVIEW_COVER_SLOTS: usize = shapes::def::MAX_PARTS as usize;
+
+/// The cover byte a preview part classifies to (`gi_classes`), and the
+/// table entry the editor writes that part's cover into.
+pub fn preview_cover_slot(part: u8) -> u8 {
+	(PALETTE - 1 - usize::from(part) % PREVIEW_COVER_SLOTS) as u8
 }
 
 fn union_box(boxes: &[SubBox]) -> Option<SubBox> {
@@ -258,21 +304,20 @@ static COVERS: LazyLock<(Vec<Cover>, Vec<u8>)> = LazyLock::new(|| {
 		// answer for whatever a journal or an edit actually stored.
 		for state in 0..16u8 {
 			let cell = crate::chunk::make_cell(b, state);
-			let boxes = shapes::light_boxes(cell);
 			let key = ((b as usize) << 4) | state as usize;
-			if boxes.is_empty() {
+			let Some(cover) = Cover::from_light_boxes(shapes::light_boxes(cell)) else {
 				index[key] = 0;
 				continue;
-			}
-			let cover = Cover {
-				boxes: [Some(boxes[0]), union_box(&boxes[1..])],
 			};
 			let found = covers.iter().position(|c| *c == cover).unwrap_or_else(|| {
 				covers.push(cover);
 				covers.len() - 1
 			});
 			let class = 1 + found;
-			assert!(class < PALETTE, "covers overflow the palette byte");
+			assert!(
+				class < PALETTE - PREVIEW_COVER_SLOTS,
+				"covers overflow the palette byte"
+			);
 			index[key] = class as u8;
 		}
 	}
@@ -305,10 +350,7 @@ pub fn light_origin(cover: u8) -> [f32; 3] {
 	let Some(c) = covers().get(usize::from(cover) - 1) else {
 		return MID;
 	};
-	let boxes: Vec<SubBox> = c.boxes.iter().flatten().copied().collect();
-	let Some(b) = union_box(&boxes) else {
-		return MID;
-	};
+	let b = c.bounds;
 	let g = f32::from(shapes::GRID);
 	let ctr = |lo: u8, hi: u8| (f32::from(lo) + f32::from(hi)) * 0.5 / g;
 	// Clip the cell's emissive band to the shape's own extent. A shape
@@ -385,7 +427,8 @@ const PICK_RESONANT_LIGHT: u8 = 12;
 /// a shaped cell with no light boxes at all (an open door, the editor's empty preview) is AIR on
 /// both counts: the two classes are read independently on the GPU, and a look with no cover is
 /// a whole opaque cell, which is exactly what a doorway must never be. A translucent shaped cell
-/// keeps its look and carries no cover: the GI takes it as a full see-through cell.
+/// keeps its look and carries no cover: the GI takes it as a full see-through cell. A cell the
+/// shape editor is previewing through answers its part's rewritable slot (`preview_cover_slot`).
 #[inline]
 pub fn gi_classes(cell: u16) -> (u8, u8) {
 	let b = BlockType::from_id(crate::chunk::cell_id(cell));
@@ -394,7 +437,11 @@ pub fn gi_classes(cell: u16) -> (u8, u8) {
 	if p.shape.is_none() || p.bucket == crate::block::MeshBucket::Translucent {
 		return (look, 0);
 	}
-	match COVERS.1[((b as usize) << 4) | crate::chunk::cell_state(cell) as usize] {
+	let state = crate::chunk::cell_state(cell);
+	if shapes::preview_active(b, state) {
+		return (look, preview_cover_slot(state));
+	}
+	match COVERS.1[((b as usize) << 4) | state as usize] {
 		0 => (0, 0),
 		cover => (look, cover),
 	}
@@ -429,10 +476,10 @@ pub fn opacity(b: BlockType) -> GiOpacity {
 	}
 }
 
-/// Pack one sub-box into the cover table's box word: the three min coordinates
+/// Pack one sub-box into the cover table's bounds word: the three min coordinates
 /// then the three max, a nibble each (a sub-grid coordinate fits). 0 is
 /// the "no box" sentinel — a real box always has a nonzero max. The WGSL
-/// decode in gi_dda.wgsl's `gi_boxes_hit` is this formula's mirror,
+/// decode in gi_dda.wgsl's `gi_box_span` is this formula's mirror,
 /// pinned by `box_pack_matches_the_shader_decode`.
 #[inline]
 pub fn pack_box(b: SubBox) -> u32 {
@@ -564,10 +611,11 @@ mod tests {
 			"{n_looks} looks in {room} slots — only {} left",
 			room - n_looks
 		);
+		let cover_room = room - PREVIEW_COVER_SLOTS;
 		assert!(
-			n_covers + PALETTE_MARGIN <= room,
-			"{n_covers} covers in {room} slots — only {} left",
-			room - n_covers
+			n_covers + PALETTE_MARGIN <= cover_room,
+			"{n_covers} covers in {cover_room} slots — only {} left",
+			cover_room - n_covers
 		);
 		// A shaped row in an existing material is free on both counts:
 		// every slab shares its cube's look and the slab family's covers.
@@ -688,11 +736,11 @@ mod tests {
 	}
 
 	#[test]
-	fn the_cover_contains_every_collision_box() {
-		// Box 0 is light box 0 exactly; box 1 must contain each of
-		// the rest. Over-blocking is allowed (a stair's L rounds up to
-		// its bounding pair), under-blocking never (light through a
-		// solid tread).
+	fn the_cover_is_the_exact_raster_of_the_light_boxes() {
+		// Bit for bit: a twelfth is filled in the mask exactly when a
+		// light box covers it (the two-box cover this replaced rounded a
+		// 29-box stair up to its whole cell), and the bounds hold every
+		// box, so the shader's cheap reject never rejects a hit.
 		for b in BlockType::ALL {
 			if b.props().shape.is_none() {
 				continue;
@@ -713,11 +761,18 @@ mod tests {
 					continue;
 				}
 				let c = &covers()[usize::from(cover) - 1];
-				assert_eq!(c.boxes[0], Some(boxes[0]));
-				for cb in &boxes[1..] {
-					let u = c.boxes[1].expect("rest of the boxes need a cover");
+				let occ = shapes::rasterize(boxes);
+				for (i, &filled) in occ.iter().enumerate() {
+					let (x, y, z) = ((i % 12) as u8, (i / 144) as u8, ((i / 12) % 12) as u8);
+					assert_eq!(
+						c.filled(x, y, z),
+						filled,
+						"{b:?} state {state} at {x},{y},{z}"
+					);
+				}
+				for cb in boxes {
 					for a in 0..3 {
-						assert!(u.min[a] <= cb.min[a] && u.max[a] >= cb.max[a]);
+						assert!(c.bounds.min[a] <= cb.min[a] && c.bounds.max[a] >= cb.max[a]);
 					}
 				}
 			}
@@ -725,8 +780,115 @@ mod tests {
 	}
 
 	#[test]
+	fn mask_bits_match_the_shader_decode() {
+		// gi_common's `gi_cover_march` reads bit `(y*12 + z)*12 + x` of the
+		// mask, word `i >> 5`, bit `i & 31` — `shapes::occ_idx`'s order.
+		let c = Cover::from_light_boxes(&[SubBox::new([3, 5, 7], [4, 6, 8])]).unwrap();
+		let i = (5 * 12 + 7) * 12 + 3;
+		assert_eq!(c.mask[i >> 5], 1 << (i & 31));
+		assert_eq!(c.mask.iter().filter(|&&w| w != 0).count(), 1);
+		assert!(c.filled(3, 5, 7));
+		assert!(!c.filled(4, 5, 7));
+		assert_eq!(COVER_WORDS, 54);
+		assert_eq!(COVER_ENTRY_WORDS, 56);
+	}
+
+	#[test]
+	fn lumber_stairs_are_open_under_their_treads() {
+		// The bug this file's masks fixed: thin treads on stringers used to
+		// occlude as a solid cube. Tread rows are one twelfth thick with air
+		// between them, and the stringers do not fill the cell's width.
+		let c = &covers()[usize::from(gi_cover(make_cell(BlockType::LumberStairs, 0))) - 1];
+		assert_ne!(c.mask, [u32::MAX; COVER_WORDS], "not a solid cube");
+		// The first tread (x 0..4) at y 3..4, air directly under it at
+		// mid-width, and the whole tread row is exactly one twelfth.
+		assert!(c.filled(1, 3, 6));
+		assert!(!c.filled(1, 2, 6));
+		assert!(!c.filled(1, 4, 6));
+		// Between the stringers (z 2..3 and 9..10) under the tread: open.
+		assert!(!c.filled(1, 1, 6));
+		assert!(c.filled(1, 1, 2), "the stringer foot");
+		// A full cube's shadow it is not: fewer than half the twelfths.
+		let filled: u32 = c.mask.iter().map(|w| w.count_ones()).sum();
+		assert!(filled * 2 < 1728, "{filled} of 1728 twelfths filled");
+	}
+
+	/// The ramp pass draws a run of twelfth steps as one plane through each
+	/// tread's low edge, so the drawn diagonal lies on the AIR side of the
+	/// raster it merged: a point on a ramp never starts inside its own
+	/// occluder, which is what lets the origin-cell march self-shadow
+	/// without darkening every diagonal.
+	#[test]
+	fn a_ramp_plane_lies_on_the_air_side_of_its_mask() {
+		use crate::shapes::{shape_of, state_valid};
+		let mut ramps = 0;
+		for b in BlockType::ALL {
+			if b.props().shape.is_none() {
+				continue;
+			}
+			for state in 0..16u8 {
+				let cell = make_cell(b, state);
+				if !state_valid(cell) || gi_cover(cell) == 0 {
+					continue;
+				}
+				let c = &covers()[usize::from(gi_cover(cell)) - 1];
+				let v = shape_of(b, state).unwrap();
+				for q in v.quads.iter().filter(|q| q.is_ramp()) {
+					let (ox, oy, oz) = q.dir.offset();
+					let mut ctr = [0f32; 3];
+					for corner in q.corners {
+						for a in 0..3 {
+							ctr[a] += f32::from(corner[a]) * 0.25;
+						}
+					}
+					let at = [
+						ctr[0] + ox as f32 * 0.25,
+						ctr[1] + oy as f32 * 0.25,
+						ctr[2] + oz as f32 * 0.25,
+					]
+					.map(|v| v.floor());
+					if at.iter().any(|&v| !(0.0..12.0).contains(&v)) {
+						continue;
+					}
+					let [x, y, z] = at.map(|v| v as u8);
+					assert!(
+						!c.filled(x, y, z),
+						"{b:?} state {state}: ramp {q:?} starts in its mask"
+					);
+					ramps += 1;
+				}
+			}
+		}
+		assert!(ramps > 0, "the lumber stairs ship ramps");
+	}
+
+	#[test]
+	fn a_preview_cell_classifies_to_its_rewritable_slot() {
+		use crate::shapes::{clear_preview_overrides, preview_variant, set_preview_override};
+		let chair = make_cell(BlockType::Chair, 2);
+		let own = gi_cover(chair);
+		assert_ne!(own, 0);
+		set_preview_override(BlockType::Chair, 2, preview_variant(&[], (0, 0, 0), 0));
+		assert_eq!(gi_cover(chair), preview_cover_slot(2));
+		assert_eq!(gi_look(chair), gi_look(BlockType::Chair as u16));
+		// Another state of the same block is untouched.
+		assert_eq!(
+			gi_cover(make_cell(BlockType::Chair, 1)),
+			gi_cover(make_cell(BlockType::Chair, 1))
+		);
+		clear_preview_overrides();
+		assert_eq!(gi_cover(chair), own);
+		// The slots sit above every shipped cover, one per footprint part.
+		for part in 0..PREVIEW_COVER_SLOTS as u8 {
+			let slot = usize::from(preview_cover_slot(part));
+			assert!(slot > covers().len());
+			assert!(slot < PALETTE);
+		}
+	}
+
+	#[test]
 	fn box_pack_matches_the_shader_decode() {
-		// gi_boxes_hit unpacks the three min coordinates and then the three
+		// gi_box_span unpacks the three min coordinates and then the three
 		// max, a nibble each. 0 must remain the no-box sentinel.
 		let b = SubBox::new([0, 8, 3], [12, 12, 7]);
 		let p = pack_box(b);
@@ -738,12 +900,9 @@ mod tests {
 			[12, 12, 7],
 			"max lanes"
 		);
-		// Every real cover box packs nonzero (max is never all-zero).
+		// Every real cover's bounds pack nonzero (max is never all-zero).
 		for c in covers() {
-			assert_ne!(pack_box(c.boxes[0].expect("box 0 is always there")), 0);
-			for bx in c.boxes.into_iter().flatten() {
-				assert_ne!(pack_box(bx), 0);
-			}
+			assert_ne!(pack_box(c.bounds), 0);
 		}
 	}
 

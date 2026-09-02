@@ -55,8 +55,14 @@ const GI_LUT_OP_TINTED = 4u;
 // sun visibility there. Spray and the viewmodel bind this as their
 // light rig — no CPU probe reads.
 @group(0) @binding(8) var<storage, read_write> cam_out: array<vec4f, 2>;
-// The cover table — gi_common's `gi_covers` twin over this pass's own group.
-@group(0) @binding(9) var<storage, read> covers: array<vec2u>;
+// The cover table — gi_common's `gi_covers` twin over this pass's own group: the bounds word
+// and the twelfths mask of every partial cell (`core::gi::Cover`), read off the binding only.
+struct Cover {
+	bounds: u32,
+	pad: u32,
+	mask: array<u32, 54>,
+}
+@group(0) @binding(9) var<storage, read> covers: array<Cover>;
 
 const RAYS: u32 = 32u;
 const MAX_T: f32 = 160.0;
@@ -166,7 +172,7 @@ fn solid_cell(c: vec3i) -> bool {
 	let v = window_cell(c);
 	// Partial cells stay "solid" for probe placement — the pinned
 	// twin of gi_common's `gi_solid`, and the old conservative
-	// behavior. Only `march` below resolves their sub-boxes.
+	// behavior. Only `march` below resolves their masks.
 	return v != 0u && (lut[v].x >> 24u) >= 2u;
 }
 
@@ -225,6 +231,42 @@ struct Hit {
 // so the footprint argument holds here with more force than for the
 // gather, and a cascade passes its own distance. Shadow rays pass
 // `max_t`: an occluder is a cell, not a density.
+// Ray vs one covered cell — the pinned twin of gi_common's `gi_cover_march` over this pass's
+// `covers`; the maths is gi_dda.wgsl's. `skip_leading` is the origin-cell rule the resolve's
+// marches use; this kernel never asks for it, since a probe stands in open air by relocation
+// and a bounce point is pushed a tenth of a cell into its neighbour.
+fn cover_march(
+	o: vec3f, dir: vec3f, inv: vec3f, step_dir: vec3i, cell: vec3i,
+	t0: f32, t1: f32, cover: u32, def_axis: u32, skip_leading: bool,
+) -> vec2f {
+	let span = gi_box_span(o, dir, cell, t0, t1, covers[cover].bounds, def_axis);
+	if span.x > span.y {
+		return vec2f(-1.0, 0.0);
+	}
+	var s = gi_sub_init(o, dir, cell, span.x, inv, u32(span.z));
+	var inside = skip_leading;
+	for (var k = 0; k < GI_SUB_STEPS; k++) {
+		if gi_sub_outside(s.cell) {
+			break;
+		}
+		let t = span.x + s.t / GI_SUB;
+		if t > span.y {
+			break;
+		}
+		let b = gi_sub_bit(s.cell);
+		let solid = ((covers[cover].mask[b >> 5u] >> (b & 31u)) & 1u) != 0u;
+		if solid {
+			if !inside {
+				return vec2f(t, f32(s.axis));
+			}
+		} else {
+			inside = false;
+		}
+		s = gi_ray_step(s, step_dir, inv);
+	}
+	return vec2f(-1.0, 0.0);
+}
+
 fn march(from_p: vec3f, dir: vec3f, max_t: f32, coarse_from: f32, seed: u32) -> Hit {
 	var out: Hit;
 	out.hit = false;
@@ -286,13 +328,13 @@ fn march(from_p: vec3f, dir: vec3f, max_t: f32, coarse_from: f32, seed: u32) -> 
 		let tx = window_texel_w(w, r.cell.y);
 		let v = tx.x;
 		if tx.y != 0u {
-			// Every covered cell blocks only where its boxes stand,
+			// Every covered cell blocks only where its mask stands,
 			// emitters included since R27 — the pinned twin of
 			// gi_common's `gi_march` rule. See there for why the
 			// emitting special case existed and why taking the
 			// emission out of these marches is what retired it.
 			let t_exit = min(r.tmax.x, min(r.tmax.y, r.tmax.z));
-			let bh = gi_boxes_hit(from_p, dir, r.cell, r.t, t_exit, covers[tx.y], r.axis);
+			let bh = cover_march(from_p, dir, inv, step_dir, r.cell, r.t, t_exit, tx.y, r.axis, false);
 			if bh.x >= 0.0 {
 				out.hit = true;
 				out.cell = r.cell;

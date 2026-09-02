@@ -20,6 +20,11 @@ impl Engine {
 		// re-uploads through the ordinary budgeted drain (the GI mirror
 		// of the re-mesh above — device loss must never need a relight).
 		self.pipeline.gi_redirty_all();
+		// And its cover table holds only the shipped roster: the editor's
+		// live slots are rewritten by the next preview rebuild.
+		if let Some(ed) = self.editor.as_mut() {
+			ed.preview_dirty = true;
+		}
 	}
 
 	/// The GI's ratcheting state, or zeros before the renderer exists.
@@ -143,6 +148,13 @@ impl Engine {
 		for pos in self.pipeline.take_gi_dirty() {
 			if self.stream.gi_queued.insert(pos) {
 				self.stream.gi_queue.push_back(pos);
+			}
+		}
+		// The shape editor's live covers land before the invalidation
+		// that re-traces around them.
+		if let Some(ed) = self.editor.as_mut() {
+			for (slot, cover) in ed.pending_covers.drain(..) {
+				renderer.gi_write_cover(gpu, slot, cover.as_ref());
 			}
 		}
 		for (x, y, z) in self.pipeline.take_gi_edits() {

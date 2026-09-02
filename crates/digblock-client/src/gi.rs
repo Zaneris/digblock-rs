@@ -11,7 +11,7 @@
 
 use digblock_core::block::BlockType;
 use digblock_core::chunk::ChunkPos;
-use digblock_core::gi::{GiChunk, GiOpacity, opacity};
+use digblock_core::gi::{COVER_ENTRY_WORDS, GiChunk, GiOpacity, opacity};
 use digblock_platform::Gpu;
 use rustc_hash::FxHashMap;
 
@@ -488,15 +488,43 @@ fn material_lut(layer_means: &[[u8; 4]]) -> [[u32; 4]; 256] {
 	lut
 }
 
-/// The cover table: one `vec2u` per COVER (`core::gi::covers`, entry 0 the no-box sentinel),
-/// each word a packed sub-box (`core::gi::pack_box`) — what `gi_boxes_hit` resolves when a
-/// window texel's cover byte is nonzero. Sized to the palette, so the buffer never reallocates.
-fn cover_table() -> [[u32; 2]; 256] {
-	let mut out = [[0u32; 2]; 256];
+/// One cover-table entry (`GiCover` in gi_common.wgsl): the packed bounds (`core::gi::pack_box`),
+/// a pad word, then the twelfths mask — what `gi_cover_march` resolves when a window texel's
+/// cover byte is nonzero. An all-zero entry is "no box": entry 0's sentinel, and an empty
+/// editor preview.
+fn cover_entry(c: &digblock_core::gi::Cover) -> [u32; COVER_ENTRY_WORDS] {
+	let mut out = [0u32; COVER_ENTRY_WORDS];
+	out[0] = digblock_core::gi::pack_box(c.bounds);
+	out[2..].copy_from_slice(&c.mask);
+	out
+}
+
+/// The cover table: one entry per COVER (`core::gi::covers`, entry 0 the no-box sentinel).
+/// Sized to the palette, so the buffer never reallocates; the top `PREVIEW_COVER_SLOTS`
+/// entries stay zero here and belong to the shape editor (`GiDraw::write_cover`).
+fn cover_table() -> [[u32; COVER_ENTRY_WORDS]; 256] {
+	let mut out = [[0u32; COVER_ENTRY_WORDS]; 256];
 	for (i, c) in digblock_core::gi::covers().iter().enumerate() {
-		out[i + 1] = c.boxes.map(|b| b.map_or(0, digblock_core::gi::pack_box));
+		out[i + 1] = cover_entry(c);
 	}
 	out
+}
+
+impl GiDraw {
+	/// Rewrite one cover-table entry in place — the shape editor's live preview, into one of
+	/// the reserved slots (`core::gi::preview_cover_slot`), so a sculpt in progress occludes as
+	/// itself. `None` writes the no-box entry, which lets light through (an empty part).
+	pub(crate) fn write_cover(
+		&self,
+		gpu: &Gpu,
+		slot: u8,
+		cover: Option<&digblock_core::gi::Cover>,
+	) {
+		let entry = cover.map_or([0u32; COVER_ENTRY_WORDS], cover_entry);
+		let offset = u64::from(slot) * (COVER_ENTRY_WORDS * 4) as u64;
+		gpu.queue
+			.write_buffer(&self.covers_buf, offset, bytemuck::cast_slice(&entry));
+	}
 }
 
 /// The CPU twin of `gi_lateral_max` in gi_dda.wgsl — the lateral bound EVERY march breaks at, in

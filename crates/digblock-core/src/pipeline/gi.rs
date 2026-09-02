@@ -45,6 +45,13 @@ impl Pipeline {
 		std::mem::take(&mut self.gi_edits)
 	}
 
+	/// Queue probe invalidation around a cell whose VALUE did not change but whose lighting
+	/// did — the shape editor rewriting the cover its preview cells name. `set_cell` records
+	/// only real writes, and a same-value write is a no-op there by design.
+	pub fn touch_gi(&mut self, x: i32, y: i32, z: i32) {
+		self.gi_edits.push((x, y, z));
+	}
+
 	/// Classify one resident chunk for the GI window. None = not (or no
 	/// longer) resident — the caller drops the entry; if the region ever
 	/// becomes visible again it arrives, and arriving re-dirties it.

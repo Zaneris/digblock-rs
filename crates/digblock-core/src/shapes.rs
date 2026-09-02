@@ -808,11 +808,13 @@ fn union_bounds(boxes: &[SubBox]) -> SubBox {
 }
 
 #[inline]
-fn occ_idx(x: i32, y: i32, z: i32) -> usize {
+/// Raster index of twelfth (x, y, z): `gi`'s cover masks share this bit order.
+pub(crate) fn occ_idx(x: i32, y: i32, z: i32) -> usize {
 	((y * G + z) * G + x) as usize
 }
 
-fn rasterize(boxes: &[SubBox]) -> Vec<bool> {
+/// Twelfths filled by a box union, in `occ_idx` order.
+pub(crate) fn rasterize(boxes: &[SubBox]) -> Vec<bool> {
 	let mut occ = vec![false; (G * G * G) as usize];
 	for b in boxes {
 		for y in b.min[1]..b.max[1] {
@@ -927,6 +929,13 @@ pub fn set_preview_override(b: BlockType, state: u8, v: ShapeVariant) {
 pub fn clear_preview_overrides() {
 	PREVIEW_ON.store(false, std::sync::atomic::Ordering::Release);
 	PREVIEW.lock().unwrap().clear();
+}
+
+/// Whether a preview override stands for (block, state): `gi::gi_classes`
+/// routes such a cell to a rewritable cover slot so the sculpt occludes as
+/// itself rather than as the block it borrows.
+pub fn preview_active(b: BlockType, state: u8) -> bool {
+	preview_of(b, state).is_some()
 }
 
 #[inline]

@@ -27,16 +27,26 @@ const GI_LUT_OP_TINTED = 4u;
 // lights[0].x is the count as a bitcast u32; entries are PAIRS of vec4s — (xyz world center, w
 // class word), then the rectangle a surface emitter radiates from (zero for a point).
 @group(2) @binding(5) var<storage, read> lights: array<vec4f>;
-// The cover table: one vec2u per cover byte, each word a packed sub-box (`core::gi::pack_box`;
-// entry 0 is the no-box sentinel) — the occlusion of a PARTIAL cell, named by the window's
-// second channel. Split from the LUT so a look and a cover are spent independently.
-@group(2) @binding(6) var<storage, read> gi_covers: array<vec2u>;
+// The cover table: one entry per cover byte — the occlusion of a PARTIAL cell, named by the
+// window's second channel. `bounds` is a packed sub-box (`core::gi::pack_box`; 0 means no box:
+// the entry-0 sentinel, and an empty editor preview), `mask` one bit per twelfth of the cell
+// (`core::gi::Cover`, in `gi_sub_bit` order). Split from the LUT so a look and a cover are
+// spent independently. Always read straight off the binding, never copied into a local — an
+// entry is 224 bytes, and a dynamically indexed function-scope array is its own hazard.
+struct GiCover {
+	bounds: u32,
+	pad: u32,
+	mask: array<u32, 54>,
+}
+@group(2) @binding(6) var<storage, read> gi_covers: array<GiCover>;
 
 // How far off a surface a ray starts. It exists only to put the origin on the AIR side of a face
-// the point lies exactly on — nothing more. Both marches below step BEFORE they test, so the
-// origin cell is skipped regardless and the offset never needs to be large enough to leave it; a
-// larger one put the occlusion probe more than a whole cell off the surface, where that much
-// geometry could not shadow anything at all.
+// the point lies exactly on — nothing more. Against a full cube that makes the origin cell the
+// air outside, which the whole-cell loops skip anyway (they step before they test); inside a
+// COVERED cell it moves the origin a tenth of a twelfth off the surface, into the air sub-cell
+// when the depth reconstruction is exact, and `gi_cover_march`'s leading-run rule is what
+// forgives it when it is not. Never larger: a bigger offset put the occlusion probe more than
+// a whole cell off the surface, where that much geometry could not shadow anything at all.
 const GI_SURFACE_EPS = 0.01;
 
 // The toroidal wrap, ONE integer modulo per axis instead of two — the frame's single hottest
@@ -115,7 +125,7 @@ fn gi_solid(side: i32, c: vec3i) -> bool {
 	// places probes and gates the short probe-visibility DDA,
 	// where treating a slab as its whole cell is exactly the old — and
 	// conservative — behavior. Only the long marches below resolve the
-	// sub-boxes.
+	// cover's mask.
 	return v != 0u && (gi_lut[v].x >> 24u) >= 2u;
 }
 
@@ -180,6 +190,45 @@ fn gi_occluded(side: i32, a: vec3f, b: vec3f, cap: i32) -> bool {
 	return false;
 }
 
+// Ray vs one COVERED cell over [t0, t1]: the bounds reject (`gi_box_span`), then the twelfths
+// march over the cover's mask, one bit per sub-cell. Returns (hit t, axis), t < 0 for a miss.
+// `skip_leading` is the ORIGIN cell's rule: sub-cells solid from the very first one are the
+// surface the shading point was reconstructed slightly inside of (half-res depth lands on
+// either side of a one-twelfth tread), so they are walked out of, and the first solid
+// sub-cell after air is the hit. The pinned twin of gi_probe.wgsl's `cover_march`: the maths
+// lives in gi_dda.wgsl, this owns the read.
+fn gi_cover_march(
+	o: vec3f, dir: vec3f, inv: vec3f, step_dir: vec3i, cell: vec3i,
+	t0: f32, t1: f32, cover: u32, def_axis: u32, skip_leading: bool,
+) -> vec2f {
+	let span = gi_box_span(o, dir, cell, t0, t1, gi_covers[cover].bounds, def_axis);
+	if span.x > span.y {
+		return vec2f(-1.0, 0.0);
+	}
+	var s = gi_sub_init(o, dir, cell, span.x, inv, u32(span.z));
+	var inside = skip_leading;
+	for (var k = 0; k < GI_SUB_STEPS; k++) {
+		if gi_sub_outside(s.cell) {
+			break;
+		}
+		let t = span.x + s.t / GI_SUB;
+		if t > span.y {
+			break;
+		}
+		let b = gi_sub_bit(s.cell);
+		let solid = ((gi_covers[cover].mask[b >> 5u] >> (b & 31u)) & 1u) != 0u;
+		if solid {
+			if !inside {
+				return vec2f(t, f32(s.axis));
+			}
+		} else {
+			inside = false;
+		}
+		s = gi_ray_step(s, step_dir, inv);
+	}
+	return vec2f(-1.0, 0.0);
+}
+
 // Sun visibility: march toward the sun until sky or a hit, counting the water crossed on the way.
 // `sun` = quantized dir toward the sun (w = above-horizon 0/1); `iters` caps the march. Returning
 // the PATH rather than a transmittance is what leaves exactly one water extinction constant in the
@@ -223,6 +272,24 @@ fn gi_sun_vis(side: i32, sky_y: f32, cam_xz: vec2f, sun: vec4f, p: vec3f, iters:
 	// tradeoff is preserved verbatim where it was accepted.
 	var proven = false;
 	let lateral_max = gi_lateral_max(f32(side));
+	// The ORIGIN cell first, at twelfth resolution. The loop below skips it (see there), which
+	// is right for a full cube — the point sits on its face, the cell is the air outside — and
+	// wrong for a covered one, where the surface lies inside the cell among the rest of the
+	// shape: a tread must shade the stringer under it, a ceiling slab the floor beneath it.
+	{
+		let lat0 = vec2f(r.cell.xz) + 0.5 - cam_xz;
+		if dot(lat0, lat0) <= lateral_max * lateral_max {
+			let c0 = gi_texel_w(gi_wrap2(r.cell.xz, side), r.cell.y).y;
+			if c0 != 0u {
+				let t_exit = min(r.tmax.x, min(r.tmax.y, r.tmax.z));
+				let bh = gi_cover_march(o, dir, inv, step_dir, r.cell, 0.0, t_exit, c0, r.axis, true);
+				if bh.x >= 0.0 {
+					out.dist = bh.x;
+					return out;
+				}
+			}
+		}
+	}
 	// The hard bound tracks the window, not a literal: with the brick skip an empty brick costs
 	// one iteration, so a ray crossing the whole window needs far fewer steps than blocks — but a
 	// ray grazing dense geometry does not, and truncating it silently un-shadows whatever is past
@@ -237,12 +304,13 @@ fn gi_sun_vis(side: i32, sky_y: f32, cam_xz: vec2f, sun: vec4f, p: vec3f, iters:
 		// It used to test `cell` at the top, and on the first iteration
 		// `cell` is the shading point's OWN cell. For a full cube the
 		// point sits on the face, so that cell is the air outside and the
-		// test is harmless. A shaped block is a third of a cell tall, so
-		// its top surface lies INSIDE its own cell, which GI classifies
-		// opaque (occupancy is per cell — there are no sub-cell masks in
-		// the voxel window) — the very first test returned "blocked" and
-		// the surface shadowed itself. `gi_occluded` directly above has
-		// always stepped first; this march simply never did.
+		// test is harmless. A shaped block's surface lies INSIDE its own
+		// cell, which a whole-cell test takes as opaque — the very first
+		// test returned "blocked" and the surface shadowed itself. The
+		// origin cell is answered ABOVE instead, through its cover's mask
+		// at twelfth resolution, which a whole-cell test cannot do.
+		// `gi_occluded` directly above has always stepped first; this
+		// march simply never did.
 		r = gi_ray_step(r, step_dir, inv);
 		// The sky ceiling (R18): a non-descending ray above the highest
 		// occupied cell in the whole window can never be blocked — one
@@ -276,13 +344,13 @@ fn gi_sun_vis(side: i32, sky_y: f32, cam_xz: vec2f, sun: vec4f, p: vec3f, iters:
 		let tx = gi_texel_w(w, r.cell.y);
 		let v = tx.x;
 		if tx.y != 0u {
-			// A covered cell blocks only where its boxes actually
-			// stand — this is what lets a low sun clear the slab
-			// beside the one you placed, and a torch shade as a
-			// post instead of a pillar. The table is read only here,
-			// off the hot path.
+			// A covered cell blocks only where its shape actually
+			// stands — this is what lets a low sun clear the slab
+			// beside the one you placed, a torch shade as a post
+			// instead of a pillar, and a stair's treads stripe the
+			// floor. The table is read only here, off the hot path.
 			let t_exit = min(r.tmax.x, min(r.tmax.y, r.tmax.z));
-			let bh = gi_boxes_hit(o, dir, r.cell, r.t, t_exit, gi_covers[tx.y], r.axis);
+			let bh = gi_cover_march(o, dir, inv, step_dir, r.cell, r.t, t_exit, tx.y, r.axis, false);
 			if bh.x >= 0.0 {
 				out.dist = bh.x;
 				return out;
@@ -310,8 +378,9 @@ fn gi_sun_vis(side: i32, sky_y: f32, cam_xz: vec2f, sun: vec4f, p: vec3f, iters:
 
 // A general march, for the final gather's ray — the one thing `gi_occluded`
 // (a bool) and `gi_sun_vis` (a visibility) could not answer: WHAT was hit.
-// Same shape as `gi_sun_vis` deliberately, including stepping before
-// testing, so a shaped block never occludes its own surface here either.
+// Same shape as `gi_sun_vis` deliberately, the origin cell's twelfths
+// march included, so a shaped block shades itself here exactly as it
+// does under the sun and never as a whole cell.
 struct GiHit {
 	hit: bool,
 	// On a hit, the cell struck; on a miss, the cell where the march
@@ -359,6 +428,24 @@ fn gi_march(
 	var r = gi_ray_init(o, dir, inv);
 	let lateral_max = gi_lateral_max(f32(side));
 	var rng = seed;
+	// The origin cell at twelfth resolution — see gi_sun_vis.
+	{
+		let lat0 = vec2f(r.cell.xz) + 0.5 - cam_xz;
+		if dot(lat0, lat0) <= lateral_max * lateral_max {
+			let tx0 = gi_texel_w(gi_wrap2(r.cell.xz, side), r.cell.y);
+			if tx0.y != 0u {
+				let t_exit = min(min(r.tmax.x, min(r.tmax.y, r.tmax.z)), max_t);
+				let bh = gi_cover_march(o, dir, inv, step_dir, r.cell, 0.0, t_exit, tx0.y, r.axis, true);
+				if bh.x >= 0.0 {
+					out.hit = true;
+					out.cell = r.cell;
+					out.axis = u32(bh.y);
+					out.cls = tx0.x;
+					return out;
+				}
+			}
+		}
+	}
 	for (var i = 0; i < 128; i++) {
 		if i >= iters {
 			break;
@@ -410,7 +497,7 @@ fn gi_march(
 			// casting a whole-cell shadow from a thin post — and with the direct term
 			// resampled over every in-range emitter, clustered torches shadowed each other.
 			let t_exit = min(r.tmax.x, min(r.tmax.y, r.tmax.z));
-			let bh = gi_boxes_hit(o, dir, r.cell, r.t, t_exit, gi_covers[tx.y], r.axis);
+			let bh = gi_cover_march(o, dir, inv, step_dir, r.cell, r.t, t_exit, tx.y, r.axis, false);
 			if bh.x >= 0.0 {
 				out.hit = true;
 				out.cell = r.cell;
