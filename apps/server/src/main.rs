@@ -264,6 +264,9 @@ fn main() {
 			}
 		}
 	}
+	// Force every .shape asset through parse and bake NOW: a malformed
+	// definition dies at boot, never mid-session under a player's feet.
+	digblock_core::shapes::prewarm();
 	let mut sim = match Sim::new(seed, &data_dir, sim_radius, workers) {
 		Ok(sim) => sim,
 		Err(e) => {

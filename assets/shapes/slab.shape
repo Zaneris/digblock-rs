@@ -1,0 +1,18 @@
+# Slab fills by state, indexed by the size bit then the anchor bit: one
+# third or two thirds of the cell's height, anchored to its floor or its
+# ceiling. The one-third rise is deliberately one stair tread — the
+# auto-step threshold serves both. A ceiling slab is the floor one mirrored
+# about the cell's mid-plane (pinned by a test), which keeps every pair the
+# same volume, and so the same alchemy cost and the same dig.
+version 1
+shape slab
+grid 12
+states explicit 4
+state 0                    # one third, floor
+box all  0 0 0  12 4 12
+state 1                    # two thirds, floor
+box all  0 0 0  12 8 12
+state 2                    # one third, ceiling
+box all  0 8 0  12 12 12
+state 3                    # two thirds, ceiling
+box all  0 4 0  12 12 12

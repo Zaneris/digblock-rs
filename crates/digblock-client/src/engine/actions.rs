@@ -1215,15 +1215,18 @@ impl Engine {
 		// with the pick, and the count `begin_multi`'s single `inv_delta`
 		// carries for the whole group.
 		let broken = cleared.len() as u32;
-		if prev.is_door() {
-			let partner = digblock_core::shapes::door_partner(
-				hit.cell,
-				digblock_core::chunk::cell_state(prev_cell),
-			);
-			if let Some(pc) = self.pipeline.cell_at(partner.0, partner.1, partner.2)
-				&& BlockType::from_id(digblock_core::chunk::cell_id(pc)).is_door()
-			{
-				cleared.push((partner, pc));
+		if digblock_core::shapes::is_multi_cell(prev) {
+			for (partner, _) in digblock_core::shapes::object_cells(hit.cell, prev_cell) {
+				if partner == hit.cell {
+					continue;
+				}
+				// The lenient orphan-healing check: any cell of the same
+				// BLOCK clears, even one whose state drifted from the pair.
+				if let Some(pc) = self.pipeline.cell_at(partner.0, partner.1, partner.2)
+					&& BlockType::from_id(digblock_core::chunk::cell_id(pc)) == prev
+				{
+					cleared.push((partner, pc));
+				}
 			}
 		}
 		// A field extraction (SKILLS-DESIGN §5.3): the vein is DRAWN out,
@@ -1443,19 +1446,19 @@ impl Engine {
 			return;
 		}
 		// Never place into the player — the shared shape-aware contract
-		// (identical to the server's InsidePlayer scan). Doors check
-		// both halves.
+		// (identical to the server's InsidePlayer scan). A multi-cell
+		// object checks every derived cell.
 		let mut placements = vec![(target, placed_cell)];
-		if block.is_door() {
-			let upper = (target.0, target.1 + 1, target.2);
-			// The upper cell, same rule (mirrors the server's gate).
-			if !self.cell_is_replaceable(upper) {
-				return;
+		if digblock_core::shapes::is_multi_cell(block) {
+			debug_assert!(digblock_core::shapes::place_canonical(placed_cell));
+			placements = digblock_core::shapes::object_cells(target, placed_cell);
+			// The derived cells, same rule (mirrors the server's gate); the
+			// anchor was checked above.
+			for &(c, _) in &placements[1..] {
+				if !self.cell_is_replaceable(c) {
+					return;
+				}
 			}
-			placements.push((
-				upper,
-				make_cell(block, door_state(quantized_facing(dir), false, true)),
-			));
 		}
 		// Protected cells, scanned over the ASSEMBLED placements so a
 		// door's derived upper half and a slab grow (which rewrites the
@@ -1556,21 +1559,26 @@ impl Engine {
 	/// server re-raycasts and flips authoritatively). Offline it IS the
 	/// authority. Never consumes stock.
 	pub(super) fn toggle_door(&mut self, hit: RayHit) {
-		use digblock_core::chunk::{cell_id, cell_state};
-		use digblock_core::shapes::{door_partner, door_toggled};
+		use digblock_core::chunk::cell_id;
+		use digblock_core::shapes::{door_toggled, object_cells};
 		let cell = hit.cell;
 		let Some(cur) = self.pipeline.cell_at(cell.0, cell.1, cell.2) else {
 			return;
 		};
-		if !BlockType::from_id(cell_id(cur)).is_door() {
+		let block = BlockType::from_id(cell_id(cur));
+		if !block.is_door() {
 			return;
 		}
-		let partner = door_partner(cell, cell_state(cur));
 		let mut entries = vec![(cell, cur, door_toggled(cur))];
-		if let Some(pc) = self.pipeline.cell_at(partner.0, partner.1, partner.2)
-			&& BlockType::from_id(cell_id(pc)).is_door()
-		{
-			entries.push((partner, pc, door_toggled(pc)));
+		for (partner, _) in object_cells(cell, cur) {
+			if partner == cell {
+				continue;
+			}
+			if let Some(pc) = self.pipeline.cell_at(partner.0, partner.1, partner.2)
+				&& BlockType::from_id(cell_id(pc)) == block
+			{
+				entries.push((partner, pc, door_toggled(pc)));
+			}
 		}
 		// A door in a protected cell is furniture, not a mechanism — the
 		// same refusal the server makes over its own write list, and

@@ -1,0 +1,10 @@
+# The torch: one centered post, square in section and stopping short of the
+# cell's top. Floor-mounted, stateless. A body walks THROUGH it (no
+# collision) while it still stands in the way of light and the interact ray
+# still finds it to dig — the flame is the TEXTURE's business; torch_side
+# paints its upper rows as glow.
+version 1
+shape torch
+grid 12
+states none
+box visual+light+interaction  5 0 5  7 10 7  # post

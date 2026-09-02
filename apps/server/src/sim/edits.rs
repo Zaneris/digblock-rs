@@ -360,18 +360,15 @@ impl Sim {
 			EditKind::Place { block } => {
 				// Strict: unknown ids, spare bits, and states the id's
 				// shape doesn't define are refused (`state_valid` is the
-				// one gate). Door requests must be the LOWER+CLOSED cell —
-				// the server derives the upper half itself.
+				// one gate). A multi-cell or openable request must be the
+				// canonical ANCHOR (part 0, closed) — the server derives
+				// every other cell itself.
 				if block == BlockType::Air as u16 || !digblock_core::shapes::state_valid(block) {
 					return reject(RejectReason::BadBlock);
 				}
 				let b = BlockType::from_id(digblock_core::chunk::cell_id(block));
-				if b.is_door() {
-					let (_, open, upper) =
-						digblock_core::shapes::door_parts(digblock_core::chunk::cell_state(block));
-					if open || upper {
-						return reject(RejectReason::BadBlock);
-					}
+				if !digblock_core::shapes::place_canonical(block) {
+					return reject(RejectReason::BadBlock);
 				}
 				// Slab requests must be the canonical floor third with no
 				// state bits set: the server derives grown values itself,
@@ -514,18 +511,23 @@ impl Sim {
 					writes.push((c, air));
 					broken += 1;
 				}
-				if hit.block.is_door() {
-					let partner = digblock_core::shapes::door_partner(
-						req.cell,
-						digblock_core::chunk::cell_state(hit.cell_value),
-					);
-					if self
-						.store
-						.cell_at(partner.0, partner.1, partner.2)
-						.is_some_and(|c| {
-							BlockType::from_id(digblock_core::chunk::cell_id(c)).is_door()
-						}) {
-						writes.push((partner, air));
+				if digblock_core::shapes::is_multi_cell(hit.block) {
+					for (partner, _) in
+						digblock_core::shapes::object_cells(req.cell, hit.cell_value)
+					{
+						if partner == req.cell {
+							continue;
+						}
+						// The lenient orphan-healing check: any cell of the
+						// same BLOCK clears, even a state-drifted one.
+						if self
+							.store
+							.cell_at(partner.0, partner.1, partner.2)
+							.is_some_and(|c| {
+								BlockType::from_id(digblock_core::chunk::cell_id(c)) == hit.block
+							}) {
+							writes.push((partner, air));
+						}
 					}
 				}
 			}
@@ -573,14 +575,19 @@ impl Sim {
 						v
 					};
 					writes.push((target, placed));
-					if place_b.is_some_and(|b| b.is_door()) {
-						// The derived upper half, same rule.
-						let upper = (target.0, target.1 + 1, target.2);
-						if !self.cell_is_replaceable(upper) {
-							return reject(RejectReason::Occluded);
+					if place_b.is_some_and(digblock_core::shapes::is_multi_cell) {
+						// The derived cells of a multi-cell object, same rule.
+						// `object_cells` is the derivation the client's
+						// prediction rides too, so they can never disagree.
+						for (c, dv) in digblock_core::shapes::object_cells(target, placed) {
+							if c == target {
+								continue;
+							}
+							if !self.cell_is_replaceable(c) {
+								return reject(RejectReason::Occluded);
+							}
+							writes.push((c, dv));
 						}
-						let upper_cell = v | (0b1000 << digblock_core::chunk::STATE_SHIFT);
-						writes.push((upper, upper_cell));
 					}
 				}
 				// Mirrors the local-engine rejection via the shared
@@ -953,14 +960,18 @@ impl Sim {
 			return reject(RejectReason::Occluded);
 		}
 		use digblock_core::chunk::{cell_id, cell_state};
-		use digblock_core::shapes::{door_partner, door_toggled};
+		use digblock_core::shapes::{door_toggled, object_cells};
 		let cur = hit.cell_value;
-		let partner = door_partner(hit.cell, cell_state(cur));
 		let mut writes = vec![(hit.cell, cur, door_toggled(cur))];
-		if let Some(pc) = self.store.cell_at(partner.0, partner.1, partner.2)
-			&& BlockType::from_id(cell_id(pc)).is_door()
-		{
-			writes.push((partner, pc, door_toggled(pc)));
+		for (partner, _) in object_cells(hit.cell, cur) {
+			if partner == hit.cell {
+				continue;
+			}
+			if let Some(pc) = self.store.cell_at(partner.0, partner.1, partner.2)
+				&& BlockType::from_id(cell_id(pc)) == hit.block
+			{
+				writes.push((partner, pc, door_toggled(pc)));
+			}
 		}
 		// A door inside a protected region is furniture, not a mechanism
 		// — except under an admin's hand.

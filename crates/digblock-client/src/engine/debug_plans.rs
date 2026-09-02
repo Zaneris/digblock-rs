@@ -46,6 +46,31 @@ pub(super) fn shaped_roster(s: digblock_core::block::ShapeFamily) -> Vec<BlockTy
 /// verification needs no ground) — every stair material × 4 facings, then closed and open doors in
 /// every material, then the slabs. Rows run back in z, one material per row, so the rank grows
 /// backward as the catalog does instead of off the sides of the frame.
+/// The shape editor's stage: a stone pad under the object's origin cell
+/// with cleared air above, wide enough that a rotated multi-cell footprint
+/// (parts can land one cell to any side of the origin) stays on the slab.
+pub(super) fn editor_pad_plan(origin: (i32, i32, i32)) -> Vec<(i32, i32, i32, u16)> {
+	use digblock_core::block::BlockType as B;
+	let (ox, oy, oz) = origin;
+	let mut out = Vec::new();
+	for x in ox - 3..=ox + 4 {
+		for z in oz - 4..=oz + 4 {
+			out.push((x, oy - 1, z, B::Stone as u16));
+			for y in oy..oy + 5 {
+				// The object envelope (any footprint at any rotation) is
+				// the editor preview's to write — a pending Air here would
+				// clobber a freshly sculpted cell.
+				let envelope =
+					(ox - 3..=ox + 3).contains(&x) && (oz - 3..=oz + 3).contains(&z) && y <= oy + 3;
+				if !envelope {
+					out.push((x, y, z, B::Air as u16));
+				}
+			}
+		}
+	}
+	out
+}
+
 pub(super) fn debug_shapes_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 	use digblock_core::block::{BlockType as B, ShapeFamily};
 	use digblock_core::chunk::make_cell;

@@ -191,6 +191,13 @@ impl Engine {
 		if let Some(tod) = fixed_tod {
 			self.sun.tod = tod;
 		}
+		// The shape editor replaces the whole interactive half: fly camera,
+		// sculpting, IO — no player sim, dig/place, tutorial or net.
+		if self.config.debug_editor {
+			self.editor_step(dt);
+			self.bench.pending.update_ms = ms_since(t_update);
+			return;
+		}
 		// Scripted flight — the bench's, and the capture harness's. Inputs
 		// are off and the camera is driven outright, so both return before
 		// the interactive half of update; streaming still runs, because

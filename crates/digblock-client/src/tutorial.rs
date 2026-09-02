@@ -2,9 +2,10 @@
 //! the player actually doing the thing, driven by the same events the
 //! sound layer rides plus a per-frame poll for the continuous verbs
 //! (walk, look, jump). Pure and headless: `observe`/`poll` consume data
-//! and answer with an [`Advance`]; the engine owns when it starts (first
-//! entry into an offline world), what it looks like (`ui::tutorial`),
-//! and where completion persists (`Settings::show_tutorial`). Strictly
+//! and answer with an [`Advance`]; the engine owns when it starts (a
+//! fresh character's world entry, save or server), what it looks like
+//! (`ui::tutorial`), and where completion persists
+//! (`Settings::show_tutorial`). Strictly
 //! linear in v1; steps are NAMED (`StepId`), never numbered, so nothing
 //! persisted or parsed can rot when one is inserted.
 

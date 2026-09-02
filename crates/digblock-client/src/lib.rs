@@ -43,6 +43,8 @@ mod water;
 mod water_audio;
 mod waystone_fx;
 
+/// The shape editor's launcher-facing IO seam (see `Engine::set_shape_services`).
+pub use engine::editor::io::{ShapeIoCmd, ShapeIoResp, ShapeServices};
 pub use engine::{
 	DebugScreen, Engine, EngineConfig, STARE_FRAMES, knobs, parse_held_item, parse_node_kind,
 };

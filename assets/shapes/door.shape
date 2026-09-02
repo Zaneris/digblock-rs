@@ -1,0 +1,27 @@
+# Hinged door: ONE object wearing two stacked cells (footprint 1x2x1),
+# authored CLOSED, facing +x, hinge at the -z pivot corner. The open pose
+# (a rigid 90-degree swing about the hinge), the per-facing rotation, and
+# the lower/upper split are all derived by the engine (states door) — which
+# is why every box must fit the swing envelope, x below 4.
+#
+# The leaf is set back from the -x face so the handle can protrude past
+# both leaf faces. The upper half DRAWS a divided-lite window but collides
+# as the uncut slab (the lites are cosmetic to physics and light), so the
+# upper leaf here is an invisible collision+light+interaction box under
+# visual-only rails, stiles and mullions.
+version 1
+shape door
+grid 12
+footprint 1 2 1
+states door
+box all                          1 0 0    3 12 12   # leaf, lower half
+box visual+interaction           0 9 9    4 11 11   # handle (lower only)
+box visual                       3 1 0    4 3 1     # hinge, lower
+box collision+light+interaction  1 12 0   3 24 12   # leaf, upper half (uncut)
+box visual                       1 12 0   3 14 12   # bottom rail
+box visual                       1 22 0   3 24 12   # top rail
+box visual                       1 14 0   3 22 2    # stile, hinge side
+box visual                       1 14 10  3 22 12   # stile, latch side
+box visual                       1 14 5   3 22 7    # vertical mullion
+box visual                       1 17 2   3 19 10   # horizontal mullion
+box visual                       3 21 0   4 23 1    # hinge, upper

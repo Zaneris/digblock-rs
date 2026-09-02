@@ -1,0 +1,14 @@
+# Canonical stairs, ascending toward +x: three plain steps of equal rise,
+# each tread running the full depth of the cell. Two nosing/reveal detail
+# passes were tried and reverted — an overhanging tread lip reads
+# asymmetric, the top step having nothing overhanging it. `ramp` is the
+# physics contract: a climb resolves a diagonal, not the boxes; the
+# one-third rise is deliberately the auto-step threshold.
+version 1
+shape stairs
+grid 12
+states facing
+ramp
+box all  0 0 0  12 4 12   # bottom step
+box all  4 4 0  12 8 12   # middle step
+box all  8 8 0  12 12 12  # top step

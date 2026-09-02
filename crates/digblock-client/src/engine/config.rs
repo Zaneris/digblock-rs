@@ -288,6 +288,9 @@ pub struct EngineConfig {
 	/// launcher from DIG_DOORS. See [`debug_doors_plan`] for why
 	/// `debug_shapes` does not cover this.
 	pub debug_doors: bool,
+	/// The shape editor: sculpt sub-block objects on a pad and save them
+	/// as .shape files. Set by the launcher from DIG_EDITOR / ?editor.
+	pub debug_editor: bool,
 	/// Debug: seal a stone vault around the spawn camera with one torch
 	/// inside — the NEE capture, and any look call about a dim room (a
 	/// roofed room goes DARK and torchlight is what makes it readable).
@@ -498,6 +501,7 @@ impl EngineConfig {
 			debug_sphere: None,
 			debug_sphere_age: None,
 			debug_doors: false,
+			debug_editor: false,
 			debug_vault: false,
 			debug_node: None,
 			debug_ore: 0,

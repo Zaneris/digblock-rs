@@ -81,3 +81,30 @@ test("the canvas backing is the CSS box times the device ratio, at 1x and 2x", a
 		expect([png.width, png.height]).toEqual(c.backing);
 	}
 });
+
+test("the shape editor boots, loads a built-in, and draws its panel", async ({ dig }) => {
+	const d = await dig({ seed: 7, editor: true, mute: true, master: "" });
+	await d.page.waitForTimeout(2000);
+	// The side panel is text in the top-left; text is structure the sky
+	// never has, so that corner must out-detail the top-right. Regions are
+	// [x0, y0, x1, y1] corners.
+	let png = await d.shot(test.info().outputPath("editor-boot.png"));
+	expectRendered(png, "editor pad");
+	const { width: w, height: h } = png;
+	const panel = detail(png, { region: [0, 0, Math.round(w * 0.35), Math.round(h * 0.3)] });
+	const sky = detail(png, { region: [Math.round(w * 0.65), 0, w, Math.round(h * 0.3)] });
+	expect(panel, `the panel corner (${panel.toFixed(2)}) should be busier than the opposite one (${sky.toFixed(2)})`)
+		.toBeGreaterThan(sky * 2);
+	// Enter loads the selected built-in (the roster's first): the sculpted
+	// preview lands on the pad through the game's own mesher, so the dark
+	// flat pad mid-frame gains the object's lit faces.
+	const mid = { region: [Math.round(w * 0.42), Math.round(h * 0.5), Math.round(w * 0.58), Math.round(h * 0.78)] };
+	const flat = stats(png, mid).mean;
+	await d.keys("Enter");
+	await d.page.waitForTimeout(800);
+	png = await d.shot(test.info().outputPath("editor-loaded.png"));
+	const loaded = stats(png, mid).mean;
+	expect(loaded, `the pad (${flat.toFixed(1)}) should brighten under the loaded shape (${loaded.toFixed(1)})`)
+		.toBeGreaterThan(flat * 1.2);
+	expect(d.trouble(), "console trouble").toEqual([]);
+});

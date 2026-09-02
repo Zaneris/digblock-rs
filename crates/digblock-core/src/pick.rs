@@ -82,7 +82,7 @@ pub fn breaks_as_extra(
 	cell_id(value) == id
 		&& b.dig_credit(edited, alchemy) == credit
 		&& b.dig_hardness(at.1).is_some()
-		&& !b.is_door()
+		&& !crate::shapes::is_multi_cell(b)
 		&& !b.is_slab()
 		&& mode == DigMode::Break
 }

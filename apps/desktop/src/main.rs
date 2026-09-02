@@ -9,6 +9,7 @@ mod audio;
 mod auth;
 mod services;
 mod settings;
+mod shape_store;
 
 /// Bad or missing flag values are fatal like unknown args — a silently
 /// defaulted `--seed`/`--draw-dist` makes captures non-deterministic.
@@ -338,6 +339,7 @@ fn main() {
 		"DIG_IDENTITY_FILE",
 		"DIG_SESSION_FILE",
 		"DIG_CHROME",
+		"DIG_SHAPE_DIR",
 	];
 	let unknown: Vec<String> = std::env::vars_os()
 		.map(|(k, _)| k.to_string_lossy().into_owned())
@@ -493,9 +495,15 @@ fn main() {
 		config.legacy_identity = legacy_identity();
 	}
 
+	let editor_on = config.debug_editor;
 	let mut engine = Engine::new(config);
 	if interactive {
 		engine.set_settings_store(Box::new(settings::save));
+	}
+	// The shape editor's file store (list/load/save over assets/shapes/,
+	// or DIG_SHAPE_DIR).
+	if editor_on {
+		engine.set_shape_services(shape_store::start());
 	}
 	// Named local saves ride the menu; scripted joins and capture paths
 	// stay store-less (they keep the ephemeral world + hermetic runs).

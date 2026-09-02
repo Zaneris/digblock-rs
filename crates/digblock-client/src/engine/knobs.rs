@@ -93,6 +93,11 @@ pub const SHAPES: Knob = flag(
 	"every shaped block laid out in a row",
 );
 pub const DOORS: Knob = flag("doors", "DIG_DOORS", "doors in every state");
+pub const EDITOR: Knob = flag(
+	"editor",
+	"DIG_EDITOR",
+	"the shape editor: sculpt sub-block objects and save them as .shape files",
+);
 pub const SPHERE: Knob = value(
 	"sphere",
 	"DIG_SPHERE",
@@ -214,6 +219,7 @@ pub const ALL: &[Knob] = &[
 	NO_MARKERS,
 	SHAPES,
 	DOORS,
+	EDITOR,
 	SPHERE,
 	SPHERE_AGE,
 	VAULT,
@@ -341,6 +347,7 @@ pub fn apply(
 	config.markers = !on(&NO_MARKERS);
 	config.debug_shapes = on(&SHAPES);
 	config.debug_doors = on(&DOORS);
+	config.debug_editor = on(&EDITOR);
 	config.debug_vault_dark = on(&VAULT_DARK);
 	config.debug_vault = config.debug_vault_dark || on(&VAULT);
 	config.debug_roof = on(&ROOF);

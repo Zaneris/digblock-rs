@@ -11,6 +11,7 @@ mod auth;
 mod jobs;
 mod services;
 mod settings;
+mod shapes_io;
 mod store;
 
 /// A query param that carries a value, absent if the key isn't there. A key that IS there but
@@ -346,9 +347,14 @@ async fn boot() -> Result<(), JsValue> {
 	// The two knobs the SHELL acts on, before a device exists.
 	let no_gpu_timer = !config.gpu_timer;
 	let fps_cap = config.fps_cap;
+	let editor_on = config.debug_editor;
 	let mut engine = Engine::new(config);
 	if mobile && let Some(insets) = safe_area_insets() {
 		engine.set_safe_area(insets);
+	}
+	// The shape editor's IO: Save = a browser download, O = the file picker.
+	if editor_on {
+		engine.set_shape_services(shapes_io::start());
 	}
 	if interactive {
 		// A capture run must not WRITE settings either: a `?renderscale=`

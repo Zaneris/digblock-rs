@@ -520,6 +520,12 @@ impl Engine {
 					// level-up.
 					self.skills = digblock_core::skills::SkillSet::from_wire(&xp);
 					self.sync_node_reveal(false);
+					// The walkthrough's arm for a server join: `Skills` is the
+					// first moment the zero-XP question has the server's
+					// answer, and it arrives once per join, never mid-session
+					// (awards ride `XpGain`), so this cannot re-arm a
+					// walkthrough the player finished or skipped.
+					self.arm_tutorial();
 					// A character with no light of their own enters their
 					// held evening; the join's InventoryFull landed just
 					// ahead of this frame, and the server's clock keeps

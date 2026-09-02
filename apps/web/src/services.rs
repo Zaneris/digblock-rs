@@ -483,7 +483,7 @@ fn js_err(v: &JsValue) -> String {
 	v.as_string().unwrap_or_else(|| format!("{v:?}"))
 }
 
-async fn sleep_ms(ms: i32) {
+pub(crate) async fn sleep_ms(ms: i32) {
 	let p = js_sys::Promise::new(&mut |resolve, _| {
 		web_sys::window()
 			.expect("window")

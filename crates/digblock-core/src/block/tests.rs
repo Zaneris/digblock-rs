@@ -16,6 +16,26 @@ fn discriminants_index_props() {
 }
 
 #[test]
+fn every_texture_layer_has_exactly_one_name() {
+	assert_eq!(tex::NAMED.len(), tex::COUNT as usize);
+	let mut values: Vec<u16> = tex::NAMED.iter().map(|&(_, v)| v).collect();
+	values.sort_unstable();
+	let expected: Vec<u16> = (0..tex::COUNT).collect();
+	assert_eq!(
+		values, expected,
+		"NAMED covers 0..COUNT with no gaps or dups"
+	);
+	for (i, &(name, _)) in tex::NAMED.iter().enumerate() {
+		assert!(
+			!tex::NAMED[..i].iter().any(|&(n, _)| n == name),
+			"duplicate name {name}"
+		);
+		assert_eq!(tex::layer_by_name(name), Some(tex::NAMED[i].1));
+	}
+	assert_eq!(tex::layer_by_name("NOT_A_LAYER"), None);
+}
+
+#[test]
 fn table_sanity() {
 	for &b in &BlockType::ALL {
 		let p = b.props();

@@ -959,6 +959,82 @@ pub mod tex {
 	/// Pinned against it by `every_block_texture_layer_is_uploaded` in
 	/// digblock-client, the one crate that can see both.
 	pub const COUNT: u16 = SPELL_PORT + 1;
+
+	/// Every layer's canonical name — the handle `.shape` files use, because
+	/// the INDEX is runtime-only and may be reordered. Completeness (one row
+	/// per layer, unique, covering `0..COUNT`) is pinned by a test, so a new
+	/// layer that forgets its row fails the build's tests, not a load.
+	pub const NAMED: &[(&str, u16)] = &[
+		("WATER", WATER),
+		("DIRT", DIRT),
+		("GRASS_SIDE", GRASS_SIDE),
+		("GRASS_TOP", GRASS_TOP),
+		("SAND", SAND),
+		("STONE", STONE),
+		("LOG", LOG),
+		("LOG_TOP", LOG_TOP),
+		("LEAVES", LEAVES),
+		("SNOW", SNOW),
+		("DRY_GRASS_SIDE", DRY_GRASS_SIDE),
+		("DRY_GRASS_TOP", DRY_GRASS_TOP),
+		("MUD", MUD),
+		("GRAVEL", GRAVEL),
+		("PINE_LEAVES", PINE_LEAVES),
+		("SANDSTONE", SANDSTONE),
+		("RUBBLE", RUBBLE),
+		("TORCH_SIDE", TORCH_SIDE),
+		("TORCH_FLAME", TORCH_FLAME),
+		("LUMBER_LIGHT", LUMBER_LIGHT),
+		("LUMBER_DARK", LUMBER_DARK),
+		("LUMBER_RED", LUMBER_RED),
+		("EMBERORE", EMBERORE),
+		("DUSKSTONE", DUSKSTONE),
+		("GLOWVEIN", GLOWVEIN),
+		("AETHEROCK", AETHEROCK),
+		("DEPLETED_STONE", DEPLETED_STONE),
+		("STONE_BRICK", STONE_BRICK),
+		("SANDSTONE_BRICK", SANDSTONE_BRICK),
+		("POLISHED_STONE", POLISHED_STONE),
+		("GLASS", GLASS),
+		("METAL", METAL),
+		("CRYSTAL", CRYSTAL),
+		("LANTERN", LANTERN),
+		("AETHERLAMP", AETHERLAMP),
+		("SIPHON_GLOW", SIPHON_GLOW),
+		("PICK_GLOW", PICK_GLOW),
+		("DEPLETED_EMBERORE", DEPLETED_EMBERORE),
+		("DEPLETED_DUSKSTONE", DEPLETED_DUSKSTONE),
+		("DEPLETED_GLOWVEIN", DEPLETED_GLOWVEIN),
+		("DEPLETED_AETHEROCK", DEPLETED_AETHEROCK),
+		("HEARTWOOD", HEARTWOOD),
+		("DRAINED_HEARTWOOD", DRAINED_HEARTWOOD),
+		("LEYSTONE", LEYSTONE),
+		("SPENT_LEYSTONE", SPENT_LEYSTONE),
+		("SPRINGSTONE", SPRINGSTONE),
+		("SPENT_SPRINGSTONE", SPENT_SPRINGSTONE),
+		("GLASS_RED", GLASS_RED),
+		("GLASS_GREEN", GLASS_GREEN),
+		("GLASS_BLUE", GLASS_BLUE),
+		("GLASS_AMBER", GLASS_AMBER),
+		("CONJURED_LIGHT", CONJURED_LIGHT),
+		("ESSENCE_VITAE", ESSENCE_VITAE),
+		("ESSENCE_TERRA", ESSENCE_TERRA),
+		("ESSENCE_UNDA", ESSENCE_UNDA),
+		("ESSENCE_FERRUM", ESSENCE_FERRUM),
+		("ESSENCE_AETHER", ESSENCE_AETHER),
+		("WARDGLASS", WARDGLASS),
+		("SPELL_WISP", SPELL_WISP),
+		("SPELL_KINDLE", SPELL_KINDLE),
+		("SPELL_SPHERE", SPELL_SPHERE),
+		("SPELL_CAUSEWAY", SPELL_CAUSEWAY),
+		("SPELL_HOME", SPELL_HOME),
+		("SPELL_PORT", SPELL_PORT),
+	];
+
+	/// Resolve a `.shape` texture name to its layer, `None` if unknown.
+	pub fn layer_by_name(name: &str) -> Option<u16> {
+		NAMED.iter().find(|(n, _)| *n == name).map(|&(_, v)| v)
+	}
 }
 
 impl BlockType {

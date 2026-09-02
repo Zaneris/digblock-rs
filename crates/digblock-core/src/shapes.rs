@@ -1,10 +1,12 @@
 //! Sub-block shape registry: static geometry per (block id, state nibble) on a
 //! cubic sub-grid (`GRID` sub-cells per block edge, chosen so halves, thirds,
-//! quarters and sixths are all exact). Shapes are authored once as sub-box
-//! lists in a canonical facing and every variant is baked from them at first
-//! use — rasterize to a bitset, emit exposed sub-faces, greedy-merge into
-//! maximal quads — all pure integer ops, so the registry is deterministic
-//! across platforms and both sides of the wire.
+//! quarters and sixths are all exact). Shapes are authored as `.shape` text
+//! assets (embedded and parsed by [`def`]) in a canonical facing, and every
+//! variant is baked from them at first use — rasterize to a bitset, emit
+//! exposed sub-faces, greedy-merge into maximal quads — all pure integer ops,
+//! so the registry is deterministic across platforms and both sides of the
+//! wire. The LEGACY_* pins in the tests prove each ported file bakes
+//! byte-identical to the retired hardcoded consts.
 //!
 //! Layering: above block.rs/dir.rs, below the mesher. Corner-slot and UV
 //! conventions deliberately mirror the mesher's `face_corners`, so a baked
@@ -17,6 +19,8 @@ use crate::chunk::{STATE_MASK, STATE_SHIFT, cell_id, cell_state};
 use crate::dir::{DIRS, Dir};
 use glam::Vec3;
 use std::sync::LazyLock;
+
+pub mod def;
 
 /// Sub-cells per block edge.
 pub const GRID: u8 = 12;
@@ -93,13 +97,145 @@ pub fn door_parts(state: u8) -> (Facing, bool, bool) {
 	)
 }
 
-/// The other half of a door pair (upper ↔ lower, same column). Client
-/// prediction and the server's pair writes share this so they can never
-/// disagree about which cell is the partner.
+/// The other half of a door pair (upper ↔ lower, same column) — a thin
+/// wrapper over the generic `object_cells` machinery, kept for its many
+/// callers. Client prediction and the server's pair writes share this so
+/// they can never disagree about which cell is the partner.
 #[inline]
 pub fn door_partner(cell: (i32, i32, i32), state: u8) -> (i32, i32, i32) {
-	let (_, _, upper) = door_parts(state);
-	(cell.0, cell.1 + if upper { -1 } else { 1 }, cell.2)
+	let value = crate::chunk::make_cell(BlockType::LumberDoor, state);
+	let other = usize::from(part_index(value) == 0);
+	object_cells(cell, value)[other].0
+}
+
+// --- multi-cell objects -----------------------------------------------
+
+/// How a kind's state nibble is laid out: which bits are a facing, an open
+/// flag, and the part index of a multi-cell footprint. Declared in code —
+/// the wire's grammar — and cross-checked against the kind's `.shape` file
+/// at load. Growing a footprint past what the nibble holds means drawing
+/// the cell's spare bits into state (chunk.rs reserves the right); that is
+/// additive for existing cells, whose spare bits are zero.
+pub struct StateLayout {
+	/// Bits 0-1 are a `Facing`.
+	pub facing: bool,
+	/// An open/closed flag (the door's bit 2).
+	pub open_bit: Option<u8>,
+	/// Where the part index lives (meaningful only when parts > 1).
+	pub part_shift: u8,
+	/// Cells of the footprint, in canonical facing: W, H, D.
+	pub footprint: [u8; 3],
+}
+
+impl StateLayout {
+	/// Cells this object wears.
+	#[inline]
+	pub fn parts(&self) -> u8 {
+		self.footprint[0] * self.footprint[1] * self.footprint[2]
+	}
+
+	/// Bits the part index occupies.
+	#[inline]
+	fn part_bits(&self) -> u8 {
+		match self.parts() {
+			1 => 0,
+			2 => 1,
+			_ => 2,
+		}
+	}
+}
+
+/// The nibble layout of a kind. The door's rows are FROZEN — facing, open
+/// bit 2, part bit 3 (part 1 = upper) — so every journaled door cell keeps
+/// today's meaning.
+pub fn state_layout(kind: ShapeKind) -> StateLayout {
+	let (facing, open_bit, part_shift, footprint) = match kind {
+		ShapeKind::Stairs | ShapeKind::Chair | ShapeKind::Bed => (true, None, 2, [1, 1, 1]),
+		ShapeKind::Door => (true, Some(2), 3, [1, 2, 1]),
+		ShapeKind::Slab | ShapeKind::Torch | ShapeKind::Table => (false, None, 0, [1, 1, 1]),
+	};
+	StateLayout {
+		facing,
+		open_bit,
+		part_shift,
+		footprint,
+	}
+}
+
+/// Whether this block is one object wearing several cells.
+#[inline]
+pub fn is_multi_cell(b: BlockType) -> bool {
+	b.props().shape.is_some_and(|k| state_layout(k).parts() > 1)
+}
+
+/// Which cell of its object's footprint this cell is (0 for the anchor and
+/// for every single-cell shape).
+#[inline]
+pub fn part_index(value: u16) -> u8 {
+	let Some(kind) = BlockType::from_id(cell_id(value)).props().shape else {
+		return 0;
+	};
+	let l = state_layout(kind);
+	(cell_state(value) >> l.part_shift) & ((1 << l.part_bits()) - 1)
+}
+
+/// A part's cell offset from the anchor: canonical order
+/// `part = cx + W*(cz + D*cy)`, the x/z pair turned with the facing.
+fn part_offset(l: &StateLayout, part: u8, facing_k: u8) -> (i32, i32, i32) {
+	let [w, _, d] = l.footprint;
+	let (mut x, y, mut z) = (
+		i32::from(part % w),
+		i32::from(part / (w * d)),
+		i32::from((part / w) % d),
+	);
+	for _ in 0..(facing_k & 3) {
+		(x, z) = (-z, x);
+	}
+	(x, y, z)
+}
+
+/// Every (cell, expected cell value) of the object this cell belongs to,
+/// derived purely from the one cell's own value — [0] is the anchor
+/// (part 0). Client prediction and the server's assembled writes share
+/// this, so a door still places, digs and toggles as one object, and any
+/// future footprint does too.
+pub fn object_cells(cell: (i32, i32, i32), value: u16) -> Vec<((i32, i32, i32), u16)> {
+	let Some(kind) = BlockType::from_id(cell_id(value)).props().shape else {
+		return vec![(cell, value)];
+	};
+	let l = state_layout(kind);
+	let parts = l.parts();
+	if parts == 1 {
+		return vec![(cell, value)];
+	}
+	let k = if l.facing { cell_state(value) & 3 } else { 0 };
+	let mine = part_offset(&l, part_index(value), k);
+	let anchor = (cell.0 - mine.0, cell.1 - mine.1, cell.2 - mine.2);
+	let part_mask =
+		u16::from((1u8 << l.part_bits()) - 1) << (STATE_SHIFT + u32::from(l.part_shift));
+	(0..parts)
+		.map(|p| {
+			let o = part_offset(&l, p, k);
+			let v =
+				(value & !part_mask) | (u16::from(p) << (STATE_SHIFT + u32::from(l.part_shift)));
+			((anchor.0 + o.0, anchor.1 + o.1, anchor.2 + o.2), v)
+		})
+		.collect()
+}
+
+/// Whether a value is the canonical ANCHOR form a placement may carry on
+/// the wire: part 0, and closed if the kind has an open flag. The server
+/// derives every other cell itself.
+#[inline]
+pub fn place_canonical(value: u16) -> bool {
+	let Some(kind) = BlockType::from_id(cell_id(value)).props().shape else {
+		return true;
+	};
+	let l = state_layout(kind);
+	let open = l
+		.open_bit
+		.is_some_and(|bit| cell_state(value) & (1 << bit) != 0);
+	part_index(value) == 0 && !open
 }
 
 /// The door cell with its open flag flipped, in place inside the state
@@ -241,13 +377,16 @@ fn row_bits(a0: u8, a1: u8) -> u16 {
 /// One baked template quad. Corners are [TL, TR, BL, BR] in twelfths —
 /// the same slot semantics as the mesher's `face_corners`, so the shared
 /// index pattern and the corner codes carry over unchanged.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct ShapeQuad {
 	pub dir: Dir,
 	pub corners: [[u8; 3]; 4],
 	/// Per-corner UV in twelfths (matches the corner-code UV of a full
 	/// block face: TL=(u0,v0) … BR=(u1,v1)).
 	pub uv: [[u8; 2]; 4],
+	/// Texture layer override from the owning authored box, resolved for
+	/// this quad's dir at bake; `None` = the block row's top/side/bottom.
+	pub tex: Option<u16>,
 	/// Lies on the block-boundary plane toward `dir` → subject to
 	/// neighbor culling. Interior quads always emit.
 	pub boundary: bool,
@@ -291,6 +430,9 @@ pub struct ShapeVariant {
 /// The shape for a block + state, if the block is shaped.
 #[inline]
 pub fn shape_of(b: BlockType, state: u8) -> Option<&'static ShapeVariant> {
+	if let Some(v) = preview_of(b, state) {
+		return Some(v);
+	}
 	match b.props().shape? {
 		ShapeKind::Stairs => Some(&STAIRS[(state & 3) as usize]),
 		ShapeKind::Door => Some(&DOORS[(state & 0xF) as usize]),
@@ -372,36 +514,41 @@ pub fn draw_bounds(cell: u16) -> Option<SubBox> {
 	shape_of_cell(cell).map(|v| v.bounds)
 }
 
-/// The cell a whole OBJECT is anchored to, plus the box of best fit around all of it, in twelfths
-/// **of that anchor cell** — so a door hands back its LOWER half and a box two cells tall. **The
+/// The cell a whole OBJECT's box is measured from, plus the box of best fit around all of it, in
+/// twelfths **of that cell** — so a door hands back its LOWER half and a box two cells tall. **The
 /// caller must not assume the box fits inside one cell.** This is the crosshair outline's box: a
 /// door is one object wearing two cells, and boxing the half under the crosshair framed whichever
-/// panel you aimed at. The partner's geometry is DERIVED, so this stays pure in one cell value.
+/// panel you aimed at. Every partner's geometry is DERIVED, so this stays pure in one cell value.
+/// The measuring cell is the footprint's minimum corner (a rotated footprint can put parts on the
+/// anchor's negative side, and the box's twelfths are unsigned) — for a door, exactly the lower.
 pub fn object_bounds(cell: (i32, i32, i32), value: u16) -> ((i32, i32, i32), Option<SubBox>) {
 	let b = BlockType::from_id(cell_id(value));
-	if !b.is_door() {
+	if !is_multi_cell(b) {
 		return (cell, draw_bounds(value));
 	}
-	let state = cell_state(value);
-	let (facing, open, upper) = door_parts(state);
-	let half = |up: bool| shape_of(b, door_state(facing, open, up)).map(|v| v.bounds);
-	let (Some(lower), Some(top)) = (half(false), half(true)) else {
-		return (cell, draw_bounds(value));
-	};
-	// Both halves in the anchor's frame: the lower at its own height, the
-	// upper one whole cell up.
-	let mut u = lower;
-	for a in 0..3 {
-		let lift = if a == 1 { GRID } else { 0 };
-		u.min[a] = u.min[a].min(top.min[a] + lift);
-		u.max[a] = u.max[a].max(top.max[a] + lift);
+	let cells = object_cells(cell, value);
+	let corner = (
+		cells.iter().map(|&(c, _)| c.0).min().unwrap_or(cell.0),
+		cells.iter().map(|&(c, _)| c.1).min().unwrap_or(cell.1),
+		cells.iter().map(|&(c, _)| c.2).min().unwrap_or(cell.2),
+	);
+	let mut u: Option<SubBox> = None;
+	for (c, v) in cells {
+		let Some(part) = draw_bounds(v) else {
+			return (cell, draw_bounds(value));
+		};
+		let lift = [
+			(c.0 - corner.0) as u8 * GRID,
+			(c.1 - corner.1) as u8 * GRID,
+			(c.2 - corner.2) as u8 * GRID,
+		];
+		let acc = u.get_or_insert(SubBox::new([u8::MAX; 3], [0; 3]));
+		for (a, l) in lift.into_iter().enumerate() {
+			acc.min[a] = acc.min[a].min(part.min[a] + l);
+			acc.max[a] = acc.max[a].max(part.max[a] + l);
+		}
 	}
-	let anchor = if upper {
-		door_partner(cell, state)
-	} else {
-		cell
-	};
-	(anchor, Some(u))
+	(corner, u)
 }
 
 /// Whether a cell takes its per-block tint from the cell BELOW instead of its own: the upper half
@@ -453,232 +600,128 @@ pub fn craft_batch(b: BlockType) -> u32 {
 	}
 }
 
-// --- authored geometry ------------------------------------------------
+// --- variant building ---------------------------------------------------
 
-/// Canonical stairs, ascending toward +x: three plain steps of equal rise, each tread running the
-/// full depth of the cell. Two nosing/reveal detail passes were tried and reverted — an
-/// overhanging tread lip reads asymmetric, the top step having nothing overhanging it.
-const STAIR_BOXES: [SubBox; 3] = [
-	SubBox::new([0, 0, 0], [12, 4, 12]),
-	SubBox::new([4, 4, 0], [12, 8, 12]),
-	SubBox::new([8, 8, 0], [12, 12, 12]),
-];
+static TORCHES: LazyLock<[ShapeVariant; 1]> =
+	LazyLock::new(|| [build_variant(ShapeKind::Torch, 0)]);
 
-/// Canonical closed leaf (facing +x): a thin slab set back from the −x
-/// face, leaving room for the handle to protrude past either leaf face,
-/// covering the cell's whole elevation.
-const LEAF: SubBox = SubBox::new([1, 0, 0], [3, 12, 12]);
-
-/// Door handle (lower half only): a small square knob through the leaf
-/// near the latch stile, protruding past each leaf face.
-const HANDLE: SubBox = SubBox::new([0, 9, 9], [4, 11, 11]);
-
-/// Door hinges, one per half, mounted on the BACK of the closed leaf at
-/// the pivot edge. They ride the leaf through [`swing_open`] — the open
-/// pose lands them in the cell's corner, bridging the setback gap to
-/// whatever the open door hangs against — so the door and its knuckles
-/// read as one rigid rotation.
-const HINGE_LOWER: SubBox = SubBox::new([3, 1, 0], [4, 3, 1]);
-const HINGE_UPPER: SubBox = SubBox::new([3, 9, 0], [4, 11, 1]);
-
-/// Canonical upper-half panel: a divided-lite window laid out the same
-/// way in both axes (width = z here) — rails, stiles, and a cross mullion
-/// leaving four square lites. Overlaps are fine; the raster unions them.
-const DOOR_UPPER_BOXES: [SubBox; 6] = [
-	SubBox::new([1, 0, 0], [3, 2, 12]),   // bottom rail
-	SubBox::new([1, 10, 0], [3, 12, 12]), // top rail
-	SubBox::new([1, 2, 0], [3, 10, 2]),   // stile (hinge side)
-	SubBox::new([1, 2, 10], [3, 10, 12]), // stile (latch side)
-	SubBox::new([1, 2, 5], [3, 10, 7]),   // vertical mullion
-	SubBox::new([1, 5, 2], [3, 7, 10]),   // horizontal mullion
-];
-
-/// Slab fills by state, indexed by the size bit and then the anchor bit: one third or two thirds
-/// of the cell's height, anchored to its floor or to its ceiling. The one-third rise is
-/// deliberately one stair tread — the auto-step threshold serves both. A ceiling slab is the
-/// floor one mirrored about the cell's mid-plane, which keeps every pair the same volume, and so
-/// the same alchemy cost and the same dig.
-const SLAB_BOXES: [SubBox; 4] = [
-	SubBox::new([0, 0, 0], [12, 4, 12]),
-	SubBox::new([0, 0, 0], [12, 8, 12]),
-	SubBox::new([0, 8, 0], [12, 12, 12]),
-	SubBox::new([0, 4, 0], [12, 12, 12]),
-];
-
-/// The torch: one centered post, square in section and stopping short of the cell's top.
-/// Floor-mounted, stateless — wall mounting is a state nibble away when wanted. Small enough that
-/// auto-step walking OVER it reads fine. As slim as a CENTERED box gets on this grid (an odd
-/// width cannot straddle the middle), and it carries no head: a flare over the top read as a
-/// mallet, and the flame is the TEXTURE's business — `torch_side` paints its upper rows as glow.
-const TORCH_BOXES: [SubBox; 1] = [SubBox::new([5, 0, 5], [7, 10, 7])];
-
-/// A table: a full-footprint top on four corner legs. Stateless — a square top has no facing to
-/// lose, so tables pushed together read as one continuous surface rather than a grid of rotations
-/// that don't line up. The top is deliberately the cell's whole footprint, not inset: an inset
-/// top leaves a visible gap between adjacent tables at exactly the seam a player builds a long
-/// table across.
-const TABLE_BOXES: [SubBox; 5] = [
-	SubBox::new([0, 10, 0], [12, 12, 12]),
-	SubBox::new([1, 0, 1], [3, 10, 3]),
-	SubBox::new([9, 0, 1], [11, 10, 3]),
-	SubBox::new([1, 0, 9], [3, 10, 11]),
-	SubBox::new([9, 0, 9], [11, 10, 11]),
-];
-
-/// A chair, canonically BACKED toward +x: seat at mid-height, back rising from it, four legs.
-/// Placing uses the look direction unrotated, so a chair dropped while facing +x has its back
-/// away and its seat turned toward the placer — which is what you want when setting one at a
-/// table. The seat sits above `AUTO_STEP_MAX`, so a walk does not climb onto furniture.
-const CHAIR_BOXES: [SubBox; 6] = [
-	SubBox::new([2, 6, 2], [10, 8, 10]),
-	SubBox::new([8, 8, 2], [10, 12, 10]),
-	SubBox::new([2, 0, 2], [4, 6, 4]),
-	SubBox::new([8, 0, 2], [10, 6, 4]),
-	SubBox::new([2, 0, 8], [4, 6, 10]),
-	SubBox::new([8, 0, 8], [10, 6, 10]),
-];
-
-/// A bed, canonically HEADED toward +x: a mattress on a low frame with a raised pillow at the
-/// head end, so the facing is readable from across a room. One cell, not two — a horizontal pair
-/// is genuinely new machinery, since the door's pair is VERTICAL and `door_partner`,
-/// `object_bounds`, the place path's derived second cell and the server's assembled `writes` all
-/// special-case that axis. The long frame can arrive with the feature that justifies it.
-const BED_BOXES: [SubBox; 6] = [
-	SubBox::new([0, 3, 1], [12, 6, 11]),
-	SubBox::new([8, 6, 2], [11, 8, 10]),
-	SubBox::new([0, 0, 1], [2, 3, 3]),
-	SubBox::new([0, 0, 9], [2, 3, 11]),
-	SubBox::new([10, 0, 1], [12, 3, 3]),
-	SubBox::new([10, 0, 9], [12, 3, 11]),
-];
-
-static TORCHES: LazyLock<[ShapeVariant; 1]> = LazyLock::new(|| {
-	let boxes = TORCH_BOXES.to_vec();
-	let baked = bake(&boxes);
-	// Walked through like an open door — a torch is a fixture, not a
-	// wall — while the interact ray still finds it to dig.
-	[ShapeVariant {
-		collision: Vec::new(),
-		light: boxes.clone(),
-		interaction: boxes,
-		quads: baked.quads,
-		face_masks: baked.face_masks,
-		occludes_full: baked.occludes_full,
-		bounds: baked.bounds,
-		ramp: None,
-	}]
-});
-
-static TABLES: LazyLock<[ShapeVariant; 1]> = LazyLock::new(|| [furniture(&TABLE_BOXES, 0)]);
+static TABLES: LazyLock<[ShapeVariant; 1]> = LazyLock::new(|| [build_variant(ShapeKind::Table, 0)]);
 
 static CHAIRS: LazyLock<[ShapeVariant; 4]> =
-	LazyLock::new(|| Facing::ALL.map(|f| furniture(&CHAIR_BOXES, f as u8)));
+	LazyLock::new(|| Facing::ALL.map(|f| build_variant(ShapeKind::Chair, f as u8)));
 
 static BEDS: LazyLock<[ShapeVariant; 4]> =
-	LazyLock::new(|| Facing::ALL.map(|f| furniture(&BED_BOXES, f as u8)));
+	LazyLock::new(|| Facing::ALL.map(|f| build_variant(ShapeKind::Bed, f as u8)));
 
-/// One furniture variant: rotate the canonical boxes, bake, and let
-/// collision and the interact ray share them. Furniture has no swung
-/// pose and no ramp — the whole family is "solid where it is drawn".
-fn furniture(canonical: &[SubBox], k: u8) -> ShapeVariant {
-	let boxes = rotate_boxes(canonical, k);
-	let baked = bake(&boxes);
+static SLABS: LazyLock<[ShapeVariant; 4]> =
+	LazyLock::new(|| std::array::from_fn(|state| build_variant(ShapeKind::Slab, state as u8)));
+
+static STAIRS: LazyLock<[ShapeVariant; 4]> =
+	LazyLock::new(|| Facing::ALL.map(|f| build_variant(ShapeKind::Stairs, f as u8)));
+
+static DOORS: LazyLock<[ShapeVariant; 16]> =
+	LazyLock::new(|| std::array::from_fn(|state| build_variant(ShapeKind::Door, state as u8)));
+
+/// The authored boxes falling inside one footprint cell, clipped and
+/// translated to cell-local twelfths (authored order preserved — it is the
+/// overlap paint order). A box wholly outside the cell drops out.
+fn slice_cell(list: &[def::DefBox], co: (i32, i32, i32)) -> Vec<def::DefBox> {
+	let lo = [co.0 * G, co.1 * G, co.2 * G];
+	list.iter()
+		.filter_map(|b| {
+			let mut min = [0u8; 3];
+			let mut max = [0u8; 3];
+			for a in 0..3 {
+				let l = i32::from(b.sub.min[a]).max(lo[a]);
+				let h = i32::from(b.sub.max[a]).min(lo[a] + G);
+				if l >= h {
+					return None;
+				}
+				min[a] = (l - lo[a]) as u8;
+				max[a] = (h - lo[a]) as u8;
+			}
+			Some(def::DefBox {
+				sub: SubBox::new(min, max),
+				..b.clone()
+			})
+		})
+		.collect()
+}
+
+/// One role's boxes from a cell-local list, posed: filter, swing if open
+/// (BEFORE the facing rotation, so every facing opens with the same
+/// handedness), then rotate by k.
+fn role_boxes(
+	list: &[def::DefBox],
+	open: bool,
+	k: u8,
+	pick: impl Fn(def::Roles) -> bool,
+) -> Vec<SubBox> {
+	let picked: Vec<SubBox> = list
+		.iter()
+		.filter(|b| pick(b.roles))
+		.map(|b| b.sub)
+		.map(|b| if open { swing_open(&b) } else { b })
+		.collect();
+	rotate_boxes(&picked, k)
+}
+
+/// The posed visual boxes of a cell-local list WITH their texture triples,
+/// for the override-aware bake (triples are facing-invariant: top/bottom
+/// survive a y-rotation and all four sides share one slot).
+fn visual_pairs(list: &[def::DefBox], open: bool, k: u8) -> Vec<(SubBox, [Option<u16>; 3])> {
+	let visual: Vec<&def::DefBox> = list.iter().filter(|b| b.roles.visual).collect();
+	let posed = role_boxes(list, open, k, |r| r.visual);
+	posed
+		.into_iter()
+		.zip(visual)
+		.map(|(sub, b)| (sub, b.tex))
+		.collect()
+}
+
+/// Bake one (kind, state) variant from its loaded `.shape` definition:
+/// slice the state's footprint cell out of the authored volume, split by
+/// role, pose (the door's swing, then the facing rotation), bake the
+/// visual boxes into quads and bounds. An OPEN door keeps only its swung
+/// visual and interaction — collision and light go empty, on purpose.
+fn build_variant(kind: ShapeKind, state: u8) -> ShapeVariant {
+	let d = def::of(kind);
+	let l = state_layout(kind);
+	let (open, k) = match d.states {
+		def::StateModel::Door => {
+			let (f, open, _) = door_parts(state);
+			(open, f as u8)
+		}
+		def::StateModel::Facing => (false, state & 3),
+		_ => (false, 0),
+	};
+	let part = (state >> l.part_shift) & ((1 << l.part_bits()) - 1);
+	let list = slice_cell(d.state_boxes(state), part_offset(&l, part, 0));
+	let baked = bake_tex(&visual_pairs(&list, open, k));
+	let closed_role = |pick: fn(def::Roles) -> bool| {
+		if open {
+			Vec::new()
+		} else {
+			role_boxes(&list, false, k, pick)
+		}
+	};
 	ShapeVariant {
-		collision: boxes.clone(),
-		light: boxes.clone(),
-		interaction: boxes,
+		collision: closed_role(|r| r.collision),
+		light: closed_role(|r| r.light),
+		// The interact ray still finds an open door on its swung leaf.
+		interaction: role_boxes(&list, open, k, |r| r.interaction),
 		quads: baked.quads,
 		face_masks: baked.face_masks,
 		occludes_full: baked.occludes_full,
 		bounds: baked.bounds,
-		ramp: None,
+		ramp: d.ramp.then(|| Facing::from_bits(k)),
 	}
 }
 
-static SLABS: LazyLock<[ShapeVariant; 4]> = LazyLock::new(|| {
-	SLAB_BOXES.map(|b| {
-		let boxes = vec![b];
-		let baked = bake(&boxes);
-		ShapeVariant {
-			collision: boxes.clone(),
-			light: boxes.clone(),
-			interaction: boxes,
-			quads: baked.quads,
-			face_masks: baked.face_masks,
-			occludes_full: baked.occludes_full,
-			bounds: baked.bounds,
-			ramp: None,
-		}
-	})
-});
-
-static STAIRS: LazyLock<[ShapeVariant; 4]> = LazyLock::new(|| {
-	Facing::ALL.map(|f| {
-		let boxes = rotate_boxes(&STAIR_BOXES, f as u8);
-		let baked = bake(&boxes);
-		ShapeVariant {
-			collision: boxes.clone(),
-			light: boxes.clone(),
-			interaction: boxes,
-			quads: baked.quads,
-			face_masks: baked.face_masks,
-			occludes_full: baked.occludes_full,
-			bounds: baked.bounds,
-			ramp: Some(f),
-		}
-	})
-});
-
-static DOORS: LazyLock<[ShapeVariant; 16]> = LazyLock::new(|| {
-	std::array::from_fn(|state| {
-		let (facing, open, upper) = door_parts(state as u8);
-		let k = facing as u8;
-		// Closed canonical panel; the open pose swings 90° about the
-		// leaf's vertical pivot axis — a true rigid rotation, applied
-		// BEFORE the facing rotation so every facing opens with the same
-		// handedness.
-		let mut panel: Vec<SubBox> = if upper {
-			let mut p = DOOR_UPPER_BOXES.to_vec();
-			p.push(HINGE_UPPER);
-			p
-		} else {
-			vec![LEAF, HANDLE, HINGE_LOWER]
-		};
-		// Collision stays the uncut slab (the knob is cosmetic to
-		// physics); the interact ray also finds the protruding handle.
-		let mut slab = vec![LEAF];
-		let mut interact = if upper {
-			vec![LEAF]
-		} else {
-			vec![LEAF, HANDLE]
-		};
-		if open {
-			panel = panel.iter().map(swing_open).collect();
-			slab = slab.iter().map(swing_open).collect();
-			interact = interact.iter().map(swing_open).collect();
-		}
-		let panel = rotate_boxes(&panel, k);
-		let slab = rotate_boxes(&slab, k);
-		let interact = rotate_boxes(&interact, k);
-		let baked = bake(&panel);
-		ShapeVariant {
-			// Collision is always the UNCUT leaf (lites don't carve) —
-			// and nothing at all while open.
-			light: if open { Vec::new() } else { slab.clone() },
-			collision: if open { Vec::new() } else { slab },
-			// The interact ray still finds an open door on its swung leaf.
-			interaction: interact,
-			quads: baked.quads,
-			face_masks: baked.face_masks,
-			occludes_full: baked.occludes_full,
-			bounds: baked.bounds,
-			ramp: None,
-		}
-	})
-});
-
 /// Rotate boxes k × 90° CCW about +y: point (x, z) → (GRID − z, x).
-fn rotate_boxes(boxes: &[SubBox], k: u8) -> Vec<SubBox> {
+/// Public for the shape editor's facing preview; the registry's own
+/// variants ride it through `build_variant`.
+pub fn rotate_boxes(boxes: &[SubBox], k: u8) -> Vec<SubBox> {
 	let mut out: Vec<SubBox> = boxes.to_vec();
 	for _ in 0..(k & 3) {
 		out = out
@@ -799,8 +842,100 @@ fn neutral_axes(dir: Dir) -> (usize, usize) {
 	}
 }
 
+/// Bake with no texture overrides — every quad falls back to the block row.
+/// Live code always bakes through a def's texture pairs; the legacy pins
+/// and the full-cube convention test bake bare box lists.
+#[cfg(test)]
 fn bake(boxes: &[SubBox]) -> Baked {
-	let occ = rasterize(boxes);
+	let pairs: Vec<(SubBox, [Option<u16>; 3])> = boxes.iter().map(|&b| (b, [None; 3])).collect();
+	bake_tex(&pairs)
+}
+
+// --- editor preview -----------------------------------------------------
+
+/// Bake one footprint cell of an ARBITRARY authored list into a full
+/// variant, the exact pipeline the game runs on a `.shape` file — the
+/// editor's preview, paired with [`set_preview_override`].
+pub fn preview_variant(list: &[def::DefBox], cell_offset: (i32, i32, i32), k: u8) -> ShapeVariant {
+	let sliced = slice_cell(list, cell_offset);
+	let baked = bake_tex(&visual_pairs(&sliced, false, k));
+	ShapeVariant {
+		collision: role_boxes(&sliced, false, k, |r| r.collision),
+		light: role_boxes(&sliced, false, k, |r| r.light),
+		interaction: role_boxes(&sliced, false, k, |r| r.interaction),
+		quads: baked.quads,
+		face_masks: baked.face_masks,
+		occludes_full: baked.occludes_full,
+		bounds: baked.bounds,
+		ramp: None,
+	}
+}
+
+/// EDITOR-ONLY registry overrides: while any is set, `shape_of` answers it
+/// for that (block, state) before the shipped tables, so a sculpted work in
+/// progress renders through the game's own mesher as real world cells.
+/// Never used in a networked session — an override under `Player::tick`
+/// would diverge from the server. Each set leaks its variant (a dev tool's
+/// churn, not a player's). Off = one relaxed atomic load in `shape_of`.
+static PREVIEW_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static PREVIEW: std::sync::Mutex<Vec<((BlockType, u8), &'static ShapeVariant)>> =
+	std::sync::Mutex::new(Vec::new());
+
+/// Install (or replace) the preview variant one (block, state) answers.
+pub fn set_preview_override(b: BlockType, state: u8, v: ShapeVariant) {
+	let leaked: &'static ShapeVariant = Box::leak(Box::new(v));
+	let mut p = PREVIEW.lock().unwrap();
+	match p.iter_mut().find(|(key, _)| *key == (b, state)) {
+		Some(slot) => slot.1 = leaked,
+		None => p.push(((b, state), leaked)),
+	}
+	PREVIEW_ON.store(true, std::sync::atomic::Ordering::Release);
+}
+
+/// Drop every preview override (the shipped tables answer again).
+pub fn clear_preview_overrides() {
+	PREVIEW_ON.store(false, std::sync::atomic::Ordering::Release);
+	PREVIEW.lock().unwrap().clear();
+}
+
+#[inline]
+fn preview_of(b: BlockType, state: u8) -> Option<&'static ShapeVariant> {
+	if !PREVIEW_ON.load(std::sync::atomic::Ordering::Acquire) {
+		return None;
+	}
+	let p = PREVIEW.lock().unwrap();
+	p.iter()
+		.find(|(key, _)| *key == (b, state))
+		.map(|&(_, v)| v)
+}
+
+/// The texture-triple slot a quad direction samples — the same split
+/// `BlockType::texture` uses (top, bottom, everything else is side).
+#[inline]
+fn tex_slot(dir: Dir) -> usize {
+	match dir {
+		Dir::Top => 0,
+		Dir::Bottom => 2,
+		_ => 1,
+	}
+}
+
+fn bake_tex(boxes: &[(SubBox, [Option<u16>; 3])]) -> Baked {
+	let plain: Vec<SubBox> = boxes.iter().map(|&(b, _)| b).collect();
+	let occ = rasterize(&plain);
+	// Exposure comes from the UNION (interior faces between boxes still
+	// vanish); each filled sub-cell's texture comes from the LAST box that
+	// painted it — the overlap rule the .shape grammar documents.
+	let mut owner = vec![0u16; (G * G * G) as usize];
+	for (i, (b, _)) in boxes.iter().enumerate() {
+		for y in b.min[1]..b.max[1] {
+			for z in b.min[2]..b.max[2] {
+				for x in b.min[0]..b.max[0] {
+					owner[occ_idx(i32::from(x), i32::from(y), i32::from(z))] = i as u16;
+				}
+			}
+		}
+	}
 	let occ_at = |x: i32, y: i32, z: i32| -> bool {
 		if !(0..G).contains(&x) || !(0..G).contains(&y) || !(0..G).contains(&z) {
 			return false;
@@ -811,15 +946,17 @@ fn bake(boxes: &[SubBox]) -> Baked {
 	let mut face_masks = [FaceMask::EMPTY; 6];
 	for dir in DIRS {
 		let (ox, oy, oz) = dir.offset();
+		let slot = tex_slot(dir);
 		// Sub-cell layers along the normal axis; the face plane of layer
 		// L is at L (negative dirs) or L+1 (positive dirs).
 		for layer in 0..G {
 			let positive = ox + oy + oz > 0;
 			let q = if positive { layer + 1 } else { layer };
 			let boundary = q == 0 || q == G;
-			// Exposed faces of this layer as a (u, v) cell grid.
-			let mut grid = [[false; GU]; GU];
-			let mut any = false;
+			// Exposed faces of this layer as a (u, v) cell grid, each cell
+			// tagged with its owner's resolved layer for this dir.
+			let mut grid: [[Option<Option<u16>>; GU]; GU] = [[None; GU]; GU];
+			let mut values: Vec<Option<u16>> = Vec::new();
 			for a in 0..G {
 				for b in 0..G {
 					// (a, b) sweep the two non-normal axes.
@@ -833,9 +970,12 @@ fn bake(boxes: &[SubBox]) -> Baked {
 					if !occ_at(x, y, z) || occ_at(x + ox, y + oy, z + oz) {
 						continue;
 					}
+					let t = boxes[owner[occ_idx(x, y, z)] as usize].1[slot];
 					let (u, v) = uv_cell(dir, (x, y, z));
-					grid[v as usize][u as usize] = true;
-					any = true;
+					grid[v as usize][u as usize] = Some(t);
+					if !values.contains(&t) {
+						values.push(t);
+					}
 					if boundary {
 						let (na, nb) = neutral_axes(dir);
 						let p = [x, y, z];
@@ -843,44 +983,55 @@ fn bake(boxes: &[SubBox]) -> Baked {
 					}
 				}
 			}
-			if !any {
-				continue;
-			}
-			greedy_rects(&grid, |u0, v0, u1, v1| {
-				let corners = [
-					uv_pos(dir, q, u0, v0), // TL
-					uv_pos(dir, q, u1, v0), // TR
-					uv_pos(dir, q, u0, v1), // BL
-					uv_pos(dir, q, u1, v1), // BR
-				];
-				let uv = [
-					[u0 as u8, v0 as u8],
-					[u1 as u8, v0 as u8],
-					[u0 as u8, v1 as u8],
-					[u1 as u8, v1 as u8],
-				];
-				let rect = if boundary {
-					let (na, nb) = neutral_axes(dir);
-					let mut lo = [G; 3];
-					let mut hi = [0; 3];
-					for c in corners {
-						for i in 0..3 {
-							lo[i] = lo[i].min(i32::from(c[i]));
-							hi[i] = hi[i].max(i32::from(c[i]));
-						}
+			// One greedy pass per distinct texture (deterministic order:
+			// the row default first, then layers ascending) — a quad never
+			// spans two textures. Override-free shapes have ONE value, so
+			// this is the old single pass, bit for bit.
+			values.sort_unstable();
+			for tex in values {
+				let mut sub = [[false; GU]; GU];
+				for v in 0..GU {
+					for u in 0..GU {
+						sub[v][u] = grid[v][u] == Some(tex);
 					}
-					[lo[na] as u8, lo[nb] as u8, hi[na] as u8, hi[nb] as u8]
-				} else {
-					[0; 4]
-				};
-				quads.push(ShapeQuad {
-					dir,
-					corners,
-					uv,
-					boundary,
-					rect,
+				}
+				greedy_rects(&sub, |u0, v0, u1, v1| {
+					let corners = [
+						uv_pos(dir, q, u0, v0), // TL
+						uv_pos(dir, q, u1, v0), // TR
+						uv_pos(dir, q, u0, v1), // BL
+						uv_pos(dir, q, u1, v1), // BR
+					];
+					let uv = [
+						[u0 as u8, v0 as u8],
+						[u1 as u8, v0 as u8],
+						[u0 as u8, v1 as u8],
+						[u1 as u8, v1 as u8],
+					];
+					let rect = if boundary {
+						let (na, nb) = neutral_axes(dir);
+						let mut lo = [G; 3];
+						let mut hi = [0; 3];
+						for c in corners {
+							for i in 0..3 {
+								lo[i] = lo[i].min(i32::from(c[i]));
+								hi[i] = hi[i].max(i32::from(c[i]));
+							}
+						}
+						[lo[na] as u8, lo[nb] as u8, hi[na] as u8, hi[nb] as u8]
+					} else {
+						[0; 4]
+					};
+					quads.push(ShapeQuad {
+						dir,
+						corners,
+						uv,
+						tex,
+						boundary,
+						rect,
+					});
 				});
-			});
+			}
 		}
 	}
 	let occludes_full = std::array::from_fn(|d| face_masks[d].is_full());
@@ -888,7 +1039,7 @@ fn bake(boxes: &[SubBox]) -> Baked {
 		quads,
 		face_masks,
 		occludes_full,
-		bounds: union_bounds(boxes),
+		bounds: union_bounds(&plain),
 	}
 }
 

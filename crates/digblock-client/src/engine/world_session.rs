@@ -480,18 +480,14 @@ impl Engine {
 		self.ui.menu.set_world_list(rows);
 	}
 
-	/// Hold the world after an arrival — a join or a teleport — until the server reports the
-	/// journaled columns around the destination sent (`NetEvent::AreaReady`), or the wait runs out.
-	/// Offline arrivals never hold, guaranteed by the CALL SITES: both are `pump_net` arms and an
-	/// offline session produces no `NetEvent`s. Never guard this on `self.session.client` —
-	/// `pump_net` owns it by value for the drain, so `is_some()` reads false on both hold paths.
-	/// Start the walkthrough for this world entry, if this session
-	/// should have one: offline local play, interactively, a character
-	/// with no XP at all (every fresh character gets the walkthrough;
-	/// the dig step's own XP award is what retires it for this one),
-	/// with the settings row not switched off — or whatever
-	/// `DIG_TUTORIAL` insists. Runs after the save's skills are adopted,
-	/// which is what makes the zero-XP question answerable.
+	/// Start the walkthrough for this world entry, local save or server
+	/// join alike, if this session should have one: interactively, a
+	/// character with no XP at all (every fresh character gets the
+	/// walkthrough; the dig step's own XP award is what retires it for
+	/// this one), with the settings row not switched off — or whatever
+	/// `DIG_TUTORIAL` insists. Runs after the entry's skills are adopted
+	/// (the save's, or the join's `Skills`), which is what makes the
+	/// zero-XP question answerable.
 	pub(super) fn arm_tutorial(&mut self) {
 		match self.config.debug_tutorial {
 			Some(crate::tutorial::TutorialOverride::Off) => return,
@@ -540,7 +536,7 @@ impl Engine {
 		}
 	}
 
-	/// Arm a nudge-armed chapter (siphon, wisp): offline local play,
+	/// Arm a nudge-armed chapter (siphon, wisp), on a server or offline:
 	/// interactively, the settings row and the dev override both
 	/// respected. No XP gate here — each nudge already fires only for a
 	/// player new to its subject, which is its own "still new".
@@ -551,8 +547,7 @@ impl Engine {
 		) {
 			return;
 		}
-		if self.session.client.is_none()
-			&& self.config.show_tutorial
+		if self.config.show_tutorial
 			&& self.config.interactive
 			&& !self.config.bench
 			&& self.config.debug_screen.is_none()
@@ -561,6 +556,11 @@ impl Engine {
 		}
 	}
 
+	/// Hold the world after an arrival — a join or a teleport — until the server reports the
+	/// journaled columns around the destination sent (`NetEvent::AreaReady`), or the wait runs out.
+	/// Offline arrivals never hold, guaranteed by the CALL SITES: both are `pump_net` arms and an
+	/// offline session produces no `NetEvent`s. Never guard this on `self.session.client` —
+	/// `pump_net` owns it by value for the drain, so `is_some()` reads false on both hold paths.
 	pub(super) fn begin_arrival_hold(&mut self) {
 		self.save
 			.arrival_hold

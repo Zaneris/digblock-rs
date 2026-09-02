@@ -1,5 +1,5 @@
 //! The siphon chapter through the engine: the affordability nudge arms
-//! it (offline, interactive), owning a siphon advances the craft step
+//! it (interactive, server or offline), owning a siphon advances the craft step
 //! off the engine's own poll, and the siphon actually in hand finishes
 //! the chapter. The cinematic itself is camrig's business; here only
 //! the state machine and the wiring around it are on trial.
@@ -116,10 +116,9 @@ fn the_nudge_arms_the_chapter_and_the_pack_walks_it() {
 	assert!(!engine.tutorial.is_running(), "chapter finished");
 }
 
-/// The nudge on a server session arms nothing: the chapter is offline
-/// onboarding, and a second nudge after a skip stays quiet too.
+/// A skip is final: a second nudge after one stays quiet.
 #[test]
-fn the_chapter_respects_the_offline_gate_and_a_skip() {
+fn the_chapter_respects_a_skip() {
 	let mut engine = affordable_engine();
 	engine.nudge_siphon();
 	assert!(engine.tutorial.is_running());
