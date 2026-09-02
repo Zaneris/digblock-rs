@@ -7,11 +7,12 @@
 //! craft creates essence, since [`crate::worldgen::nodes`] holds the only
 //! faucet and this module only ever debits; and the essence tool costs no
 //! essence, ever, or the currency deadlocks on the first world where nobody
-//! owns a siphon. Structural costs DERIVE from the material × shape grid; the
-//! functional roster is hand-priced, because function has no volume.
+//! owns a siphon. Structural costs DERIVE from the refinement chains: a cube
+//! is its parent cube plus a catalyst, a shape is its own cube plus a pinch,
+//! raw matter shapes for free. The functional roster is hand-priced, because
+//! function has no volume.
 
-use crate::block::{BlockType, Essence};
-use crate::material::cost_split;
+use crate::block::{BlockType, Essence, ShapeFamily};
 
 /// The most cost lines — feedstock and essence together — any one craft
 /// carries. A screen drawing a price as chips sizes its icon budget from
@@ -193,23 +194,25 @@ pub fn functional_ideal(b: BlockType) -> Option<&'static [(Essence, u32)]> {
 		// empty splits stay in this table because the twin pin reads it:
 		// a level and a price are one decision.
 		B::Bucket | B::EssenceSiphon => &[],
-		B::Torch => &[(E::Vitae, 2), (E::Terra, 2)],
+		B::Torch => &[(E::Vitae, 2), (E::Terra, 3)],
 		// The game's biggest sink, and the only thing that makes Ferrum a
-		// goal rather than a number. The Aether line is what
+		// goal rather than a number: about three duskstone finds and three
+		// glowvein finds at the level it opens. The Aether line is what
 		// keeps Aetherock worth reaching for before the lamps arrive.
-		B::ResonantPick => &[(E::Ferrum, 240), (E::Terra, 60), (E::Aether, 12)],
-		B::Lantern => &[(E::Ferrum, 8), (E::Terra, 6)],
-		B::Aetherlamp => &[(E::Ferrum, 12), (E::Aether, 3)],
-		B::MastersSigil => &[(E::Aether, 99)],
+		B::ResonantPick => &[(E::Ferrum, 480), (E::Terra, 120), (E::Aether, 24)],
+		B::Lantern => &[(E::Ferrum, 12), (E::Terra, 8)],
+		B::Aetherlamp => &[(E::Ferrum, 18), (E::Aether, 5)],
+		// Priced above a run of crystal, so it stays the last line.
+		B::MastersSigil => &[(E::Aether, 360)],
 		// Furniture is a timber feedstock and a living catalyst — chosen,
 		// not measured: a chair is mostly air and still costs a chair.
-		B::Chair => &[(E::Vitae, 2)],
-		B::Table => &[(E::Vitae, 2)],
+		B::Chair => &[(E::Vitae, 3)],
+		B::Table => &[(E::Vitae, 4)],
 		// The bed is the catalog's first genuinely cross-family price:
 		// a timber frame AND the bedding on it. Unda is the reagent with
 		// the fewest sources — the springstone node is the whole of it —
 		// which is what makes diving for one worth doing.
-		B::Bed => &[(E::Vitae, 4), (E::Unda, 6)],
+		B::Bed => &[(E::Vitae, 6), (E::Unda, 8)],
 		_ => return None,
 	})
 }
@@ -240,11 +243,11 @@ pub fn functional_feedstock(b: BlockType) -> &'static [(BlockType, u32)] {
 	}
 }
 
-/// Feedstock lines for anything craftable — the block half of a price.
-/// A grid item consumes ONE cube of its material's feedstock (see
-/// [`crate::material::Material::feedstock`] and
-/// [`crate::shapes::craft_batch`], which says how many pieces that cube
-/// cuts into); functional items carry their hand-set lines.
+/// Feedstock lines for anything craftable — the block half of a price. A CUBE consumes one cube
+/// of its parent ([`crate::material::Material::refined_from`]); a SHAPE is cut from its own
+/// material's cube, as many as the form takes ([`ShapeFamily::batch`]); functional items carry
+/// their hand-set lines. The cube a shape names may be the world's (a dirt slab, a rubble stair)
+/// or the bench's (a stone stair), which is the whole shape of the chain.
 pub fn craft_feedstock(b: BlockType) -> Vec<(BlockType, u32)> {
 	if !b.is_bench_only() {
 		return Vec::new();
@@ -252,17 +255,31 @@ pub fn craft_feedstock(b: BlockType) -> Vec<(BlockType, u32)> {
 	if functional_ideal(b).is_some() {
 		return functional_feedstock(b).to_vec();
 	}
-	b.grid_cell()
-		.and_then(|(m, _)| m.feedstock())
-		.map(|f| vec![(f, 1)])
-		.unwrap_or_default()
+	let Some((m, s)) = b.grid_cell() else {
+		return Vec::new();
+	};
+	match s {
+		ShapeFamily::Block => m.refined_from().map(|p| vec![(p, 1)]).unwrap_or_default(),
+		_ => own_cube(m)
+			.map(|cube| vec![(cube, s.batch().0)])
+			.unwrap_or_default(),
+	}
+}
+
+/// The cube a shape of `m` is cut from, if a player can ever hold one:
+/// the world hands it out, or the bench makes it.
+fn own_cube(m: crate::material::Material) -> Option<BlockType> {
+	let cube = BlockType::from_grid(m, ShapeFamily::Block)?;
+	(!cube.is_bench_only() || m.refine_units().is_some()).then_some(cube)
 }
 
 /// Ideal (pre-waste) craft cost lines for anything craftable. `None` = not craftable, while EMPTY
 /// is a craftable item whose whole price is feedstock ([`craft_feedstock`]) — `Some(vec![])` and
 /// `None` mean different things, which is why callers gate on this and not on the lines. Gated on
 /// [`BlockType::is_bench_only`] first, the twin of the same gate in [`crate::unlock::craft`], and
-/// derived for every structural block: the material's whole-cube split prorated UP to the shape.
+/// derived for every structural block from its chain: a cube costs its material's refinement, a
+/// shape costs its material's pinch ([`crate::material::Material::shape_units`], nothing for raw
+/// matter), which is what makes the raw shapes the vessels' kind of recipe — feedstock alone.
 pub fn craft_ideal(b: BlockType) -> Option<Vec<(Essence, u32)>> {
 	if !b.is_bench_only() {
 		return None;
@@ -271,15 +288,12 @@ pub fn craft_ideal(b: BlockType) -> Option<Vec<(Essence, u32)>> {
 		return Some(lines.to_vec());
 	}
 	let (m, s) = b.grid_cell()?;
-	let units = m.craft_units()?;
-	Some(match m.feedstock() {
-		// A feedstock recipe consumes a whole cube of matter per craft
-		// whatever shape it cuts (`craft_batch` says how many pieces), so
-		// its catalyst is the cube's own, never prorated by the shape.
-		Some(_) => units.to_vec(),
-		// Essence-only substances keep the volume rule: the shape's share
-		// of a cube's worth of the currency.
-		None => cost_split(units, s.units()),
+	Some(match s {
+		ShapeFamily::Block => m.refine_units()?.to_vec(),
+		_ => {
+			own_cube(m)?;
+			m.shape_units()
+		}
 	})
 }
 
@@ -322,30 +336,56 @@ pub fn base_pace_ticks(level: u32) -> u32 {
 /// a whole plain block's worth at the bench, kept as the scale's anchor.
 const REF_WORTH: u32 = 9;
 
-/// What one feedstock BLOCK contributes to an item's worth — the same
-/// figure a plain block's substance was always worth at the bench, so a
-/// price paid in matter takes the time the matter takes.
-const FEEDSTOCK_WORTH: u32 = 9;
+/// What a cube the WORLD handed out embodies, in units — the same figure a
+/// plain block's substance was always worth at the bench, so a price paid
+/// in matter takes the time the matter takes. A cube the bench made
+/// embodies its own craft instead ([`embodied_units`]).
+const RAW_WORTH: u32 = 9;
 
 /// Floor on the pace, in ticks. The cheapest crafts are worth a fraction
 /// of the reference, and a strictly proportional pace would run them many
 /// times a second, which is a stream of wire ops rather than a bench.
 const MIN_PACE_TICKS: u32 = 6;
 
-/// What ONE craft of `item` is worth at the bench — a fixed fraction of its ideal (pre-waste)
-/// cost, essence and feedstock together. Zero for anything with no recipe. Pre-waste on purpose,
-/// which is what makes it a property of the ITEM rather than of the player: two masons at
-/// different levels pay different prices for the same stair and spend the same time making it.
+/// What ONE craft of `item` EMBODIES, in units: its ideal essence plus what its feedstock
+/// embodied in turn — a world-handed cube counts [`RAW_WORTH`], a bench-made one carries its own
+/// craft's units per piece, so a polished slab is worth the rubble, the three catalysts and the
+/// cut that went into it. Zero for anything with no recipe. Memoized, since the bench bucket asks
+/// every tick; the chain pin bounds the recursion.
+fn embodied_units(item: BlockType) -> u32 {
+	static TABLE: std::sync::OnceLock<Vec<u32>> = std::sync::OnceLock::new();
+	fn embodied(b: BlockType, depth: u32) -> u32 {
+		let Some(lines) = craft_ideal(b) else {
+			return 0;
+		};
+		assert!(
+			depth < 8,
+			"{b:?}: a feedstock chain that never reaches the world"
+		);
+		let essence: u32 = lines.iter().map(|&(_, n)| n).sum();
+		let matter: u32 = craft_feedstock(b)
+			.iter()
+			.map(|&(f, n)| {
+				let per_piece = if f.is_bench_only() && craft_ideal(f).is_some() {
+					embodied(f, depth + 1).div_ceil(crate::shapes::craft_batch(f))
+				} else {
+					RAW_WORTH
+				};
+				n * per_piece
+			})
+			.sum();
+		essence + matter
+	}
+	let table = TABLE.get_or_init(|| BlockType::ALL.into_iter().map(|b| embodied(b, 0)).collect());
+	table[item as usize]
+}
+
+/// What ONE craft of `item` is worth at the bench — a fixed fraction of what it embodies
+/// ([`embodied_units`]). Zero for anything with no recipe. Pre-waste on purpose, which is what
+/// makes it a property of the ITEM rather than of the player: two masons at different levels pay
+/// different prices for the same stair and spend the same time making it.
 pub fn craft_worth(item: BlockType) -> u32 {
-	let Some(lines) = craft_ideal(item) else {
-		return 0;
-	};
-	let essence: u32 = lines.iter().map(|&(_, n)| n).sum();
-	let matter: u32 = craft_feedstock(item)
-		.iter()
-		.map(|&(_, n)| n * FEEDSTOCK_WORTH)
-		.sum();
-	(essence + matter).div_ceil(3)
+	embodied_units(item).div_ceil(3)
 }
 
 /// Bench TRANSMUTATION pace in sim ticks for ONE `item` at `level`. An instant craft is the last

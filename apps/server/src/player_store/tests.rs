@@ -264,12 +264,19 @@ fn every_format_version_still_reads() {
 		bytes.extend_from_slice(&1u32.to_le_bytes());
 		bytes.extend_from_slice(&device(7));
 		// Two essence pairs — a common balance and an Aether one — so
-		// the §14 reset below has something to bite on.
-		bytes.push(2);
+		// the §14 reset below has something to bite on, and one pair on
+		// a retired crest's id, which the raw shapes reuse.
+		bytes.push(3);
 		bytes.extend_from_slice(&digblock_core::inventory::SUB_WIRE_FLAG.to_le_bytes());
 		bytes.extend_from_slice(&500u32.to_le_bytes());
 		bytes.extend_from_slice(&(digblock_core::inventory::SUB_WIRE_FLAG | 4).to_le_bytes());
 		bytes.extend_from_slice(&7u32.to_le_bytes());
+		bytes.extend_from_slice(
+			&digblock_core::block::BlockType::REUSED_CREST_IDS
+				.start()
+				.to_le_bytes(),
+		);
+		bytes.extend_from_slice(&1u32.to_le_bytes());
 		if version >= 2 {
 			bytes.push(LAYOUT_ABSENT);
 		}
@@ -335,6 +342,15 @@ fn every_format_version_still_reads() {
 				assert_eq!(flora, 500, "v{version}: current records keep theirs");
 			}
 			assert_eq!(aether, 7, "v{version}: Aether survives either way");
+			// The crest purge: a record from before the raw shapes reused
+			// the crests' ids carried a crest there, and it drops; a record
+			// written since really does hold the slab.
+			let slab = r.inventory.count(digblock_core::block::BlockType::DirtSlab);
+			if version < FIRST_RAW_SHAPES_VERSION {
+				assert_eq!(slab, 0, "v{version}: a crest id drops on read");
+			} else {
+				assert_eq!(slab, 1, "v{version}: the raw shape reads as itself");
+			}
 			// The Arcana wind-back: a total earned while first arrivals
 			// paid a milestone is not a total this ladder can produce,
 			// so it goes to nothing — and takes no other skill with it.

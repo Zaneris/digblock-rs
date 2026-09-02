@@ -26,7 +26,7 @@ impl GiDraw {
 			&gi.bytes[..],
 			wgpu::TexelCopyBufferLayout {
 				offset: 0,
-				bytes_per_row: Some(16),
+				bytes_per_row: Some(16 * digblock_core::gi::BYTES_PER_CELL as u32),
 				rows_per_image: Some(16),
 			},
 			wgpu::Extent3d {
@@ -74,15 +74,15 @@ impl GiDraw {
 		let list: Vec<_> = gi
 			.emitters
 			.iter()
-			.map(|&(x, y, z, class)| {
-				let o = digblock_core::gi::light_origin(class);
+			.map(|e| {
+				let o = digblock_core::gi::light_origin(e.cover);
 				Emitter {
 					pos: [
-						world.0 + f32::from(x) + o[0],
-						world.1 + f32::from(y) + o[1],
-						world.2 + f32::from(z) + o[2],
+						world.0 + f32::from(e.at[0]) + o[0],
+						world.1 + f32::from(e.at[1]) + o[1],
+						world.2 + f32::from(e.at[2]) + o[2],
 					],
-					class,
+					class: e.look,
 					// Never overridden: a placed torch's level and tint are
 					// its row's, and every copy of it in the world agrees
 					// by construction.
@@ -148,7 +148,7 @@ impl GiDraw {
 				c[av] += span_v as f32 * 0.5;
 				Emitter {
 					pos: c,
-					class: digblock_core::gi::gi_class(id),
+					class: digblock_core::gi::gi_look(id),
 					// A vein's brightness and colour are its tier's, the
 					// same in every hand and every wall — so both come from
 					// the LUT row and neither rides the entry.

@@ -20,47 +20,73 @@ fn gi_lateral_max(side: f32) -> f32 {
 	return side * 0.5 - 1.0;
 }
 
-// Ray vs the box cover of a PARTIAL cell over the span [t0, t1] inside `cell`. `bx` is the LUT
-// entry's zw pair, one word per box packing min and max corner in twelfths (`core::gi::pack_box`
-// packs it, `box_pack_matches_the_shader_decode` pins the two; an empty word means no box).
-// `def_axis` answers for a ray already inside the lateral bounds. Returns (hit t, axis), t < 0
-// for a miss. Here, not in gi_common: a partial cell must block probe and sun rays identically.
-fn gi_boxes_hit(o: vec3f, dir: vec3f, cell: vec3i, t0: f32, t1: f32, bx: vec2u, def_axis: u32) -> vec2f {
-	var best = vec2f(-1.0, 0.0);
+// Ray vs the BOUNDS of a PARTIAL cell's cover over the span [t0, t1] inside `cell`: the cheap
+// reject ahead of the twelfths march (gi_common.wgsl's `gi_cover_march`, its twin in
+// gi_probe.wgsl). `word` packs min and max corner in twelfths (`core::gi::pack_box` packs it,
+// `box_pack_matches_the_shader_decode` pins the two; an empty word means no box at all).
+// `def_axis` answers for a ray already inside the bounds. Returns (entry t, exit t, entry
+// axis), entry > exit for a miss. Here, not in gi_common: a partial cell must block probe and
+// sun rays identically.
+fn gi_box_span(o: vec3f, dir: vec3f, cell: vec3i, t0: f32, t1: f32, word: u32, def_axis: u32) -> vec3f {
+	if word == 0u {
+		return vec3f(1.0, 0.0, f32(def_axis));
+	}
 	// An axis with no motion cannot bound t. The epsilon's sign is arbitrary: an origin inside
 	// the slab gets planes at ±huge (no constraint), one outside gets both huge with one sign
 	// (empty interval), so containment falls out either way with no NaN from the 0 × inf a
 	// plain 1/dir would produce. The sun ray lives at dir.z == 0 permanently, so this is the
 	// common case, not a corner.
 	let d = select(dir, vec3f(1e-6), abs(dir) < vec3f(1e-6));
-	for (var i = 0; i < 2; i++) {
-		let p = select(bx.x, bx.y, i == 1);
-		if p == 0u {
-			continue;
-		}
-		let bmin = vec3u(p, p >> 4u, p >> 8u) & vec3u(0xfu);
-		let bmax = vec3u(p >> 12u, p >> 16u, p >> 20u) & vec3u(0xfu);
-		let lo = vec3f(cell) + vec3f(bmin) / 12.0;
-		let hi = vec3f(cell) + vec3f(bmax) / 12.0;
-		let ta = (lo - o) / d;
-		let tb = (hi - o) / d;
-		let near = min(ta, tb);
-		let far = max(ta, tb);
-		let tmin = max(max(near.x, near.y), max(near.z, t0));
-		let tmax = min(min(far.x, far.y), min(far.z, t1));
-		if tmin <= tmax && (best.x < 0.0 || tmin < best.x) {
-			var axis = def_axis;
-			if tmin == near.x {
-				axis = 0u;
-			} else if tmin == near.y {
-				axis = 1u;
-			} else if tmin == near.z {
-				axis = 2u;
-			}
-			best = vec2f(tmin, f32(axis));
-		}
+	let bmin = vec3u(word, word >> 4u, word >> 8u) & vec3u(0xfu);
+	let bmax = vec3u(word >> 12u, word >> 16u, word >> 20u) & vec3u(0xfu);
+	let lo = vec3f(cell) + vec3f(bmin) / GI_SUB;
+	let hi = vec3f(cell) + vec3f(bmax) / GI_SUB;
+	let ta = (lo - o) / d;
+	let tb = (hi - o) / d;
+	let near = min(ta, tb);
+	let far = max(ta, tb);
+	let tmin = max(max(near.x, near.y), max(near.z, t0));
+	let tmax = min(min(far.x, far.y), min(far.z, t1));
+	var axis = def_axis;
+	if tmin == near.x {
+		axis = 0u;
+	} else if tmin == near.y {
+		axis = 1u;
+	} else if tmin == near.z {
+		axis = 2u;
 	}
-	return best;
+	return vec3f(tmin, tmax, f32(axis));
+}
+
+// The twelfths grid inside one cell. A cover's mask is one bit per sub-cell, and the marches
+// cross it with the SAME stepper as the cell grid: positions scaled by GI_SUB, `dir`, `inv` and
+// `step_dir` untouched, so the sub-ray's t is in twelfths along the ray (world t = t_in + t/12).
+const GI_SUB = 12.0;
+// Most sub-cells one ray can cross inside a cell: 3 * 12 - 2 = 34.
+const GI_SUB_STEPS = 36;
+
+// Seed the sub-cell DDA at the world point `o + dir * t_in` inside `cell`, nudged along the
+// ray so a point exactly on a twelfth plane — every cell-face entry is one — floors INTO the
+// cell. The clamp catches the residual corner case, which at worst tests one edge sub-cell
+// of THIS cell and never a neighbour's bit. A hit in the first sub-cell wears `def_axis`.
+fn gi_sub_init(o: vec3f, dir: vec3f, cell: vec3i, t_in: f32, inv: vec3f, def_axis: u32) -> GiRay {
+	let q = (o + dir * t_in - vec3f(cell)) * GI_SUB + dir * 1e-3;
+	var s = gi_ray_init(q, dir, inv);
+	s.cell = clamp(s.cell, vec3i(0), vec3i(11));
+	s.axis = def_axis;
+	return s;
+}
+
+// The sub-ray has left its cell.
+fn gi_sub_outside(c: vec3i) -> bool {
+	return any(c < vec3i(0)) || any(c > vec3i(11));
+}
+
+// A sub-cell's bit in the cover mask — `core::shapes::occ_idx`'s order, pinned by
+// `mask_bits_match_the_shader_decode` on the CPU side and read back out of this source by
+// the client's `the_mask_bit_order_matches_the_shader`.
+fn gi_sub_bit(c: vec3i) -> u32 {
+	return u32((c.y * 12 + c.z) * 12 + c.x);
 }
 
 struct GiRay {
@@ -165,8 +191,8 @@ fn lcg_next(state: ptr<function, u32>) -> f32 {
 }
 
 // The slack every stop-short margin carries over its own exact bound — the amount by which a
-// ray must miss a surface it is allowed to reach, given that every march STEPS before it
-// tests and a boundary lands exactly on a cell face.
+// ray must miss a surface it is allowed to reach, given that every march tests a whole cell
+// only after stepping into it and a boundary lands exactly on a cell face.
 const GI_LIGHT_SLACK = 0.035;
 
 // How far short of an emitter a shadow ray must stop so the emitter's own cell can never
@@ -244,7 +270,8 @@ fn gi_light_margin_of(l: vec4f) -> f32 {
 	// the rock it belongs to, with air in front, so there is nothing between the shading point
 	// and the light to skip — and skipping a cell's worth would let a seam light through the
 	// wall it is set into. All it wants is the slack every stop-short bound wants, enough that
-	// a march stepping before it tests cannot register the emitting cell it is about to touch.
+	// a march that tests whole cells only after stepping into them cannot register the
+	// emitting cell it is about to touch.
 	if (bitcast<u32>(l.w) & GI_LIGHT_QUAD) != 0u {
 		return GI_LIGHT_SLACK;
 	}

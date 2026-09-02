@@ -83,10 +83,19 @@ pub(super) struct EditorState {
 	status: String,
 	/// Worst per-cell baked quad count of the last preview.
 	quads_worst: usize,
+	/// Ramps and folded triangles in the worst variant, for the HUD.
+	ramps_worst: usize,
+	tris_worst: usize,
 	ctrl: bool,
 	shift: bool,
 	prev_dig: bool,
-	preview_dirty: bool,
+	pub(super) preview_dirty: bool,
+	/// Cover-table entries the last preview rebuild owes the GPU, one per
+	/// footprint part (`gi::preview_cover_slot`): the sculpt's own light
+	/// boxes, so it shades and self-shadows as itself rather than as the
+	/// chair whose registry entry it borrows. Flushed where the device is
+	/// in hand (`editor_flush_covers`), since the rebuild runs without it.
+	pub(super) pending_covers: Vec<(u8, Option<digblock_core::gi::Cover>)>,
 }
 
 impl EditorState {
@@ -107,10 +116,13 @@ impl EditorState {
 			naming: None,
 			status: String::from("shape editor: [ ] pick file, Enter load, Ctrl+S save"),
 			quads_worst: 0,
+			ramps_worst: 0,
+			tris_worst: 0,
 			ctrl: false,
 			shift: false,
 			prev_dig: false,
 			preview_dirty: true,
+			pending_covers: Vec::new(),
 		}
 	}
 
@@ -297,13 +309,24 @@ impl Engine {
 		// All four chair states get an override: live parts their slice,
 		// the rest empty — a stale variant from a larger footprint would
 		// otherwise keep drawing.
+		ed.pending_covers.clear();
 		for p in 0..4u8 {
 			let v = if p < parts {
 				shapes::preview_variant(&list, ed.doc.part_cell(p), k)
 			} else {
 				shapes::preview_variant(&[], (0, 0, 0), 0)
 			};
-			ed.quads_worst = ed.quads_worst.max(v.quads.len());
+			if v.quads.len() > ed.quads_worst || p == 0 {
+				ed.quads_worst = v.quads.len();
+				ed.ramps_worst = v.quads.iter().filter(|q| q.is_ramp()).count();
+				ed.tris_worst = v.quads.iter().filter(|q| q.is_tri()).count();
+			}
+			// The GI sees the sculpt through its part's rewritable cover
+			// slot, which `gi_classes` names for an overridden cell.
+			ed.pending_covers.push((
+				digblock_core::gi::preview_cover_slot(p),
+				digblock_core::gi::Cover::from_light_boxes(&v.light),
+			));
 			shapes::set_preview_override(BlockType::Chair, p, v);
 		}
 		// Re-lay the world cells (footprint or facing may have moved).
@@ -341,8 +364,12 @@ impl Engine {
 			}
 		}
 		// Same-value writes no-op in set_cell, so force the remesh the
-		// override swap needs.
+		// override swap needs — and the relight: the cells' cover BYTES
+		// are stable per part, only the table entries behind them moved.
 		self.pipeline.remesh_near(origin, 1);
+		for &(c, _) in &cells {
+			self.pipeline.touch_gi(c.0, c.1, c.2);
+		}
 		if let Some(ed) = self.editor.as_mut() {
 			ed.preview_dirty = !all_landed;
 		}
@@ -767,9 +794,19 @@ impl Engine {
 			),
 			(
 				format!(
-					"quads {} / {}{}",
+					"quads {} / {}{}{}{}",
 					ed.quads_worst,
 					digblock_core::shapes::MAX_SHAPE_QUADS,
+					if ed.ramps_worst > 0 {
+						format!("  ramps {}", ed.ramps_worst)
+					} else {
+						String::new()
+					},
+					if ed.tris_worst > 0 {
+						format!("  tris {}", ed.tris_worst)
+					} else {
+						String::new()
+					},
 					if over { "  OVER CAP" } else { "" }
 				),
 				over,

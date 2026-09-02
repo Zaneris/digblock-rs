@@ -34,12 +34,11 @@ pub(crate) use frame_types::{FrameScene, FrameUniforms, NameTag, RenderConfig};
 
 const NORMAL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Uint;
 
-/// Worst-case quads per chunk mesh: a solid chunk of the busiest shaped
-/// variant (every template quad emits when neighbors don't cover them).
-/// Dwarfs the old full-block checkerboard bound. The shared index buffer
-/// this sizes is allocated once and stays small enough for mobile;
-/// `upload_chunk` guards the cap instead of trusting it.
-const MAX_QUADS: usize = 4096 * digblock_core::shapes::MAX_SHAPE_QUADS;
+/// Entries per chunk mesh stream the shared index buffer covers. The
+/// per-chunk slot budget (`digblock_core::budget`) keeps every mesh under
+/// it by refusing placements that would exceed it; `upload_chunk` guards
+/// the cap instead of trusting it. Allocated once, small enough for mobile.
+const MAX_QUADS: usize = digblock_core::budget::CHUNK_SLOTS;
 
 /// Chunk-origin stride: one `vec4f` per slot in the instance-step origin
 /// stream. Was padded out to the uniform dynamic-offset alignment rather

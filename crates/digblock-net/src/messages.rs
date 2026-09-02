@@ -544,6 +544,9 @@ pub enum RejectReason {
 	NotUnlocked,
 	/// Dig refused: the cell shows this player a revealed vein and the tool is not the siphon.
 	NeedsTool,
+	/// Place refused: the chunk's slot budget (`digblock_core::budget`) has no room for the
+	/// shape's template. In v42; older decoders get `Occluded`.
+	TooDetailed,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]

@@ -102,6 +102,15 @@ impl Pipeline {
 
 	/// Full-cell lookup (id + state nibble); same loading semantics as
 	/// [`Self::block_at`].
+	/// A resident chunk's slot cost (`crate::budget`); None if not ready.
+	pub fn chunk_cost(&self, pos: ChunkPos) -> Option<u32> {
+		match &self.store.get(&pos)?.state {
+			ChunkState::Ready(d) if is_air_chunk(d) => Some(0),
+			ChunkState::Ready(d) => Some(crate::budget::chunk_cost(&d.blocks)),
+			_ => None,
+		}
+	}
+
 	pub fn cell_at(&self, x: i32, y: i32, z: i32) -> Option<u16> {
 		let ((cx, cy, cz), (lx, ly, lz)) = crate::chunk::split_world(x, y, z)?;
 		match self.store.get(&ChunkPos::new(cx, cy, cz)) {

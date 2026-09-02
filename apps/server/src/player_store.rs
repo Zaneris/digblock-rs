@@ -26,7 +26,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 const MAGIC: [u8; 4] = *b"DBI1";
-const VERSION: u16 = 11;
+const VERSION: u16 = 12;
 
 /// The version from which the bucket is a CRAFTED tool (SKILLS-DESIGN §13.5). Every record below
 /// it was written when the bucket was owned by everyone — the count machinery just never stored
@@ -58,6 +58,13 @@ const FIRST_ACCOUNT_VERSION: u16 = 5;
 /// The version from which a record carries the spell-bar bytes — opaque preference data the sim
 /// stores verbatim (the client validates on read). Records below it read an empty bar.
 const FIRST_SPELLS_VERSION: u16 = 11;
+
+/// The version from which the raw shapes hold the retired crests' block ids
+/// (`BlockType::REUSED_CREST_IDS`). Every record below it carries those ids as crests, which
+/// dropped on decode, so the reader strikes them out before decoding — the record BODY is
+/// unchanged; the version is the purge's whole trigger, so it runs at most once per record and
+/// a fresh account never sees it.
+const FIRST_RAW_SHAPES_VERSION: u16 = 12;
 
 /// The version that carries a quarantine section at all. Below it the
 /// record list simply ends with the account count.
@@ -769,6 +776,11 @@ fn read_record(
 		v
 	} else {
 		Vec::new()
+	};
+	let pairs = if version < FIRST_RAW_SHAPES_VERSION {
+		Inventory::without_reused_crests(&pairs)
+	} else {
+		pairs
 	};
 	let mut inventory = Inventory::from_wire(&pairs);
 	if version < FIRST_CRAFTED_BUCKET_VERSION {

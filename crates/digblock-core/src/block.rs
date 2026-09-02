@@ -86,7 +86,7 @@ blocks! {
 	/// the cell state nibble). Crafted via alchemy from sub-wood, never
 	/// generated.
 	WoodStairs = 22 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LOG, tex::LOG_TOP, tex::LOG_TOP)), ShapeKind::Stairs), 60, DigFamily::Wood), Material::Wood),
-	StoneStairs = 23 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::STONE, tex::STONE, tex::STONE)), ShapeKind::Stairs), 90, DigFamily::Rock), Material::Stone),
+	StoneStairs = 23 => mat(dig(styled(shaped(crafted(props(RenderClass::Shaped, true, tex::STONE, tex::STONE, tex::STONE)), ShapeKind::Stairs), ShapeStyle::Stone), 90, DigFamily::Rock), Material::Stone),
 	/// Two-cell door (facing/open/half in the state nibble): thin leaf,
 	/// divided-lite window in the upper half. Crafted via alchemy — out
 	/// of planed `Lumber` like the rest of the joinery, which is why it
@@ -126,7 +126,7 @@ blocks! {
 	/// have something to complete into (three thirds = one block, the
 	/// rule that closes the slab economy).
 	Lumber = 30 => mat(dig(crafted(props(RenderClass::Opaque, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT)), 60, DigFamily::Wood), Material::Lumber),
-	LumberStairs = 31 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT)), ShapeKind::Stairs), 60, DigFamily::Wood), Material::Lumber),
+	LumberStairs = 31 => mat(dig(styled(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT)), ShapeKind::Stairs), ShapeStyle::Lumber), 60, DigFamily::Wood), Material::Lumber),
 	LumberSlab = 32 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT)), ShapeKind::Slab), 20, DigFamily::Wood), Material::Lumber),
 	/// The mason's door — §7.2's grid at work rather than a curated row: it
 	/// lands where clean Stone does, because that is the material's level,
@@ -136,19 +136,19 @@ blocks! {
 	StoneDoor = 33 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::STONE, tex::STONE, tex::STONE)), ShapeKind::Door), 68, DigFamily::Rock), Material::Stone),
 	/// Sandstone's set, likewise free: the material opens at its own level
 	/// and hands over every shape at once.
-	SandstoneStairs = 34 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::SANDSTONE, tex::SANDSTONE, tex::SANDSTONE)), ShapeKind::Stairs), 70, DigFamily::Rock), Material::Sandstone),
+	SandstoneStairs = 34 => mat(dig(styled(shaped(crafted(props(RenderClass::Shaped, true, tex::SANDSTONE, tex::SANDSTONE, tex::SANDSTONE)), ShapeKind::Stairs), ShapeStyle::Stone), 70, DigFamily::Rock), Material::Sandstone),
 	SandstoneSlab = 35 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::SANDSTONE, tex::SANDSTONE, tex::SANDSTONE)), ShapeKind::Slab), 23, DigFamily::Rock), Material::Sandstone),
 	SandstoneDoor = 36 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::SANDSTONE, tex::SANDSTONE, tex::SANDSTONE)), ShapeKind::Door), 53, DigFamily::Rock), Material::Sandstone),
 	/// The second timber. `LUMBER_DARK` was drawn and registered
 	/// with `LUMBER_LIGHT` and then sat unused on no block for a release —
 	/// under the grid a whole new joinery set is four rows and no new art.
 	DarkLumber = 37 => mat(dig(crafted(props(RenderClass::Opaque, true, tex::LUMBER_DARK, tex::LUMBER_DARK, tex::LUMBER_DARK)), 60, DigFamily::Wood), Material::DarkLumber),
-	DarkLumberStairs = 38 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_DARK, tex::LUMBER_DARK, tex::LUMBER_DARK)), ShapeKind::Stairs), 60, DigFamily::Wood), Material::DarkLumber),
+	DarkLumberStairs = 38 => mat(dig(styled(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_DARK, tex::LUMBER_DARK, tex::LUMBER_DARK)), ShapeKind::Stairs), ShapeStyle::Lumber), 60, DigFamily::Wood), Material::DarkLumber),
 	DarkLumberSlab = 39 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_DARK, tex::LUMBER_DARK, tex::LUMBER_DARK)), ShapeKind::Slab), 20, DigFamily::Wood), Material::DarkLumber),
 	DarkLumberDoor = 40 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_DARK, tex::LUMBER_DARK, tex::LUMBER_DARK)), ShapeKind::Door), 45, DigFamily::Wood), Material::DarkLumber),
 	/// The third timber.
 	RedLumber = 41 => mat(dig(crafted(props(RenderClass::Opaque, true, tex::LUMBER_RED, tex::LUMBER_RED, tex::LUMBER_RED)), 60, DigFamily::Wood), Material::RedLumber),
-	RedLumberStairs = 42 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_RED, tex::LUMBER_RED, tex::LUMBER_RED)), ShapeKind::Stairs), 60, DigFamily::Wood), Material::RedLumber),
+	RedLumberStairs = 42 => mat(dig(styled(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_RED, tex::LUMBER_RED, tex::LUMBER_RED)), ShapeKind::Stairs), ShapeStyle::Lumber), 60, DigFamily::Wood), Material::RedLumber),
 	RedLumberSlab = 43 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_RED, tex::LUMBER_RED, tex::LUMBER_RED)), ShapeKind::Slab), 20, DigFamily::Wood), Material::RedLumber),
 	RedLumberDoor = 44 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_RED, tex::LUMBER_RED, tex::LUMBER_RED)), ShapeKind::Door), 45, DigFamily::Wood), Material::RedLumber),
 	/// Furniture (SKILLS-DESIGN §7.3): FUNCTIONAL items, not §7.2 grid
@@ -320,8 +320,18 @@ blocks! {
 	// renderer and the GI have (R35's bucket predicate). Soft and
 	// diggable by anyone, so nobody is walled in by a spell.
 	Wardglass = 90 => conjured(dig(translucent(props(RenderClass::Glass, true, tex::WARDGLASS, tex::WARDGLASS, tex::WARDGLASS)), 25, DigFamily::Soft)),
-	// Ids 91–93 were the three crests (retired): held mastery trophies that did nothing. The ids
-	// stay unassigned — a save carrying one drops it on decode, never misreads it as something else.
+	/// The raw shapes: loose ground and broken rock worked as they come, the bench's day-one
+	/// forms. No refinement, so no catalyst — feedstock alone, the vessels' kind of price. Each
+	/// wears its cube's texture (no new art) and swings as its cube, a slab at a third.
+	///
+	/// Ids 91–93 were the three crests (retired trophies that did nothing) and a save carrying
+	/// one dropped it on decode. The table is contiguous, so the next rows REUSE them
+	/// ([`Self::REUSED_CREST_IDS`]): both stores strike those ids out of any record written
+	/// before the reuse, keyed on the record's version and never on its contents.
+	DirtSlab = 91 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::DIRT, tex::DIRT, tex::DIRT)), ShapeKind::Slab), 10, DigFamily::Soft), Material::Dirt),
+	DirtStairs = 92 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::DIRT, tex::DIRT, tex::DIRT)), ShapeKind::Stairs), 30, DigFamily::Soft), Material::Dirt),
+	RubbleSlab = 93 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::RUBBLE, tex::RUBBLE, tex::RUBBLE)), ShapeKind::Slab), 30, DigFamily::Rock), Material::Rubble),
+	RubbleStairs = 94 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::RUBBLE, tex::RUBBLE, tex::RUBBLE)), ShapeKind::Stairs), 90, DigFamily::Rock), Material::Rubble),
 }
 
 /// The indestructible world floor: cells at this height can never be dug
@@ -400,6 +410,26 @@ pub enum ShapeKind {
 	Bed,
 }
 
+/// The authored LOOK a shaped row bakes from, when its kind ships more than one `.shape` file:
+/// the same nibble layout, physics contract, family and craft cost as the kind's own file,
+/// different boxes. Named for the file suffix (`stairs_lumber.shape`), and only the stairs
+/// have looks today — `def::asset_name` is the one place a (kind, style) pair becomes a file.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+pub enum ShapeStyle {
+	/// The kind's canonical file (`stairs.shape`): plain full-depth steps.
+	Plain = 0,
+	/// Carpentered: thin treads on two sawtooth stringers, open underneath.
+	Lumber = 1,
+	/// Masonry: cut steps with recessed reveals over a base course.
+	Stone = 2,
+}
+
+impl ShapeStyle {
+	/// Every look, in discriminant order (the registry's table index).
+	pub const ALL: [ShapeStyle; 3] = [ShapeStyle::Plain, ShapeStyle::Lumber, ShapeStyle::Stone];
+}
+
 /// The SHAPE axis of SKILLS-DESIGN §7.2's material × shape grid: the form a substance is worked
 /// into. Distinct from [`ShapeKind`], which is a rendering/collision tag — `Block` has no
 /// sub-block geometry at all, and `ShapeKind::Torch` is a functional item rather than a form you
@@ -449,10 +479,22 @@ impl ShapeFamily {
 		}
 	}
 
+	/// How a craft cuts this form from its material's cube: (cubes in, pieces out). Sized so no
+	/// craft creates volume and none throws a piece's worth away — the stairs used to waste a
+	/// third of every cube, and now take two cubes for three. Pinned against [`Self::units`] in
+	/// `shapes::craft_costs_derive_from_collision_volume`.
+	pub fn batch(self) -> (u32, u32) {
+		match self {
+			ShapeFamily::Block => (1, 1),
+			ShapeFamily::Slab => (1, 3),
+			ShapeFamily::Stairs => (2, 3),
+			ShapeFamily::Door => (1, 2),
+		}
+	}
+
 	/// The form's volume in sub-units (`shapes::SUBS_PER_BLOCK` to a whole
-	/// cube) — §4.2's volume rule, and the factor every craft cost and
-	/// extraction yield in this material is prorated by. Pinned against
-	/// the rasterized geometry by
+	/// cube) — the volume rule, and what [`Self::batch`] conserves. Pinned
+	/// against the rasterized geometry by
 	/// `shapes::craft_costs_derive_from_collision_volume`.
 	pub fn units(self) -> u32 {
 		match self {
@@ -641,6 +683,9 @@ pub struct BlockProps {
 	/// Sub-block shape family; `Some` ⟺ `class == RenderClass::Shaped`
 	/// (pinned by `table_sanity`).
 	pub shape: Option<ShapeKind>,
+	/// Which of the kind's authored files this row bakes from; `Plain` for every row whose kind
+	/// ships one. Meaningless without [`Self::shape`] (pinned by `table_sanity`).
+	pub shape_style: ShapeStyle,
 	/// Stage-A light (SKILLS-DESIGN §7.4): every face renders fullbright ink — the shader skips
 	/// the sun/shadow terms. Independent of [`Self::light`] on purpose: ore-reveal seams want ink
 	/// that casts nothing, and a recessed lamp could cast without glowing. Both stay per-ROW
@@ -704,6 +749,7 @@ const fn props(class: RenderClass, solid: bool, side: u16, top: u16, bottom: u16
 		drops: None,
 		crumbles: None,
 		shape: None,
+		shape_style: ShapeStyle::Plain,
 		emissive: false,
 		light: 0,
 		surface_light: false,
@@ -725,6 +771,13 @@ const fn conjured(mut p: BlockProps) -> BlockProps {
 /// resolves geometry from.
 const fn shaped(mut p: BlockProps, kind: ShapeKind) -> BlockProps {
 	p.shape = Some(kind);
+	p
+}
+
+/// A shaped row in one of its kind's alternate looks: the registry bakes it
+/// from `<kind>_<style>.shape` instead of the kind's own file.
+const fn styled(mut p: BlockProps, style: ShapeStyle) -> BlockProps {
+	p.shape_style = style;
 	p
 }
 
@@ -846,6 +899,7 @@ const fn water_props(amount: u8, source: bool, falling: bool) -> BlockProps {
 		drops: None,
 		crumbles: None,
 		shape: None,
+		shape_style: ShapeStyle::Plain,
 		emissive: false,
 		light: 0,
 		surface_light: false,
@@ -1049,6 +1103,12 @@ impl BlockType {
 			BlockType::Air
 		}
 	}
+
+	/// The ids the retired crests held, reused by the raw shapes: a record written before the reuse
+	/// carries them as crests, and a store reading one strikes them out first
+	/// (`inventory::without_reused_crests`) — keyed on the record's version, so it runs once and a
+	/// fresh record never sees it. Frozen: it names bytes on disk.
+	pub const REUSED_CREST_IDS: std::ops::RangeInclusive<u16> = 91..=93;
 
 	/// Strict decode for VALIDATION paths (network input): `None` for
 	/// unknown ids or set state bits, instead of silently reading Air.

@@ -5,7 +5,7 @@
 //! is a no-op, and the GPU allocation lives until V8 happens to collect the JS wrapper, which it
 //! does late and in bursts, because the wrapper is a few bytes and V8 cannot see the megabytes
 //! behind it. A session that walks (chunk buffers past the pool ceiling), resizes or toggles
-//! fullscreen (a whole target set), or moves the draw-distance slider (the 100 MiB voxel window)
+//! fullscreen (a whole target set), or moves the draw-distance slider (the 200 MiB voxel window)
 //! strands all of it in Chrome's GPU process. `destroy()` is the standard fix and is safe with
 //! in-flight frames on both backends: WebGPU orders it on the device timeline after every earlier
 //! submit, and wgpu-core queues the raw handle behind pending submissions. The one rule is that
@@ -140,14 +140,14 @@ mod tests {
 	const MIB: u64 = 1024 * 1024;
 
 	#[test]
-	fn the_voxel_window_at_draw_20_is_one_hundred_mib() {
+	fn the_voxel_window_at_draw_20_is_two_hundred_mib() {
 		let side = crate::gi::window_chunks_for(20) * 16;
 		let size = Extent3d {
 			width: side,
 			height: 256,
 			depth_or_array_layers: side,
 		};
-		assert_eq!(texture_bytes_of(size, Dim::D3, Fmt::R8Uint, 1), 100 * MIB);
+		assert_eq!(texture_bytes_of(size, Dim::D3, Fmt::Rg8Uint, 1), 200 * MIB);
 	}
 
 	#[test]

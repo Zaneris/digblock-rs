@@ -5,27 +5,37 @@ use crate::skills::total_xp_for;
 #[test]
 fn craft_levels_are_pinned() {
 	use BlockType as B;
-	// The starter timber, in every form you have learned so far — but
-	// not the felled log itself, which grows on a tree.
-	assert_eq!(craft(B::WoodSlab), Some(1));
-	assert_eq!(craft(B::WoodStairs), Some(6), "the stairs SHAPE opens");
+	// The raw shapes, in the order a fresh player meets the matter: the
+	// ground first, beside the siphon; the felled log two rungs on; the
+	// broken rock once rock opens — but never the cubes themselves,
+	// which the world hands out.
+	for b in [B::DirtSlab, B::DirtStairs] {
+		assert_eq!(craft(b), Some(1), "{b:?} is a day-one recipe");
+	}
+	for b in [B::WoodSlab, B::WoodStairs] {
+		assert_eq!(craft(b), Some(3), "{b:?}");
+	}
+	for b in [B::RubbleSlab, B::RubbleStairs] {
+		assert_eq!(craft(b), Some(4), "{b:?}");
+	}
 	assert_eq!(craft(B::Torch), Some(5), "light rides the bucket's rung");
 	assert_eq!(
 		craft(B::EssenceSiphon),
 		Some(1),
 		"the essence tool is the first craft beat"
 	);
-	// §7.2's grid rule: the whole planed-timber set opens together at
-	// its MATERIAL's level, whatever each shape's own level is — and
-	// the door SHAPE lands at the same level, so the first door fanfare
+	// The grid rule: the whole planed-timber set opens together at its
+	// MATERIAL's level, whatever each shape's own level is — except the
+	// door SHAPE, which lands three rungs on, so the first door fanfare
 	// and the first craftable door are one event.
-	for b in [B::Lumber, B::LumberSlab, B::LumberStairs, B::LumberDoor] {
-		assert_eq!(craft(b), Some(12), "{b:?}");
+	for b in [B::Lumber, B::LumberSlab, B::LumberStairs] {
+		assert_eq!(craft(b), Some(9), "{b:?}");
 	}
+	assert_eq!(craft(B::LumberDoor), Some(12), "the door SHAPE opens");
 	// And the mason's unlock does the same for stone: the slab and the
 	// stairs no longer arrive nineteen levels before the block they are
 	// cut from, which is the inversion the grid exists to fix.
-	for b in [B::Stone, B::StoneSlab, B::StoneStairs] {
+	for b in [B::Stone, B::StoneSlab, B::StoneStairs, B::StoneDoor] {
 		assert_eq!(craft(b), Some(15), "{b:?}");
 	}
 	for b in [B::Sandstone, B::SandstoneSlab, B::Glass] {
@@ -102,17 +112,19 @@ fn the_materials_with_no_gate_beyond_their_family_are_spelled_out() {
 	assert_eq!(
 		family_only,
 		vec![
-			M::Wood,
 			M::Dirt,
+			M::Wood,
+			M::Rubble,
 			M::Sand,
+			M::Snow,
+			M::Grass,
+			M::Mud,
+			M::Gravel,
 			M::Lumber,
 			M::Stone,
 			M::DarkLumber,
 			M::StoneBrick,
 			M::Sandstone,
-			M::Snow,
-			M::Grass,
-			M::Mud,
 			M::Glass,
 			M::RedGlass,
 			M::GreenGlass,
@@ -121,8 +133,6 @@ fn the_materials_with_no_gate_beyond_their_family_are_spelled_out() {
 			M::RedLumber,
 			M::PolishedStone,
 			M::SandstoneBrick,
-			M::Rubble,
-			M::Gravel,
 			M::DryGrass,
 			M::Leaf,
 			M::PineLeaf,
@@ -284,12 +294,15 @@ fn craft_only_blocks_are_gated_until_they_can_be_made() {
 	// The gate IS the recipe's level, item by item — and the recipe's
 	// level now follows the material, so a stone shape asks for the
 	// mason's unlock rather than for the shape's own.
-	assert_eq!(pickup(B::WoodSlab), 1, "a level-1 recipe");
-	assert_eq!(pickup(B::WoodStairs), 6);
+	assert_eq!(pickup(B::DirtSlab), 1, "a level-1 recipe");
+	assert_eq!(pickup(B::WoodSlab), 3);
+	assert_eq!(pickup(B::WoodStairs), 3);
+	assert_eq!(pickup(B::RubbleStairs), 4);
 	assert_eq!(pickup(B::Torch), 5);
-	for b in [B::Lumber, B::LumberSlab, B::LumberStairs, B::LumberDoor] {
-		assert_eq!(pickup(b), 12, "{b:?} — the timber set");
+	for b in [B::Lumber, B::LumberSlab, B::LumberStairs] {
+		assert_eq!(pickup(b), 9, "{b:?} — the timber set");
 	}
+	assert_eq!(pickup(B::LumberDoor), 12, "the door shape");
 	for b in [B::StoneSlab, B::StoneStairs] {
 		assert_eq!(pickup(b), 15, "{b:?} — clean stone in any form");
 	}
@@ -453,6 +466,10 @@ fn crafted_blocks_have_recipes_and_drop_themselves() {
 			B::GreenGlass,
 			B::BlueGlass,
 			B::AmberGlass,
+			B::DirtSlab,
+			B::DirtStairs,
+			B::RubbleSlab,
+			B::RubbleStairs,
 		]
 	);
 }
@@ -576,13 +593,13 @@ fn unlock_levels_are_the_threshold_levels() {
 	assert_eq!(
 		alchemy,
 		vec![
-			5, 6, 7, 12, 14, 15, 18, 21, 24, 27, 28, 30, 33, 36, 40, 50, 99
+			3, 4, 5, 7, 9, 12, 14, 15, 18, 21, 24, 27, 28, 30, 33, 36, 40, 50, 99
 		],
 		"the catalog tops at 50 and 99 is the sigil alone — the tail is \
-			 expansion headroom. The opening run is a rung apiece: the torch, \
-			 the stairs, the bucket; the siphon sits at the first level, which \
-			 is never an unlock, and the old bonus lines left with bench \
-			 extraction"
+			 expansion headroom. The opening run is a rung or two apiece: the \
+			 timber shapes, the rubble shapes, the torch, the bucket, the first \
+			 refinement, the door; the siphon and the dirt shapes sit at the \
+			 first level, which is never an unlock"
 	);
 	// Arcana: the seven waystones interleaved with the travel rungs —
 	// ports are the spine the way reveals are Mining's. Return Home and

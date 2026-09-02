@@ -1187,7 +1187,8 @@ fn crafting_pace_is_server_enforced() {
 	wait_live(&mut sim, 1);
 	let level = digblock_core::unlock::craft(BlockType::LumberSlab).expect("a recipe");
 	sim.bench_set_alchemy_level(1, level);
-	sim.test_grant(1, BlockType::Wood, 100_000);
+	// A slab is cut from its own material's cube: planks, not logs.
+	sim.test_grant(1, BlockType::Lumber, 100_000);
 	sim.test_grant_essence(1, Essence::Vitae, 100_000);
 	let pace = digblock_core::alchemy::craft_pace_ticks(BlockType::LumberSlab, level);
 	let burst = digblock_core::alchemy::bench_burst_ticks(level);

@@ -211,9 +211,10 @@ fn family(r: &Rig, name: &str) -> InvId {
 /// the bench's one instant action also its fastest XP.
 #[test]
 fn a_transmute_batch_drips_instead_of_paying_at_once() {
+	// The Slabs family opens on its first unlocked member, the dirt
+	// slab — raw matter, shaped for nothing but the matter.
 	let mut r = rig_at(20, |inv| {
-		inv.add(B::Wood, 50);
-		inv.add_sub(Essence::Vitae, 500);
+		inv.add(B::Dirt, 50);
 	});
 	let slabs = center(r.hits.rect_of(family(&r, "Slabs")).unwrap());
 	press(&mut r, slabs);
@@ -229,21 +230,21 @@ fn a_transmute_batch_drips_instead_of_paying_at_once() {
 	press(&mut r, go);
 	assert_eq!(
 		r.screen.crafting,
-		Some((B::WoodSlab, BULK_SHIFT)),
+		Some((B::DirtSlab, BULK_SHIFT)),
 		"SHIFT queues its own multiplier"
 	);
 
 	// Half a cycle pays nothing.
-	let pace = alchemy::craft_pace_ticks(B::WoodSlab, 20) as f32 / 60.0;
+	let pace = alchemy::craft_pace_ticks(B::DirtSlab, 20) as f32 / 60.0;
 	assert_eq!(r.screen.tick(pace * 0.5, &r.view), None);
 	let one = Some(AlchAction::Craft {
-		item: B::WoodSlab,
+		item: B::DirtSlab,
 		count: 1,
 	});
 	assert_eq!(r.screen.tick(pace * 0.6, &r.view), one);
 	assert_eq!(
 		r.screen.crafting,
-		Some((B::WoodSlab, BULK_SHIFT - 1)),
+		Some((B::DirtSlab, BULK_SHIFT - 1)),
 		"one off the queue"
 	);
 
@@ -266,20 +267,17 @@ fn a_transmute_batch_drips_instead_of_paying_at_once() {
 	assert!(r.screen.busy(), "the bench works with the screen closed");
 	assert_eq!(
 		r.screen.job(),
-		Some(BenchJob::Craft(B::WoodSlab, BULK_SHIFT - 1)),
+		Some(BenchJob::Craft(B::DirtSlab, BULK_SHIFT - 1)),
 		"the HUD tell knows the job"
 	);
 	assert_eq!(r.screen.tick(pace * 1.1, &r.view), one);
 	r.screen.open();
 
-	// Spend the essence out from under it: the queue withdraws exactly
+	// Spend the matter out from under it: the queue withdraws exactly
 	// where the button would have greyed, rather than running on
 	// against a rebase that can no longer pay.
-	let flora = r.inv.sub_count(Essence::Vitae);
-	assert!(
-		r.inv.try_take_sub(Essence::Vitae, flora),
-		"drain the holdings"
-	);
+	let dirt = r.inv.count(B::Dirt);
+	assert!(r.inv.try_take(B::Dirt, dirt), "drain the holdings");
 	rebuild(&mut r);
 	assert_eq!(r.screen.tick(pace * 1.1, &r.view), None);
 	assert_eq!(r.screen.crafting, None, "a queue nobody can pay for ends");
@@ -287,7 +285,7 @@ fn a_transmute_batch_drips_instead_of_paying_at_once() {
 	assert!(text_of(&r).contains("Click 1"), "the legend is back");
 
 	// The world-exit arm clears outright.
-	r.screen.debug_batch(B::WoodSlab, 3, 0.5);
+	r.screen.debug_batch(B::DirtSlab, 3, 0.5);
 	assert!(r.screen.busy());
 	r.screen.abandon();
 	assert!(!r.screen.busy(), "abandon drops the job");
@@ -300,8 +298,10 @@ fn a_transmute_batch_drips_instead_of_paying_at_once() {
 fn family_selection_and_the_single_transmute_button() {
 	// A level past the mason's unlock and short of dark lumber's, so
 	// the rig holds an unlocked-but-unaffordable member (Stone, with
-	// no Earth in hand) AND a locked one (DarkLumber) at once.
+	// no rubble and no Earth in hand) AND a locked one (DarkLumber) at
+	// once.
 	let mut r = rig_at(15, |inv| {
+		inv.add(B::Dirt, 50);
 		inv.add(B::Wood, 50);
 		inv.add_sub(Essence::Vitae, 500);
 	});
@@ -320,7 +320,7 @@ fn family_selection_and_the_single_transmute_button() {
 
 	// SLABS leads (the shape axis first, cheapest form first, the
 	// hand-priced ones after). Its first unlocked member is the
-	// WoodSlab the Vitae affords; Ctrl asks for its whole batch and
+	// DirtSlab the dirt affords; Ctrl asks for its whole batch and
 	// the holdings clamp it.
 	let slabs = center(r.hits.rect_of(family(&r, "Slabs")).unwrap());
 	press(&mut r, slabs);
@@ -333,11 +333,11 @@ fn family_selection_and_the_single_transmute_button() {
 			pressed: true,
 		},
 	);
-	let batches = r.view.affordable(B::WoodSlab);
+	let batches = r.view.affordable(B::DirtSlab);
 	assert!(batches > 0 && batches < BULK_CTRL, "clamp is meaningful");
 	// The press QUEUES the batch rather than paying for it.
 	assert_eq!(press(&mut r, go), None, "the button starts a batch");
-	assert_eq!(r.screen.crafting, Some((B::WoodSlab, batches)));
+	assert_eq!(r.screen.crafting, Some((B::DirtSlab, batches)));
 	// Pressing it again is the stop, so the bench is idle for the
 	// selection checks below.
 	rebuild(&mut r);
@@ -386,7 +386,10 @@ fn family_selection_and_the_single_transmute_button() {
 	let stone = center(r.hits.rect_of(InvId::Craft(1)).unwrap());
 	press(&mut r, stone);
 	rebuild(&mut r);
-	assert!(r.hits.rect_of(InvId::CraftGo).is_none(), "Stone: no Earth");
+	assert!(
+		r.hits.rect_of(InvId::CraftGo).is_none(),
+		"Stone: no rubble, no Earth"
+	);
 }
 
 /// The vessels are paid in FEEDSTOCK: once both are open, a player with
@@ -1212,6 +1215,7 @@ fn the_modifier_keys_queue_the_batch_the_legend_names() {
 	// what you can afford is a different rule with its own test, and a
 	// batch cut short by it would measure the stock, not the key.
 	let mut r = rig_at(20, |inv| {
+		inv.add(B::Dirt, 100_000);
 		inv.add(B::Wood, 100_000);
 		inv.add_sub(Essence::Vitae, 1_000_000);
 	});

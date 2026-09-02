@@ -42,6 +42,15 @@ impl GiDraw {
 		});
 		gpu.queue
 			.write_buffer(&lut_buf, 0, bytemuck::cast_slice(&lut));
+		let covers = cover_table();
+		let covers_buf = device.create_buffer(&wgpu::BufferDescriptor {
+			label: Some("gi cover table"),
+			size: (256 * COVER_ENTRY_WORDS * 4) as u64,
+			usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+			mapped_at_creation: false,
+		});
+		gpu.queue
+			.write_buffer(&covers_buf, 0, bytemuck::cast_slice(&covers));
 		let lights_buf = device.create_buffer(&wgpu::BufferDescriptor {
 			label: Some("gi light list"),
 			// A header vec4, then TWO vec4s an entry: the position and
@@ -122,6 +131,7 @@ impl GiDraw {
 					},
 					count: None,
 				},
+				storage_buf(9),
 			],
 		});
 		// The camera-light sample cam_light writes and spray/viewmodel
@@ -142,6 +152,7 @@ impl GiDraw {
 			window: &window_view,
 			coarse: &coarse_view,
 			lut: &lut_buf,
+			covers: &covers_buf,
 			lights: &lights_buf,
 			cam: &cam_buf,
 		};
@@ -406,6 +417,14 @@ impl GiDraw {
 						min_binding_size: None,
 					},
 				),
+				g_entry(
+					6,
+					wgpu::BindingType::Buffer {
+						ty: wgpu::BufferBindingType::Storage { read_only: true },
+						has_dynamic_offset: false,
+						min_binding_size: None,
+					},
+				),
 			],
 		});
 		let gather_bind = gather_binds(device, &gather_bgl, &cascades, &world);
@@ -576,6 +595,7 @@ impl GiDraw {
 			probe_bgl: bgl,
 			debug_bgl,
 			lut_buf,
+			covers_buf,
 			stub,
 			gather_iters,
 			sun_iters,
@@ -626,7 +646,7 @@ impl GiDraw {
 		let device = &gpu.device;
 		let side = window_chunks * 16;
 		let (window, coarse) = window_textures(device, side, ledger);
-		// The old pair is DESTROYED, not dropped — 100 MiB at draw 20 that a drop would strand
+		// The old pair is DESTROYED, not dropped — 200 MiB at draw 20 that a drop would strand
 		// on the web (`gpu_ledger`). Safe here: the frame still reading it is already submitted,
 		// and every bind group naming it is rebuilt below before the next encode.
 		let old_window = std::mem::replace(&mut self.window, window);
@@ -645,6 +665,7 @@ impl GiDraw {
 			window: &window_view,
 			coarse: &coarse_view,
 			lut: &self.lut_buf,
+			covers: &self.covers_buf,
 			lights: &self.lights_buf,
 			cam: &self.cam_buf,
 		};
@@ -679,12 +700,13 @@ struct WorldBinds<'a> {
 	window: &'a wgpu::TextureView,
 	coarse: &'a wgpu::TextureView,
 	lut: &'a wgpu::Buffer,
+	covers: &'a wgpu::Buffer,
 	lights: &'a wgpu::Buffer,
 	cam: &'a wgpu::Buffer,
 }
 
-/// The per-block class ids and the coarse occupancy over them, for a
-/// side in blocks , charged to the ledger.
+/// The per-block look and cover bytes (`core::gi::BYTES_PER_CELL`) and the
+/// coarse occupancy over them, for a side in blocks, charged to the ledger.
 fn window_textures(
 	device: &wgpu::Device,
 	side: u32,
@@ -700,7 +722,7 @@ fn window_textures(
 		mip_level_count: 1,
 		sample_count: 1,
 		dimension: wgpu::TextureDimension::D3,
-		format: wgpu::TextureFormat::R8Uint,
+		format: wgpu::TextureFormat::Rg8Uint,
 		usage: wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::TEXTURE_BINDING,
 		view_formats: &[],
 	});
@@ -778,6 +800,10 @@ fn probe_binds(
 				wgpu::BindGroupEntry {
 					binding: 8,
 					resource: world.cam.as_entire_binding(),
+				},
+				wgpu::BindGroupEntry {
+					binding: 9,
+					resource: world.covers.as_entire_binding(),
 				},
 			],
 		})
@@ -860,6 +886,10 @@ fn gather_binds(
 				wgpu::BindGroupEntry {
 					binding: 5,
 					resource: world.lights.as_entire_binding(),
+				},
+				wgpu::BindGroupEntry {
+					binding: 6,
+					resource: world.covers.as_entire_binding(),
 				},
 			],
 		})

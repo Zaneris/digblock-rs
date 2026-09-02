@@ -180,6 +180,13 @@ impl ChunkStore {
 			.map(|cell| BlockType::from_id(digblock_core::chunk::cell_id(cell)))
 	}
 
+	/// A loaded chunk's slot cost (`digblock_core::budget`); None if unloaded.
+	pub fn chunk_cost(&self, pos: digblock_core::ChunkPos) -> Option<u32> {
+		let stack = self.columns.get(&(pos.x, pos.z))?;
+		let d = stack.get(usize::try_from(pos.y).ok()?)?;
+		Some(digblock_core::budget::chunk_cost(&d.blocks))
+	}
+
 	/// Full-cell lookup (id + state nibble); same loading semantics.
 	pub fn cell_at(&self, x: i32, y: i32, z: i32) -> Option<u16> {
 		let ((cx, cy, cz), (lx, ly, lz)) = split_world(x, y, z)?;

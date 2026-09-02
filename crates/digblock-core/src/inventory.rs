@@ -242,6 +242,21 @@ impl Inventory {
 		out
 	}
 
+	/// Wire pairs with the retired crests' ids struck out — the migration a store runs on a record
+	/// written BEFORE the raw shapes reused those ids ([`BlockType::REUSED_CREST_IDS`]), keyed on
+	/// the store's version and never on the contents: at those versions the ids meant crests,
+	/// which dropped on decode, and reading them as shapes would hand a dirt slab to whoever
+	/// held a trophy.
+	pub fn without_reused_crests(pairs: &[(u16, u32)]) -> Vec<(u16, u32)> {
+		pairs
+			.iter()
+			.copied()
+			.filter(|&(id, _)| {
+				id & SUB_WIRE_FLAG != 0 || !BlockType::REUSED_CREST_IDS.contains(&id)
+			})
+			.collect()
+	}
+
 	/// [`Self::to_wire`] into a caller-owned buffer (cleared first).
 	///
 	/// The server's player store serializes every stored record on each

@@ -169,7 +169,7 @@ impl Carried {
 		let cast = digblock_core::gi::carried_light(b, mining);
 		self.lights.push(crate::gi::Emitter {
 			pos: o.to_array(),
-			class: digblock_core::gi::gi_class(digblock_core::chunk::make_cell(b, 0)),
+			class: digblock_core::gi::gi_look(digblock_core::chunk::make_cell(b, 0)),
 			level: if cast.level == b.props().light {
 				0
 			} else {
@@ -192,7 +192,7 @@ impl Carried {
 	pub(super) fn push_arcane(&mut self, key: u16, origin: Vec3, level: u8, whitened: bool) {
 		self.lights.push(crate::gi::Emitter {
 			pos: origin.to_array(),
-			class: digblock_core::gi::gi_class(digblock_core::chunk::make_cell(
+			class: digblock_core::gi::gi_look(digblock_core::chunk::make_cell(
 				BlockType::ConjuredLight,
 				0,
 			)),
@@ -434,12 +434,15 @@ mod carried_tests {
 		let mut c = Carried::default();
 		c.begin();
 		torch_at(&mut c, CARRIER_SELF, eye);
-		let want =
-			digblock_core::gi::gi_class(digblock_core::chunk::make_cell(BlockType::Torch, 0));
+		let want = digblock_core::gi::gi_look(digblock_core::chunk::make_cell(BlockType::Torch, 0));
 		assert_eq!(c.lights[0].class, want);
-		assert!(
-			want >= digblock_core::gi::SHAPE_CLASS_BASE,
-			"the shaped class"
+		// The look is the whole of what a hand carries: the placed
+		// torch's cover names where in its cell it glows from, and a
+		// carried light has no cell.
+		assert_ne!(
+			digblock_core::gi::gi_cover(digblock_core::chunk::make_cell(BlockType::Torch, 0)),
+			0,
+			"the torch is a shaped emitter"
 		);
 		let o = digblock_core::gi::carried_origin(eye);
 		assert_eq!(c.lights[0].pos, o.to_array());
@@ -608,7 +611,7 @@ mod carried_tests {
 			},
 		);
 		assert_eq!(c.lights.len(), 1, "an empty hand, but a burning wisp");
-		let want = digblock_core::gi::gi_class(digblock_core::chunk::make_cell(
+		let want = digblock_core::gi::gi_look(digblock_core::chunk::make_cell(
 			BlockType::ConjuredLight,
 			0,
 		));

@@ -20,6 +20,11 @@ impl Engine {
 		// re-uploads through the ordinary budgeted drain (the GI mirror
 		// of the re-mesh above — device loss must never need a relight).
 		self.pipeline.gi_redirty_all();
+		// And its cover table holds only the shipped roster: the editor's
+		// live slots are rewritten by the next preview rebuild.
+		if let Some(ed) = self.editor.as_mut() {
+			ed.preview_dirty = true;
+		}
 	}
 
 	/// The GI's ratcheting state, or zeros before the renderer exists.
@@ -145,12 +150,25 @@ impl Engine {
 				self.stream.gi_queue.push_back(pos);
 			}
 		}
+		// The shape editor's live covers land before the invalidation
+		// that re-traces around them.
+		if let Some(ed) = self.editor.as_mut() {
+			for (slot, cover) in ed.pending_covers.drain(..) {
+				renderer.gi_write_cover(gpu, slot, cover.as_ref());
+			}
+		}
 		for (x, y, z) in self.pipeline.take_gi_edits() {
 			renderer.gi_invalidate([x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5]);
 		}
+		// The window's share of the upload budget, counted in CHUNKS at one
+		// byte per cell — the rate the window filled at before its texel
+		// widened to a look and a cover. The fill rate is the lighting
+		// latency after an arrival (a half-filled window is a darker one),
+		// so the wider texel is paid in bandwidth, never in fill: each chunk
+		// costs `gi::CHUNK_BYTES` on the wire and one quota unit here.
 		let mut gi_budget = self.config.upload_bytes_max / 4;
 		let mut gi_uploads = 0u32;
-		while gi_budget >= 4096 {
+		while gi_budget >= digblock_core::chunk::CHUNK_VOLUME {
 			if gi_uploads >= GI_UPLOAD_MIN && web_time::Instant::now() >= deadline {
 				break;
 			}
@@ -167,7 +185,7 @@ impl Engine {
 			}
 			if let Some(chunk) = self.pipeline.classify_gi(pos) {
 				renderer.gi_upload(gpu, pos, &chunk);
-				gi_budget -= 4096;
+				gi_budget -= digblock_core::chunk::CHUNK_VOLUME;
 				gi_uploads += 1;
 			}
 		}

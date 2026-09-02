@@ -1,4 +1,4 @@
-//! The MATERIAL axis of SKILLS-DESIGN §7.2's material × shape grid.
+//! The MATERIAL axis of the material × shape grid.
 //!
 //! A structural block is a *substance* worked into a *form*: Stone stairs are
 //! Stone in the Stairs shape. A block declares its material once (the `mat`
@@ -7,11 +7,12 @@
 //! craft cost, the earned half of the strength wall, and the transmute tab's
 //! families.
 //!
-//! [`Material::craft_units`] is what a substance COSTS and
-//! [`Material::node_units`] what a live node of it PAYS at a draw. No material
-//! carries both, so essence cannot be manufactured from essence by
-//! construction. Functional items have NO material: §7.3 prices function by
-//! hand.
+//! Substances form REFINEMENT CHAINS rooted in the world: a refined cube is
+//! made from its parent's cube ([`Material::refined_from`]) beside a catalyst
+//! ([`Material::refine_units`]), and every shape is cut from its own cube.
+//! [`Material::node_units`] is what a live node PAYS at a draw; no material
+//! carries both a recipe and a yield, so essence cannot be manufactured from
+//! essence by construction. Functional items have NO material: priced by hand.
 
 use crate::block::{BlockType, Essence};
 
@@ -26,7 +27,7 @@ pub enum Material {
 	Wood,
 	Dirt,
 	Sand,
-	/// Planed timber, light: the joinery material (SKILLS-DESIGN §7.2).
+	/// Planed timber, light: the joinery material.
 	Lumber,
 	Stone,
 	/// Planed timber, dark.
@@ -52,7 +53,8 @@ pub enum Material {
 	/// Grown from Aether: the endgame material, and it glows.
 	Crystal,
 
-	// ---- recipe-less: never crafted in any shape. Rubble is the mass Earth feedstock (§7.1) ----
+	// ---- the rest of the raw matter, and the recipe-less rows ----
+	/// What mined rock actually is: broken stone, the mason's feedstock, shaped as it comes.
 	Rubble,
 	Gravel,
 	DryGrass,
@@ -60,14 +62,14 @@ pub enum Material {
 	Leaf,
 	/// Conifer canopy. A separate material from [`Self::Leaf`] — one grid cell holds one block.
 	PineLeaf,
-	/// Revealed and drawn at the rock face, never crafted in any shape (§5.3).
+	/// Revealed and drawn at the rock face, never crafted in any shape.
 	Emberore,
 	Duskstone,
 	Glowvein,
 	Aetherock,
 	/// A tapped-out vein face, superseded by the per-tier rocks below; kept so old cells decode.
 	DepletedStone,
-	/// The four spent vein faces (§5.3) — one per tier, so a trophy says which seam you worked.
+	/// The four spent vein faces — one per tier, so a trophy says which seam you worked.
 	DepletedEmberore,
 	DepletedDuskstone,
 	DepletedGlowvein,
@@ -85,19 +87,23 @@ impl Material {
 	pub const COUNT: usize = 41;
 
 	/// Every material in unlock order — the transmute tab reads members in
-	/// this order, so a family's tiles run from cheapest to rarest.
+	/// this order, so a family's tiles run from cheapest to rarest: the raw
+	/// matter first (its shapes are the day-one recipes), then each
+	/// refinement rung, then everything with no recipe at all.
 	pub const ALL: [Material; Self::COUNT] = [
-		Material::Wood,
 		Material::Dirt,
+		Material::Wood,
+		Material::Rubble,
 		Material::Sand,
+		Material::Snow,
+		Material::Grass,
+		Material::Mud,
+		Material::Gravel,
 		Material::Lumber,
 		Material::Stone,
 		Material::DarkLumber,
 		Material::StoneBrick,
 		Material::Sandstone,
-		Material::Snow,
-		Material::Grass,
-		Material::Mud,
 		Material::Glass,
 		Material::RedGlass,
 		Material::GreenGlass,
@@ -108,8 +114,6 @@ impl Material {
 		Material::SandstoneBrick,
 		Material::Metal,
 		Material::Crystal,
-		Material::Rubble,
-		Material::Gravel,
 		Material::DryGrass,
 		Material::Leaf,
 		Material::PineLeaf,
@@ -130,83 +134,139 @@ impl Material {
 		Material::SpentSpringstone,
 	];
 
-	/// The blocks a craft of this substance consumes — the MATTER half of a feedstock-and-catalyst
-	/// recipe. One cube of feedstock per craft; the shape's batch ([`crate::shapes::craft_batch`])
-	/// says how many pieces that cube cuts into. `None` = transmuted from essence alone (Metal,
-	/// Crystal). Bulk building stays affordable because of this split: the weight of a wall's
-	/// price is the rock you quarried, and the essence line beside it is a CATALYST.
-	pub fn feedstock(self) -> Option<BlockType> {
+	/// The block this substance is REFINED from — the matter half of its cube recipe, one parent
+	/// cube per craft. `None` for the raw substances the world hands out (their cubes are never
+	/// crafted) and for the two transmuted from essence alone (Metal, Crystal). One parent per
+	/// substance makes the chains a tree rooted in the world, pinned to bottom out within a few
+	/// links; the child's level never precedes the parent's, so every link is craftable in turn.
+	pub fn refined_from(self) -> Option<BlockType> {
 		use Material as M;
 		Some(match self {
-			// The timbers are worked from the felled log.
-			M::Wood | M::Lumber | M::DarkLumber | M::RedLumber => BlockType::Wood,
-			// The mason's loop (§7.1): broken rock back into clean forms.
-			M::Stone | M::StoneBrick | M::PolishedStone => BlockType::Rubble,
-			// The sand-flavoured substances fuse from sand itself.
-			M::Sand
+			// Planed from the felled log, then the coloured timbers from the plain plank.
+			M::Lumber => BlockType::Wood,
+			M::DarkLumber | M::RedLumber => BlockType::Lumber,
+			// The mason's loop: broken rock back into clean forms, then dressed, then polished.
+			M::Stone => BlockType::Rubble,
+			M::StoneBrick => BlockType::Stone,
+			M::PolishedStone => BlockType::StoneBrick,
+			// The sand-flavoured substances fuse from sand itself; the tints from clean glass.
+			M::Sandstone | M::Glass => BlockType::Sand,
+			M::SandstoneBrick => BlockType::Sandstone,
+			M::RedGlass | M::GreenGlass | M::BlueGlass | M::AmberGlass => BlockType::Glass,
+			_ => return None,
+		})
+	}
+
+	/// The essence half of the CUBE recipe, before waste: the catalyst beside a refined
+	/// substance's parent block, or the whole price of one transmuted from essence alone. `None` =
+	/// the bench cannot make this substance's cube (raw matter, and everything with no recipe).
+	/// Climbs with the chain's depth, so a rung is a price and not just a look, and the second
+	/// rung of each family names a second essence so the mid ladder spends every faucet. A pure
+	/// SINK: essence enters only at a node draw ([`Self::node_units`]) and leaves only here.
+	pub fn refine_units(self) -> Option<&'static [(Essence, u32)]> {
+		use Essence as E;
+		use Material as M;
+		Some(match self {
+			// Tier 1: a third of a node cell at the first level.
+			M::Lumber => &[(E::Vitae, 4)],
+			M::Stone | M::Sandstone => &[(E::Terra, 5)],
+			M::Glass => &[(E::Terra, 6)],
+			// Tier 2: dressed, coloured, tinted.
+			M::StoneBrick | M::SandstoneBrick => &[(E::Terra, 8)],
+			M::DarkLumber => &[(E::Vitae, 6), (E::Terra, 2)],
+			M::RedLumber => &[(E::Vitae, 6), (E::Ferrum, 2)],
+			M::RedGlass => &[(E::Terra, 4), (E::Ferrum, 4)],
+			M::GreenGlass => &[(E::Terra, 4), (E::Vitae, 4)],
+			M::BlueGlass => &[(E::Terra, 4), (E::Unda, 4)],
+			M::AmberGlass => &[(E::Terra, 8)],
+			// Tier 3: a whole node cell's worth.
+			M::PolishedStone => &[(E::Terra, 14)],
+			// The essence-only substances: transmutation proper, more
+			// than a cube's worth of the currency.
+			M::Metal => &[(E::Ferrum, 45)],
+			// Aether-bound, with a metal lattice to hold it: the only
+			// repeatable Aether sink big enough to matter in the endgame.
+			M::Crystal => &[(E::Aether, 27), (E::Ferrum, 18)],
+			_ => return None,
+		})
+	}
+
+	/// The substance's primary essence — the family its catalyst leads with, and what cutting a
+	/// refined cube into a shape costs a unit of per tier ([`Self::shape_units`]). Every substance
+	/// answers, raw ones included, so the grid never special-cases one.
+	pub fn essence(self) -> Essence {
+		use Essence as E;
+		use Material as M;
+		match self {
+			M::Wood
+			| M::Lumber
+			| M::DarkLumber
+			| M::RedLumber
+			| M::Grass
+			| M::DryGrass
+			| M::Mud
+			| M::Leaf
+			| M::PineLeaf
+			| M::Heartwood
+			| M::DrainedHeartwood => E::Vitae,
+			M::Dirt
+			| M::Sand
+			| M::Stone
+			| M::StoneBrick
+			| M::PolishedStone
 			| M::Sandstone
 			| M::SandstoneBrick
 			| M::Glass
 			| M::RedGlass
 			| M::GreenGlass
 			| M::BlueGlass
-			| M::AmberGlass => BlockType::Sand,
-			// The loose grounds reshape from their own loose block.
-			M::Dirt => BlockType::Dirt,
-			M::Grass => BlockType::Grass,
-			M::Mud => BlockType::Mud,
-			M::Snow => BlockType::Snow,
-			_ => return None,
-		})
-	}
-
-	/// The essence half of a cube's price, before waste. For a substance with [`Self::feedstock`]
-	/// this is the CATALYST — never prorated by the shape, since a craft consumes a whole feedstock
-	/// cube whatever it cuts it into. For the essence-only substances it is the whole price.
-	/// `None` = the bench cannot make this substance in any shape. A pure SINK price: essence
-	/// enters only at a node draw ([`Self::node_units`]) and leaves only here, so nothing loops.
-	pub fn craft_units(self) -> Option<&'static [(Essence, u32)]> {
-		use Essence as E;
-		use Material as M;
-		Some(match self {
-			// Catalysts, matching each substance's essence identity.
-			M::Wood | M::Lumber | M::DarkLumber | M::RedLumber => &[(E::Vitae, 3)],
-			M::Stone | M::Sand | M::Sandstone => &[(E::Terra, 3)],
-			M::StoneBrick | M::PolishedStone | M::SandstoneBrick => &[(E::Terra, 3)],
-			M::Glass | M::RedGlass | M::GreenGlass | M::BlueGlass | M::AmberGlass => {
-				&[(E::Terra, 3)]
-			}
-			M::Dirt => &[(E::Terra, 3), (E::Vitae, 1)],
-			M::Grass => &[(E::Terra, 2), (E::Vitae, 1)],
-			M::Mud => &[(E::Terra, 2), (E::Vitae, 1), (E::Unda, 1)],
-			M::Snow => &[(E::Unda, 3)],
-			// The essence-only substances: transmutation proper, a whole
-			// cube's worth of the currency.
-			M::Metal => &[(E::Ferrum, 27)],
-			// Aether-bound, with a metal lattice to hold it: the only
-			// repeatable Aether sink big enough to matter in the endgame.
-			M::Crystal => &[(E::Aether, 18), (E::Ferrum, 9)],
-			M::Rubble
+			| M::AmberGlass
+			| M::Rubble
 			| M::Gravel
-			| M::DryGrass
-			| M::Leaf
-			| M::PineLeaf
-			| M::Emberore
-			| M::Duskstone
-			| M::Glowvein
-			| M::Aetherock
 			| M::DepletedStone
 			| M::DepletedEmberore
 			| M::DepletedDuskstone
 			| M::DepletedGlowvein
 			| M::DepletedAetherock
-			| M::Heartwood
-			| M::DrainedHeartwood
 			| M::Leystone
-			| M::SpentLeystone
-			| M::Springstone
-			| M::SpentSpringstone => return None,
-		})
+			| M::SpentLeystone => E::Terra,
+			M::Snow | M::Springstone | M::SpentSpringstone => E::Unda,
+			M::Metal | M::Emberore | M::Duskstone | M::Glowvein => E::Ferrum,
+			M::Crystal | M::Aetherock => E::Aether,
+		}
+	}
+
+	/// Raw matter: the world hands the cube out and the bench never makes one. Its shapes are cut
+	/// for free — nothing was refined, so there is nothing to catalyse — which is the rule the
+	/// whole ladder rests on: essence enters a price the moment anything is refined, never before.
+	pub fn is_raw(self) -> bool {
+		self.refined_from().is_none() && self.refine_units().is_none()
+	}
+
+	/// How many refinements deep this substance sits: 0 for raw matter and for the essence-only
+	/// substances (transmuted, not refined), one more than its parent otherwise. Terminates because
+	/// the chains are pinned to.
+	pub fn tier(self) -> u32 {
+		match self.refined_from().and_then(|p| p.material()) {
+			Some(p) => 1 + p.tier(),
+			None => 0,
+		}
+	}
+
+	/// The essence a SHAPE of this substance costs per craft, beside its own cube: nothing for
+	/// raw matter, the tier in units of the primary essence for a refined one, and a hand-set
+	/// pinch for the essence-only two (a tier of zero would cut metal for free).
+	pub fn shape_units(self) -> Vec<(Essence, u32)> {
+		let n = match self {
+			Material::Metal => 3,
+			Material::Crystal => 2,
+			_ => self.tier(),
+		};
+		if n == 0 {
+			Vec::new()
+		} else {
+			vec![(self.essence(), n)]
+		}
 	}
 
 	/// What one DRAW of this substance pays, per node cell, at full
@@ -303,26 +363,10 @@ impl Material {
 	}
 }
 
-/// Prorate a whole-cube essence split down to a shape's `units`, rounding each line UP — the craft
-/// side, where the player pays.
-///
-/// A whole cube is the identity, which keeps every raw-block recipe exactly what it was before the
-/// grid. Nothing is prorated for a payout any more: a node is drawn whole, and only a node pays.
-pub fn cost_split(lines: &[(Essence, u32)], units: u32) -> Vec<(Essence, u32)> {
-	let subs = crate::shapes::SUBS_PER_BLOCK;
-	lines
-		.iter()
-		.map(|&(e, n)| {
-			// A listed line never vanishes: the thinnest shape of a
-			// one-unit material still costs its one unit.
-			(e, (n * units).div_ceil(subs).max(1))
-		})
-		.collect()
-}
-
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::block::ShapeFamily;
 
 	/// `ALL` is the roster every derived table walks — a material listed
 	/// twice would double a family's tiles, and one left out would silently
@@ -332,7 +376,7 @@ mod tests {
 		// `COUNT` is written by hand, so `ALL`'s length proves nothing —
 		// what the type cannot catch is a duplicate squeezing a material
 		// out, and a NEW variant never added at all. The exhaustive match
-		// is the compile gate for the second: a 38th material fails to
+		// is the compile gate for the second: a 42nd material fails to
 		// build here until this test — the `ALL` sweep — is touched.
 		for (i, &m) in Material::ALL.iter().enumerate() {
 			match m {
@@ -384,6 +428,13 @@ mod tests {
 			);
 			assert!(!m.name().is_empty(), "{m:?} has no label");
 		}
+		// Unlock order, which is what the tab's tiles read: a material
+		// never lists before one that opens earlier.
+		let levels: Vec<u32> = Material::ALL
+			.iter()
+			.filter_map(|&m| crate::unlock::material(m))
+			.collect();
+		assert!(levels.windows(2).all(|w| w[0] <= w[1]), "{levels:?}");
 	}
 
 	/// The node yield basis is exactly the live node roster: only a find
@@ -405,7 +456,8 @@ mod tests {
 					| Material::Springstone
 			);
 			if is_node {
-				assert!(m.craft_units().is_none(), "{m:?} must never be craftable");
+				assert!(m.refine_units().is_none(), "{m:?} must never be craftable");
+				assert!(m.is_raw(), "{m:?} must never be craftable");
 				assert!(total > 0, "{m:?} is a find and must pay something");
 			} else {
 				assert_eq!(total, 0, "{m:?} pays essence without being a node");
@@ -413,50 +465,105 @@ mod tests {
 		}
 	}
 
-	/// A whole cube prorates to itself — which is what keeps the
-	/// essence-only substances' cube recipes exactly their split.
+	/// The refinement chains, held together: every refined substance names a parent CUBE that is
+	/// itself raw or refined, the chain reaches the world within a few links with no cycle, the
+	/// catalyst is a price that climbs with the tier and never a cube's worth, and the essence-only
+	/// two cost more than a cube's worth with no parent at all. A raw substance's shapes are free.
 	#[test]
-	fn a_whole_cube_prorates_to_itself() {
+	fn refinement_chains_bottom_out_in_the_world() {
 		for &m in &Material::ALL {
-			let subs = crate::shapes::SUBS_PER_BLOCK;
-			if let Some(c) = m.craft_units() {
-				assert_eq!(cost_split(c, subs), c.to_vec(), "{m:?} cost");
+			// Walk the chain: a parent is always a full cube of some material.
+			let mut depth = 0;
+			let mut at = m;
+			while let Some(p) = at.refined_from() {
+				let (pm, ps) = p
+					.grid_cell()
+					.unwrap_or_else(|| panic!("{m:?} is refined from {p:?}, which is no cube"));
+				assert_eq!(ps, ShapeFamily::Block, "{m:?} is refined from a shape");
+				assert!(
+					m.refine_units().is_some(),
+					"{m:?} has a parent and no catalyst"
+				);
+				depth += 1;
+				assert!(depth <= 4, "{m:?}'s chain never reaches the world");
+				at = pm;
 			}
-		}
-	}
-
-	/// The feedstock-and-catalyst shape, held together: every craftable substance either names a
-	/// world-handed feedstock cube plus a SMALL catalyst, or transmutes from essence alone at a
-	/// whole cube's worth — never both at once, and never a feedstock the bench itself is the only
-	/// source of, which would nest the bootstrap deadlock one table deeper.
-	#[test]
-	fn feedstock_recipes_carry_catalysts_and_essence_recipes_carry_cubes() {
-		for &m in &Material::ALL {
-			let Some(units) = m.craft_units() else {
-				assert!(m.feedstock().is_none(), "{m:?} feeds an uncraftable");
-				continue;
-			};
-			let total: u32 = units.iter().map(|&(_, n)| n).sum();
-			match m.feedstock() {
-				Some(f) => {
-					assert!(!f.is_bench_only(), "{m:?} feeds on bench-only {f:?}");
-					assert!(f.is_slottable(), "{m:?} feeds on unholdable {f:?}");
+			assert!(
+				at.is_raw() || at.refine_units().is_some(),
+				"{m:?} bottoms out in {at:?}"
+			);
+			assert_eq!(m.tier(), depth, "{m:?}");
+			match (m.refined_from(), m.refine_units()) {
+				(Some(_), Some(units)) => {
+					let total: u32 = units.iter().map(|&(_, n)| n).sum();
 					assert!(
-						total < crate::shapes::SUBS_PER_BLOCK / 3,
-						"{m:?}'s catalyst is a price, not a pinch"
+						total < crate::shapes::SUBS_PER_BLOCK,
+						"{m:?}'s catalyst is a cube's worth, not a catalyst"
+					);
+					assert!(total >= 4, "{m:?}'s catalyst is a pinch, not a price");
+					assert_eq!(units[0].0, m.essence(), "{m:?} leads with its own essence");
+					assert!(!m.shape_units().is_empty(), "{m:?}'s shapes cost nothing");
+				}
+				(None, Some(units)) => {
+					let total: u32 = units.iter().map(|&(_, n)| n).sum();
+					assert!(
+						total >= crate::shapes::SUBS_PER_BLOCK,
+						"{m:?} transmutes from essence alone and must cost a cube's worth"
+					);
+					assert!(!m.shape_units().is_empty(), "{m:?}'s shapes cost nothing");
+				}
+				(None, None) => {
+					assert!(m.is_raw());
+					assert!(
+						m.shape_units().is_empty(),
+						"{m:?} is raw and its shapes cost"
 					);
 				}
-				None => assert!(
-					total >= crate::shapes::SUBS_PER_BLOCK,
-					"{m:?} transmutes from essence alone and must cost a cube's worth"
-				),
+				(Some(_), None) => unreachable!("asserted above"),
 			}
 		}
-		// The rosters that make the split meaningful, named.
-		assert_eq!(Material::Stone.feedstock(), Some(BlockType::Rubble));
-		assert_eq!(Material::Lumber.feedstock(), Some(BlockType::Wood));
-		assert_eq!(Material::Glass.feedstock(), Some(BlockType::Sand));
-		assert_eq!(Material::Metal.feedstock(), None);
-		assert_eq!(Material::Crystal.feedstock(), None);
+		// The catalyst climbs the chain: a rung costs more than the one below it.
+		for &m in &Material::ALL {
+			if let Some(p) = m.refined_from().and_then(|p| p.material())
+				&& let (Some(mine), Some(theirs)) = (m.refine_units(), p.refine_units())
+			{
+				let sum = |u: &[(Essence, u32)]| u.iter().map(|&(_, n)| n).sum::<u32>();
+				assert!(
+					sum(mine) > sum(theirs),
+					"{m:?} is cheaper than {p:?} below it"
+				);
+			}
+		}
+		// The rosters that make the chains meaningful, named.
+		assert_eq!(Material::Stone.refined_from(), Some(BlockType::Rubble));
+		assert_eq!(Material::StoneBrick.refined_from(), Some(BlockType::Stone));
+		assert_eq!(
+			Material::PolishedStone.refined_from(),
+			Some(BlockType::StoneBrick)
+		);
+		assert_eq!(Material::Lumber.refined_from(), Some(BlockType::Wood));
+		assert_eq!(Material::RedLumber.refined_from(), Some(BlockType::Lumber));
+		assert_eq!(Material::Glass.refined_from(), Some(BlockType::Sand));
+		assert_eq!(Material::BlueGlass.refined_from(), Some(BlockType::Glass));
+		assert_eq!(Material::Metal.refined_from(), None);
+		assert_eq!(Material::Crystal.refined_from(), None);
+		assert_eq!(
+			[
+				Material::Dirt.tier(),
+				Material::Stone.tier(),
+				Material::StoneBrick.tier(),
+				Material::PolishedStone.tier(),
+				Material::Metal.tier()
+			],
+			[0, 1, 2, 3, 0]
+		);
+		for m in [
+			Material::Dirt,
+			Material::Wood,
+			Material::Rubble,
+			Material::Sand,
+		] {
+			assert!(m.is_raw(), "{m:?}");
+		}
 	}
 }

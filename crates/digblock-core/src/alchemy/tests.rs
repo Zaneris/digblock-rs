@@ -224,11 +224,10 @@ fn pace_steps_and_the_catalog_are_pinned() {
 	}
 }
 
-/// The grid's craft prices, block by block — the feedstock-and-catalyst
-/// derivation, golden-pinned: a cube of the material's feedstock plus
-/// its small catalyst for every shape (the batch varies, the price per
-/// CRAFT does not), and a cube's worth of pure essence for the
-/// substances nothing in the world is made of.
+/// The grid's craft prices, block by block — the chain derivation, golden-pinned: a raw shape is
+/// its cube and nothing else, a refined cube is its parent cube plus a catalyst that climbs the
+/// chain, a refined shape is its own cube plus its tier's pinch, and the essence-only two cost
+/// more than a cube's worth of the currency and cut with a hand-set pinch.
 #[test]
 fn the_grid_reproduces_the_shipped_recipes() {
 	use BlockType as B;
@@ -241,22 +240,67 @@ fn the_grid_reproduces_the_shipped_recipes() {
 	);
 	// block, feedstock, catalyst, batch.
 	let cases: &[Row] = &[
-		(B::WoodStairs, &[(B::Wood, 1)], &[(E::Vitae, 3)], 1),
-		(B::StoneStairs, &[(B::Rubble, 1)], &[(E::Terra, 3)], 1),
-		(B::LumberDoor, &[(B::Wood, 1)], &[(E::Vitae, 3)], 2),
-		(B::WoodSlab, &[(B::Wood, 1)], &[(E::Vitae, 3)], 3),
-		(B::StoneSlab, &[(B::Rubble, 1)], &[(E::Terra, 3)], 3),
-		(B::Lumber, &[(B::Wood, 1)], &[(E::Vitae, 3)], 1),
-		(B::Stone, &[(B::Rubble, 1)], &[(E::Terra, 3)], 1),
-		(B::Sandstone, &[(B::Sand, 1)], &[(E::Terra, 3)], 1),
-		(B::Glass, &[(B::Sand, 1)], &[(E::Terra, 3)], 1),
-		(B::StoneDoor, &[(B::Rubble, 1)], &[(E::Terra, 3)], 2),
-		(B::DarkLumber, &[(B::Wood, 1)], &[(E::Vitae, 3)], 1),
-		(B::RedLumberStairs, &[(B::Wood, 1)], &[(E::Vitae, 3)], 1),
-		// The essence-only substances: no feedstock, the volume rule.
-		(B::Metal, &[], &[(E::Ferrum, 27)], 1),
-		(B::MetalSlab, &[], &[(E::Ferrum, 9)], 1),
-		(B::Crystal, &[], &[(E::Aether, 18), (E::Ferrum, 9)], 1),
+		// Raw matter, shaped as it comes: feedstock alone, the vessels' kind of price.
+		(B::DirtSlab, &[(B::Dirt, 1)], &[], 3),
+		(B::DirtStairs, &[(B::Dirt, 2)], &[], 3),
+		(B::WoodStairs, &[(B::Wood, 2)], &[], 3),
+		(B::WoodSlab, &[(B::Wood, 1)], &[], 3),
+		(B::RubbleSlab, &[(B::Rubble, 1)], &[], 3),
+		(B::RubbleStairs, &[(B::Rubble, 2)], &[], 3),
+		// Tier 1: refined from a raw cube, and shaped from its own.
+		(B::Lumber, &[(B::Wood, 1)], &[(E::Vitae, 4)], 1),
+		(B::LumberDoor, &[(B::Lumber, 1)], &[(E::Vitae, 1)], 2),
+		(B::Stone, &[(B::Rubble, 1)], &[(E::Terra, 5)], 1),
+		(B::StoneSlab, &[(B::Stone, 1)], &[(E::Terra, 1)], 3),
+		(B::StoneStairs, &[(B::Stone, 2)], &[(E::Terra, 1)], 3),
+		(B::StoneDoor, &[(B::Stone, 1)], &[(E::Terra, 1)], 2),
+		(B::Sandstone, &[(B::Sand, 1)], &[(E::Terra, 5)], 1),
+		(B::Glass, &[(B::Sand, 1)], &[(E::Terra, 6)], 1),
+		// Tier 2: refined from a refined cube, a second essence on the line.
+		(B::StoneBrick, &[(B::Stone, 1)], &[(E::Terra, 8)], 1),
+		(
+			B::StoneBrickSlab,
+			&[(B::StoneBrick, 1)],
+			&[(E::Terra, 2)],
+			3,
+		),
+		(
+			B::DarkLumber,
+			&[(B::Lumber, 1)],
+			&[(E::Vitae, 6), (E::Terra, 2)],
+			1,
+		),
+		(
+			B::RedLumberStairs,
+			&[(B::RedLumber, 2)],
+			&[(E::Vitae, 2)],
+			3,
+		),
+		(
+			B::BlueGlass,
+			&[(B::Glass, 1)],
+			&[(E::Terra, 4), (E::Unda, 4)],
+			1,
+		),
+		// Tier 3.
+		(
+			B::PolishedStone,
+			&[(B::StoneBrick, 1)],
+			&[(E::Terra, 14)],
+			1,
+		),
+		(
+			B::PolishedStoneStairs,
+			&[(B::PolishedStone, 2)],
+			&[(E::Terra, 3)],
+			3,
+		),
+		// The essence-only substances: no parent, a cube's worth and more,
+		// and their shapes cut from the cube like everything else.
+		(B::Metal, &[], &[(E::Ferrum, 45)], 1),
+		(B::MetalSlab, &[(B::Metal, 1)], &[(E::Ferrum, 3)], 3),
+		(B::Crystal, &[], &[(E::Aether, 27), (E::Ferrum, 18)], 1),
+		(B::CrystalSlab, &[(B::Crystal, 1)], &[(E::Aether, 2)], 3),
 		// And the vessels, feedstock alone.
 		(B::Bucket, &[(B::Wood, 6)], &[], 1),
 		(B::EssenceSiphon, &[(B::Wood, 2), (B::Leaves, 5)], &[], 1),
@@ -264,7 +308,7 @@ fn the_grid_reproduces_the_shipped_recipes() {
 		(
 			B::Torch,
 			&[(B::Wood, 1)],
-			&[(E::Vitae, 2), (E::Terra, 2)],
+			&[(E::Vitae, 2), (E::Terra, 3)],
 			1,
 		),
 	];
@@ -303,6 +347,18 @@ fn pace_tracks_what_a_craft_is_worth() {
 		"the bucket's timber is worth time"
 	);
 	assert!(craft_worth(B::EssenceSiphon) > craft_worth(B::Bucket));
+	// Worth is what a craft EMBODIES, so it climbs the chain: a polished
+	// stair carries the rubble, three catalysts and the cut, and a raw
+	// slab carries a cube and nothing else.
+	assert!(
+		craft_worth(B::DirtSlab) > 0,
+		"free to catalyse, not free to cut"
+	);
+	assert!(craft_worth(B::Stone) > craft_worth(B::RubbleSlab));
+	assert!(craft_worth(B::StoneBrick) > craft_worth(B::Stone));
+	assert!(craft_worth(B::PolishedStone) > craft_worth(B::StoneBrick));
+	assert!(craft_worth(B::PolishedStoneStairs) > craft_worth(B::StoneStairs));
+	assert!(craft_worth(B::MetalSlab) > craft_worth(B::StoneSlab));
 	// The pick's forge stays the longest hold in the catalog.
 	for &b in &BlockType::ALL {
 		if craft_ideal(b).is_some() && b != B::ResonantPick {
@@ -564,6 +620,58 @@ fn essence_faucets_open_where_they_always_did() {
 		],
 		"an essence's faucet moved — check every recipe priced in it \
 			 still has a level a player can reach it at"
+	);
+}
+
+/// **Every feedstock chain bottoms out in the world**, and in order: walking a recipe's feedstock
+/// reaches a world-handed block within a few links with no cycle, and every bench-made link opens
+/// at or before the recipe that consumes it — a stone stair must not open before stone does.
+/// `every_price_has_a_source_at_its_own_level` cannot say this: `pickup` answers on the DROP, and
+/// the world's own stone drops rubble, so a bench-made stone passes its gate at the first level.
+#[test]
+fn every_feedstock_chain_bottoms_out_in_the_world() {
+	let mut deepest = 0;
+	for &item in &BlockType::ALL {
+		let Some(level) = crate::unlock::craft(item) else {
+			assert!(
+				craft_feedstock(item).is_empty(),
+				"{item:?} feeds with no recipe"
+			);
+			continue;
+		};
+		let mut frontier = vec![(item, 0u32)];
+		while let Some((b, depth)) = frontier.pop() {
+			assert!(
+				depth <= 5,
+				"{item:?}'s feedstock chain never reaches the world"
+			);
+			deepest = deepest.max(depth);
+			for (f, n) in craft_feedstock(b) {
+				assert!(n > 0, "{b:?}: a zero-count feedstock line");
+				assert_ne!(f, item, "{item:?} feeds on itself");
+				if f.is_bench_only() {
+					let opens = crate::unlock::craft(f)
+						.unwrap_or_else(|| panic!("{b:?} feeds on {f:?}, which nothing makes"));
+					assert!(
+						opens <= level,
+						"{item:?} opens at {level} and feeds on {f:?}, which opens at {opens}"
+					);
+					frontier.push((f, depth + 1));
+				}
+			}
+		}
+	}
+	assert!(
+		deepest >= 3,
+		"the chains are shallower than the design: {deepest}"
+	);
+	// A shape is cut from its OWN cube, whichever hand supplies it.
+	use BlockType as B;
+	assert_eq!(craft_feedstock(B::DirtSlab), vec![(B::Dirt, 1)]);
+	assert_eq!(craft_feedstock(B::StoneSlab), vec![(B::Stone, 1)]);
+	assert_eq!(
+		craft_feedstock(B::PolishedStoneSlab),
+		vec![(B::PolishedStone, 1)]
 	);
 }
 

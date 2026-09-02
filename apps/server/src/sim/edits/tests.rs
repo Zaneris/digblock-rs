@@ -2378,26 +2378,26 @@ fn alchemy_craft_and_same_tick_place() {
 	let mut sim = flat_sim("alchemy");
 	let mut c = connect(&mut sim, 1);
 	wait_live(&mut sim, 1);
-	// One timber cube plus enough Vitae for one slab craft's catalyst
-	// at the level-1 waste, with the remainder asserted below.
-	sim.test_grant(1, BlockType::Wood, 1);
+	// One dirt cube, and some Vitae the craft must NOT touch: a raw
+	// shape is feedstock alone, asserted on the rebase below.
+	sim.test_grant(1, BlockType::Dirt, 1);
 	sim.test_grant_essence(1, Essence::Vitae, 10);
 
 	// Craft + place, both queued in ONE tick: wire order must debit
-	// before the place's stock gate runs. The WOOD slab is the craft a
-	// fresh player can afford — under §7.2's grid the material carries
+	// before the place's stock gate runs. The DIRT slab is the craft a
+	// fresh player can afford — under the grid the material carries
 	// the progression, so clean stone in any shape waits for its own
-	// material unlock.
+	// material unlock and the timber shapes for theirs.
 	let pos = sim.test_player(1).unwrap().pos;
 	let down = Vec3::new(0.45, -1.0, 0.0).normalize();
 	let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();
-	let slab = make_cell(BlockType::WoodSlab, 0);
+	let slab = make_cell(BlockType::DirtSlab, 0);
 	sim.tick_once(vec![
 		SimEvent::Msg {
 			conn_id: 1,
 			msg: ClientMsg::Alchemy {
 				op: AlchemyOp::Craft {
-					item: BlockType::WoodSlab as u16,
+					item: BlockType::DirtSlab as u16,
 					count: 1,
 				},
 			},
@@ -2431,15 +2431,21 @@ fn alchemy_craft_and_same_tick_place() {
 		"craft-then-place landed in one tick: {:?}",
 		c.msgs
 	);
-	// The level-1 economy: the craft spends the timber cube and the
-	// catalyst at that level's waste, leaving the Vitae remainder.
-	let (catalyst, n) =
-		digblock_core::alchemy::craft_ideal(BlockType::WoodSlab).expect("a slab is bench-made")[0];
-	assert_eq!(catalyst, Essence::Vitae, "the slab's catalyst");
-	let left = 10 - digblock_core::alchemy::craft_cost(n, 1);
+	// The level-1 economy: a raw shape spends the cube and nothing else,
+	// so the Vitae stands untouched in the rebase.
+	assert_eq!(
+		digblock_core::alchemy::craft_ideal(BlockType::DirtSlab),
+		Some(Vec::new()),
+		"a raw shape carries no catalyst"
+	);
+	assert_eq!(
+		sim.test_inventory_count(1, BlockType::Dirt),
+		0,
+		"the cube is spent"
+	);
 	let want = (
-		digblock_core::inventory::SUB_WIRE_FLAG | catalyst as u16,
-		left,
+		digblock_core::inventory::SUB_WIRE_FLAG | Essence::Vitae as u16,
+		10,
 	);
 	assert!(
 		c.msgs.iter().any(|m| matches!(
@@ -2447,7 +2453,7 @@ fn alchemy_craft_and_same_tick_place() {
 			ServerMsg::InventoryFull { counts }
 				if counts.contains(&want)
 		)),
-		"Vitae remainder in the rebase: {:?}",
+		"Vitae untouched in the rebase: {:?}",
 		c.msgs
 	);
 
@@ -2458,14 +2464,14 @@ fn alchemy_craft_and_same_tick_place() {
 		conn_id: 1,
 		msg: ClientMsg::Alchemy {
 			op: AlchemyOp::Craft {
-				item: BlockType::WoodSlab as u16,
+				item: BlockType::DirtSlab as u16,
 				count: 999,
 			},
 		},
 	}]);
-	let before = sim.test_inventory_count(1, BlockType::WoodSlab);
+	let before = sim.test_inventory_count(1, BlockType::DirtSlab);
 	c.drain();
-	assert_eq!(sim.test_inventory_count(1, BlockType::WoodSlab), before);
+	assert_eq!(sim.test_inventory_count(1, BlockType::DirtSlab), before);
 	assert!(
 		c.msgs
 			.iter()
@@ -3180,4 +3186,116 @@ fn the_declared_orientation_shapes_the_swing_and_clamps() {
 			"a junk byte has to dig the shipped row (z={z})"
 		);
 	}
+}
+
+/// The chunk slot budget: a place whose template has no room left in its
+/// chunk is refused before stock is touched. No shipped shape is costly
+/// enough to fill a chunk on its own, so the test installs a preview
+/// variant of 24 loose cubes (six faces each) on the chair, fills the
+/// ground under the player with it, and asks for one more shaped block.
+#[test]
+fn place_refused_when_the_chunk_slot_budget_is_spent() {
+	use digblock_core::budget::{SHAPED_SLOTS, cell_cost};
+	use digblock_core::chunk::make_cell;
+	use digblock_core::shapes::{
+		self, SubBox,
+		def::{DefBox, Roles},
+	};
+	let mut boxes = Vec::new();
+	for i in 0..24u8 {
+		let (x, y, z) = (2 * (i % 3), 2 * ((i / 3) % 3), 2 * (i / 9));
+		boxes.push(DefBox {
+			sub: SubBox::new([x, y, z], [x + 1, y + 1, z + 1]),
+			roles: Roles::ALL,
+			tex: [None; 3],
+		});
+	}
+	shapes::set_preview_override(
+		BlockType::Chair,
+		0,
+		shapes::preview_variant(&boxes, (0, 0, 0), 0),
+	);
+	let fat = make_cell(BlockType::Chair, 0);
+	let cost = cell_cost(fat);
+	assert_eq!(cost, 24 * 6);
+
+	let mut sim = flat_sim("budget");
+	let mut c = connect(&mut sim, 1);
+	wait_live(&mut sim, 1);
+	// The place lands in the chunk holding the ground under spawn. Fill
+	// that chunk's cells BELOW the surface row until one more shape can't
+	// fit; the surface stays stone so the aimed ray still lands on it.
+	let ground = FLAT_GROUND_TOP as i32;
+	let (cy, surface_row) = (ground.div_euclid(16), ground.rem_euclid(16));
+	let mut need = SHAPED_SLOTS / cost + 1;
+	'fill: for ly in 0..surface_row {
+		for z in 0..16 {
+			for x in 0..16 {
+				sim.test_set_cell(x, cy * 16 + ly, z, fat);
+				need -= 1;
+				if need == 0 {
+					break 'fill;
+				}
+			}
+		}
+	}
+	assert_eq!(need, 0, "ran out of cells under the surface");
+
+	// Stone first so it takes slot 0; the stairs land in slot 1.
+	sim.test_grant(1, BlockType::Stone, 1);
+	sim.test_grant(1, BlockType::StoneStairs, 1);
+	let pos = sim.test_player(1).unwrap().pos;
+	// The column beside the player's own, or the stair is inside them.
+	let ground = (pos.x.floor() as i32 + 1, ground, pos.z.floor() as i32);
+	let target = (ground.0, ground.1 + 1, ground.2);
+	assert_eq!(
+		target.1.div_euclid(16),
+		cy,
+		"the place lands in the filled chunk"
+	);
+	place_aimed(
+		&mut sim,
+		&mut c,
+		1,
+		BlockType::StoneStairs as u16,
+		top_point(ground, 12),
+		1,
+	);
+	assert!(
+		c.msgs.iter().any(|m| matches!(
+			m,
+			ServerMsg::EditRejected {
+				client_seq: 1,
+				reason: RejectReason::TooDetailed
+			}
+		)),
+		"{:?}",
+		c.msgs
+	);
+	assert_eq!(
+		sim.test_cell_at(target.0, target.1, target.2),
+		Some(0),
+		"nothing written"
+	);
+	assert_eq!(
+		sim.test_inventory_count(1, BlockType::StoneStairs),
+		1,
+		"refused before the stock gate"
+	);
+	// A full block costs nothing and still goes in.
+	place_aimed(
+		&mut sim,
+		&mut c,
+		2,
+		BlockType::Stone as u16,
+		top_point(ground, 12),
+		0,
+	);
+	assert_eq!(
+		sim.test_cell_at(target.0, target.1, target.2),
+		Some(BlockType::Stone as u16),
+		"{:?}",
+		c.msgs
+	);
+	shapes::clear_preview_overrides();
 }

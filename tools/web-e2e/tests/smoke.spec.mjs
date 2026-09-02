@@ -95,10 +95,13 @@ test("the shape editor boots, loads a built-in, and draws its panel", async ({ d
 	const sky = detail(png, { region: [Math.round(w * 0.65), 0, w, Math.round(h * 0.3)] });
 	expect(panel, `the panel corner (${panel.toFixed(2)}) should be busier than the opposite one (${sky.toFixed(2)})`)
 		.toBeGreaterThan(sky * 2);
-	// Enter loads the selected built-in (the roster's first): the sculpted
-	// preview lands on the pad through the game's own mesher, so the dark
-	// flat pad mid-frame gains the object's lit faces.
-	const mid = { region: [Math.round(w * 0.42), Math.round(h * 0.5), Math.round(w * 0.58), Math.round(h * 0.78)] };
+	// Enter loads the selected built-in (the roster's first, the bed): the
+	// sculpted preview lands on the pad through the game's own mesher, so
+	// the flat pad under the object's footprint gains its lit faces. The
+	// box is the FOOTPRINT, not the whole pad: under the editor's frozen
+	// afternoon sun the pad itself is bright, and a box mostly made of pad
+	// would measure the sun rather than the object.
+	const mid = { region: [Math.round(w * 0.45), Math.round(h * 0.56), Math.round(w * 0.55), Math.round(h * 0.74)] };
 	const flat = stats(png, mid).mean;
 	await d.keys("Enter");
 	await d.page.waitForTimeout(800);

@@ -404,6 +404,13 @@ impl Engine {
 							_ => {}
 						}
 					}
+					// The budget is predicted too, so this only speaks when
+					// the two ends' chunks disagreed, and only once per action.
+					if reason == digblock_net::messages::RejectReason::TooDetailed
+						&& matches!(e.inv_delta, Some((_, n)) if n < 0)
+					{
+						self.push_feed(Msg::PlaceTooDetailed);
+					}
 				}
 				NetEvent::DigRefused { cell, reason } => {
 					// Abandon the hold the moment the server says no, so

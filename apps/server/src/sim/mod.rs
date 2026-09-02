@@ -74,6 +74,8 @@ const DRAW_DIST_MAX: i32 = 32;
 /// The first protocol whose decoder knows `ServerMsg::SpellBar` — the
 /// join sync sends it only to peers whose Hello spoke this or newer.
 const SPELL_BAR_PROTOCOL: u16 = 41;
+/// First protocol whose `RejectReason` decoder knows `TooDetailed`.
+pub(crate) const DETAIL_BUDGET_PROTOCOL: u16 = 42;
 /// Cap on the stored spell-bar bytes (the client sends 3 today; the
 /// headroom is for a wider bar, the bound is for a hostile peer).
 const SPELL_BAR_MAX: usize = 16;

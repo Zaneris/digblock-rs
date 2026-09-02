@@ -211,13 +211,13 @@ const HEARTWOOD_SALT: u64 = 0x8ea7_c0de_57ee_d001;
 /// The share of ordinary trees whose trunk carries a heart, in 100ths —
 /// the surface counterpart of `ore`'s deposit rate: how far a forager
 /// walks between finds.
-const HEARTWOOD_IN_100: u64 = 12;
+const HEARTWOOD_IN_100: u64 = 20;
 
 /// How many trunk cells of a heartwood tree manifest, counted up from the cell above the root —
 /// the heart sits low, at eye height, where a standing player's crosshair naturally lands. Every
 /// trunk column that carries a heart carries this much of one, a landmark's four included: a heart
 /// that grew with the trunk would make one tree worth a session.
-const HEART_CELLS: i32 = 2;
+const HEART_CELLS: i32 = 3;
 
 /// Does this cell hold heartwood — the living core of a worldgen tree? Pure in `(x, y, z, seed)`
 /// like [`ore::ore_at`]: the trunk comes from [`crate::decoration::trunk_at`], and whether a tree

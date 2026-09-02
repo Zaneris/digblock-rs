@@ -2,7 +2,7 @@ use super::*;
 use digblock_core::skills::{Skill, total_xp_for};
 use digblock_core::unlock::Kind;
 
-/// A torch — craft-only, Alchemy 8 — two blocks ahead.
+/// A torch — craft-only, gated at its own recipe's level — two blocks ahead.
 fn torch_ahead() -> (Engine, (i32, i32, i32)) {
 	block_ahead(BlockType::Torch)
 }

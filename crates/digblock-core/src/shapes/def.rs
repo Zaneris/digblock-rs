@@ -22,7 +22,7 @@
 //! writer; parse(emit(x)) is a fixpoint (comments are not round-tripped).
 
 use super::SubBox;
-use crate::block::{ShapeKind, tex};
+use crate::block::{ShapeKind, ShapeStyle, tex};
 use std::sync::LazyLock;
 
 /// Which of a variant's derived lists a box feeds. Non-empty by construction
@@ -440,8 +440,8 @@ fn layer_name(layer: u16) -> &'static str {
 
 // --- the built-in roster ----------------------------------------------
 
-/// (asset name, embedded source) of every shipped `.shape` — grows as the
-/// hardcoded families are ported until all seven `ShapeKind`s live here.
+/// (asset name, embedded source) of every shipped `.shape`: one per kind,
+/// plus one per alternate look (`<kind>_<style>`, see [`asset_name`]).
 pub const ASSETS: &[(&str, &str)] = &[
 	("bed", include_str!("../../../../assets/shapes/bed.shape")),
 	(
@@ -453,6 +453,14 @@ pub const ASSETS: &[(&str, &str)] = &[
 	(
 		"stairs",
 		include_str!("../../../../assets/shapes/stairs.shape"),
+	),
+	(
+		"stairs_lumber",
+		include_str!("../../../../assets/shapes/stairs_lumber.shape"),
+	),
+	(
+		"stairs_stone",
+		include_str!("../../../../assets/shapes/stairs_stone.shape"),
 	),
 	(
 		"table",
@@ -467,7 +475,7 @@ pub const ASSETS: &[(&str, &str)] = &[
 /// The kind an asset name binds to; the loader refuses names it doesn't know.
 pub fn kind_by_name(name: &str) -> Option<ShapeKind> {
 	Some(match name {
-		"stairs" => ShapeKind::Stairs,
+		"stairs" | "stairs_lumber" | "stairs_stone" => ShapeKind::Stairs,
 		"door" => ShapeKind::Door,
 		"slab" => ShapeKind::Slab,
 		"torch" => ShapeKind::Torch,
@@ -476,6 +484,31 @@ pub fn kind_by_name(name: &str) -> Option<ShapeKind> {
 		"bed" => ShapeKind::Bed,
 		_ => return None,
 	})
+}
+
+/// A kind's canonical asset name: the file its `Plain` look bakes from.
+fn kind_name(kind: ShapeKind) -> &'static str {
+	match kind {
+		ShapeKind::Stairs => "stairs",
+		ShapeKind::Door => "door",
+		ShapeKind::Slab => "slab",
+		ShapeKind::Torch => "torch",
+		ShapeKind::Table => "table",
+		ShapeKind::Chair => "chair",
+		ShapeKind::Bed => "bed",
+	}
+}
+
+/// The asset a (kind, look) pair bakes from: the kind's own file for
+/// `Plain`, `<kind>_<style>` for an alternate look. The ONE place the
+/// enum becomes a file name; `of` panics if the roster lacks it.
+pub fn asset_name(kind: ShapeKind, style: ShapeStyle) -> String {
+	let kind = kind_name(kind);
+	match style {
+		ShapeStyle::Plain => kind.to_string(),
+		ShapeStyle::Lumber => format!("{kind}_lumber"),
+		ShapeStyle::Stone => format!("{kind}_stone"),
+	}
 }
 
 /// The state model the code-side nibble layout defines for a kind; a file
@@ -495,7 +528,7 @@ fn kind_footprint(kind: ShapeKind) -> [u8; 3] {
 	super::state_layout(kind).footprint
 }
 
-static DEFS: LazyLock<Vec<(ShapeKind, ShapeDef)>> = LazyLock::new(|| {
+static DEFS: LazyLock<Vec<(&'static str, ShapeDef)>> = LazyLock::new(|| {
 	ASSETS
 		.iter()
 		.map(|&(name, src)| {
@@ -514,16 +547,18 @@ static DEFS: LazyLock<Vec<(ShapeKind, ShapeDef)>> = LazyLock::new(|| {
 			if d.ramp != (kind == ShapeKind::Stairs) {
 				fail("ramp is stairs' physics contract, exactly");
 			}
-			(kind, d)
+			(name, d)
 		})
 		.collect()
 });
 
-/// The loaded definition for a ported kind. Panics for a kind not yet in the
-/// roster — the registry only asks for kinds it was rewired to.
-pub(crate) fn of(kind: ShapeKind) -> &'static ShapeDef {
+/// The loaded definition for a kind in one of its looks. Panics for a pair
+/// the roster has no file for — a styled block row names a file that must
+/// exist, and `every_shape_asset_parses_and_bakes` asks for every row's.
+pub(crate) fn of(kind: ShapeKind, style: ShapeStyle) -> &'static ShapeDef {
+	let name = asset_name(kind, style);
 	DEFS.iter()
-		.find(|&&(k, _)| k == kind)
+		.find(|&&(n, _)| n == name)
 		.map(|(_, d)| d)
-		.unwrap_or_else(|| panic!("no shape asset for {kind:?}"))
+		.unwrap_or_else(|| panic!("no shape asset {name} for {kind:?} in the {style:?} look"))
 }
