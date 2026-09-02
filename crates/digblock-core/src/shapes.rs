@@ -21,6 +21,7 @@ use glam::Vec3;
 use std::sync::LazyLock;
 
 pub mod def;
+mod ramp;
 
 /// Sub-cells per block edge.
 pub const GRID: u8 = 12;
@@ -393,6 +394,30 @@ pub struct ShapeQuad {
 	/// Boundary quads: the covered rect [a0, b0, a1, b1) in the neutral
 	/// tangent frame, for `FaceMask::covers`. Zeroed for interior quads.
 	pub rect: [u8; 4],
+}
+
+impl ShapeQuad {
+	/// A folded quad: two corners coincide, so one of its two triangles is
+	/// degenerate and only the other draws (the ramp pass's side pieces).
+	pub fn is_tri(&self) -> bool {
+		let c = &self.corners;
+		c[0] == c[1] || c[1] == c[3] || c[3] == c[2] || c[2] == c[0]
+	}
+
+	/// A ramp: the corners do not share the coordinate along `dir`'s axis.
+	pub fn is_ramp(&self) -> bool {
+		let (ox, oy, _) = self.dir.offset();
+		let axis = if ox != 0 {
+			0
+		} else if oy != 0 {
+			1
+		} else {
+			2
+		};
+		self.corners
+			.iter()
+			.any(|c| c[axis] != self.corners[0][axis])
+	}
 }
 
 /// Everything baked for one (shape, state) combination.
@@ -942,6 +967,11 @@ fn bake_tex(boxes: &[(SubBox, [Option<u16>; 3])]) -> Baked {
 		}
 		occ[occ_idx(x, y, z)]
 	};
+	// Runs of twelfth steps draw as ramps first; the greedy pass skips the
+	// face cells they replaced.
+	let joined = ramp::join(&occ, &|p, dir| {
+		boxes[owner[occ_idx(p[0], p[1], p[2])] as usize].1[tex_slot(dir)]
+	});
 	let mut quads = Vec::new();
 	let mut face_masks = [FaceMask::EMPTY; 6];
 	for dir in DIRS {
@@ -970,16 +1000,21 @@ fn bake_tex(boxes: &[(SubBox, [Option<u16>; 3])]) -> Baked {
 					if !occ_at(x, y, z) || occ_at(x + ox, y + oy, z + oz) {
 						continue;
 					}
+					if boundary {
+						let (na, nb) = neutral_axes(dir);
+						let p = [x, y, z];
+						face_masks[dir as usize].0[p[nb] as usize] |= 1 << p[na];
+					}
+					// Coverage counts the cell either way; only the draw
+					// is the ramp's.
+					if joined.consumed[dir as usize][occ_idx(x, y, z)] {
+						continue;
+					}
 					let t = boxes[owner[occ_idx(x, y, z)] as usize].1[slot];
 					let (u, v) = uv_cell(dir, (x, y, z));
 					grid[v as usize][u as usize] = Some(t);
 					if !values.contains(&t) {
 						values.push(t);
-					}
-					if boundary {
-						let (na, nb) = neutral_axes(dir);
-						let p = [x, y, z];
-						face_masks[dir as usize].0[p[nb] as usize] |= 1 << p[na];
 					}
 				}
 			}
@@ -1009,16 +1044,7 @@ fn bake_tex(boxes: &[(SubBox, [Option<u16>; 3])]) -> Baked {
 						[u1 as u8, v1 as u8],
 					];
 					let rect = if boundary {
-						let (na, nb) = neutral_axes(dir);
-						let mut lo = [G; 3];
-						let mut hi = [0; 3];
-						for c in corners {
-							for i in 0..3 {
-								lo[i] = lo[i].min(i32::from(c[i]));
-								hi[i] = hi[i].max(i32::from(c[i]));
-							}
-						}
-						[lo[na] as u8, lo[nb] as u8, hi[na] as u8, hi[nb] as u8]
+						boundary_rect(dir, &corners)
 					} else {
 						[0; 4]
 					};
@@ -1034,6 +1060,7 @@ fn bake_tex(boxes: &[(SubBox, [Option<u16>; 3])]) -> Baked {
 			}
 		}
 	}
+	quads.extend(joined.quads);
 	let occludes_full = std::array::from_fn(|d| face_masks[d].is_full());
 	Baked {
 		quads,
@@ -1041,6 +1068,21 @@ fn bake_tex(boxes: &[(SubBox, [Option<u16>; 3])]) -> Baked {
 		occludes_full,
 		bounds: union_bounds(&plain),
 	}
+}
+
+/// A boundary quad's covered rect [a0, b0, a1, b1) in the neutral tangent
+/// frame, for `FaceMask::covers`: the corners' bounding box.
+fn boundary_rect(dir: Dir, corners: &[[u8; 3]; 4]) -> [u8; 4] {
+	let (na, nb) = neutral_axes(dir);
+	let mut lo = [G; 3];
+	let mut hi = [0; 3];
+	for c in corners {
+		for i in 0..3 {
+			lo[i] = lo[i].min(i32::from(c[i]));
+			hi[i] = hi[i].max(i32::from(c[i]));
+		}
+	}
+	[lo[na] as u8, lo[nb] as u8, hi[na] as u8, hi[nb] as u8]
 }
 
 /// Greedy maximal-rectangle cover of a boolean grid: grow right, then

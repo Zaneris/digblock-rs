@@ -83,6 +83,9 @@ pub(super) struct EditorState {
 	status: String,
 	/// Worst per-cell baked quad count of the last preview.
 	quads_worst: usize,
+	/// Ramps and folded triangles in the worst variant, for the HUD.
+	ramps_worst: usize,
+	tris_worst: usize,
 	ctrl: bool,
 	shift: bool,
 	prev_dig: bool,
@@ -107,6 +110,8 @@ impl EditorState {
 			naming: None,
 			status: String::from("shape editor: [ ] pick file, Enter load, Ctrl+S save"),
 			quads_worst: 0,
+			ramps_worst: 0,
+			tris_worst: 0,
 			ctrl: false,
 			shift: false,
 			prev_dig: false,
@@ -303,7 +308,11 @@ impl Engine {
 			} else {
 				shapes::preview_variant(&[], (0, 0, 0), 0)
 			};
-			ed.quads_worst = ed.quads_worst.max(v.quads.len());
+			if v.quads.len() > ed.quads_worst || p == 0 {
+				ed.quads_worst = v.quads.len();
+				ed.ramps_worst = v.quads.iter().filter(|q| q.is_ramp()).count();
+				ed.tris_worst = v.quads.iter().filter(|q| q.is_tri()).count();
+			}
 			shapes::set_preview_override(BlockType::Chair, p, v);
 		}
 		// Re-lay the world cells (footprint or facing may have moved).
@@ -767,9 +776,19 @@ impl Engine {
 			),
 			(
 				format!(
-					"quads {} / {}{}",
+					"quads {} / {}{}{}{}",
 					ed.quads_worst,
 					digblock_core::shapes::MAX_SHAPE_QUADS,
+					if ed.ramps_worst > 0 {
+						format!("  ramps {}", ed.ramps_worst)
+					} else {
+						String::new()
+					},
+					if ed.tris_worst > 0 {
+						format!("  tris {}", ed.tris_worst)
+					} else {
+						String::new()
+					},
 					if over { "  OVER CAP" } else { "" }
 				),
 				over,

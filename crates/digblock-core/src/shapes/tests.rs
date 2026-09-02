@@ -1047,3 +1047,309 @@ fn preview_overrides_hijack_shape_of_and_clear() {
 	clear_preview_overrides();
 	assert!(shape_of(b, 5).is_none(), "cleared");
 }
+
+// --- twelfth-step ramps -------------------------------------------------
+
+/// Stairs of one-twelfth steps ascending +x, `steps` treads, across z in
+/// [z0, z1): tread i spans x in [i, 12) at height i.
+fn twelfth_stairs(steps: u8, z0: u8, z1: u8) -> Vec<SubBox> {
+	(0..steps)
+		.map(|i| SubBox::new([i, i, z0], [GRID, i + 1, z1]))
+		.collect()
+}
+
+fn ramps(b: &Baked) -> Vec<&ShapeQuad> {
+	b.quads.iter().filter(|q| q.is_ramp()).collect()
+}
+
+fn tris(b: &Baked) -> usize {
+	b.quads.iter().filter(|q| q.is_tri()).count()
+}
+
+#[test]
+fn a_run_of_twelfth_steps_bakes_to_one_ramp_and_two_side_triangles() {
+	let b = bake(&twelfth_stairs(12, 0, GRID));
+	// Ramp, two side triangles, and per side the y=0 row and the top
+	// column; then the top tread, the bottom, the back, the first riser.
+	assert_eq!(b.quads.len(), 11, "{:#?}", b.quads);
+	assert_eq!(tris(&b), 2);
+	let r = ramps(&b);
+	assert_eq!(r.len(), 1);
+	let r = r[0];
+	assert_eq!(r.dir, Dir::Top);
+	assert!(!r.boundary);
+	// The plane rises one per twelfth from the first tread's low edge
+	// (x=0, y=1) to the last riser's top (x=11, y=12), across all z.
+	for c in r.corners {
+		assert_eq!(
+			u32::from(c[1]),
+			u32::from(c[0]) + 1,
+			"corner {c:?} off the plane"
+		);
+		assert!(c[2] == 0 || c[2] == GRID);
+		assert!(c[0] == 0 || c[0] == 11);
+	}
+	// Nothing flat remains where the ramp is: every Top quad left is the
+	// last tread at y = 12.
+	for q in b.quads.iter().filter(|q| q.dir == Dir::Top && !q.is_ramp()) {
+		assert!(q.corners.iter().all(|c| c[1] == GRID), "{q:?}");
+	}
+	// Both side triangles are boundary quads with a valid cull rect.
+	for q in b.quads.iter().filter(|q| q.is_tri()) {
+		assert!(q.boundary);
+		let [a0, b0, a1, b1] = q.rect;
+		assert!(a0 < a1 && a1 <= GRID && b0 < b1 && b1 <= GRID, "{q:?}");
+	}
+	// The masks are still the raster's: the +x back and the bottom are full.
+	assert!(b.face_masks[Dir::West as usize].is_full());
+	assert!(b.face_masks[Dir::Bottom as usize].is_full());
+}
+
+#[test]
+fn a_single_twelfth_step_stays_boxy() {
+	let b = bake(&twelfth_stairs(2, 0, GRID));
+	assert!(ramps(&b).is_empty());
+	assert_eq!(tris(&b), 0);
+	assert!(b.quads.iter().all(|q| !q.is_ramp()));
+}
+
+#[test]
+fn two_risers_are_enough_to_join() {
+	let b = bake(&twelfth_stairs(3, 0, GRID));
+	assert_eq!(ramps(&b).len(), 1);
+	assert_eq!(tris(&b), 2);
+	let r = ramps(&b)[0];
+	let xs: Vec<u8> = r.corners.iter().map(|c| c[0]).collect();
+	assert!(xs.iter().all(|&x| x == 0 || x == 2), "{xs:?}");
+}
+
+#[test]
+fn a_ramp_joins_in_every_horizontal_direction() {
+	for k in 0..4u8 {
+		let boxes = rotate_boxes(&twelfth_stairs(12, 0, GRID), k);
+		let b = bake(&boxes);
+		assert_eq!(ramps(&b).len(), 1, "k={k}");
+		assert_eq!(tris(&b), 2, "k={k}");
+		assert_eq!(b.quads.len(), 11, "k={k}");
+	}
+}
+
+#[test]
+fn a_wall_beside_the_ramp_hides_that_side_triangle() {
+	let mut boxes = twelfth_stairs(12, 0, 6);
+	boxes.push(SubBox::new([0, 0, 6], [GRID, GRID, GRID]));
+	let b = bake(&boxes);
+	assert_eq!(ramps(&b).len(), 1);
+	assert_eq!(tris(&b), 1, "{:#?}", b.quads);
+	let t = b.quads.iter().find(|q| q.is_tri()).unwrap();
+	assert_eq!(t.dir, Dir::South);
+}
+
+#[test]
+fn a_hollow_support_falls_back_to_one_filler_triangle_per_step() {
+	// A diagonal string of single cells: the ramp still joins, but there
+	// is no solid wedge under it to draw as one triangle.
+	let boxes: Vec<SubBox> = (0..12u8)
+		.map(|i| SubBox::new([i, i, 0], [i + 1, i + 1, GRID]))
+		.collect();
+	let b = bake(&boxes);
+	assert_eq!(ramps(&b).len(), 1);
+	assert_eq!(tris(&b), 22);
+}
+
+#[test]
+fn ramp_pieces_wind_outward_under_the_shared_index_pattern() {
+	assert_winds_outward(&bake(&twelfth_stairs(12, 0, GRID)));
+}
+
+/// `twelfth_stairs(12)` mirrored in y: column x is solid from y = 11 - x up.
+fn upside_down_stairs() -> Vec<SubBox> {
+	(0..12u8)
+		.map(|i| SubBox::new([i, 11 - i, 0], [GRID, GRID - i, GRID]))
+		.collect()
+}
+
+#[test]
+fn a_soffit_run_joins_as_a_ramp_facing_down() {
+	// The twelfth stairs upside down: a stringer whose underside climbs -x.
+	let b = bake(&upside_down_stairs());
+	assert_eq!(b.quads.len(), 11, "{:#?}", b.quads);
+	assert_eq!(tris(&b), 2);
+	let r = ramps(&b);
+	assert_eq!(r.len(), 1);
+	assert_eq!(r[0].dir, Dir::Bottom);
+	// The plane follows the underside, y = 11 - x for x in [0, 11].
+	for c in r[0].corners {
+		assert_eq!(
+			u32::from(c[0]) + u32::from(c[1]),
+			11,
+			"corner {c:?} off the plane"
+		);
+		assert!(c[0] == 0 || c[0] == 11);
+	}
+	for q in b
+		.quads
+		.iter()
+		.filter(|q| q.dir == Dir::Bottom && !q.is_ramp())
+	{
+		assert!(q.corners.iter().all(|c| c[1] == 0), "{q:?}");
+	}
+	assert!(b.face_masks[Dir::Top as usize].is_full());
+	assert!(b.face_masks[Dir::West as usize].is_full());
+	assert_winds_outward(&b);
+}
+
+/// A wall whose plan view is the twelfth stairs: column x is solid for
+/// z < x + 1, full height. Its sawtooth faces +z and -x.
+fn sawtooth_wall() -> Vec<SubBox> {
+	(0..12u8)
+		.map(|k| SubBox::new([k, 0, 0], [k + 1, GRID, k + 1]))
+		.collect()
+}
+
+#[test]
+fn a_wall_run_joins_into_a_vertical_ramp() {
+	let b = bake(&sawtooth_wall());
+	assert_eq!(b.quads.len(), 11, "{:#?}", b.quads);
+	let r = ramps(&b);
+	assert_eq!(r.len(), 1);
+	assert_eq!(r[0].dir, Dir::North);
+	// The plane z = x + 1 for x in [0, 11], full height.
+	for c in r[0].corners {
+		assert_eq!(
+			u32::from(c[2]),
+			u32::from(c[0]) + 1,
+			"corner {c:?} off the plane"
+		);
+		assert!(c[1] == 0 || c[1] == GRID);
+	}
+	// The side triangles lie on the top and the bottom.
+	let mut dirs: Vec<Dir> = b
+		.quads
+		.iter()
+		.filter(|q| q.is_tri())
+		.map(|q| q.dir)
+		.collect();
+	dirs.sort_by_key(|d| *d as u8);
+	assert_eq!(dirs, [Dir::Bottom, Dir::Top]);
+	assert_winds_outward(&b);
+}
+
+#[test]
+fn a_wall_run_joins_facing_the_other_way_too() {
+	// Mirrored in z: the sawtooth faces -z and -x, the ramp faces South.
+	let boxes: Vec<SubBox> = (0..12u8)
+		.map(|k| SubBox::new([k, 0, 11 - k], [k + 1, GRID, GRID]))
+		.collect();
+	let b = bake(&boxes);
+	assert_eq!(b.quads.len(), 11, "{:#?}", b.quads);
+	let r = ramps(&b);
+	assert_eq!(r.len(), 1);
+	assert_eq!(r[0].dir, Dir::South);
+	for c in r[0].corners {
+		assert_eq!(
+			u32::from(c[0]) + u32::from(c[2]),
+			11,
+			"corner {c:?} off the plane"
+		);
+	}
+	assert_eq!(tris(&b), 2);
+	assert_winds_outward(&b);
+}
+
+#[test]
+fn a_thin_diagonal_wall_gets_a_ramp_on_both_faces() {
+	// One cell thick in plan: both sawtooth faces join, and with nothing
+	// solid behind either, every step gets its own filler on top and below.
+	let boxes: Vec<SubBox> = (0..12u8)
+		.map(|k| SubBox::new([k, 0, k], [k + 1, GRID, k + 1]))
+		.collect();
+	let b = bake(&boxes);
+	let mut dirs: Vec<Dir> = ramps(&b).iter().map(|q| q.dir).collect();
+	dirs.sort_by_key(|d| *d as u8);
+	assert_eq!(dirs, [Dir::North, Dir::South]);
+	assert_eq!(tris(&b), 2 * 2 * 11);
+	assert_winds_outward(&b);
+}
+
+/// Two twelfth-thick stringers with flat tops and climbing undersides,
+/// three flat treads between them: the editor's stairs test. Each
+/// stringer's soffit joins into one ramp facing down. The first stringer
+/// is solid over its whole run, one triangle per side; the second thins
+/// out past its fourth step from the top, so each side gets one triangle
+/// over those four and a small one per remaining step (five).
+#[test]
+fn stringer_soffits_join_and_flat_treads_stay() {
+	let src = "version 1\nshape stairs_test\ngrid 12\nstates facing\nramp\n\
+box all  0 0 2  4 4 3\nbox all  0 0 9  3 4 10\nbox all  4 1 2  5 8 3\nbox all  3 1 9  4 4 10\n\
+box all  5 2 2  6 8 3\nbox all  4 2 9  5 8 10\nbox all  0 3 0  4 4 2\nbox all  6 3 2  7 8 3\n\
+box all  0 3 3  4 4 9\nbox all  5 3 9  6 8 10\nbox all  0 3 10  4 4 12\nbox all  7 4 2  8 8 3\n\
+box all  6 4 9  7 8 10\nbox all  8 5 2  9 12 3\nbox all  7 5 9  8 8 10\nbox all  9 6 2  10 12 3\n\
+box all  8 6 9  9 12 10\nbox all  4 7 0  8 8 2\nbox all  10 7 2  11 12 3\nbox all  4 7 3  8 8 9\n\
+box all  9 7 9  10 12 10\nbox all  4 7 10  8 8 12\nbox all  10 8 9  11 12 10\nbox all  11 9 2  12 12 3\n\
+box all  11 9 9  12 12 10\nbox all  8 11 0  12 12 2\nbox all  8 11 3  12 12 9\nbox all  8 11 10  12 12 12\n";
+	let d = def::parse(src).unwrap();
+	let boxes: Vec<SubBox> = d.boxes.iter().map(|b| b.sub).collect();
+	let before = boxes.len();
+	let b = bake(&boxes);
+	assert_eq!(before, 28);
+	let r = ramps(&b);
+	assert_eq!(r.len(), 2, "{:#?}", r);
+	assert!(r.iter().all(|q| q.dir == Dir::Bottom));
+	// Two for the solid stringer, (1 + 5) per side for the thin one.
+	assert_eq!(tris(&b), 2 + 2 * (1 + 5), "{:#?}", b.quads);
+	assert_winds_outward(&b);
+}
+
+/// Every ramp and triangle, triangulated as `quad_indices` does, has an
+/// outward normal: along `dir`'s axis sign for the ramp, along `dir` for a
+/// side piece.
+fn assert_winds_outward(b: &Baked) {
+	for q in b.quads.iter().filter(|q| q.is_ramp() || q.is_tri()) {
+		let p = |i: usize| q.corners[i].map(f32::from);
+		let (ox, oy, oz) = q.dir.offset();
+		let want = [ox as f32, oy as f32, oz as f32];
+		let mut drawn = 0;
+		for tri in [[3, 1, 0], [3, 0, 2]] {
+			let (a, b, c) = (p(tri[0]), p(tri[1]), p(tri[2]));
+			let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+			let v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+			let n = [
+				u[1] * v[2] - u[2] * v[1],
+				u[2] * v[0] - u[0] * v[2],
+				u[0] * v[1] - u[1] * v[0],
+			];
+			let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+			if len == 0.0 {
+				continue;
+			}
+			drawn += 1;
+			let dot = n[0] * want[0] + n[1] * want[1] + n[2] * want[2];
+			assert!(dot > 0.0, "{q:?}: triangle {tri:?} normal {n:?}");
+		}
+		assert_eq!(drawn, if q.is_tri() { 1 } else { 2 }, "{q:?}");
+	}
+}
+
+#[test]
+fn shipped_shapes_have_no_twelfth_runs() {
+	// The legacy pins prove this bit for bit; this names the property.
+	for b in [
+		BlockType::WoodStairs,
+		BlockType::LumberDoor,
+		BlockType::WoodSlab,
+		BlockType::Torch,
+		BlockType::Table,
+		BlockType::Chair,
+		BlockType::Bed,
+	] {
+		for state in 0..16u8 {
+			if let Some(v) = shape_of(b, state) {
+				assert!(
+					v.quads.iter().all(|q| !q.is_ramp() && !q.is_tri()),
+					"{b:?} {state}"
+				);
+			}
+		}
+	}
+}
