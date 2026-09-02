@@ -14,7 +14,7 @@
 //! here by `full_cube_bakes_to_the_six_block_faces` and cross-checked in
 //! mesher.rs.
 
-use crate::block::{BlockType, ShapeKind};
+use crate::block::{BlockType, ShapeKind, ShapeStyle};
 use crate::chunk::{STATE_MASK, STATE_SHIFT, cell_id, cell_state};
 use crate::dir::{DIRS, Dir};
 use glam::Vec3;
@@ -33,8 +33,8 @@ const GU: usize = GRID as usize;
 /// viewmodel and icon buffers, and is what the editor reports against. The
 /// chunk index buffer is NOT sized from it any more: `budget` charges each
 /// placed shape's template against a per-chunk budget instead, so this is
-/// a sanity ceiling, not a memory line. Worst shipped today: the upper
-/// door half (lites + hinge), at 48.
+/// a sanity ceiling, not a memory line. Worst shipped today: the lumber
+/// stairs (treads on sawtooth stringers), at 92.
 pub const MAX_SHAPE_QUADS: usize = 144;
 
 /// Sub-units one whole block converts into — an even division into thirds
@@ -462,8 +462,9 @@ pub fn shape_of(b: BlockType, state: u8) -> Option<&'static ShapeVariant> {
 	if let Some(v) = preview_of(b, state) {
 		return Some(v);
 	}
-	match b.props().shape? {
-		ShapeKind::Stairs => Some(&STAIRS[(state & 3) as usize]),
+	let p = b.props();
+	match p.shape? {
+		ShapeKind::Stairs => Some(&STAIRS[p.shape_style as usize][(state & 3) as usize]),
 		ShapeKind::Door => Some(&DOORS[(state & 0xF) as usize]),
 		ShapeKind::Slab => Some(&SLABS[(state & 3) as usize]),
 		ShapeKind::Torch => Some(&TORCHES[0]),
@@ -626,25 +627,31 @@ pub fn craft_batch(b: BlockType) -> u32 {
 
 // --- variant building ---------------------------------------------------
 
-static TORCHES: LazyLock<[ShapeVariant; 1]> =
-	LazyLock::new(|| [build_variant(ShapeKind::Torch, 0)]);
+/// Bake one kind's canonical (`Plain`) look; the kinds that ship one file.
+fn plain(kind: ShapeKind, state: u8) -> ShapeVariant {
+	build_variant(kind, ShapeStyle::Plain, state)
+}
 
-static TABLES: LazyLock<[ShapeVariant; 1]> = LazyLock::new(|| [build_variant(ShapeKind::Table, 0)]);
+static TORCHES: LazyLock<[ShapeVariant; 1]> = LazyLock::new(|| [plain(ShapeKind::Torch, 0)]);
+
+static TABLES: LazyLock<[ShapeVariant; 1]> = LazyLock::new(|| [plain(ShapeKind::Table, 0)]);
 
 static CHAIRS: LazyLock<[ShapeVariant; 4]> =
-	LazyLock::new(|| Facing::ALL.map(|f| build_variant(ShapeKind::Chair, f as u8)));
+	LazyLock::new(|| Facing::ALL.map(|f| plain(ShapeKind::Chair, f as u8)));
 
 static BEDS: LazyLock<[ShapeVariant; 4]> =
-	LazyLock::new(|| Facing::ALL.map(|f| build_variant(ShapeKind::Bed, f as u8)));
+	LazyLock::new(|| Facing::ALL.map(|f| plain(ShapeKind::Bed, f as u8)));
 
 static SLABS: LazyLock<[ShapeVariant; 4]> =
-	LazyLock::new(|| std::array::from_fn(|state| build_variant(ShapeKind::Slab, state as u8)));
+	LazyLock::new(|| std::array::from_fn(|state| plain(ShapeKind::Slab, state as u8)));
 
-static STAIRS: LazyLock<[ShapeVariant; 4]> =
-	LazyLock::new(|| Facing::ALL.map(|f| build_variant(ShapeKind::Stairs, f as u8)));
+/// Stairs bake one facing table per look, indexed by `ShapeStyle` discriminant.
+static STAIRS: LazyLock<[[ShapeVariant; 4]; ShapeStyle::ALL.len()]> = LazyLock::new(|| {
+	ShapeStyle::ALL.map(|s| Facing::ALL.map(|f| build_variant(ShapeKind::Stairs, s, f as u8)))
+});
 
 static DOORS: LazyLock<[ShapeVariant; 16]> =
-	LazyLock::new(|| std::array::from_fn(|state| build_variant(ShapeKind::Door, state as u8)));
+	LazyLock::new(|| std::array::from_fn(|state| plain(ShapeKind::Door, state as u8)));
 
 /// The authored boxes falling inside one footprint cell, clipped and
 /// translated to cell-local twelfths (authored order preserved — it is the
@@ -703,13 +710,13 @@ fn visual_pairs(list: &[def::DefBox], open: bool, k: u8) -> Vec<(SubBox, [Option
 		.collect()
 }
 
-/// Bake one (kind, state) variant from its loaded `.shape` definition:
+/// Bake one (kind, look, state) variant from its loaded `.shape` definition:
 /// slice the state's footprint cell out of the authored volume, split by
 /// role, pose (the door's swing, then the facing rotation), bake the
 /// visual boxes into quads and bounds. An OPEN door keeps only its swung
 /// visual and interaction — collision and light go empty, on purpose.
-fn build_variant(kind: ShapeKind, state: u8) -> ShapeVariant {
-	let d = def::of(kind);
+fn build_variant(kind: ShapeKind, style: ShapeStyle, state: u8) -> ShapeVariant {
+	let d = def::of(kind, style);
 	let l = state_layout(kind);
 	let (open, k) = match d.states {
 		def::StateModel::Door => {

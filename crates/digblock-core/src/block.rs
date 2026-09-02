@@ -86,7 +86,7 @@ blocks! {
 	/// the cell state nibble). Crafted via alchemy from sub-wood, never
 	/// generated.
 	WoodStairs = 22 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LOG, tex::LOG_TOP, tex::LOG_TOP)), ShapeKind::Stairs), 60, DigFamily::Wood), Material::Wood),
-	StoneStairs = 23 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::STONE, tex::STONE, tex::STONE)), ShapeKind::Stairs), 90, DigFamily::Rock), Material::Stone),
+	StoneStairs = 23 => mat(dig(styled(shaped(crafted(props(RenderClass::Shaped, true, tex::STONE, tex::STONE, tex::STONE)), ShapeKind::Stairs), ShapeStyle::Stone), 90, DigFamily::Rock), Material::Stone),
 	/// Two-cell door (facing/open/half in the state nibble): thin leaf,
 	/// divided-lite window in the upper half. Crafted via alchemy — out
 	/// of planed `Lumber` like the rest of the joinery, which is why it
@@ -126,7 +126,7 @@ blocks! {
 	/// have something to complete into (three thirds = one block, the
 	/// rule that closes the slab economy).
 	Lumber = 30 => mat(dig(crafted(props(RenderClass::Opaque, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT)), 60, DigFamily::Wood), Material::Lumber),
-	LumberStairs = 31 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT)), ShapeKind::Stairs), 60, DigFamily::Wood), Material::Lumber),
+	LumberStairs = 31 => mat(dig(styled(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT)), ShapeKind::Stairs), ShapeStyle::Lumber), 60, DigFamily::Wood), Material::Lumber),
 	LumberSlab = 32 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT, tex::LUMBER_LIGHT)), ShapeKind::Slab), 20, DigFamily::Wood), Material::Lumber),
 	/// The mason's door — §7.2's grid at work rather than a curated row: it
 	/// lands where clean Stone does, because that is the material's level,
@@ -136,19 +136,19 @@ blocks! {
 	StoneDoor = 33 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::STONE, tex::STONE, tex::STONE)), ShapeKind::Door), 68, DigFamily::Rock), Material::Stone),
 	/// Sandstone's set, likewise free: the material opens at its own level
 	/// and hands over every shape at once.
-	SandstoneStairs = 34 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::SANDSTONE, tex::SANDSTONE, tex::SANDSTONE)), ShapeKind::Stairs), 70, DigFamily::Rock), Material::Sandstone),
+	SandstoneStairs = 34 => mat(dig(styled(shaped(crafted(props(RenderClass::Shaped, true, tex::SANDSTONE, tex::SANDSTONE, tex::SANDSTONE)), ShapeKind::Stairs), ShapeStyle::Stone), 70, DigFamily::Rock), Material::Sandstone),
 	SandstoneSlab = 35 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::SANDSTONE, tex::SANDSTONE, tex::SANDSTONE)), ShapeKind::Slab), 23, DigFamily::Rock), Material::Sandstone),
 	SandstoneDoor = 36 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::SANDSTONE, tex::SANDSTONE, tex::SANDSTONE)), ShapeKind::Door), 53, DigFamily::Rock), Material::Sandstone),
 	/// The second timber. `LUMBER_DARK` was drawn and registered
 	/// with `LUMBER_LIGHT` and then sat unused on no block for a release —
 	/// under the grid a whole new joinery set is four rows and no new art.
 	DarkLumber = 37 => mat(dig(crafted(props(RenderClass::Opaque, true, tex::LUMBER_DARK, tex::LUMBER_DARK, tex::LUMBER_DARK)), 60, DigFamily::Wood), Material::DarkLumber),
-	DarkLumberStairs = 38 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_DARK, tex::LUMBER_DARK, tex::LUMBER_DARK)), ShapeKind::Stairs), 60, DigFamily::Wood), Material::DarkLumber),
+	DarkLumberStairs = 38 => mat(dig(styled(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_DARK, tex::LUMBER_DARK, tex::LUMBER_DARK)), ShapeKind::Stairs), ShapeStyle::Lumber), 60, DigFamily::Wood), Material::DarkLumber),
 	DarkLumberSlab = 39 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_DARK, tex::LUMBER_DARK, tex::LUMBER_DARK)), ShapeKind::Slab), 20, DigFamily::Wood), Material::DarkLumber),
 	DarkLumberDoor = 40 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_DARK, tex::LUMBER_DARK, tex::LUMBER_DARK)), ShapeKind::Door), 45, DigFamily::Wood), Material::DarkLumber),
 	/// The third timber.
 	RedLumber = 41 => mat(dig(crafted(props(RenderClass::Opaque, true, tex::LUMBER_RED, tex::LUMBER_RED, tex::LUMBER_RED)), 60, DigFamily::Wood), Material::RedLumber),
-	RedLumberStairs = 42 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_RED, tex::LUMBER_RED, tex::LUMBER_RED)), ShapeKind::Stairs), 60, DigFamily::Wood), Material::RedLumber),
+	RedLumberStairs = 42 => mat(dig(styled(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_RED, tex::LUMBER_RED, tex::LUMBER_RED)), ShapeKind::Stairs), ShapeStyle::Lumber), 60, DigFamily::Wood), Material::RedLumber),
 	RedLumberSlab = 43 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_RED, tex::LUMBER_RED, tex::LUMBER_RED)), ShapeKind::Slab), 20, DigFamily::Wood), Material::RedLumber),
 	RedLumberDoor = 44 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_RED, tex::LUMBER_RED, tex::LUMBER_RED)), ShapeKind::Door), 45, DigFamily::Wood), Material::RedLumber),
 	/// Furniture (SKILLS-DESIGN §7.3): FUNCTIONAL items, not §7.2 grid
@@ -410,6 +410,26 @@ pub enum ShapeKind {
 	Bed,
 }
 
+/// The authored LOOK a shaped row bakes from, when its kind ships more than one `.shape` file:
+/// the same nibble layout, physics contract, family and craft cost as the kind's own file,
+/// different boxes. Named for the file suffix (`stairs_lumber.shape`), and only the stairs
+/// have looks today — `def::asset_name` is the one place a (kind, style) pair becomes a file.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+pub enum ShapeStyle {
+	/// The kind's canonical file (`stairs.shape`): plain full-depth steps.
+	Plain = 0,
+	/// Carpentered: thin treads on two sawtooth stringers, open underneath.
+	Lumber = 1,
+	/// Masonry: cut steps with recessed reveals over a base course.
+	Stone = 2,
+}
+
+impl ShapeStyle {
+	/// Every look, in discriminant order (the registry's table index).
+	pub const ALL: [ShapeStyle; 3] = [ShapeStyle::Plain, ShapeStyle::Lumber, ShapeStyle::Stone];
+}
+
 /// The SHAPE axis of SKILLS-DESIGN §7.2's material × shape grid: the form a substance is worked
 /// into. Distinct from [`ShapeKind`], which is a rendering/collision tag — `Block` has no
 /// sub-block geometry at all, and `ShapeKind::Torch` is a functional item rather than a form you
@@ -663,6 +683,9 @@ pub struct BlockProps {
 	/// Sub-block shape family; `Some` ⟺ `class == RenderClass::Shaped`
 	/// (pinned by `table_sanity`).
 	pub shape: Option<ShapeKind>,
+	/// Which of the kind's authored files this row bakes from; `Plain` for every row whose kind
+	/// ships one. Meaningless without [`Self::shape`] (pinned by `table_sanity`).
+	pub shape_style: ShapeStyle,
 	/// Stage-A light (SKILLS-DESIGN §7.4): every face renders fullbright ink — the shader skips
 	/// the sun/shadow terms. Independent of [`Self::light`] on purpose: ore-reveal seams want ink
 	/// that casts nothing, and a recessed lamp could cast without glowing. Both stay per-ROW
@@ -726,6 +749,7 @@ const fn props(class: RenderClass, solid: bool, side: u16, top: u16, bottom: u16
 		drops: None,
 		crumbles: None,
 		shape: None,
+		shape_style: ShapeStyle::Plain,
 		emissive: false,
 		light: 0,
 		surface_light: false,
@@ -747,6 +771,13 @@ const fn conjured(mut p: BlockProps) -> BlockProps {
 /// resolves geometry from.
 const fn shaped(mut p: BlockProps, kind: ShapeKind) -> BlockProps {
 	p.shape = Some(kind);
+	p
+}
+
+/// A shaped row in one of its kind's alternate looks: the registry bakes it
+/// from `<kind>_<style>.shape` instead of the kind's own file.
+const fn styled(mut p: BlockProps, style: ShapeStyle) -> BlockProps {
+	p.shape_style = style;
 	p
 }
 
@@ -868,6 +899,7 @@ const fn water_props(amount: u8, source: bool, falling: bool) -> BlockProps {
 		drops: None,
 		crumbles: None,
 		shape: None,
+		shape_style: ShapeStyle::Plain,
 		emissive: false,
 		light: 0,
 		surface_light: false,

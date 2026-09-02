@@ -1,0 +1,38 @@
+# Lumber stairs, ascending toward +x: three one-twelfth treads carried on
+# two sawtooth stringers, open underneath - a carpentered look over the
+# same ramp physics as the plain stairs. The stringers rise in twelfth
+# steps, which the ramp pass joins into one diagonal per side.
+version 1
+shape stairs_lumber
+grid 12
+states facing
+ramp
+box all  0 0 2  3 4 3
+box all  0 0 9  3 4 10
+box all  3 1 2  4 4 3
+box all  3 1 9  4 4 10
+box all  4 2 2  5 8 3
+box all  4 2 9  5 8 10
+box all  0 3 0  4 4 2
+box all  5 3 2  6 8 3
+box all  0 3 3  4 4 9
+box all  5 3 9  6 8 10
+box all  0 3 10  4 4 12
+box all  6 4 2  7 8 3
+box all  6 4 9  7 8 10
+box all  7 5 2  8 8 3
+box all  7 5 9  8 8 10
+box all  8 6 2  9 12 3
+box all  8 6 9  9 12 10
+box all  4 7 0  8 8 2
+box all  9 7 2  10 12 3
+box all  4 7 3  8 8 9
+box all  9 7 9  10 12 10
+box all  4 7 10  8 8 12
+box all  10 8 2  11 12 3
+box all  10 8 9  11 12 10
+box all  11 9 2  12 12 3
+box all  11 9 9  12 12 10
+box all  8 11 0  12 12 2
+box all  8 11 3  12 12 9
+box all  8 11 10  12 12 12

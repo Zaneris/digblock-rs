@@ -117,7 +117,7 @@ fn slab_variants() {
 fn a_ceiling_slab_is_a_floor_slab_mirrored() {
 	// Validates the .shape FILE: an editor edit breaking the mirror breaks
 	// the equal-volume/equal-cost invariant, and fails here first.
-	let d = def::of(ShapeKind::Slab);
+	let d = def::of(ShapeKind::Slab, ShapeStyle::Plain);
 	for two_thirds in [false, true] {
 		let bottom = d.state_boxes(slab_state(two_thirds, false))[0].sub;
 		let top = d.state_boxes(slab_state(two_thirds, true))[0].sub;
@@ -354,7 +354,7 @@ fn door_variants() {
 	// sub-cells it pokes out either side, and each half carries a
 	// small hinge on the leaf's back at the pivot edge. Sourced from the
 	// .shape FILE, so an editor edit moves these pins, loudly.
-	let d = def::of(ShapeKind::Door);
+	let d = def::of(ShapeKind::Door, ShapeStyle::Plain);
 	let cell = |cy: i32, pick: fn(def::Roles) -> bool| -> Vec<SubBox> {
 		slice_cell(&d.boxes, (0, cy, 0))
 			.iter()
@@ -411,8 +411,10 @@ fn craft_costs_derive_from_collision_volume() {
 	// debit one item each.
 	// Ported families price from their .shape FILE, so an editor edit that
 	// moves a box moves the recipe cost and fails here rather than silently.
+	// A family prices from its kind's PLAIN file: an alternate look is the
+	// same form in a different dress, and costs the same.
 	let def_volume = |kind, state: u8| {
-		let boxes: Vec<SubBox> = def::of(kind)
+		let boxes: Vec<SubBox> = def::of(kind, ShapeStyle::Plain)
 			.state_boxes(state)
 			.iter()
 			.map(|b| b.sub)
@@ -425,7 +427,7 @@ fn craft_costs_derive_from_collision_volume() {
 		// A door prices BOTH cells of its footprint, every box (uncut
 		// leaves — the visual-only lites don't discount the collision one).
 		ShapeFamily::Door => {
-			let d = def::of(ShapeKind::Door);
+			let d = def::of(ShapeKind::Door, ShapeStyle::Plain);
 			let all = |cy: i32| -> Vec<SubBox> {
 				slice_cell(&d.boxes, (0, cy, 0))
 					.iter()
@@ -730,7 +732,11 @@ fn ported_families_stay_byte_identical_to_the_legacy_consts() {
 		// The old STAIRS assembly, verbatim: furniture plus the ramp tag.
 		let mut stair = legacy_furniture(&LEGACY_STAIR_BOXES, k);
 		stair.ramp = Some(f);
-		assert_variant_identical(&STAIRS[k as usize], &stair, &format!("stairs k={k}"));
+		assert_variant_identical(
+			&STAIRS[ShapeStyle::Plain as usize][k as usize],
+			&stair,
+			&format!("stairs k={k}"),
+		);
 	}
 	// The old SLABS assembly, verbatim: one unrotated box per state.
 	for state in 0..4usize {
@@ -747,7 +753,31 @@ fn every_shape_asset_parses_and_bakes() {
 	for &(name, src) in def::ASSETS {
 		let d = def::parse(src).unwrap_or_else(|e| panic!("{name}: {e}"));
 		assert_eq!(d.name, name);
-		assert!(def::kind_by_name(name).is_some(), "{name} is a kind");
+		let kind = def::kind_by_name(name).unwrap_or_else(|| panic!("{name} is a kind"));
+		// No orphan file: every asset is some (kind, look) pair's.
+		assert!(
+			ShapeStyle::ALL
+				.iter()
+				.any(|&s| def::asset_name(kind, s) == name),
+			"{name} is no look of {kind:?}"
+		);
+	}
+	// Every styled row names a file the roster has (`of` panics otherwise),
+	// and only the stairs have per-look tables — a styled row of any other
+	// kind would bake plain and never say so.
+	for &b in &BlockType::ALL {
+		let p = b.props();
+		if let Some(kind) = p.shape {
+			let _ = def::of(kind, p.shape_style);
+			assert!(
+				p.shape_style == ShapeStyle::Plain || kind == ShapeKind::Stairs,
+				"{b:?}: only the stairs bake per look"
+			);
+		}
+	}
+	// The table index is the discriminant.
+	for (i, s) in ShapeStyle::ALL.iter().enumerate() {
+		assert_eq!(*s as usize, i);
 	}
 	prewarm();
 }

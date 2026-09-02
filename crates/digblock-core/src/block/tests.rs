@@ -54,6 +54,10 @@ fn table_sanity() {
 		if p.shape.is_some() {
 			assert!(p.solid, "{b:?} shaped blocks are solid");
 		}
+		// A look is a way of drawing a shape; a row with no shape has none.
+		if p.shape_style != ShapeStyle::Plain {
+			assert!(p.shape.is_some(), "{b:?} styled without a shape");
+		}
 		// Glass-the-class and Translucent-the-bucket travel together in
 		// one direction each: every Glass row is bucketed translucent,
 		// and every translucent row is Glass or a shaped variant — and
