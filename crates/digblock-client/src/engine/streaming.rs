@@ -148,9 +148,15 @@ impl Engine {
 		for (x, y, z) in self.pipeline.take_gi_edits() {
 			renderer.gi_invalidate([x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5]);
 		}
+		// The window's share of the upload budget, counted in CHUNKS at one
+		// byte per cell — the rate the window filled at before its texel
+		// widened to a look and a cover. The fill rate is the lighting
+		// latency after an arrival (a half-filled window is a darker one),
+		// so the wider texel is paid in bandwidth, never in fill: each chunk
+		// costs `gi::CHUNK_BYTES` on the wire and one quota unit here.
 		let mut gi_budget = self.config.upload_bytes_max / 4;
 		let mut gi_uploads = 0u32;
-		while gi_budget >= digblock_core::gi::CHUNK_BYTES {
+		while gi_budget >= digblock_core::chunk::CHUNK_VOLUME {
 			if gi_uploads >= GI_UPLOAD_MIN && web_time::Instant::now() >= deadline {
 				break;
 			}
@@ -167,7 +173,7 @@ impl Engine {
 			}
 			if let Some(chunk) = self.pipeline.classify_gi(pos) {
 				renderer.gi_upload(gpu, pos, &chunk);
-				gi_budget -= digblock_core::gi::CHUNK_BYTES;
+				gi_budget -= digblock_core::chunk::CHUNK_VOLUME;
 				gi_uploads += 1;
 			}
 		}

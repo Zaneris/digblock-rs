@@ -379,29 +379,37 @@ pub struct CarriedLight {
 /// torch, and the step up from its own first rank is one a player cannot miss.
 const PICK_RESONANT_LIGHT: u8 = 12;
 
-/// The look of one cell: 0 for air, else the block's look class — a
-/// shaped cell wears its cube's look, whatever its state.
-#[inline]
-pub fn gi_look(cell: u16) -> u8 {
-	LOOKS.1[BlockType::from_id(crate::chunk::cell_id(cell)) as usize]
-}
-
-/// The cover of one cell: 0 for a full cell, else a [`covers`] entry —
-/// the one place the state nibble matters (a thin floor slab and a
-/// thick ceiling slab occlude differently).
-#[inline]
-pub fn gi_cover(cell: u16) -> u8 {
-	let b = BlockType::from_id(crate::chunk::cell_id(cell));
-	if b.props().shape.is_none() {
-		return 0;
-	}
-	COVERS.1[((b as usize) << 4) | crate::chunk::cell_state(cell) as usize]
-}
-
-/// Both classes of one cell, as the window texel carries them.
+/// Both classes of one cell, as the window texel carries them. A full cube is its look and no
+/// cover. A shaped cell wears its cube's look with the state's cover — the one place the state
+/// nibble matters (a thin floor slab and a thick ceiling slab occlude differently) — EXCEPT that
+/// a shaped cell with no light boxes at all (an open door, the editor's empty preview) is AIR on
+/// both counts: the two classes are read independently on the GPU, and a look with no cover is
+/// a whole opaque cell, which is exactly what a doorway must never be. A translucent shaped cell
+/// keeps its look and carries no cover: the GI takes it as a full see-through cell.
 #[inline]
 pub fn gi_classes(cell: u16) -> (u8, u8) {
-	(gi_look(cell), gi_cover(cell))
+	let b = BlockType::from_id(crate::chunk::cell_id(cell));
+	let look = LOOKS.1[b as usize];
+	let p = b.props();
+	if p.shape.is_none() || p.bucket == crate::block::MeshBucket::Translucent {
+		return (look, 0);
+	}
+	match COVERS.1[((b as usize) << 4) | crate::chunk::cell_state(cell) as usize] {
+		0 => (0, 0),
+		cover => (look, cover),
+	}
+}
+
+/// The look of one cell: 0 for air, else the block's look class.
+#[inline]
+pub fn gi_look(cell: u16) -> u8 {
+	gi_classes(cell).0
+}
+
+/// The cover of one cell: 0 for a full cell, else a [`covers`] entry.
+#[inline]
+pub fn gi_cover(cell: u16) -> u8 {
+	gi_classes(cell).1
 }
 
 /// How a look attenuates rays (LUT-side mirror; also the coarse rule). A covered cell does not
@@ -633,9 +641,12 @@ mod tests {
 		for f in Facing::ALL {
 			for upper in [false, true] {
 				let open = make_cell(BlockType::LumberDoor, door_state(f, true, upper));
-				assert_eq!(gi_cover(open), 0);
+				// Air on BOTH counts: a look with no cover would be a whole
+				// opaque cell, and the doorway is the whole point.
+				assert_eq!(gi_classes(open), (0, 0));
 				let closed = make_cell(BlockType::LumberDoor, door_state(f, false, upper));
 				assert_ne!(gi_cover(closed), 0);
+				assert_eq!(gi_look(closed), gi_look(BlockType::Lumber as u16));
 			}
 		}
 	}
