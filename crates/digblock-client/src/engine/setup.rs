@@ -20,7 +20,7 @@ impl Engine {
 			// sculpt's relief, and no day cycle drifting toward night mid-edit.
 			// An explicit --tod / ?tod still wins.
 			if config.tod.is_none() {
-				config.tod = Some(digblock_core::sun::tod_of_clock(17, 0));
+				config.tod = Some(digblock_core::sun::tod_of_clock(16, 0));
 			}
 		}
 		let mut metrics = Metrics::new(config.metrics_csv.as_deref(), config.spike_log);
