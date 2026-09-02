@@ -150,7 +150,7 @@ impl Engine {
 		}
 		let mut gi_budget = self.config.upload_bytes_max / 4;
 		let mut gi_uploads = 0u32;
-		while gi_budget >= 4096 {
+		while gi_budget >= digblock_core::gi::CHUNK_BYTES {
 			if gi_uploads >= GI_UPLOAD_MIN && web_time::Instant::now() >= deadline {
 				break;
 			}
@@ -167,7 +167,7 @@ impl Engine {
 			}
 			if let Some(chunk) = self.pipeline.classify_gi(pos) {
 				renderer.gi_upload(gpu, pos, &chunk);
-				gi_budget -= 4096;
+				gi_budget -= digblock_core::gi::CHUNK_BYTES;
 				gi_uploads += 1;
 			}
 		}

@@ -55,6 +55,8 @@ const GI_LUT_OP_TINTED = 4u;
 // sun visibility there. Spray and the viewmodel bind this as their
 // light rig — no CPU probe reads.
 @group(0) @binding(8) var<storage, read_write> cam_out: array<vec4f, 2>;
+// The cover table — gi_common's `gi_covers` twin over this pass's own group.
+@group(0) @binding(9) var<storage, read> covers: array<vec2u>;
 
 const RAYS: u32 = 32u;
 const MAX_T: f32 = 160.0;
@@ -102,11 +104,16 @@ fn wrap2(v: vec2i, m: i32) -> vec2i {
 	return select(r, r + vec2i(m), r < vec2i(0));
 }
 
-fn window_cell_w(w: vec2i, y: i32) -> u32 {
+// The window texel — gi_common's `gi_texel_w` twin: .x the look, .y the cover.
+fn window_texel_w(w: vec2i, y: i32) -> vec2u {
 	if y < 0 || y > 255 {
-		return 0u;
+		return vec2u(0u);
 	}
-	return textureLoad(window_tex, vec3i(w.x, y, w.y), 0).r;
+	return textureLoad(window_tex, vec3i(w.x, y, w.y), 0).rg;
+}
+
+fn window_cell_w(w: vec2i, y: i32) -> u32 {
+	return window_texel_w(w, y).x;
 }
 
 // The coarse brick word at a pre-wrapped lateral coordinate — gi_common's
@@ -276,8 +283,24 @@ fn march(from_p: vec3f, dir: vec3f, max_t: f32, coarse_from: f32, seed: u32) -> 
 			r = gi_ray_step(r, step_dir, inv);
 			continue;
 		}
-		let v = window_cell_w(w, r.cell.y);
-		if v != 0u {
+		let tx = window_texel_w(w, r.cell.y);
+		let v = tx.x;
+		if tx.y != 0u {
+			// Every covered cell blocks only where its boxes stand,
+			// emitters included since R27 — the pinned twin of
+			// gi_common's `gi_march` rule. See there for why the
+			// emitting special case existed and why taking the
+			// emission out of these marches is what retired it.
+			let t_exit = min(r.tmax.x, min(r.tmax.y, r.tmax.z));
+			let bh = gi_boxes_hit(from_p, dir, r.cell, r.t, t_exit, covers[tx.y], r.axis);
+			if bh.x >= 0.0 {
+				out.hit = true;
+				out.cell = r.cell;
+				out.axis = u32(bh.y);
+				out.cls = v;
+				return out;
+			}
+		} else if v != 0u {
 			// Word 0 only on the hot path — the pinned twin of
 			// gi_common's marches (the whole entry per occupied cell
 			// measured a clear cost on the bench).
@@ -288,22 +311,6 @@ fn march(from_p: vec3f, dir: vec3f, max_t: f32, coarse_from: f32, seed: u32) -> 
 				out.axis = r.axis;
 				out.cls = v;
 				return out;
-			}
-			if op == 3u {
-				// Every partial cell blocks only where its boxes stand,
-				// emitters included since R27 — the pinned twin of
-				// gi_common's `gi_march` rule. See there for why the
-				// emitting special case existed and why taking the
-				// emission out of these marches is what retired it.
-				let t_exit = min(r.tmax.x, min(r.tmax.y, r.tmax.z));
-				let bh = gi_boxes_hit(from_p, dir, r.cell, r.t, t_exit, lut[v].zw, r.axis);
-				if bh.x >= 0.0 {
-					out.hit = true;
-					out.cell = r.cell;
-					out.axis = u32(bh.y);
-					out.cls = v;
-					return out;
-				}
 			}
 			if op == 1u {
 				out.water += 1.0;

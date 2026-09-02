@@ -496,7 +496,7 @@ fn the_sky_fade_tops_out_at_sea_level() {
 fn a_carried_light_is_a_light_like_any_other() {
 	let cam = [100.0, 64.0, 100.0];
 	let reach = lateral_max(20);
-	let class = digblock_core::gi::gi_class(digblock_core::chunk::make_cell(
+	let class = digblock_core::gi::gi_look(digblock_core::chunk::make_cell(
 		digblock_core::block::BlockType::Torch,
 		0,
 	));
@@ -586,7 +586,7 @@ fn a_carried_light_is_a_light_like_any_other() {
 #[test]
 fn a_wielders_level_rides_the_entry_and_nothing_elses() {
 	let cam = [0.0, 0.0, 0.0];
-	let class = digblock_core::gi::gi_class(digblock_core::chunk::make_cell(
+	let class = digblock_core::gi::gi_look(digblock_core::chunk::make_cell(
 		digblock_core::block::BlockType::ResonantPick,
 		0,
 	));
@@ -781,7 +781,7 @@ fn the_chunk_reach_skip_never_drops_a_reachable_light() {
 #[test]
 fn a_surface_emitter_packs_its_rectangle_beside_its_position() {
 	let cam = [0.0, 0.0, 0.0];
-	let class = digblock_core::gi::gi_class(BlockType::Emberore as u16);
+	let class = digblock_core::gi::gi_look(BlockType::Emberore as u16);
 	let seam = Emitter {
 		pos: [2.0, 3.0, 4.0],
 		class,
@@ -1015,26 +1015,37 @@ fn the_disocclusion_prior_stays_under_the_caps() {
 	);
 }
 
-/// The LUT's packed sub-box words must decode in the shader to the twelfths the shape authored —
-/// `gi_boxes_hit` unpacks the min triple and then the max triple out of one word. The core side
-/// pins the same format from the packer's end (`box_pack_matches_the_shader_decode`); this end
-/// pins that the LUT actually carries the boxes: every synthetic class entry is the PARTIAL
-/// opacity class with a nonzero first box, borrowing its base block's light level.
+/// The cover table's packed sub-box words must decode in the shader to the twelfths the shape
+/// authored — `gi_boxes_hit` unpacks the min triple and then the max triple out of one word. The
+/// core side pins the same format from the packer's end (`box_pack_matches_the_shader_decode`);
+/// this end pins that the table actually carries the covers, entry 0 the no-box sentinel, and
+/// that the LUT is one row per LOOK — the torch's row carrying the torch's light, since the
+/// light list names looks and the level has to ride along.
 #[test]
-fn the_lut_carries_the_shape_covers() {
-	let lut = material_lut(&[]);
-	let base = digblock_core::gi::SHAPE_CLASS_BASE as usize;
-	let classes = digblock_core::gi::shape_classes();
-	assert!(!classes.is_empty());
-	for (i, sc) in classes.iter().enumerate() {
-		let e = lut[base + i];
-		assert_eq!(e[0] >> 24, 3, "synthetic class {i} is not partial");
-		assert_ne!(e[2], 0, "synthetic class {i} lost its first box");
-		assert_eq!(e[1] & 0xff, u32::from(sc.base.props().light));
+fn the_cover_table_carries_every_cover_and_the_lut_every_look() {
+	let covers = cover_table();
+	let palette = digblock_core::gi::covers();
+	assert!(!palette.is_empty());
+	assert_eq!(covers[0], [0, 0], "entry 0 is the no-box sentinel");
+	for (i, c) in palette.iter().enumerate() {
+		assert_ne!(covers[i + 1][0], 0, "cover {i} lost its first box");
+		assert_eq!(covers[i + 1][1] != 0, c.boxes[1].is_some(), "cover {i}");
 	}
-	// And the torch's emitting class is synthetic now — the light
-	// list names classes, so the level has to ride along.
-	let torch = digblock_core::gi::gi_class(BlockType::Torch as u16);
+	let lut = material_lut(&[]);
+	assert_eq!(lut[0], [0; 4], "row 0 is air");
+	for (i, look) in digblock_core::gi::looks().iter().enumerate() {
+		assert_eq!(
+			lut[i + 1][1] & 0xff,
+			u32::from(look.base.props().light),
+			"look {i}"
+		);
+		assert_ne!(
+			lut[i + 1][0] >> 24,
+			3,
+			"look {i}: the partial op is retired"
+		);
+	}
+	let torch = digblock_core::gi::gi_look(BlockType::Torch as u16);
 	assert_eq!(
 		lut[torch as usize][1] & 0xff,
 		u32::from(BlockType::Torch.props().light)
@@ -1054,7 +1065,7 @@ fn the_cast_colour_is_the_albedo_except_where_a_vein_says_otherwise() {
 		.collect();
 	let lut = material_lut(&means);
 	let tint = |b: BlockType| {
-		let w = lut[b as usize][1] >> 8;
+		let w = lut[usize::from(digblock_core::gi::gi_look(b as u16))][1] >> 8;
 		[
 			(w & 0xff) as u8,
 			((w >> 8) & 0xff) as u8,
@@ -1083,7 +1094,7 @@ fn the_cast_colour_is_the_albedo_except_where_a_vein_says_otherwise() {
 			"{ore:?}: the whole point is that this is NOT the texture mean"
 		);
 		assert!(
-			lut[ore as usize][1] & 0xff > 0,
+			lut[usize::from(digblock_core::gi::gi_look(ore as u16))][1] & 0xff > 0,
 			"{ore:?} has a colour and no light to cast in it"
 		);
 	}
@@ -1102,7 +1113,7 @@ fn the_tinted_word_is_the_bucket_and_pins_its_endpoints() {
 	let covered = digblock_core::block::BlockType::Glass.props().tex_top as usize;
 	means[covered] = [90, 140, 200, 255];
 	let lut_covered = material_lut(&means);
-	let glass = digblock_core::block::BlockType::Glass as usize;
+	let glass = usize::from(digblock_core::gi::gi_look(BlockType::Glass as u16));
 	let z = lut_covered[glass][2];
 	assert_eq!(
 		[z & 0xff, (z >> 8) & 0xff, (z >> 16) & 0xff],
@@ -1118,13 +1129,13 @@ fn the_tinted_word_is_the_bucket_and_pins_its_endpoints() {
 		"no cover filters nothing"
 	);
 	// The op is the bucket, and .z is nonzero exactly on op-4 rows,
-	// swept over every full-cube class byte.
+	// swept over every block's look.
 	let mut tinted = 0u32;
 	for b in BlockType::ALL {
-		let id = b as usize;
-		if id >= 256 || b == BlockType::Air {
+		if b == BlockType::Air {
 			continue;
 		}
+		let id = usize::from(digblock_core::gi::gi_look(b as u16));
 		let op = lut_covered[id][0] >> 24;
 		if b.props().bucket == MeshBucket::Translucent {
 			tinted += 1;
@@ -1132,7 +1143,7 @@ fn the_tinted_word_is_the_bucket_and_pins_its_endpoints() {
 			assert_ne!(lut_covered[id][2], 0, "{b:?} carries a filter");
 		} else {
 			assert_ne!(op, 4, "{b:?}");
-			assert_eq!(lut_covered[id][2], 0, "{b:?} box word stays clear");
+			assert_eq!(lut_covered[id][2], 0, "{b:?} filter word stays clear");
 		}
 	}
 	assert!(tinted > 0, "the bucket has members to sweep");

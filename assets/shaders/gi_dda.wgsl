@@ -20,8 +20,8 @@ fn gi_lateral_max(side: f32) -> f32 {
 	return side * 0.5 - 1.0;
 }
 
-// Ray vs the box cover of a PARTIAL cell over the span [t0, t1] inside `cell`. `bx` is the LUT
-// entry's zw pair, one word per box packing min and max corner in twelfths (`core::gi::pack_box`
+// Ray vs the box cover of a PARTIAL cell over the span [t0, t1] inside `cell`. `bx` is the cover
+// table's entry, one word per box packing min and max corner in twelfths (`core::gi::pack_box`
 // packs it, `box_pack_matches_the_shader_decode` pins the two; an empty word means no box).
 // `def_axis` answers for a ray already inside the lateral bounds. Returns (hit t, axis), t < 0
 // for a miss. Here, not in gi_common: a partial cell must block probe and sun rays identically.

@@ -129,6 +129,7 @@ pub(crate) struct Emitter {
 	/// without shading it — the reach filter, the distance selection, the reservoir's candidate
 	/// score — wants a representative point and nothing more.
 	pub pos: [f32; 3],
+	/// The emitter's LOOK (`core::gi::gi_look`): its LUT row.
 	pub class: u8,
 	/// Cast level for THIS entry, or 0 to take the class's own. A placed emitter is always 0: a
 	/// torch is a torch wherever it stands, so one number in its LUT row serves every copy. The
@@ -315,6 +316,7 @@ pub(crate) struct GiDraw {
 	probe_bgl: wgpu::BindGroupLayout,
 	debug_bgl: wgpu::BindGroupLayout,
 	lut_buf: wgpu::Buffer,
+	covers_buf: wgpu::Buffer,
 	/// Cost-stub mask (DIG_STUB) — rides `jitter.w` into gi_resolve.wgsl,
 	/// which has no frame UBO of its own to read `misc.z` from.
 	stub: u32,
@@ -425,11 +427,11 @@ pub(crate) struct GiDraw {
 	debug_probes: bool,
 }
 
-/// The material LUT: one entry per class byte, holding everything a ray needs —
-/// albedo rgb plus the opacity class, the cast-light level (emission colour is the albedo, so a
-/// torch glows its own warm tone), and the two-box occlusion cover of a PARTIAL class
-/// (`core::gi::pack_box`). Full cubes keep the base-id entries; the synthetic shape classes above
-/// `core::gi::SHAPE_CLASS_BASE` borrow their base block's albedo and light.
+/// The material LUT: one row per LOOK (`core::gi::looks`, row 0 air), holding everything a ray
+/// needs — albedo rgb plus the opacity op, the cast-light level (emission colour is the albedo,
+/// so a torch glows its own warm tone) and, on a tinted row, its rgb filter. A shaped cell's
+/// boxes are not here: the window's cover byte names them in [`cover_table`], so a look and a
+/// cover are spent independently and a slab in a new material costs neither.
 fn material_lut(layer_means: &[[u8; 4]]) -> [[u32; 4]; 256] {
 	let mut lut = [[0u32; 4]; 256];
 	let albedo = |b: BlockType| -> [u8; 4] {
@@ -452,15 +454,12 @@ fn material_lut(layer_means: &[[u8; 4]]) -> [[u32; 4]; 256] {
 			| u32::from(t[1]) << 16
 			| u32::from(t[2]) << 24
 	};
-	for b in BlockType::ALL {
-		let id = b as usize;
-		if id >= 256 || b == BlockType::Air {
-			continue;
-		}
+	for (i, look) in digblock_core::gi::looks().iter().enumerate() {
+		let b = look.base;
 		let m = albedo(b);
-		// Op 3 is the synthetic shape classes' (below); 4 is tinted
-		// transmission, whose rgb filter rides word .z — free for every
-		// full-cube class, since only synthetic classes carry boxes.
+		// Op 4 is tinted transmission, whose rgb filter rides word .z.
+		// (Op 3 was the retired partial class: a cover is a window
+		// channel now, not a row.)
 		let op = match opacity(b) {
 			GiOpacity::Air => 0u32,
 			GiOpacity::Translucent => 1,
@@ -479,24 +478,25 @@ fn material_lut(layer_means: &[[u8; 4]]) -> [[u32; 4]; 256] {
 			};
 			t(m[0]) | (t(m[1]) << 8) | (t(m[2]) << 16)
 		};
-		lut[id] = [
+		lut[i + 1] = [
 			u32::from(m[0]) | (u32::from(m[1]) << 8) | (u32::from(m[2]) << 16) | (op << 24),
 			emit_word(b),
-			if op == 4 { tinted(m) } else { 0 },
+			if op == LUT_OP_TINTED { tinted(m) } else { 0 },
 			0,
 		];
 	}
-	for (i, sc) in digblock_core::gi::shape_classes().iter().enumerate() {
-		let m = albedo(sc.base);
-		let boxes = sc.boxes.map(|b| b.map_or(0, digblock_core::gi::pack_box));
-		lut[digblock_core::gi::SHAPE_CLASS_BASE as usize + i] = [
-			u32::from(m[0]) | (u32::from(m[1]) << 8) | (u32::from(m[2]) << 16) | (3 << 24),
-			emit_word(sc.base),
-			boxes[0],
-			boxes[1],
-		];
-	}
 	lut
+}
+
+/// The cover table: one `vec2u` per COVER (`core::gi::covers`, entry 0 the no-box sentinel),
+/// each word a packed sub-box (`core::gi::pack_box`) — what `gi_boxes_hit` resolves when a
+/// window texel's cover byte is nonzero. Sized to the palette, so the buffer never reallocates.
+fn cover_table() -> [[u32; 2]; 256] {
+	let mut out = [[0u32; 2]; 256];
+	for (i, c) in digblock_core::gi::covers().iter().enumerate() {
+		out[i + 1] = c.boxes.map(|b| b.map_or(0, digblock_core::gi::pack_box));
+	}
+	out
 }
 
 /// The CPU twin of `gi_lateral_max` in gi_dda.wgsl — the lateral bound EVERY march breaks at, in

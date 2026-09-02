@@ -27,6 +27,10 @@ const GI_LUT_OP_TINTED = 4u;
 // lights[0].x is the count as a bitcast u32; entries are PAIRS of vec4s — (xyz world center, w
 // class word), then the rectangle a surface emitter radiates from (zero for a point).
 @group(2) @binding(5) var<storage, read> lights: array<vec4f>;
+// The cover table: one vec2u per cover byte, each word a packed sub-box (`core::gi::pack_box`;
+// entry 0 is the no-box sentinel) — the occlusion of a PARTIAL cell, named by the window's
+// second channel. Split from the LUT so a look and a cover are spent independently.
+@group(2) @binding(6) var<storage, read> gi_covers: array<vec2u>;
 
 // How far off a surface a ray starts. It exists only to put the origin on the AIR side of a face
 // the point lies exactly on — nothing more. Both marches below step BEFORE they test, so the
@@ -45,13 +49,15 @@ fn gi_wrap2(v: vec2i, m: i32) -> vec2i {
 	return select(r, r + vec2i(m), r < vec2i(0));
 }
 
-// The fine cell at a PRE-WRAPPED lateral coordinate, so a march that
-// already knows where it is does not pay for the wrap again.
-fn gi_cell_w(w: vec2i, y: i32) -> u32 {
+// The fine texel at a PRE-WRAPPED lateral coordinate, so a march that
+// already knows where it is does not pay for the wrap again: .x the
+// look (the LUT row), .y the cover (the box-table entry, 0 for a full
+// cell). One load serves both.
+fn gi_texel_w(w: vec2i, y: i32) -> vec2u {
 	if y < 0 || y > 255 {
-		return 0u;
+		return vec2u(0u);
 	}
-	return textureLoad(gi_window, vec3i(w.x, y, w.y), 0).r;
+	return textureLoad(gi_window, vec3i(w.x, y, w.y), 0).rg;
 }
 
 // The coarse brick from the SAME pre-wrapped lateral coordinate, which is what lets one wrap serve
@@ -100,7 +106,7 @@ fn gi_brick_open(word: u32, oy: f32, dy: f32, ybase: f32, t0: f32, t1: f32) -> f
 // The wrapping form, for the callers that hold a world cell rather than
 // a march's running position (probe relocation, the occlusion DDA).
 fn gi_cell(side: i32, c: vec3i) -> u32 {
-	return gi_cell_w(gi_wrap2(c.xz, side), c.y);
+	return gi_texel_w(gi_wrap2(c.xz, side), c.y).x;
 }
 
 fn gi_solid(side: i32, c: vec3i) -> bool {
@@ -267,28 +273,28 @@ fn gi_sun_vis(side: i32, sky_y: f32, cam_xz: vec2f, sun: vec4f, p: vec3f, iters:
 			r = gi_ray_skip_brick(r, dir, step_dir, inv);
 			continue;
 		}
-		let v = gi_cell_w(w, r.cell.y);
-		if v != 0u {
+		let tx = gi_texel_w(w, r.cell.y);
+		let v = tx.x;
+		if tx.y != 0u {
+			// A covered cell blocks only where its boxes actually
+			// stand — this is what lets a low sun clear the slab
+			// beside the one you placed, and a torch shade as a
+			// post instead of a pillar. The table is read only here,
+			// off the hot path.
+			let t_exit = min(r.tmax.x, min(r.tmax.y, r.tmax.z));
+			let bh = gi_boxes_hit(o, dir, r.cell, r.t, t_exit, gi_covers[tx.y], r.axis);
+			if bh.x >= 0.0 {
+				out.dist = bh.x;
+				return out;
+			}
+		} else if v != 0u {
 			// Word 0 only on the hot path: this loop is the frame's
 			// innermost, and loading the whole LUT entry per occupied
-			// cell measured a clear cost on the bench. The box words are
-			// fetched only inside the partial branch.
+			// cell measured a clear cost on the bench.
 			let op = gi_lut[v].x >> 24u;
 			if op == 2u {
 				out.dist = r.t;
 				return out;
-			}
-			if op == 3u {
-				// A shaped cell blocks only where its boxes actually
-				// stand — this is what lets a low sun clear the slab
-				// beside the one you placed, and a torch shade as a
-				// post instead of a pillar.
-				let t_exit = min(r.tmax.x, min(r.tmax.y, r.tmax.z));
-				let bh = gi_boxes_hit(o, dir, r.cell, r.t, t_exit, gi_lut[v].zw, r.axis);
-				if bh.x >= 0.0 {
-					out.dist = bh.x;
-					return out;
-				}
 			}
 			if op == 1u {
 				out.water += 1.0;
@@ -395,8 +401,24 @@ fn gi_march(
 			r = gi_ray_skip_brick(r, dir, step_dir, inv);
 			continue;
 		}
-		let v = gi_cell_w(w, r.cell.y);
-		if v != 0u {
+		let tx = gi_texel_w(w, r.cell.y);
+		let v = tx.x;
+		if tx.y != 0u {
+			// An emitting covered cell resolves its boxes like every other partial (R27).
+			// It used to be a hit WHOLE so a gather ray would reliably strike a torch's
+			// cell; R27 removed emission from this path (`path_radiance`), leaving the rule
+			// casting a whole-cell shadow from a thin post — and with the direct term
+			// resampled over every in-range emitter, clustered torches shadowed each other.
+			let t_exit = min(r.tmax.x, min(r.tmax.y, r.tmax.z));
+			let bh = gi_boxes_hit(o, dir, r.cell, r.t, t_exit, gi_covers[tx.y], r.axis);
+			if bh.x >= 0.0 {
+				out.hit = true;
+				out.cell = r.cell;
+				out.axis = u32(bh.y);
+				out.cls = v;
+				return out;
+			}
+		} else if v != 0u {
 			// Word 0 only on the hot path — see gi_sun_vis.
 			let op = gi_lut[v].x >> 24u;
 			if op == 2u {
@@ -405,22 +427,6 @@ fn gi_march(
 				out.axis = r.axis;
 				out.cls = v;
 				return out;
-			}
-			if op == 3u {
-				// An emitting partial cell resolves its boxes like every other partial (R27).
-				// It used to be a hit WHOLE so a gather ray would reliably strike a torch's
-				// cell; R27 removed emission from this path (`path_radiance`), leaving the rule
-				// casting a whole-cell shadow from a thin post — and with the direct term
-				// resampled over every in-range emitter, clustered torches shadowed each other.
-				let t_exit = min(r.tmax.x, min(r.tmax.y, r.tmax.z));
-				let bh = gi_boxes_hit(o, dir, r.cell, r.t, t_exit, gi_lut[v].zw, r.axis);
-				if bh.x >= 0.0 {
-					out.hit = true;
-					out.cell = r.cell;
-					out.axis = u32(bh.y);
-					out.cls = v;
-					return out;
-				}
 			}
 			if op == 1u {
 				out.water += 1.0;
@@ -442,9 +448,8 @@ fn gi_albedo(v: u32) -> vec3f {
 	return vec3f(f32(m & 0xffu), f32((m >> 8u) & 0xffu), f32((m >> 16u) & 0xffu)) / 255.0;
 }
 
-// A tinted class's per-cell rgb filter (op 4). Word .z is free for every
-// full-cube class — only the synthetic shape classes carry boxes there —
-// and the CPU packs it only for op-4 rows (material_lut).
+// A tinted look's per-cell rgb filter (op 4). The CPU packs word .z only
+// for op-4 rows (material_lut).
 fn gi_glass_tr(v: u32) -> vec3f {
 	let m = gi_lut[v].z;
 	return vec3f(f32(m & 0xffu), f32((m >> 8u) & 0xffu), f32((m >> 16u) & 0xffu)) / 255.0;

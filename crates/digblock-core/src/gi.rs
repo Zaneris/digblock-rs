@@ -1,16 +1,17 @@
 //! GI-class classification for the RTGI voxel window.
 //!
-//! The window is an R8Uint 3D texture, one texel per block, that the probe rays
-//! march. Classification is a pure function of the cell, so every consumer
-//! agrees by construction. For full cubes the class byte IS the block id;
-//! everything a ray needs per class lives in the render side's material LUT, so
-//! the window never re-uploads when a look is tuned.
-//!
-//! Shaped cells get SYNTHETIC classes from [`SHAPE_CLASS_BASE`] up, each
-//! carrying a TWO-BOX COVER of the shape's light boxes (`shapes::light_boxes`:
-//! its collision, plus a walk-through fixture's post): box 0 exactly, then the
-//! AABB union of the rest. A cover can only ever OVER-block, never under. A
-//! state with NO light boxes — an open door — classifies as air.
+//! The window is an `Rg8Uint` 3D texture, one texel per block, that the probe
+//! rays march. Classification is a pure function of the cell, so every consumer
+//! agrees by construction. A texel is TWO palette indices, each deduplicated
+//! over the roster so it grows with what is DISTINCT rather than with the block
+//! count: `.r` is the cell's LOOK (everything a ray needs to shade or pass a
+//! cell — albedo texture, cast light, opacity — the render side's material LUT
+//! is one row per look) and `.g` is its COVER (the two-box occlusion of a
+//! shaped cell: `shapes::light_boxes` box 0 exactly, then the AABB union of the
+//! rest; a cover can only ever OVER-block, never under). Cover 0 is a full cell;
+//! look 0 is air. A shaped cell shares its cube's look, so a slab in a new
+//! material costs no look and no cover, and a state with no light boxes — an
+//! open door — classifies as air.
 
 use std::sync::LazyLock;
 
@@ -28,17 +29,32 @@ pub enum GiOpacity {
 	Tinted,
 }
 
+/// Bytes per window texel: the look, then the cover.
+pub const BYTES_PER_CELL: usize = 2;
+
+/// One chunk's worth of window texels.
+pub const CHUNK_BYTES: usize = CHUNK_VOLUME * BYTES_PER_CELL;
+
 /// One classified chunk, ready for the GPU: texel bytes in
 /// write_texture order, the coarse brick words, and the cells
 /// that emit (for the light list).
 pub struct GiChunk {
 	/// `[z][y][x]` — depth slices in `write_texture` layout, x fastest
-	/// (NOT ChunkData's y-major order).
-	pub bytes: Box<[u8; CHUNK_VOLUME]>,
+	/// (NOT ChunkData's y-major order), [`BYTES_PER_CELL`] per texel.
+	pub bytes: Box<[u8; CHUNK_BYTES]>,
 	/// One [`pack_coarse`] word per brick of the chunk, `[z][y][x]`.
 	pub coarse: [u32; 8],
-	/// Emitting cells as (local x, y, z, class).
-	pub emitters: Vec<(u8, u8, u8, u8)>,
+	/// Emitting cells.
+	pub emitters: Vec<GiEmitter>,
+}
+
+/// One point emitter in a chunk: its local cell and both classes — the look is what it casts,
+/// the cover is where inside the cell it casts FROM ([`light_origin`]).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct GiEmitter {
+	pub at: [u8; 3],
+	pub look: u8,
+	pub cover: u8,
 }
 
 /// Cells along a brick's edge; a brick address is a cell address shifted by its log.
@@ -50,7 +66,7 @@ const BRICK_CELLS: usize = BRICK * BRICK * BRICK;
 /// lowest and highest tops. A ray segment above `hi` is open, one below `lo` crosses the CORE at
 /// `core` density, and the band between crosses at `band` density — so a ray skimming flat ground
 /// inside the ground's own brick is open, which one density over the whole brick got wrong.
-/// `modal` is the class most blockers wear. Densities are fractions of their full scale —
+/// `modal` is the look most blockers wear. Densities are fractions of their full scale —
 /// `CORE_FULL` and `BAND_FULL`, the two bit widths the word affords — and any brick with a
 /// blocker has `hi > 0`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -137,18 +153,74 @@ fn summarize_brick(blk: &[bool; BRICK_CELLS], hist: &[u16; 256]) -> Brick {
 	}
 }
 
-/// First class byte the shaped-variant classes occupy: below is a plain block id (or air), from
-/// here up indexes [`shape_classes`]. The window texture is `R8Uint`, so one byte is the whole
-/// budget and this constant is where it is SPLIT. **A shaped material costs a dozen-odd classes**
-/// — a NEW shape family is the expensive case, costing covers in every material at once, and a
-/// many-state MULTI-CELL family (parts × facings, each with its own light cover) is the next one.
-/// `shape_classes_fit_the_byte` pins both ends, prints the headroom and holds a margin back.
-pub const SHAPE_CLASS_BASE: u8 = 112;
+/// How many classes a palette byte holds, index 0 reserved (air, or no
+/// cover). Both palettes are one byte wide because the window is: a
+/// wider texel doubles the frame's largest allocation again.
+pub const PALETTE: usize = 256;
 
-/// One synthetic class: the block whose material the LUT entry borrows,
-/// and the ≤2-box occlusion cover in sub-grid units.
-pub struct ShapeClass {
+/// The margin each palette holds back, so a catalog wave is priced before
+/// it is written rather than after the `LazyLock` panics at startup.
+pub const PALETTE_MARGIN: usize = 32;
+
+/// One look: the block whose row the material LUT builds this class from.
+/// Every block with the same [`look_key`] shares it, so the LUT row is the
+/// same whichever member is named.
+pub struct Look {
 	pub base: BlockType,
+}
+
+/// What makes two blocks one look: the texture the LUT's albedo is taken from, what it casts,
+/// and how a ray crosses it. Everything the material LUT reads and nothing it does not, so a
+/// row built from any member of the class is bit-identical.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct LookKey {
+	tex: u16,
+	light: u8,
+	flecks: Option<([u8; 3], [u8; 3])>,
+	op: GiOpacity,
+}
+
+fn look_key(b: BlockType) -> LookKey {
+	let p = b.props();
+	LookKey {
+		tex: p.tex_top,
+		light: p.light,
+		flecks: b.node_flecks(),
+		op: opacity(b),
+	}
+}
+
+/// The look palette and the id → look index.
+static LOOKS: LazyLock<(Vec<Look>, Vec<u8>)> = LazyLock::new(|| {
+	let mut looks: Vec<Look> = Vec::new();
+	let mut keys = Vec::new();
+	let mut index = vec![0u8; BlockType::COUNT];
+	for b in BlockType::ALL {
+		if b == BlockType::Air {
+			continue;
+		}
+		let key = look_key(b);
+		let found = keys.iter().position(|k| *k == key).unwrap_or_else(|| {
+			looks.push(Look { base: b });
+			keys.push(key);
+			looks.len() - 1
+		});
+		let class = 1 + found;
+		assert!(class < PALETTE, "looks overflow the palette byte");
+		index[b as usize] = class as u8;
+	}
+	(looks, index)
+});
+
+/// Every look, indexed by `look - 1`. The render side builds the LUT's
+/// rows from 1 up out of this; row 0 is air.
+pub fn looks() -> &'static [Look] {
+	&LOOKS.0
+}
+
+/// One cover: the ≤2-box occlusion of a shaped cell, in sub-grid units.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Cover {
 	pub boxes: [Option<SubBox>; 2],
 }
 
@@ -169,15 +241,16 @@ fn union_box(boxes: &[SubBox]) -> Option<SubBox> {
 	}))
 }
 
-/// The class table and the (id, state) → class byte index. Index slots hold the class byte, or 0
-/// for "occludes nothing" (an open door). The index is sized by the roster rather than by a fixed
-/// id space, so shaped rows are limited only by the class budget above — the fixed-size table it
-/// replaced silently capped shaped ids at a number the grid's materials reach.
-static SHAPE_CLASSES: LazyLock<(Vec<ShapeClass>, Vec<u8>)> = LazyLock::new(|| {
-	let mut classes: Vec<ShapeClass> = Vec::new();
+/// The cover palette and the (id, state) → cover index. Index slots hold the cover class, or 0
+/// for "occludes as its whole cell" — a full cube, a translucent shaped cell (a crystal slab, a
+/// pane: the GI approximates it as a full see-through cell, since a box that attenuates instead
+/// of blocking has no home in the box words) — and for an open door, whose look is air anyway.
+/// Deduplicated over the GEOMETRY alone: every material's floor slab is one cover.
+static COVERS: LazyLock<(Vec<Cover>, Vec<u8>)> = LazyLock::new(|| {
+	let mut covers: Vec<Cover> = Vec::new();
 	let mut index = vec![0u8; BlockType::COUNT * 16];
 	for b in BlockType::ALL {
-		if b.props().shape.is_none() {
+		if b.props().shape.is_none() || b.props().bucket == crate::block::MeshBucket::Translucent {
 			continue;
 		}
 		// All 16 nibbles, not just canonically-valid states: `shape_of`
@@ -191,30 +264,25 @@ static SHAPE_CLASSES: LazyLock<(Vec<ShapeClass>, Vec<u8>)> = LazyLock::new(|| {
 				index[key] = 0;
 				continue;
 			}
-			let cover = [Some(boxes[0]), union_box(&boxes[1..])];
-			let found = classes
-				.iter()
-				.position(|c| c.base == b && c.boxes == cover)
-				.unwrap_or_else(|| {
-					classes.push(ShapeClass {
-						base: b,
-						boxes: cover,
-					});
-					classes.len() - 1
-				});
-			let class = SHAPE_CLASS_BASE as usize + found;
-			assert!(class < 256, "shape classes overflow the class byte");
+			let cover = Cover {
+				boxes: [Some(boxes[0]), union_box(&boxes[1..])],
+			};
+			let found = covers.iter().position(|c| *c == cover).unwrap_or_else(|| {
+				covers.push(cover);
+				covers.len() - 1
+			});
+			let class = 1 + found;
+			assert!(class < PALETTE, "covers overflow the palette byte");
 			index[key] = class as u8;
 		}
 	}
-	(classes, index)
+	(covers, index)
 });
 
-/// Every synthetic class, indexed by `class - SHAPE_CLASS_BASE`. The
-/// render side builds the LUT entries from `SHAPE_CLASS_BASE` up out of
-/// this.
-pub fn shape_classes() -> &'static [ShapeClass] {
-	&SHAPE_CLASSES.0
+/// Every cover, indexed by `cover - 1`. The render side packs these into
+/// the cover table from 1 up; entry 0 is the no-box sentinel.
+pub fn covers() -> &'static [Cover] {
+	&COVERS.0
 }
 
 /// The emissive band of a shaped emitter, as a fraction of its cell measured DOWN FROM THE CELL
@@ -224,20 +292,20 @@ pub fn shape_classes() -> &'static [ShapeClass] {
 /// the torch, whose post stops short of the cell top, that leaves a flame over the post.
 const EMISSIVE_BAND: f32 = 5.0 / 12.0;
 
-/// Where inside its cell an emitting class actually radiates from, in block units (0..1 per axis).
-/// A full cube emits from its center; a shaped emitter does not — a torch is a slim post whose
-/// fire is the top of its height, so a center origin puts the point source down in the handle.
-/// Under `LIGHT_NEAR` that costs no brightness, but the hard point shadows project from the wrong
-/// height. Written per-axis though only y moves today, so a wall-mounted variant works.
-pub fn light_origin(class: u8) -> [f32; 3] {
+/// Where inside its cell an emitter of this COVER actually radiates from, in block units (0..1
+/// per axis). A full cube (cover 0) emits from its center; a shaped emitter does not — a torch is
+/// a slim post whose fire is the top of its height, so a center origin puts the point source
+/// down in the handle. Under `LIGHT_NEAR` that costs no brightness, but the hard point shadows
+/// project from the wrong height. Written per-axis though only y moves today.
+pub fn light_origin(cover: u8) -> [f32; 3] {
 	const MID: [f32; 3] = [0.5, 0.5, 0.5];
-	if class < SHAPE_CLASS_BASE {
+	if cover == 0 {
 		return MID;
 	}
-	let Some(sc) = shape_classes().get((class - SHAPE_CLASS_BASE) as usize) else {
+	let Some(c) = covers().get(usize::from(cover) - 1) else {
 		return MID;
 	};
-	let boxes: Vec<SubBox> = sc.boxes.iter().flatten().copied().collect();
+	let boxes: Vec<SubBox> = c.boxes.iter().flatten().copied().collect();
 	let Some(b) = union_box(&boxes) else {
 		return MID;
 	};
@@ -311,34 +379,36 @@ pub struct CarriedLight {
 /// torch, and the step up from its own first rank is one a player cannot miss.
 const PICK_RESONANT_LIGHT: u8 = 12;
 
-/// The class byte for one cell: 0 for air, the block id for full cubes
-/// and fluids, a synthetic [`shape_classes`] entry for shaped cells —
-/// which is the one place the state nibble matters (a thin floor slab
-/// and a thick ceiling slab occlude differently).
+/// The look of one cell: 0 for air, else the block's look class — a
+/// shaped cell wears its cube's look, whatever its state.
 #[inline]
-pub fn gi_class(cell: u16) -> u8 {
-	let b = BlockType::from_id(crate::chunk::cell_id(cell));
-	if b == BlockType::Air {
-		return 0;
-	}
-	if b.props().shape.is_some() {
-		// A translucent shaped cell (a crystal slab, a pane) skips the
-		// synthetic partial classes and answers its BASE id: the GI
-		// approximates it as a full see-through cell, since a box that
-		// attenuates instead of blocking has no home in the box words.
-		if b.props().bucket != crate::block::MeshBucket::Translucent {
-			let key = ((b as usize) << 4) | crate::chunk::cell_state(cell) as usize;
-			return SHAPE_CLASSES.1[key];
-		}
-	}
-	b as u8
+pub fn gi_look(cell: u16) -> u8 {
+	LOOKS.1[BlockType::from_id(crate::chunk::cell_id(cell)) as usize]
 }
 
-/// How a full-cube class attenuates rays (LUT-side mirror; also the coarse rule). Shaped cells
-/// don't route through this — their synthetic classes are partial by construction — EXCEPT
-/// translucent ones, which [`gi_class`] hands back as their base id. The see-through test is the
-/// BUCKET, not a class: a translucent shaped row keeps `RenderClass::Shaped`, and
-/// `Translucent`-the-class still means water (the marches' op-1 path-length counter).
+/// The cover of one cell: 0 for a full cell, else a [`covers`] entry —
+/// the one place the state nibble matters (a thin floor slab and a
+/// thick ceiling slab occlude differently).
+#[inline]
+pub fn gi_cover(cell: u16) -> u8 {
+	let b = BlockType::from_id(crate::chunk::cell_id(cell));
+	if b.props().shape.is_none() {
+		return 0;
+	}
+	COVERS.1[((b as usize) << 4) | crate::chunk::cell_state(cell) as usize]
+}
+
+/// Both classes of one cell, as the window texel carries them.
+#[inline]
+pub fn gi_classes(cell: u16) -> (u8, u8) {
+	(gi_look(cell), gi_cover(cell))
+}
+
+/// How a look attenuates rays (LUT-side mirror; also the coarse rule). A covered cell does not
+/// route through this — its cover is partial by construction — EXCEPT a translucent one, which
+/// carries no cover and answers as its whole cell. The see-through test is the BUCKET, not a
+/// class: a translucent shaped row keeps `RenderClass::Shaped`, and `Translucent`-the-class still
+/// means water (the marches' op-1 path-length counter).
 #[inline]
 pub fn opacity(b: BlockType) -> GiOpacity {
 	if b.props().bucket == crate::block::MeshBucket::Translucent {
@@ -351,10 +421,10 @@ pub fn opacity(b: BlockType) -> GiOpacity {
 	}
 }
 
-/// Pack one sub-box into the LUT's box word: the three min coordinates
+/// Pack one sub-box into the cover table's box word: the three min coordinates
 /// then the three max, a nibble each (a sub-grid coordinate fits). 0 is
 /// the "no box" sentinel — a real box always has a nonzero max. The WGSL
-/// decode in gi_common.wgsl's `gi_box_hit` is this formula's mirror,
+/// decode in gi_dda.wgsl's `gi_boxes_hit` is this formula's mirror,
 /// pinned by `box_pack_matches_the_shader_decode`.
 #[inline]
 pub fn pack_box(b: SubBox) -> u32 {
@@ -371,7 +441,7 @@ pub fn pack_box(b: SubBox) -> u32 {
 /// region may hold a stale previous tenant.
 pub fn classify_chunk(data: &ChunkData) -> GiChunk {
 	let n = CHUNK_SIZE;
-	let mut bytes = Box::new([0u8; CHUNK_VOLUME]);
+	let mut bytes = Box::new([0u8; CHUNK_BYTES]);
 	let mut flags = [0u32; 8];
 	let mut hist = [[0u16; 256]; 8];
 	let mut blk = Box::new([[false; BRICK_CELLS]; 8]);
@@ -380,9 +450,11 @@ pub fn classify_chunk(data: &ChunkData) -> GiChunk {
 		for y in 0..n {
 			for x in 0..n {
 				let cell = data.get_cell(x, y, z);
-				let class = gi_class(cell);
-				bytes[(z * n + y) * n + x] = class;
-				if class == 0 {
+				let (look, cover) = gi_classes(cell);
+				let i = ((z * n + y) * n + x) * BYTES_PER_CELL;
+				bytes[i] = look;
+				bytes[i + 1] = cover;
+				if look == 0 {
 					continue;
 				}
 				let b = BlockType::from_id(crate::chunk::cell_id(cell));
@@ -393,19 +465,23 @@ pub fn classify_chunk(data: &ChunkData) -> GiChunk {
 				// here as well would light buried rock AND double every cell.
 				let emits = b.props().light > 0 && !b.props().surface_light;
 				if emits {
-					emitters.push((x as u8, y as u8, z as u8, class));
+					emitters.push(GiEmitter {
+						at: [x as u8, y as u8, z as u8],
+						look,
+						cover,
+					});
 				}
 				// A partial cell sets the blocker bit too: the coarse
 				// texture only licenses SKIPPING a brick, and a brick
 				// holding a slab must still be marched. Tinted cells set
 				// it for the same reason — a skipped brick accumulates no
 				// throughput, so a wall of panes would go untinted.
-				let blocks_rays = class >= SHAPE_CLASS_BASE
-					|| matches!(opacity(b), GiOpacity::Opaque | GiOpacity::Tinted);
+				let blocks_rays =
+					cover != 0 || matches!(opacity(b), GiOpacity::Opaque | GiOpacity::Tinted);
 				let ci = (z / BRICK) * 4 + (y / BRICK) * 2 + (x / BRICK);
 				flags[ci] |= u32::from(blocks_rays) | u32::from(emits) << 1;
 				if blocks_rays {
-					hist[ci][usize::from(class)] += 1;
+					hist[ci][usize::from(look)] += 1;
 					blk[ci][((z % BRICK) * BRICK + y % BRICK) * BRICK + x % BRICK] = true;
 				}
 			}
@@ -431,7 +507,7 @@ mod tests {
 
 	#[test]
 	fn a_torch_radiates_from_its_flame_not_its_handle() {
-		let o = light_origin(gi_class(make_cell(BlockType::Torch, 0)));
+		let o = light_origin(gi_cover(make_cell(BlockType::Torch, 0)));
 		// The cell-relative emissive band clipped to the post leaves the
 		// flame at the top of the post, and the origin is the middle of
 		// what is left. Horizontally the centered post agrees with the cell
@@ -440,14 +516,12 @@ mod tests {
 		assert!((o[2] - 0.5).abs() < 1e-6, "{o:?}");
 		assert!((o[1] - 8.5 / 12.0).abs() < 1e-6, "{o:?}");
 		// Full cubes are untouched — the point source stays the center.
-		assert_eq!(light_origin(BlockType::Stone as u8), [0.5, 0.5, 0.5]);
+		assert_eq!(
+			light_origin(gi_cover(BlockType::Stone as u16)),
+			[0.5, 0.5, 0.5]
+		);
 	}
 
-	/// Both halves of the `R8Uint` window's class budget, and the headroom
-	/// left in each — the numbers, not just a pass, because this is the
-	/// wall §7.2's grid walks toward one material at a time (each shaped
-	/// material spends a dozen-odd covers) and the failure mode is a
-	/// LazyLock panic at startup rather than anything a reader can price.
 	#[test]
 	fn a_carried_light_hangs_inside_the_body() {
 		use crate::player::{EYE_TO_CROWN, EYE_TO_FEET};
@@ -466,51 +540,90 @@ mod tests {
 		assert!(o.y - 0.5 > eye.y - EYE_TO_FEET, "{o:?} near the feet");
 	}
 
+	/// Both palettes and the headroom left in each — the numbers, not just
+	/// a pass, because a catalog wave should be priced before it is written
+	/// rather than after the `LazyLock` panics at startup. A look is spent
+	/// per distinct TEXTURE-and-light, a cover per distinct GEOMETRY, and
+	/// neither per block: that is the whole point of the split.
 	#[test]
-	fn shape_classes_fit_the_byte() {
-		let n = shape_classes().len();
-		let room = 256 - SHAPE_CLASS_BASE as usize;
-		assert!(n > 0);
+	fn the_palettes_fit_their_bytes_with_room_to_spare() {
+		let room = PALETTE - 1;
+		let n_looks = looks().len();
+		let n_covers = covers().len();
+		assert!(n_looks > 0 && n_covers > 0);
 		assert!(
-			n <= room,
-			"{n} shape classes in {room} slots — lower SHAPE_CLASS_BASE or widen the window"
+			n_looks + PALETTE_MARGIN <= room,
+			"{n_looks} looks in {room} slots — only {} left",
+			room - n_looks
 		);
-		// The other half: a full cube's class IS its id, so every UNSHAPED
-		// row has to stay below the split. Tools never reach the window,
-		// but their ids sit in the same space and cost nothing to cover.
-		let highest = BlockType::ALL
-			.iter()
-			.filter(|b| b.props().shape.is_none())
-			.map(|&b| b as usize)
-			.max()
-			.expect("air at least");
 		assert!(
-			highest < SHAPE_CLASS_BASE as usize,
-			"full-cube id {highest} collides with the shape classes"
+			n_covers + PALETTE_MARGIN <= room,
+			"{n_covers} covers in {room} slots — only {} left",
+			room - n_covers
 		);
-		// Headroom, spelled out so a catalog wave can be priced before it
-		// is written rather than after it panics.
+		// A shaped row in an existing material is free on both counts:
+		// every slab shares its cube's look and the slab family's covers.
+		assert_eq!(
+			gi_look(make_cell(BlockType::WoodSlab, 0)),
+			gi_look(BlockType::Wood as u16)
+		);
+		for state in 0..16u8 {
+			assert_eq!(
+				gi_cover(make_cell(BlockType::WoodSlab, state)),
+				gi_cover(make_cell(BlockType::StoneSlab, state)),
+				"state {state}: one geometry, one cover"
+			);
+		}
+		// And the palettes are what the roster spends, spelled out.
+		let blocks = BlockType::ALL.len() - 1;
 		assert!(
-			room - n >= 16,
-			"only {} shape slots left — one more shaped material and it overflows",
-			room - n
+			n_looks < blocks,
+			"{n_looks} looks for {blocks} blocks: nothing deduplicated"
 		);
 	}
 
 	#[test]
-	fn shaped_cells_get_synthetic_classes_per_state() {
+	fn a_look_is_everything_the_lut_reads_and_nothing_else() {
+		// Every block answers a look, and two blocks share one exactly
+		// when the LUT would build the same row from either.
+		for a in BlockType::ALL {
+			if a == BlockType::Air {
+				assert_eq!(gi_look(a as u16), 0);
+				continue;
+			}
+			assert_ne!(gi_look(a as u16), 0, "{a:?}");
+			for b in BlockType::ALL {
+				if b == BlockType::Air {
+					continue;
+				}
+				assert_eq!(
+					gi_look(a as u16) == gi_look(b as u16),
+					look_key(a) == look_key(b),
+					"{a:?} vs {b:?}"
+				);
+			}
+			// The base named for a look really is a member of it.
+			let l = &looks()[usize::from(gi_look(a as u16)) - 1];
+			assert_eq!(look_key(l.base), look_key(a), "{a:?}");
+		}
+	}
+
+	#[test]
+	fn shaped_cells_get_covers_per_state() {
 		// A floor slab and a ceiling slab occlude differently, so they
 		// must classify differently — the old id-only rule collapsed
 		// them (and everything else) into one opaque cube.
-		let floor = gi_class(make_cell(BlockType::WoodSlab, slab_state(false, false)));
-		let ceil = gi_class(make_cell(BlockType::WoodSlab, slab_state(false, true)));
-		assert!(floor >= SHAPE_CLASS_BASE);
-		assert!(ceil >= SHAPE_CLASS_BASE);
+		let floor = gi_cover(make_cell(BlockType::WoodSlab, slab_state(false, false)));
+		let ceil = gi_cover(make_cell(BlockType::WoodSlab, slab_state(false, true)));
+		assert_ne!(floor, 0);
+		assert_ne!(ceil, 0);
 		assert_ne!(floor, ceil);
 		// Stairs rotate: each facing is its own cover.
-		let e = gi_class(make_cell(BlockType::WoodStairs, Facing::PosX as u8));
-		let w = gi_class(make_cell(BlockType::WoodStairs, Facing::NegX as u8));
+		let e = gi_cover(make_cell(BlockType::WoodStairs, Facing::PosX as u8));
+		let w = gi_cover(make_cell(BlockType::WoodStairs, Facing::NegX as u8));
 		assert_ne!(e, w);
+		// A full cube has none.
+		assert_eq!(gi_cover(BlockType::Stone as u16), 0);
 	}
 
 	#[test]
@@ -520,9 +633,9 @@ mod tests {
 		for f in Facing::ALL {
 			for upper in [false, true] {
 				let open = make_cell(BlockType::LumberDoor, door_state(f, true, upper));
-				assert_eq!(gi_class(open), 0);
+				assert_eq!(gi_cover(open), 0);
 				let closed = make_cell(BlockType::LumberDoor, door_state(f, false, upper));
-				assert!(gi_class(closed) >= SHAPE_CLASS_BASE);
+				assert_ne!(gi_cover(closed), 0);
 			}
 		}
 	}
@@ -575,24 +688,23 @@ mod tests {
 			}
 			for state in 0..16u8 {
 				let cell = make_cell(b, state);
-				let class = gi_class(cell);
+				let cover = gi_cover(cell);
 				let boxes = shapes::light_boxes(cell);
-				// A translucent shaped block skips the synthetic classes
-				// on purpose: the GI takes it as a full see-through cell
-				// of its base id, boxes and all (see `gi_class`).
+				// A translucent shaped block carries no cover on purpose:
+				// the GI takes it as a full see-through cell of its look,
+				// boxes and all (see `COVERS`).
 				if b.props().bucket == crate::block::MeshBucket::Translucent {
-					assert_eq!(class, b as u8, "{b:?}");
+					assert_eq!(cover, 0, "{b:?}");
 					continue;
 				}
 				if boxes.is_empty() {
-					assert_eq!(class, 0);
+					assert_eq!(cover, 0);
 					continue;
 				}
-				let sc = &shape_classes()[(class - SHAPE_CLASS_BASE) as usize];
-				assert_eq!(sc.base, b);
-				assert_eq!(sc.boxes[0], Some(boxes[0]));
+				let c = &covers()[usize::from(cover) - 1];
+				assert_eq!(c.boxes[0], Some(boxes[0]));
 				for cb in &boxes[1..] {
-					let u = sc.boxes[1].expect("rest of the boxes need a cover");
+					let u = c.boxes[1].expect("rest of the boxes need a cover");
 					for a in 0..3 {
 						assert!(u.min[a] <= cb.min[a] && u.max[a] >= cb.max[a]);
 					}
@@ -603,7 +715,7 @@ mod tests {
 
 	#[test]
 	fn box_pack_matches_the_shader_decode() {
-		// gi_box_hit unpacks the three min coordinates and then the three
+		// gi_boxes_hit unpacks the three min coordinates and then the three
 		// max, a nibble each. 0 must remain the no-box sentinel.
 		let b = SubBox::new([0, 8, 3], [12, 12, 7]);
 		let p = pack_box(b);
@@ -616,7 +728,8 @@ mod tests {
 			"max lanes"
 		);
 		// Every real cover box packs nonzero (max is never all-zero).
-		for c in shape_classes() {
+		for c in covers() {
+			assert_ne!(pack_box(c.boxes[0].expect("box 0 is always there")), 0);
 			for bx in c.boxes.into_iter().flatten() {
 				assert_ne!(pack_box(bx), 0);
 			}
@@ -633,14 +746,23 @@ mod tests {
 
 	#[test]
 	fn bytes_are_texel_ordered_not_chunk_ordered() {
-		// One stone cell off every axis: its byte must sit at the
+		// One stone cell off every axis: its texel must sit at the
 		// write_texture layout index (z-major, then y, x fastest), which
-		// differs from ChunkData's y-major order.
+		// differs from ChunkData's y-major order — look first, cover
+		// beside it.
 		let mut data = ChunkData::default();
 		data.set(3, 5, 7, BlockType::Stone);
 		let gi = classify_chunk(&data);
-		assert_eq!(gi.bytes[(7 * 16 + 5) * 16 + 3], BlockType::Stone as u8);
+		let i = ((7 * 16 + 5) * 16 + 3) * BYTES_PER_CELL;
+		assert_eq!(gi.bytes[i], gi_look(BlockType::Stone as u16));
+		assert_eq!(gi.bytes[i + 1], 0);
 		assert_eq!(gi.bytes.iter().filter(|&&b| b != 0).count(), 1);
+		// And a shaped cell writes both bytes.
+		let mut data = ChunkData::default();
+		data.set(3, 5, 7, BlockType::WoodSlab);
+		let gi = classify_chunk(&data);
+		assert_eq!(gi.bytes[i], gi_look(BlockType::Wood as u16));
+		assert_eq!(gi.bytes[i + 1], gi_cover(make_cell(BlockType::WoodSlab, 0)));
 	}
 
 	#[test]
@@ -652,11 +774,18 @@ mod tests {
 		let gi = classify_chunk(&data);
 		assert_eq!(gi.coarse[0] & 0b11, 0b01, "stone: blocks, no emission");
 		// The torch blocks (partial cells still pin their brick) and
-		// emits; its class is synthetic now, carrying the post boxes.
+		// emits, carrying the post's cover.
 		assert_eq!(gi.coarse[7] & 0b11, 0b11);
-		let torch_class = gi_class(BlockType::Torch as u16);
-		assert!(torch_class >= SHAPE_CLASS_BASE);
-		assert_eq!(gi.emitters, vec![(12, 12, 12, torch_class)]);
+		let (look, cover) = gi_classes(BlockType::Torch as u16);
+		assert_ne!(cover, 0);
+		assert_eq!(
+			gi.emitters,
+			vec![GiEmitter {
+				at: [12, 12, 12],
+				look,
+				cover
+			}]
+		);
 		// Water attenuates but neither blocks nor emits.
 		let mut wet = ChunkData::default();
 		wet.set(0, 0, 0, BlockType::Water);
@@ -679,7 +808,7 @@ mod tests {
 	}
 
 	/// The far gather crosses a brick by its summary, so a brick with any blocker must be
-	/// unskippable AND carry a top, the mode must be the class most blockers wear, a solid brick
+	/// unskippable AND carry a top, the mode must be the look most blockers wear, a solid brick
 	/// must read as a full core, and the word must round-trip the summary it was packed from.
 	#[test]
 	fn a_brick_with_a_blocker_is_never_open() {
@@ -711,8 +840,8 @@ mod tests {
 			);
 			assert_eq!(
 				b.modal,
-				gi_class(BlockType::Stone as u16),
-				"the mode is the class most blockers wear"
+				gi_look(BlockType::Stone as u16),
+				"the mode is the look most blockers wear"
 			);
 			assert_eq!(
 				unpack_coarse(pack_coarse(true, false, b)),
