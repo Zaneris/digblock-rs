@@ -152,6 +152,7 @@ fn samples() -> Vec<Msg> {
 		Msg::DigRefused(req),
 		Msg::DigProtected,
 		Msg::PlaceProtected,
+		Msg::PlaceTooDetailed,
 		Msg::NeedsSiphon,
 		Msg::DigRefusedByServer,
 		Msg::CastInterrupted,
@@ -263,6 +264,7 @@ fn samples() -> Vec<Msg> {
 			Msg::DigRefused(_)
 			| Msg::DigProtected
 			| Msg::PlaceProtected
+			| Msg::PlaceTooDetailed
 			| Msg::NeedsSiphon
 			| Msg::DigRefusedByServer
 			| Msg::CastInterrupted

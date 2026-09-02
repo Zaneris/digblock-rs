@@ -1482,6 +1482,16 @@ impl Engine {
 		{
 			return;
 		}
+		// The chunk slot budget, the server's rule run on our own chunks,
+		// so the refusal is instant rather than a round trip later.
+		if !digblock_core::budget::writes_fit(
+			&placements,
+			|c| self.pipeline.cell_at(c.0, c.1, c.2),
+			|p| self.pipeline.chunk_cost(p),
+		) {
+			self.push_feed(Msg::PlaceTooDetailed);
+			return;
+		}
 		// Stock gate BEFORE the world mutation: no stock, no prediction.
 		// One debit covers a door's two cells.
 		if !self.inventory.try_take(block, 1) {

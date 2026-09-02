@@ -28,10 +28,14 @@ pub const GRID: u8 = 12;
 const G: i32 = GRID as i32;
 const GU: usize = GRID as usize;
 
-/// Ceiling on any variant's baked quad count — sizes the renderer's shared
-/// index buffer (`MAX_QUADS`); pinned per-variant by a test here. Worst
-/// today: the upper door half (lites + hinge).
-pub const MAX_SHAPE_QUADS: usize = 48;
+/// Ceiling on any variant's baked entry count (quads, ramps and folded
+/// triangles alike); pinned per-variant by a test here. Sizes the item,
+/// viewmodel and icon buffers, and is what the editor reports against. The
+/// chunk index buffer is NOT sized from it any more: `budget` charges each
+/// placed shape's template against a per-chunk budget instead, so this is
+/// a sanity ceiling, not a memory line. Worst shipped today: the upper
+/// door half (lites + hinge), at 48.
+pub const MAX_SHAPE_QUADS: usize = 144;
 
 /// Sub-units one whole block converts into — an even division into thirds
 /// on each axis.

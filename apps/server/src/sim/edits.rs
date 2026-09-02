@@ -618,6 +618,24 @@ impl Sim {
 			return reject(RejectReason::Protected);
 		}
 
+		// The chunk slot budget: a place whose template would push any
+		// chunk it touches past what the index buffer holds. Honest
+		// clients predict this from the same rule; a decoder from before
+		// the variant hears the nearest older reason.
+		if place_b.is_some()
+			&& !digblock_core::budget::writes_fit(
+				&writes,
+				|c| self.store.cell_at(c.0, c.1, c.2),
+				|p| self.store.chunk_cost(p),
+			) {
+			let protocol = self.clients.get(&req.conn_id).map_or(0, |c| c.protocol);
+			return reject(if protocol >= super::DETAIL_BUDGET_PROTOCOL {
+				RejectReason::TooDetailed
+			} else {
+				RejectReason::Occluded
+			});
+		}
+
 		// Slot enforcement: the edit must use the item actually in its declared
 		// hotbar slot (the arrangement arrived in-order on the same stream, so
 		// honest clients can never trip this). Digs are tool-free and exempt. Sits

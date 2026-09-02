@@ -3,6 +3,7 @@
 
 pub mod alchemy;
 pub mod block;
+pub mod budget;
 pub mod camera_probe;
 pub mod causeway;
 pub mod chunk;

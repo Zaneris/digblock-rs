@@ -100,6 +100,8 @@ pub(crate) enum Msg {
 	/// A protected cell and its opposite number — two messages, since one line for both misleads.
 	DigProtected,
 	PlaceProtected,
+	/// The chunk's slot budget is spent: no room for another shape's template here.
+	PlaceTooDetailed,
 	/// A revealed vein with the wrong tool in hand — cleared by switching hands, not by levelling.
 	NeedsSiphon,
 	/// A server refusal the client cannot turn into a gate: the cell is gone, or the two disagree.

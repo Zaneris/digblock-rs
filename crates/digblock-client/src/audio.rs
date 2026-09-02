@@ -359,6 +359,7 @@ pub(crate) fn feed_sound(msg: &crate::voice::Msg) -> Option<crate::events::UiEve
 		M::DigRefused(_)
 		| M::DigProtected
 		| M::PlaceProtected
+		| M::PlaceTooDetailed
 		| M::NeedsSiphon
 		| M::DigRefusedByServer
 		| M::CastInterrupted

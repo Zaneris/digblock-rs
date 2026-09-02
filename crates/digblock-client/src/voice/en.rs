@@ -46,6 +46,7 @@ pub(super) fn line(msg: &Msg, binds: &crate::bindings::Bindings) -> String {
 		),
 		Msg::DigProtected => "This block is holding firm".into(),
 		Msg::PlaceProtected => "Nothing will stay put here".into(),
+		Msg::PlaceTooDetailed => "Too much detail here already".into(),
 		Msg::NeedsSiphon => "This vein needs an essence siphon".into(),
 		Msg::DigRefusedByServer => "The server refused that dig".into(),
 		Msg::CastInterrupted => "The channel breaks".into(),

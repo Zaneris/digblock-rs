@@ -3181,3 +3181,94 @@ fn the_declared_orientation_shapes_the_swing_and_clamps() {
 		);
 	}
 }
+
+/// The chunk slot budget: a place whose template has no room left in its
+/// chunk is refused before stock is touched. No shipped shape is costly
+/// enough to fill a chunk on its own, so the test installs a preview
+/// variant of 24 loose cubes (six faces each) on the chair, fills the
+/// ground under the player with it, and asks for one more shaped block.
+#[test]
+fn place_refused_when_the_chunk_slot_budget_is_spent() {
+	use digblock_core::budget::{SHAPED_SLOTS, cell_cost};
+	use digblock_core::chunk::make_cell;
+	use digblock_core::shapes::{
+		self, SubBox,
+		def::{DefBox, Roles},
+	};
+	let mut boxes = Vec::new();
+	for i in 0..24u8 {
+		let (x, y, z) = (2 * (i % 3), 2 * ((i / 3) % 3), 2 * (i / 9));
+		boxes.push(DefBox {
+			sub: SubBox::new([x, y, z], [x + 1, y + 1, z + 1]),
+			roles: Roles::ALL,
+			tex: [None; 3],
+		});
+	}
+	shapes::set_preview_override(
+		BlockType::Chair,
+		0,
+		shapes::preview_variant(&boxes, (0, 0, 0), 0),
+	);
+	let fat = make_cell(BlockType::Chair, 0);
+	let cost = cell_cost(fat);
+	assert_eq!(cost, 24 * 6);
+
+	let mut sim = flat_sim("budget");
+	let mut c = connect(&mut sim, 1);
+	wait_live(&mut sim, 1);
+	// The place lands in the chunk holding the ground under spawn. Fill
+	// that chunk's cells BELOW the surface row until one more shape can't
+	// fit; the surface stays stone so the aimed ray still lands on it.
+	let ground = FLAT_GROUND_TOP as i32;
+	let (cy, surface_row) = (ground.div_euclid(16), ground.rem_euclid(16));
+	let mut need = SHAPED_SLOTS / cost + 1;
+	'fill: for ly in 0..surface_row {
+		for z in 0..16 {
+			for x in 0..16 {
+				sim.test_set_cell(x, cy * 16 + ly, z, fat);
+				need -= 1;
+				if need == 0 {
+					break 'fill;
+				}
+			}
+		}
+	}
+	assert_eq!(need, 0, "ran out of cells under the surface");
+
+	sim.test_grant(1, BlockType::StoneStairs, 1);
+	let target = place_cell(&mut sim, &mut c, 1, BlockType::StoneStairs as u16);
+	assert_eq!(
+		target.1.div_euclid(16),
+		cy,
+		"the place lands in the filled chunk"
+	);
+	assert!(
+		c.msgs.iter().any(|m| matches!(
+			m,
+			ServerMsg::EditRejected {
+				client_seq: 1,
+				reason: RejectReason::TooDetailed
+			}
+		)),
+		"{:?}",
+		c.msgs
+	);
+	assert_eq!(
+		sim.test_cell_at(target.0, target.1, target.2),
+		Some(0),
+		"nothing written"
+	);
+	assert_eq!(
+		sim.test_inventory_count(1, BlockType::StoneStairs),
+		1,
+		"refused before the stock gate"
+	);
+	// A full block costs nothing and still goes in.
+	sim.test_grant(1, BlockType::Stone, 1);
+	let target = place_cell(&mut sim, &mut c, 2, BlockType::Stone as u16);
+	assert_eq!(
+		sim.test_cell_at(target.0, target.1, target.2),
+		Some(BlockType::Stone as u16)
+	);
+	shapes::clear_preview_overrides();
+}
