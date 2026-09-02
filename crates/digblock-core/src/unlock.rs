@@ -22,14 +22,13 @@ use crate::skills::{MAX_LEVEL, Skill, SkillSet};
 // ---- the tables ------------------------------------------------------
 
 /// The Alchemy level that opens a SHAPE — can you work any substance into this form at all?
-/// (SKILLS-DESIGN §7.2's shape axis.) The full cube sits at the very first level deliberately:
-/// the progression belongs to the materials, so a substance arrives in every form you have
-/// already learned rather than dribbling in one shape at a time. Reaching a shape LATER then
-/// hands it to you in every material you already own.
+/// (The grid's shape axis.) The cube, the slab and the stairs sit at the very first level
+/// deliberately: the progression belongs to the materials, so a substance arrives in every form
+/// you have already learned rather than dribbling in one shape at a time, and the day-one
+/// recipes are the raw shapes — a dirt slab, a dirt stair — with nothing to catalyse.
 pub fn shape(s: ShapeFamily) -> u32 {
 	match s {
-		ShapeFamily::Block | ShapeFamily::Slab => 1,
-		ShapeFamily::Stairs => 6,
+		ShapeFamily::Block | ShapeFamily::Slab | ShapeFamily::Stairs => 1,
 		// The door lands WITH the first material that authors one, so the
 		// shape fanfare and the first actual door are the same level-up —
 		// it used to open early, and an unlock that hands you nothing
@@ -40,24 +39,30 @@ pub fn shape(s: ShapeFamily) -> u32 {
 
 /// The Alchemy level that opens a MATERIAL — when does this substance become workable at all?
 /// `None` = never, in any shape. A level here is not a promise that any cell is craftable:
-/// [`craft`] refuses anything the world hands you, so Dirt has a level and no craftable form.
-/// The level is what a dirt slab WOULD open at, and authoring one is a block row and a PNG —
-/// which is why materials with no authored block are listed too: the level IS the design.
+/// [`craft`] refuses anything the world hands you, so Sand has a level and no craftable form.
+/// The level is what a sand slab WOULD open at, and authoring one is a block row — which is why
+/// materials with no authored block are listed too: the level IS the design. A refined
+/// substance never opens before its parent, which is what keeps every chain craftable in turn.
 pub fn material(m: Material) -> Option<u32> {
 	use Material as M;
 	Some(match m {
-		// The starter timber and the loose ground under your feet — what
-		// the world hands a fresh player, so the bench has something to do
-		// on day one.
-		M::Wood => 1,
-		M::Dirt | M::Sand => 5,
-		// Planed timber: the joinery material.
-		M::Lumber => 12,
-		// The mason's unlock (§7.1) — clean rock exists only pristine in
+		// The raw matter, in the order a fresh player meets it: the ground
+		// under their feet, then the tree they fell for the siphon, then
+		// the rock they break once timber has opened rock. Its shapes are
+		// the day-one recipes, and cost nothing to catalyse.
+		M::Dirt => 1,
+		M::Wood => 3,
+		M::Rubble => 4,
+		// The rest of the loose ground sits with the rubble: raw shaping,
+		// were any of it authored a form.
+		M::Sand | M::Snow | M::Grass | M::Mud | M::Gravel => 4,
+		// Planed timber: the joinery material, and the first refinement.
+		M::Lumber => 9,
+		// The mason's unlock — clean rock exists only pristine in
 		// terrain or transmuted here, which is what makes Rubble matter.
 		M::Stone => 15,
 		M::DarkLumber | M::StoneBrick => 18,
-		M::Sandstone | M::Snow | M::Grass | M::Mud | M::Glass => 21,
+		M::Sandstone | M::Glass => 21,
 		// The stained panes ride one rung past plain glass — the same
 		// substance, asked for a colour.
 		M::RedGlass | M::GreenGlass | M::BlueGlass | M::AmberGlass => 24,
@@ -66,9 +71,7 @@ pub fn material(m: Material) -> Option<u32> {
 		// Scarce by construction: Ferrum comes only from ore.
 		M::Metal => 33,
 		M::Crystal => 40,
-		M::Rubble
-		| M::Gravel
-		| M::DryGrass
+		M::DryGrass
 		| M::Leaf
 		| M::PineLeaf
 		| M::Emberore

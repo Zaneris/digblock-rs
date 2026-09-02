@@ -387,6 +387,10 @@ fn material_roster_is_pinned() {
 		(B::RedLumberDoor, M::RedLumber),
 		(B::Leaves, M::Leaf),
 		(B::PineLeaves, M::PineLeaf),
+		(B::DirtSlab, M::Dirt),
+		(B::DirtStairs, M::Dirt),
+		(B::RubbleSlab, M::Rubble),
+		(B::RubbleStairs, M::Rubble),
 	];
 	for (b, m) in expect {
 		assert_eq!(b.material(), Some(m), "{b:?}");

@@ -617,16 +617,11 @@ pub fn state_valid(cell: u16) -> bool {
 
 // --- alchemy ----------------------------------------------------------
 
-/// How many items one craft produces (the essence redesign's feedstock-and-catalyst shape). A
-/// feedstock recipe consumes ONE cube of matter, so it yields as many of the shape as the cube's
-/// volume cuts into — floored, the remainder being the waste of the cut — which is what makes
-/// matter conservation structural: a craft can only ever output at most the volume it consumed.
-/// Essence-only recipes buy one at a time.
+/// How many pieces one craft of `b` yields: the form's `pieces_out`
+/// ([`crate::block::ShapeFamily::batch`]) for a grid item, one for
+/// everything else. The cubes it takes are the feedstock's count.
 pub fn craft_batch(b: BlockType) -> u32 {
-	match b.grid_cell() {
-		Some((m, s)) if m.feedstock().is_some() => (SUBS_PER_BLOCK / s.units()).max(1),
-		_ => 1,
-	}
+	b.grid_cell().map_or(1, |(_, s)| s.batch().1)
 }
 
 // --- variant building ---------------------------------------------------

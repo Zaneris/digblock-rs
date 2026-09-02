@@ -2378,26 +2378,26 @@ fn alchemy_craft_and_same_tick_place() {
 	let mut sim = flat_sim("alchemy");
 	let mut c = connect(&mut sim, 1);
 	wait_live(&mut sim, 1);
-	// One timber cube plus enough Vitae for one slab craft's catalyst
-	// at the level-1 waste, with the remainder asserted below.
-	sim.test_grant(1, BlockType::Wood, 1);
+	// One dirt cube, and some Vitae the craft must NOT touch: a raw
+	// shape is feedstock alone, asserted on the rebase below.
+	sim.test_grant(1, BlockType::Dirt, 1);
 	sim.test_grant_essence(1, Essence::Vitae, 10);
 
 	// Craft + place, both queued in ONE tick: wire order must debit
-	// before the place's stock gate runs. The WOOD slab is the craft a
-	// fresh player can afford — under §7.2's grid the material carries
+	// before the place's stock gate runs. The DIRT slab is the craft a
+	// fresh player can afford — under the grid the material carries
 	// the progression, so clean stone in any shape waits for its own
-	// material unlock.
+	// material unlock and the timber shapes for theirs.
 	let pos = sim.test_player(1).unwrap().pos;
 	let down = Vec3::new(0.45, -1.0, 0.0).normalize();
 	let hit = raycast(pos, down, REACH, &|x, y, z| sim.test_cell_at(x, y, z)).unwrap();
-	let slab = make_cell(BlockType::WoodSlab, 0);
+	let slab = make_cell(BlockType::DirtSlab, 0);
 	sim.tick_once(vec![
 		SimEvent::Msg {
 			conn_id: 1,
 			msg: ClientMsg::Alchemy {
 				op: AlchemyOp::Craft {
-					item: BlockType::WoodSlab as u16,
+					item: BlockType::DirtSlab as u16,
 					count: 1,
 				},
 			},
@@ -2431,15 +2431,21 @@ fn alchemy_craft_and_same_tick_place() {
 		"craft-then-place landed in one tick: {:?}",
 		c.msgs
 	);
-	// The level-1 economy: the craft spends the timber cube and the
-	// catalyst at that level's waste, leaving the Vitae remainder.
-	let (catalyst, n) =
-		digblock_core::alchemy::craft_ideal(BlockType::WoodSlab).expect("a slab is bench-made")[0];
-	assert_eq!(catalyst, Essence::Vitae, "the slab's catalyst");
-	let left = 10 - digblock_core::alchemy::craft_cost(n, 1);
+	// The level-1 economy: a raw shape spends the cube and nothing else,
+	// so the Vitae stands untouched in the rebase.
+	assert_eq!(
+		digblock_core::alchemy::craft_ideal(BlockType::DirtSlab),
+		Some(Vec::new()),
+		"a raw shape carries no catalyst"
+	);
+	assert_eq!(
+		sim.test_inventory_count(1, BlockType::Dirt),
+		0,
+		"the cube is spent"
+	);
 	let want = (
-		digblock_core::inventory::SUB_WIRE_FLAG | catalyst as u16,
-		left,
+		digblock_core::inventory::SUB_WIRE_FLAG | Essence::Vitae as u16,
+		10,
 	);
 	assert!(
 		c.msgs.iter().any(|m| matches!(
@@ -2447,7 +2453,7 @@ fn alchemy_craft_and_same_tick_place() {
 			ServerMsg::InventoryFull { counts }
 				if counts.contains(&want)
 		)),
-		"Vitae remainder in the rebase: {:?}",
+		"Vitae untouched in the rebase: {:?}",
 		c.msgs
 	);
 
@@ -2458,14 +2464,14 @@ fn alchemy_craft_and_same_tick_place() {
 		conn_id: 1,
 		msg: ClientMsg::Alchemy {
 			op: AlchemyOp::Craft {
-				item: BlockType::WoodSlab as u16,
+				item: BlockType::DirtSlab as u16,
 				count: 999,
 			},
 		},
 	}]);
-	let before = sim.test_inventory_count(1, BlockType::WoodSlab);
+	let before = sim.test_inventory_count(1, BlockType::DirtSlab);
 	c.drain();
-	assert_eq!(sim.test_inventory_count(1, BlockType::WoodSlab), before);
+	assert_eq!(sim.test_inventory_count(1, BlockType::DirtSlab), before);
 	assert!(
 		c.msgs
 			.iter()

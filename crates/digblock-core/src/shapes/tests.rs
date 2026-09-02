@@ -452,20 +452,30 @@ fn craft_costs_derive_from_collision_volume() {
 	// Functional items are priced by hand (§7.3), never by volume —
 	// the torch has no shape FAMILY at all, which is how it opts out.
 	assert_eq!(BlockType::Torch.shape_family(), None);
+	// Matter conservation, per form: the cubes a craft takes hold at
+	// least the volume of the pieces it cuts, and no more than a piece's
+	// worth goes to waste — the stairs used to throw a third of every cube
+	// away, and now take two cubes for three.
+	for s in ShapeFamily::ALL {
+		let (cubes, pieces) = s.batch();
+		assert!(cubes >= 1 && pieces >= 1, "{s:?}");
+		assert!(
+			pieces * s.units() <= cubes * SUBS_PER_BLOCK,
+			"{s:?}: {cubes} cubes cannot cut {pieces} pieces of {} units",
+			s.units()
+		);
+		assert!(
+			cubes * SUBS_PER_BLOCK - pieces * s.units() < s.units(),
+			"{s:?} wastes a whole piece's worth per craft"
+		);
+	}
+	assert_eq!(ShapeFamily::Block.batch(), (1, 1));
+	assert_eq!(ShapeFamily::Stairs.batch(), (2, 3));
 	for &b in &BlockType::ALL {
 		let batch = craft_batch(b);
 		match b.grid_cell() {
-			// Matter conservation, per pair: a cube in, at most a
-			// cube's volume out.
-			Some((m, s)) if m.feedstock().is_some() => {
-				assert!(batch >= 1, "{b:?}");
-				assert!(
-					batch * s.units() <= SUBS_PER_BLOCK,
-					"{b:?}: one cube cannot cut {batch} pieces of {} units",
-					s.units()
-				);
-			}
-			_ => assert_eq!(batch, 1, "{b:?} — essence recipes buy singly"),
+			Some((_, s)) => assert_eq!(batch, s.batch().1, "{b:?}"),
+			None => assert_eq!(batch, 1, "{b:?} — hand-priced items buy singly"),
 		}
 	}
 	assert_eq!(SUBS_PER_BLOCK * SUB_UNIT_VOLUME, 1728, "exact division");

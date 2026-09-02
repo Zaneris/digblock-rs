@@ -310,7 +310,14 @@ impl Engine {
 		if let Some(p) = save.player {
 			self.set_look(p.yaw, p.pitch);
 		}
-		self.inventory = Inventory::from_wire(&save.inventory);
+		// A save from before the raw shapes reused the retired crests' ids
+		// holds those ids as crests, which used to drop on decode; struck
+		// out first, so nobody's trophy turns into a dirt slab.
+		self.inventory = if save.rev < digblock_persist::REV_RAW_SHAPES {
+			Inventory::from_wire(&Inventory::without_reused_crests(&save.inventory))
+		} else {
+			Inventory::from_wire(&save.inventory)
+		};
 		// §13.5's migration grant: a save written before the bucket
 		// joined the catalog came from a build where every player owned
 		// one, so it keeps its bucket. Never a windfall — a fresh world

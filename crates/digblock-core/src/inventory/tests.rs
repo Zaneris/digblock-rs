@@ -170,12 +170,22 @@ fn essences_ride_the_wire_as_flagged_ids() {
 #[test]
 fn alchemy_craft_scales_with_level() {
 	let mut inv = Inventory::default();
-	inv.add(BlockType::Wood, 3);
+	inv.add(BlockType::Wood, 5);
 	inv.add_sub(Essence::Vitae, 20);
 
-	// Craft a door batch and two stairs: each craft consumes one
-	// timber cube and the catalyst at mastery's smallest waste markup;
-	// the door's cube cuts TWO leaves, the stairs' one flight each.
+	// Refine a plank, cut it into a door batch, then two flights of raw
+	// stairs: the plank takes a log and its catalyst at mastery's
+	// smallest waste markup, the door cuts the plank into TWO leaves for
+	// a pinch, and each stairs craft takes two logs for three flights and
+	// no essence at all.
+	assert!(apply_alchemy(
+		&mut inv,
+		AlchemyOp::Craft {
+			item: BlockType::Lumber,
+			count: 1
+		},
+		&at(99)
+	));
 	assert!(apply_alchemy(
 		&mut inv,
 		AlchemyOp::Craft {
@@ -192,12 +202,17 @@ fn alchemy_craft_scales_with_level() {
 		},
 		&at(99)
 	));
-	assert_eq!(inv.count(BlockType::LumberDoor), 2, "one cube, two leaves");
-	assert_eq!(inv.count(BlockType::WoodStairs), 2);
-	assert_eq!(inv.count(BlockType::Wood), 0, "three cubes consumed");
-	// What the four crafts cost is asked of the curve, not multiplied
-	// out here: the markup is `alchemy`'s to retune, and a product
-	// written down beside it is that retune's second edit.
+	assert_eq!(inv.count(BlockType::LumberDoor), 2, "one plank, two leaves");
+	assert_eq!(inv.count(BlockType::Lumber), 0, "the plank was cut");
+	assert_eq!(
+		inv.count(BlockType::WoodStairs),
+		6,
+		"two logs, three flights"
+	);
+	assert_eq!(inv.count(BlockType::Wood), 0, "five logs consumed");
+	// What the crafts cost is asked of the curve, not multiplied out
+	// here: the markup is `alchemy`'s to retune, and a product written
+	// down beside it is that retune's second edit.
 	let line = |item: BlockType| -> u32 {
 		crate::alchemy::craft_ideal(item)
 			.expect("craftable")
@@ -205,29 +220,33 @@ fn alchemy_craft_scales_with_level() {
 			.map(|&(_, n)| crate::alchemy::craft_cost(n, crate::skills::MAX_LEVEL))
 			.sum()
 	};
-	let spent = line(BlockType::LumberDoor) + 2 * line(BlockType::WoodStairs);
+	let spent =
+		line(BlockType::Lumber) + line(BlockType::LumberDoor) + 2 * line(BlockType::WoodStairs);
 	assert_eq!(inv.sub_count(Essence::Vitae), 20 - spent);
 
 	// The bottom of the curve: the steepest waste, so the same essence
-	// buys less — and no timber refuses outright.
+	// buys less — and no timber refuses outright. The raw shapes are
+	// free, so the first PRICED recipe is the first refinement, at the
+	// level it opens.
 	let mut low = Inventory::default();
 	low.add(BlockType::Wood, 1);
+	let opens = crate::unlock::craft(BlockType::Lumber).expect("craftable");
 	// Exactly one short of what a novice pays — derived, so the fixture
 	// tracks the curve instead of pinning a moment of it.
-	let novice = crate::alchemy::craft_ideal(BlockType::WoodSlab)
+	let novice = crate::alchemy::craft_ideal(BlockType::Lumber)
 		.expect("craftable")
 		.iter()
-		.map(|&(_, n)| crate::alchemy::craft_cost(n, 1))
+		.map(|&(_, n)| crate::alchemy::craft_cost(n, opens))
 		.sum::<u32>();
 	low.add_sub(Essence::Vitae, novice - 1);
 	assert!(
 		!apply_alchemy(
 			&mut low,
 			AlchemyOp::Craft {
-				item: BlockType::WoodSlab,
+				item: BlockType::Lumber,
 				count: 1
 			},
-			&at(1)
+			&at(opens)
 		),
 		"a novice's markup puts the catalyst out of reach"
 	);
@@ -235,13 +254,30 @@ fn alchemy_craft_scales_with_level() {
 	assert!(apply_alchemy(
 		&mut low,
 		AlchemyOp::Craft {
-			item: BlockType::WoodSlab,
+			item: BlockType::Lumber,
+			count: 1
+		},
+		&at(opens)
+	));
+	assert_eq!(low.count(BlockType::Lumber), 1, "a log planes to one plank");
+	assert_eq!(low.count(BlockType::Wood), 0);
+	// And raw matter shapes for nothing but the matter, from the first
+	// level, with no essence in the pack at all.
+	let mut raw = Inventory::default();
+	raw.add(BlockType::Dirt, 1);
+	assert!(apply_alchemy(
+		&mut raw,
+		AlchemyOp::Craft {
+			item: BlockType::DirtSlab,
 			count: 1
 		},
 		&at(1)
 	));
-	assert_eq!(low.count(BlockType::WoodSlab), 3, "a cube cuts three slabs");
-	assert_eq!(low.count(BlockType::Wood), 0);
+	assert_eq!(raw.count(BlockType::DirtSlab), 3, "a cube cuts three slabs");
+	assert_eq!(raw.count(BlockType::Dirt), 0);
+	for &e in &Essence::ALL {
+		assert_eq!(raw.sub_count(e), 0, "raw shaping moved {e:?}");
+	}
 
 	// Unaffordable, level-locked, invalid, zero/oversized counts:
 	// refused with no mutation.
@@ -282,6 +318,35 @@ fn alchemy_craft_scales_with_level() {
 		&at(99)
 	));
 	assert_eq!(inv, before, "failed ops never mutate");
+}
+
+/// The crest purge strikes exactly the reused ids and nothing beside
+/// them — not the flagged essence pairs, whose low bits may land on the
+/// same numbers, and not the ids either side.
+#[test]
+fn the_crest_purge_strikes_only_the_reused_ids() {
+	let ids = BlockType::REUSED_CREST_IDS;
+	let pairs = vec![
+		(BlockType::Dirt as u16, 4),
+		(*ids.start(), 1),
+		(*ids.end(), 2),
+		(*ids.end() + 1, 3),
+		(SUB_WIRE_FLAG | *ids.start(), 9),
+	];
+	assert_eq!(
+		Inventory::without_reused_crests(&pairs),
+		vec![
+			(BlockType::Dirt as u16, 4),
+			(*ids.end() + 1, 3),
+			(SUB_WIRE_FLAG | *ids.start(), 9),
+		]
+	);
+	// And the ids really are the raw shapes' now, so the purge is what
+	// stands between an old crest and a dirt slab.
+	for id in ids {
+		let b = BlockType::try_from_id(id).expect("reused");
+		assert!(b.is_crafted_only(), "{b:?}");
+	}
 }
 
 /// The feedstock half of a price: the two vessels cost blocks and no

@@ -559,19 +559,24 @@ fn a_field_draw_ignores_the_depth_reward() {
 fn alchemy_xp_derives_from_the_base_tables() {
 	use crate::inventory::AlchemyOp;
 	use BlockType as B;
-	// Crafts pay their FULL worth — a fixed fraction of the IDEAL
-	// cost, feedstock included. The old halving un-pulled with the
+	// Crafts pay their FULL worth — a fixed fraction of what the craft
+	// EMBODIES, feedstock included: two raw logs for the stairs, a log
+	// and its catalyst for the plank. The old halving un-pulled with the
 	// unbounded bench it existed to pace.
-	assert_eq!(craft_xp(B::WoodStairs), 4);
-	assert_eq!(craft_xp(B::Lumber), 4);
+	assert_eq!(craft_xp(B::WoodStairs), 6);
+	assert_eq!(craft_xp(B::Lumber), 5);
 	assert_eq!(craft_xp(B::Air), 0, "no recipe, no XP");
 	assert_eq!(
 		alchemy_xp(&AlchemyOp::Craft {
 			item: B::Lumber,
 			count: 3
 		}),
-		12
+		15
 	);
+	// And worth compounds down the chain: a stone brick embodies the
+	// rubble, two catalysts and nothing else, so it pays more than the
+	// stone it was dressed from.
+	assert!(craft_xp(B::StoneBrick) > craft_xp(B::Stone));
 	// The two feedstock-priced vessels still pay: their timber carries
 	// the worth, so the first craft beat is also the first Alchemy XP
 	// a fresh player earns at a bench.

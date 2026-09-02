@@ -55,10 +55,17 @@ pub const REV_CRAFTED_BUCKET: u32 = 1;
 /// way: on the VERSION, never on the contents.
 pub const REV_FOUND_ESSENCE: u32 = 2;
 
+/// rev 3: the raw shapes reused the retired crests' block ids
+/// (`BlockType::REUSED_CREST_IDS`). A save below this holds those ids as
+/// crests, which used to drop on decode, so the engine strikes them out
+/// before decoding — the server's record reader does the same at its own
+/// version, keyed the same way.
+pub const REV_RAW_SHAPES: u32 = 3;
+
 /// The rev fresh saves are written at — always the newest, so every
 /// migration above is a statement about older builds' saves and nothing
 /// a new world can trigger.
-pub const SAVE_REV: u32 = REV_FOUND_ESSENCE;
+pub const SAVE_REV: u32 = REV_RAW_SHAPES;
 
 /// Everything needed to enter a saved world.
 #[derive(Debug)]

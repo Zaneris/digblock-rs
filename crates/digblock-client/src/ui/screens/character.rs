@@ -153,10 +153,18 @@ fn alch_teasers() -> Vec<(u32, &'static str)> {
 	use BlockType as B;
 	use Material as M;
 	vec![
+		(mat_at(M::Wood), "Timber shapes: the felled log, cut"),
+		(mat_at(M::Rubble), "Rubble shapes: broken rock, cut"),
 		(item_at(B::Torch), "The torch"),
-		(unlock::shape(ShapeFamily::Stairs), "The stairs shape"),
 		(item_at(B::Bucket), "The bucket"),
-		(mat_at(M::Lumber), "Planed lumber and its joinery"),
+		(
+			mat_at(M::Lumber),
+			"Planed lumber: the first refinement, and its slab and stairs",
+		),
+		(
+			unlock::shape(ShapeFamily::Door),
+			"The door shape: lumber's first",
+		),
 		(item_at(B::Table), "Furniture: the table and the chair"),
 		(mat_at(M::Stone), "Clean stone: every learned shape at once"),
 		(mat_at(M::DarkLumber), "Dark lumber and stone brick"),
@@ -651,7 +659,10 @@ mod tests {
 		// thresholds; past the last Mining gate, Mining shows none.
 		let fresh = texts(&emit(&SkillSet::default())).join("\n");
 		let timber = format!("Next: Lv {} - Timber gives", unlock::mine(BlockType::Wood));
-		let torch = format!("Next: Lv {} - The torch", item_at(BlockType::Torch));
+		let torch = format!(
+			"Next: Lv {} - Timber shapes",
+			mat_at(digblock_core::material::Material::Wood)
+		);
 		let ore = format!(
 			"Next: Lv {} - Emberore reveals",
 			reveal_at(BlockType::Emberore)

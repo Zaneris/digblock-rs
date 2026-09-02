@@ -18,7 +18,7 @@ use crate::inventory::Inventory;
 /// `the_grid_holds_every_type_a_player_can_own` rather than by this comment, because the catalog
 /// has already grown past a smaller grid. The wire does not care: `from_wire` takes what it is
 /// given and pads, so a save written at the old height decodes with its arrangement intact.
-pub const GRID_SLOTS: usize = 63;
+pub const GRID_SLOTS: usize = 72;
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct InvGrid {
