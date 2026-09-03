@@ -10,6 +10,57 @@ fn sky_hash13(p: vec3f) -> f32 {
 	return fract(sin(dot(p, vec3f(127.1, 311.7, 74.7))) * 43758.5453);
 }
 
+// Integer hash (pcg4d): four uniform lanes from a 2-D cell and a seed. Bits, not fract(sin()),
+// so it is exact thousands of blocks out, where the water's fields sample it.
+fn sky_pcg4(p: vec4u) -> vec4u {
+	var v = p * 1664525u + 1013904223u;
+	v.x += v.y * v.w;
+	v.y += v.z * v.x;
+	v.z += v.x * v.y;
+	v.w += v.y * v.z;
+	v ^= v >> vec4u(16u);
+	v.x += v.y * v.w;
+	v.y += v.z * v.x;
+	v.z += v.x * v.y;
+	v.w += v.y * v.z;
+	return v;
+}
+
+fn sky_cell4(c: vec2u, seed: u32) -> vec4f {
+	return vec4f(sky_pcg4(vec4u(c, seed, 0x9e3779b9u)) >> vec4u(8u)) / 16777216.0;
+}
+
+// 2-D value noise, four lanes from one hash per corner, smoothstep-blended. floor -> i32 -> u32
+// is a bit reinterpretation, so negative coordinates stay consistent across the origin.
+fn sky_vnoise2(p: vec2f, seed: u32) -> vec4f {
+	let i = floor(p);
+	let f = p - i;
+	let u = f * f * (3.0 - 2.0 * f);
+	let c = vec2u(vec2i(i));
+	let a = sky_cell4(c, seed);
+	let b = sky_cell4(c + vec2u(1u, 0u), seed);
+	let d = sky_cell4(c + vec2u(0u, 1u), seed);
+	let e = sky_cell4(c + vec2u(1u, 1u), seed);
+	return mix(mix(a, b, u.x), mix(d, e, u.x), u.y);
+}
+
+// Two octaves of the above; lanes sit roughly in [0.2, 0.8] about 0.5.
+fn sky_fbm2(p: vec2f, seed: u32) -> vec4f {
+	return sky_vnoise2(p, seed) * 0.65
+		+ sky_vnoise2(p * 2.03 + vec2f(7.3, 3.1), seed + 1u) * 0.35;
+}
+
+// One wind for the water's gust field and the sky's clouds, so the mirror agrees with the dome.
+// The drift is a circle with the animation clock's own period (600 s, Engine::time_secs):
+// constant speed, continuous, and exactly periodic, where a straight scroll would snap back
+// 180 blocks at the wrap.
+const SKY_WIND_SPEED = 0.3;
+const SKY_WIND_OMEGA = 0.010471976;
+fn sky_wind_drift(t: f32) -> vec2f {
+	let a = t * SKY_WIND_OMEGA;
+	return (SKY_WIND_SPEED / SKY_WIND_OMEGA) * vec2f(cos(a), sin(a));
+}
+
 // Direction-space starfield: hash a cell grid over the ray, place one
 // potential star per cell, threshold most of them away. Callers weight
 // by star intensity (sun_dir.w) and their own horizon suppression.

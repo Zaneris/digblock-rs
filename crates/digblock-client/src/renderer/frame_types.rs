@@ -112,8 +112,11 @@ pub mod stub {
 	/// The resolve traces every lane of every pixel every frame, history or not — the
 	/// pre-adaptive-budget resolve (`gi_resolve.wgsl`'s gate), for pricing the gating against it.
 	pub const GISTEADY: u32 = 1 << 19;
+	/// Water's per-vertex wind fields (gust, turn, warp) → neutral: the pre-wind still-water
+	/// lattice, for A/B-ing the field and pricing it. Rides `frame.misc.z` with the other W bits.
+	pub const WGUST: u32 = 1 << 20;
 
-	const NAMES: [(&str, u32); 20] = [
+	const NAMES: [(&str, u32); 21] = [
 		("wvert", WVERT),
 		("wsun", WSUN),
 		("wssr", WSSR),
@@ -134,6 +137,7 @@ pub mod stub {
 		("giscreen", GISCREEN),
 		("giprobelod", GIPROBELOD),
 		("gisteady", GISTEADY),
+		("wgust", WGUST),
 	];
 
 	/// Comma-separated names → mask. Unknown names are returned so the
