@@ -254,7 +254,7 @@ impl WaterState {
 	}
 
 	/// Payload bits above the per-vertex drop code (pre-shift: the whole
-	/// payload lands in word 1 above the texture layer).
+	/// payload lands in word 1 above the ten low bits water leaves zero).
 	fn flags(self) -> u32 {
 		u32::from(self.falling) << 4 | self.flow << 5 | self.splash << 8
 	}
@@ -271,7 +271,6 @@ pub(super) fn emit_water_face(
 	input: &MeshInput,
 	b: (usize, usize, usize),
 	dir: Dir,
-	tex: u32,
 	state: WaterState,
 ) {
 	let (bx, by, bz) = (b.0 as i32, b.1 as i32, b.2 as i32);
@@ -308,6 +307,6 @@ pub(super) fn emit_water_face(
 			dir,
 			ci as u32,
 		));
-		out.push(tex | ((d | state.flags() | (vfall << 10)) << 10));
+		out.push((d | state.flags() | (vfall << 10)) << 10);
 	}
 }

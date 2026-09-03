@@ -1,6 +1,7 @@
 // Water shader — fork of chunk.wgsl with the shared two-word vertex: word 0 is the solid geometry
-// packing, word 1 the texture layer with the per-vertex surface payload above it (drop code,
-// falling flag, flow dir, splash code, fall distance).
+// packing, word 1 the per-vertex surface payload (drop code, falling flag, flow dir, splash code,
+// fall distance) above the ten-bit field the solid stream uses for its texture layer and water
+// leaves zero. Water samples no texture: its surface is bed, mirror and glint.
 //
 // The drop code sinks a vertex below its lattice height by the strongest water amount at that
 // CORNER, so adjacent cells share exactly the level the sim computed and there are no cracks.
@@ -21,9 +22,6 @@
 @group(0) @binding(1) var scene_depth: texture_2d<f32>;
 @group(0) @binding(2) var scene_tex: texture_2d<f32>;
 @group(0) @binding(3) var scene_smp: sampler;
-
-@group(1) @binding(0) var blocks_tex: texture_2d_array<f32>;
-@group(1) @binding(1) var blocks_smp: sampler;
 
 // Group 2 is the shared GI world data, declared by gi_common.wgsl
 // (prepended between sky_common and this file).
@@ -88,7 +86,6 @@ struct VsOut {
 	// water full of view-dependent holes.
 	@invariant @builtin(position) pos: vec4f,
 	@location(0) uv: vec2f,
-	@location(1) @interpolate(flat) layer: u32,
 	@location(2) @interpolate(flat) direct: f32,
 	// Probe-field indirect, gathered in the vertex shader (see header) and
 	// perspective-interpolated across the cell-sized quad.
@@ -289,7 +286,6 @@ fn vs(@location(0) packed: vec2u, @location(1) origin: vec4f) -> VsOut {
 	// Raw corner uv (w0 corner code) — all scroll/advection happens in fs.
 	o.uv = vec2f(f32((w0 >> 29u) & 1u), f32((w0 >> 30u) & 1u));
 	o.splash = (w1 >> 18u) & 3u;
-	o.layer = w1 & 0x3ffu;
 	o.world = world;
 	o.ni = ni;
 	o.flow = (w1 >> 15u) & 7u;
@@ -356,52 +352,23 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 		return vec4f(0.1, 0.2, 0.3, 1.0);
 	}
 	let t = frame.light_color.w;
-	// Motion per face: falling sides run downward, flowing tops along the
-	// flow dir (sample offset opposes feature motion). rate × len =
-	// speed; len bounds how far a layer slides.
 	let vertical = i.ni == 3u || i.ni == 4u;
 	// Blocks fallen at this pixel (the bias tames the lip singularity).
 	let y_fallen = i.fall_y + 0.5;
 	var base_uv = i.uv;
-	var adv = vec2f(0.0);
-	var rate = 0.0;
-	var len = 0.0;
 	if i.falling == 1u && !vertical {
 		// Gravity stretch: v follows free-fall time of flight (√y), so
-		// features elongate and their world speed grows ∝ √y down the
-		// sheet. Past the packed fall distance's cap the texture smears,
-		// hidden under full aeration whitening by then.
+		// the clump pulses below elongate and their world speed grows
+		// ∝ √y down the sheet.
 		base_uv = vec2f(i.uv.x, sqrt(y_fallen) * 2.2);
-		adv = vec2f(0.0, -1.0);
-		rate = 0.25;
-		len = 6.0;
-	} else if i.ni == 4u && i.flow != 0u {
-		adv = -FLOW_DIRS[min(i.flow, 4u)];
-		rate = 0.10;
-		len = 4.0;
 	}
-	// Two-phase advection (Max/Becker): two layers half a period
-	// apart, each visible only around the middle of its slide, so flow
-	// reads as endless motion without the conveyor-belt repeat of an
-	// unbounded scroll. Static faces collapse to layer A (wb = 0).
-	// Both samples stay outside control flow (derivative rules).
-	let pa = fract(t * rate);
-	let pb = fract(t * rate + 0.5);
-	let uv_a = fract(base_uv + adv * (pa * len));
-	let uv_b = fract(base_uv + adv * (pb * len) + vec2f(0.37, 0.61));
-	let wb = abs(2.0 * pa - 1.0) * min(len, 1.0);
-	let tex = mix(
-		textureSample(blocks_tex, blocks_smp, uv_a, i.layer).rgb,
-		textureSample(blocks_tex, blocks_smp, uv_b, i.layer).rgb,
-		wb,
-	);
 	// Aeration: falling water entrains air and whitens with distance
 	// fallen — glassy at the lip, diffuse froth at the base. This is
-	// scattering AT the surface, not absorption through the body, so it
-	// survives the demolition that took the depth tint: the surface
-	// texture now only ever reaches the eye through this term.
+	// scattering AT the surface, not absorption through the body.
 	let aer = smoothstep(0.5, 6.0, y_fallen) * f32(i.falling);
-	let froth_tex = mix(tex, vec3f(0.93, 0.96, 1.0), 0.55);
+	// Froth base: the old water texture was a flat rgb(64,164,223) blended 0.55 toward off-white,
+	// which is this constant. The PNG stays an asset for the bucket icon and the GI albedo LUT.
+	let froth_tex = vec3f(0.62, 0.82, 0.94);
 	// Falling-sheet structure: vertical streak noise tears the sheet
 	// into ropes with translucent gaps, and clump pulses ride the
 	// stretched v — two layers (front fast/bright, back slow/dim) give
