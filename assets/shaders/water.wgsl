@@ -219,7 +219,10 @@ const UNDERSIDE_F0 = 0.25;
 // ramp's top edge, so open water is bit-identical.
 fn mirror_sky(origin: vec3f, ray: vec3f) -> vec3f {
 	var sky = sky_base(ray, frame.horizon.rgb, frame.zenith.rgb, frame.sun_dir, frame.moon_dir);
-	sky += vec3f(sky_stars(ray)) * frame.sun_dir.w * smoothstep(0.0, 0.3, ray.y);
+	// The same clouds the dome draws, so the mirror agrees with the sky above it.
+	let cover = sky_clouds(ray, frame.light_color.w);
+	sky = mix(sky, sky_cloud_col(frame.horizon.rgb, frame.light_color.rgb), cover);
+	sky += vec3f(sky_stars(ray)) * frame.sun_dir.w * smoothstep(0.0, 0.3, ray.y) * (1.0 - cover);
 	return sky * medium_sky_fade(origin.y);
 }
 

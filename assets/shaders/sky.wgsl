@@ -2,7 +2,8 @@
 // sun + moon discs, hash-based stars at night. Drawn as one triangle
 // at NDC depth 1.0 after the solids (depth test kills occluded
 // fragments), before water. Everything is a pure function of the frame
-// uniforms — deterministic under a frozen --tod (stars don't twinkle).
+// uniforms — deterministic under a frozen --tod (stars don't twinkle;
+// the clouds ride the animation clock, as the water does).
 // The gradient/glow/star math lives in sky_common.wgsl (prepended by
 // digblock-assets, so line numbers here are offset), shared with the
 // water shader's reflections.
@@ -33,7 +34,15 @@ fn view_ray(ndc: vec2f) -> vec3f {
 @fragment
 fn fs(i: VsOut) -> @location(0) vec4f {
 	let ray = view_ray(i.ndc);
-	var col = sky_dome(ray, frame.horizon.rgb, frame.zenith.rgb, frame.sun_dir, frame.moon_dir);
+	var col = sky_dome(
+		ray,
+		frame.horizon.rgb,
+		frame.zenith.rgb,
+		frame.sun_dir,
+		frame.moon_dir,
+		frame.light_color.rgb,
+		frame.light_color.w,
+	);
 	// Submerged, the dome is seen through the water: the column up to where the ray surfaces,
 	// or an endless one where it never does — which is what lies past the last streamed chunk,
 	// and was a raw sky beside a seabed the medium had faded into its own in-scatter.

@@ -79,22 +79,55 @@ fn sky_stars(ray: vec3f) -> f32 {
 	return smoothstep(0.35, 0.0, d) * brightness;
 }
 
-// Horizon→zenith gradient plus sunset/sunrise glow — the disc-free,
-// star-free sky base. sun/moon are the frame lanes passed through
-// verbatim: moon.w = sunset glow strength.
-// The dome as the sky pass draws it: the gradient plus the sun and moon discs
-// and the night's stars. Snell's window samples this along the BENT ray.
-fn sky_dome(ray: vec3f, horizon: vec3f, zenith: vec3f, sun: vec4f, moon: vec4f) -> vec3f {
+// Cloud cover along `ray`: a plane at a fixed height, fbm scrolled by the shared wind,
+// thresholded, thinning toward the horizon where the projection stretches to nothing. Zero at and
+// below it. Read by the VISIBLE sky (sky_dome) and the water's mirror only; sky_base is the fog
+// colour everywhere and stays cloudless.
+const SKY_CLOUD_H = 180.0;
+fn sky_clouds(ray: vec3f, t: f32) -> f32 {
+	let up = ray.y;
+	if up < 0.02 {
+		return 0.0;
+	}
+	let uv = ray.xz * (SKY_CLOUD_H / up) - sky_wind_drift(t) * 6.0;
+	let n = sky_fbm2(uv / 260.0, 23u).x;
+	return smoothstep(0.50, 0.68, n) * smoothstep(0.02, 0.18, up);
+}
+
+// A cloud's own colour: the horizon (the sky's brightness reference) lifted by the direct light,
+// so it is sunlit white by day, orange at dusk and moonlit grey by night.
+fn sky_cloud_col(horizon: vec3f, light: vec3f) -> vec3f {
+	return horizon * 0.7 + light * 0.35;
+}
+
+// The dome as the sky pass draws it: the gradient under the clouds, plus the sun and moon discs
+// and the night's stars where the clouds leave gaps. `light` is the direct light colour and `t`
+// the animation clock, both straight from the frame.
+fn sky_dome(
+	ray: vec3f,
+	horizon: vec3f,
+	zenith: vec3f,
+	sun: vec4f,
+	moon: vec4f,
+	light: vec3f,
+	t: f32,
+) -> vec3f {
 	var col = sky_base(ray, horizon, zenith, sun, moon);
+	let cover = sky_clouds(ray, t);
+	col = mix(col, sky_cloud_col(horizon, light), cover);
+	let gap = 1.0 - cover;
 	// Sun disc (soft-edged, and oversized for game feel).
-	col += vec3f(1.0, 0.95, 0.85) * smoothstep(0.9994, 0.9998, dot(ray, sun.xyz)) * 4.0;
+	col += vec3f(1.0, 0.95, 0.85) * smoothstep(0.9994, 0.9998, dot(ray, sun.xyz)) * 4.0 * gap;
 	// Moon disc: smaller, dim, slightly blue.
-	col += vec3f(0.9, 0.93, 1.0) * smoothstep(0.9996, 0.9999, dot(ray, moon.xyz));
+	col += vec3f(0.9, 0.93, 1.0) * smoothstep(0.9996, 0.9999, dot(ray, moon.xyz)) * gap;
 	// Stars fade in at night, suppressed in the horizon haze.
-	col += vec3f(sky_stars(ray)) * sun.w * smoothstep(0.0, 0.3, ray.y);
+	col += vec3f(sky_stars(ray)) * sun.w * smoothstep(0.0, 0.3, ray.y) * gap;
 	return col;
 }
 
+// Horizon→zenith gradient plus sunset/sunrise glow — the disc-free,
+// star-free, cloud-free sky base. sun/moon are the frame lanes passed
+// through verbatim: moon.w = sunset glow strength.
 fn sky_base(ray: vec3f, horizon: vec3f, zenith: vec3f, sun: vec4f, moon: vec4f) -> vec3f {
 	let up = max(ray.y, 0.0);
 	var col = mix(horizon, zenith, pow(up, 0.45));
