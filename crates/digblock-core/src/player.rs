@@ -13,6 +13,7 @@ use crate::block::BlockType;
 use glam::{Vec2, Vec3};
 
 mod collision;
+use crate::shapes::Facing;
 use crate::worldgen::Seed;
 use collision::*;
 pub use collision::{ascend_clear, occupied_cells, overlaps_solid, placement_blocked};
@@ -24,6 +25,11 @@ pub const WALK_SPEED: f32 = 4.0;
 /// Ground acceleration toward the input target, blocks/s²: reaches
 /// WALK_SPEED from a standstill in WALK_SPEED / WALK_ACCEL seconds.
 pub const WALK_ACCEL: f32 = 10.0;
+/// Ground brake, blocks/s²: how fast speed the input no longer asks for
+/// sheds (a release, a reversal) and how fast the velocity swings toward
+/// a new direction (a WASD or mouse turn). A full stop and a quarter
+/// turn both take about WALK_SPEED / WALK_BRAKE seconds.
+pub const WALK_BRAKE: f32 = 40.0;
 pub const JUMP_IMPULSE: f32 = 5.0;
 /// Fixed simulation tick (Java was per-frame at ~60fps).
 pub const TICK: f32 = 1.0 / 60.0;
@@ -439,22 +445,49 @@ impl Player {
 			// ---- dry / wading: the classic rules, bit-identical ----
 			self.out.y = (self.out.y - GRAVITY * dt).max(TERM_VELOCITY);
 			if self.grounded(cell_at) {
-				// Ground movement is plain kinematics: accelerate toward
-				// the input target (direction × WALK_SPEED) at
-				// WALK_ACCEL, with velocity as the only state —
-				// landings, edge exits, turns and re-presses all fall
-				// out of momentum naturally (the Java snapped straight
-				// to full speed). Releasing input still stops instantly.
-				if mv == Vec2::ZERO {
-					self.out = Vec3::ZERO;
+				// Ground movement chases the input target (wish × the
+				// speed cap) split by the current HEADING: speed along it
+				// grows at WALK_ACCEL up to what the target wants there and
+				// sheds at WALK_BRAKE down to it (never past a stop), and
+				// the target's sideways part swings the velocity at
+				// WALK_BRAKE too. So a release, a reversal and a WASD turn
+				// all settle in one short brake, a mouse turn mid-walk
+				// carries its speed into the new heading, and a wall slide
+				// is untouched because it IS the target along the wall.
+				// Stairs mount by position snap (see resolve), so the climb
+				// never shows in velocity: the cap shrinks with the rise
+				// along the wish so travel ALONG a 45° flight is WALK_SPEED.
+				let wish = flat * mv.y + right * mv.x;
+				let wish_dir = wish.normalize_or_zero();
+				let rise = match ramp_support(self.pos, cell_at) {
+					Some(Facing::PosX | Facing::NegX) => wish_dir.x.abs(),
+					Some(Facing::PosZ | Facing::NegZ) => wish_dir.z.abs(),
+					None => 0.0,
+				};
+				let target = wish * (WALK_SPEED / (1.0 + rise * rise).sqrt());
+				let cur = Vec3::new(self.out.x, 0.0, self.out.z);
+				let heading = cur.normalize_or_zero();
+				let want = target.dot(heading);
+				let speed = cur.length();
+				let speed = if want < speed {
+					(speed - WALK_BRAKE * dt).max(want.max(0.0))
 				} else {
-					let target = (flat * mv.y + right * mv.x) * WALK_SPEED;
-					let cur = Vec3::new(self.out.x, 0.0, self.out.z);
-					self.out = cur + (target - cur).clamp_length_max(WALK_ACCEL * dt);
-				}
+					(speed + WALK_ACCEL * dt).min(want)
+				};
+				self.out = if speed <= 0.0 {
+					// Stopped (or never moving): set off toward the target.
+					target.clamp_length_max(WALK_ACCEL * dt)
+				} else {
+					// The swing never exceeds the speed itself, so steering
+					// rotates a crawl instead of doubling it.
+					let swing = (WALK_BRAKE * dt).min(speed);
+					let side = target - heading * want;
+					heading * speed + side.clamp_length_max(swing)
+				};
+				// A jump keeps its run: the horizontal carry rides into
+				// the air untouched (the Java halved it).
 				if intent.jump {
-					self.out *= 0.5;
-					self.out.y += JUMP_IMPULSE;
+					self.out.y = JUMP_IMPULSE;
 				}
 			} else {
 				self.out += flat * (mv.y / 60.0) + right * (mv.x / 60.0);

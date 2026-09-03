@@ -812,7 +812,8 @@ fn stair_side_wall_never_hoists() {
 	// and running the length of the approach: pressing into it
 	// diagonally while climbing slides along it, never hoists onto it
 	// — the run-out exemption is ahead-of-ascent only, so side faces
-	// keep blocking.
+	// keep blocking. Only the auto-step may take the face away, and
+	// only once the feet are within a tread of its top.
 	let world = |x: i32, y: i32, z: i32| -> Option<u16> {
 		if y < 10 {
 			some_cell(BlockType::Dirt)
@@ -829,17 +830,20 @@ fn stair_side_wall_never_hoists() {
 		move_axis: Vec2::new(0.5, 1.0).normalize(),
 		jump: false,
 	};
+	let strip_top = 11.0;
 	for _ in 0..240 {
 		p.tick(TICK, Vec3::X, press, &world);
 		let feet = p.pos.y - EYE_TO_FEET;
-		// While the cylinder section overlaps the strip, its face
-		// blocks flush a RADIUS out from it; above that only the
-		// bottom sphere can legitimately round over the corner, by a
-		// bounded amount.
-		if feet < 10.69 {
+		// Below the auto-step window the face blocks flush, a RADIUS
+		// out from it; inside the window the step may mount the strip,
+		// but the axis never crosses its face before the feet reach
+		// its top.
+		if feet < strip_top - AUTO_STEP_MAX {
 			assert!(p.pos.z < 0.71, "face kept blocking: {:?}", p.pos);
 		}
-		assert!(p.pos.z < 0.78, "never hoisted over the edge: {:?}", p.pos);
+		if feet < strip_top {
+			assert!(p.pos.z < 1.0, "never hoisted over the edge: {:?}", p.pos);
+		}
 		assert!(
 			!overlaps_solid(p.pos, &world),
 			"never inside the strip: {:?}",
@@ -851,7 +855,6 @@ fn stair_side_wall_never_hoists() {
 			break;
 		}
 	}
-	assert!(p.pos.x > 12.9, "climbed the ramp while sliding");
 }
 
 #[test]

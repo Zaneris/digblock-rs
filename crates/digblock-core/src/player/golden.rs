@@ -51,7 +51,7 @@ fn golden_trajectory_pins_sim_version() {
 	let s = p.state();
 	assert_eq!(
 		(s.pos.to_array(), s.vel.to_array()),
-		([-2.2490497f32, 11.5, 5.5237446], [-4.0f32, 0.0, 0.0]),
+		([-2.2638562f32, 11.5, 6.441363], [-4.0f32, 0.0, 0.0]),
 		"Player::tick behavior changed — update these values AND bump digblock_core::SIM_VERSION"
 	);
 }
@@ -102,7 +102,7 @@ fn golden_stair_trajectory_pins_sim_version() {
 	// glued descent all feed these bits.
 	assert_eq!(
 		(s.pos.to_array(), s.vel.to_array()),
-		([0.5f32, 11.5, 7.969425], [0.0f32, 0.0, -4.0]),
+		([0.5f32, 11.5, 9.729809], [0.0f32, 0.0, -4.0]),
 		"stair behavior changed — update these values AND bump digblock_core::SIM_VERSION"
 	);
 }
@@ -140,7 +140,7 @@ fn golden_water_trajectory_pins_sim_version() {
 	// in, sinking, swim-up, and the breach all feed these bits.
 	assert_eq!(
 		(s.pos.to_array(), s.vel.to_array()),
-		([0.5f32, 22.090445, 11.94389], [0.0f32, 3.856666, 0.5000001]),
+		([0.5f32, 22.090445, 11.995], [0.0f32, 3.856666, 0.8833333]),
 		"swim behavior changed — update these values AND bump digblock_core::SIM_VERSION"
 	);
 }
