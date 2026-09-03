@@ -51,8 +51,8 @@ fn open_browser(menu: &mut Menu) {
 	menu.handle_key(Key::Enter);
 }
 
-/// The in-game root offers Inventory (hint "I") and the Spellbook
-/// (hint "J"); picking Inventory raises the intent and closes.
+/// The in-game root offers the page rows with the key chip each binding
+/// names; picking Inventory raises the intent and closes.
 #[test]
 fn inventory_row_raises_intent_and_hotkey_hints_show() {
 	let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
@@ -74,11 +74,17 @@ fn inventory_row_raises_intent_and_hotkey_hints_show() {
 			.and_then(|r| r.right.as_ref())
 			.map(|(s, _)| s.as_str())
 	};
-	assert_eq!(hint("Inventory"), Some("I"));
-	assert_eq!(hint("Alchemy"), Some("K"));
-	assert_eq!(hint("Spellbook"), Some("J"));
-	assert_eq!(hint("Character"), Some("C"));
-	assert_eq!(hint("Hiscores"), Some("H"));
+	use crate::bindings::Action as A;
+	let binds = Settings::default().bindings;
+	for (row, action) in [
+		("Inventory", A::OpenInventory),
+		("Alchemy", A::OpenAlchemy),
+		("Spellbook", A::OpenSpellbook),
+		("Character", A::OpenCharacter),
+		("Hiscores", A::OpenHiscores),
+	] {
+		assert_eq!(hint(row), Some(binds.label(action)), "{row} chip");
+	}
 
 	menu.handle_key(Key::Down); // Spellbook
 	menu.handle_key(Key::Down); // Inventory

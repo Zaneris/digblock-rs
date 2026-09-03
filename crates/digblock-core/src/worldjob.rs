@@ -461,7 +461,7 @@ fn judge_frontier_column(
 /// Every rule the game actually runs. Both arms register from this one
 /// list — the server at boot and the engine when it opens a local world —
 /// so a rule cannot reach one of them and miss the other, and the roster
-/// is somewhere a test can read it (`the_production_roster_is_pinned`).
+/// is somewhere a test can read it.
 pub fn production() -> Vec<Box<dyn WorldJob>> {
 	let mut jobs: Vec<Box<dyn WorldJob>> = Vec::new();
 	jobs.extend(grass::jobs());

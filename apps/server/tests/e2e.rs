@@ -1005,9 +1005,17 @@ fn dev_account_ids_are_derived_from_the_subject() {
 	let master = MasterProc::spawn();
 
 	let (_, admin, name) = dev_sign_in(&master.url, "admin");
+	let justfile = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../justfile"))
+		.expect("the justfile beside this workspace");
+	let want = justfile
+		.lines()
+		.find_map(|l| l.strip_prefix("DEV_ADMIN_ID := "))
+		.expect("DEV_ADMIN_ID in the justfile")
+		.trim()
+		.trim_matches('"');
 	assert_eq!(
-		admin, "b2379408-3102-8b68-b56b-5774dec269b8",
-		"DEV_ADMIN_ID in the justfile is this value — update both together"
+		admin, want,
+		"`just play` passes DEV_ADMIN_ID as --admin, so the derivation must land on it"
 	);
 	assert_eq!(name.as_deref(), Some("admin"));
 

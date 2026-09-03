@@ -183,16 +183,20 @@ mod tests {
 	}
 
 	#[test]
-	fn the_evening_runs_to_1700_and_stands() {
+	fn the_evening_runs_to_the_hold_and_stands() {
 		let mut hold = DuskHold::default();
 		hold.start(None);
 		let mid = run(&mut hold, HOUR_SECS);
 		assert!(
-			(mid - tod_of_clock(16, 0)).abs() < 0.1,
+			(mid - tod_of_clock(ENTRY_HOURS as u32 + 1, 0)).abs() < 0.1,
 			"one hour in: {mid}"
 		);
-		let pinned = run(&mut hold, 3.0 * HOUR_SECS);
-		assert_eq!(pinned, tod_of_clock(17, 0), "standing at the hold");
+		let pinned = run(&mut hold, (HOLD_HOURS - ENTRY_HOURS) * HOUR_SECS);
+		assert_eq!(
+			pinned,
+			tod_of_clock(HOLD_HOURS as u32, 0),
+			"standing at the hold"
+		);
 	}
 
 	#[test]
@@ -206,19 +210,23 @@ mod tests {
 	}
 
 	#[test]
-	fn a_night_server_is_chased_at_4x_until_caught() {
+	fn a_night_server_is_chased_at_the_chase_rate_until_caught() {
 		let mut hold = DuskHold::default();
 		// Server two hours ahead at entry; by the stand-still it reads
-		// 19:00, four hours short of the window's edge.
-		hold.start(Some(tod_of_clock(17, 0)));
+		// two hours past the hold, well inside the window.
+		hold.start(Some(tod_of_clock(ENTRY_HOURS as u32 + 2, 0)));
 		run(&mut hold, 2.0 * HOUR_SECS);
 		hold.light_obtained();
-		// The gap is 2h and closes at 3x world rate; watch the chase run
-		// 4x and land exactly on the tracked clock, then hand over.
+		// The gap is 2h and closes at (chase - 1)x world rate; watch the
+		// chase run at its rate and land exactly on the tracked clock,
+		// then hand over.
 		let before = hold.tick(0.05).unwrap();
 		let after = hold.tick(0.05).unwrap();
 		let rate = (before - after) / 0.05;
-		assert!((rate - 4.0 * TOD_RATE_DEG_PER_SEC).abs() < 0.01, "{rate}");
+		assert!(
+			(rate - CHASE_RATE * TOD_RATE_DEG_PER_SEC).abs() < 0.01,
+			"{rate}"
+		);
 		let mut last = after;
 		let mut caught_after = 0.1f32;
 		while let Some(t) = hold.tick(0.05) {
@@ -226,11 +234,13 @@ mod tests {
 			caught_after += 0.05;
 			assert!(caught_after < 2.0 * HOUR_SECS, "chase never caught up");
 		}
-		// Gap/3 seconds to close, and the handover value is the server's
-		// clock at that moment: 19:00 plus the chase's own duration.
-		let expect_secs = 2.0 * HOUR_SECS / 3.0;
+		// Gap/(chase - 1) seconds to close, and the handover value is the
+		// server's clock at that moment: the hold plus two hours, plus
+		// the chase's own duration.
+		let expect_secs = 2.0 * HOUR_SECS / (CHASE_RATE - 1.0);
 		assert!((caught_after - expect_secs).abs() < 1.0, "{caught_after}");
-		let server_now = tod_of_clock(19, 0) - TOD_RATE_DEG_PER_SEC * caught_after;
+		let server_now =
+			tod_of_clock(HOLD_HOURS as u32 + 2, 0) - TOD_RATE_DEG_PER_SEC * caught_after;
 		assert!((last - server_now).abs() < 0.1, "{last} vs {server_now}");
 	}
 
@@ -247,7 +257,7 @@ mod tests {
 		// clock stands until the server itself reaches 17:00 (7 hours),
 		// then hands over in sync.
 		let held = run(&mut hold, 6.9 * HOUR_SECS);
-		assert_eq!(held, tod_of_clock(17, 0), "still standing");
+		assert_eq!(held, tod_of_clock(HOLD_HOURS as u32, 0), "still standing");
 		for _ in 0..((0.2 * HOUR_SECS / 0.05) as u32) {
 			if hold.tick(0.05).is_none() {
 				return;
@@ -272,7 +282,11 @@ mod tests {
 		// One server hour later its dusk arrives, and the stand begins:
 		// the clock pins while the server runs on into the night.
 		let pinned = run(&mut hold, 3.0 * HOUR_SECS);
-		assert_eq!(pinned, tod_of_clock(17, 0), "standing at the hold");
+		assert_eq!(
+			pinned,
+			tod_of_clock(HOLD_HOURS as u32, 0),
+			"standing at the hold"
+		);
 		assert!(hold.waiting_for_light());
 	}
 

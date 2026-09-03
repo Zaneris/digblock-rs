@@ -88,7 +88,7 @@ pub const MAX_LEVEL: u32 = 99;
 /// coefficient against a fixed per-level growth ratio, so the price doubles over a fixed span
 /// of levels. THIS TABLE IS THE CURVE, not a cache of a
 /// formula stated elsewhere: the values are a golden both sides must agree on forever, and libm
-/// rounding is not a foundation for that. `xp_curve_table_is_pinned` holds it.
+/// rounding is not a foundation for that.
 const XP_TO_NEXT: [u64; (MAX_LEVEL - 1) as usize] = [
 	88, 95, 102, 109, 117, 125, 134, //
 	144, 154, 166, 177, 190, 204, 219, //

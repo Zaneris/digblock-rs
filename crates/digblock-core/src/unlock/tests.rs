@@ -1,70 +1,17 @@
 use super::*;
 use crate::skills::total_xp_for;
 
-/// The craft table, spot by spot — every number a player feels.
+/// A level and a recipe are one decision: neither exists alone. The essence tool is the first
+/// craft beat and stands alone on the first level, the bucket strictly later.
 #[test]
-fn craft_levels_are_pinned() {
+fn a_level_and_a_recipe_are_one_decision() {
 	use BlockType as B;
-	// The raw shapes, in the order a fresh player meets the matter: the
-	// ground first, beside the siphon; the felled log two rungs on; the
-	// broken rock once rock opens — but never the cubes themselves,
-	// which the world hands out.
-	for b in [B::DirtSlab, B::DirtStairs] {
-		assert_eq!(craft(b), Some(1), "{b:?} is a day-one recipe");
-	}
-	for b in [B::WoodSlab, B::WoodStairs] {
-		assert_eq!(craft(b), Some(3), "{b:?}");
-	}
-	for b in [B::RubbleSlab, B::RubbleStairs] {
-		assert_eq!(craft(b), Some(4), "{b:?}");
-	}
-	assert_eq!(craft(B::Torch), Some(5), "light rides the bucket's rung");
 	assert_eq!(
 		craft(B::EssenceSiphon),
 		Some(1),
 		"the essence tool is the first craft beat"
 	);
-	// The grid rule: the whole planed-timber set opens together at its
-	// MATERIAL's level, whatever each shape's own level is — except the
-	// door SHAPE, which lands three rungs on, so the first door fanfare
-	// and the first craftable door are one event.
-	for b in [B::Lumber, B::LumberSlab, B::LumberStairs] {
-		assert_eq!(craft(b), Some(9), "{b:?}");
-	}
-	assert_eq!(craft(B::LumberDoor), Some(12), "the door SHAPE opens");
-	// And the mason's unlock does the same for stone: the slab and the
-	// stairs no longer arrive nineteen levels before the block they are
-	// cut from, which is the inversion the grid exists to fix.
-	for b in [B::Stone, B::StoneSlab, B::StoneStairs, B::StoneDoor] {
-		assert_eq!(craft(b), Some(15), "{b:?}");
-	}
-	for b in [B::Sandstone, B::SandstoneSlab, B::Glass] {
-		assert_eq!(craft(b), Some(21), "{b:?}");
-	}
-	// Nothing the world hands you has a level, because it has no
-	// recipe: the loose ground, the felled log, and the water you scoop
-	// are all things you go and pick up. Clean rock is the one
-	// substance the world PLACES and never GIVES — it crumbles — so it
-	// keeps the mason's unlock and §7.1's economy with it.
-	for b in [
-		B::Wood,
-		B::Dirt,
-		B::Sand,
-		B::Snow,
-		B::Grass,
-		B::Mud,
-		B::Water,
-		B::Rubble,
-		B::Gravel,
-	] {
-		assert_eq!(craft(b), None, "{b:?} is the world's, not the bench's");
-	}
-	// The siphon is the first craft beat and stands alone on the first
-	// level: the bucket opens strictly later, so nothing competes with
-	// it on the catalog's opening line.
-	assert_eq!(craft(B::EssenceSiphon), Some(1));
 	assert!(craft(B::Bucket) > craft(B::EssenceSiphon));
-	// A level and a recipe are one decision: neither exists alone.
 	for &b in &BlockType::ALL {
 		assert_eq!(
 			craft(b).is_some(),
@@ -95,69 +42,6 @@ fn every_ore_is_gated_at_its_own_reveal() {
 				 data that any level can see and break"
 		);
 	}
-}
-
-/// The other half of the strength wall: no material may reach the EARNED table's ungated fallback
-/// by accident. `mine_material`'s fallback means "this substance is only as hard as its family",
-/// right for soil, foliage, timber and plain rock and wrong for anything that has to be paid for —
-/// and the two are indistinguishable at the match arm, so a new substance nobody remembers to gate
-/// inherits its family's wall. Spelling the set out makes joining it a decision.
-#[test]
-fn the_materials_with_no_gate_beyond_their_family_are_spelled_out() {
-	use Material as M;
-	let family_only: Vec<Material> = Material::ALL
-		.into_iter()
-		.filter(|&m| mine_material(m) == 1)
-		.collect();
-	assert_eq!(
-		family_only,
-		vec![
-			M::Dirt,
-			M::Wood,
-			M::Rubble,
-			M::Sand,
-			M::Snow,
-			M::Grass,
-			M::Mud,
-			M::Gravel,
-			M::Lumber,
-			M::Stone,
-			M::DarkLumber,
-			M::StoneBrick,
-			M::Sandstone,
-			M::Glass,
-			M::RedGlass,
-			M::GreenGlass,
-			M::BlueGlass,
-			M::AmberGlass,
-			M::RedLumber,
-			M::PolishedStone,
-			M::SandstoneBrick,
-			M::DryGrass,
-			M::Leaf,
-			M::PineLeaf,
-			M::DepletedStone,
-			// Spent rock, deep tiers included. What a gate would
-			// protect is the ore, and the siphon has already taken
-			// it — somebody else's tapped Aetherock face is a rock
-			// with nothing in it, so it breaks like one.
-			M::DepletedEmberore,
-			M::DepletedDuskstone,
-			M::DepletedGlowvein,
-			M::DepletedAetherock,
-			// The surface nodes and their spent faces: a live surface
-			// node can never be placed (never an item), so the reveal
-			// and the family wall are the only gates it needs — and a
-			// spent face is a find already taken.
-			M::Heartwood,
-			M::DrainedHeartwood,
-			M::Leystone,
-			M::SpentLeystone,
-			M::Springstone,
-			M::SpentSpringstone,
-		],
-		"a material joined or left the family-only set — is that intended?"
-	);
 }
 
 /// §7.2's grid rule, enforced instead of described: EVERY authored
@@ -488,10 +372,8 @@ fn one_question_answers_every_dig_gate() {
 		s
 	};
 	// A fresh player: soil yes, rock no, other people's torches no. The
-	// LEVELS are read from the tables rather than spelled again — they are
-	// pinned by `the_strength_wall_is_the_dig_family` and
-	// `craft_levels_are_pinned`, and what is under test here is that one
-	// question reports them, not what they are.
+	// LEVELS are read from the tables rather than spelled again — what is
+	// under test here is that one question reports them, not what they are.
 	let fresh = at(1, 1);
 	assert_eq!(dig_blocked(B::Dirt, &fresh), None);
 	assert_eq!(

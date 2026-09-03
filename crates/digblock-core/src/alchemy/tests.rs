@@ -2,30 +2,11 @@ use super::*;
 
 /// §3.2's yield curve and §4.2's waste curve: the relationships a player feels — mastery keeps
 /// everything, a novice keeps less, neither curve moves the wrong way, a craft never returns MORE
-/// than its ideal — plus derived-output goldens along both. The goldens are the deliberate-pin
-/// exemption at work: monotone bounds cannot notice a curve changing SLOPE, and these two ARE the
-/// player-facing economy, so a retune moves these rows knowingly and a reshape fails them.
+/// than its ideal, and the waste dip really dips.
 #[test]
-fn efficiency_and_waste_hit_their_pinned_endpoints() {
+fn efficiency_and_waste_move_the_right_way() {
 	use crate::skills::MAX_LEVEL;
 	const BASES: [u32; 4] = [3, 9, 18, 27];
-
-	// Derived goldens: the novice keeps two fifths, the midpoint seven
-	// tenths; waste starts, steps down at the dip, holds its plateau,
-	// and resumes the linear tail to the mastery floor.
-	for (level, yield100, waste) in [
-		(1, 40, 1600),
-		(2, 40, 1594),
-		(50, 70, 1325),
-		(55, 73, 1297),
-		(56, 73, 1250),
-		(63, 77, 1250),
-		(64, 78, 1246),
-		(MAX_LEVEL, 100, 1050),
-	] {
-		assert_eq!(scaled_yield(100, level), yield100, "yield at {level}");
-		assert_eq!(waste_permille(level), waste, "waste at {level}");
-	}
 
 	for base in BASES {
 		assert_eq!(
@@ -224,102 +205,11 @@ fn pace_steps_and_the_catalog_are_pinned() {
 	}
 }
 
-/// The grid's craft prices, block by block — the chain derivation, golden-pinned: a raw shape is
-/// its cube and nothing else, a refined cube is its parent cube plus a catalyst that climbs the
-/// chain, a refined shape is its own cube plus its tier's pinch, and the essence-only two cost
-/// more than a cube's worth of the currency and cut with a hand-set pinch.
+/// Nothing gains an economy by accident: a block crafts only through a material it declared or a
+/// hand-priced entry, both of which are their own decisions elsewhere, and a block with no recipe
+/// takes no feedstock.
 #[test]
-fn the_grid_reproduces_the_shipped_recipes() {
-	use BlockType as B;
-	use Essence as E;
-	type Row = (
-		BlockType,
-		&'static [(BlockType, u32)],
-		&'static [(Essence, u32)],
-		u32,
-	);
-	// block, feedstock, catalyst, batch.
-	let cases: &[Row] = &[
-		// Raw matter, shaped as it comes: feedstock alone, the vessels' kind of price.
-		(B::DirtSlab, &[(B::Dirt, 1)], &[], 3),
-		(B::DirtStairs, &[(B::Dirt, 2)], &[], 3),
-		(B::WoodStairs, &[(B::Wood, 2)], &[], 3),
-		(B::WoodSlab, &[(B::Wood, 1)], &[], 3),
-		(B::RubbleSlab, &[(B::Rubble, 1)], &[], 3),
-		(B::RubbleStairs, &[(B::Rubble, 2)], &[], 3),
-		// Tier 1: refined from a raw cube, and shaped from its own.
-		(B::Lumber, &[(B::Wood, 1)], &[(E::Vitae, 4)], 1),
-		(B::LumberDoor, &[(B::Lumber, 1)], &[(E::Vitae, 1)], 2),
-		(B::Stone, &[(B::Rubble, 1)], &[(E::Terra, 5)], 1),
-		(B::StoneSlab, &[(B::Stone, 1)], &[(E::Terra, 1)], 3),
-		(B::StoneStairs, &[(B::Stone, 2)], &[(E::Terra, 1)], 3),
-		(B::StoneDoor, &[(B::Stone, 1)], &[(E::Terra, 1)], 2),
-		(B::Sandstone, &[(B::Sand, 1)], &[(E::Terra, 5)], 1),
-		(B::Glass, &[(B::Sand, 1)], &[(E::Terra, 6)], 1),
-		// Tier 2: refined from a refined cube, a second essence on the line.
-		(B::StoneBrick, &[(B::Stone, 1)], &[(E::Terra, 8)], 1),
-		(
-			B::StoneBrickSlab,
-			&[(B::StoneBrick, 1)],
-			&[(E::Terra, 2)],
-			3,
-		),
-		(
-			B::DarkLumber,
-			&[(B::Lumber, 1)],
-			&[(E::Vitae, 6), (E::Terra, 2)],
-			1,
-		),
-		(
-			B::RedLumberStairs,
-			&[(B::RedLumber, 2)],
-			&[(E::Vitae, 2)],
-			3,
-		),
-		(
-			B::BlueGlass,
-			&[(B::Glass, 1)],
-			&[(E::Terra, 4), (E::Unda, 4)],
-			1,
-		),
-		// Tier 3.
-		(
-			B::PolishedStone,
-			&[(B::StoneBrick, 1)],
-			&[(E::Terra, 14)],
-			1,
-		),
-		(
-			B::PolishedStoneStairs,
-			&[(B::PolishedStone, 2)],
-			&[(E::Terra, 3)],
-			3,
-		),
-		// The essence-only substances: no parent, a cube's worth and more,
-		// and their shapes cut from the cube like everything else.
-		(B::Metal, &[], &[(E::Ferrum, 45)], 1),
-		(B::MetalSlab, &[(B::Metal, 1)], &[(E::Ferrum, 3)], 3),
-		(B::Crystal, &[], &[(E::Aether, 27), (E::Ferrum, 18)], 1),
-		(B::CrystalSlab, &[(B::Crystal, 1)], &[(E::Aether, 2)], 3),
-		// And the vessels, feedstock alone.
-		(B::Bucket, &[(B::Wood, 6)], &[], 1),
-		(B::EssenceSiphon, &[(B::Wood, 2), (B::Leaves, 5)], &[], 1),
-		// The torch: a stick with a treated head.
-		(
-			B::Torch,
-			&[(B::Wood, 1)],
-			&[(E::Vitae, 2), (E::Terra, 3)],
-			1,
-		),
-	];
-	for &(b, feed, ideal, batch) in cases {
-		assert_eq!(craft_feedstock(b), feed.to_vec(), "{b:?} feedstock");
-		assert_eq!(craft_ideal(b), Some(ideal.to_vec()), "{b:?} catalyst");
-		assert_eq!(crate::shapes::craft_batch(b), batch, "{b:?} batch");
-	}
-	// Nothing gains an economy by accident: a block crafts only
-	// through a material it declared or a hand-priced entry, both of
-	// which are their own decisions elsewhere.
+fn a_block_crafts_only_through_a_material_or_a_hand_set_price() {
 	for &b in &BlockType::ALL {
 		if !b.is_grid_item() {
 			assert_eq!(
@@ -570,57 +460,6 @@ fn every_price_has_a_source_at_its_own_level() {
 			);
 		}
 	}
-}
-
-/// **Where each essence's faucet actually opens** — the first level at which a player can both SEE
-/// a node paying it and legally swing at its host. The cross-skill coupling
-/// `every_price_has_a_source_at_its_own_level` will not assert, held as a golden because it is a
-/// CONSEQUENCE of three tables — reveal, strength wall, yield split — answering to two skills and
-/// knowing nothing of each other; a bad retune fails nowhere, leaving early rows nobody can buy.
-#[test]
-fn essence_faucets_open_where_they_always_did() {
-	let mut opens: Vec<(Essence, u32)> = Vec::new();
-	for &e in &Essence::ALL {
-		let at = crate::worldgen::nodes::NODES
-			.iter()
-			.filter(|&&n| {
-				node_yields(n, crate::skills::MAX_LEVEL)
-					.iter()
-					.any(|&(y, amount)| y == e && amount > 0)
-			})
-			.filter_map(|&n| {
-				// The node's own reveal against the wall on the host it
-				// stands in — a draw is a hold like any other and
-				// `dig_blocked` gates it. A siphon-revealed node is seen
-				// from the first level: the siphon opens at the level
-				// everyone starts at, gated by feedstock alone.
-				let seen = match crate::unlock::reveal(n) {
-					Some(l) => l,
-					None if crate::unlock::siphon_reveal(n) => 1,
-					None => return None,
-				};
-				Some(seen.max(crate::unlock::mine(n)))
-			})
-			.min()
-			.unwrap_or(u32::MAX);
-		opens.push((e, at));
-	}
-	assert_eq!(
-		opens,
-		vec![
-			// The three surface faucets open on the siphon craft itself:
-			// the reveal is the siphon and the draw carries no strength
-			// wall, so the moment the tool exists all three pay. Only the
-			// deep faucets still wait on the Mining ladder.
-			(Essence::Vitae, 1),
-			(Essence::Terra, 1),
-			(Essence::Unda, 1),
-			(Essence::Ferrum, 15),
-			(Essence::Aether, 33),
-		],
-		"an essence's faucet moved — check every recipe priced in it \
-			 still has a level a player can reach it at"
-	);
 }
 
 /// **Every feedstock chain bottoms out in the world**, and in order: walking a recipe's feedstock

@@ -851,7 +851,7 @@ const fn crumbles(mut p: BlockProps, d: BlockType) -> BlockProps {
 /// The substance half of SKILLS-DESIGN §7.2's grid. Everything a structural block's economy needs
 /// — unlock level, craft cost, extraction yield, the earned strength wall — falls out of this
 /// plus the row's `shaped` tag, so a material × shape pair is a row and a PNG rather than four
-/// table edits. FUNCTIONAL items deliberately have none (`material_roster_is_pinned` holds it).
+/// table edits. FUNCTIONAL items deliberately have none.
 const fn mat(mut p: BlockProps, m: Material) -> BlockProps {
 	p.material = Some(m);
 	p

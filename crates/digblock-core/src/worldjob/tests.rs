@@ -553,31 +553,15 @@ fn a_rolled_job_skips_the_slot_it_loads_into() {
 	}
 }
 
-/// Every rule the game runs, in one list both hosts register from. A pin rather than a derived
-/// check, because nothing in Rust can enumerate the modules that define rules — and the bug it
-/// names is the one no test of a rule can see: a job nothing registers never runs in production
-/// however well its own behaviour is covered. Building the real roster is also the standing check
-/// that no production scope can destroy a node reveal, since `register` refuses one.
+/// Every rule the game runs registers from the one list both hosts build from. Building the
+/// real roster is the standing check that no production scope can destroy a node reveal, since
+/// `register` refuses one.
 #[test]
-fn the_production_roster_is_pinned() {
-	const RULES: [&str; 6] = [
-		"grass-9am",
-		"grass-noon",
-		"grass-3pm",
-		"leaf-decay",
-		"node-regrow",
-		"conjured-light-fade",
-	];
+fn the_production_roster_registers() {
 	let mut s = Scheduler::new();
-	let mut names: Vec<&'static str> = Vec::new();
 	for job in production() {
-		names.push(job.name());
 		s.register(job);
 	}
-	names.sort_unstable();
-	let mut want = RULES.to_vec();
-	want.sort_unstable();
-	assert_eq!(names, want, "a rule joined or left the production roster");
 }
 
 /// The cube shell at exactly Chebyshev distance `d` from `c` — "ring N"

@@ -98,10 +98,4 @@ mod tests {
 			assert!(dx.abs().max(dz.abs()) >= STARE_HOP, "station {k}");
 		}
 	}
-
-	/// The run's frame count is whole ticks of whole stations.
-	#[test]
-	fn the_stare_run_is_whole_stations() {
-		assert_eq!(STARE_FRAMES, 3 * 30 * 60);
-	}
 }

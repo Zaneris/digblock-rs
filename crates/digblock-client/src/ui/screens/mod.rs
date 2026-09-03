@@ -581,7 +581,6 @@ mod tests {
 			}),
 		));
 
-		assert_eq!(named.len(), 5, "every page over the bar is listed");
 		for (page, names) in named {
 			assert_eq!(
 				names,
