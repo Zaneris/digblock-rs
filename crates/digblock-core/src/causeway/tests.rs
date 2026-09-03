@@ -270,7 +270,7 @@ fn a_road_carries_a_running_player_off_a_cliff_and_through_two_turns() {
 					let cell_at = |x: i32, y: i32, z: i32| {
 						Some(*world.get(&(x, y, z)).unwrap_or(&base(x, y, z)))
 					};
-					player.tick(TICK, dir, intent, &cell_at);
+					player.tick(TICK, dir, dir, intent, &cell_at);
 				}
 				// Sampled AFTER the tick and BEFORE the plank, so a road
 				// that only ever catches up cannot hide a drop.
@@ -380,6 +380,7 @@ fn a_road_carries_a_running_player_off_a_cliff_and_through_two_turns() {
 		player.tick(
 			TICK,
 			Vec3::X,
+			Vec3::X,
 			PlayerIntent {
 				move_axis: Vec2::ZERO,
 				jump: false,
@@ -427,7 +428,7 @@ fn a_held_jump_climbs_the_road() {
 		{
 			let cell_at =
 				|x: i32, y: i32, z: i32| Some(*world.get(&(x, y, z)).unwrap_or(&base(x, y, z)));
-			player.tick(TICK, Vec3::X, intent, &cell_at);
+			player.tick(TICK, Vec3::X, Vec3::X, intent, &cell_at);
 		}
 		let plank = {
 			let cell_at =

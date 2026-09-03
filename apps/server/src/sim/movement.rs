@@ -185,12 +185,13 @@ fn step_client(
 				move_axis: glam::Vec2::from_array(input.move_axis),
 				jump: input.jump,
 			};
+			let from = client.look;
 			client.look = Vec3::from_array(input.look).normalize_or_zero();
 			client.last_intent = PlayerIntent {
 				jump: false,
 				..intent
 			};
-			client.player.tick(TICK, client.look, intent, cell_at);
+			client.player.tick(TICK, from, client.look, intent, cell_at);
 			client.last_input_tick = input.tick;
 			client.stats.consumed += 1;
 			client.hotbar.set_selected(input.active_slot as usize);
@@ -224,7 +225,9 @@ fn step_client(
 		None => {
 			// Underrun: coast on the last intent, never adopt.
 			let intent = client.last_intent;
-			client.player.tick(TICK, client.look, intent, cell_at);
+			client
+				.player
+				.tick(TICK, client.look, client.look, intent, cell_at);
 			client.drift *= 1.0 - DRIFT_ALPHA;
 		}
 	}

@@ -257,6 +257,9 @@ pub struct Engine {
 	/// it, and `causeway` is what remembers which cells are ours to take.
 	causeway_left: f32,
 	causeway: digblock_core::causeway::Trail,
+	/// Look the last OFFLINE player tick ran with (the predictor keeps
+	/// its own while a session is up), so a turn re-aims the run.
+	walk_from: Option<Vec3>,
 	/// The last spell SENT, so a `CastRefused` — which carries a reason
 	/// and never a spell — can be aimed at the prediction it actually
 	/// answers. Without it any refused cast takes the road up, and a

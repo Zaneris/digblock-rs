@@ -428,10 +428,14 @@ impl Player {
 	}
 
 	/// One fixed tick. `dir` is the current look direction (the Java
-	/// camera direction).
+	/// camera direction) and `from` the one the previous tick ran with:
+	/// on the ground the run re-aims by the turn between them, so a
+	/// mouse flick never waits on the steering swing. In the air the
+	/// look leaves velocity alone.
 	pub fn tick(
 		&mut self,
 		dt: f32,
+		from: Vec3,
 		dir: Vec3,
 		intent: PlayerIntent,
 		cell_at: &dyn Fn(i32, i32, i32) -> Option<u16>,
@@ -470,7 +474,17 @@ impl Player {
 					None => 0.0,
 				};
 				let target = wish * (WALK_SPEED / (1.0 + rise * rise).sqrt());
-				let cur = Vec3::new(self.out.x, 0.0, self.out.z);
+				let mut cur = Vec3::new(self.out.x, 0.0, self.out.z);
+				// Turn the run with the look: rotate by the yaw from
+				// the previous look to this one (a unit complex product
+				// in the xz plane), so a flick carries full speed into
+				// the new heading and the swing below has nothing to do.
+				let from = Vec3::new(from.x, 0.0, from.z).normalize_or_zero();
+				if from != Vec3::ZERO && flat != Vec3::ZERO {
+					let re = from.x * flat.x + from.z * flat.z;
+					let im = from.x * flat.z - from.z * flat.x;
+					cur = Vec3::new(cur.x * re - cur.z * im, 0.0, cur.x * im + cur.z * re);
+				}
 				let heading = cur.normalize_or_zero();
 				let want = target.dot(heading);
 				let speed = cur.length();

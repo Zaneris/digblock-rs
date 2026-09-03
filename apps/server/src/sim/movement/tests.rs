@@ -24,7 +24,9 @@ fn honest_claims_adopted_and_echoed() {
 			move_axis: glam::Vec2::new(0.0, 1.0),
 			jump: false,
 		};
-		local.tick(TICK, Vec3::Z, intent, &|x, y, z| sim.test_cell_at(x, y, z));
+		local.tick(TICK, Vec3::Z, Vec3::Z, intent, &|x, y, z| {
+			sim.test_cell_at(x, y, z)
+		});
 		let claim = local.state();
 		history.push(claim.pos);
 		sim.tick_once(vec![batch(vec![input(t, true, claim)], 1)]);
@@ -199,7 +201,9 @@ fn standing_on_stair_claim_adopted() {
 			move_axis: glam::Vec2::new(0.0, 1.0),
 			jump: false,
 		};
-		local.tick(TICK, Vec3::Z, intent, &|x, y, z| sim.test_cell_at(x, y, z));
+		local.tick(TICK, Vec3::Z, Vec3::Z, intent, &|x, y, z| {
+			sim.test_cell_at(x, y, z)
+		});
 		let mut claim = local.state();
 		claim.pos.x += EPS;
 		// The walk spends real time standing ON the stair cells.
@@ -288,7 +292,9 @@ fn slab_stack_claim_adopted() {
 			move_axis: glam::Vec2::new(0.0, 1.0),
 			jump: false,
 		};
-		local.tick(TICK, Vec3::Z, intent, &|x, y, z| sim.test_cell_at(x, y, z));
+		local.tick(TICK, Vec3::Z, Vec3::Z, intent, &|x, y, z| {
+			sim.test_cell_at(x, y, z)
+		});
 		let mut claim = local.state();
 		claim.pos.x += EPS;
 		// The walk spends real time on top of the full stack.

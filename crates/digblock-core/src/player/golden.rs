@@ -15,6 +15,7 @@ fn golden_trajectory_pins_sim_version() {
 	};
 	let mut p = Player::new(Vec3::new(0.5, 12.5, 0.5));
 	let diag = Vec3::new(1.0, 0.0, 1.0).normalize();
+	let mut from = Vec3::Z;
 	for t in 0..180u32 {
 		let (intent, dir) = match t {
 			0..=59 => (
@@ -46,12 +47,13 @@ fn golden_trajectory_pins_sim_version() {
 				Vec3::NEG_X,
 			),
 		};
-		p.tick(TICK, dir, intent, &flat);
+		p.tick(TICK, from, dir, intent, &flat);
+		from = dir;
 	}
 	let s = p.state();
 	assert_eq!(
 		(s.pos.to_array(), s.vel.to_array()),
-		([-2.4771037f32, 11.5, 5.312146], [-4.0f32, 0.0, 0.0]),
+		([-0.69925743f32, 11.5, 4.964402], [-4.0f32, 0.0, 0.0]),
 		"Player::tick behavior changed — update these values AND bump digblock_core::SIM_VERSION"
 	);
 }
@@ -88,6 +90,7 @@ fn golden_stair_trajectory_pins_sim_version() {
 		};
 		p.tick(
 			TICK,
+			Vec3::Z,
 			Vec3::Z,
 			PlayerIntent {
 				move_axis: mv,
@@ -133,7 +136,7 @@ fn golden_water_trajectory_pins_sim_version() {
 				jump: true,
 			}
 		};
-		p.tick(TICK, Vec3::Z, intent, &shelf);
+		p.tick(TICK, Vec3::Z, Vec3::Z, intent, &shelf);
 	}
 	let s = p.state();
 	// The last tick catches the breach arc over the shelf lip — falling

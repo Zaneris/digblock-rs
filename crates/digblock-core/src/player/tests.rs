@@ -79,7 +79,7 @@ fn ascend_clear_steps_over_built_obstructions() {
 
 fn tick_n(p: &mut Player, n: usize, intent: PlayerIntent) {
 	for _ in 0..n {
-		p.tick(TICK, Vec3::Z, intent, &flat_world);
+		p.tick(TICK, Vec3::Z, Vec3::Z, intent, &flat_world);
 	}
 }
 
@@ -141,6 +141,7 @@ fn airtime_grants_only_air_control_speed() {
 	p.tick(
 		TICK,
 		Vec3::Z,
+		Vec3::Z,
 		PlayerIntent {
 			move_axis: Vec2::new(0.0, 1.0),
 			jump: true,
@@ -152,7 +153,7 @@ fn airtime_grants_only_air_control_speed() {
 		jump: false,
 	};
 	for _ in 0..200 {
-		p.tick(TICK, Vec3::Z, forward, &flat_world);
+		p.tick(TICK, Vec3::Z, Vec3::Z, forward, &flat_world);
 		if (p.pos.y - GROUND_EYE).abs() < 0.001 {
 			break; // landed
 		}
@@ -173,6 +174,7 @@ fn jumps_and_returns() {
 	p.tick(
 		TICK,
 		Vec3::Z,
+		Vec3::Z,
 		PlayerIntent {
 			move_axis: Vec2::ZERO,
 			jump: true,
@@ -181,7 +183,7 @@ fn jumps_and_returns() {
 	);
 	let mut peak = ground_y;
 	for _ in 0..120 {
-		p.tick(TICK, Vec3::Z, PlayerIntent::default(), &flat_world);
+		p.tick(TICK, Vec3::Z, Vec3::Z, PlayerIntent::default(), &flat_world);
 		peak = peak.max(p.pos.y);
 	}
 	assert!(peak > ground_y + 0.8, "peak {peak} vs ground {ground_y}");
@@ -202,7 +204,7 @@ fn walking_off_an_edge_keeps_momentum() {
 	};
 	let mut p = new_player();
 	for _ in 0..600 {
-		p.tick(TICK, Vec3::Z, PlayerIntent::default(), &world);
+		p.tick(TICK, Vec3::Z, Vec3::Z, PlayerIntent::default(), &world);
 	}
 	let forward = PlayerIntent {
 		move_axis: Vec2::new(0.0, 1.0),
@@ -212,7 +214,7 @@ fn walking_off_an_edge_keeps_momentum() {
 	let mut exit_step = 0.0f32;
 	for _ in 0..600 {
 		let grounded_before = (p.pos.y - GROUND_EYE).abs() < 0.001;
-		p.tick(TICK, Vec3::Z, forward, &world);
+		p.tick(TICK, Vec3::Z, Vec3::Z, forward, &world);
 		let step = p.pos.z - prev_z;
 		prev_z = p.pos.z;
 		if grounded_before && p.pos.y < GROUND_EYE - 0.001 {
@@ -242,12 +244,13 @@ fn wall_blocks_and_slides() {
 		};
 		let mut p = new_player();
 		for _ in 0..600 {
-			p.tick(TICK, Vec3::Z, PlayerIntent::default(), &world);
+			p.tick(TICK, Vec3::Z, Vec3::Z, PlayerIntent::default(), &world);
 		}
 		let x0 = p.pos.x;
 		for _ in 0..180 {
 			p.tick(
 				TICK,
+				Vec3::Z,
 				Vec3::Z,
 				PlayerIntent {
 					move_axis: Vec2::new(1.0, 1.0),
@@ -280,12 +283,13 @@ fn wall_blocks_and_slides() {
 	};
 	let mut p = new_player();
 	for _ in 0..600 {
-		p.tick(TICK, Vec3::Z, PlayerIntent::default(), &world);
+		p.tick(TICK, Vec3::Z, Vec3::Z, PlayerIntent::default(), &world);
 	}
 	// Walk forward (+z) into the wall for several seconds.
 	for _ in 0..180 {
 		p.tick(
 			TICK,
+			Vec3::Z,
 			Vec3::Z,
 			PlayerIntent {
 				move_axis: Vec2::new(0.0, 1.0),
@@ -317,8 +321,8 @@ fn state_roundtrip_preserves_trajectory() {
 		} else {
 			forward
 		};
-		a.tick(TICK, Vec3::Z, intent, &flat_world);
-		b.tick(TICK, Vec3::Z, intent, &flat_world);
+		a.tick(TICK, Vec3::Z, Vec3::Z, intent, &flat_world);
+		b.tick(TICK, Vec3::Z, Vec3::Z, intent, &flat_world);
 		if i == 80 {
 			let s = b.state();
 			b = new_player();
@@ -340,9 +344,10 @@ fn ceiling_stops_jump() {
 		})
 	};
 	let mut p = Player::new(Vec3::new(0.5, GROUND_EYE, 0.5));
-	p.tick(TICK, Vec3::Z, PlayerIntent::default(), &world); // settle
+	p.tick(TICK, Vec3::Z, Vec3::Z, PlayerIntent::default(), &world); // settle
 	p.tick(
 		TICK,
+		Vec3::Z,
 		Vec3::Z,
 		PlayerIntent {
 			move_axis: Vec2::ZERO,
@@ -352,7 +357,7 @@ fn ceiling_stops_jump() {
 	);
 	let mut peak = p.pos.y;
 	for _ in 0..120 {
-		p.tick(TICK, Vec3::Z, PlayerIntent::default(), &world);
+		p.tick(TICK, Vec3::Z, Vec3::Z, PlayerIntent::default(), &world);
 		peak = peak.max(p.pos.y);
 	}
 	assert!(peak <= 12.0 - EYE_TO_CROWN + 1e-3, "head stopped: {peak}");
@@ -378,14 +383,14 @@ fn one_block_hole_blocked() {
 	};
 	let mut p = new_player();
 	for _ in 0..600 {
-		p.tick(TICK, Vec3::Z, PlayerIntent::default(), &world);
+		p.tick(TICK, Vec3::Z, Vec3::Z, PlayerIntent::default(), &world);
 	}
 	let forward = PlayerIntent {
 		move_axis: Vec2::new(0.0, 1.0),
 		jump: false,
 	};
 	for _ in 0..180 {
-		p.tick(TICK, Vec3::Z, forward, &world);
+		p.tick(TICK, Vec3::Z, Vec3::Z, forward, &world);
 	}
 	assert!(p.pos.z < 11.75, "blocked at the hole, z = {}", p.pos.z);
 }
@@ -403,14 +408,14 @@ fn two_block_corridor_passes() {
 	};
 	let mut p = new_player();
 	for _ in 0..600 {
-		p.tick(TICK, Vec3::Z, PlayerIntent::default(), &world);
+		p.tick(TICK, Vec3::Z, Vec3::Z, PlayerIntent::default(), &world);
 	}
 	let forward = PlayerIntent {
 		move_axis: Vec2::new(0.0, 1.0),
 		jump: false,
 	};
 	for _ in 0..240 {
-		p.tick(TICK, Vec3::Z, forward, &world);
+		p.tick(TICK, Vec3::Z, Vec3::Z, forward, &world);
 	}
 	assert!(p.pos.z > 13.0, "walked through, z = {}", p.pos.z);
 }
@@ -428,18 +433,18 @@ fn jump_mounts_one_block_step() {
 	};
 	let mut p = new_player();
 	for _ in 0..600 {
-		p.tick(TICK, Vec3::Z, PlayerIntent::default(), &world);
+		p.tick(TICK, Vec3::Z, Vec3::Z, PlayerIntent::default(), &world);
 	}
 	let hold = PlayerIntent {
 		move_axis: Vec2::new(0.0, 1.0),
 		jump: true,
 	};
 	for _ in 0..600 {
-		p.tick(TICK, Vec3::Z, hold, &world);
+		p.tick(TICK, Vec3::Z, Vec3::Z, hold, &world);
 	}
 	// Release jump and settle: hopping stops, feet find the step top.
 	for _ in 0..120 {
-		p.tick(TICK, Vec3::Z, PlayerIntent::default(), &world);
+		p.tick(TICK, Vec3::Z, Vec3::Z, PlayerIntent::default(), &world);
 	}
 	assert!(p.pos.z > 12.0, "advanced onto the step, z = {}", p.pos.z);
 	assert!(
@@ -467,11 +472,11 @@ fn jump_clears_step_under_three_high_ceiling() {
 		jump: true,
 	};
 	for _ in 0..600 {
-		p.tick(TICK, Vec3::Z, hold, &world);
+		p.tick(TICK, Vec3::Z, Vec3::Z, hold, &world);
 	}
 	// Release jump and settle: hopping stops, feet find the step top.
 	for _ in 0..120 {
-		p.tick(TICK, Vec3::Z, PlayerIntent::default(), &world);
+		p.tick(TICK, Vec3::Z, Vec3::Z, PlayerIntent::default(), &world);
 	}
 	assert!(p.pos.z > 12.0, "advanced onto the step, z = {}", p.pos.z);
 	assert!(
@@ -486,7 +491,7 @@ fn falls_through_unloaded_chunks() {
 	let none = |_: i32, _: i32, _: i32| -> Option<u16> { None };
 	let mut p = new_player();
 	for _ in 0..120 {
-		p.tick(TICK, Vec3::Z, PlayerIntent::default(), &none);
+		p.tick(TICK, Vec3::Z, Vec3::Z, PlayerIntent::default(), &none);
 	}
 	assert!(p.pos.y < TEST_SPAWN.y - 10.0, "fell through unloaded world");
 }
@@ -526,7 +531,13 @@ fn sinks_slowly_in_water() {
 	let mut p = Player::new(Vec3::new(0.5, 15.0, 0.5));
 	let mut min_vy = 0.0f32;
 	for _ in 0..60 {
-		p.tick(TICK, Vec3::Z, PlayerIntent::default(), &water_world);
+		p.tick(
+			TICK,
+			Vec3::Z,
+			Vec3::Z,
+			PlayerIntent::default(),
+			&water_world,
+		);
 		min_vy = min_vy.min(p.state().vel.y);
 	}
 	assert!(min_vy >= WATER_SINK_SPEED - 1e-3, "sink capped: {min_vy}");
@@ -541,9 +552,13 @@ fn sinks_slowly_in_water() {
 	);
 	let mut dry = Player::new(Vec3::new(0.5, 15.0, 0.5));
 	for _ in 0..60 {
-		dry.tick(TICK, Vec3::Z, PlayerIntent::default(), &|_, _, _| {
-			some_cell(BlockType::Air)
-		});
+		dry.tick(
+			TICK,
+			Vec3::Z,
+			Vec3::Z,
+			PlayerIntent::default(),
+			&|_, _, _| some_cell(BlockType::Air),
+		);
 	}
 	let dry_drop = 15.0 - dry.pos.y;
 	assert!(
@@ -560,7 +575,7 @@ fn swim_up_rises() {
 		jump: true,
 	};
 	for _ in 0..120 {
-		p.tick(TICK, Vec3::Z, hold, &water_world);
+		p.tick(TICK, Vec3::Z, Vec3::Z, hold, &water_world);
 		assert!(
 			p.state().vel.y <= SWIM_UP_SPEED + 1e-3,
 			"rise capped: {}",
@@ -584,7 +599,7 @@ fn swims_where_pointed() {
 	};
 	let mut diver = Player::new(Vec3::new(0.5, 16.0, 0.5));
 	for _ in 0..60 {
-		diver.tick(TICK, down, forward, &water_world);
+		diver.tick(TICK, down, down, forward, &water_world);
 	}
 	// A near-vertical dive approaches -SWIM_SPEED — clearly past what
 	// the passive sink covers over the same second.
@@ -592,7 +607,7 @@ fn swims_where_pointed() {
 
 	let mut climber = Player::new(Vec3::new(0.5, 13.0, 0.5));
 	for _ in 0..60 {
-		climber.tick(TICK, up, forward, &water_world);
+		climber.tick(TICK, up, up, forward, &water_world);
 	}
 	assert!(climber.pos.y > 14.6, "climbed to {}", climber.pos.y);
 }
@@ -604,7 +619,7 @@ fn jump_out_mounts_adjacent_block() {
 	// resolution puts the eye at shelf top + EYE_TO_FEET.
 	let mut p = Player::new(Vec3::new(0.5, 18.5, 11.4));
 	for _ in 0..600 {
-		p.tick(TICK, Vec3::Z, SWIM, &shelf_world);
+		p.tick(TICK, Vec3::Z, Vec3::Z, SWIM, &shelf_world);
 		if (p.pos.y - 21.5).abs() < 0.001 && p.pos.z > 12.0 {
 			return; // mounted the shelf
 		}
@@ -620,7 +635,13 @@ fn terminal_fall_damped_on_entry() {
 	// to the floor — only the fast phase is bounded).
 	let mut p = Player::new(Vec3::new(0.5, 40.0, 0.5));
 	for _ in 0..600 {
-		p.tick(TICK, Vec3::Z, PlayerIntent::default(), &water_world);
+		p.tick(
+			TICK,
+			Vec3::Z,
+			Vec3::Z,
+			PlayerIntent::default(),
+			&water_world,
+		);
 		if p.pos.y < 20.0 && p.state().vel.y >= WATER_SINK_SPEED - 1e-3 {
 			// Recovered to the sink band — the plunge is over.
 			assert!(p.pos.y > 16.0, "plunge ran too deep: {}", p.pos.y);
@@ -695,7 +716,7 @@ fn stair_flight_climbs_at_a_constant_rate() {
 				jump: false,
 			};
 			for t in 0..ticks {
-				p.tick(TICK, dir, walk, world);
+				p.tick(TICK, dir, dir, walk, world);
 				let feet = p.pos.y - EYE_TO_FEET;
 				let dy = feet - prev;
 				prev = feet;
@@ -771,7 +792,7 @@ fn stair_mounts_flush_landing_smoothly() {
 	};
 	for _ in 0..90 {
 		let prev = p.pos.y;
-		p.tick(TICK, Vec3::X, forward, &landing_world);
+		p.tick(TICK, Vec3::X, Vec3::X, forward, &landing_world);
 		assert!(p.pos.y >= prev - 1e-3, "no dip mounting: {:?}", p.pos);
 	}
 	assert!(p.pos.x > 14.0, "mounted and moved on, x = {}", p.pos.x);
@@ -800,7 +821,7 @@ fn stair_runout_blocked_by_taller_wall() {
 		jump: false,
 	};
 	for _ in 0..240 {
-		p.tick(TICK, Vec3::X, forward, &world);
+		p.tick(TICK, Vec3::X, Vec3::X, forward, &world);
 		assert!(p.pos.y < 12.6, "never climbed the wall: {:?}", p.pos);
 	}
 	assert!(p.pos.x < 12.75, "blocked at the wall face, x = {}", p.pos.x);
@@ -832,7 +853,7 @@ fn stair_side_wall_never_hoists() {
 	};
 	let strip_top = 11.0;
 	for _ in 0..240 {
-		p.tick(TICK, Vec3::X, press, &world);
+		p.tick(TICK, Vec3::X, Vec3::X, press, &world);
 		let feet = p.pos.y - EYE_TO_FEET;
 		// Below the auto-step window the face blocks flush, a RADIUS
 		// out from it; inside the window the step may mount the strip,
@@ -898,7 +919,7 @@ fn stair_back_face_blocks_like_a_wall() {
 		jump: false,
 	};
 	for _ in 0..180 {
-		p.tick(TICK, Vec3::NEG_X, toward, &one_stair_world);
+		p.tick(TICK, Vec3::NEG_X, Vec3::NEG_X, toward, &one_stair_world);
 	}
 	assert!(p.pos.x > 13.25, "blocked at the back face, x = {}", p.pos.x);
 	assert!(
@@ -919,7 +940,7 @@ fn stair_low_side_ramps_up() {
 	};
 	let mut peak = 0.0f32;
 	for _ in 0..240 {
-		p.tick(TICK, Vec3::X, forward, &one_stair_world);
+		p.tick(TICK, Vec3::X, Vec3::X, forward, &one_stair_world);
 		peak = peak.max(p.pos.y);
 	}
 	assert!(peak > 12.3, "ramped up, peak eye {peak}");
@@ -943,7 +964,7 @@ fn stair_under_low_ceiling_wedges() {
 		jump: false,
 	};
 	for _ in 0..240 {
-		p.tick(TICK, Vec3::X, forward, &world);
+		p.tick(TICK, Vec3::X, Vec3::X, forward, &world);
 		assert!(p.pos.y < 12.75, "never squeezed past the gap: {}", p.pos.y);
 	}
 	assert!(
@@ -987,7 +1008,7 @@ fn slab_steps_mount_at_the_ramp_rate() {
 	let mut prev = p.pos.y - EYE_TO_FEET;
 	let mut rises = 0;
 	for t in 0..300 {
-		p.tick(TICK, Vec3::X, forward, &slab_stack_world);
+		p.tick(TICK, Vec3::X, Vec3::X, forward, &slab_stack_world);
 		let feet = p.pos.y - EYE_TO_FEET;
 		let dy = feet - prev;
 		prev = feet;
@@ -1051,7 +1072,7 @@ fn fast_fall_onto_a_slab_edge_lands_flat() {
 		let mut p = Player::new(Vec3::new(11.95, h, 0.5));
 		let mut landed = false;
 		for t in 0..200 {
-			p.tick(TICK, Vec3::X, PlayerIntent::default(), &world);
+			p.tick(TICK, Vec3::X, Vec3::X, PlayerIntent::default(), &world);
 			let feet = p.pos.y - EYE_TO_FEET;
 			landed |= p.state().vel.y == 0.0;
 			if landed {
@@ -1084,7 +1105,7 @@ fn walks_onto_third_slab_without_jumping() {
 	};
 	for _ in 0..90 {
 		let prev = p.pos.y;
-		p.tick(TICK, Vec3::X, forward, &world);
+		p.tick(TICK, Vec3::X, Vec3::X, forward, &world);
 		assert!(p.pos.y >= prev - 1e-3, "no dip stepping up: {:?}", p.pos);
 		if p.pos.x > 12.5 {
 			break;
@@ -1118,7 +1139,7 @@ fn two_thirds_rise_walls() {
 		jump: false,
 	};
 	for _ in 0..240 {
-		p.tick(TICK, Vec3::X, forward, &world);
+		p.tick(TICK, Vec3::X, Vec3::X, forward, &world);
 	}
 	assert!(p.pos.x < 11.75, "blocked at the face, x = {}", p.pos.x);
 	let feet = p.pos.y - EYE_TO_FEET;
@@ -1148,7 +1169,7 @@ fn step_blocked_under_low_ceiling() {
 		jump: false,
 	};
 	for _ in 0..240 {
-		p.tick(TICK, Vec3::X, forward, &world);
+		p.tick(TICK, Vec3::X, Vec3::X, forward, &world);
 	}
 	assert!(
 		p.pos.x < 11.75,
@@ -1188,7 +1209,7 @@ fn step_never_mounts_a_door_leaf() {
 		jump: false,
 	};
 	for _ in 0..240 {
-		p.tick(TICK, Vec3::X, forward, &world);
+		p.tick(TICK, Vec3::X, Vec3::X, forward, &world);
 	}
 	assert!(p.pos.x < 12.0, "blocked at the leaf, x = {}", p.pos.x);
 	let feet = p.pos.y - EYE_TO_FEET;
@@ -1219,10 +1240,10 @@ fn jump_mounts_two_thirds_slab() {
 		jump: true,
 	};
 	for _ in 0..600 {
-		p.tick(TICK, Vec3::X, hold, &world);
+		p.tick(TICK, Vec3::X, Vec3::X, hold, &world);
 	}
 	for _ in 0..120 {
-		p.tick(TICK, Vec3::X, PlayerIntent::default(), &world);
+		p.tick(TICK, Vec3::X, Vec3::X, PlayerIntent::default(), &world);
 	}
 	assert!(p.pos.x > 12.0, "advanced onto the slab, x = {}", p.pos.x);
 	let feet = p.pos.y - EYE_TO_FEET;
@@ -1259,7 +1280,7 @@ fn closed_door_blocks_open_door_passes() {
 	let mut blocked = Player::new(Vec3::new(10.5, GROUND_EYE, 0.5));
 	let closed = door_world(false);
 	for _ in 0..240 {
-		blocked.tick(TICK, Vec3::X, forward, &closed);
+		blocked.tick(TICK, Vec3::X, Vec3::X, forward, &closed);
 	}
 	assert!(
 		blocked.pos.x < 12.0,
@@ -1270,7 +1291,7 @@ fn closed_door_blocks_open_door_passes() {
 	let mut walker = Player::new(Vec3::new(10.5, GROUND_EYE, 0.5));
 	let opened = door_world(true);
 	for _ in 0..240 {
-		walker.tick(TICK, Vec3::X, forward, &opened);
+		walker.tick(TICK, Vec3::X, Vec3::X, forward, &opened);
 	}
 	assert!(
 		walker.pos.x > 13.5,
@@ -1378,12 +1399,62 @@ fn wading_stays_dry_physics() {
 		jump: false,
 	};
 	for _ in 0..60 {
-		p.tick(TICK, Vec3::Z, forward, &shallow); // accelerate
+		p.tick(TICK, Vec3::Z, Vec3::Z, forward, &shallow); // accelerate
 	}
 	let z0 = p.pos.z;
 	for _ in 0..60 {
-		p.tick(TICK, Vec3::Z, forward, &shallow);
+		p.tick(TICK, Vec3::Z, Vec3::Z, forward, &shallow);
 	}
 	let waded = p.pos.z - z0;
 	assert!((waded - WALK_SPEED).abs() < 0.1, "waded {waded} in 1s");
+}
+
+/// A mouse turn on the ground re-aims the run in the same tick: the
+/// velocity follows the look at full speed, no swing, no dip.
+#[test]
+fn a_turn_on_the_ground_re_aims_the_run() {
+	let mut p = Player::new(Vec3::new(0.5, GROUND_EYE, 0.5));
+	let forward = PlayerIntent {
+		move_axis: Vec2::new(0.0, 1.0),
+		jump: false,
+	};
+	tick_n(&mut p, 60, forward);
+	let before = p.state().vel;
+	assert!(before.z > 0.99 * WALK_SPEED, "walking +z first: {before:?}");
+	p.tick(TICK, Vec3::Z, Vec3::X, forward, &flat_world);
+	let v = p.state().vel;
+	assert!(
+		(v.x - before.z).abs() < 1e-3 && v.z.abs() < 1e-3,
+		"a 90° flick carries the whole run into +x: {v:?}"
+	);
+}
+
+/// In the air the look leaves velocity alone: the same flick mid-jump
+/// keeps the takeoff heading.
+#[test]
+fn a_turn_in_the_air_leaves_the_run_alone() {
+	let mut p = Player::new(Vec3::new(0.5, GROUND_EYE, 0.5));
+	let forward = PlayerIntent {
+		move_axis: Vec2::new(0.0, 1.0),
+		jump: false,
+	};
+	tick_n(&mut p, 60, forward);
+	p.tick(
+		TICK,
+		Vec3::Z,
+		Vec3::Z,
+		PlayerIntent {
+			move_axis: Vec2::new(0.0, 1.0),
+			jump: true,
+		},
+		&flat_world,
+	);
+	let takeoff = p.state().vel;
+	assert!(takeoff.y > 0.0, "airborne: {takeoff:?}");
+	p.tick(TICK, Vec3::Z, Vec3::X, forward, &flat_world);
+	let v = p.state().vel;
+	assert!(
+		(v.z - takeoff.z).abs() < 1e-3 && v.x < 0.1,
+		"the flick did not turn the jump: {v:?}"
+	);
 }

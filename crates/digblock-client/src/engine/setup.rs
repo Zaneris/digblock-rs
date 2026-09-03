@@ -316,6 +316,7 @@ impl Engine {
 			cast: None,
 			wisp_left: 0.0,
 			causeway_left: 0.0,
+			walk_from: None,
 			causeway: Default::default(),
 			last_cast: None,
 			dig_accum: 0.0,
