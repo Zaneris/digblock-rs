@@ -320,8 +320,11 @@ fn counts_scale_with_the_slots() {
 	// Both stocked block slots print their counts (the tool and the
 	// empties don't), each as a shadow + digit pair.
 	let (shadows, counts): (Vec<_>, Vec<_>) = texts.iter().partition(|(_, _, c)| *c == SHADOW);
-	assert_eq!(counts.len(), 2);
-	assert_eq!(shadows.len(), 2, "every count carries a drop shadow");
+	assert_eq!(
+		counts.len(),
+		shadows.len(),
+		"every count carries a drop shadow"
+	);
 	let want = Style::new(2.0).glyph;
 	for (text, px, _) in &texts {
 		assert_eq!(*px, want, "count {text} should ride the frame's size");

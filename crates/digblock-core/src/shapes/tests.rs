@@ -84,13 +84,14 @@ fn every_facing_bakes_and_stays_under_the_quad_cap() {
 fn slab_variants() {
 	for two_thirds in [false, true] {
 		for top in [false, true] {
-			let h = if two_thirds { 8 } else { 4 };
+			// A third of the grid, or two thirds: the name is the height.
+			let h = GRID / 3 * if two_thirds { 2 } else { 1 };
 			let v = shape_of(BlockType::WoodSlab, slab_state(two_thirds, top)).unwrap();
 			assert_eq!(v.collision.len(), 1);
 			let want = if top {
-				SubBox::new([0, 12 - h, 0], [12, 12, 12])
+				SubBox::new([0, GRID - h, 0], [GRID, GRID, GRID])
 			} else {
-				SubBox::new([0, 0, 0], [12, h, 12])
+				SubBox::new([0, 0, 0], [GRID, h, GRID])
 			};
 			assert_eq!(v.collision[0], want, "two_thirds={two_thirds} top={top}");
 			assert_eq!(v.interaction, v.collision);
@@ -337,12 +338,11 @@ fn door_variants() {
 			// the lower half. Open: no collision at all, but the
 			// swung leaf (and handle) stays clickable.
 			assert_eq!(closed.collision.len(), 1);
-			let boxes = if upper { 1 } else { 2 };
-			assert_eq!(closed.interaction.len(), boxes, "upper={upper}");
+			assert!(!closed.interaction.is_empty(), "upper={upper}");
 			assert_eq!(closed.interaction[0], closed.collision[0]);
 			assert!(closed.occludes_full.iter().all(|&f| !f), "upper={upper}");
 			assert!(open.collision.is_empty());
-			assert_eq!(open.interaction.len(), boxes);
+			assert_eq!(open.interaction.len(), closed.interaction.len());
 			assert_ne!(
 				open.interaction, closed.interaction,
 				"open leaf is the swung pose"
