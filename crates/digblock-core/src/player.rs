@@ -31,6 +31,11 @@ pub const WALK_ACCEL: f32 = 10.0;
 /// turn both take about WALK_SPEED / WALK_BRAKE seconds.
 pub const WALK_BRAKE: f32 = 40.0;
 pub const JUMP_IMPULSE: f32 = 5.0;
+/// Fraction of the horizontal run kept at takeoff. The jump adds its
+/// own 5 blocks/s straight up, so a full carry launches the eye along
+/// a visibly faster path than the walk; the Java halved it, which cost
+/// every landing a re-acceleration. Between the two.
+pub const JUMP_CARRY: f32 = 0.7;
 /// Fixed simulation tick (Java was per-frame at ~60fps).
 pub const TICK: f32 = 1.0 / 60.0;
 
@@ -484,9 +489,10 @@ impl Player {
 					let side = target - heading * want;
 					heading * speed + side.clamp_length_max(swing)
 				};
-				// A jump keeps its run: the horizontal carry rides into
-				// the air untouched (the Java halved it).
+				// A jump keeps most of its run (JUMP_CARRY) and rides it
+				// into the air.
 				if intent.jump {
+					self.out *= JUMP_CARRY;
 					self.out.y = JUMP_IMPULSE;
 				}
 			} else {
