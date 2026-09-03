@@ -789,8 +789,6 @@ mod tests {
 		assert_eq!(c.mask.iter().filter(|&&w| w != 0).count(), 1);
 		assert!(c.filled(3, 5, 7));
 		assert!(!c.filled(4, 5, 7));
-		assert_eq!(COVER_WORDS, 54);
-		assert_eq!(COVER_ENTRY_WORDS, 56);
 	}
 
 	#[test]

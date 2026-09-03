@@ -161,3 +161,26 @@ Unit tests live beside the code as sibling `mod tests;` files (or focused `*_tes
 `crates/digblock-net/tests/loopback.rs` (full client/server netcode with no sockets), `apps/server/tests/e2e.rs` (boots
 the real master container; Docker required). Cross-language constants are pinned by tests that read the other side's
 files from disk, so a mirror edit shows up as a test failure, not a drift.
+
+### A test must earn its place
+
+Test the reason, not the value. A test is worth adding only if its failure message can name a consequence rather than a
+delta: "an existing world's spawn moved", "client and server now disagree", "a shipped client can't decode this frame",
+"a stair opens before the stone it is cut from". If the only honest failure message is "this used to be 252 and now it's
+249", the test knows nothing the diff didn't, and it will be updated endlessly instead of ever catching a bug.
+
+Three kinds clear that bar:
+
+- **Contract tests**: something outside the change depends on the value. Wire encoding goldens, the terrain hash, the
+  player trajectory goldens, per-seed spawn/ore/landmark positions, shape collision pins, the C# master mirrors, RFC
+  vectors. Failure means "you broke something you can't see from here", and moving one is a deliberate versioning act.
+- **Invariant tests**: a rule the code honors everywhere, swept over the whole catalog rather than a hand-kept list.
+  Every shape of a material shares its cube's light; a settle lands the same cells at a wider apron. Adding a row never
+  touches the test, and a row that breaks the rule fails by name.
+- **Scenario tests**: a player-shaped walk through the real pipeline, asserting what happened, not what the numbers
+  were.
+
+Do not add tests that pin a retunable number, a table row, a roster, or a count against a literal: XP curves, recipe
+tables, material rosters, "the list has 5 entries" where 5 is not derived from whatever fills the list, mesh hashes,
+byte counts of a texture. Those restate the code, and a restatement never fails for a reason. If a table has a shape
+worth protecting, assert the relationship (monotone, bounded, derived from the constants) and let the values move.

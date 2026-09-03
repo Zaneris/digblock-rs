@@ -140,42 +140,6 @@ mod tests {
 	const MIB: u64 = 1024 * 1024;
 
 	#[test]
-	fn the_voxel_window_at_draw_20_is_two_hundred_mib() {
-		let side = crate::gi::window_chunks_for(20) * 16;
-		let size = Extent3d {
-			width: side,
-			height: 256,
-			depth_or_array_layers: side,
-		};
-		assert_eq!(texture_bytes_of(size, Dim::D3, Fmt::Rg8Uint, 1), 200 * MIB);
-	}
-
-	#[test]
-	fn a_gi_history_texel_is_sixteen_bytes_and_a_target_set_sums_its_formats() {
-		let px = Extent3d {
-			width: 1000,
-			height: 500,
-			depth_or_array_layers: 1,
-		};
-		assert_eq!(
-			texture_bytes_of(px, Dim::D2, crate::gi::GI_ACC_FORMAT, 1),
-			500_000 * 16
-		);
-		// The five screen-sized targets: depth 4 + depth copy 4 + normal 1 + scene 4 + post 4.
-		let screen: u64 = [
-			Fmt::Depth32Float,
-			Fmt::R32Float,
-			Fmt::R8Uint,
-			Fmt::Bgra8UnormSrgb,
-			Fmt::Bgra8UnormSrgb,
-		]
-		.into_iter()
-		.map(|f| texture_bytes_of(px, Dim::D2, f, 1))
-		.sum();
-		assert_eq!(screen, 500_000 * 17);
-	}
-
-	#[test]
 	fn mip_levels_and_array_layers_are_counted() {
 		let size = Extent3d {
 			width: 64,

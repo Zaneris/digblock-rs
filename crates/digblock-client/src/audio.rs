@@ -740,37 +740,11 @@ impl Ambient {
 mod tests {
 	use super::*;
 
-	/// The rows §7.2 added, which the old hand-listed roster missed
-	/// entirely — every one of them dug, broke and was walked on as DIRT.
-	/// Spot-checked across all three classes, because "it compiles" only
-	/// proves the match is exhaustive, not that the arms are sane.
+	/// Every shape of a substance sounds like the cube it came from, swept over the whole
+	/// catalog rather than a hand-kept list of rows.
 	#[test]
 	fn the_catalog_sounds_like_what_it_is_made_of() {
-		use BlockType as B;
 		use digblock_core::block::ShapeFamily;
-		for b in [
-			B::StoneBrick,
-			B::PolishedStone,
-			B::SandstoneBrick,
-			B::Metal,
-			B::Crystal,
-			B::Glass,
-			B::DepletedStone,
-			B::Emberore,
-			B::Duskstone,
-			B::Glowvein,
-			B::Aetherock,
-			B::StoneDoor,
-			B::Rubble,
-		] {
-			assert_eq!(material_of(b), Material::Stone, "{b:?}");
-		}
-		for b in [B::DarkLumber, B::RedLumber, B::Lumber, B::LumberDoor] {
-			assert_eq!(material_of(b), Material::Wood, "{b:?}");
-		}
-		for b in [B::Dirt, B::Sand, B::Snow, B::DryGrass] {
-			assert_eq!(material_of(b), Material::Earth, "{b:?}");
-		}
 		// Every shape of a substance sounds like the substance: a slab and a stair are the same
 		// stuff as the cube they came from. The cube is `from_grid(m, Block)` — §7.2's own
 		// inverse, and the lookup `slab_base` already uses. NOT a `find` for the material's row

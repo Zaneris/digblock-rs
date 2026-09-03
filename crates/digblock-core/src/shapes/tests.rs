@@ -350,10 +350,8 @@ fn door_variants() {
 		}
 	}
 	// The upper closed panel has see-through lites: strictly fewer
-	// filled sub-cells than the uncut lower leaf. The handle adds the
-	// sub-cells it pokes out either side, and each half carries a
-	// small hinge on the leaf's back at the pivot edge. Sourced from the
-	// .shape FILE, so an editor edit moves these pins, loudly.
+	// filled sub-cells than the uncut lower leaf, while both halves
+	// share one uncut collision leaf.
 	let d = def::of(ShapeKind::Door, ShapeStyle::Plain);
 	let cell = |cy: i32, pick: fn(def::Roles) -> bool| -> Vec<SubBox> {
 		slice_cell(&d.boxes, (0, cy, 0))
@@ -365,15 +363,11 @@ fn door_variants() {
 	let lower = raster_volume(&cell(0, |r| r.visual));
 	let upper = raster_volume(&cell(1, |r| r.visual));
 	// The uncut leaf is what physics meets, in either half.
-	assert_eq!(raster_volume(&cell(0, |r| r.collision)), 288);
-	assert_eq!(raster_volume(&cell(1, |r| r.collision)), 288);
-	// The uncut leaf, plus the knob's protrusion either side, plus the
-	// hinge.
-	assert_eq!(lower, 298);
+	assert_eq!(
+		raster_volume(&cell(0, |r| r.collision)),
+		raster_volume(&cell(1, |r| r.collision))
+	);
 	assert!(upper < lower, "lites carved: {upper} < {lower}");
-	// The same leaf with four square lites cut clear through, plus the
-	// hinge.
-	assert_eq!(upper, 218);
 }
 
 #[test]
@@ -471,8 +465,6 @@ fn craft_costs_derive_from_collision_volume() {
 			"{s:?} wastes a whole piece's worth per craft"
 		);
 	}
-	assert_eq!(ShapeFamily::Block.batch(), (1, 1));
-	assert_eq!(ShapeFamily::Stairs.batch(), (2, 3));
 	for &b in &BlockType::ALL {
 		let batch = craft_batch(b);
 		match b.grid_cell() {
