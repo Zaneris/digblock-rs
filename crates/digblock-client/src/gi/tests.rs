@@ -1239,6 +1239,38 @@ fn consecutive_sweep_steps_are_not_neighbours() {
 /// refused by `gi_uploadable`), and `lateral_max` — the bound every march breaks at — is not
 /// short of the streamed radius. A window one draw distance on a side failed both by half, and
 /// that half was a lit, shadowless, dome-lit ring around any camera high enough to see it (R40).
+/// Chrome clears the voxel window through a staging buffer its whole size, so a window past the
+/// device's buffer limit is never cleared and the screen goes black. At the WebGPU default limit
+/// the cap must admit every draw distance whose window fits, and nothing past it.
+#[test]
+fn the_draw_cap_keeps_the_window_inside_the_buffer_limit() {
+	use crate::settings::{DRAW_FLOOR, DRAW_MAX};
+	const WEBGPU_DEFAULT: u64 = 256 << 20;
+	let cap = max_draw_dist(WEBGPU_DEFAULT);
+	assert!(
+		cap >= DRAW_FLOOR,
+		"the cap {cap} is under the slider's floor {DRAW_FLOOR}"
+	);
+	assert!(
+		cap < DRAW_MAX,
+		"the slider's top {DRAW_MAX} fits 256 MiB, so this test guards nothing"
+	);
+	assert!(
+		window_bytes(window_chunks_for(cap)) <= WEBGPU_DEFAULT,
+		"draw {cap} overflows"
+	);
+	assert!(
+		window_bytes(window_chunks_for(cap + 1)) > WEBGPU_DEFAULT,
+		"draw {} fits, so the cap is a rung too low",
+		cap + 1
+	);
+	assert_eq!(
+		max_draw_dist(u64::MAX),
+		DRAW_MAX,
+		"an unbounded device still stops at the slider"
+	);
+}
+
 #[test]
 fn the_window_covers_the_streamed_radius() {
 	use crate::settings::{DRAW_FLOOR, DRAW_MAX};

@@ -329,6 +329,9 @@ pub struct Engine {
 	/// Shader animation clock, wrapped on a long period (carried in the
 	/// otherwise unused light_color.w — no uniform layout change).
 	time_secs: f32,
+	/// The draw distance the device's buffer limit allows the GI window
+	/// (`gi::max_draw_dist`); unbounded until a device is in hand.
+	draw_cap: i32,
 	/// Unwrapped world clock feeding the job scheduler. The shader clock
 	/// above wraps on a period shorter than a game day, and a Schedule
 	/// slot never advances again against a wrapped clock.

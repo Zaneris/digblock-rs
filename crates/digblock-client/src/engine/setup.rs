@@ -338,6 +338,7 @@ impl Engine {
 			presence: digblock_core::presence::RollingPeak::day(),
 			flow_accum: 0.0,
 			time_secs: 0.0,
+			draw_cap: i32::MAX,
 			world_secs: 0.0,
 			session: NetSession {
 				client: None,
@@ -797,6 +798,22 @@ impl Engine {
 	/// the streaming radius (rescan on next maintain), the GI window (rebuilt by the streaming
 	/// pass, which holds the device) and — connected — the server's sync radius. The store sees
 	/// every batch, including name-only changes from the join path.
+	/// Take a draw distance everywhere it lives: the config, the far plane, the streaming
+	/// pipeline and the server. A no-op when it already is.
+	pub(super) fn apply_draw_dist(&mut self, d: i32) {
+		if d == self.config.draw_dist {
+			return;
+		}
+		self.config.draw_dist = d;
+		self.camera.far = far_plane(d);
+		self.pipeline.set_draw_dist(d);
+		if let Some(net) = self.session.client.as_mut()
+			&& net.ready()
+		{
+			net.send_set_draw_dist(d);
+		}
+	}
+
 	pub(super) fn apply_settings(&mut self, s: crate::settings::Settings) {
 		self.config.ssr = s.ssr;
 		self.config.touch_jump_button = s.touch_jump_button;
@@ -824,16 +841,7 @@ impl Engine {
 				sfx: s.sfx_vol,
 			});
 		}
-		if s.draw_dist != self.config.draw_dist {
-			self.config.draw_dist = s.draw_dist;
-			self.camera.far = far_plane(s.draw_dist);
-			self.pipeline.set_draw_dist(s.draw_dist);
-			if let Some(net) = self.session.client.as_mut()
-				&& net.ready()
-			{
-				net.send_set_draw_dist(s.draw_dist);
-			}
-		}
+		self.apply_draw_dist(s.draw_dist.min(self.draw_cap));
 		// Both render scales are applied by simply storing them: the
 		// renderer keys its target rebuild on the scale it last built at,
 		// so the next frame re-creates them. No explicit invalidation, and

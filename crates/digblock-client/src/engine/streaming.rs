@@ -10,6 +10,17 @@ impl Engine {
 	/// paths can't drift: meshes stream back in via the pipeline re-mesh, and spray/player state
 	/// rides the same uploads.
 	pub(super) fn build_renderer(&mut self, gpu: &Gpu, surface_format: wgpu::TextureFormat) {
+		// The device bounds the draw distance through the GI window it can clear
+		// (`gi::max_draw_dist`); a saved setting past it is held at the cap, not failed.
+		self.draw_cap = crate::gi::max_draw_dist(gpu.device.limits().max_buffer_size);
+		if self.config.draw_dist > self.draw_cap {
+			log::warn!(
+				"draw distance {} exceeds what this device's buffer limit allows; capped at {}",
+				self.config.draw_dist,
+				self.draw_cap
+			);
+			self.apply_draw_dist(self.draw_cap);
+		}
 		self.renderer = Some(Renderer::new(
 			gpu,
 			surface_format,
