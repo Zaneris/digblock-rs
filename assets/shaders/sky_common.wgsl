@@ -79,49 +79,44 @@ fn sky_stars(ray: vec3f) -> f32 {
 	return smoothstep(0.35, 0.0, d) * brightness;
 }
 
-// Cloud cover along `ray`: a plane at a fixed height, fbm scrolled by the shared wind,
-// thresholded, thinning toward the horizon where the projection stretches to nothing. Zero at and
-// below it. Read by the VISIBLE sky (sky_dome) and the water's mirror only; sky_base is the fog
-// colour everywhere and stays cloudless.
-const SKY_CLOUD_H = 180.0;
-fn sky_clouds(ray: vec3f, t: f32) -> f32 {
-	let up = ray.y;
-	if up < 0.02 {
+// The cloud deck: a slab of world y the sky pass marches through its shape volume (sky.wgsl)
+// and the water's mirror projects onto flat. Above the highest terrain, so no summit stands
+// inside it.
+const SKY_CLOUD_BASE = 260.0;
+const SKY_CLOUD_TOP = 330.0;
+
+// Cloud cover over a world xz: fbm scrolled by the shared wind, thresholded. The march extrudes
+// this through the deck with the shape volume; the mirror uses it as it is.
+fn sky_cloud_cover(xz: vec2f, t: f32) -> f32 {
+	let n = sky_fbm2((xz - sky_wind_drift(t) * 6.0) / 220.0, 23u).x;
+	return smoothstep(0.42, 0.68, n);
+}
+
+// Cover along `ray` from `origin` as a flat layer at the deck's middle: what the water mirrors.
+// Zero at the horizon and for an eye above the deck, thinning toward the horizon.
+fn sky_cloud_mirror(origin: vec3f, ray: vec3f, t: f32) -> f32 {
+	let rise = 0.5 * (SKY_CLOUD_BASE + SKY_CLOUD_TOP) - origin.y;
+	if ray.y < 0.02 || rise <= 0.0 {
 		return 0.0;
 	}
-	let uv = ray.xz * (SKY_CLOUD_H / up) - sky_wind_drift(t) * 6.0;
-	let n = sky_fbm2(uv / 260.0, 23u).x;
-	return smoothstep(0.50, 0.68, n) * smoothstep(0.02, 0.18, up);
+	let xz = origin.xz + ray.xz * (rise / ray.y);
+	return sky_cloud_cover(xz, t) * smoothstep(0.02, 0.15, ray.y);
 }
 
-// A cloud's own colour: the horizon (the sky's brightness reference) lifted by the direct light,
-// so it is sunlit white by day, orange at dusk and moonlit grey by night.
+// A cloud's underside as the water sees it: the horizon lifted a little by the direct light.
 fn sky_cloud_col(horizon: vec3f, light: vec3f) -> vec3f {
-	return horizon * 0.7 + light * 0.35;
+	return horizon * 0.75 + light * 0.2;
 }
 
-// The dome as the sky pass draws it: the gradient under the clouds, plus the sun and moon discs
-// and the night's stars where the clouds leave gaps. `light` is the direct light colour and `t`
-// the animation clock, both straight from the frame.
-fn sky_dome(
-	ray: vec3f,
-	horizon: vec3f,
-	zenith: vec3f,
-	sun: vec4f,
-	moon: vec4f,
-	light: vec3f,
-	t: f32,
-) -> vec3f {
-	var col = sky_base(ray, horizon, zenith, sun, moon);
-	let cover = sky_clouds(ray, t);
-	col = mix(col, sky_cloud_col(horizon, light), cover);
-	let gap = 1.0 - cover;
+// The sun and moon discs and the night's stars, drawn over the gradient by the sky pass; the
+// caller weights them by whatever cloud sits in front.
+fn sky_discs(ray: vec3f, sun: vec4f, moon: vec4f) -> vec3f {
 	// Sun disc (soft-edged, and oversized for game feel).
-	col += vec3f(1.0, 0.95, 0.85) * smoothstep(0.9994, 0.9998, dot(ray, sun.xyz)) * 4.0 * gap;
+	var col = vec3f(1.0, 0.95, 0.85) * smoothstep(0.9994, 0.9998, dot(ray, sun.xyz)) * 4.0;
 	// Moon disc: smaller, dim, slightly blue.
-	col += vec3f(0.9, 0.93, 1.0) * smoothstep(0.9996, 0.9999, dot(ray, moon.xyz)) * gap;
+	col += vec3f(0.9, 0.93, 1.0) * smoothstep(0.9996, 0.9999, dot(ray, moon.xyz));
 	// Stars fade in at night, suppressed in the horizon haze.
-	col += vec3f(sky_stars(ray)) * sun.w * smoothstep(0.0, 0.3, ray.y) * gap;
+	col += vec3f(sky_stars(ray)) * sun.w * smoothstep(0.0, 0.3, ray.y);
 	return col;
 }
 

@@ -115,8 +115,10 @@ pub mod stub {
 	/// Water's per-vertex gust field → 1: one wave amplitude everywhere, for A/B-ing the field
 	/// and pricing it. Rides `frame.misc.z` with the other W bits.
 	pub const WGUST: u32 = 1 << 20;
+	/// The sky's cloud march and the water's cloud mirror → clear sky, for pricing the deck.
+	pub const NOCLOUD: u32 = 1 << 21;
 
-	const NAMES: [(&str, u32); 21] = [
+	const NAMES: [(&str, u32); 22] = [
 		("wvert", WVERT),
 		("wsun", WSUN),
 		("wssr", WSSR),
@@ -138,6 +140,7 @@ pub mod stub {
 		("giprobelod", GIPROBELOD),
 		("gisteady", GISTEADY),
 		("wgust", WGUST),
+		("nocloud", NOCLOUD),
 	];
 
 	/// Comma-separated names → mask. Unknown names are returned so the
