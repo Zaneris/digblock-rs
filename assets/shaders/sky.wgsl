@@ -13,8 +13,6 @@
 @group(1) @binding(0) var cloud_tex: texture_3d<f32>;
 @group(1) @binding(1) var cloud_smp: sampler;
 
-// Mirrors renderer/frame_types.rs `stub::NOCLOUD`.
-const STUB_NOCLOUD = 2097152u;
 const CLOUD_STEPS = 14u;
 // Extinction per block of full density: ~30 blocks of solid cloud is opaque to the eye. The
 // light march folds three multi-scatter octaves in, so the interior still glows (see `cloud_light`).
@@ -153,7 +151,8 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	let ray = view_ray(i.ndc);
 	var col = sky_base(ray, frame.horizon.rgb, frame.zenith.rgb, frame.sun_dir, frame.moon_dir);
 	var trans = 1.0;
-	if (u32(frame.misc.z) & STUB_NOCLOUD) == 0u {
+	// The deck is opt-in (water_misc.w, DIG_CLOUDS / ?clouds) while its look is tuned.
+	if frame.water_misc.w > 0.5 {
 		let jitter = sky_hash13(vec3f(floor(i.pos.xy), 0.0));
 		let cl = cloud_march(frame.cam_pos.xyz, ray, jitter, frame.light_color.w);
 		col = col * cl.trans + cl.scatter;

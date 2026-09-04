@@ -57,8 +57,6 @@ const STUB_WREFRACT = 16u;
 const STUB_WFLAT = 32u;
 // The per-vertex gust field → 1: one amplitude everywhere, the pre-wind surface.
 const STUB_WGUST = 1048576u;
-// The mirror's cloud cover → clear, with the sky pass's march (renderer/frame_types.rs).
-const STUB_NOCLOUD = 2097152u;
 
 fn stubbed(bit: u32) -> bool {
 	return (u32(frame.misc.z) & bit) != 0u;
@@ -229,7 +227,7 @@ fn mirror_sky(origin: vec3f, ray: vec3f) -> vec3f {
 	var sky = sky_base(ray, frame.horizon.rgb, frame.zenith.rgb, frame.sun_dir, frame.moon_dir);
 	// The deck the sky pass marches, flat: the mirror agrees with the sky above it in shape.
 	var cover = 0.0;
-	if !stubbed(STUB_NOCLOUD) {
+	if frame.water_misc.w > 0.5 {
 		cover = sky_cloud_mirror(origin, ray, frame.light_color.w);
 	}
 	sky = mix(sky, sky_cloud_col(frame.horizon.rgb, frame.light_color.rgb), cover);
