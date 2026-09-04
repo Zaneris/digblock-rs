@@ -328,11 +328,11 @@ impl MeshInput {
 pub struct MeshData {
 	/// Packed two-word vertices (see `pack`), 4 per face (TL,TR,BL,BR).
 	pub solid: Vec<u32>,
-	/// Same two-word format; word 1 additionally carries the water payload packed above the layer
-	/// field, in order: the surface drop code, the falling flag, the flow direction, the splash
-	/// code (one lower per ring of Chebyshev distance out — expanding foam rings), and the vertex
-	/// fall distance. Bottom-plane verts take one more block of fall so the interpolated "blocks
-	/// fallen" is continuous down a column, and the field saturates rather than wrapping.
+	/// Same two-word format; word 1 leaves the layer field zero and carries the water payload
+	/// packed above it, in order: the surface drop code, the falling flag, the flow direction, the
+	/// splash code (one lower per ring of Chebyshev distance out — expanding foam rings), and the
+	/// vertex fall distance. Bottom-plane verts take one more block of fall so the interpolated
+	/// "blocks fallen" is continuous down a column, and the field saturates rather than wrapping.
 	pub water: Vec<u32>,
 	/// Water-fall impact cells (the fall-impact predicate), packed
 	/// chunk-local as x, then y, then z — spray-emitter metadata. Rides the
@@ -436,8 +436,9 @@ fn face_visible(me: BlockType, neighbor: Option<u16>, dir: Dir) -> bool {
 /// Pack a vertex's GEOMETRY word (word 0 — solid and water share it), in order: x, y and z in
 /// TWELFTH-block units (the sub-block shape grid), then the normal, then the corner code. Word 1 is
 /// per-stream material, assembled by the caller: [`solid_word1`] carries texture layer, uv in
-/// twelfths, the emissive flag and tint-from-below; water carries the layer then the payload. Every
-/// consumer moves with this layout — chunk.wgsl's `vs` and `vs_depth`, water.wgsl, the attributes.
+/// twelfths, the emissive flag and tint-from-below; water leaves the layer field zero and carries
+/// the payload above it. Every consumer moves with this layout — chunk.wgsl's `vs` and `vs_depth`,
+/// water.wgsl, the attributes.
 #[inline]
 fn pack(pos: (u32, u32, u32), normal: Dir, corner: u32) -> u32 {
 	let (x, y, z) = pos;
@@ -675,7 +676,7 @@ pub fn mesh_chunk(input: &MeshInput) -> MeshData {
 							let state = *wstate.get_or_insert_with(|| {
 								WaterState::of(input, &mut falls, x as i32, y as i32, z as i32, me)
 							});
-							emit_water_face(&mut mesh.water, input, (x, y, z), dir, tex, state);
+							emit_water_face(&mut mesh.water, input, (x, y, z), dir, state);
 						}
 						crate::block::MeshBucket::Translucent => {
 							emit_face(

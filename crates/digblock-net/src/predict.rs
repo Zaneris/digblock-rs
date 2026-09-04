@@ -30,6 +30,9 @@ const VEL_EPS2: f32 = 1e-4; // = (1e-2 blocks/s)²
 struct BufEntry {
 	tick: u32,
 	intent: PlayerIntent,
+	/// The look this tick ran from and to; a replay must turn the run
+	/// by exactly the yaw it did the first time.
+	from: Vec3,
 	dir: Vec3,
 	post: PlayerState,
 	/// Claim actually put on the wire, frozen at first batching. Re-sends
@@ -48,6 +51,9 @@ pub struct Predictor {
 	next_tick: u32,
 	buf: VecDeque<BufEntry>,
 	last_acked: u32,
+	/// Look of the most recent predicted tick, the `from` of the next.
+	/// Kept apart from `buf`, which drains as ticks are acked.
+	last_dir: Option<Vec3>,
 	/// Current hotbar selection, stamped into every outgoing `InputTick`
 	/// (feeds the server's held-item broadcast). Not per-tick history —
 	/// reconciliation never replays it.
@@ -82,6 +88,7 @@ impl Predictor {
 			next_tick: start_tick,
 			buf: VecDeque::new(),
 			last_acked: start_tick.saturating_sub(1),
+			last_dir: None,
 			active_slot: 0,
 			spare: Vec::new(),
 			clock: 0.0,
@@ -119,13 +126,15 @@ impl Predictor {
 	) -> u32 {
 		let tick = self.next_tick;
 		self.next_tick += 1;
-		player.tick(TICK, dir, intent, cell_at);
+		let from = self.last_dir.replace(dir).unwrap_or(dir);
+		player.tick(TICK, from, dir, intent, cell_at);
 		if self.buf.len() == BUF_CAP {
 			self.buf.pop_front();
 		}
 		self.buf.push_back(BufEntry {
 			tick,
 			intent,
+			from,
 			dir,
 			post: player.state(),
 			sent: None,
@@ -221,7 +230,7 @@ impl Predictor {
 		let before = player.pos;
 		player.set_state(server);
 		for e in self.buf.iter_mut() {
-			player.tick(TICK, e.dir, e.intent, cell_at);
+			player.tick(TICK, e.from, e.dir, e.intent, cell_at);
 			e.post = player.state();
 		}
 		Reconciled::Replayed {
@@ -255,7 +264,7 @@ mod tests {
 	fn landed_player() -> Player {
 		let mut p = Player::new(Vec3::new(0.5, 11.5, 0.5));
 		for _ in 0..10 {
-			p.tick(TICK, Vec3::Z, PlayerIntent::default(), &flat_world);
+			p.tick(TICK, Vec3::Z, Vec3::Z, PlayerIntent::default(), &flat_world);
 		}
 		p
 	}
@@ -265,7 +274,7 @@ mod tests {
 		let mut p = Player::new(Vec3::ZERO);
 		p.set_state(from);
 		for (intent, dir) in inputs {
-			p.tick(TICK, *dir, *intent, &flat_world);
+			p.tick(TICK, *dir, *dir, *intent, &flat_world);
 		}
 		p.state()
 	}

@@ -544,6 +544,27 @@ pub(crate) fn window_chunks_for(draw_dist: i32) -> u32 {
 	2 * draw_dist.max(1) as u32
 }
 
+/// The voxel window's bytes at a side in chunks (`window_textures`' first texture).
+pub(crate) fn window_bytes(window_chunks: u32) -> u64 {
+	let side = u64::from(window_chunks) * 16;
+	side * side * u64::from(WORLD_H) * digblock_core::gi::BYTES_PER_CELL as u64
+}
+
+/// The largest draw distance whose window a device with this `max_buffer_size` can hold. The
+/// window is a 3D texture in a format no render pass can clear, so Chrome zero-fills it on first
+/// use by copying from a staging buffer the size of the whole texture, and a texture past the
+/// limit is never cleared: every frame errors and the screen goes black (draw 24 at the WebGPU
+/// default of 256 MiB). The cap keeps the window, and the streamed radius it must cover, inside;
+/// the slider's own top bounds it above.
+pub(crate) fn max_draw_dist(max_buffer_size: u64) -> i32 {
+	let mut d = 1;
+	while d < crate::settings::DRAW_MAX && window_bytes(window_chunks_for(d + 1)) <= max_buffer_size
+	{
+		d += 1;
+	}
+	d
+}
+
 /// The light list's payload: every observable emitter — inside the reach, not past
 /// [`BEHIND_REACH`], not under the sky cull — at most `cap` nearest to the forward-leading
 /// segment (see `SELECT_AHEAD`), in the GPU entry form. Carried lights are simply more candidates,

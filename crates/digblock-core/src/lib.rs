@@ -52,4 +52,4 @@ pub use chunk::{CHUNK_SIZE, ChunkData, ChunkPos};
 /// carries. Exchanged in the Hello/Welcome handshake; a mismatch is refused, and the golden tests
 /// name this constant when they fail. A NEW `worldgen::TerrainVersion` row needs no bump — a world
 /// names its generator — but editing a row in place does.
-pub const SIM_VERSION: u16 = 27;
+pub const SIM_VERSION: u16 = 28;

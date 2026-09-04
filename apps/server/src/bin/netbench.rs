@@ -176,8 +176,10 @@ fn predict_clients(clients: &mut [Client], sim: &Sim, tick: u32, n: usize) {
 			.get_or_insert_with(|| digblock_core::player::Player::new(state.pos));
 		p.set_state(state);
 		let look = look_for(c.conn_id, tick, n);
+		let from = look_for(c.conn_id, tick.saturating_sub(1), n);
 		p.tick(
 			digblock_core::player::TICK,
+			from,
 			look,
 			WALK_INTENT,
 			&|x, y, z| sim.cell_at(x, y, z),

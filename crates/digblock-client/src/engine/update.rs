@@ -886,7 +886,10 @@ impl Engine {
 					net.predictor
 						.predict(&mut self.player, intent, dir, &cell_at);
 				}
-				_ => self.player.tick(TICK, dir, intent, &cell_at),
+				_ => {
+					let from = self.walk_from.replace(dir).unwrap_or(dir);
+					self.player.tick(TICK, from, dir, intent, &cell_at)
+				}
 			}
 		}
 		if self.causeway_left <= 0.0 {

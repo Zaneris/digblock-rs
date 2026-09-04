@@ -232,7 +232,7 @@ impl Renderer {
 		// legal subset — and sharing means the pass binds nothing new
 		// between the water draw and this one.
 		let glass = crate::glass::GlassDraw::new(gpu, surface_format, &water_layout);
-		let sky = SkyDraw::new(gpu, surface_format, &frame_bgl);
+		let sky = SkyDraw::new(gpu, surface_format, &frame_bgl, &mut ledger);
 
 		// Fullscreen composite of the offscreen scene into the swapchain:
 		// first draw of the water pass. Depth Always/no-write — the pass

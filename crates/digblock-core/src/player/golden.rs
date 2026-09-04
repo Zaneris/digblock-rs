@@ -15,6 +15,7 @@ fn golden_trajectory_pins_sim_version() {
 	};
 	let mut p = Player::new(Vec3::new(0.5, 12.5, 0.5));
 	let diag = Vec3::new(1.0, 0.0, 1.0).normalize();
+	let mut from = Vec3::Z;
 	for t in 0..180u32 {
 		let (intent, dir) = match t {
 			0..=59 => (
@@ -46,12 +47,13 @@ fn golden_trajectory_pins_sim_version() {
 				Vec3::NEG_X,
 			),
 		};
-		p.tick(TICK, dir, intent, &flat);
+		p.tick(TICK, from, dir, intent, &flat);
+		from = dir;
 	}
 	let s = p.state();
 	assert_eq!(
 		(s.pos.to_array(), s.vel.to_array()),
-		([-2.2490497f32, 11.5, 5.5237446], [-4.0f32, 0.0, 0.0]),
+		([-0.69925743f32, 11.5, 4.964402], [-4.0f32, 0.0, 0.0]),
 		"Player::tick behavior changed — update these values AND bump digblock_core::SIM_VERSION"
 	);
 }
@@ -89,6 +91,7 @@ fn golden_stair_trajectory_pins_sim_version() {
 		p.tick(
 			TICK,
 			Vec3::Z,
+			Vec3::Z,
 			PlayerIntent {
 				move_axis: mv,
 				jump,
@@ -102,7 +105,7 @@ fn golden_stair_trajectory_pins_sim_version() {
 	// glued descent all feed these bits.
 	assert_eq!(
 		(s.pos.to_array(), s.vel.to_array()),
-		([0.5f32, 11.5, 7.969425], [0.0f32, 0.0, -4.0]),
+		([0.5f32, 11.500007, 8.279938], [0.0f32, 0.0, -4.0]),
 		"stair behavior changed — update these values AND bump digblock_core::SIM_VERSION"
 	);
 }
@@ -133,14 +136,17 @@ fn golden_water_trajectory_pins_sim_version() {
 				jump: true,
 			}
 		};
-		p.tick(TICK, Vec3::Z, intent, &shelf);
+		p.tick(TICK, Vec3::Z, Vec3::Z, intent, &shelf);
 	}
 	let s = p.state();
 	// The last tick catches the breach arc over the shelf lip — falling
 	// in, sinking, swim-up, and the breach all feed these bits.
 	assert_eq!(
 		(s.pos.to_array(), s.vel.to_array()),
-		([0.5f32, 22.090445, 11.94389], [0.0f32, 3.856666, 0.5000001]),
+		(
+			[0.5f32, 22.090445, 11.964334],
+			[0.0f32, 3.856666, 0.6533333]
+		),
 		"swim behavior changed — update these values AND bump digblock_core::SIM_VERSION"
 	);
 }

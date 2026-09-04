@@ -367,10 +367,22 @@ async fn init_gpu(
 		"gpu timestamps: {}",
 		required_features.contains(wgpu::Features::TIMESTAMP_QUERY)
 	);
+	// The adapter's own buffer ceiling rather than the WebGPU default: Chrome zero-fills a
+	// fresh 3D texture through a staging buffer its whole size, and the GI voxel window passes
+	// 256 MiB at draw distance 24. The engine caps the draw distance to whatever is granted.
+	let required_limits = wgpu::Limits {
+		max_buffer_size: adapter.limits().max_buffer_size,
+		..Default::default()
+	};
+	log::info!(
+		"max buffer size: {} MiB",
+		required_limits.max_buffer_size >> 20
+	);
 	let (device, queue) = adapter
 		.request_device(&wgpu::DeviceDescriptor {
 			label: Some("digblock"),
 			required_features,
+			required_limits,
 			..Default::default()
 		})
 		.await

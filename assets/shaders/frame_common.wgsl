@@ -35,7 +35,7 @@ struct Frame {
 	misc: vec4f,
 	// x = camera underwater (0/1), y = SSR enabled (0/1),
 	// z = water-surface height above the camera (underwater path-length
-	// clamp; only meaningful while x = 1), w reserved
+	// clamp; only meaningful while x = 1), w = cloud deck on (0/1; DIG_CLOUDS / ?clouds)
 	water_misc: vec4f,
 	// RTGI probe-field parameters (patched by the renderer each frame
 	// from GiDraw — the engine writes zeros):

@@ -304,7 +304,7 @@ impl Engine {
 				} else {
 					0.0
 				},
-				0.0,
+				f32::from(self.config.clouds),
 			],
 			// The renderer's GiDraw fills these (quantized caster, cascade
 			// dims, window side) via patch_frame each frame.

@@ -1,6 +1,7 @@
 // Water shader — fork of chunk.wgsl with the shared two-word vertex: word 0 is the solid geometry
-// packing, word 1 the texture layer with the per-vertex surface payload above it (drop code,
-// falling flag, flow dir, splash code, fall distance).
+// packing, word 1 the per-vertex surface payload (drop code, falling flag, flow dir, splash code,
+// fall distance) above the ten-bit field the solid stream uses for its texture layer and water
+// leaves zero. Water samples no texture: its surface is bed, mirror and glint.
 //
 // The drop code sinks a vertex below its lattice height by the strongest water amount at that
 // CORNER, so adjacent cells share exactly the level the sim computed and there are no cracks.
@@ -21,9 +22,6 @@
 @group(0) @binding(1) var scene_depth: texture_2d<f32>;
 @group(0) @binding(2) var scene_tex: texture_2d<f32>;
 @group(0) @binding(3) var scene_smp: sampler;
-
-@group(1) @binding(0) var blocks_tex: texture_2d_array<f32>;
-@group(1) @binding(1) var blocks_smp: sampler;
 
 // Group 2 is the shared GI world data, declared by gi_common.wgsl
 // (prepended between sky_common and this file).
@@ -57,6 +55,8 @@ const STUB_WSSR = 4u;
 const STUB_WRIPPLE = 8u;
 const STUB_WREFRACT = 16u;
 const STUB_WFLAT = 32u;
+// The per-vertex gust field → 1: one amplitude everywhere, the pre-wind surface.
+const STUB_WGUST = 1048576u;
 
 fn stubbed(bit: u32) -> bool {
 	return (u32(frame.misc.z) & bit) != 0u;
@@ -88,7 +88,9 @@ struct VsOut {
 	// water full of view-dependent holes.
 	@invariant @builtin(position) pos: vec4f,
 	@location(0) uv: vec2f,
-	@location(1) @interpolate(flat) layer: u32,
+	// Gust amplitude at the corner: a 24-block field on a 1-block quad, so per-vertex is exact
+	// (R17 again) and free per pixel.
+	@location(1) gust: f32,
 	@location(2) @interpolate(flat) direct: f32,
 	// Probe-field indirect, gathered in the vertex shader (see header) and
 	// perspective-interpolated across the cell-sized quad.
@@ -129,38 +131,70 @@ const FLOW_DIRS = array<vec2f, 5>(
 	vec2f(0.0, -1.0),
 );
 
-// Analytic ripple slope field: three sine octaves summed as a height
-// gradient — pure ALU, no texture fetches. `boost` scales amplitude
-// (impact turbulence hook); octaves fade out with distance and the
-// whole field rolls off so far water can't alias into pixel shimmer.
-fn ripple_grad(p: vec2f, t: f32, flow: vec2f, boost: f32, dist: f32) -> vec2f {
-	// Wave directions: aligned to the current, with the other two fanned
-	// to either side of it, when the cell flows; fixed spread directions
-	// on still water.
-	var d0 = vec2f(0.80, 0.60);
-	var d1 = vec2f(-0.71, 0.71);
-	var d2 = vec2f(0.97, -0.24);
-	if dot(flow, flow) > 0.5 {
-		d0 = flow;
-		d1 = vec2f(0.766 * flow.x - 0.643 * flow.y, 0.643 * flow.x + 0.766 * flow.y);
-		d2 = vec2f(0.766 * flow.x + 0.643 * flow.y, -0.643 * flow.x + 0.766 * flow.y);
+// The gust at a surface point, evaluated per VERTEX: the fbm's lane sits in ~[0.2, 0.8], and
+// the map stretches that band to ~0.35..1.4, calm patches beside rough ones, drifting on the wind.
+fn gust_field(xz: vec2f, t: f32) -> f32 {
+	let n = sky_fbm2((xz - sky_wind_drift(t)) / 24.0, 11u).x;
+	return mix(0.35, 1.4, smoothstep(0.2, 0.8, n));
+}
+
+fn turn(d: vec2f, c: f32, s: f32) -> vec2f {
+	return vec2f(c * d.x - s * d.y, s * d.x + c * d.y);
+}
+
+// The heading still water's waves run under; a flowing cell's current stands in for it.
+const WIND_DIR = vec2f(0.8, 0.6);
+// Derivative drag (afl_ext's ocean): each wave shifts the sample point by its own slope, so the
+// finer waves bunch up on the crests of the coarser ones, which is what reads as water.
+const WAVE_DRAG = 0.38;
+// Per wave: the direction's turn off the wind (cos, sin) and a phase offset. Hand-spread
+// within about ±40°, the swell (first) dead on the wind, so no two waves share a heading.
+const WAVES = array<vec3f, 10>(
+	vec3f(1.000, 0.000, 0.0),
+	vec3f(0.853, 0.523, 2.1),
+	vec3f(0.814, -0.581, 4.4),
+	vec3f(0.955, 0.296, 1.3),
+	vec3f(0.976, -0.218, 5.6),
+	vec3f(0.778, 0.629, 3.0),
+	vec3f(0.900, -0.435, 0.7),
+	vec3f(0.993, 0.120, 4.9),
+	vec3f(0.765, -0.644, 2.6),
+	vec3f(0.921, 0.389, 5.9),
+);
+
+// Analytic wave slope field: a dense sum of exp(sin) waves (peaked crests, broad troughs) spread
+// about the wind, frequencies growing 1.3x per wave, under derivative drag. Pure ALU. `boost`
+// scales amplitude (impact turbulence), `gust` is the per-vertex wind field. Each wave fades out
+// past ~10 of its own wavelengths, so far water keeps the swell and loses the ripples before they
+// can alias into pixel shimmer; the loop ends at the first wave that has faded.
+fn ripple_grad(p: vec2f, t: f32, flow: vec2f, boost: f32, dist: f32, gust: f32) -> vec2f {
+	let flowing = dot(flow, flow) > 0.5;
+	let wind = select(WIND_DIR, flow, flowing);
+	// Advect with the top-face surface scroll so ripples ride the current instead of swimming
+	// against it.
+	var pos = p - flow * (t * 0.4);
+	var g = vec2f(0.0);
+	var freq = 0.35;
+	var spd = 0.6;
+	var w = 1.0;
+	let amp = 0.04 * boost * gust / (1.0 + dist * 0.008);
+	for (var i = 0u; i < 10u; i++) {
+		let len = 6.2832 / freq;
+		let fade = 1.0 - smoothstep(10.0 * len, 30.0 * len, dist);
+		if fade <= 0.0 {
+			break;
+		}
+		let wv = WAVES[i];
+		let d = turn(wind, wv.x, wv.y);
+		let x = dot(d, pos) * freq + t * spd + wv.z;
+		let e = exp(sin(x) - 1.0);
+		let dx = e * cos(x);
+		g += d * (dx * w * amp * fade);
+		pos -= d * (dx * w * WAVE_DRAG / freq);
+		w *= 0.8;
+		freq *= 1.3;
+		spd *= 1.07;
 	}
-	// Slope amplitudes, frequencies (rad/block), phase speeds: a rough
-	// spectrum — long waves carry the most slope, short ones detail.
-	let s = vec3f(0.10, 0.06, 0.035) * boost;
-	let f = vec3f(0.9, 1.9, 4.1);
-	let spd = vec3f(1.2, 1.7, 2.6);
-	let fade = vec3f(
-		1.0,
-		1.0 - smoothstep(48.0, 120.0, dist),
-		1.0 - smoothstep(16.0, 48.0, dist),
-	) / (1.0 + dist * 0.015);
-	// Advect phase with the top-face surface scroll so ripples ride the
-	// current instead of swimming against it.
-	let q = p - flow * (t * 0.4);
-	var g = d0 * (s.x * fade.x * cos(dot(d0, q) * f.x + t * spd.x));
-	g += d1 * (s.y * fade.y * cos(dot(d1, q) * f.y + t * spd.y));
-	g += d2 * (s.z * fade.z * cos(dot(d2, q) * f.z + t * spd.z));
 	return g;
 }
 
@@ -191,7 +225,13 @@ const UNDERSIDE_F0 = 0.25;
 // ramp's top edge, so open water is bit-identical.
 fn mirror_sky(origin: vec3f, ray: vec3f) -> vec3f {
 	var sky = sky_base(ray, frame.horizon.rgb, frame.zenith.rgb, frame.sun_dir, frame.moon_dir);
-	sky += vec3f(sky_stars(ray)) * frame.sun_dir.w * smoothstep(0.0, 0.3, ray.y);
+	// The deck the sky pass marches, flat: the mirror agrees with the sky above it in shape.
+	var cover = 0.0;
+	if frame.water_misc.w > 0.5 {
+		cover = sky_cloud_mirror(origin, ray, frame.light_color.w);
+	}
+	sky = mix(sky, sky_cloud_col(frame.horizon.rgb, frame.light_color.rgb), cover);
+	sky += vec3f(sky_stars(ray)) * frame.sun_dir.w * smoothstep(0.0, 0.3, ray.y) * (1.0 - cover);
 	return sky * medium_sky_fade(origin.y);
 }
 
@@ -289,10 +329,13 @@ fn vs(@location(0) packed: vec2u, @location(1) origin: vec4f) -> VsOut {
 	// Raw corner uv (w0 corner code) — all scroll/advection happens in fs.
 	o.uv = vec2f(f32((w0 >> 29u) & 1u), f32((w0 >> 30u) & 1u));
 	o.splash = (w1 >> 18u) & 3u;
-	o.layer = w1 & 0x3ffu;
 	o.world = world;
 	o.ni = ni;
 	o.flow = (w1 >> 15u) & 7u;
+	o.gust = 1.0;
+	if !stubbed(STUB_WGUST) {
+		o.gust = gust_field(world.xz, frame.light_color.w);
+	}
 	o.falling = (w1 >> 14u) & 1u;
 	o.fall_y = f32((w1 >> 20u) & 0xfu);
 	o.drop = f32(min((w1 >> 10u) & 0xfu, 9u));
@@ -356,52 +399,23 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 		return vec4f(0.1, 0.2, 0.3, 1.0);
 	}
 	let t = frame.light_color.w;
-	// Motion per face: falling sides run downward, flowing tops along the
-	// flow dir (sample offset opposes feature motion). rate × len =
-	// speed; len bounds how far a layer slides.
 	let vertical = i.ni == 3u || i.ni == 4u;
 	// Blocks fallen at this pixel (the bias tames the lip singularity).
 	let y_fallen = i.fall_y + 0.5;
 	var base_uv = i.uv;
-	var adv = vec2f(0.0);
-	var rate = 0.0;
-	var len = 0.0;
 	if i.falling == 1u && !vertical {
 		// Gravity stretch: v follows free-fall time of flight (√y), so
-		// features elongate and their world speed grows ∝ √y down the
-		// sheet. Past the packed fall distance's cap the texture smears,
-		// hidden under full aeration whitening by then.
+		// the clump pulses below elongate and their world speed grows
+		// ∝ √y down the sheet.
 		base_uv = vec2f(i.uv.x, sqrt(y_fallen) * 2.2);
-		adv = vec2f(0.0, -1.0);
-		rate = 0.25;
-		len = 6.0;
-	} else if i.ni == 4u && i.flow != 0u {
-		adv = -FLOW_DIRS[min(i.flow, 4u)];
-		rate = 0.10;
-		len = 4.0;
 	}
-	// Two-phase advection (Max/Becker): two layers half a period
-	// apart, each visible only around the middle of its slide, so flow
-	// reads as endless motion without the conveyor-belt repeat of an
-	// unbounded scroll. Static faces collapse to layer A (wb = 0).
-	// Both samples stay outside control flow (derivative rules).
-	let pa = fract(t * rate);
-	let pb = fract(t * rate + 0.5);
-	let uv_a = fract(base_uv + adv * (pa * len));
-	let uv_b = fract(base_uv + adv * (pb * len) + vec2f(0.37, 0.61));
-	let wb = abs(2.0 * pa - 1.0) * min(len, 1.0);
-	let tex = mix(
-		textureSample(blocks_tex, blocks_smp, uv_a, i.layer).rgb,
-		textureSample(blocks_tex, blocks_smp, uv_b, i.layer).rgb,
-		wb,
-	);
 	// Aeration: falling water entrains air and whitens with distance
 	// fallen — glassy at the lip, diffuse froth at the base. This is
-	// scattering AT the surface, not absorption through the body, so it
-	// survives the demolition that took the depth tint: the surface
-	// texture now only ever reaches the eye through this term.
+	// scattering AT the surface, not absorption through the body.
 	let aer = smoothstep(0.5, 6.0, y_fallen) * f32(i.falling);
-	let froth_tex = mix(tex, vec3f(0.93, 0.96, 1.0), 0.55);
+	// Froth base: the old water texture was a flat rgb(64,164,223) blended 0.55 toward off-white,
+	// which is this constant. The PNG stays an asset for the bucket icon and the GI albedo LUT.
+	let froth_tex = vec3f(0.62, 0.82, 0.94);
 	// Falling-sheet structure: vertical streak noise tears the sheet
 	// into ropes with translucent gaps, and clump pulses ride the
 	// stretched v — two layers (front fast/bright, back slow/dim) give
@@ -420,7 +434,7 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	let boost = 1.0 + 0.5 * f32(i.splash);
 	var g = vec2f(0.0);
 	if !stubbed(STUB_WRIPPLE) {
-		g = ripple_grad(i.world.xz, t, FLOW_DIRS[min(i.flow, 4u)], boost, i.view_dist);
+		g = ripple_grad(i.world.xz, t, FLOW_DIRS[min(i.flow, 4u)], boost, i.view_dist, i.gust);
 	}
 	let nrm = ripple_normal(i.ni, g);
 	let vdir = normalize(frame.cam_pos.xyz - i.world);
@@ -431,7 +445,9 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	// path stays stable instead of aliasing into per-pixel shimmer;
 	// (e+2) keeps lobe energy roughly constant as it widens. Fresnel
 	// at the half vector: bright at low sun, subtle from above.
-	let e = mix(240.0, 24.0, smoothstep(8.0, 120.0, i.view_dist));
+	// The lobe also widens and dims where the wind roughens the surface.
+	let gust01 = clamp((i.gust - 0.35) / 1.05, 0.0, 1.0);
+	let e = mix(240.0, 24.0, smoothstep(8.0, 120.0, i.view_dist)) * mix(1.3, 0.6, gust01);
 	let hs = normalize(vdir - frame.light_dir.xyz);
 	let fres_h = schlick(max(dot(vdir, hs), 0.0));
 	let spec = pow(max(dot(nrm, hs), 0.0), e) * (e + 2.0) / 242.0 * fres_h;
