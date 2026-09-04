@@ -85,11 +85,15 @@ fn sky_stars(ray: vec3f) -> f32 {
 const SKY_CLOUD_BASE = 260.0;
 const SKY_CLOUD_TOP = 330.0;
 
-// Cloud cover over a world xz: fbm scrolled by the shared wind, thresholded. The march extrudes
-// this through the deck with the shape volume; the mirror uses it as it is.
+// Cloud cover over a world xz: fbm on the shared wind's circle, run 14x faster than the water's
+// gusts (about 4 blocks/s), thresholded. The march extrudes this through the deck with the shape
+// volume; the mirror uses it flat. SKY_CLOUD_AMOUNT is the one knob for how much sky is cloud:
+// it slides the threshold through the fbm's band, 0 clear and 1 overcast.
+const SKY_CLOUD_AMOUNT = 0.45;
 fn sky_cloud_cover(xz: vec2f, t: f32) -> f32 {
-	let n = sky_fbm2((xz - sky_wind_drift(t) * 6.0) / 220.0, 23u).x;
-	return smoothstep(0.42, 0.68, n);
+	let n = sky_fbm2((xz - sky_wind_drift(t) * 14.0) / 150.0, 23u).x;
+	let lo = 0.78 - 0.48 * SKY_CLOUD_AMOUNT;
+	return smoothstep(lo, lo + 0.22, n);
 }
 
 // Cover along `ray` from `origin` as a flat layer at the deck's middle: what the water mirrors.
@@ -103,9 +107,10 @@ fn sky_cloud_mirror(origin: vec3f, ray: vec3f, t: f32) -> f32 {
 	return sky_cloud_cover(xz, t) * smoothstep(0.02, 0.15, ray.y);
 }
 
-// A cloud's underside as the water sees it: the horizon lifted a little by the direct light.
+// A cloud's underside as the water sees it: skylit, with a little of the direct light bled
+// through, so it sits a touch brighter than the horizon it replaces.
 fn sky_cloud_col(horizon: vec3f, light: vec3f) -> vec3f {
-	return horizon * 0.75 + light * 0.2;
+	return horizon * 0.85 + light * 0.25;
 }
 
 // The sun and moon discs and the night's stars, drawn over the gradient by the sky pass; the
