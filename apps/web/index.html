@@ -154,11 +154,19 @@
 			height: 100%; width: 0%; background: #7ec850;
 			border-radius: 3px; transition: width .15s linear;
 		}
-		/* No Content-Length (or none yet): a sweeping segment instead of a fill. */
+		/* No Content-Length (or none yet), and every stage after the download:
+		   a sweeping segment instead of a fill. It sweeps by transform, not
+		   margin, on purpose: a margin animation needs the main thread every
+		   frame, and engine init holds that for seconds on a cold phone, which
+		   left the segment frozen a third of the way along looking like a
+		   stalled download. A transform animation runs on the compositor and
+		   keeps moving through it. The segment is 30% wide, so 233% of its own
+		   width lands its far edge on the bar's end. */
 		#bar.indeterminate > div {
-			width: 30%; animation: sweep 1.2s ease-in-out infinite alternate;
+			width: 30%; will-change: transform;
+			animation: sweep 1.2s ease-in-out infinite alternate;
 		}
-		@keyframes sweep { from { margin-left: 0 } to { margin-left: 70% } }
+		@keyframes sweep { from { transform: translateX(0) } to { transform: translateX(233.33%) } }
 		#status { color: #bbb; min-height: 1.2em; }
 		#loading pre {
 			color: #f66; white-space: pre-wrap; text-align: left;
