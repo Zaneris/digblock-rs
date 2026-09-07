@@ -19,6 +19,10 @@ struct Vm {
 	// plumbed in from the engine, so it is not possible to draw a torch
 	// and forget the flag.
 	light_color: vec4f,
+	// xyz = the eye in item space (viewmodel.rs's eye_in_item_space), so
+	// a glossy face dots its raw normal against the view ray as it does
+	// against the light; w spare.
+	eye: vec4f,
 }
 
 @group(0) @binding(0) var<uniform> vm: Vm;
@@ -54,6 +58,11 @@ struct VsOut {
 	@location(1) @interpolate(flat) layer: u32,
 	@location(2) shade: vec3f,
 	@location(3) @interpolate(flat) ink: f32,
+	// The face's finish (finish_common.wgsl), its item-space normal, and
+	// the un-normalized ray from the fragment to the eye.
+	@location(4) @interpolate(flat) finish: u32,
+	@location(5) @interpolate(flat) n: vec3f,
+	@location(6) view: vec3f,
 }
 
 // The per-FACE ink bit, riding above the texture layer in the same
@@ -62,6 +71,8 @@ struct VsOut {
 // the per-DRAW flag below cannot say: it can only make the whole item
 // fullbright, and a fullbright tool has no form left.
 const ITEM_INK_BIT = 65536u;
+// The finish's two bits sit just above it (viewmodel.rs's FINISH_SHIFT).
+const ITEM_FINISH_SHIFT = 17u;
 
 @vertex
 fn vs(
@@ -83,6 +94,9 @@ fn vs(
 	out.layer = layer & (ITEM_INK_BIT - 1u);
 	out.ink = f32((layer & ITEM_INK_BIT) != 0u);
 	out.shade = cam_light.ambient.rgb + vm.light_color.rgb * diffuse;
+	out.finish = (layer >> ITEM_FINISH_SHIFT) & 3u;
+	out.n = n;
+	out.view = vm.eye.xyz - pos;
 	return out;
 }
 
@@ -92,12 +106,23 @@ fn fs(in: VsOut) -> @location(0) vec4f {
 	// page has no mips, and Tint's derivative-uniformity rule wants the
 	// level spelled out anyway.
 	let tex = textureSampleLevel(materials, mat_smp, in.uv, i32(in.layer), 0.0);
-	// Fullbright ink is its own light — no ambient, no sun, no diffuse — through the same shared
-	// `emissive_ink` chunk.wgsl uses, so a held torch and a floor torch are one object rendered
-	// twice. No medium term on either branch, unlike chunk.wgsl: the item is one world unit from
-	// the eye and this pass carries no frame uniforms to read a medium from, so a submerged
-	// camera's hand takes no water extinction. Ink is the whole item (`glows`) or this face alone.
+	// Only masked minerals bypass hand lighting; the host remains ordinary albedo.
+	// Other glowing materials carry a white mask, retaining their fullbright ink.
+	// The same mask bank is used for world blocks and other players' held items.
 	let ink = vm.light_color.w > 0.5 || in.ink > 0.5;
-	let lit = select(tex.rgb * in.shade, emissive_ink(tex.rgb), ink);
+	let mask = textureSampleLevel(materials, mat_smp, in.uv,
+		i32(in.layer) + i32(textureNumLayers(materials) / 2u), 0.0).r;
+	var col = tex.rgb * in.shade;
+	if in.finish != 0u {
+		let v = normalize(in.view);
+		// The same sun gate the diffuse took above.
+		let sh = mix(vec3f(1.0), cam_light.sun.rgb, vm.light.w);
+		let sun = vm.light_color.rgb * sh * finish_lobe(in.n, v, -vm.light.xyz, in.finish);
+		// The hand is at the camera, so the omni probe there IS the environment a mirrored
+		// ray would find: the world's reflection read, without a world to read it from.
+		let local = finish_fresnel(in.finish, dot(in.n, v)) * cam_light.ambient.rgb;
+		col = finish_combine(col, tex.rgb, in.finish, sun, local);
+	}
+	let lit = mix(col, emissive_ink(tex.rgb), select(0.0, mask, ink));
 	return vec4f(lit, 1.0);
 }

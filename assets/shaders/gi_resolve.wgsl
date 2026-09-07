@@ -28,6 +28,7 @@ struct GiResolve {
 	// applies the same value to the sun lane via light_dir.w).
 	sun_color: vec4f,
 	zenith: vec4f,
+	// rgb sky horizon, w shared animation clock for fire.
 	horizon: vec4f,
 	// Last frame's view-projection — the codebase's first temporal state.
 	// Solids are static geometry under a moving camera, so reprojecting a
@@ -665,7 +666,7 @@ fn fs(i: VsOut) -> FsOut {
 		let seed = (u32(uv.x) * 73856093u)
 			^ (u32(uv.y) * 19349663u)
 			^ (u32(rz.jitter.x) * 83492791u);
-		let pick = resample_light(sp, n, seed);
+		let pick = resample_light(sp, n, seed, rz.horizon.w);
 		if pick.valid && !stubbed(STUB_GINEE) {
 			// Stop short of the light's own cell (gi_light_margin, shared
 			// with the probe nee()) so the whole-cell emitter rule can't

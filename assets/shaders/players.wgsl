@@ -98,6 +98,8 @@ const ITEM_YAW = -0.785398163;
 // (viewmodel.rs's `INK_BIT`, and the twin of viewmodel.wgsl's constant).
 // Held items are built once for both hands, so both pipelines decode it.
 const ITEM_INK_BIT = 65536u;
+// The finish's two bits sit just above it (viewmodel.rs's FINISH_SHIFT).
+const ITEM_FINISH_SHIFT = 17u;
 
 struct VsOut {
 	@builtin(position) pos: vec4f,
@@ -108,8 +110,10 @@ struct VsOut {
 	@location(2) world: vec3f,
 	// World-space face normal (flat — a box face has one).
 	@location(3) @interpolate(flat) wn: vec3f,
-	// Set means fullbright ink (`glows`): skip the lighting entirely.
+	// Set enables fullbright ink through the material’s emission mask.
 	@location(4) @interpolate(flat) emissive: f32,
+	// The held face's finish (finish_common.wgsl); a body is matte.
+	@location(5) @interpolate(flat) finish: u32,
 }
 
 @vertex
@@ -141,6 +145,7 @@ fn vs(
 	out.world = world;
 	out.wn = wn;
 	out.emissive = 0.0;
+	out.finish = 0u;
 	return out;
 }
 
@@ -182,6 +187,7 @@ fn vs_held(
 	// (the bit above the layer index). A remote's siphon has to hold the
 	// same lit bulb yours does, or the two hands disagree about one item.
 	out.emissive = max(i1.x, f32((layer & ITEM_INK_BIT) != 0u));
+	out.finish = (layer >> ITEM_FINISH_SHIFT) & 3u;
 	return out;
 }
 
@@ -197,13 +203,11 @@ fn fs(in: VsOut) -> @location(0) vec4f {
 		0.0,
 	);
 	let albedo = select(in.albedo, tex.rgb, in.uvl.z >= 0.0);
-	var col: vec3f;
-	if in.emissive > 0.5 {
-		// Fullbright ink is its own light — no sun, no GI — exactly as
-		// chunk.wgsl treats the same block standing in the world, through
-		// the same shared function. One torch, three places, one look.
-		col = emissive_ink(albedo);
-	} else {
+	let mask = textureSampleLevel(materials, mat_smp, in.uvl.xy,
+		i32(max(in.uvl.z, 0.0) + 0.5) + i32(textureNumLayers(materials) / 2u), 0.0).r;
+	let emission = select(0.0, mask, in.emissive > 0.5);
+	var col = emissive_ink(albedo);
+	if emission < 1.0 {
 		// RTGI: quantized-sun lambert x traced visibility + probe indirect
 		// — the same combine as chunk.wgsl.
 		let side = i32(frame.gi_misc.x);
@@ -224,10 +228,22 @@ fn fs(in: VsOut) -> @location(0) vec4f {
 		let lat = gp.xz - frame.cam_pos.xz;
 		let gmax = gi_lateral_max(frame.gi_misc.x);
 		if dot(lat, lat) <= gmax * gmax && !stubbed(STUB_GINEE) {
-			nee = sum_lights(side, frame.gi_misc.y, frame.cam_pos.xz, gp, in.wn);
+			nee = sum_lights(side, frame.gi_misc.y, frame.cam_pos.xz, gp, in.wn, frame.light_color.w);
 		}
 		col = albedo * (frame.light_color.rgb * direct * sh + indirect + nee);
+		if in.finish != 0u {
+			// The world's glossy rule (chunk.wgsl): the sun lobe through the traced
+			// visibility, and the probe cache read along the mirrored view ray.
+			let v = normalize(frame.cam_pos.xyz - gp);
+			let spec = frame.light_color.rgb * sh * finish_lobe(in.wn, v, -frame.light_dir.xyz, in.finish);
+			let mirror = gi_cache_at(side, gp + in.wn * GI_SURFACE_EPS, reflect(-v, in.wn),
+				frame.cam_pos.xyz, frame.gi0, frame.gi1, frame.zenith.rgb, frame.horizon.rgb);
+			let local = finish_fresnel(in.finish, dot(in.wn, v)) * mirror
+				+ finish_lamps(gp + in.wn * GI_SURFACE_EPS, in.wn, v, in.finish);
+			col = finish_combine(col, albedo, in.finish, spec, local);
+		}
 	}
+	col = mix(col, emissive_ink(albedo), emission);
 	// The same medium the terrain beside them goes through — that
 	// sharing is the whole reason it is a prelude and not a local. It
 	// runs on BOTH branches: the branch narrows to the lighting rather

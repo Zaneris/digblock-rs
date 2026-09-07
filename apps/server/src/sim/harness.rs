@@ -129,6 +129,22 @@ pub(crate) fn a_vein_under_spawn() -> ((i32, i32, i32), Vec3, digblock_core::Blo
 	panic!("no vein in the flat world's surface — retune or widen the search");
 }
 
+/// A cell of the flat world's TOP surface that holds THIS node, and the eye over it —
+/// [`a_vein_under_spawn`]'s sibling for a caller that needs a kind: the surface tier is what a
+/// siphon-holder meets first, and its host's wall is what a gate asked of the CELL gets wrong.
+pub(crate) fn a_node_under_spawn(node: digblock_core::BlockType) -> ((i32, i32, i32), Vec3) {
+	let y = FLAT_GROUND_TOP as i32;
+	for z in -80..80 {
+		for x in -80..80 {
+			if digblock_core::worldgen::ore::ore_at(x, y, z, SEED.value) == Some(node) {
+				let eye = Vec3::new(x as f32 + 0.5, FLAT_SPAWN.y, z as f32 + 0.5);
+				return ((x, y, z), eye);
+			}
+		}
+	}
+	panic!("no {node:?} in the flat world's surface — retune or widen the search");
+}
+
 pub(crate) struct TestClient {
 	pub(crate) rx: Receiver<OutMsg>,
 	pub(crate) frames: FrameReader,

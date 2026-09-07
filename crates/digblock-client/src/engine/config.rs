@@ -229,11 +229,13 @@ pub struct EngineConfig {
 	/// `debug_screen` makes for the input-only screens. Set by the
 	/// desktop launcher from DIG_CONFETTI.
 	pub debug_confetti: bool,
-	/// DIG_CLOUDS / ?clouds: draw the volumetric cloud deck (sky.wgsl) and mirror it in water.
-	/// Off by default while its look is tuned; the code stays live behind the flag.
+	/// Draw the volumetric cloud deck (sky.wgsl) and mirror it in water. On by default;
+	/// DIG_NO_CLOUDS / ?noclouds drops it, the A/B for its frame cost.
 	pub clouds: bool,
 	/// DIG_BURSTS: the generic burst rack, one of each kind, on repeat.
 	pub debug_bursts: bool,
+	/// Pose magic effects at a fixed lifetime fraction for visual review.
+	pub debug_fx: Option<f32>,
 	/// DIG_ORBIT: a slow cinematic orbit of the aim point,
 	/// `(radius, deg/s)`.
 	pub debug_orbit: Option<(f32, f32)>,
@@ -277,6 +279,8 @@ pub struct EngineConfig {
 	/// once chunks are Ready. Set by the desktop launcher from
 	/// DIG_SHAPES — visual verification without gameplay wiring.
 	pub debug_shapes: bool,
+	/// Material review: tiled stone, polished stone and metal under shared lamps and sky.
+	pub debug_materials: bool,
 	/// Debug: a glass sphere of this radius closing about spawn from the
 	/// moment every cell it would touch is resident — the cast's own plan
 	/// and climb, with no channel or bill behind it. Set by the launcher
@@ -344,6 +348,8 @@ pub struct EngineConfig {
 	/// cross; no other water capture puts a SHADED surface on screen at all. Set by the desktop
 	/// launcher from DIG_RIVER.
 	pub debug_river: bool,
+	/// A waterfall feeding the diagnostic pool, to inspect mist and droplets.
+	pub debug_spray: bool,
 	/// Debug: how many torches `debug_torches_plan` lights its courtyard
 	/// with, 0 = scene off. The local-light capture DIG_VAULT cannot be:
 	/// a room deeper than `LIGHT_RANGE` and an emitter COUNT that varies
@@ -490,8 +496,9 @@ impl EngineConfig {
 			player_name: None,
 			debug_playerbox: None,
 			debug_confetti: false,
-			clouds: false,
+			clouds: true,
 			debug_bursts: false,
+			debug_fx: None,
 			debug_orbit: None,
 			debug_dolly: None,
 			show_tutorial: true,
@@ -502,6 +509,7 @@ impl EngineConfig {
 			debug_siphon: None,
 			debug_cast: None,
 			debug_shapes: false,
+			debug_materials: false,
 			debug_sphere: None,
 			debug_sphere_age: None,
 			debug_doors: false,
@@ -515,6 +523,7 @@ impl EngineConfig {
 			debug_tunnel: false,
 			debug_dive: false,
 			debug_river: false,
+			debug_spray: false,
 			debug_torches: 0,
 			debug_torches_far: 0,
 			debug_torches_wall: false,

@@ -19,8 +19,6 @@ const CLOUD_STEPS = 14u;
 const CLOUD_SIGMA = 0.10;
 // Single-scatter albedo: clouds are very nearly white.
 const CLOUD_ALBEDO = 0.94;
-// The march's length cap along a grazing ray, past which the deck is horizon haze anyway.
-const CLOUD_REACH = 1600.0;
 // Blocks per repeat of the shape volume, and its straight scroll: each component's 600 s travel
 // is a whole number of repeats (3.2*600 = 12*160, 2.4*600 = 9*160), so the tiling volume lands on
 // itself at the clock's wrap. It runs slower than the cover, and the difference is what makes the
@@ -38,9 +36,11 @@ struct Cloud {
 // volume, remapped by the cover and shaped by height (flat base, a top that climbs with cover so
 // wisps stay low and thick cover towers), then eroded at its edges by the same volume read five
 // times finer: wispy where it thins, and the erosion flips sense low to high so bases stay flat
-// while tops crumble (Schneider's Nubis). The erosion is skipped on shadow samples.
-fn cloud_density(p: vec3f, t: f32, detail: bool) -> f32 {
-	let cover = sky_cloud_cover(p.xz, t);
+// while tops crumble (Schneider's Nubis). The erosion is skipped on shadow samples. `dist` is the
+// sample's distance from the eye, which ends the deck (sky_cloud_far) per sample: a grazing ray
+// is thinned along its whole path rather than saturating and being painted over afterwards.
+fn cloud_density(p: vec3f, dist: f32, t: f32, detail: bool) -> f32 {
+	let cover = sky_cloud_cover(p.xz, t) * sky_cloud_far(dist);
 	if cover <= 0.0 {
 		return 0.0;
 	}
@@ -82,8 +82,10 @@ fn cloud_light(od: f32, mu: f32) -> f32 {
 
 // March the deck along `ray`: three shadow samples toward the caster per lit step, Beer-Lambert
 // extinction, energy-conserving in-scatter (Hillaire), skylight ambient that brightens toward the
-// tops. `jitter` slides the start to hide the steps; a haze fade sinks the far deck into the horizon.
-fn cloud_march(origin: vec3f, ray: vec3f, jitter: f32, t: f32) -> Cloud {
+// tops. `jitter` slides the start to hide the steps. `clear` is the cloudless sky along the ray:
+// aerial perspective sinks the far deck into it, glow and all, rather than into a flat horizon
+// tint, so a sunset still reads through the last of the deck.
+fn cloud_march(origin: vec3f, ray: vec3f, jitter: f32, t: f32, clear: vec3f) -> Cloud {
 	var c: Cloud;
 	c.scatter = vec3f(0.0);
 	c.trans = 1.0;
@@ -93,7 +95,7 @@ fn cloud_march(origin: vec3f, ray: vec3f, jitter: f32, t: f32) -> Cloud {
 	let ta = (SKY_CLOUD_BASE - origin.y) / ray.y;
 	let tb = (SKY_CLOUD_TOP - origin.y) / ray.y;
 	let t0 = max(min(ta, tb), 0.0);
-	let t1 = min(max(ta, tb), t0 + CLOUD_REACH);
+	let t1 = min(max(ta, tb), SKY_CLOUD_REACH);
 	if t1 <= t0 {
 		return c;
 	}
@@ -104,11 +106,11 @@ fn cloud_march(origin: vec3f, ray: vec3f, jitter: f32, t: f32) -> Cloud {
 	var s = t0 + ds * jitter;
 	for (var i = 0u; i < CLOUD_STEPS; i++) {
 		let p = origin + ray * s;
-		let d = cloud_density(p, t, true);
+		let d = cloud_density(p, s, t, true);
 		if d > 0.003 {
-			var od = cloud_density(p + to_light * 5.0, t, false) * 5.0;
-			od += cloud_density(p + to_light * 14.0, t, false) * 9.0;
-			od += cloud_density(p + to_light * 30.0, t, false) * 16.0;
+			var od = cloud_density(p + to_light * 5.0, s, t, false) * 5.0;
+			od += cloud_density(p + to_light * 14.0, s, t, false) * 9.0;
+			od += cloud_density(p + to_light * 30.0, s, t, false) * 16.0;
 			let h = clamp((p.y - SKY_CLOUD_BASE) / (SKY_CLOUD_TOP - SKY_CLOUD_BASE), 0.0, 1.0);
 			let ambient = mix(frame.horizon.rgb, frame.zenith.rgb, h) * (0.5 + 0.5 * h);
 			let radiance = CLOUD_ALBEDO * (sun * cloud_light(od, mu) + ambient);
@@ -121,8 +123,8 @@ fn cloud_march(origin: vec3f, ray: vec3f, jitter: f32, t: f32) -> Cloud {
 		}
 		s += ds;
 	}
-	let haze = smoothstep(0.15, 1.0, t0 / CLOUD_REACH);
-	c.scatter = mix(c.scatter, frame.horizon.rgb * (1.0 - c.trans), haze);
+	let haze = smoothstep(0.15, 1.0, t0 / SKY_CLOUD_REACH);
+	c.scatter = mix(c.scatter, clear * (1.0 - c.trans), haze);
 	return c;
 }
 
@@ -151,10 +153,10 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 	let ray = view_ray(i.ndc);
 	var col = sky_base(ray, frame.horizon.rgb, frame.zenith.rgb, frame.sun_dir, frame.moon_dir);
 	var trans = 1.0;
-	// The deck is opt-in (water_misc.w, DIG_CLOUDS / ?clouds) while its look is tuned.
+	// The deck rides water_misc.w: on unless DIG_NO_CLOUDS / ?noclouds drops it.
 	if frame.water_misc.w > 0.5 {
 		let jitter = sky_hash13(vec3f(floor(i.pos.xy), 0.0));
-		let cl = cloud_march(frame.cam_pos.xyz, ray, jitter, frame.light_color.w);
+		let cl = cloud_march(frame.cam_pos.xyz, ray, jitter, frame.light_color.w, col);
 		col = col * cl.trans + cl.scatter;
 		trans = cl.trans;
 	}

@@ -1,4 +1,5 @@
 use super::*;
+use crate::chunk::cell_state;
 use crate::worldgen::Seed;
 use crate::worldgen::column_shape;
 
@@ -224,7 +225,7 @@ fn expect_shape(kind: TreeKind) -> (std::ops::RangeInclusive<i32>, std::ops::Ran
 	match kind {
 		TreeKind::Blob => (4..=6, 25..=49),
 		TreeKind::TallNarrow => (6..=7, 33..=33),
-		TreeKind::Pine => (6..=7, 41..=65),
+		TreeKind::Pine => (6..=7, 41..=105),
 		TreeKind::SquatWide => (4..=5, 57..=109),
 		TreeKind::FlatTop => (4..=6, 17..=29),
 	}
@@ -239,19 +240,21 @@ fn assert_sane(t: &Tree) {
 		t.trunk_h
 	);
 	assert!(t.top() < WORLD_VBLOCK);
-	let expect_leaf = match t.kind {
-		TreeKind::Pine => BlockType::PineLeaves,
-		_ => BlockType::Leaves,
+	let expect_leaf = |b: BlockType| match t.kind {
+		TreeKind::Pine => matches!(b, BlockType::PineLeaves | BlockType::PineBoughs),
+		_ => b == BlockType::Leaves,
 	};
 	let mut wood = 0;
 	let mut leaves = 0;
-	t.for_each_block(|x, y, z, b| {
+	t.for_each_cell(|x, y, z, cell| {
+		assert!(crate::shapes::state_valid(cell), "cell {cell:#x}");
+		let b = BlockType::from_id(cell_id(cell));
 		assert!((x - t.x).abs() <= STRUCTURE_APRON, "apron x");
 		assert!((z - t.z).abs() <= STRUCTURE_APRON, "apron z");
 		assert!(y >= t.y - 1 && y < t.top(), "vertical bounds");
 		match b {
 			BlockType::Wood => wood += 1,
-			b if b == expect_leaf => leaves += 1,
+			b if expect_leaf(b) => leaves += 1,
 			other => panic!("unexpected {other:?}"),
 		}
 	});
@@ -307,6 +310,104 @@ fn conifer_and_acacia_shapes() {
 			}
 		}
 	}
+}
+
+/// A pine only narrows going up: no tier is wider than the one below it,
+/// so a wide skirt never hangs above a narrow ring. Swept over every
+/// salt pattern, since the salt picks the silhouette.
+#[test]
+fn a_pine_never_widens_going_up() {
+	let mut seen_wide = false;
+	for salt in 0..16u16 {
+		let t = Tree {
+			x: 0,
+			y: 60,
+			z: 0,
+			trunk_h: 6,
+			kind: TreeKind::Pine,
+			salt,
+		};
+		let mut radius: std::collections::BTreeMap<i32, i32> = Default::default();
+		t.for_each_cell(|x, y, z, cell| {
+			if BlockType::from_id(cell_id(cell)).is_foliage() {
+				let r = (x - t.x).abs().max((z - t.z).abs());
+				radius
+					.entry(y)
+					.and_modify(|m| *m = (*m).max(r))
+					.or_insert(r);
+			}
+		});
+		let by_height: Vec<i32> = radius.values().copied().collect();
+		assert!(
+			by_height.windows(2).all(|w| w[0] >= w[1]),
+			"salt {salt}: tier radii going up {by_height:?}"
+		);
+		seen_wide |= by_height[0] == 2;
+	}
+	assert!(seen_wide, "some pines spread at the base");
+}
+
+/// Every bough of a pine slopes away from its trunk: a wedge on a tier's
+/// edge falls toward the outside, a hip on a corner falls toward both of
+/// its outer sides, and the peak sits on the trunk top. A bough turned the
+/// wrong way would show its open back and its slope would climb toward
+/// the tree's outside, a notch in the cone. The one home of the
+/// form-and-facing convention `bough_state` and the shape file share.
+#[test]
+fn a_pines_boughs_slope_away_from_the_trunk() {
+	use crate::shapes::CanopyForm;
+	let t = Tree {
+		x: 5,
+		y: 60,
+		z: -3,
+		trunk_h: 6,
+		kind: TreeKind::Pine,
+		salt: 0x1234,
+	};
+	let top = t.y + t.trunk_h - 1;
+	let mut peak = None;
+	let mut boughs = 0;
+	t.for_each_cell(|x, y, z, cell| {
+		if BlockType::from_id(cell_id(cell)) != BlockType::PineBoughs {
+			return;
+		}
+		boughs += 1;
+		let (dx, dz) = (x - t.x, z - t.z);
+		let state = cell_state(cell);
+		let form = CanopyForm::of_state(state);
+		let (fx, fz) = Facing::from_bits(state).offset();
+		// The next facing counter-clockwise: a hip's second outer side.
+		let (gx, gz) = Facing::from_bits(state + 1).offset();
+		let r = dx.abs().max(dz.abs());
+		match form {
+			CanopyForm::Wedge => {
+				assert_ne!(dx.abs(), dz.abs(), "a wedge sits on an edge, not a corner");
+				let outward = if dx.abs() == r {
+					(dx.signum(), 0)
+				} else {
+					(0, dz.signum())
+				};
+				assert_eq!((fx, fz), outward, "wedge at ({dx},{dz}) faces the outside");
+			}
+			CanopyForm::Hip => {
+				assert_eq!(dx.abs(), dz.abs(), "a hip sits on a corner");
+				assert!(
+					fx * dx + fz * dz > 0,
+					"hip at ({dx},{dz}) first side outward"
+				);
+				assert!(
+					gx * dx + gz * dz > 0,
+					"hip at ({dx},{dz}) second side outward"
+				);
+			}
+			CanopyForm::Peak => {
+				assert_eq!((dx, y, dz), (0, top + 1, 0), "the peak caps the trunk");
+				assert!(peak.replace(y).is_none(), "one peak");
+			}
+		}
+	});
+	assert!(peak.is_some());
+	assert!(boughs > 8, "a cone of tiers, not one ring ({boughs})");
 }
 
 /// The landmark fallback may only ADD trees. Every anchor the original single-roll placement

@@ -209,7 +209,7 @@ pub fn material_of(b: BlockType) -> Material {
 		};
 	}
 	match b.dig_family() {
-		DigFamily::Rock => Material::Stone,
+		DigFamily::Rock | DigFamily::Loose => Material::Stone,
 		DigFamily::Wood => Material::Wood,
 		DigFamily::Soft | DigFamily::Fixed => Material::Earth,
 	}

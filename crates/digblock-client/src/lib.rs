@@ -15,6 +15,7 @@ mod confetti;
 mod dusk;
 mod engine;
 pub mod events;
+mod flame;
 mod font;
 mod gi;
 mod glass;

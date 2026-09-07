@@ -93,6 +93,7 @@ pub(super) fn line(msg: &Msg, binds: &crate::bindings::Bindings) -> String {
 			match f {
 				F::Fixed | F::Soft => "You can now dig the soft ground.".into(),
 				F::Wood => "You can now dig wood.".into(),
+				F::Loose => "You can now dig gravel and rubble.".into(),
 				F::Rock => "You can now dig rock.".into(),
 			}
 		}

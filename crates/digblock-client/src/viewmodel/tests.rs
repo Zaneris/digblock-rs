@@ -9,17 +9,45 @@ const ASPECT: f32 = 16.0 / 9.0;
 /// there will ever be, since they share the word.
 #[test]
 fn the_ink_bit_matches_the_shaders() {
-	let decl = format!("const ITEM_INK_BIT = {}u;", 1u32 << INK_BIT);
+	let ink = format!("const ITEM_INK_BIT = {}u;", 1u32 << INK_BIT);
+	let finish = format!("const ITEM_FINISH_SHIFT = {FINISH_SHIFT}u;");
 	for (name, src) in [
 		("viewmodel", digblock_assets::shader::VIEWMODEL),
 		("players", digblock_assets::shader::PLAYERS),
 	] {
-		assert!(src.contains(&decl), "{name}.wgsl must declare `{decl}`");
+		assert!(src.contains(&ink), "{name}.wgsl must declare `{ink}`");
+		assert!(src.contains(&finish), "{name}.wgsl must declare `{finish}`");
 	}
 	assert!(
 		u32::from(digblock_core::block::tex::COUNT) < 1u32 << INK_BIT,
 		"the layer index has to fit under the bit it shares a word with"
 	);
+}
+
+/// The block in your hand and the block on the floor are one material: every face of a held
+/// item carries the finish its texture wears in the mesher, so the two cannot disagree about
+/// which of them gleams.
+#[test]
+fn a_held_block_wears_its_placed_finish() {
+	let mut verts = Vec::new();
+	for kind in [
+		IconKind::Cube(BlockType::Metal),
+		IconKind::Shaped(BlockType::MetalStairs),
+		IconKind::Cube(BlockType::PolishedStone),
+		IconKind::Shaped(BlockType::CrystalSlab),
+		IconKind::Cube(BlockType::Stone),
+	] {
+		build(kind, &mut verts);
+		assert!(!verts.is_empty(), "{kind:?} drew nothing");
+		for v in &verts {
+			let layer = (v.layer & ((1 << INK_BIT) - 1)) as u16;
+			assert_eq!(
+				(v.layer >> FINISH_SHIFT) & 3,
+				digblock_core::block::tex::finish(layer),
+				"{kind:?}: a face's finish disagrees with its texture's"
+			);
+		}
+	}
 }
 
 /// A tool's lit part is a FACE, not the item: the geometry has to

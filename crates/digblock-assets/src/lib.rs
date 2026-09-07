@@ -3,6 +3,37 @@
 //! bundle-path logic.
 
 pub mod tex {
+	/// Separate mineral emission masks; surface PNGs remain ordinary opaque albedo.
+	pub const EMISSION_MASKS: &[(&[u8], &[u8])] = &[
+		(
+			EMBERORE,
+			include_bytes!("../../../assets/textures/EmberoreEmission.png"),
+		),
+		(
+			DUSKSTONE,
+			include_bytes!("../../../assets/textures/DuskstoneEmission.png"),
+		),
+		(
+			GLOWVEIN,
+			include_bytes!("../../../assets/textures/GlowveinEmission.png"),
+		),
+		(
+			AETHEROCK,
+			include_bytes!("../../../assets/textures/AetherockEmission.png"),
+		),
+		(
+			HEARTWOOD,
+			include_bytes!("../../../assets/textures/HeartwoodEmission.png"),
+		),
+		(
+			LEYSTONE,
+			include_bytes!("../../../assets/textures/LeystoneEmission.png"),
+		),
+		(
+			SPRINGSTONE,
+			include_bytes!("../../../assets/textures/SpringstoneEmission.png"),
+		),
+	];
 	pub const WATER: &[u8] = include_bytes!("../../../assets/textures/Water.png");
 	pub const DIRT: &[u8] = include_bytes!("../../../assets/textures/Dirt.png");
 	pub const GRASS_SIDE: &[u8] = include_bytes!("../../../assets/textures/GrassSide.png");
@@ -64,8 +95,8 @@ pub mod tex {
 	pub const PICK_GLOW: &[u8] = include_bytes!("../../../assets/textures/PickGlow.png");
 	// The four SPENT vein faces: the same rock as their tier with the
 	// flecks drained to dark inclusions, so a worked seam still reads as
-	// the seam you worked. Unlike the live rows these are drawn LIT, which
-	// is why their bodies stay at ordinary stone brightness.
+	// the seam you worked. Live and spent hosts share ordinary stone albedo;
+	// only live mineral inclusions have a separate emission mask.
 	pub const DEPLETED_EMBERORE: &[u8] =
 		include_bytes!("../../../assets/textures/DepletedEmberore.png");
 	pub const DEPLETED_DUSKSTONE: &[u8] =
@@ -275,13 +306,19 @@ pub mod shader {
 		include_str!("../../../assets/shaders/frame_common.wgsl"),
 		include_str!("../../../assets/shaders/medium_common.wgsl"),
 		include_str!("../../../assets/shaders/sky_common.wgsl"),
+		include_str!("../../../assets/shaders/fire_common.wgsl"),
+		include_str!("../../../assets/shaders/gi_dda.wgsl"),
+		include_str!("../../../assets/shaders/gi_common.wgsl"),
 		include_str!("../../../assets/shaders/ink_common.wgsl"),
+		include_str!("../../../assets/shaders/finish_common.wgsl"),
+		include_str!("../../../assets/shaders/finish_lamps.wgsl"),
 		include_str!("../../../assets/shaders/chunk.wgsl"),
 	);
 	pub const WATER: &str = concat!(
 		include_str!("../../../assets/shaders/frame_common.wgsl"),
 		include_str!("../../../assets/shaders/medium_common.wgsl"),
 		include_str!("../../../assets/shaders/sky_common.wgsl"),
+		include_str!("../../../assets/shaders/fire_common.wgsl"),
 		include_str!("../../../assets/shaders/gi_dda.wgsl"),
 		include_str!("../../../assets/shaders/gi_common.wgsl"),
 		include_str!("../../../assets/shaders/water.wgsl"),
@@ -299,6 +336,7 @@ pub mod shader {
 		include_str!("../../../assets/shaders/frame_common.wgsl"),
 		include_str!("../../../assets/shaders/medium_common.wgsl"),
 		include_str!("../../../assets/shaders/sky_common.wgsl"),
+		include_str!("../../../assets/shaders/fx_common.wgsl"),
 		include_str!("../../../assets/shaders/spray.wgsl"),
 	);
 	/// Level-up confetti. Takes the GI world bindings its spray sibling
@@ -310,8 +348,10 @@ pub mod shader {
 		include_str!("../../../assets/shaders/frame_common.wgsl"),
 		include_str!("../../../assets/shaders/medium_common.wgsl"),
 		include_str!("../../../assets/shaders/sky_common.wgsl"),
+		include_str!("../../../assets/shaders/fire_common.wgsl"),
 		include_str!("../../../assets/shaders/gi_dda.wgsl"),
 		include_str!("../../../assets/shaders/gi_common.wgsl"),
+		include_str!("../../../assets/shaders/fx_common.wgsl"),
 		include_str!("../../../assets/shaders/confetti.wgsl"),
 	);
 	/// The generic burst rack (debris/splash/sparkle/poof) — confetti's
@@ -321,8 +361,10 @@ pub mod shader {
 		include_str!("../../../assets/shaders/frame_common.wgsl"),
 		include_str!("../../../assets/shaders/medium_common.wgsl"),
 		include_str!("../../../assets/shaders/sky_common.wgsl"),
+		include_str!("../../../assets/shaders/fire_common.wgsl"),
 		include_str!("../../../assets/shaders/gi_dda.wgsl"),
 		include_str!("../../../assets/shaders/gi_common.wgsl"),
+		include_str!("../../../assets/shaders/fx_common.wgsl"),
 		include_str!("../../../assets/shaders/bursts.wgsl"),
 	);
 	/// The essence draw — the Essence Siphon's motes and face kindle. No
@@ -332,6 +374,7 @@ pub mod shader {
 	pub const SIPHON: &str = concat!(
 		include_str!("../../../assets/shaders/frame_common.wgsl"),
 		include_str!("../../../assets/shaders/medium_common.wgsl"),
+		include_str!("../../../assets/shaders/fx_common.wgsl"),
 		include_str!("../../../assets/shaders/siphon.wgsl"),
 	);
 	/// Teleport light (the cast channel, departure, arrival) and the
@@ -340,20 +383,32 @@ pub mod shader {
 	pub const TELEPORT: &str = concat!(
 		include_str!("../../../assets/shaders/frame_common.wgsl"),
 		include_str!("../../../assets/shaders/medium_common.wgsl"),
+		include_str!("../../../assets/shaders/fx_common.wgsl"),
 		include_str!("../../../assets/shaders/teleport.wgsl"),
+	);
+	pub const FLAME: &str = concat!(
+		include_str!("../../../assets/shaders/frame_common.wgsl"),
+		include_str!("../../../assets/shaders/medium_common.wgsl"),
+		include_str!("../../../assets/shaders/fx_common.wgsl"),
+		include_str!("../../../assets/shaders/fire_common.wgsl"),
+		include_str!("../../../assets/shaders/flame.wgsl"),
 	);
 	pub const WAYSTONE: &str = concat!(
 		include_str!("../../../assets/shaders/frame_common.wgsl"),
 		include_str!("../../../assets/shaders/medium_common.wgsl"),
+		include_str!("../../../assets/shaders/fx_common.wgsl"),
 		include_str!("../../../assets/shaders/waystone.wgsl"),
 	);
 	pub const PLAYERS: &str = concat!(
 		include_str!("../../../assets/shaders/frame_common.wgsl"),
 		include_str!("../../../assets/shaders/medium_common.wgsl"),
 		include_str!("../../../assets/shaders/sky_common.wgsl"),
+		include_str!("../../../assets/shaders/fire_common.wgsl"),
 		include_str!("../../../assets/shaders/gi_dda.wgsl"),
 		include_str!("../../../assets/shaders/gi_common.wgsl"),
 		include_str!("../../../assets/shaders/ink_common.wgsl"),
+		include_str!("../../../assets/shaders/finish_common.wgsl"),
+		include_str!("../../../assets/shaders/finish_lamps.wgsl"),
 		include_str!("../../../assets/shaders/players.wgsl"),
 	);
 	/// Blended glass — the Translucent mesh bucket, drawn in the water
@@ -364,6 +419,7 @@ pub mod shader {
 		include_str!("../../../assets/shaders/frame_common.wgsl"),
 		include_str!("../../../assets/shaders/medium_common.wgsl"),
 		include_str!("../../../assets/shaders/sky_common.wgsl"),
+		include_str!("../../../assets/shaders/fire_common.wgsl"),
 		include_str!("../../../assets/shaders/gi_dda.wgsl"),
 		include_str!("../../../assets/shaders/gi_common.wgsl"),
 		include_str!("../../../assets/shaders/ink_common.wgsl"),
@@ -389,11 +445,13 @@ pub mod shader {
 	pub const HOTBAR_ICONS: &str = include_str!("../../../assets/shaders/hotbar_icons.wgsl");
 	/// The first-person viewmodel. Deliberately WITHOUT the frame prelude: it is authored in view
 	/// space and carries its own projection and light rig, so the shared Frame block would only be
-	/// an unused binding it must not declare. ink_common is the one prelude it can take, and only
-	/// because it declares no bindings at all — a torch in your hand glows by the same rule as the
-	/// torch on the floor beside it, and that rule is a pure function.
+	/// an unused binding it must not declare. ink_common and finish_common are the preludes it can
+	/// take, and only because they declare no bindings at all — a torch in your hand glows, and a
+	/// metal block gleams, by the same rules as on the floor beside it, and those rules are pure
+	/// functions.
 	pub const VIEWMODEL: &str = concat!(
 		include_str!("../../../assets/shaders/ink_common.wgsl"),
+		include_str!("../../../assets/shaders/finish_common.wgsl"),
 		include_str!("../../../assets/shaders/viewmodel.wgsl"),
 	);
 	/// RTGI probe-update compute. No frame prelude: the
@@ -403,11 +461,13 @@ pub mod shader {
 	/// transmittance is the same constant the view ray uses.
 	pub const GI_PROBE: &str = concat!(
 		include_str!("../../../assets/shaders/medium_common.wgsl"),
+		include_str!("../../../assets/shaders/fire_common.wgsl"),
 		include_str!("../../../assets/shaders/gi_dda.wgsl"),
 		include_str!("../../../assets/shaders/gi_probe.wgsl"),
 	);
 	/// The voxel-window debug raymarch (`DIG_GI=window`).
 	pub const GI_DEBUG: &str = concat!(
+		include_str!("../../../assets/shaders/fire_common.wgsl"),
 		include_str!("../../../assets/shaders/gi_dda.wgsl"),
 		include_str!("../../../assets/shaders/gi_debug.wgsl"),
 	);
@@ -416,6 +476,7 @@ pub mod shader {
 	/// world bindings with water/players via the gi_common prelude.
 	pub const GI_RESOLVE: &str = concat!(
 		include_str!("../../../assets/shaders/medium_common.wgsl"),
+		include_str!("../../../assets/shaders/fire_common.wgsl"),
 		include_str!("../../../assets/shaders/gi_dda.wgsl"),
 		include_str!("../../../assets/shaders/gi_common.wgsl"),
 		include_str!("../../../assets/shaders/gi_resolve.wgsl"),
@@ -431,18 +492,34 @@ pub mod shader {
 	/// it, which is exactly the coupling these files exist to prevent.
 	/// medium_common must validate with nothing before it at all.
 	pub const MEDIUM_COMMON: &str = include_str!("../../../assets/shaders/medium_common.wgsl");
-	pub const GI_DDA: &str = include_str!("../../../assets/shaders/gi_dda.wgsl");
+	pub const GI_DDA: &str = concat!(
+		include_str!("../../../assets/shaders/fire_common.wgsl"),
+		include_str!("../../../assets/shaders/gi_dda.wgsl")
+	);
 	pub const INK_COMMON: &str = include_str!("../../../assets/shaders/ink_common.wgsl");
+	pub const FINISH_COMMON: &str = include_str!("../../../assets/shaders/finish_common.wgsl");
+	// finish_lamps reads the frame clock, the light list and the lobe, so its standalone
+	// validation carries the same stack chunk and players put ahead of it.
+	pub const FINISH_LAMPS: &str = concat!(
+		include_str!("../../../assets/shaders/frame_common.wgsl"),
+		include_str!("../../../assets/shaders/medium_common.wgsl"),
+		include_str!("../../../assets/shaders/fire_common.wgsl"),
+		include_str!("../../../assets/shaders/gi_dda.wgsl"),
+		include_str!("../../../assets/shaders/gi_common.wgsl"),
+		include_str!("../../../assets/shaders/finish_common.wgsl"),
+		include_str!("../../../assets/shaders/finish_lamps.wgsl"),
+	);
 	// gi_common consumes medium_common's depth fade (R32) as well as
 	// gi_dda's steppers, so its standalone validation carries both — the
 	// same order every real consumer already concatenates them in.
 	pub const GI_COMMON: &str = concat!(
 		include_str!("../../../assets/shaders/medium_common.wgsl"),
+		include_str!("../../../assets/shaders/fire_common.wgsl"),
 		include_str!("../../../assets/shaders/gi_dda.wgsl"),
 		include_str!("../../../assets/shaders/gi_common.wgsl"),
 	);
 
-	pub const ALL: [(&str, &str); 26] = [
+	pub const ALL: [(&str, &str); 29] = [
 		("chunk.wgsl", CHUNK),
 		("water.wgsl", WATER),
 		("glass.wgsl", GLASS),
@@ -456,6 +533,7 @@ pub mod shader {
 		("siphon.wgsl", SIPHON),
 		("teleport.wgsl", TELEPORT),
 		("waystone.wgsl", WAYSTONE),
+		("flame.wgsl", FLAME),
 		("players.wgsl", PLAYERS),
 		("highlight.wgsl", HIGHLIGHT),
 		("highlight_crack.wgsl", HIGHLIGHT_CRACK),
@@ -468,6 +546,8 @@ pub mod shader {
 		("medium_common.wgsl", MEDIUM_COMMON),
 		("gi_dda.wgsl", GI_DDA),
 		("ink_common.wgsl", INK_COMMON),
+		("finish_common.wgsl", FINISH_COMMON),
+		("finish_lamps.wgsl", FINISH_LAMPS),
 		("gi_common.wgsl", GI_COMMON),
 	];
 }
@@ -577,6 +657,33 @@ mod tests {
 				src.matches("emissive_ink(").count() >= 2,
 				"{name} takes the ink prelude but never calls it"
 			);
+		}
+	}
+
+	/// A glossy block gleams the same wherever it is drawn, for the ink rule's reason: one
+	/// definition of the lobe, and every pass that draws a finished face takes it and CALLS it.
+	/// Two occurrences at least, because the prelude's own `fn` is one of them.
+	#[test]
+	fn every_pass_that_draws_a_finish_folds_it_the_same_way() {
+		for (name, src) in [
+			("chunk", super::shader::CHUNK),
+			("viewmodel", super::shader::VIEWMODEL),
+			("players", super::shader::PLAYERS),
+		] {
+			for f in ["finish_lobe(", "finish_fresnel(", "finish_combine("] {
+				assert!(
+					src.matches(f).count() >= 2,
+					"{name} takes the finish prelude but never calls `{f}`"
+				);
+			}
+			// The two passes with a light list mirror its nearest lamps; the
+			// hand has no list and keeps the camera probe's sheen.
+			if name != "viewmodel" {
+				assert!(
+					src.matches("finish_lamps(").count() >= 2,
+					"{name} draws finished faces but never mirrors the lamps"
+				);
+			}
 		}
 	}
 

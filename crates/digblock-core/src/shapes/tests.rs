@@ -853,6 +853,227 @@ fn the_shape_grammar_rejects_malformed_input() {
 	}
 }
 
+/// A polygon the grammar takes draws as authored; one it refuses would
+/// have drawn inside out, folded, or nowhere at all.
+#[test]
+fn the_shape_grammar_reads_polygons_and_refuses_bent_ones() {
+	let head = "version 1\nshape x\ngrid 12\nstates none\nbox collision 0 0 0 12 1 12\n";
+	let ok = format!(
+		"{head}tri 0 12 0  12 0 0  12 0 12  dir=+x\nquad 0 0 0  12 0 0  12 0 12  0 0 12  dir=-y tex=METAL\n"
+	);
+	let d = def::parse(&ok).unwrap();
+	assert_eq!(d.polys.len(), 2);
+	assert_eq!(d.polys[0].dir, Dir::West);
+	assert_eq!(d.polys[1].tex, Some(crate::block::tex::METAL));
+	let text = def::emit(&d);
+	assert_eq!(
+		def::parse(&text).unwrap(),
+		d,
+		"polygons round-trip through emit"
+	);
+	for (broken, why) in [
+		("tri 0 0 0  6 0 0  12 0 0  dir=+y\n", "collinear corners"),
+		("tri 0 0 0  0 0 0  12 0 12  dir=+y\n", "repeated corner"),
+		("tri 0 12 0  12 0 0  12 0 12\n", "no dir"),
+		("tri 0 12 0  12 0 0  12 0 12  dir=up\n", "bad dir"),
+		("tri 0 13 0  12 0 0  12 0 12  dir=+x\n", "out of range"),
+		(
+			"quad 0 0 0  12 0 0  12 12 12  0 0 12  dir=-y\n",
+			"not coplanar",
+		),
+		("quad 0 0 0  12 0 12  12 0 0  0 0 12  dir=-y\n", "bowtie"),
+		(
+			"quad 0 0 0  6 0 0  12 0 0  0 0 12  dir=-y\n",
+			"three in a line",
+		),
+		(
+			"tri 0 12 0  12 0 0  12 0 12  dir=+x tex=NOPE\n",
+			"bad texture",
+		),
+	] {
+		assert!(
+			def::parse(&format!("{head}{broken}")).is_err(),
+			"accepted: {why}"
+		);
+	}
+	// The door swings boxes; a polygon has no swung pose.
+	let door = "version 1\nshape x\ngrid 12\nfootprint 1 2 1\nstates door\nbox all 1 0 0 3 12 12\ntri 0 0 0 0 12 0 0 0 12 dir=-x\n";
+	assert!(def::parse(door).is_err());
+	// A polygon may not straddle two cells of a footprint.
+	let wide = "version 1\nshape x\ngrid 12\nfootprint 2 1 1\nstates none\nbox all 0 0 0 24 1 12\ntri 0 12 0  24 0 0  24 0 12  dir=+x\n";
+	assert!(def::parse(wide).is_err());
+}
+
+/// However a polygon is authored, it winds outward: a face listed clockwise
+/// would otherwise be deleted by back-face culling and show the cell's
+/// inside instead.
+#[test]
+fn polygons_wind_outward_whichever_way_they_are_listed() {
+	for pts in [
+		vec![[0u8, 12, 0], [12, 0, 0], [12, 0, 12]],
+		vec![[12u8, 0, 12], [12, 0, 0], [0, 12, 0]],
+		vec![[0u8, 12, 0], [0, 12, 12], [12, 0, 12], [12, 0, 0]],
+		vec![[12u8, 0, 0], [12, 0, 12], [0, 12, 12], [0, 12, 0]],
+	] {
+		let src = format!(
+			"version 1\nshape x\ngrid 12\nstates none\nbox collision 0 0 0 12 1 12\n{} {} dir=+x\n",
+			if pts.len() == 3 { "tri" } else { "quad" },
+			pts.iter()
+				.map(|p| format!("{} {} {}", p[0], p[1], p[2]))
+				.collect::<Vec<_>>()
+				.join("  ")
+		);
+		let d = def::parse(&src).unwrap();
+		let v = preview_variant(&d.boxes, &d.polys, [1, 1, 1], (0, 0, 0), 0);
+		assert_eq!(v.quads.len(), 1, "a box with no visual role draws nothing");
+		let b = Baked {
+			quads: v.quads.clone(),
+			face_masks: v.face_masks,
+			occludes_full: v.occludes_full,
+			bounds: v.bounds,
+		};
+		assert_winds_outward(&b);
+		assert!(v.quads[0].is_ramp(), "a slope is a ramp to the GI");
+		assert!(!v.quads[0].boundary, "a slope is interior");
+	}
+}
+
+/// A polygon flat on the boundary it faces culls like a box face there
+/// (and hides the neighbour's), while one that only touches the plane's
+/// cells partway hides nothing it does not fully cover.
+#[test]
+fn boundary_polygons_cover_the_face_mask_exactly() {
+	let wedge = shape_of(
+		BlockType::PineBoughs,
+		canopy_state(CanopyForm::Wedge, Facing::PosX),
+	)
+	.unwrap();
+	assert!(
+		wedge.occludes_full[Dir::East as usize],
+		"the back is a full square"
+	);
+	assert!(wedge.occludes_full[Dir::Bottom as usize]);
+	assert!(
+		!wedge.occludes_full[Dir::West as usize],
+		"the slope's far edge is open"
+	);
+	// The side triangle (y <= 12 - x on the z = 0 plane) covers exactly
+	// the twelfths under its hypotenuse.
+	let side = &wedge.face_masks[Dir::South as usize];
+	for y in 0..GRID {
+		for x in 0..GRID {
+			let covered = side.0[y as usize] >> x & 1 != 0;
+			assert_eq!(covered, x + y + 2 <= GRID, "({x},{y})");
+		}
+	}
+	assert_eq!(*side, wedge.face_masks[Dir::North as usize]);
+	// Every canopy quad on a boundary plane names a rect the mesher can
+	// test, and the peak hides the trunk top under it.
+	for state in 0..16u8 {
+		let v = shape_of(BlockType::PineBoughs, state).unwrap();
+		for q in v.quads.iter().filter(|q| q.boundary) {
+			let [a0, b0, a1, b1] = q.rect;
+			assert!(a0 < a1 && a1 <= GRID && b0 < b1 && b1 <= GRID, "{q:?}");
+		}
+	}
+	let peak = shape_of(
+		BlockType::PineBoughs,
+		canopy_state(CanopyForm::Peak, Facing::PosX),
+	)
+	.unwrap();
+	assert!(peak.occludes_full[Dir::Bottom as usize]);
+	assert!(peak.bounds.max[1] <= GRID / 2, "half a cell tall");
+}
+
+/// The boughs of a tier meet edge to edge: wherever two ring cells touch,
+/// the faces they show each other are the same triangles, so the cone has
+/// no gap and no overlap along a seam — and the bough behind a needle cube
+/// hides the cube's face with a full square. Swept over the ring the
+/// decoration lays, in every facing, so a rotation slip in one form fails
+/// by name.
+#[test]
+fn a_tiers_boughs_meet_without_a_seam() {
+	use crate::decoration::bough_state;
+	let variant = |dx: i32, dz: i32| shape_of(BlockType::PineBoughs, bough_state(dx, dz)).unwrap();
+	// The boundary corners a variant shows toward `dir`, translated onto
+	// the neighbour's frame so coincident faces compare equal.
+	let faces = |v: &ShapeVariant, dir: Dir| -> Vec<[u8; 3]> {
+		let (ox, _, oz) = dir.offset();
+		let mut pts: Vec<[u8; 3]> = v
+			.quads
+			.iter()
+			.filter(|q| q.boundary && q.dir == dir)
+			.flat_map(|q| q.corners)
+			.map(|c| {
+				[
+					(i32::from(c[0]) - ox * G) as u8,
+					c[1],
+					(i32::from(c[2]) - oz * G) as u8,
+				]
+			})
+			.collect();
+		pts.sort_unstable();
+		pts.dedup();
+		pts
+	};
+	let mut seams = 0;
+	for r in [1i32, 2] {
+		for dz in -r..=r {
+			for dx in -r..=r {
+				if dx.abs().max(dz.abs()) != r {
+					continue;
+				}
+				let me = variant(dx, dz);
+				for (d, nx, nz) in [(Dir::West, dx + 1, dz), (Dir::North, dx, dz + 1)] {
+					if nx.abs().max(nz.abs()) != r {
+						continue;
+					}
+					let other = variant(nx, nz);
+					let mine = faces(me, d);
+					let theirs = {
+						let mut t: Vec<[u8; 3]> = other
+							.quads
+							.iter()
+							.filter(|q| q.boundary && q.dir == d.opposite())
+							.flat_map(|q| q.corners)
+							.collect();
+						t.sort_unstable();
+						t.dedup();
+						t
+					};
+					assert!(
+						!mine.is_empty(),
+						"({dx},{dz}) shows nothing toward ({nx},{nz})"
+					);
+					assert_eq!(mine, theirs, "seam between ({dx},{dz}) and ({nx},{nz})");
+					seams += 1;
+				}
+			}
+		}
+		// Toward the trunk (r = 1) or the needle cubes (r = 2), every
+		// rim bough's inner faces are full squares.
+		for dz in -r..=r {
+			for dx in -r..=r {
+				if dx.abs().max(dz.abs()) != r {
+					continue;
+				}
+				let v = variant(dx, dz);
+				for (d, ix, iz) in [
+					(Dir::East, dx - 1, dz),
+					(Dir::West, dx + 1, dz),
+					(Dir::South, dx, dz - 1),
+					(Dir::North, dx, dz + 1),
+				] {
+					if ix.abs().max(iz.abs()) < r {
+						assert!(v.occludes_full[d as usize], "({dx},{dz}) toward {d:?}");
+					}
+				}
+			}
+		}
+	}
+	assert!(seams >= 8 + 16, "swept every seam of both rings ({seams})");
+}
+
 #[test]
 fn the_shape_grammar_reads_roles_footprints_and_textures() {
 	use crate::block::tex;
@@ -883,10 +1104,13 @@ fn texture_overrides_split_quads_and_the_later_box_wins() {
 	// the union, but the side faces may not merge across the texture split.
 	let stone = [Some(tex::STONE); 3];
 	let metal = [Some(tex::METAL); 3];
-	let split = bake_tex(&[
-		(SubBox::new([0, 0, 0], [12, 4, 6]), stone),
-		(SubBox::new([0, 0, 6], [12, 4, 12]), metal),
-	]);
+	let split = bake_tex(
+		&[
+			(SubBox::new([0, 0, 0], [12, 4, 6]), stone),
+			(SubBox::new([0, 0, 6], [12, 4, 12]), metal),
+		],
+		&[],
+	);
 	let plain = bake(&[SubBox::new([0, 0, 0], [12, 4, 12])]);
 	assert_eq!(
 		split.face_masks, plain.face_masks,
@@ -910,10 +1134,13 @@ fn texture_overrides_split_quads_and_the_later_box_wins() {
 		assert_eq!(q.tex, want, "{q:?}");
 	}
 	// Overlap: a later box repaints the sub-cells it covers.
-	let over = bake_tex(&[
-		(SubBox::new([0, 0, 0], [12, 4, 12]), stone),
-		(SubBox::new([0, 0, 6], [12, 4, 12]), metal),
-	]);
+	let over = bake_tex(
+		&[
+			(SubBox::new([0, 0, 0], [12, 4, 12]), stone),
+			(SubBox::new([0, 0, 6], [12, 4, 12]), metal),
+		],
+		&[],
+	);
 	assert_eq!(over.quads.len(), split.quads.len());
 	for (a, b) in over.quads.iter().zip(&split.quads) {
 		assert_eq!(a, b, "overlap paints the same result as flush boxes");
@@ -1063,7 +1290,7 @@ fn preview_overrides_hijack_shape_of_and_clear() {
 		roles: def::Roles::ALL,
 		tex: [None; 3],
 	}];
-	let v = preview_variant(&list, (0, 0, 0), 0);
+	let v = preview_variant(&list, &[], [1, 1, 1], (0, 0, 0), 0);
 	assert_eq!(v.collision, vec![SubBox::new([0, 0, 0], [12, 6, 12])]);
 	assert!(!v.quads.is_empty());
 	set_preview_override(b, 5, v);
@@ -1071,7 +1298,7 @@ fn preview_overrides_hijack_shape_of_and_clear() {
 	assert_eq!(got.collision.len(), 1);
 	// A replaced override swaps in place; a slice from another cell of a
 	// footprint is empty geometry but still a variant.
-	set_preview_override(b, 5, preview_variant(&list, (1, 0, 0), 0));
+	set_preview_override(b, 5, preview_variant(&list, &[], [2, 1, 1], (1, 0, 0), 0));
 	assert!(
 		shape_of(b, 5).unwrap().quads.is_empty(),
 		"sliced past the box"

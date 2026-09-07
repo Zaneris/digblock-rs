@@ -8,21 +8,28 @@
 //! shape <name>
 //! grid 12
 //! footprint W H D                        # optional, default 1 1 1
-//! states none|facing|door|explicit <n>
+//! states none|facing|door|explicit <n>|forms <n>
 //! ramp                                   # optional; stairs' diagonal physics
 //! box <roles> x0 y0 z0 x1 y1 z1 [top=N] [side=N] [bottom=N] [all=N]
+//! tri  x y z  x y z  x y z  dir=+x [tex=N]        # visual-only sloped face
+//! quad x y z  x y z  x y z  x y z  dir=-y [tex=N] # ditto, four corners around
 //! state <k>                              # explicit model: section for state k
+//! form <k>                               # forms model: section for form k
 //! ```
 //!
 //! Coordinates are footprint-local twelfths (min inclusive, max exclusive),
 //! authored in the canonical +x facing. Roles are `all` or `+`-joined subsets
 //! of visual/collision/light/interaction. Textures are named by their
-//! `block::tex` constant, never by index. Malformed input is an `Err` here and
-//! fatal in every loader — never a silent default. `emit` is the editor's
-//! writer; parse(emit(x)) is a fixpoint (comments are not round-tripped).
+//! `block::tex` constant, never by index. Polygons draw as authored (any
+//! plane, lit and textured as the axis face `dir` names) and feed nothing but
+//! the look; boxes still carry what a body, a ray and light meet. Malformed
+//! input is an `Err` here and fatal in every loader — never a silent default.
+//! `emit` is the editor's writer; parse(emit(x)) is a fixpoint (comments are
+//! not round-tripped).
 
 use super::SubBox;
 use crate::block::{ShapeKind, ShapeStyle, tex};
+use crate::dir::Dir;
 use std::sync::LazyLock;
 
 /// Which of a variant's derived lists a box feeds. Non-empty by construction
@@ -59,15 +66,47 @@ pub struct DefBox {
 	pub tex: [Option<u16>; 3],
 }
 
+/// One authored polygon: three or four corners in perimeter order, the axis
+/// face it is lit and textured as, and a texture override (`None` = the
+/// block row's layer for that face). Visual only; winding is fixed at bake.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct DefPoly {
+	pub pts: Vec<[u8; 3]>,
+	pub dir: Dir,
+	pub tex: Option<u16>,
+}
+
 /// How a shape's state nibble maps to variants. `Door` derives all 16
 /// (facing × open × part) from one authored closed pose; `Explicit` carries
-/// one authored section per state.
+/// one authored section per state; `Forms` carries one section per FORM,
+/// each turned by the facing in the nibble's low two bits (state = form
+/// × 4 + facing).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum StateModel {
 	None_,
 	Facing,
 	Door,
 	Explicit(u8),
+	Forms(u8),
+}
+
+impl StateModel {
+	/// Authored sections this model carries (one for the derived models).
+	pub fn sections(self) -> usize {
+		match self {
+			StateModel::Explicit(n) | StateModel::Forms(n) => usize::from(n),
+			_ => 1,
+		}
+	}
+
+	/// Which authored section a state reads.
+	pub fn section_of(self, state: u8) -> usize {
+		match self {
+			StateModel::Explicit(_) => usize::from(state),
+			StateModel::Forms(_) => usize::from(state >> 2),
+			_ => 0,
+		}
+	}
 }
 
 /// A parsed `.shape` file: everything the registry bakes a family from.
@@ -76,21 +115,37 @@ pub struct ShapeDef {
 	pub name: String,
 	pub footprint: [u8; 3],
 	pub states: StateModel,
-	/// Canonical boxes (models other than `Explicit`).
+	/// Canonical boxes (models other than `Explicit` and `Forms`).
 	pub boxes: Vec<DefBox>,
-	/// `Explicit` model: one authored box list per state, in order.
+	/// `Explicit` / `Forms` models: one authored box list per section.
 	pub explicit: Vec<Vec<DefBox>>,
+	/// Canonical polygons, alongside `boxes`.
+	pub polys: Vec<DefPoly>,
+	/// One polygon list per section, alongside `explicit`.
+	pub explicit_polys: Vec<Vec<DefPoly>>,
 	pub ramp: bool,
 }
 
 impl ShapeDef {
 	/// The authored boxes for one state under this def's model (the
 	/// canonical pose for derived models; the state's own section for
-	/// `Explicit`).
+	/// `Explicit`, its form's for `Forms`).
 	pub fn state_boxes(&self, state: u8) -> &[DefBox] {
 		match self.states {
-			StateModel::Explicit(_) => &self.explicit[state as usize],
+			StateModel::Explicit(_) | StateModel::Forms(_) => {
+				&self.explicit[self.states.section_of(state)]
+			}
 			_ => &self.boxes,
+		}
+	}
+
+	/// The authored polygons for one state, chosen like [`Self::state_boxes`].
+	pub fn state_polys(&self, state: u8) -> &[DefPoly] {
+		match self.states {
+			StateModel::Explicit(_) | StateModel::Forms(_) => {
+				&self.explicit_polys[self.states.section_of(state)]
+			}
+			_ => &self.polys,
 		}
 	}
 }
@@ -125,6 +180,8 @@ struct Parser {
 	ramp: bool,
 	boxes: Vec<DefBox>,
 	explicit: Vec<Vec<DefBox>>,
+	polys: Vec<DefPoly>,
+	explicit_polys: Vec<Vec<DefPoly>>,
 }
 
 impl Parser {
@@ -194,7 +251,16 @@ impl Parser {
 						}
 						StateModel::Explicit(n)
 					}
-					_ => return Err("usage: states none|facing|door|explicit <n>".into()),
+					["forms", n] => {
+						let n: u8 = n.parse().map_err(|_| "bad form count")?;
+						if n == 0 || n > 4 {
+							return Err("form count must be 1..=4 (four facings each)".into());
+						}
+						StateModel::Forms(n)
+					}
+					_ => {
+						return Err("usage: states none|facing|door|explicit <n>|forms <n>".into());
+					}
 				});
 				Ok(())
 			}
@@ -212,25 +278,99 @@ impl Parser {
 				let Some(StateModel::Explicit(n)) = self.states else {
 					return Err("state sections need `states explicit <n>`".into());
 				};
-				let [k] = args else {
-					return Err("usage: state <k>".into());
+				self.open_section("state", n, args)
+			}
+			"form" => {
+				let Some(StateModel::Forms(n)) = self.states else {
+					return Err("form sections need `states forms <n>`".into());
 				};
-				let k: u8 = k.parse().map_err(|_| "bad state index")?;
-				if usize::from(k) != self.explicit.len() || k >= n {
-					return Err(format!(
-						"state sections must run 0..{n} in order (expected {})",
-						self.explicit.len()
-					));
-				}
-				if self.explicit.last().is_some_and(Vec::is_empty) {
-					return Err("previous state section has no boxes".into());
-				}
-				self.explicit.push(Vec::new());
-				Ok(())
+				self.open_section("form", n, args)
 			}
 			"box" => self.push_box(args),
+			"tri" => self.push_poly(3, args),
+			"quad" => self.push_poly(4, args),
 			_ => Err(format!("unknown directive `{word}`")),
 		}
+	}
+
+	/// Start section k of a sectioned model (`state k` / `form k`): they
+	/// run 0..n in order, and a section never closes empty of boxes.
+	fn open_section(&mut self, word: &str, n: u8, args: &[&str]) -> Result<(), String> {
+		let [k] = args else {
+			return Err(format!("usage: {word} <k>"));
+		};
+		let k: u8 = k.parse().map_err(|_| format!("bad {word} index"))?;
+		if usize::from(k) != self.explicit.len() || k >= n {
+			return Err(format!(
+				"{word} sections must run 0..{n} in order (expected {})",
+				self.explicit.len()
+			));
+		}
+		if self.explicit.last().is_some_and(Vec::is_empty) {
+			return Err(format!("previous {word} section has no boxes"));
+		}
+		self.explicit.push(Vec::new());
+		self.explicit_polys.push(Vec::new());
+		Ok(())
+	}
+
+	fn push_poly(&mut self, n: usize, args: &[&str]) -> Result<(), String> {
+		let Some(states) = self.states else {
+			return Err("polygon lines must come after states".into());
+		};
+		if states == StateModel::Door {
+			return Err("the door model swings boxes only; polygons are not supported".into());
+		}
+		let word = if n == 3 { "tri" } else { "quad" };
+		if args.len() < n * 3 + 1 {
+			return Err(format!(
+				"usage: {word} {}dir=±x|±y|±z [tex=NAME]",
+				"x y z  ".repeat(n)
+			));
+		}
+		let mut pts = Vec::with_capacity(n);
+		for i in 0..n {
+			pts.push([
+				coord(args[i * 3])?,
+				coord(args[i * 3 + 1])?,
+				coord(args[i * 3 + 2])?,
+			]);
+		}
+		let fp = self.footprint.unwrap_or([1, 1, 1]);
+		poly_cell(fp, &pts)?;
+		let mut dir = None;
+		let mut tex_over = None;
+		for t in &args[n * 3..] {
+			let (key, value) = t
+				.split_once('=')
+				.ok_or_else(|| format!("expected dir=… or tex=NAME, got `{t}`"))?;
+			match key {
+				"dir" => dir = Some(parse_dir(value)?),
+				"tex" => {
+					tex_over = Some(
+						tex::layer_by_name(value)
+							.ok_or_else(|| format!("unknown texture name `{value}`"))?,
+					);
+				}
+				_ => return Err(format!("unknown polygon key `{key}` (dir/tex)")),
+			}
+		}
+		let dir = dir.ok_or("polygon needs dir=±x|±y|±z")?;
+		super::poly_check(&pts).map_err(|e| format!("{word}: {e}"))?;
+		let p = DefPoly {
+			pts,
+			dir,
+			tex: tex_over,
+		};
+		match states {
+			StateModel::Explicit(_) | StateModel::Forms(_) => self
+				.explicit_polys
+				.last_mut()
+				.ok_or("polygon before the first section")?
+				.push(p),
+			_ => self.polys.push(p),
+		}
+		Ok(())
 	}
 
 	fn push_box(&mut self, args: &[&str]) -> Result<(), String> {
@@ -279,10 +419,10 @@ impl Parser {
 			tex: tex_over,
 		};
 		match states {
-			StateModel::Explicit(_) => self
+			StateModel::Explicit(_) | StateModel::Forms(_) => self
 				.explicit
 				.last_mut()
-				.ok_or("box before the first state section")?
+				.ok_or("box before the first section")?
 				.push(b),
 			_ => self.boxes.push(b),
 		}
@@ -296,15 +436,15 @@ impl Parser {
 		}
 		let states = self.states.ok_or("missing states directive")?;
 		match states {
-			StateModel::Explicit(n) => {
+			StateModel::Explicit(n) | StateModel::Forms(n) => {
 				if self.explicit.len() != usize::from(n) {
 					return Err(format!(
-						"expected {n} state sections, found {}",
+						"expected {n} sections, found {}",
 						self.explicit.len()
 					));
 				}
 				if self.explicit.last().is_some_and(Vec::is_empty) {
-					return Err("last state section has no boxes".into());
+					return Err("last section has no boxes".into());
 				}
 			}
 			_ if self.boxes.is_empty() => return Err("no boxes".into()),
@@ -321,6 +461,8 @@ impl Parser {
 			states,
 			boxes: self.boxes,
 			explicit: self.explicit,
+			polys: self.polys,
+			explicit_polys: self.explicit_polys,
 			ramp: self.ramp,
 		})
 	}
@@ -328,6 +470,64 @@ impl Parser {
 
 fn coord(tok: &str) -> Result<u8, String> {
 	tok.parse().map_err(|_| format!("bad number `{tok}`"))
+}
+
+/// The footprint cell a polygon lies in: on every axis, the cell range each
+/// corner admits (a corner on a cell boundary admits both sides), intersected
+/// over the corners. A polygon straddling two cells is refused — the bake
+/// slices a footprint per cell and cannot cut a polygon in two. A polygon
+/// lying wholly on a shared boundary plane goes to the lower cell.
+pub(super) fn poly_cell(fp: [u8; 3], pts: &[[u8; 3]]) -> Result<[u8; 3], String> {
+	let g = super::GRID;
+	let mut cell = [0u8; 3];
+	for a in 0..3 {
+		let (mut lo, mut hi) = (0u8, fp[a] - 1);
+		for p in pts {
+			if p[a] > fp[a] * g {
+				return Err("polygon corner outside the footprint".into());
+			}
+			let c_hi = (p[a] / g).min(fp[a] - 1);
+			let c_lo = if p[a] % g == 0 && p[a] > 0 {
+				p[a] / g - 1
+			} else {
+				c_hi
+			};
+			lo = lo.max(c_lo);
+			hi = hi.min(c_hi);
+		}
+		if lo > hi {
+			return Err("polygon straddles footprint cells".into());
+		}
+		cell[a] = lo;
+	}
+	Ok(cell)
+}
+
+/// Axis-face names as the grammar spells them: signed axes, never the
+/// compass words `Dir` carries (West is +x there, a trap in a text file).
+const DIR_NAMES: [(&str, Dir); 6] = [
+	("+x", Dir::West),
+	("-x", Dir::East),
+	("+y", Dir::Top),
+	("-y", Dir::Bottom),
+	("+z", Dir::North),
+	("-z", Dir::South),
+];
+
+fn parse_dir(tok: &str) -> Result<Dir, String> {
+	DIR_NAMES
+		.iter()
+		.find(|(n, _)| *n == tok)
+		.map(|&(_, d)| d)
+		.ok_or_else(|| format!("bad dir `{tok}` (+x -x +y -y +z -z)"))
+}
+
+fn dir_name(d: Dir) -> &'static str {
+	DIR_NAMES
+		.iter()
+		.find(|(_, v)| *v == d)
+		.map(|&(n, _)| n)
+		.expect("every Dir has a name")
 }
 
 fn parse_roles(tok: &str) -> Result<Roles, String> {
@@ -367,16 +567,25 @@ pub fn emit(def: &ShapeDef) -> String {
 		StateModel::Facing => writeln!(s, "states facing").unwrap(),
 		StateModel::Door => writeln!(s, "states door").unwrap(),
 		StateModel::Explicit(n) => writeln!(s, "states explicit {n}").unwrap(),
+		StateModel::Forms(n) => writeln!(s, "states forms {n}").unwrap(),
 	}
 	if def.ramp {
 		writeln!(s, "ramp").unwrap();
 	}
 	match def.states {
-		StateModel::Explicit(_) => {
+		StateModel::Explicit(_) | StateModel::Forms(_) => {
+			let word = if matches!(def.states, StateModel::Forms(_)) {
+				"form"
+			} else {
+				"state"
+			};
 			for (k, list) in def.explicit.iter().enumerate() {
-				writeln!(s, "state {k}").unwrap();
+				writeln!(s, "{word} {k}").unwrap();
 				for b in list {
 					emit_box(&mut s, b);
+				}
+				for p in def.explicit_polys.get(k).into_iter().flatten() {
+					emit_poly(&mut s, p);
 				}
 			}
 		}
@@ -384,9 +593,25 @@ pub fn emit(def: &ShapeDef) -> String {
 			for b in &def.boxes {
 				emit_box(&mut s, b);
 			}
+			for p in &def.polys {
+				emit_poly(&mut s, p);
+			}
 		}
 	}
 	s
+}
+
+fn emit_poly(s: &mut String, p: &DefPoly) {
+	use std::fmt::Write;
+	s.push_str(if p.pts.len() == 3 { "tri " } else { "quad" });
+	for c in &p.pts {
+		write!(s, "  {} {} {}", c[0], c[1], c[2]).unwrap();
+	}
+	write!(s, "  dir={}", dir_name(p.dir)).unwrap();
+	if let Some(layer) = p.tex {
+		write!(s, "  tex={}", layer_name(layer)).unwrap();
+	}
+	s.push('\n');
 }
 
 fn emit_box(s: &mut String, b: &DefBox) {
@@ -445,6 +670,10 @@ fn layer_name(layer: u16) -> &'static str {
 pub const ASSETS: &[(&str, &str)] = &[
 	("bed", include_str!("../../../../assets/shapes/bed.shape")),
 	(
+		"canopy",
+		include_str!("../../../../assets/shapes/canopy.shape"),
+	),
+	(
 		"chair",
 		include_str!("../../../../assets/shapes/chair.shape"),
 	),
@@ -482,6 +711,7 @@ pub fn kind_by_name(name: &str) -> Option<ShapeKind> {
 		"table" => ShapeKind::Table,
 		"chair" => ShapeKind::Chair,
 		"bed" => ShapeKind::Bed,
+		"canopy" => ShapeKind::Canopy,
 		_ => return None,
 	})
 }
@@ -496,6 +726,7 @@ fn kind_name(kind: ShapeKind) -> &'static str {
 		ShapeKind::Table => "table",
 		ShapeKind::Chair => "chair",
 		ShapeKind::Bed => "bed",
+		ShapeKind::Canopy => "canopy",
 	}
 }
 
@@ -519,6 +750,7 @@ fn kind_model(kind: ShapeKind) -> StateModel {
 		ShapeKind::Door => StateModel::Door,
 		ShapeKind::Slab => StateModel::Explicit(4),
 		ShapeKind::Torch | ShapeKind::Table => StateModel::None_,
+		ShapeKind::Canopy => StateModel::Forms(super::CANOPY_FORMS),
 	}
 }
 

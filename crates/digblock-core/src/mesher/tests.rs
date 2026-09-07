@@ -495,11 +495,41 @@ fn packed_vertex_roundtrip() {
 	assert_eq!((w1 >> 14) & 0xf, 0, "uv v in twelfths");
 	assert_eq!((w1 >> 18) & 1, 0, "emissive bit clear");
 	assert_eq!((w1 >> 19) & 1, 0, "tint-from-below bit clear");
-	assert_eq!(w1 >> 20, 0, "bits 20-31 are free after the repack");
+	assert_eq!((w1 >> 20) & 3, 0, "unclassified textures stay matte");
+	assert_eq!(w1 >> 22, 0, "bits 22-31 are free");
 	let lit = solid_word1(700, 12, 0, true, false);
 	assert_eq!((lit >> 18) & 1, 1, "emissive bit set");
 	let down = solid_word1(700, 12, 0, false, true);
 	assert_eq!((down >> 19) & 1, 1, "tint-from-below bit set");
+	// Shader contract: glossy finishes must neither alias one another nor change UVs/ink/tint.
+	for (layer, finish) in [
+		(crate::block::tex::POLISHED_STONE, 1),
+		(crate::block::tex::CRYSTAL, 1),
+		(crate::block::tex::METAL, 2),
+	] {
+		let word = solid_word1(u32::from(layer), 12, 12, true, true);
+		assert_eq!(
+			(word >> 20) & 3,
+			finish,
+			"chunk shader receives the surface finish"
+		);
+		assert_eq!(
+			word & 0x3ff,
+			u32::from(layer),
+			"finish must not change texture"
+		);
+		assert_eq!(
+			(word >> 10) & 0xff,
+			12 | (12 << 4),
+			"finish must not change UVs"
+		);
+		assert_eq!(
+			(word >> 18) & 3,
+			3,
+			"finish must not clear ink or door tint"
+		);
+		assert_eq!(word >> 22, 0, "finish stays inside its field");
+	}
 }
 
 /// The mesh is where a door's two halves agree to wear one tint: the upper half's every vertex

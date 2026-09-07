@@ -32,10 +32,11 @@ impl GiDraw {
 	}
 
 	/// Rebuild the flattened light list when it changed: the `cap` nearest emitters to the
-	/// selection anchor, count in the header. Order never matters to a reader, so a stale
-	/// SELECTION bites only through the truncation — "nearest to an anchor that has since left"
-	/// drops the torches around the player. Nothing is sorted: `select_lights` partitions. `cap`
-	/// is `Settings::max_lights`; the buffer and shader clamps stay sized to `MAX_LIGHTS`.
+	/// selection anchor, count in the header, nearest the eye first. The estimators never read
+	/// the order; the glossy highlight reads the head of it. A stale SELECTION bites only through
+	/// the truncation — "nearest to an anchor that has since left" drops the torches around the
+	/// player. `cap` is `Settings::max_lights`; the buffer and shader clamps stay sized to
+	/// `MAX_LIGHTS`.
 	pub(super) fn flush_lights(&mut self, gpu: &Gpu, cam: [f32; 3], lights: LightInputs<'_>) {
 		let LightInputs {
 			fwd,
@@ -120,6 +121,20 @@ impl GiDraw {
 			.filter(&in_reach)
 			.eq(self.carried.iter().copied());
 		if !self.lights_dirty && !stale && !carried_moved {
+			// The selection stands, but the eye may have walked far enough that the head of
+			// the list is no longer the lamps beside the player: re-sort what was flushed and
+			// upload it again, no reselection. Gated on a real move (RESORT_DIST) so a
+			// standing player keeps the early-out, and the list is at most MAX_LIGHTS long.
+			let d = [
+				cam[0] - self.lights_eye[0],
+				cam[1] - self.lights_eye[1],
+				cam[2] - self.lights_eye[2],
+			];
+			if d[0] * d[0] + d[1] * d[1] + d[2] * d[2] > RESORT_DIST * RESORT_DIST {
+				self.lights_eye = cam;
+				sort_nearest_eye(&mut self.light_entries, cam);
+				self.upload_lights(gpu);
+			}
 			return;
 		}
 		// Before `self.carried` is rewritten, since the tally reads it.
@@ -142,10 +157,29 @@ impl GiDraw {
 			sky_floor,
 			cap,
 		);
+		self.light_entries = all;
+		self.lights_eye = cam;
+		self.upload_lights(gpu);
+	}
+
+	/// The flushed entries to the GPU, count in the header.
+	fn upload_lights(&self, gpu: &Gpu) {
+		let all = &self.light_entries;
 		let count = all.len() as u32;
 		let mut bytes = Vec::with_capacity(16 + all.len() * 32);
 		bytes.extend_from_slice(bytemuck::cast_slice(&[count, 0, 0, 0]));
-		bytes.extend_from_slice(bytemuck::cast_slice(&all));
+		bytes.extend_from_slice(bytemuck::cast_slice(all));
 		gpu.queue.write_buffer(&self.lights_buf, 0, &bytes);
 	}
+}
+
+/// How far the eye walks before the flushed list is re-ordered for it: a couple of blocks, the
+/// scale at which "the lamps beside the player" changes in a lit hall.
+const RESORT_DIST: f32 = 2.0;
+
+/// Order light entries nearest the eye first, the order `finish_lamps` reads the head of.
+pub(super) fn sort_nearest_eye(entries: &mut [[f32; 8]], cam: [f32; 3]) {
+	let eye_d2 =
+		|e: &[f32; 8]| (e[0] - cam[0]).powi(2) + (e[1] - cam[1]).powi(2) + (e[2] - cam[2]).powi(2);
+	entries.sort_by(|a, b| eye_d2(a).total_cmp(&eye_d2(b)));
 }

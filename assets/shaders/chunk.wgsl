@@ -1,8 +1,8 @@
 // Solid chunk shader (water has its own fork — water.wgsl).
 // RTGI shading: ALL lighting arrives through the half-res GI
 // resolve buffers — probe-traced indirect plus a per-pixel DDA sun visibility.
-// This shader upsamples bilaterally and combines
-// tex * (light_color * lambert * sunvis + indirect). Nothing else LIGHTS here;
+// Glossy finishes (finish_common.wgsl) add a sun lobe and a probe-cache reflection.
+// Diffuse lighting is upsampled bilaterally;
 // the participating medium (medium_common.wgsl) is applied once at the end to
 // emissive ink and lit surfaces alike, and `block_tint` is a material property
 // that sits on the albedo rather than on the light.
@@ -16,8 +16,8 @@
 // The GI resolve outputs, both rgba16f: indirect rgb + view distance,
 // and sun visibility + face-normal code + the sun ray's water path +
 // history length.
-@group(2) @binding(0) var gi_indirect: texture_2d<f32>;
-@group(2) @binding(1) var gi_sun: texture_2d<f32>;
+@group(3) @binding(0) var resolved_indirect: texture_2d<f32>;
+@group(3) @binding(1) var resolved_sun: texture_2d<f32>;
 
 // Java normal() table order (VertTex.glsl), which is also the face code
 // order the mesher packs: W(+x), N(+z), S(-z), B(-y), T(+y), E(-x).
@@ -44,8 +44,7 @@ struct VsOut {
 	@location(2) @interpolate(flat) direct: f32,
 	// Distance to the camera — the bilateral upsample's depth guide.
 	@location(3) view_dist: f32,
-	// Stage-A emissive (the w1 flag): set means fullbright ink — the
-	// lighting terms are skipped entirely.
+	// Stage-A emissive (the w1 flag): enables the texture’s emission mask.
 	@location(4) @interpolate(flat) emissive: u32,
 	// Face-normal code (axis*2 + sign) matching gi_resolve's encoding,
 	// for the bilateral upsample's normal test.
@@ -56,11 +55,13 @@ struct VsOut {
 	// one BELOW this one. Set on a door's upper half so its two cells
 	// wear one tint.
 	@location(7) @interpolate(flat) tint_down: u32,
+	// solid_word1's finish bits: matte, polished stone, metal.
+	@location(8) @interpolate(flat) finish: u32,
 }
 
 // Packed vertex, two words: w0 carries geometry (x, y and z in TWELFTH-block units, the normal
 // index and the corner code), w1 the solid material (texture layer, uv, the emissive and
-// tint-from-below flags). Must agree with `mesher::pack` / `solid_word1`. Twelfths → blocks with
+// tint-from-below flags, and the finish). Must agree with `mesher::pack` / `solid_word1`. Twelfths → blocks with
 // the whole-block part split off in INTEGER space, so full-block lattice vertices decode exactly
 // even under fast-math — a plain float divide becomes an inexact reciprocal on some backends.
 fn twelfths(v: u32) -> f32 {
@@ -91,6 +92,7 @@ fn vs(@location(0) packed: vec2u, @location(1) origin: vec4f) -> VsOut {
 	o.view_dist = distance(world, frame.cam_pos.xyz);
 	o.emissive = (w1 >> 18u) & 1u;
 	o.tint_down = (w1 >> 19u) & 1u;
+	o.finish = (w1 >> 20u) & 3u;
 	// NORMALS order (W N S B T E) → gi_resolve's axis*2+sign code.
 	var code_of = array<u32, 6>(0u, 4u, 5u, 3u, 2u, 1u);
 	o.ncode = code_of[ni];
@@ -176,25 +178,33 @@ fn block_tint(world: vec3f, ncode: u32, tint_down: u32) -> vec3f {
 	return (1.0 + v) * vec3f(1.0 + d, 1.0, 1.0 - d);
 }
 
+// The local highlight is the probe cache read along the mirrored view ray: the nearest-probe
+// gather the resolve itself falls back to, so a torch or a vein lands as a soft reflection for
+// a few atlas taps, with no light scan and no shadow march per fragment. Probes hold
+// cosine-weighted irradiance, so the reflection is blurred to about the width polished stone
+// wants; metal reads as a soft sheen rather than a mirror.
+fn finish_reflection(p: vec3f, n: vec3f, v: vec3f) -> vec3f {
+	let r = reflect(-v, n);
+	return gi_cache_at(i32(frame.gi_misc.x), p, r, frame.cam_pos.xyz, frame.gi0, frame.gi1,
+		frame.zenith.rgb, frame.horizon.rgb);
+}
+
 @fragment
 fn fs(i: VsOut) -> @location(0) vec4f {
 	let tex = textureSample(blocks_tex, blocks_smp, i.uv, i.layer).rgb;
-	// Fullbright ink, through ink_common's shared `emissive_ink` — the ONE definition, so the
-	// same block reads identically here, in your own hand (viewmodel.wgsl) and in somebody
-	// else's (players.wgsl). This is the ink alone: `glows` and `emits` are independent block
-	// properties, so nothing here changes what a torch CASTS, only how the emitter reads.
-	var col = select(tex, emissive_ink(tex), i.emissive == 1u);
-	// Emissive ink is its own light — no sun, no GI. It still travels to
-	// the eye through the medium like everything else, which is why the
-	// branch narrowed to the lighting instead of returning early.
-	if i.emissive == 0u {
+	// The second atlas bank separates mineral emission from the lit host surface.
+	let mask = textureSample(blocks_tex, blocks_smp, i.uv,
+		i.layer + textureNumLayers(blocks_tex) / 2u).r;
+	let emission = select(0.0, mask, i.emissive == 1u);
+	var col = emissive_ink(tex);
+	if emission < 1.0 {
 		// Bilateral upsample of the reduced-res GI buffers: the 4 nearest GI texels, each
 		// weighted by view-distance proximity and a face-normal match, so lighting never
 		// bleeds across a silhouette or around a corner. The ratio is a UNIFORM, which is
 		// what lets the resolve run at a coarser fraction of the render size, and an INTEGER
 		// divisor, or the 2x2 neighbourhood `base` names drifts off the texels it weights.
 		let gi_div = max(i32(frame.misc.w), 1);
-		let dim = vec2i(textureDimensions(gi_indirect)) - 1;
+		let dim = vec2i(textureDimensions(resolved_indirect)) - 1;
 		let base = (vec2i(i.pos.xy) - gi_div / 2) / gi_div;
 		var acc = vec3f(0.0);
 		var sun_acc = 0.0;
@@ -210,8 +220,8 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 		var matched = false;
 		for (var t = 0; t < 4; t++) {
 			let c = clamp(base + vec2i(t & 1, t >> 1), vec2i(0), dim);
-			let ind = textureLoad(gi_indirect, c, 0);
-			let sn = textureLoad(gi_sun, c, 0);
+			let ind = textureLoad(resolved_indirect, c, 0);
+			let sn = textureLoad(resolved_sun, c, 0);
 			let dd = abs(ind.w - i.view_dist);
 			if dd < best_d {
 				best_d = dd;
@@ -259,7 +269,22 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 		// feeds a calibrated gain that an albedo jitter would detune.
 		let albedo = tex * block_tint(i.world, i.ncode, i.tint_down);
 		col = albedo * (frame.light_color.rgb * frame.light_dir.w * i.direct * sh + indirect);
+		if i.finish != 0u {
+			let axis = i.ncode >> 1u;
+			let n = vec3f(f32(axis == 0u), f32(axis == 1u), f32(axis == 2u))
+				* select(1.0, -1.0, (i.ncode & 1u) == 1u);
+			let v = normalize(frame.cam_pos.xyz - i.world);
+			let sun = frame.light_color.rgb * frame.light_dir.w * sh
+				* finish_lobe(n, v, -frame.light_dir.xyz, i.finish);
+			// Schlick at the view angle weights the reflection the way the lobe's own
+			// Fresnel weights the sun, so one f0 per finish prices both terms.
+			let off = i.world + n * GI_SURFACE_EPS;
+			let local = finish_fresnel(i.finish, dot(n, v)) * finish_reflection(off, n, v)
+				+ finish_lamps(off, n, v, i.finish);
+			col = finish_combine(col, tex, i.finish, sun, local);
+		}
 	}
+	col = mix(col, emissive_ink(tex), emission);
 	// The medium, from this surface to the eye. In-scatter is `sky_base`
 	// itself, so at distance the surface fades into exactly the sky pixel
 	// behind it — including the streaming rim, which is why the world's

@@ -125,7 +125,7 @@ pub fn strip_reason(view: &AlchView, item: BlockType) -> StripReason {
 	}
 	let feedstock = alchemy::craft_feedstock(item);
 	if let Some((f, more)) = feedstock.iter().find_map(|&(f, n)| {
-		let have = view.counts[f as usize];
+		let have = view.held(f);
 		(have < n).then(|| (f, n - have))
 	}) {
 		return StripReason::Short {
@@ -164,12 +164,15 @@ pub fn cost_chips(view: &AlchView, item: BlockType, locked: bool) -> Vec<Chip> {
 	};
 	let tint = |t: u32| if locked { LOCKED_TINT } else { t };
 	let feedstock = alchemy::craft_feedstock(item).into_iter().map(|(f, n)| {
-		let (kind, t) = hud::item_icon(HotbarItem::Block(f), false);
+		// The chip wears the face of what the pack would actually pay
+		// with: a line the pack covers in pine reads as pine, not as
+		// the leaves it does not hold.
+		let (kind, t) = hud::item_icon(HotbarItem::Block(view.pays_with(f)), false);
 		Chip {
 			kind,
 			tint: tint(t),
 			n,
-			ink: ink(view.counts[f as usize] < n),
+			ink: ink(view.held(f) < n),
 		}
 	});
 	let ideal = alchemy::craft_ideal(item).unwrap_or_default();
@@ -194,6 +197,22 @@ fn chip_name(chip: &Chip) -> String {
 }
 
 impl AlchView {
+	/// What the pack can pay toward a feedstock line — the same count
+	/// `apply_alchemy` checks, so the chip that reads short and the
+	/// rule that refuses are one answer.
+	pub fn held(&self, f: BlockType) -> u32 {
+		alchemy::feedstock_held(f, |b| self.counts[b as usize])
+	}
+
+	/// The block the pack would pay a line with first: the debit's own
+	/// order (`feedstock_pay_order`), so the chip wears what the craft
+	/// actually spends, not the alternate held in greatest number.
+	pub fn pays_with(&self, f: BlockType) -> BlockType {
+		alchemy::feedstock_pay_order(f)
+			.find(|&b| self.counts[b as usize] > 0)
+			.unwrap_or(f)
+	}
+
 	pub fn build(inv: &Inventory, skills_set: &SkillSet) -> Self {
 		let level = skills_set.level(Skill::Alchemy);
 		let xp = skills_set.xp(Skill::Alchemy);
@@ -235,10 +254,10 @@ impl AlchView {
 			.iter()
 			.map(|&(e, n)| self.subs[e as usize] / alchemy::craft_cost(n, self.level))
 			.min();
-		let matter = alchemy::craft_feedstock(item)
-			.iter()
-			.map(|&(f, n)| self.counts[f as usize] / n)
-			.min();
+		// The matter half as one pool, the way `apply_alchemy` checks
+		// it: lines that share a block cannot each count it.
+		let feedstock = alchemy::craft_feedstock(item);
+		let matter = alchemy::feedstock_batches(&feedstock, |b| self.counts[b as usize]);
 		essence
 			.into_iter()
 			.chain(matter)

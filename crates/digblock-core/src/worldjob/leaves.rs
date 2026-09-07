@@ -106,7 +106,11 @@ impl WorldJob for LeafDecay {
 
 	fn scope(&self) -> Scope {
 		Scope {
-			blocks: &[BlockType::Leaves, BlockType::PineLeaves],
+			blocks: &[
+				BlockType::Leaves,
+				BlockType::PineLeaves,
+				BlockType::PineBoughs,
+			],
 			radius_chunks: RADIUS_CHUNKS,
 			y: (0, WORLD_VBLOCK),
 			candidates: Candidates::Frontier {

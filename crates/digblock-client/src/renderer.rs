@@ -283,6 +283,7 @@ pub(crate) struct Renderer {
 	/// The block texture array, held for `retire` — the materials bind
 	/// group is what draws with it.
 	block_texture: wgpu::Texture,
+	block_colors: Vec<[u8; 4]>,
 	/// None when the device lacks TIMESTAMP_QUERY.
 	gpu_timer: Option<GpuTimer>,
 	/// RTGI: the voxel window, probe cascades, and the half-res resolve
@@ -319,6 +320,9 @@ pub(crate) struct Renderer {
 	/// The standing spirals over arrival pads, culled and packed by the
 	/// engine each frame.
 	waystone_fx: crate::waystone_fx::WaystoneFx,
+	flames: crate::flame::Flames,
+	flame_scratch: Vec<crate::flame::FlameInstance>,
+	flame_sites: Vec<glam::Vec3>,
 	/// Remote-player boxes (multiplayer), fed per-frame by the engine.
 	players: crate::players::RemotePlayersDraw,
 	/// Target-block outline + dig-crack decal (scene pass).

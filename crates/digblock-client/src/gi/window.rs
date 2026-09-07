@@ -6,6 +6,16 @@
 use super::*;
 
 impl GiDraw {
+	/// Visible fire follows resident torch emitters, including edits and eviction.
+	pub(crate) fn torch_sites(&self) -> impl Iterator<Item = [f32; 3]> + '_ {
+		let torch = digblock_core::gi::gi_look(BlockType::Torch as u16);
+		self.emitters
+			.values()
+			.flatten()
+			.filter(move |e| e.class == torch)
+			.map(|e| e.pos)
+	}
+
 	/// Upload one classified chunk into its toroidal window region (and
 	/// its coarse bytes, and its emitter-list slice).
 	pub(crate) fn upload_chunk(&mut self, gpu: &Gpu, pos: ChunkPos, gi: &GiChunk) {

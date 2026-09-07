@@ -351,8 +351,7 @@ impl Engine {
 	}
 
 	/// The particle half of the fan-out: which burst a moment throws.
-	/// Plain digs deliberately throw nothing — the debris chips read as
-	/// confetti, not rubble; the water and essence moments keep theirs.
+	/// Successful breaks throw material chips and dust; extraction releases essence.
 	fn spawn_particles(&mut self, ev: &crate::events::GameEvent) {
 		use crate::bursts::BurstKind;
 		use crate::events::GameEvent as E;
@@ -363,20 +362,60 @@ impl Engine {
 				scooped: true,
 				..
 			} => {
-				self.spawn_burst(BurstKind::Splash, center(cell), [0.3, 0.5, 0.8]);
+				self.spawn_splash(cell);
 			}
 			E::DigFinished {
 				cell,
 				extracted: true,
+				block,
 				..
 			} => {
 				// A drained seam releases motes, not rubble.
-				self.spawn_burst(BurstKind::Sparkle, center(cell), [1.0, 0.9, 0.5]);
+				let (tint, _) = block.node_flecks().unwrap_or(([255; 3], [255; 3]));
+				self.spawn_burst(
+					BurstKind::Sparkle,
+					center(cell),
+					tint.map(|c| f32::from(c) / 255.0),
+				);
+			}
+			E::DigFinished { cell, block, .. } => {
+				let tint = self
+					.renderer
+					.as_ref()
+					.map_or([0.35; 3], |r| r.block_color(block));
+				self.spawn_burst(BurstKind::Debris, center(cell), tint);
+				self.spawn_burst(BurstKind::Poof, center(cell), tint);
 			}
 			E::Placed { cell, poured: true } => {
-				self.spawn_burst(BurstKind::Splash, center(cell), [0.3, 0.5, 0.8]);
+				self.spawn_splash(cell);
 			}
 			_ => {}
+		}
+	}
+
+	/// Ripples only lie on a verified flat pool, never hover over a removed source.
+	fn spawn_splash(&mut self, cell: (i32, i32, i32)) {
+		let (x, y, z) = cell;
+		let flat = (-1..=1).all(|dz| {
+			(-1..=1).all(|dx| {
+				self.pipeline.cell_at(x + dx, y, z + dz).is_some_and(|c| {
+					BlockType::from_id(digblock_core::chunk::cell_id(c)).is_fluid_source()
+				}) && self
+					.pipeline
+					.cell_at(x + dx, y + 1, z + dz)
+					.is_some_and(|c| {
+						BlockType::from_id(digblock_core::chunk::cell_id(c)) == BlockType::Air
+					})
+			})
+		});
+		self.spawn_burst(
+			crate::bursts::BurstKind::Splash,
+			Vec3::from_array(cell_center(cell)),
+			[0.3, 0.5, 0.8],
+		);
+		if flat && let Some(burst) = self.vfx.bursts.last_mut() {
+			// Full-source surface is one eighth below the cell top, as corner_drop defines it.
+			burst[11] = y as f32 + 2.0 - digblock_core::player::WATER_SURFACE_DROP;
 		}
 	}
 

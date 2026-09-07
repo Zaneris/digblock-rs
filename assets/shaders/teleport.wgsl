@@ -39,13 +39,13 @@ const CH_RISE: f32 = 1.6;
 // the same reason siphon's motes are: this is concentrated light with no
 // tonemap, and the dominant channel is allowed to clip.
 const MOTE: f32 = 0.09;
-const MOTE_GAIN: f32 = 1.8;
+const MOTE_GAIN: f32 = 1.45;
 // The column of light: width, height and brightness.
 const COLUMN_W: f32 = 0.55;
 const COLUMN_H: f32 = 2.7;
 const COLUMN_GAIN: f32 = 0.85;
 // How far a mote whitens as its flight completes — a jump ENDS hot.
-const WHITE: f32 = 0.55;
+const WHITE: f32 = 0.30;
 // The kindled orb: its diameter in blocks, its brightness, the seconds
 // its fade-in takes, and its sparks — every Nth mote drifts about the orb
 // at this radius, breathing on this period.
@@ -76,6 +76,7 @@ struct VsOut {
 	@location(1) col: vec4f,
 	// Inner edge of the radial falloff (0 = the column's soft bloom).
 	@location(2) soft: f32,
+	@location(3) detail: vec2f,
 }
 
 @vertex
@@ -98,7 +99,8 @@ fn vs(
 	// Camera basis, and its horizontal half for the cylindrical column.
 	let right = normalize(vec3f(frame.view_proj[0].x, frame.view_proj[1].x, frame.view_proj[2].x));
 	let up = normalize(vec3f(frame.view_proj[0].y, frame.view_proj[1].y, frame.view_proj[2].y));
-	let right_h = normalize(vec3f(right.x, 0.0, right.z));
+	let horizontal = vec3f(right.x, 0.0, right.z);
+	let right_h = horizontal / max(length(horizontal), 0.001);
 
 	var center: vec3f;
 	var bx: vec3f;
@@ -108,6 +110,7 @@ fn vs(
 	var size_y = 0.0;
 	var weight = 0.0;
 	var soft = 0.0;
+	var shape = 0.0;
 	let ph = clamp(t / LIFE, 0.0, 1.0);
 	if mode == 3u {
 		// The orb and its sparks share one basis: camera-facing quads
@@ -123,6 +126,7 @@ fn vs(
 			col = mix(tint, vec3f(1.0), 0.6);
 			weight = ORB_GAIN * smoothstep(0.0, ORB_RISE, t);
 			soft = 0.15;
+			shape = 3.0;
 		} else {
 			// A spark per SPARK_EVERY motes; the rest carry no weight and
 			// collapse below. Each drifts a slow orbit with its own bob.
@@ -138,6 +142,17 @@ fn vs(
 			weight = 0.5 * sin(3.1416 * mph) * smoothstep(0.0, ORB_RISE, t) * is_spark;
 			soft = 0.45;
 		}
+	} else if pi == 1u {
+		// A floor-plane ring gathers inward during a cast and expands on arrival.
+		bx = vec3f(1.0, 0.0, 0.0);
+		by = vec3f(0.0, 0.0, 1.0);
+		center = origin + vec3f(0.0, 0.025, 0.0);
+		let radius = select(mix(1.8, 0.15, ph), mix(0.15, 2.2, ph), mode == 1u);
+		size_x = select(radius, 1.4 - 0.5 * t, mode == 2u);
+		size_y = size_x;
+		weight = select(sin(ph * 3.14159265), 0.3 + 0.5 * t, mode == 2u);
+		col = mix(tint, vec3f(1.0), 0.25);
+		shape = 2.0;
 	} else if pi == 0u {
 		// The column: a cylindrical billboard standing on the feet. Its
 		// life differs per mode — a departure swells into it and dies on
@@ -145,7 +160,8 @@ fn vs(
 		center = origin + vec3f(0.0, COLUMN_H * 0.5, 0.0);
 		bx = right_h;
 		by = vec3f(0.0, 1.0, 0.0);
-		size_x = COLUMN_W;
+		shape = 1.0;
+		size_x = COLUMN_W * select(1.0 - ph * 0.7, 0.4 + ph, mode == 1u);
 		size_y = COLUMN_H;
 		var strength = 0.0;
 		if mode == 0u {
@@ -159,6 +175,7 @@ fn vs(
 		weight = COLUMN_GAIN * strength;
 		soft = 0.0;
 	} else {
+		shape = select(-1.0, 0.0, pi % 5u == 0u);
 		let seed = seed0 + f32(pi) * 37.719;
 		let base_ang = hash1(seed) * 6.2832;
 		var ang = 0.0;
@@ -169,7 +186,7 @@ fn vs(
 			// The standing wind: motes climb a fixed helix forever, the
 			// wind rate and brightness riding the cast's progress.
 			let mph = fract(clock / CH_RISE + hash1(seed + 3.0));
-			ang = base_ang + clock * (1.5 + 2.5 * t);
+			ang = f32(pi % 3u) * 2.0944 + mph * 5.0 + clock * (1.5 + 2.5 * t);
 			rad = CH_RADIUS * (1.0 - 0.12 * sin(clock * 2.0 + seed));
 			h = CH_HEIGHT * mph;
 			strength = sin(3.1416 * mph) * (0.3 + 0.7 * t);
@@ -195,7 +212,7 @@ fn vs(
 		bx = right;
 		by = up;
 		size_x = MOTE;
-		size_y = MOTE;
+		size_y = MOTE * (1.5 + strength);
 		col *= MOTE_GAIN;
 		weight = strength;
 		soft = 0.45;
@@ -228,13 +245,26 @@ fn vs(
 	o.uv = corner + 0.5;
 	o.col = vec4f(col * tr, weight);
 	o.soft = soft;
+	o.detail = vec2f(shape, clock * 1.570796 + seed0);
 	return o;
 }
 
 @fragment
 fn fs(i: VsOut) -> @location(0) vec4f {
-	// Procedural soft disc for motes; the column takes the softest edge
-	// and fades along its own height through the same falloff.
-	let d = length(i.uv - 0.5) * 2.0;
-	return vec4f(i.col.rgb, i.col.a * smoothstep(1.0, i.soft, d));
+	let pixel = max(length(fwidth(i.uv)) * 2.0, 0.008);
+	let p = (i.uv - 0.5) * 2.0;
+	var mask = mix(1.0 - smoothstep(0.05, 1.0, length(p)), fx_glint(p, pixel), step(-0.5, i.detail.x));
+	if i.detail.x > 2.5 {
+		let core = 1.0 - smoothstep(0.15, 0.55, length(p));
+		let shell = fx_ring(p, 0.78, 0.035, pixel) * (0.45 + 0.25 * sin(atan2(p.y, p.x) * 3.0 + i.detail.y));
+		mask = core + shell;
+	} else if i.detail.x > 1.5 {
+		let angle = atan2(p.y, p.x);
+		mask = fx_ring(p, 0.8, 0.04, pixel) * (0.55 + 0.45 * smoothstep(-0.5, 0.5, cos(angle * 8.0 - i.detail.y)));
+	} else if i.detail.x > 0.5 {
+		let filament = 1.0 - smoothstep(0.0, 0.1, abs(p.x + sin(p.y * 9.0 + i.detail.y) * 0.06));
+		mask = (filament * 0.6 + (1.0 - smoothstep(0.0, 1.0, abs(p.x))) * 0.3)
+			* (1.0 - smoothstep(0.55, 1.0, abs(p.y)));
+	}
+	return vec4f(i.col.rgb, i.col.a * mask);
 }

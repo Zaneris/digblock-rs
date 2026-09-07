@@ -49,6 +49,7 @@ struct VsOut {
 	@location(0) uv: vec2f,
 	// rgb premixed (lit + fogged), a = billboard alpha.
 	@location(1) col: vec4f,
+	@location(2) detail: vec2f,
 }
 
 @vertex
@@ -61,6 +62,7 @@ fn vs(@builtin(vertex_index) vi: u32, @location(0) inst: vec4f) -> VsOut {
 	var center: vec3f;
 	var size = vec2f(0.0);
 	var alpha = 0.0;
+	var velocity = vec3f(0.0, 1.0, 0.0);
 	if pi < MIST_N {
 		// Mist: soft slabs jittered around the splash. Alpha varies per slab but NOT over time —
 		// breathing on offset clocks made the impact read as a pulse, and the droplets carry the
@@ -73,6 +75,7 @@ fn vs(@builtin(vertex_index) vi: u32, @location(0) inst: vec4f) -> VsOut {
 				0.4 + 0.55 * stack,
 				(hash1(seed + 12.0) - 0.5) * 1.6,
 			);
+		center += vec3f(sin(t * 0.785398 + seed), 0.12 * sin(t * 1.570796 + seed), cos(t * 0.785398 + seed)) * 0.16;
 		size = vec2f(2.2, 1.6);
 		alpha = 0.10 + 0.06 * hash1(seed + 13.0);
 	} else {
@@ -87,14 +90,23 @@ fn vs(@builtin(vertex_index) vi: u32, @location(0) inst: vec4f) -> VsOut {
 		let t01 = fract(t / LIFE + hash1(seed + 3.0));
 		let tau = t01 * LIFE;
 		center = inst.xyz + v0 * tau + vec3f(0.0, -9.0, 0.0) * (0.5 * tau * tau);
-		size = vec2f(mix(0.06, 0.17, t01));
+		velocity = v0 + vec3f(0.0, -9.0 * tau, 0.0);
+		size = vec2f(mix(0.05, 0.10, t01), mix(0.05, 0.10, t01) * (1.0 + length(velocity) * 0.3));
 		alpha = (1.0 - t01) * smoothstep(0.0, 0.12, t01) * 0.7;
 	}
 	// Camera-facing: rows 0/1 of P·V are the scaled view basis rows —
 	// safe to renormalize for a standard perspective projection.
 	let right = normalize(vec3f(frame.view_proj[0].x, frame.view_proj[1].x, frame.view_proj[2].x));
 	let up = normalize(vec3f(frame.view_proj[0].y, frame.view_proj[1].y, frame.view_proj[2].y));
-	let world = center + right * (corner.x * size.x) + up * (corner.y * size.y);
+	var bx = right;
+	var by = up;
+	if pi >= MIST_N {
+		let v = vec2f(dot(velocity, right), dot(velocity, up));
+		let tangent = v / max(length(v), 0.001);
+		bx = right * tangent.y - up * tangent.x;
+		by = right * tangent.x + up * tangent.y;
+	}
+	let world = center + bx * (corner.x * size.x) + by * (corner.y * size.y);
 	// Distance fade matches the CPU cull radius (spray.rs SPRAY_RADIUS)
 	// so emitters never pop.
 	let dist = distance(world, frame.cam_pos.xyz);
@@ -122,12 +134,16 @@ fn vs(@builtin(vertex_index) vi: u32, @location(0) inst: vec4f) -> VsOut {
 	o.pos = frame.view_proj * vec4f(world, 1.0);
 	o.uv = corner + 0.5;
 	o.col = vec4f(lit, alpha);
+	o.detail = vec2f(f32(pi < MIST_N), t * 1.570796 + seed);
 	return o;
 }
 
 @fragment
 fn fs(i: VsOut) -> @location(0) vec4f {
-	// Procedural soft circle — no texture.
-	let d = length(i.uv - 0.5) * 2.0;
-	return vec4f(i.col.rgb, i.col.a * smoothstep(1.0, 0.55, d));
+	let p = (i.uv - 0.5) * 2.0;
+	let drop = 1.0 - smoothstep(0.5, 1.0, length(p));
+	let mist = fx_puff(p, i.detail.y);
+	let highlight = 1.0 - smoothstep(0.0, 0.25, length(p - vec2f(-0.2, 0.3)));
+	let shade = mix(0.85 + 0.5 * highlight, 1.0, i.detail.x);
+	return vec4f(i.col.rgb * shade, i.col.a * mix(drop, mist, i.detail.x));
 }

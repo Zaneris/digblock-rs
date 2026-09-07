@@ -235,6 +235,13 @@ const GI_LIGHT_WHITEN = 0.35;
 // reservoir is a pass over the whole list per pixel. Punctual entries leave this clear.
 const GI_LIGHT_QUAD = 16384u;
 
+// q.w is a visual-only fire tag, independent of the packed class and geometry.
+fn gi_fire_gain(l: vec4f, q: vec4f, clock: f32) -> f32 {
+	if q.w < 0.5 { return 1.0; }
+	let carried = (bitcast<u32>(l.w) & GI_LIGHT_CARRIED) != 0u;
+	return fire_gain(clock, select(fire_seed(l.xyz), 0.0, carried));
+}
+
 fn gi_light_class(w: f32) -> u32 {
 	return bitcast<u32>(w) & 255u;
 }

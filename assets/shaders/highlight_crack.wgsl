@@ -127,6 +127,7 @@ fn fs(in: VsOut) -> @location(0) vec4f {
 	let p = base.p;
 	let px = base.px;
 	var alpha = base.alpha;
+	var lip = 0.0;
 	let progress = in.data.x;
 	// TWO seeds. `cseed` is the cell — it picks HOW this block fails, and
 	// all six faces share it. `seed` adds the face, and places the actual
@@ -205,7 +206,8 @@ fn fs(in: VsOut) -> @location(0) vec4f {
 				// nothing at the tip; deeper generations are finer.
 				let taper = 1.0 - 0.20 * clamp(t / arc, 0.0, 1.0);
 				let w = wide * taper / (1.0 + 0.55 * f32(gen));
-				let hw = max(w * (0.5 + 0.5 * progress), px);
+				let hw = max(w * (0.5 + 0.5 * progress + 0.3 * smoothstep(0.75, 1.0, progress)), px);
+				lip = max(lip, (1.0 - smoothstep(hw, hw + px * 2.5, d)) * 0.22);
 				crack = max(crack, 1.0 - smoothstep(max(hw - px, 0.0), hw + px, d));
 				// Fork, once growth has actually reached this joint. The
 				// child's `t0` is the joint's arc, so a joint beyond the
@@ -227,5 +229,6 @@ fn fs(in: VsOut) -> @location(0) vec4f {
 		}
 		alpha = max(alpha, crack * (0.45 + 0.35 * progress));
 	}
-	return vec4f(0.0, 0.0, 0.0, alpha);
+	let edge = lip * (1.0 - alpha);
+	return vec4f(vec3f(edge * 0.65), max(alpha, edge));
 }

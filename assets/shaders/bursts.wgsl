@@ -4,7 +4,7 @@
 // those) extended with a KIND lane and an instance color, so a new
 // polish effect is a match arm here rather than a sixth module. One
 // instance per live burst: [pos.xyz, age][seed, kind, life, size]
-// [color.rgb, 0]; vertex_index picks the particle (vi / 6) and the quad
+// [color.rgb, surface_y + 1 (zero when absent)]; vertex_index picks the particle (vi / 6) and the quad
 // corner (vi % 6). Every kind's alpha reaches zero exactly at its
 // `life`, so the CPU dropping the burst there can never cut a particle.
 
@@ -73,6 +73,7 @@ struct VsOut {
 	@location(1) col: vec4f,
 	// x = kind (the fragment picks a square or a round footprint).
 	@location(2) kind_lane: vec2f,
+	@location(3) phase: vec2f,
 }
 
 @vertex
@@ -89,10 +90,11 @@ fn vs(
 	let life = inst2.z;
 	let seed = inst2.x + f32(pi) * 17.311;
 	let live = pi < kind_count(kind);
+	let ripple = kind == KIND_SPLASH && pi < 2u && inst3.w > 0.0;
 
 	// Launch + arc, per kind. Debris and splash are ballistic (real
 	// gravity — stone is not paper); sparkle drifts; poof billows.
-	let az = hash1(seed) * 6.2832;
+	let az = select(hash1(seed) * 6.2832, f32(pi) * 0.785398, kind == KIND_SPLASH && pi < 10u);
 	let radial = vec3f(cos(az), 0.0, sin(az));
 	var v0 = vec3f(0.0);
 	var grav = 0.0;
@@ -100,6 +102,7 @@ fn vs(
 		case KIND_SPLASH: {
 			v0 = radial * (1.2 + 2.0 * hash1(seed + 1.0))
 				+ vec3f(0.0, 2.6 + 1.6 * hash1(seed + 2.0), 0.0);
+			if pi < 10u { v0 = radial * 1.7 + vec3f(0.0, 1.8, 0.0); }
 			grav = -14.0;
 		}
 		case KIND_SPARKLE: {
@@ -116,7 +119,10 @@ fn vs(
 			grav = -9.0;
 		}
 	}
-	let center = inst.xyz + v0 * age + vec3f(0.0, 0.5 * grav * age * age, 0.0);
+	var center = inst.xyz + v0 * age + vec3f(0.0, 0.5 * grav * age * age, 0.0);
+	if kind == KIND_POOF {
+		center += radial * sin(age * 3.0 + az) * age * 0.15;
+	}
 
 	// Footprint, per kind, scaled by the instance size lane. Debris
 	// tumbles like confetti (one cos on the width); poof grows.
@@ -125,21 +131,26 @@ fn vs(
 	switch kind {
 		case KIND_SPLASH: {
 			let s = 0.03 + 0.03 * hash1(seed + 3.0);
-			size = vec2f(s, s * 1.6);
+			let speed = length(v0 + vec3f(0.0, grav * age, 0.0));
+			size = vec2f(s, s * (1.0 + speed * 0.35));
+			let right = normalize(vec3f(frame.view_proj[0].x, frame.view_proj[1].x, frame.view_proj[2].x));
+			let up = normalize(vec3f(frame.view_proj[0].y, frame.view_proj[1].y, frame.view_proj[2].y));
+			let velocity = v0 + vec3f(0.0, grav * age, 0.0);
+			roll = -atan2(dot(velocity, right), dot(velocity, up));
 		}
 		case KIND_SPARKLE: {
 			let s = 0.035 + 0.03 * hash1(seed + 3.0);
 			size = vec2f(s, s);
 		}
 		case KIND_POOF: {
-			let s = 0.12 + 0.35 * (age / life);
+			let s = 0.14 + 0.42 * sqrt(clamp(age / life, 0.0, 1.0));
 			size = vec2f(s, s);
 			roll = hash1(seed + 5.0) * 6.2832;
 		}
 		default: { // debris
 			let spin = 6.0 + 8.0 * hash1(seed + 3.0);
 			let tumble = abs(cos(spin * age + hash1(seed + 4.0) * 6.2832));
-			let s = 0.055 + 0.05 * hash1(seed + 6.0);
+			let s = 0.035 + 0.095 * pow(hash1(seed + 6.0), 2.0);
 			size = vec2f(s * (0.25 + 0.75 * tumble), s);
 			roll = spin * 0.4 * age + hash1(seed + 5.0) * 6.2832;
 		}
@@ -154,7 +165,12 @@ fn vs(
 	// Camera-facing, same basis extraction as spray/confetti.
 	let right = normalize(vec3f(frame.view_proj[0].x, frame.view_proj[1].x, frame.view_proj[2].x));
 	let up = normalize(vec3f(frame.view_proj[0].y, frame.view_proj[1].y, frame.view_proj[2].y));
-	let world = center + right * local.x + up * local.y;
+	var world = center + right * local.x + up * local.y;
+	if ripple {
+		let phase = clamp(age / life - f32(pi) * 0.16, 0.0, 1.0);
+		center = vec3f(inst.x, inst3.w - 1.0 + 0.012, inst.z);
+		world = center + vec3f(corner.x, 0.0, corner.y) * (0.1 + 1.5 * phase);
+	}
 
 	// The end fade reaches zero EXACTLY at `life` for every kind; the
 	// pop-in keeps the first frame from being a solid disc in a head.
@@ -188,10 +204,11 @@ fn vs(
 	let gmax = gi_lateral_max(frame.gi_misc.x);
 	if dot(lat, lat) <= gmax * gmax && !stubbed(STUB_GINEE) {
 		nee = sum_lights(
-			i32(frame.gi_misc.x), frame.gi_misc.y, frame.cam_pos.xz, center, vec3f(0.0),
+			i32(frame.gi_misc.x), frame.gi_misc.y, frame.cam_pos.xz, center, vec3f(0.0), frame.light_color.w,
 		);
 	}
-	let col = tint * (cam_light.ambient.rgb + frame.light_color.rgb * 0.8 * sh + nee);
+	let lighting = cam_light.ambient.rgb + frame.light_color.rgb * 0.8 * sh + nee;
+	let col = tint * select(lighting, vec3f(1.0), kind == KIND_SPARKLE);
 	let ray = normalize(world - frame.cam_pos.xyz);
 	let sky = sky_base(ray, frame.horizon.rgb, frame.zenith.rgb, frame.sun_dir, frame.moon_dir);
 	let lit = medium_view(
@@ -207,23 +224,33 @@ fn vs(
 	o.pos = frame.view_proj * vec4f(world, 1.0);
 	o.uv = corner + 0.5;
 	o.col = vec4f(lit, alpha * f32(live));
-	o.kind_lane = vec2f(f32(kind), 0.0);
+	o.kind_lane = vec2f(select(f32(kind), 4.0, ripple), hash1(seed + 9.0));
+	o.phase = vec2f(age / life, az);
 	return o;
 }
 
 @fragment
 fn fs(i: VsOut) -> @location(0) vec4f {
+	let pixel = max(length(fwidth(i.uv)) * 2.0, 0.008);
 	let kind = u32(i.kind_lane.x);
-	var a = i.col.a;
-	if kind == KIND_DEBRIS {
-		// A chip is a rectangle with barely-softened edges, like paper.
-		let d = max(abs(i.uv.x - 0.5), abs(i.uv.y - 0.5)) * 2.0;
-		a *= smoothstep(1.0, 0.88, d);
+	let p = (i.uv - 0.5) * 2.0;
+	var mask = 0.0;
+	var col = i.col.rgb;
+	if kind == 4u {
+		mask = fx_ring(p, 0.8, 0.035, pixel) * (1.0 - i.phase.x);
+	} else if kind == KIND_DEBRIS {
+		let chip = max(max(abs(p.x), abs(p.y)), abs(p.x + p.y * 0.7) * 0.8);
+		mask = fx_edge(chip, 0.9, pixel);
+		col *= 0.72 + 0.28 * smoothstep(-0.15, 0.05, p.x - p.y * 0.5 + i.kind_lane.y * 0.3);
+	} else if kind == KIND_SPARKLE {
+		mask = mix(fx_glint(p, pixel), 1.0 - smoothstep(0.1, 1.0, length(p)), step(0.6, i.kind_lane.y));
+	} else if kind == KIND_POOF {
+		mask = fx_puff(p, i.phase.x * 2.0 + i.phase.y);
+		mask *= 1.0 - smoothstep(0.35, 1.0, i.phase.x);
 	} else {
-		// Droplets, motes and puffs are round; poof gets the softest rim.
-		let d = length(i.uv - vec2f(0.5)) * 2.0;
-		let inner = select(0.7, 0.15, kind == KIND_POOF);
-		a *= 1.0 - smoothstep(inner, 1.0, d);
+		mask = 1.0 - smoothstep(0.65, 1.0, length(p));
+		let glint = 1.0 - smoothstep(0.0, 0.25, length(p - vec2f(-0.22, 0.3)));
+		col *= 0.8 + glint * 0.7;
 	}
-	return vec4f(i.col.rgb, a);
+	return vec4f(col, i.col.a * mask);
 }

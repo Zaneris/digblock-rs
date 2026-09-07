@@ -7,7 +7,9 @@ import { test, expect, expectRendered, diff, detail, stats } from "./fixtures.mj
 const STEP_MS = 400;
 
 test("a capture run reaches its frame count and renders terrain", async ({ dig }) => {
-	const d = await dig({ seed: 7, tod: 60, frames: 90, fixeddt: 1 / 60 });
+	// No cloud deck: the measure below takes the sky as the smooth band the
+	// terrain has to out-texture, and clouds are texture the world did not draw.
+	const d = await dig({ seed: 7, tod: 60, frames: 90, fixeddt: 1 / 60, noclouds: true });
 	await d.exit();
 	const png = await d.shot(test.info().outputPath("terrain.png"));
 	expectRendered(png);
@@ -27,7 +29,7 @@ test("a capture run reaches its frame count and renders terrain", async ({ dig }
 test("the scenes the desktop can pose, the browser can pose", async ({ dig }) => {
 	// Each arm is a query-only knob the page had no spelling for before
 	// knobs::ALL; a typo in the table reaches the console as a panic.
-	for (const params of [{ vault: true }, { node: "leystone" }, { screen: "alchemy" }, { screen: "spellbook" }, { screen: "skills" }, { screen: "hiscores" }, { ore: 2, siphon: 50 }]) {
+	for (const params of [{ vault: true }, { node: "leystone" }, { screen: "alchemy" }, { screen: "spellbook" }, { screen: "skills" }, { screen: "hiscores" }, { ore: 2, siphon: 50, pitch: 10 }, { vault: true, screen: "torch", playerbox: "torch" }, { fx: 25 }, { fx: 75 }, { bursts: true }, { confetti: true }, { spray: true }, { noclouds: true }]) {
 		const d = await dig({ seed: 7, frames: 45, ...params });
 		await d.exit();
 		expectRendered(await d.shot(test.info().outputPath(`${Object.keys(params).join("-")}.png`)), JSON.stringify(params));
@@ -96,18 +98,30 @@ test("the shape editor boots, loads a built-in, and draws its panel", async ({ d
 	expect(panel, `the panel corner (${panel.toFixed(2)}) should be busier than the opposite one (${sky.toFixed(2)})`)
 		.toBeGreaterThan(sky * 2);
 	// Enter loads the selected built-in (the roster's first, the bed): the
-	// sculpted preview lands on the pad through the game's own mesher, so
-	// the flat pad under the object's footprint gains its lit faces. The
-	// box is the FOOTPRINT, not the whole pad: under the editor's frozen
-	// afternoon sun the pad itself is bright, and a box mostly made of pad
-	// would measure the sun rather than the object.
+	// sculpted preview lands on the pad through the game's own mesher. A
+	// material palette may draw it brighter or darker than the pad, so the
+	// proof is structure, not luminance: the flat pad under the footprint
+	// gains edges, and the pad BESIDE it does not move, so a toast or a
+	// camera settle (which touch the whole frame) cannot pass for a shape.
+	// The pad, not the sky: the horizon is still streaming chunks in and
+	// clouds drift, motion the editor did not make.
 	const mid = { region: [Math.round(w * 0.45), Math.round(h * 0.56), Math.round(w * 0.55), Math.round(h * 0.74)] };
-	const flat = stats(png, mid).mean;
+	const side = { region: [Math.round(w * 0.05), Math.round(h * 0.6), Math.round(w * 0.3), Math.round(h * 0.8)] };
+	await d.page.waitForTimeout(800);
+	const before = await d.shot();
+	const drift = diff(png, before, mid);
+	const flat = detail(before, mid);
 	await d.keys("Enter");
 	await d.page.waitForTimeout(800);
 	png = await d.shot(test.info().outputPath("editor-loaded.png"));
-	const loaded = stats(png, mid).mean;
-	expect(loaded, `the pad (${flat.toFixed(1)}) should brighten under the loaded shape (${loaded.toFixed(1)})`)
-		.toBeGreaterThan(flat * 1.2);
+	expect(diff(before, png, mid), "loading a shape must change its footprint beyond idle drift")
+		.toBeGreaterThan(drift * 4 + 4);
+	const loaded = detail(png, mid);
+	// The bed is low and flat, so its edges roughly triple the pad's own
+	// grain; doubling is the bar, with room for a palette that draws softer.
+	expect(loaded, `the footprint (${flat.toFixed(2)}) should gain the shape's edges (${loaded.toFixed(2)})`)
+		.toBeGreaterThan(flat * 2);
+	expect(diff(before, png, side), "the pad beside the footprint must not move: the change is the shape, not the frame")
+		.toBeLessThan(drift * 4 + 4);
 	expect(d.trouble(), "console trouble").toEqual([]);
 });

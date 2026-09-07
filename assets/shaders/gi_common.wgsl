@@ -793,7 +793,7 @@ const GI_OMNI_COS = 0.5;
 // the reservoir that SELECTS on it and the `sum_lights` that PAYS it cannot disagree about what a
 // torch is worth. Only the level is read per candidate; the tint is fetched per WINNER. `n` is the
 // receiver's normal, and a receiver with none passes the ZERO vector (see `GI_OMNI_COS`).
-fn gi_light_score(l: vec4f, q: vec4f, p: vec3f, n: vec3f) -> f32 {
+fn gi_light_score(l: vec4f, q: vec4f, p: vec3f, n: vec3f, clock: f32) -> f32 {
 	let d = l.xyz - p;
 	let dist2 = dot(d, d);
 	if dist2 > LIGHT_RANGE * LIGHT_RANGE || dist2 < 1e-4 {
@@ -815,10 +815,10 @@ fn gi_light_score(l: vec4f, q: vec4f, p: vec3f, n: vec3f) -> f32 {
 	// on the winner, and a RIS target may be approximate: it decides which
 	// light is picked, never what the pick is worth.
 	let ctr = gi_light_sample(l, q, p, 0.5, 0.5);
-	return emit * ndl * ctr.w / max(dist2, LIGHT_NEAR * LIGHT_NEAR);
+	return emit * gi_fire_gain(l, q, clock) * ndl * ctr.w / max(dist2, LIGHT_NEAR * LIGHT_NEAR);
 }
 
-fn resample_light(p: vec3f, n: vec3f, seed: u32) -> NeeLight {
+fn resample_light(p: vec3f, n: vec3f, seed: u32, clock: f32) -> NeeLight {
 	var out: NeeLight;
 	out.valid = false;
 	let count = min(bitcast<u32>(lights[0].x), 256u);
@@ -838,7 +838,7 @@ fn resample_light(p: vec3f, n: vec3f, seed: u32) -> NeeLight {
 		// a surface emitter radiates from (zero for a point source).
 		let l = lights[i * 2u - 1u];
 		let q = lights[i * 2u];
-		let score = gi_light_score(l, q, p, n);
+		let score = gi_light_score(l, q, p, n, clock);
 		if score <= 0.0 {
 			continue;
 		}
@@ -890,7 +890,7 @@ const GI_NEE_TAPS = 4u;
 // brightest `GI_NEE_TAPS` candidates with a ray EACH — one binary visibility sample on the whole
 // pool is right in front of a temporal filter and wrong in front of nothing. Deterministic, and
 // selected on SCORE rather than list order; the bias it trades a dither for is the dimmest tail.
-fn sum_lights(side: i32, sky_y: f32, cam_xz: vec2f, p: vec3f, n: vec3f) -> vec3f {
+fn sum_lights(side: i32, sky_y: f32, cam_xz: vec2f, p: vec3f, n: vec3f, clock: f32) -> vec3f {
 	let count = min(bitcast<u32>(lights[0].x), 256u);
 	// The ladder: scores in descending order and the entries they came
 	// from. An insertion this short beats sorting the list, and unlike a
@@ -898,7 +898,7 @@ fn sum_lights(side: i32, sky_y: f32, cam_xz: vec2f, p: vec3f, n: vec3f) -> vec3f
 	var best = array<f32, GI_NEE_TAPS>();
 	var pick = array<u32, GI_NEE_TAPS>();
 	for (var i = 1u; i <= count; i++) {
-		let score = gi_light_score(lights[i * 2u - 1u], lights[i * 2u], p, n);
+		let score = gi_light_score(lights[i * 2u - 1u], lights[i * 2u], p, n, clock);
 		if score <= 0.0 {
 			continue;
 		}

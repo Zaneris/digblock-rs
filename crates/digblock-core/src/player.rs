@@ -69,6 +69,15 @@ const SWIM_THRESHOLD: f32 = 0.5;
 /// threshold or the window is unreachable; the band [threshold, this]
 /// is what a surfacing swimmer rises through.
 const BREACH_SUBMERSION: f32 = 0.62;
+/// The float line: this far above the swim threshold, an upward LOOK stops lifting the swimmer.
+/// Aimed up at the surface, the swim target used to carry the capsule through the threshold, the
+/// dry branch dropped it straight back, and the two traded the tick at 10-20 Hz: a centimetre
+/// judder that a phone's 30 Hz screen turns into a slideshow. Leaving the water is the jump's
+/// job (SWIM_UP_SPEED, the breach); the look only steers within it.
+const FLOAT_BAND: f32 = 0.05;
+/// How fast the water lifts a swimmer whose crown is above the surface toward the float line,
+/// blocks/s: gentler than the swim-up, since nobody asked for it.
+const FLOAT_RISE_SPEED: f32 = 1.0;
 
 // Capsule collider. HEIGHT and RADIUS are the tunables; everything else
 // derives from them. Any change here is a sim-behavior change: re-pin
@@ -510,7 +519,17 @@ impl Player {
 					self.out.y = JUMP_IMPULSE;
 				}
 			} else {
-				self.out += flat * (mv.y / 60.0) + right * (mv.x / 60.0);
+				// Air control steers the flight but may not build speed past a
+				// walk. On land a landing brakes whatever the air added; off a
+				// breach there is no landing, and a held jump re-breached at
+				// every splash with everything the last hop had gained, which
+				// skimmed the sea at 19 blocks/s after twenty seconds.
+				let before = Vec2::new(self.out.x, self.out.z);
+				let drift = Vec2::new(flat.x, flat.z) * (mv.y / 60.0)
+					+ Vec2::new(right.x, right.z) * (mv.x / 60.0);
+				let after = (before + drift).clamp_length_max(before.length().max(WALK_SPEED));
+				self.out.x = after.x;
+				self.out.z = after.y;
 			}
 		} else {
 			// ---- swimming: you swim where you point ----
@@ -533,6 +552,22 @@ impl Player {
 				target.y = SWIM_UP_SPEED;
 			} else if mv == Vec2::ZERO {
 				target.y = WATER_SINK_SPEED;
+			}
+			// Buoyancy, once any part of you is out of the water: idle or
+			// swimming level you drift up to the float line and hold there
+			// with your head out, and only a downward aim takes you under
+			// again. Fully submerged the slow sink stands, so a dive stays a
+			// dive. The look cannot swim you OUT of the water either: at the
+			// float line an upward aim holds level (FLOAT_BAND), and leaving
+			// is the jump's job.
+			if !intent.jump && sub < 1.0 {
+				let diving = mv != Vec2::ZERO && target.y < 0.0;
+				if !diving {
+					target.y = target.y.max(FLOAT_RISE_SPEED);
+				}
+				if sub <= SWIM_THRESHOLD + FLOAT_BAND {
+					target.y = target.y.min(0.0);
+				}
 			}
 			self.out += (target - self.out).clamp_length_max(SWIM_ACCEL * dt);
 			// Breach: jump held near the surface while moving fires a

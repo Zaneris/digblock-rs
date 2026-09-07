@@ -17,12 +17,22 @@ just gate                 # check + check-ios + check-web + web-e2e, i.e. "am I 
 just run                  # desktop client, debug build
 just web                  # wasm build served at http://127.0.0.1:8080 (Chrome/WebGPU)
 just play                 # containerized master + native server + client, all local, torn down together
-just bench                # deterministic perf run (release build; window must stay visible or it stalls)
+just bench                # deterministic perf run (release build; window must stay visible or it stalls: --offscreen if it cannot)
 just fmt-md               # dprint re-wrap of Markdown (this file included) to 120 cols
 ```
 
 `just check` needs Docker running: the server e2e tests boot the real `apps/master` .NET container. CI is intentionally
 disabled pre-deployment; the just gates are the gate.
+
+Measuring: a windowed bench produces no frames behind a locked screen or screensaver and looks like a hang, and
+`--offscreen` is the cure (the recorded baselines went through the surface, so say so when comparing). `--mobile`
+REPLACES the whole config, so it must come before `--bench` and every other flag, or bench mode is silently dropped and
+the run never exits. The web bench (`node tools/web-e2e/dig.mjs --bench`) does not default the seed or the time of day
+the way the desktop launcher does: pass `--seed 42 --tod 45` or it measures another world. The overlay's per-pass `gpu`
+line (`--overlay`, `?overlay&gputimer=1` on web) is the attribution tool, and a steady `fps` with motion that looks like
+2 fps is the sim, not the renderer. `just play-web` takes minutes the first time (release wasm build, the master image)
+and is up when its two `→` URL lines print or port 8080 answers; if a wait on it seems endless, probe the port before
+assuming a hang.
 
 Workspace lints deny all warnings and `unreachable_pub`, so plain `cargo build` surfaces what CI would. Rust uses hard
 tabs, `max_width = 100` (rustfmt.toml).
@@ -135,7 +145,33 @@ precedence: CLI/query overrides > saved settings > platform defaults.
 ### Assets and shaders
 
 Everything in `digblock-assets` is embedded at compile time. Generated textures come from `cargo run -p texgen` (never
-hand-edit; outputs are committed, and one run legitimately rewrites every noisy texture since recipes share one RNG).
+hand-edit; outputs are committed, and each surface recipe owns a stable seed so unrelated materials do not reroll).
+`tools/texgen/src/surfaces.rs` owns material recipes; `main.rs` assembles the catalog. See `tools/texgen/README.md` for
+authoring and capture commands. Review terrain textures tiled and in-game: corner motifs or strong edge contrast can
+turn mountains into a visible grid even when a single tile looks good.
+
+Live and spent essence deposits share their host albedo and mineral placement. Live nodes have separate `*Emission.png`
+masks registered in `digblock_assets::tex::EMISSION_MASKS`: only the mineral inclusions are fullbright; the host
+receives normal lighting. Never darken the entire surface to simulate an emission map. `texture.rs` uploads albedo in
+the first atlas bank and matching emission masks in the second (white defaults preserve other emitters). The chunk,
+viewmodel and player shaders use that same layout; surface alpha remains transparency for glass and icons. `glows`
+controls visible emission independently of cast-light strength. Node light tint comes from `node_flecks`, other emitters
+from texture means, so changing lamp art also changes its emitted tint. Aether art derives from
+`Essence::Aether.palette()` to keep the ore, chip and lamp consistent.
+
+Metal and polished stone use texture-derived finish bits in `mesher::solid_word1` for world-surface highlights in
+`chunk.wgsl`; shapes and held items (both hand shaders) inherit the finish through their face textures, and
+`finish_common.wgsl` is the one definition of the lobe and `finish_lamps.wgsl` of the lamp term the chunk and players
+passes share. The sun lobe follows the traced sun visibility; local light is the probe cache read along the mirrored
+view ray plus unshadowed Blinn highlights from the head of the light list, which `select_lights` orders nearest the eye
+for exactly that read; no per-fragment light scan or shadow march. The `materials` diagnostic scene (`DIG_MATERIALS=1` /
+`?materials`) compares metal, polished stone and matte stone.
+
+`fire_common.wgsl` (the torch flicker, keyed on the frame clock in `light_color.w`) must precede `gi_dda.wgsl` wherever
+that is included, because the light scorer reads it; `fx_common.wgsl` holds the procedural footprints the effect shaders
+share. Visible torch fire is `crates/digblock-client/src/flame.rs`, fed from the GI emitter list for placed torches and
+from the held-item transforms for hands, so there is no second torch scan.
+
 WGSL shared preludes are prepended via `concat!` in a fixed order; all render-pipeline descriptors funnel through
 `crates/digblock-client/src/pipeline_builder.rs`. Shader validation is three non-overlapping gates: naga parse
 (`digblock-assets` test), full wgpu-core validation with `Backends::NOOP` (`every_pipeline_builds_without_a_gpu` in the
@@ -144,8 +180,10 @@ not enough for web.
 
 Sub-block geometry is data: `assets/shapes/*.shape` (plain text on the twelfths grid; grammar in
 `crates/digblock-core/src/shapes/def.rs`) are embedded and parsed by digblock-core and baked into the shape registry.
-Editing an existing file's collision geometry is a sim change: the `LEGACY_*` pins in `shapes/tests.rs` prove each
-ported file bakes byte-identical to the retired hardcoded consts, and an intentional edit deletes that shape's pin,
+Boxes carry collision, light and the look; `tri`/`quad` lines add sloped faces that only draw (the pine boughs in
+`canopy.shape`), lit as the axis face their `dir=` names, with stepped boxes underneath kept just inside the drawn
+plane. Editing an existing file's collision geometry is a sim change: the `LEGACY_*` pins in `shapes/tests.rs` prove
+each ported file bakes byte-identical to the retired hardcoded consts, and an intentional edit deletes that shape's pin,
 re-pins the semantic tests it disturbs, and bumps `SIM_VERSION` if collision moved. Author them with the shape editor
 (`DIG_EDITOR=1 just run`, or `?editor` on web), which sculpts at any exact twelfths resolution and saves back into
 `assets/shapes/` (web: browser download / file picker).

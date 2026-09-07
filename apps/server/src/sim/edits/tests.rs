@@ -3213,7 +3213,7 @@ fn place_refused_when_the_chunk_slot_budget_is_spent() {
 	shapes::set_preview_override(
 		BlockType::Chair,
 		0,
-		shapes::preview_variant(&boxes, (0, 0, 0), 0),
+		shapes::preview_variant(&boxes, &[], [1, 1, 1], (0, 0, 0), 0),
 	);
 	let fat = make_cell(BlockType::Chair, 0);
 	let cost = cell_cost(fat);

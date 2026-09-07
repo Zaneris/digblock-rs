@@ -222,7 +222,8 @@ pub fn functional_ideal(b: BlockType) -> Option<&'static [(Essence, u32)]> {
 /// every essence in the game is a siphon draw, so an essence-priced siphon deadlocks the currency
 /// (`the_essence_tool_costs_no_essence`). The bucket's RUNG is its whole gate, opening past the
 /// siphon. Tree matter for both — "dig your way to the trees, fell a few, make your tools" IS
-/// the loop; the siphon asks for the canopy as well as the trunk so one felled tree covers it.
+/// the loop; the siphon asks for the canopy as well as the trunk so one felled tree covers it —
+/// ANY canopy ([`feedstock_accepts`]), since a spawn among conifers has only needles to give.
 pub fn functional_feedstock(b: BlockType) -> &'static [(BlockType, u32)] {
 	match b {
 		BlockType::Bucket => &[(BlockType::Wood, 6)],
@@ -240,6 +241,70 @@ pub fn functional_feedstock(b: BlockType) -> &'static [(BlockType, u32)] {
 		BlockType::Lantern => &[(BlockType::Glass, 1)],
 		BlockType::Aetherlamp => &[(BlockType::Glass, 1)],
 		_ => &[],
+	}
+}
+
+/// Does `b` pay toward a feedstock line that names `f`? The named block always does; beyond it,
+/// matter is matter: a line that asks for the canopy takes any canopy, because a spawn among
+/// conifers has only needles to offer and the siphon is the one recipe a fresh player MUST be
+/// able to make. Every consumer of a line — the craft's check and debit, the bench's chips, the
+/// siphon nudge — counts through [`feedstock_held`] or pays in [`feedstock_pay_order`], so an
+/// alternate is worth exactly what the named block is everywhere, and the sweep is over the
+/// catalog rather than a hand-kept pair.
+pub fn feedstock_accepts(f: BlockType, b: BlockType) -> bool {
+	b == f || (f.is_foliage() && b.is_foliage())
+}
+
+/// How much of ONE feedstock line a pack can pay: everything [`feedstock_accepts`] admits,
+/// summed. `count` is the pack's own answer, so the bench's copied counts and the live inventory
+/// ask one question. A line's own reading, for the chip that says how short it is; whether a
+/// whole price is covered is [`feedstock_batches`], since two lines can share a pool.
+pub fn feedstock_held(f: BlockType, count: impl Fn(BlockType) -> u32) -> u32 {
+	feedstock_pay_order(f).map(count).sum()
+}
+
+/// The order a feedstock line is paid in: the named block first, then every alternate
+/// [`feedstock_accepts`] admits, in catalog order. ONE order, so the bench's count of what a pack
+/// affords and the craft's debit walk the same blocks and a check cannot pass a debit that fails.
+pub fn feedstock_pay_order(f: BlockType) -> impl Iterator<Item = BlockType> {
+	std::iter::once(f).chain(
+		BlockType::ALL
+			.into_iter()
+			.filter(move |&b| b != f && feedstock_accepts(f, b)),
+	)
+}
+
+/// How many times over a pack covers `lines`, every line paid in [`feedstock_pay_order`] out of
+/// ONE pool: two lines that admit the same block (two canopies, say) cannot both be paid with the
+/// one heap a per-line sum would count twice. `None` when no line asks for anything, so a price
+/// with no matter half bounds nothing. `count` is the pack's own answer.
+pub fn feedstock_batches(
+	lines: &[(BlockType, u32)],
+	count: impl Fn(BlockType) -> u32,
+) -> Option<u32> {
+	if lines.iter().all(|&(_, n)| n == 0) {
+		return None;
+	}
+	let mut pool: Vec<u32> = BlockType::ALL.iter().map(|&b| count(b)).collect();
+	let mut batches = 0;
+	loop {
+		let mut trial = pool.clone();
+		for &(f, n) in lines {
+			let mut need = n;
+			for b in feedstock_pay_order(f) {
+				let take = need.min(trial[b as usize]);
+				trial[b as usize] -= take;
+				need -= take;
+				if need == 0 {
+					break;
+				}
+			}
+			if need > 0 {
+				return Some(batches);
+			}
+		}
+		pool = trial;
+		batches += 1;
 	}
 }
 

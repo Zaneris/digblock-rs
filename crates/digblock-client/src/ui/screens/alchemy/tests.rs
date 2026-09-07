@@ -1291,3 +1291,31 @@ fn the_guide_goes_quiet_while_the_bench_works() {
 	s.crafting = None;
 	assert_eq!(s.guide_to(item), Some(InvId::CraftGo));
 }
+
+/// The bench prices a canopy line by the same rule it pays it: a pack
+/// holding needles and no leaves affords the siphon, and the strip's chip
+/// wears the needles it would spend rather than leaves it does not hold.
+#[test]
+fn needles_afford_the_siphon_and_the_chip_says_so() {
+	let rung = digblock_core::unlock::craft(B::EssenceSiphon).expect("a craft");
+	let r = rig_at(rung, |inv| {
+		for (f, n) in alchemy::craft_feedstock(B::EssenceSiphon) {
+			inv.add(if f.is_foliage() { B::PineLeaves } else { f }, n);
+		}
+	});
+	assert_eq!(
+		strip_reason(&r.view, B::EssenceSiphon),
+		StripReason::Affords(1),
+		"needles pay the canopy line"
+	);
+	let (pine, _) = hud::item_icon(HotbarItem::Block(B::PineLeaves), false);
+	let (leaves, _) = hud::item_icon(HotbarItem::Block(B::Leaves), false);
+	let kinds: Vec<_> = strip_chips(&r, B::EssenceSiphon)
+		.iter()
+		.map(|c| c.kind)
+		.collect();
+	assert!(
+		kinds.contains(&pine) && !kinds.contains(&leaves),
+		"the canopy chip wears what the pack would pay with: {kinds:?}"
+	);
+}

@@ -346,23 +346,40 @@ pub fn apply_alchemy(inv: &mut Inventory, op: AlchemyOp, skills: &crate::skills:
 					return false;
 				}
 			}
-			for &(f, n) in &feedstock {
-				if inv.count(f) < n * count {
-					return false;
-				}
+			// The matter half is covered as a WHOLE, not a line at a time: lines can share a
+			// pool (any canopy pays a canopy line), and a per-line reading passes two lines on
+			// one heap that the debit below then cannot pay.
+			if alchemy::feedstock_batches(&feedstock, |b| inv.count(b)).is_some_and(|k| k < count) {
+				return false;
 			}
 			for &(e, n) in &ideal {
 				let taken = inv.try_take_sub(e, n * count);
 				debug_assert!(taken, "checked above");
 			}
 			for &(f, n) in &feedstock {
-				let taken = inv.try_take(f, n * count);
-				debug_assert!(taken, "checked above");
+				take_feedstock(inv, f, n * count);
 			}
 			inv.add(item, per_batch * count);
 			true
 		}
 	}
+}
+
+/// Debit one feedstock line the pack has been checked to cover, in the order the check walked
+/// (`feedstock_pay_order`): the named block first, then whatever else the line accepts.
+fn take_feedstock(inv: &mut Inventory, f: BlockType, mut need: u32) {
+	for b in crate::alchemy::feedstock_pay_order(f) {
+		let take = need.min(inv.count(b));
+		if take > 0 {
+			let taken = inv.try_take(b, take);
+			debug_assert!(taken, "counted above");
+			need -= take;
+		}
+		if need == 0 {
+			return;
+		}
+	}
+	debug_assert!(need == 0, "checked before the debit");
 }
 
 #[cfg(test)]

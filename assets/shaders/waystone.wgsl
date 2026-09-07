@@ -54,6 +54,7 @@ struct VsOut {
 	@location(1) col: vec4f,
 	// 1 = the ground ring's annulus falloff, 0 = a mote's soft disc.
 	@location(2) ring: f32,
+	@location(3) phase: vec2f,
 }
 
 @vertex
@@ -91,7 +92,7 @@ fn vs(
 	} else {
 		let seed = phase * 91.17 + f32(pi) * 37.719;
 		let mph = fract(clock / RISE + hash1(seed) + phase);
-		let ang = hash1(seed + 1.0) * 6.2832 + clock * ORBIT + mph * 2.4;
+		let ang = f32(pi % 3u) * 2.0944 + clock * ORBIT + mph * 5.0;
 		let rad = radius * mix(1.0, TAPER, mph);
 		center = site + vec3f(cos(ang) * rad, height * mph, sin(ang) * rad);
 		bx = right;
@@ -127,15 +128,21 @@ fn vs(
 	o.uv = corner + 0.5;
 	o.col = vec4f(col * tr, weight);
 	o.ring = ring;
+	o.phase = vec2f(clock * 0.45 + phase * 6.2832, f32(pi % 6u == 0u));
 	return o;
 }
 
 @fragment
 fn fs(i: VsOut) -> @location(0) vec4f {
-	let d = length(i.uv - 0.5) * 2.0;
-	// A mote is a soft disc; the ring is an annulus — bright at its rim,
-	// open in the middle so the pad itself stays readable.
-	let disc = smoothstep(1.0, 0.45, d);
-	let annulus = smoothstep(0.55, 0.8, d) * smoothstep(1.0, 0.88, d);
-	return vec4f(i.col.rgb, i.col.a * mix(disc, annulus, i.ring));
+	let pixel = max(length(fwidth(i.uv)) * 2.0, 0.008);
+	let p = (i.uv - 0.5) * 2.0;
+	var mask = mix(1.0 - smoothstep(0.05, 1.0, length(p)), fx_glint(p, pixel), i.phase.y);
+	if i.ring > 0.5 {
+		let angle = atan2(p.y, p.x);
+		let segments = smoothstep(-0.25, 0.2, cos(angle * 12.0));
+		let sweep = pow(max(0.0, cos(angle - i.phase.x)), 12.0);
+		mask = fx_ring(p, 0.87, 0.025, pixel) * (0.45 + 0.55 * sweep)
+			+ fx_ring(p, 0.72, 0.065, pixel) * segments * (0.5 + sweep * 0.5);
+	}
+	return vec4f(i.col.rgb, i.col.a * mask);
 }

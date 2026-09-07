@@ -49,7 +49,7 @@ impl BlockTextures {
 			size: wgpu::Extent3d {
 				width: SIZE,
 				height: SIZE,
-				depth_or_array_layers: digblock_assets::tex::LAYERS.len() as u32,
+				depth_or_array_layers: (digblock_assets::tex::LAYERS.len() * 2) as u32,
 			},
 			mip_level_count: levels,
 			sample_count: 1,
@@ -60,11 +60,28 @@ impl BlockTextures {
 		});
 
 		let mut layer_means = Vec::with_capacity(digblock_assets::tex::LAYERS.len());
-		for (layer, bytes) in digblock_assets::tex::LAYERS.iter().enumerate() {
-			let img = image::load_from_memory(bytes)
-				.expect("decode block texture")
-				.to_rgba8();
-			layer_means.push(mean_rgb(&img));
+		// The second bank mirrors albedo indices with emission masks. White is the
+		// legacy fullbright default; deposits supply mineral-only masks. Alpha keeps
+		// its transparency meaning, including when the UI samples the first bank.
+		let layers = digblock_assets::tex::LAYERS;
+		for layer in 0..layers.len() * 2 {
+			let bytes = layers[layer % layers.len()];
+			let img = if layer < layers.len() {
+				let img = image::load_from_memory(bytes)
+					.expect("decode block texture")
+					.to_rgba8();
+				layer_means.push(mean_rgb(&img));
+				img
+			} else if let Some((_, mask)) = digblock_assets::tex::EMISSION_MASKS
+				.iter()
+				.find(|(surface, _)| *surface == bytes)
+			{
+				image::load_from_memory(mask)
+					.expect("decode emission mask")
+					.to_rgba8()
+			} else {
+				image::RgbaImage::from_pixel(SIZE, SIZE, image::Rgba([255; 4]))
+			};
 			assert_eq!(
 				(img.width(), img.height()),
 				(SIZE, SIZE),
@@ -197,6 +214,40 @@ mod layer_tests {
 			for t in [p.tex_side, p.tex_top, p.tex_bottom] {
 				assert!(t < layers, "{b:?} references missing layer {t}");
 			}
+		}
+	}
+
+	/// A live node needs both a lit host and luminous mineral; neither may turn transparent.
+	#[test]
+	fn node_emission_masks_preserve_an_opaque_lit_host() {
+		for &block in &BlockType::ALL {
+			if block.node_flecks().is_none() {
+				continue;
+			}
+			let surface = digblock_assets::tex::LAYERS[block.props().tex_side as usize];
+			let (_, mask) = digblock_assets::tex::EMISSION_MASKS
+				.iter()
+				.find(|(s, _)| *s == surface)
+				.expect("every live node has an emission mask");
+			let albedo = image::load_from_memory(surface).unwrap().to_rgba8();
+			let mask = image::load_from_memory(mask).unwrap().to_rgb8();
+			assert_eq!(
+				albedo.dimensions(),
+				mask.dimensions(),
+				"{block:?}: mask must align with surface"
+			);
+			assert!(
+				albedo.pixels().all(|p| p[3] == 255),
+				"{block:?}: emission must not cut holes in icons"
+			);
+			assert!(
+				mask.pixels().any(|p| p[0] == 0),
+				"{block:?}: host must receive lighting"
+			);
+			assert!(
+				mask.pixels().any(|p| p[0] == 255),
+				"{block:?}: minerals must glow"
+			);
 		}
 	}
 

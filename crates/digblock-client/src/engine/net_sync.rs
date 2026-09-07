@@ -434,8 +434,7 @@ impl Engine {
 						// longer see is the one case with nothing of its own to say.
 						let msg = {
 							let named = |kind| {
-								self.pipeline
-									.block_at(cell.0, cell.1, cell.2)
+								self.seen_block(cell)
 									.and_then(|b| unlock::requirement(b, kind))
 									.map(Msg::DigRefused)
 							};

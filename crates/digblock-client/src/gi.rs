@@ -365,6 +365,12 @@ pub(crate) struct GiDraw {
 	/// heading swing while oversubscribed re-flushes on the same rule a
 	/// walk does: either one moves the anchor.
 	lights_anchor: [f32; 3],
+	/// The eye the flushed list was last ordered for, and the entries as flushed. The glossy
+	/// highlight reads the HEAD of the list as the lamps nearest the eye, and a walk short of
+	/// the selection's refresh distance still changes which lamps those are — so the entries
+	/// are kept, to re-sort and re-upload without a reselection (`flush_lights`).
+	lights_eye: [f32; 3],
+	light_entries: Vec<[f32; 8]>,
 	/// Emitters IN REACH at that flush, so a move that changes WHICH are in reach re-flushes even
 	/// under the cap. Deliberately the pre-cull count and not the flushed length: the staleness
 	/// test compares it against a freshly counted `reachable()`, and the culls
@@ -569,8 +575,10 @@ pub(crate) fn max_draw_dist(max_buffer_size: u64) -> i32 {
 /// [`BEHIND_REACH`], not under the sky cull — at most `cap` nearest to the forward-leading
 /// segment (see `SELECT_AHEAD`), in the GPU entry form. Carried lights are simply more candidates,
 /// with no reservation: a carrier's own light sits at the near end of the segment and can never be
-/// the one dropped. Selection, NOT ordering — no reader cares about order, so the cap is settled by
-/// `select_nth_unstable_by` in O(n), which matters because a carried light moves every frame.
+/// the one dropped. The cap is settled by `select_nth_unstable_by` in O(n), which matters because a
+/// carried light moves every frame; the survivors are then ordered nearest the EYE first, so the
+/// glossy highlight (`finish_lamps` in chunk.wgsl) can take the first few as the lamps that matter
+/// without a scan. The estimators never cared about order and still do not.
 fn select_lights(
 	emitters: impl Iterator<Item = Emitter>,
 	carried: &[Emitter],
@@ -580,22 +588,23 @@ fn select_lights(
 	sky_floor: Option<f32>,
 	cap: usize,
 ) -> Vec<[f32; 8]> {
+	let torch = digblock_core::gi::gi_look(BlockType::Torch as u16);
 	let entry = |e: Emitter, carried: u32| {
 		let w = u32::from(e.class)
 			| carried | (u32::from(e.level) & LIGHT_LEVEL_MASK) << LIGHT_LEVEL_SHIFT
 			| if e.whitened { LIGHT_WHITENED } else { 0 }
 			| if e.face.is_some() { LIGHT_QUAD } else { 0 };
-		// The second half is the rectangle, or zero. A punctual light's
-		// pair is [pos, class] then four zeros, so the only thing that
-		// changed for a torch is the stride.
-		let f = e.face.map_or([0.0; 4], |f| {
-			[
-				f.ext[0],
-				f.ext[1],
-				f32::from_bits(u32::from(f.axis) | u32::from(f.positive) << 2),
-				0.0,
-			]
-		});
+		// The second half holds the rectangle; its spare w tags torch flicker.
+		let f = e
+			.face
+			.map_or([0.0, 0.0, 0.0, f32::from(e.class == torch)], |f| {
+				[
+					f.ext[0],
+					f.ext[1],
+					f32::from_bits(u32::from(f.axis) | u32::from(f.positive) << 2),
+					0.0,
+				]
+			});
 		(
 			e.pos,
 			[
@@ -647,7 +656,11 @@ fn select_lights(
 		all.select_nth_unstable_by(cap, |a, b| a.0.total_cmp(&b.0));
 		all.truncate(cap);
 	}
-	all.into_iter().map(|(_, e)| e).collect()
+	// Nearest the eye first (not the selection anchor): a highlight is
+	// seen from where the eye is. A few hundred entries at most.
+	let mut all: Vec<[f32; 8]> = all.into_iter().map(|(_, e)| e).collect();
+	lights::sort_nearest_eye(&mut all, cam);
+	all
 }
 
 /// The per-frame inputs to the light-list flush, handed over WITH the frame

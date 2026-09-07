@@ -74,7 +74,7 @@ blocks! {
 	/// Marsh surface and subsoil: wet dark earth.
 	Mud = 18 => mat(dig(carveable(props(RenderClass::Opaque, true, tex::MUD, tex::MUD, tex::MUD)), 25, DigFamily::Soft), Material::Mud),
 	/// Steep-shore and scree surface: loose pebbled rock.
-	Gravel = 19 => mat(dig(carveable(props(RenderClass::Opaque, true, tex::GRAVEL, tex::GRAVEL, tex::GRAVEL)), 45, DigFamily::Rock), Material::Gravel),
+	Gravel = 19 => mat(dig(carveable(props(RenderClass::Opaque, true, tex::GRAVEL, tex::GRAVEL, tex::GRAVEL)), 45, DigFamily::Loose), Material::Gravel),
 	/// Conifer foliage; a structure block like Leaves, so not carveable.
 	PineLeaves = 20 => mat(dig(props(RenderClass::Opaque, true, tex::PINE_LEAVES, tex::PINE_LEAVES, tex::PINE_LEAVES), 10, DigFamily::Fixed), Material::PineLeaf),
 	/// The stratum under sandy floors (ocean, beach, river, lake beds).
@@ -103,7 +103,7 @@ blocks! {
 	/// placeable, and the mass Terra feedstock at the bench. Placed, it
 	/// reads as rough cobble — the free rustic building material. Drops
 	/// itself, so it round-trips.
-	Rubble = 27 => mat(dig(props(RenderClass::Opaque, true, tex::RUBBLE, tex::RUBBLE, tex::RUBBLE), 90, DigFamily::Rock), Material::Rubble),
+	Rubble = 27 => mat(dig(props(RenderClass::Opaque, true, tex::RUBBLE, tex::RUBBLE, tex::RUBBLE), 60, DigFamily::Loose), Material::Rubble),
 	/// First light (SKILLS-DESIGN §7.3/§7.4): a floor-mounted post with a
 	/// glowing head, crafted early — before ore on purpose. It both
 	/// `glows` (fullbright ink, so the head reads bright of itself) and
@@ -330,8 +330,12 @@ blocks! {
 	/// before the reuse, keyed on the record's version and never on its contents.
 	DirtSlab = 91 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::DIRT, tex::DIRT, tex::DIRT)), ShapeKind::Slab), 10, DigFamily::Soft), Material::Dirt),
 	DirtStairs = 92 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::DIRT, tex::DIRT, tex::DIRT)), ShapeKind::Stairs), 30, DigFamily::Soft), Material::Dirt),
-	RubbleSlab = 93 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::RUBBLE, tex::RUBBLE, tex::RUBBLE)), ShapeKind::Slab), 30, DigFamily::Rock), Material::Rubble),
-	RubbleStairs = 94 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::RUBBLE, tex::RUBBLE, tex::RUBBLE)), ShapeKind::Stairs), 90, DigFamily::Rock), Material::Rubble),
+	RubbleSlab = 93 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::RUBBLE, tex::RUBBLE, tex::RUBBLE)), ShapeKind::Slab), 20, DigFamily::Loose), Material::Rubble),
+	RubbleStairs = 94 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::RUBBLE, tex::RUBBLE, tex::RUBBLE)), ShapeKind::Stairs), 60, DigFamily::Loose), Material::Rubble),
+	/// Conifer boughs: the sloped pieces a pine's tiers are built from (`shapes::CanopyForm`).
+	/// Worldgen's, never crafted (the canopy has no `ShapeFamily`, so the material puts it on no
+	/// grid); it sounds and lights as the needle cube, and a dig hands that cube back.
+	PineBoughs = 95 => mat(drops(dig(shaped(props(RenderClass::Shaped, true, tex::PINE_LEAVES, tex::PINE_LEAVES, tex::PINE_LEAVES), ShapeKind::Canopy), 10, DigFamily::Fixed), BlockType::PineLeaves), Material::PineLeaf),
 }
 
 /// The indestructible world floor: cells at this height can never be dug
@@ -408,6 +412,8 @@ pub enum ShapeKind {
 	Chair,
 	/// A one-cell cot, mattress on a low frame; the state nibble carries the facing (the head).
 	Bed,
+	/// A conifer bough: wedge, hip or peak (bits 2-3), turned by the facing (bits 0-1).
+	Canopy,
 }
 
 /// The authored LOOK a shaped row bakes from, when its kind ships more than one `.shape` file:
@@ -582,12 +588,12 @@ impl Essence {
 	#[inline]
 	pub const fn palette(self) -> ([u8; 3], [u8; 3]) {
 		match self {
-			// Living green, earthen amber, spring blue, cool steel, pale gold.
+			// Living green, earthen amber, spring blue, cool steel, electric magenta.
 			Essence::Vitae => ([118, 196, 84], [204, 255, 164]),
 			Essence::Terra => ([198, 150, 70], [244, 208, 140]),
 			Essence::Unda => ([62, 158, 224], [172, 224, 255]),
 			Essence::Ferrum => ([150, 160, 176], [224, 232, 240]),
-			Essence::Aether => ([240, 214, 96], [255, 248, 200]),
+			Essence::Aether => ([224, 42, 182], [255, 112, 222]),
 		}
 	}
 
@@ -727,8 +733,10 @@ pub enum DigFamily {
 	Fixed,
 	/// Loose ground: the gentlest climb, and diggable from the first swing.
 	Soft,
-	/// Timber: a firmer start and a gentler ceiling, the middle rung of the strength wall.
+	/// Timber: a firmer start and a gentler ceiling, the second rung of the strength wall.
 	Wood,
+	/// Loose rock (gravel, rubble): a heap rather than a face, the rung before solid rock.
+	Loose,
 	/// Rock resists a novice hard, and is the last rung of the strength wall.
 	Rock,
 }
@@ -1014,6 +1022,18 @@ pub mod tex {
 	/// digblock-client, the one crate that can see both.
 	pub const COUNT: u16 = SPELL_PORT + 1;
 
+	/// The visual finish a layer wears, decoded by `finish_common.wgsl`: 0 matte, 1 polished
+	/// (the broad stone lobe; crystal takes it too, so a slab reads as glossy as the cube drawn
+	/// through the glass pass), 2 metal. Per TEXTURE, so every shape cut from a material, and
+	/// the same block in a hand, wears one response.
+	pub fn finish(layer: u16) -> u32 {
+		match layer {
+			POLISHED_STONE | CRYSTAL => 1,
+			METAL => 2,
+			_ => 0,
+		}
+	}
+
 	/// Every layer's canonical name — the handle `.shape` files use, because
 	/// the INDEX is runtime-only and may be reordered. Completeness (one row
 	/// per layer, unique, covering `0..COUNT`) is pinned by a test, so a new
@@ -1165,7 +1185,14 @@ impl BlockType {
 			Some(ShapeKind::Door) => Some(ShapeFamily::Door),
 			// Functional shapes: things, not forms any substance could be
 			// worked into. They opt out of the grid and are priced by hand.
-			Some(ShapeKind::Torch | ShapeKind::Table | ShapeKind::Chair | ShapeKind::Bed) => None,
+			// The canopy is worldgen's own and never an item at all.
+			Some(
+				ShapeKind::Torch
+				| ShapeKind::Table
+				| ShapeKind::Chair
+				| ShapeKind::Bed
+				| ShapeKind::Canopy,
+			) => None,
 		}
 	}
 
@@ -1211,6 +1238,7 @@ impl BlockType {
 			BlockType::Table => "Table".into(),
 			BlockType::Chair => "Chair".into(),
 			BlockType::Bed => "Bed".into(),
+			BlockType::PineBoughs => "Pine Boughs".into(),
 			BlockType::Bucket => "Bucket".into(),
 			BlockType::EssenceSiphon => "Essence Siphon".into(),
 			BlockType::ResonantPick => "Resonant Pick".into(),
@@ -1424,7 +1452,10 @@ impl BlockType {
 	/// that ever keys on "the trivial canopy set" shares the same roster.
 	#[inline]
 	pub fn is_foliage(self) -> bool {
-		matches!(self, BlockType::Leaves | BlockType::PineLeaves)
+		matches!(
+			self,
+			BlockType::Leaves | BlockType::PineLeaves | BlockType::PineBoughs
+		)
 	}
 
 	/// A tool id: an item-only row that lives in the dedicated tool slot,

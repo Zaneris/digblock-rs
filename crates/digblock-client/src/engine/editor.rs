@@ -311,10 +311,15 @@ impl Engine {
 		// otherwise keep drawing.
 		ed.pending_covers.clear();
 		for p in 0..4u8 {
+			let polys = ed
+				.doc
+				.polys
+				.get(ed.doc.active)
+				.map_or(&[][..], Vec::as_slice);
 			let v = if p < parts {
-				shapes::preview_variant(&list, ed.doc.part_cell(p), k)
+				shapes::preview_variant(&list, polys, ed.doc.footprint, ed.doc.part_cell(p), k)
 			} else {
-				shapes::preview_variant(&[], (0, 0, 0), 0)
+				shapes::preview_variant(&[], &[], [1, 1, 1], (0, 0, 0), 0)
 			};
 			if v.quads.len() > ed.quads_worst || p == 0 {
 				ed.quads_worst = v.quads.len();
@@ -685,7 +690,7 @@ impl Engine {
 						StateModel::Explicit(4),
 						Some(vec![ed.doc.volumes[ed.doc.active].clone(); 4]),
 					),
-					StateModel::Explicit(_) => (
+					StateModel::Explicit(_) | StateModel::Forms(_) => (
 						StateModel::None_,
 						Some(vec![ed.doc.volumes[ed.doc.active].clone()]),
 					),
@@ -766,6 +771,7 @@ impl Engine {
 			StateModel::Facing => "facing".to_string(),
 			StateModel::Door => "door".to_string(),
 			StateModel::Explicit(n) => format!("explicit {} [{}]", n, ed.doc.active),
+			StateModel::Forms(n) => format!("forms {} [{}]", n, ed.doc.active),
 		};
 		let over = ed.quads_worst > digblock_core::shapes::MAX_SHAPE_QUADS;
 		let (fname, builtin) = ed

@@ -254,8 +254,10 @@ fn run_bot(
 	// In-progress timed dig: target cell, its block, and the predicted
 	// tick the hold satisfies the server's hardness gate.
 	let mut digging: Option<((i32, i32, i32), BlockType, u32)> = None;
-	// A bot never earns XP, so it asks the skill gates as a fresh player.
+	// A bot never earns XP and keeps nothing, so it asks the skill gates
+	// as a fresh player with an empty pack.
 	let bot_skills = digblock_core::skills::SkillSet::default();
+	let bot_inventory = digblock_core::inventory::Inventory::default();
 
 	// Terrain-only world model: enough for plausible claims and digs.
 	// (No caves/trees/edits — off claims are simply not adopted.)
@@ -397,14 +399,25 @@ fn run_bot(
 					if next_edit_in <= 0.0 {
 						next_edit_in = f32::INFINITY; // rearmed on completion
 						if let Some(hit) = raycast(p.pos, down, REACH, &world) {
-							// Same gates as the server, asked the same way — a
-							// bot that has dug down to bedrock (or onto
-							// level-gated rock, or somebody's craft-only
-							// build; bots run unskilled) must skip it,
-							// not retry forever.
+							// Same gates as the server, asked the same way — of
+							// the block the bot SEES (`nodes::seen_block`; with
+							// no levels and no siphon that is the cell's own,
+							// and this model holds no edits) — so a bot that
+							// has dug down to bedrock (or onto level-gated
+							// rock, or somebody's craft-only build; bots run
+							// unskilled) must skip it, not retry forever.
+							let seen = digblock_core::worldgen::nodes::seen_block(
+								hit.block as u16,
+								hit.cell,
+								seed,
+								digblock_core::worldgen::nodes::Levels::of(
+									&bot_skills,
+									&bot_inventory,
+								),
+								false,
+							);
 							if hit.block.dig_hardness(hit.cell.1).is_some()
-								&& digblock_core::unlock::dig_blocked(hit.block, &bot_skills)
-									.is_none()
+								&& digblock_core::unlock::dig_blocked(seen, &bot_skills).is_none()
 							{
 								let hardness = hit.block.dig_hardness(hit.cell.1).unwrap();
 								client.send_dig_start(hit.cell, 0);

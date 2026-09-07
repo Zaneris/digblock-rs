@@ -95,6 +95,23 @@ pub fn revealed(
 	reveal_met(node, levels).then_some(node)
 }
 
+/// The block this player is LOOKING AT: the node the reveal shows them, or the cell's own block.
+/// Every gate a player can predict (`unlock::dig_blocked`) is asked of this and never of the
+/// stored cell — a node lives in a cell that still holds its host, so a gate asked of the cell
+/// met a fresh siphon-holder with Stone's Mining wall on the leystone the siphon had just shown
+/// them. The client's raycast and the server's store both hand out the cell; this is the one
+/// step from there to what the player sees, and [`dig_mode`] is the same step asked as an act.
+pub fn seen_block(
+	cell: u16,
+	at: (i32, i32, i32),
+	seed: Seed,
+	levels: Levels,
+	edited: bool,
+) -> BlockType {
+	revealed(cell, at, seed, levels, edited)
+		.unwrap_or_else(|| BlockType::from_id(crate::chunk::cell_id(cell)))
+}
+
 /// The node worldgen puts at this coordinate IN THIS HOST — no edit bit and no level, but the same
 /// routing [`revealed`] does, because it IS the routing. The host is load-bearing rather than a
 /// shortcut: asked of the position alone the three streams overlap, and the regrowth sweep is the

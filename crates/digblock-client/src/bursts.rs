@@ -64,7 +64,7 @@ impl BurstKind {
 }
 
 /// One live burst in the flat layout the vertex shader reads:
-/// `[pos.xyz, age][seed, kind, life, size][color.rgb, 0]`.
+/// `[pos.xyz, age][seed, kind, life, size][color.rgb, surface_y + 1 (zero when absent)]`.
 pub(crate) type BurstInstance = [f32; 12];
 
 /// Pack a burst; the layout lives here, with the shader that decodes it.

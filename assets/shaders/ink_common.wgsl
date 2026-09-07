@@ -9,7 +9,7 @@
 // fullbright, and a flat multiplier would lift the post into glowing wood. Weighting by value is
 // also why ONE per-draw flag is enough for an item made of two materials.
 //
-// **The corollary is a rule for the TEXTURE: ink is authored for FULLBRIGHT, not for lit.** A
+// Only masked emissive texels are authored for FULLBRIGHT; deposit hosts are normal albedo. A
 // near-white material has no headroom left, clips on all three channels and reads as flat white
 // (R29). Raising this gain further barely moves the sprite — the ink is already clamped by the
 // scene target's SURFACE format, which caps LIGHT_GAIN too; both stopgaps for the missing tonemap.

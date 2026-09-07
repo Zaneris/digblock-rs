@@ -116,6 +116,7 @@ struct VsOut {
 	// Inner edge of the radial falloff: 0 is the kindle's soft bloom, and
 	// the motes take a harder one so they read as specks.
 	@location(2) soft: f32,
+	@location(3) phase: f32,
 }
 
 @vertex
@@ -152,6 +153,7 @@ fn vs(
 	var size = 0.0;
 	var weight = 0.0;
 	var soft = 0.0;
+	var stretch = 1.0;
 	if pi == 0u {
 		// The kindle lies ON the face, so it billboards against the face
 		// basis rather than the camera's — it is a decal on the rock, and
@@ -178,12 +180,17 @@ fn vs(
 		// The funnel: a mote lifts off somewhere on the face and spirals
 		// inward as it travels, so the stream converges on the tool
 		// instead of running at the camera in parallel lines.
-		let ang = hash1(seed) * 6.2832 + TWIST * phase;
-		let rad = mix(LIFT_MIN, LIFT_MAX, hash1(seed + 1.0)) * (1.0 - along);
+		let ang = hash1(seed) * 6.2832 + TWIST * phase * (1.0 + 0.35 * progress);
+		let rad = mix(LIFT_MIN, LIFT_MAX, hash1(seed + 1.0)) * (1.0 - along) * (1.0 - 0.25 * progress);
 		center = mix(source, dest, along) + fu * (cos(ang) * rad) + fv * (sin(ang) * rad);
 		let cam_d = distance(frame.cam_pos.xyz, center);
-		bx = right;
-		by = up;
+		let velocity = (dest - source) * (2.0 * phase)
+			+ (-fu * sin(ang) + fv * cos(ang)) * rad * TWIST * (1.0 + 0.35 * progress);
+		let projected = vec2f(dot(velocity, right), dot(velocity, up));
+		let tangent = projected / max(length(projected), 0.001);
+		bx = right * tangent.y - up * tangent.x;
+		by = right * tangent.x + up * tangent.y;
+		stretch = 1.5 + along * 2.0;
 		col = tint * MOTE_GAIN;
 		size = MOTE * (1.0 - 0.4 * along) * min(cam_d / MOTE_REF, 1.0);
 		// Harder-edged than the kindle, so a mote reads as a speck rather
@@ -199,7 +206,7 @@ fn vs(
 	// transparent: an additive pass still pays for every pixel it covers,
 	// and early in a draw most of the motes are gated off (THIN).
 	let live = select(0.0, 1.0, weight > 1e-4);
-	let world = center + (bx * (corner.x * size) + by * (corner.y * size)) * live;
+	let world = center + (bx * (corner.x * size) + by * (corner.y * size * stretch)) * live;
 
 	// Transmittance only — see the header for why the in-scatter half is
 	// wrong for an emissive term. The submerged split is medium_view's,
@@ -227,13 +234,20 @@ fn vs(
 	// would only have got flatter.
 	o.col = vec4f(col * tr * envelope, weight);
 	o.soft = soft;
+	o.phase = t * 1.5;
 	return o;
 }
 
 @fragment
 fn fs(i: VsOut) -> @location(0) vec4f {
-	// Procedural soft disc — no texture, spray.wgsl's shape with the
-	// falloff's inner edge left to the vertex stage.
-	let d = length(i.uv - 0.5) * 2.0;
-	return vec4f(i.col.rgb, i.col.a * smoothstep(1.0, i.soft, d));
+	let pixel = max(length(fwidth(i.uv)) * 2.0, 0.008);
+	let p = (i.uv - 0.5) * 2.0;
+	let d = length(p);
+	var mask = fx_glint(p, pixel);
+	if i.soft < 0.1 {
+		let veins = abs(sin(p.x * 15.0 + sin(p.y * 11.0) * 2.0 + sin(i.phase) * 0.25));
+		mask = (0.12 + 0.65 * fx_edge(veins, 0.15, pixel)) * (1.0 - smoothstep(0.35, 1.0, d));
+	}
+	let core = 1.0 - smoothstep(0.0, 0.22, d);
+	return vec4f(i.col.rgb * (1.0 + core * 0.3), i.col.a * mask);
 }

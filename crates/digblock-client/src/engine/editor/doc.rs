@@ -4,7 +4,7 @@
 //! back to a minimal `.shape` box list by a deterministic greedy merge.
 //! Pure data, no engine deps — unit-tested headless.
 
-use digblock_core::shapes::def::{DefBox, Roles, ShapeDef, StateModel};
+use digblock_core::shapes::def::{DefBox, DefPoly, Roles, ShapeDef, StateModel};
 use digblock_core::shapes::{GRID, SubBox};
 
 const G: i32 = GRID as i32;
@@ -61,6 +61,9 @@ pub(crate) struct ShapeDoc {
 	pub ramp: bool,
 	/// One volume per authored state; each volume one grid per cell.
 	pub volumes: Vec<Vec<VoxelGrid>>,
+	/// The authored polygons per volume, carried through untouched: the
+	/// grid sculpts boxes, and a file's slopes must survive a save.
+	pub polys: Vec<Vec<DefPoly>>,
 	/// Which volume edits land in (always 0 outside `Explicit`).
 	pub active: usize,
 	pub dirty: bool,
@@ -75,6 +78,7 @@ impl ShapeDoc {
 			states: StateModel::Facing,
 			ramp: false,
 			volumes: vec![vec![VoxelGrid::empty()]],
+			polys: Vec::new(),
 			active: 0,
 			dirty: false,
 		}
@@ -227,12 +231,15 @@ impl ShapeDoc {
 
 	/// The compiled document as a `ShapeDef` ready for `def::emit`.
 	pub(crate) fn to_def(&self) -> ShapeDef {
-		let (boxes, explicit) = match self.states {
-			StateModel::Explicit(_) => (
+		let polys_of = |s: usize| self.polys.get(s).cloned().unwrap_or_default();
+		let (boxes, explicit, polys, explicit_polys) = match self.states {
+			StateModel::Explicit(_) | StateModel::Forms(_) => (
 				Vec::new(),
 				(0..self.volumes.len()).map(|s| self.compile(s)).collect(),
+				Vec::new(),
+				(0..self.volumes.len()).map(polys_of).collect(),
 			),
-			_ => (self.compile(0), Vec::new()),
+			_ => (self.compile(0), Vec::new(), polys_of(0), Vec::new()),
 		};
 		ShapeDef {
 			name: self.name.clone(),
@@ -240,6 +247,8 @@ impl ShapeDoc {
 			states: self.states,
 			boxes,
 			explicit,
+			polys,
+			explicit_polys,
 			ramp: self.ramp,
 		}
 	}
@@ -254,19 +263,19 @@ impl ShapeDoc {
 			states: d.states,
 			ramp: d.ramp,
 			volumes: Vec::new(),
+			polys: Vec::new(),
 			active: 0,
 			dirty: false,
 		};
-		let states = match d.states {
-			StateModel::Explicit(n) => n as usize,
-			_ => 1,
-		};
-		for s in 0..states {
+		let sectioned = matches!(d.states, StateModel::Explicit(_) | StateModel::Forms(_));
+		for s in 0..d.states.sections() {
 			let mut cells: Vec<VoxelGrid> = (0..doc.parts()).map(|_| VoxelGrid::empty()).collect();
-			let list = match d.states {
-				StateModel::Explicit(_) => &d.explicit[s],
-				_ => &d.boxes,
+			let (list, polys) = if sectioned {
+				(&d.explicit[s], &d.explicit_polys[s])
+			} else {
+				(&d.boxes, &d.polys)
 			};
+			doc.polys.push(polys.clone());
 			for b in list {
 				let v = Voxel {
 					roles: b.roles,
@@ -408,7 +417,7 @@ mod tests {
 			let states = doc.volumes.len();
 			for s in 0..states {
 				let original = match parsed.states {
-					StateModel::Explicit(_) => &parsed.explicit[s],
+					StateModel::Explicit(_) | StateModel::Forms(_) => &parsed.explicit[s],
 					_ => &parsed.boxes,
 				};
 				let compiled = doc.compile(s);

@@ -60,10 +60,10 @@ pub const PLAYERBOX: Knob = value(
 	"a fake remote holding <item> (dirt|torch|stairs|slab|door|bucket|bucket-full|siphon|pick|sigil|empty)",
 );
 pub const CONFETTI: Knob = flag("confetti", "DIG_CONFETTI", "the milestone confetti burst");
-pub const CLOUDS: Knob = flag(
-	"clouds",
-	"DIG_CLOUDS",
-	"the volumetric cloud deck, off by default while it is tuned",
+pub const NO_CLOUDS: Knob = flag(
+	"noclouds",
+	"DIG_NO_CLOUDS",
+	"drop the volumetric cloud deck from the sky and the water's mirror",
 );
 pub const ORBIT: Knob = value(
 	"orbit",
@@ -87,6 +87,11 @@ pub const BURSTS: Knob = flag(
 	"DIG_BURSTS",
 	"the burst rack: all four particle kinds thrown a few blocks ahead",
 );
+pub const FX: Knob = value(
+	"fx",
+	"DIG_FX",
+	"pose departure, arrival, channel, orb and marker at <percent>",
+);
 pub const NO_MARKERS: Knob = flag(
 	"nomarkers",
 	"DIG_NO_MARKERS",
@@ -96,6 +101,11 @@ pub const SHAPES: Knob = flag(
 	"shapes",
 	"DIG_SHAPES",
 	"every shaped block laid out in a row",
+);
+pub const MATERIALS: Knob = flag(
+	"materials",
+	"DIG_MATERIALS",
+	"tiled stone, polished stone and metal with lamps for material review",
 );
 pub const DOORS: Knob = flag("doors", "DIG_DOORS", "doors in every state");
 pub const EDITOR: Knob = flag(
@@ -126,6 +136,11 @@ pub const TUNNEL: Knob = flag(
 	"a sealed bore past the cascades' coverage",
 );
 pub const DIVE: Knob = flag("dive", "DIG_DIVE", "submerged in the sea");
+pub const SPRAY: Knob = flag(
+	"spray",
+	"DIG_SPRAY",
+	"a waterfall feeding the diagnostic pool",
+);
 pub const RIVER: Knob = flag(
 	"river",
 	"DIG_RIVER",
@@ -217,13 +232,15 @@ pub const ALL: &[Knob] = &[
 	SCREEN,
 	PLAYERBOX,
 	CONFETTI,
-	CLOUDS,
+	NO_CLOUDS,
 	ORBIT,
 	DOLLY,
 	TUTORIAL,
 	BURSTS,
+	FX,
 	NO_MARKERS,
 	SHAPES,
+	MATERIALS,
 	DOORS,
 	EDITOR,
 	SPHERE,
@@ -234,6 +251,7 @@ pub const ALL: &[Knob] = &[
 	TUNNEL,
 	DIVE,
 	RIVER,
+	SPRAY,
 	TORCHES,
 	TORCHES_FAR,
 	TORCHES_WALL,
@@ -299,7 +317,7 @@ pub fn apply(
 		})?);
 	}
 	config.debug_confetti = on(&CONFETTI);
-	config.clouds = on(&CLOUDS);
+	config.clouds = !on(&NO_CLOUDS);
 	config.debug_bursts = on(&BURSTS);
 	if let Some(v) = get(&TUTORIAL) {
 		use crate::tutorial::{StepId, TutorialOverride};
@@ -353,6 +371,7 @@ pub fn apply(
 	}
 	config.markers = !on(&NO_MARKERS);
 	config.debug_shapes = on(&SHAPES);
+	config.debug_materials = on(&MATERIALS);
 	config.debug_doors = on(&DOORS);
 	config.debug_editor = on(&EDITOR);
 	config.debug_vault_dark = on(&VAULT_DARK);
@@ -360,7 +379,8 @@ pub fn apply(
 	config.debug_roof = on(&ROOF);
 	config.debug_tunnel = on(&TUNNEL);
 	config.debug_dive = on(&DIVE);
-	config.debug_river = on(&RIVER);
+	config.debug_spray = on(&SPRAY);
+	config.debug_river = on(&RIVER) || config.debug_spray;
 	config.debug_torches_wall = on(&TORCHES_WALL);
 	if let Some(v) = get(&ORE) {
 		config.debug_ore = v
@@ -461,6 +481,7 @@ pub fn apply(
 			)
 		})?);
 	}
+	config.debug_fx = percent(&FX)?;
 	config.debug_cast = percent(&CAST)?;
 	config.debug_siphon = percent(&SIPHON)?;
 	if config.debug_siphon.is_some() {

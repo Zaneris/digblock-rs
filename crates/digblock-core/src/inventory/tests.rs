@@ -396,3 +396,51 @@ fn fares_are_paid_together_or_not_at_all() {
 	assert!(!inv.try_take_fares(&[(E::Unda, 1), (E::Vitae, 3)]));
 	assert_eq!(inv.sub_count(E::Unda), 5);
 }
+
+/// A spawn among conifers has only needles to offer, and the siphon is the one recipe a fresh
+/// player MUST be able to make: a line that names the canopy takes any canopy, and a mixed pack
+/// pays it from both without ever spending more than the line.
+#[test]
+fn a_conifer_canopy_pays_the_siphon() {
+	let feed = crate::alchemy::craft_feedstock(BlockType::EssenceSiphon);
+	let (canopy, _) = feed
+		.iter()
+		.copied()
+		.find(|(f, _)| f.is_foliage())
+		.expect("the siphon asks for the canopy");
+	let needles = BlockType::ALL
+		.iter()
+		.copied()
+		.find(|&b| b != canopy && b.is_foliage())
+		.expect("a second canopy");
+	let craft = AlchemyOp::Craft {
+		item: BlockType::EssenceSiphon,
+		count: 1,
+	};
+
+	// Needles alone.
+	let mut inv = Inventory::default();
+	for &(f, n) in &feed {
+		inv.add(if f == canopy { needles } else { f }, n);
+	}
+	assert!(
+		apply_alchemy(&mut inv, craft, &at(1)),
+		"a pine canopy buys the siphon"
+	);
+	assert_eq!(inv.count(needles), 0, "and is spent for it");
+
+	// A mixed canopy: one leaf short, made up in needles, and the debit
+	// takes the line and no more.
+	let mut inv = Inventory::default();
+	for &(f, n) in &feed {
+		inv.add(f, if f == canopy { n - 1 } else { n });
+	}
+	inv.add(needles, 3);
+	assert!(
+		apply_alchemy(&mut inv, craft, &at(1)),
+		"the two canopies pay one line together"
+	);
+	assert_eq!(inv.count(canopy), 0, "the named canopy goes first");
+	assert_eq!(inv.count(needles), 2, "needles cover exactly the shortfall");
+	assert_eq!(inv.count(BlockType::EssenceSiphon), 1);
+}

@@ -76,6 +76,7 @@ struct VsOut {
 	@builtin(position) pos: vec4f,
 	@location(0) uv: vec2f,
 	@location(1) col: vec4f,
+	@location(2) flutter: vec2f,
 }
 
 @vertex
@@ -103,14 +104,17 @@ fn vs(
 	let k = 1.9;
 	let term = vec3f(0.0, -1.15, 0.0);
 	let decay = (1.0 - exp(-k * age)) / k;
-	let center = inst.xyz + term * age + (v0 - term) * decay;
+	let flutter = smoothstep(0.1, 0.6, age);
+	let center = inst.xyz + term * age + (v0 - term) * decay
+		+ vec3f(sin(age * 5.0 + az), 0.15 * sin(age * 7.0 + az), cos(age * 4.0 + az)) * 0.18 * flutter;
 
 	// Tumble: the flake spins about its own long axis, so it periodically
 	// turns edge-on and vanishes for an instant. Cheap (one cos on the
 	// width) and it is most of what sells paper.
 	let spin = 7.0 + 9.0 * hash1(seed + 3.0);
 	let tumble = abs(cos(spin * age + hash1(seed + 4.0) * 6.2832));
-	let size = vec2f(FLAKE.x * (0.15 + 0.85 * tumble), FLAKE.y);
+	let streamer = pi % 9u == 0u;
+	let size = vec2f(FLAKE.x * (0.15 + 0.85 * tumble), FLAKE.y * select(1.0, 2.8, streamer));
 	// Roll in screen space so the flakes aren't all axis-aligned.
 	let roll = spin * 0.35 * age + hash1(seed + 5.0) * 6.2832;
 	let rot = vec2f(cos(roll), sin(roll));
@@ -145,10 +149,10 @@ fn vs(
 	let gmax = gi_lateral_max(frame.gi_misc.x);
 	if dot(lat, lat) <= gmax * gmax && !stubbed(STUB_GINEE) {
 		nee = sum_lights(
-			i32(frame.gi_misc.x), frame.gi_misc.y, frame.cam_pos.xz, center, vec3f(0.0),
+			i32(frame.gi_misc.x), frame.gi_misc.y, frame.cam_pos.xz, center, vec3f(0.0), frame.light_color.w,
 		);
 	}
-	let col = base * (cam_light.ambient.rgb + frame.light_color.rgb * 0.8 * sh + nee);
+	let col = base * (0.72 + 0.28 * tumble) * (cam_light.ambient.rgb + frame.light_color.rgb * 0.8 * sh + nee);
 	// The participating medium, per vertex — a flake is far smaller than
 	// the segment varies over.
 	let ray = normalize(world - frame.cam_pos.xyz);
@@ -166,13 +170,16 @@ fn vs(
 	o.pos = frame.view_proj * vec4f(world, 1.0);
 	o.uv = corner + 0.5;
 	o.col = vec4f(lit, alpha);
+	o.flutter = vec2f(age * 8.0 + az, f32(streamer));
 	return o;
 }
 
 @fragment
 fn fs(i: VsOut) -> @location(0) vec4f {
-	// A flake is a rectangle with barely-softened edges — sharp enough to
-	// read as paper rather than as the round droplets spray draws.
-	let d = max(abs(i.uv.x - 0.5), abs(i.uv.y - 0.5)) * 2.0;
-	return vec4f(i.col.rgb, i.col.a * smoothstep(1.0, 0.88, d));
+	let pixel = max(length(fwidth(i.uv)) * 2.0, 0.008);
+	var p = (i.uv - 0.5) * 2.0;
+	p.x += sin(p.y * 4.0 + i.flutter.x) * 0.2 * i.flutter.y;
+	let edge = fx_edge(max(abs(p.x) / 0.78, abs(p.y)), 1.0, pixel);
+	let fold = 0.88 + 0.12 * cos(p.x * 3.0 + i.flutter.x);
+	return vec4f(i.col.rgb * fold, i.col.a * edge);
 }
