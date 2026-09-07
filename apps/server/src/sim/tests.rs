@@ -647,6 +647,68 @@ fn gated_rock_refuses_the_dig_start() {
 	assert_eq!(sim.test_digging(1), Some(hit.cell), "gate cleared at 5");
 }
 
+/// The surface tier, server half: leystone stands in Stone and the siphon is its whole gate, so
+/// a level-one player who has just made one draws it, and without the tool in hand the wall
+/// they meet is the TOOL. Gated on the cell rather than the block they see, the start refused a
+/// first find with Stone's Mining wall — a wall only the spent face a draw leaves should carry.
+#[test]
+fn a_fresh_siphon_holder_draws_leystone_through_stones_wall() {
+	use digblock_core::block::BlockType;
+	let (cell, eye) = super::harness::a_node_under_spawn(BlockType::Leystone);
+	assert!(
+		digblock_core::unlock::mine(BlockType::Stone) > 1,
+		"the host has to have a wall or this proves nothing"
+	);
+	let start = |slot: u8| SimEvent::Msg {
+		conn_id: 1,
+		msg: ClientMsg::DigStart {
+			cell: [cell.0, cell.1, cell.2],
+			slot,
+		},
+	};
+
+	// Owning the siphon reveals the find; a hand on a block slot is refused for the TOOL.
+	let mut sim = super::harness::flat_sim_at("ley-hand", eye);
+	let mut c = connect(&mut sim, 1);
+	wait_live(&mut sim, 1);
+	sim.test_grant(1, BlockType::EssenceSiphon, 1);
+	sim.tick_once(vec![start(0)]);
+	c.drain();
+	assert!(
+		c.msgs.iter().any(|m| matches!(
+			m,
+			ServerMsg::DigRefused {
+				reason: digblock_net::messages::RejectReason::NeedsTool,
+				..
+			}
+		)),
+		"a revealed leystone refuses the bare hand for the tool, not the stone: {:?}",
+		c.msgs
+	);
+	assert_eq!(sim.test_digging(1), None, "no hold opened");
+
+	// The siphon in hand: the draw opens at Mining 1.
+	let mut sim = super::harness::flat_sim_at("ley-draw", eye);
+	let mut c = connect(&mut sim, 1);
+	wait_live(&mut sim, 1);
+	sim.test_grant(1, BlockType::EssenceSiphon, 1);
+	sim.bench_set_active_tool(1, BlockType::EssenceSiphon);
+	sim.tick_once(vec![start(digblock_core::hotbar::HOTBAR_SLOTS as u8 - 1)]);
+	c.drain();
+	assert!(
+		!c.msgs
+			.iter()
+			.any(|m| matches!(m, ServerMsg::DigRefused { .. })),
+		"a fresh siphon-holder's first leystone was refused: {:?}",
+		c.msgs
+	);
+	assert_eq!(
+		sim.test_digging(1),
+		Some(cell),
+		"the draw opens at Mining 1"
+	);
+}
+
 /// SKILLS-DESIGN §5.3, server half — the whole ore loop in one test, because the parts only mean
 /// anything together: (1) below the reveal a vein is stone and pays rubble; (2) at the reveal
 /// without the siphon `DigStart` refuses with `NeedsTool` and opens no hold; (3) with the siphon

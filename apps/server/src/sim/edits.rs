@@ -1236,8 +1236,14 @@ impl Sim {
 		// at the hold's start for the same reason protection is: the
 		// refusal is useless after the player held the button through a
 		// full dig timer. Honest clients predict it and never send this.
-		if let Some(v) = cell_value {
-			let b = digblock_core::block::BlockType::from_id(digblock_core::chunk::cell_id(v));
+		// Asked of the block this client SEES, not the cell: a surface
+		// node stands in its host, and gated on the host a level-one
+		// siphon-holder met Stone's wall on their first leystone.
+		let seen = self.seen_block(conn_id, cell);
+		let Some(client) = self.clients.get_mut(&conn_id) else {
+			return;
+		};
+		if let Some(b) = seen {
 			// One question, the same one the client predicted with; the
 			// wire reason is all this end adds.
 			if let Some(req) = digblock_core::unlock::dig_blocked(b, &client.skills) {

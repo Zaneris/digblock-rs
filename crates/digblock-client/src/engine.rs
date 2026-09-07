@@ -1402,6 +1402,9 @@ mod water_tool_tests;
 mod craft_gate_tests;
 
 #[cfg(test)]
+mod node_gate_tests;
+
+#[cfg(test)]
 mod touch_hud_tests;
 
 #[cfg(test)]

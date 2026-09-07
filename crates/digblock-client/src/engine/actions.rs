@@ -136,6 +136,21 @@ impl Engine {
 		)
 	}
 
+	/// The block the player SEES in this cell (`nodes::seen_block`): the
+	/// raycast hands out the stored cell, which for a node is its host,
+	/// and a gate asked of the host refused a fresh siphon-holder's first
+	/// leystone with Stone's Mining wall.
+	pub(super) fn seen_block(&self, cell: (i32, i32, i32)) -> Option<BlockType> {
+		let v = self.pipeline.cell_at(cell.0, cell.1, cell.2)?;
+		Some(digblock_core::worldgen::nodes::seen_block(
+			v,
+			cell,
+			self.seed,
+			digblock_core::worldgen::nodes::Levels::of(&self.skills, &self.inventory),
+			self.pipeline.cell_edited(cell.0, cell.1, cell.2),
+		))
+	}
+
 	/// Has this cell ever been written — the provenance half of `BlockType::dig_credit`, and the
 	/// same bit `node_dig_mode` above passes to the reveal. Read off the `EditOverlay`, which
 	/// MIRRORS the server's journal in multiplayer, so both ends answer alike. A place of one's own
@@ -206,7 +221,8 @@ impl Engine {
 		// The skill gates are fully client-predictable (we know our own
 		// levels); the server's DigStart refusals are the backstop, and it
 		// asks this same question.
-		if digblock_core::unlock::dig_blocked(hit.block, &self.skills).is_some() {
+		let seen = self.seen_block(hit.cell).unwrap_or(hit.block);
+		if digblock_core::unlock::dig_blocked(seen, &self.skills).is_some() {
 			return false;
 		}
 		// A revealed vein and the wrong tool: predicted here so the hold
@@ -1023,7 +1039,8 @@ impl Engine {
 			{
 				Some((h.cell, Msg::NeedsSiphon))
 			} else {
-				digblock_core::unlock::dig_blocked(h.block, &self.skills)
+				let seen = self.seen_block(h.cell).unwrap_or(h.block);
+				digblock_core::unlock::dig_blocked(seen, &self.skills)
 					.map(|req| (h.cell, Msg::DigRefused(req)))
 			}
 		}) && self.refused_cell != Some(cell)

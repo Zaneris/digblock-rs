@@ -1136,6 +1136,25 @@ impl Sim {
 			.is_some_and(|c| c.contains_key(&(x, y, z)))
 	}
 
+	/// The block this client SEES in the cell (`nodes::seen_block`): what
+	/// every predictable gate is asked of, so a surface node is never
+	/// refused as the stone it stands in.
+	pub(super) fn seen_block(
+		&self,
+		conn_id: u64,
+		cell: (i32, i32, i32),
+	) -> Option<digblock_core::block::BlockType> {
+		let client = self.clients.get(&conn_id)?;
+		let v = self.store.cell_at(cell.0, cell.1, cell.2)?;
+		Some(digblock_core::worldgen::nodes::seen_block(
+			v,
+			cell,
+			self.store.seed(),
+			digblock_core::worldgen::nodes::Levels::of(&client.skills, &client.inventory),
+			self.cell_edited(cell.0, cell.1, cell.2),
+		))
+	}
+
 	/// What a dig on this cell is FOR this client — the same question the
 	/// client predicted with, asked of the server's own world.
 	pub(super) fn ore_dig_mode(
