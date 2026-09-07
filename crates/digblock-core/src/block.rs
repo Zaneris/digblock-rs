@@ -74,7 +74,7 @@ blocks! {
 	/// Marsh surface and subsoil: wet dark earth.
 	Mud = 18 => mat(dig(carveable(props(RenderClass::Opaque, true, tex::MUD, tex::MUD, tex::MUD)), 25, DigFamily::Soft), Material::Mud),
 	/// Steep-shore and scree surface: loose pebbled rock.
-	Gravel = 19 => mat(dig(carveable(props(RenderClass::Opaque, true, tex::GRAVEL, tex::GRAVEL, tex::GRAVEL)), 45, DigFamily::Rock), Material::Gravel),
+	Gravel = 19 => mat(dig(carveable(props(RenderClass::Opaque, true, tex::GRAVEL, tex::GRAVEL, tex::GRAVEL)), 45, DigFamily::Loose), Material::Gravel),
 	/// Conifer foliage; a structure block like Leaves, so not carveable.
 	PineLeaves = 20 => mat(dig(props(RenderClass::Opaque, true, tex::PINE_LEAVES, tex::PINE_LEAVES, tex::PINE_LEAVES), 10, DigFamily::Fixed), Material::PineLeaf),
 	/// The stratum under sandy floors (ocean, beach, river, lake beds).
@@ -103,7 +103,7 @@ blocks! {
 	/// placeable, and the mass Terra feedstock at the bench. Placed, it
 	/// reads as rough cobble — the free rustic building material. Drops
 	/// itself, so it round-trips.
-	Rubble = 27 => mat(dig(props(RenderClass::Opaque, true, tex::RUBBLE, tex::RUBBLE, tex::RUBBLE), 90, DigFamily::Rock), Material::Rubble),
+	Rubble = 27 => mat(dig(props(RenderClass::Opaque, true, tex::RUBBLE, tex::RUBBLE, tex::RUBBLE), 60, DigFamily::Loose), Material::Rubble),
 	/// First light (SKILLS-DESIGN §7.3/§7.4): a floor-mounted post with a
 	/// glowing head, crafted early — before ore on purpose. It both
 	/// `glows` (fullbright ink, so the head reads bright of itself) and
@@ -330,8 +330,8 @@ blocks! {
 	/// before the reuse, keyed on the record's version and never on its contents.
 	DirtSlab = 91 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::DIRT, tex::DIRT, tex::DIRT)), ShapeKind::Slab), 10, DigFamily::Soft), Material::Dirt),
 	DirtStairs = 92 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::DIRT, tex::DIRT, tex::DIRT)), ShapeKind::Stairs), 30, DigFamily::Soft), Material::Dirt),
-	RubbleSlab = 93 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::RUBBLE, tex::RUBBLE, tex::RUBBLE)), ShapeKind::Slab), 30, DigFamily::Rock), Material::Rubble),
-	RubbleStairs = 94 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::RUBBLE, tex::RUBBLE, tex::RUBBLE)), ShapeKind::Stairs), 90, DigFamily::Rock), Material::Rubble),
+	RubbleSlab = 93 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::RUBBLE, tex::RUBBLE, tex::RUBBLE)), ShapeKind::Slab), 20, DigFamily::Loose), Material::Rubble),
+	RubbleStairs = 94 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::RUBBLE, tex::RUBBLE, tex::RUBBLE)), ShapeKind::Stairs), 60, DigFamily::Loose), Material::Rubble),
 	/// Conifer boughs: the sloped pieces a pine's tiers are built from (`shapes::CanopyForm`).
 	/// Worldgen's, never crafted; a dig hands back the plain needle cube, so no slot ever holds one.
 	PineBoughs = 95 => drops(dig(shaped(props(RenderClass::Shaped, true, tex::PINE_LEAVES, tex::PINE_LEAVES, tex::PINE_LEAVES), ShapeKind::Canopy), 10, DigFamily::Fixed), BlockType::PineLeaves),
@@ -732,8 +732,10 @@ pub enum DigFamily {
 	Fixed,
 	/// Loose ground: the gentlest climb, and diggable from the first swing.
 	Soft,
-	/// Timber: a firmer start and a gentler ceiling, the middle rung of the strength wall.
+	/// Timber: a firmer start and a gentler ceiling, the second rung of the strength wall.
 	Wood,
+	/// Loose rock (gravel, rubble): a heap rather than a face, the rung before solid rock.
+	Loose,
 	/// Rock resists a novice hard, and is the last rung of the strength wall.
 	Rock,
 }

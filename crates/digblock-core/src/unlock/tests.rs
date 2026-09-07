@@ -110,7 +110,7 @@ fn grid_gates_compose() {
 }
 
 /// The strength wall (§5.1, the reversed-by-design stance): the ladder
-/// is the DIG FAMILY, so it is soil → timber → rock and every block of
+/// is the DIG FAMILY, so it is soil → timber → loose rock → rock and every block of
 /// a family opens together, shapes included. Substances that must also
 /// be earned take the later of the two gates.
 #[test]
@@ -134,15 +134,17 @@ fn the_strength_wall_is_the_dig_family() {
 	] {
 		assert_eq!(mine(b), 2, "{b:?} is Wood family");
 	}
-	// Rock last, gravel and sandstone included: gravel used to be the
-	// ungated entry rock and timber has taken that job.
+	// Loose rock after timber and before the quarry face: gravel and
+	// rubble, every shape of rubble with it.
+	for b in [B::Gravel, B::Rubble, B::RubbleSlab, B::RubbleStairs] {
+		assert_eq!(mine(b), 5, "{b:?} is Loose family");
+	}
+	// Rock last, sandstone included; the spent ore host is stone too.
 	for b in [
-		B::Gravel,
 		B::Sandstone,
 		B::Stone,
 		B::StoneStairs,
 		B::StoneSlab,
-		B::Rubble,
 		B::DepletedStone,
 	] {
 		assert_eq!(mine(b), 10, "{b:?} is Rock family");
@@ -269,6 +271,7 @@ fn no_node_opens_before_the_gate_that_reveals_it() {
 					mine(spent),
 					mine(match spent.dig_family() {
 						crate::block::DigFamily::Rock => B::Stone,
+						crate::block::DigFamily::Loose => B::Rubble,
 						crate::block::DigFamily::Wood => B::Wood,
 						_ => B::Dirt,
 					}),
@@ -381,11 +384,16 @@ fn one_question_answers_every_dig_gate() {
 		Some((Skill::Mining, mine(B::Wood), Kind::Strength)),
 		"timber is the second rung"
 	);
-	for b in [B::Gravel, B::Stone] {
+	assert_eq!(
+		dig_blocked(B::Gravel, &fresh).map(|r| (r.skill, r.level, r.kind)),
+		Some((Skill::Mining, mine(B::Rubble), Kind::Strength)),
+		"gravel is the third rung"
+	);
+	for b in [B::Sandstone, B::Stone] {
 		assert_eq!(
 			dig_blocked(b, &fresh).map(|r| (r.skill, r.level, r.kind)),
 			Some((Skill::Mining, mine(B::Stone), Kind::Strength)),
-			"{b:?} is the third rung"
+			"{b:?} is the fourth rung"
 		);
 	}
 	assert_eq!(

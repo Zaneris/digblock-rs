@@ -124,9 +124,10 @@ fn mining_teasers() -> Vec<(u32, &'static str)> {
 	vec![
 		(unlock::mine(B::Wood), "Timber gives: trees and planed wood"),
 		(
-			unlock::mine(B::Stone),
-			"Rock gives: gravel, sandstone, stone",
+			unlock::mine(B::Rubble),
+			"Loose rock gives: gravel and rubble",
 		),
+		(unlock::mine(B::Stone), "Rock gives: sandstone and stone"),
 		(reveal_at(B::Emberore), "Emberore reveals: bring a siphon"),
 		(
 			unlock::PROSPECT_FAINT_AT,

@@ -176,6 +176,7 @@ fn samples() -> Vec<Msg> {
 		Msg::VeinsRevealed,
 		Msg::SourcesRevealed,
 		Msg::NowDiggable(digblock_core::block::DigFamily::Wood),
+		Msg::NowDiggable(digblock_core::block::DigFamily::Loose),
 		Msg::NowDiggable(digblock_core::block::DigFamily::Rock),
 		Msg::Connected,
 		Msg::UnrankedServer,

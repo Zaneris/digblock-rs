@@ -79,7 +79,7 @@ fn skill_set_accumulates_and_round_trips() {
 #[test]
 fn every_scaling_family_speeds_up_and_fixed_never_moves() {
 	use crate::block::DigFamily as F;
-	for family in [F::Fixed, F::Soft, F::Wood, F::Rock] {
+	for family in [F::Fixed, F::Soft, F::Wood, F::Loose, F::Rock] {
 		let (novice, master) = (
 			dig_speed_permille(family, 1),
 			dig_speed_permille(family, MAX_LEVEL),
@@ -154,7 +154,7 @@ fn every_dig_speedup_is_smaller_than_the_one_before() {
 		);
 		assert!(now < prev, "taper jump {i} ({now}) must be under {prev}");
 	}
-	for family in [F::Fixed, F::Soft, F::Wood, F::Rock] {
+	for family in [F::Fixed, F::Soft, F::Wood, F::Loose, F::Rock] {
 		let flat = family == F::Fixed;
 		// Flat between steps, and it moves on every one of them.
 		for level in 2..=99 {

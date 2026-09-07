@@ -266,6 +266,7 @@ pub fn dig_speed_permille(family: crate::block::DigFamily, level: u32) -> u32 {
 		DigFamily::Fixed => (1000, 1000),
 		DigFamily::Soft => (2063, 542),
 		DigFamily::Wood => (2228, 650),
+		DigFamily::Loose => (2500, 542),
 		DigFamily::Rock => (2805, 542),
 	};
 	start - (DIG_TAPER[dig_step_index(level)] * (start - end) + 500) / 1000

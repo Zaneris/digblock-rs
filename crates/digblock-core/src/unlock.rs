@@ -436,14 +436,17 @@ pub fn mine(b: BlockType) -> u32 {
 
 /// The strength wall keyed on the DIG FAMILY — the same axis that decides how long a hold takes
 /// (§5.1), which is the only thing raw strength can honestly be about. Soil and foliage from
-/// the first swing, then timber, then rock: each rung is opened by digging the one below it.
-/// Keying it here rather than on the substance is what stops rock being the only family with a
-/// wall, and it puts GRAVEL behind the same wall as stone rather than leaving it entry rock.
+/// the first swing, then timber, then loose rock, then the quarry face: each rung is opened by
+/// digging the one below it. Keying it here rather than on the substance is what stops rock
+/// being the only family with a wall. Gravel and rubble stand on their own rung: a heap comes
+/// apart before a face does, and the bench shapes rubble long before the mason's unlock, so
+/// holding it behind stone's wall would open the recipe with nothing to feed it.
 fn mine_family(f: crate::block::DigFamily) -> u32 {
 	use crate::block::DigFamily as F;
 	match f {
 		F::Fixed | F::Soft => 1,
 		F::Wood => 2,
+		F::Loose => 5,
 		F::Rock => 10,
 	}
 }
@@ -652,7 +655,7 @@ pub fn family_opened(level: u32) -> Option<crate::block::DigFamily> {
 	if level <= 1 {
 		return None;
 	}
-	[F::Fixed, F::Soft, F::Wood, F::Rock]
+	[F::Fixed, F::Soft, F::Wood, F::Loose, F::Rock]
 		.into_iter()
 		.find(|&f| mine_family(f) == level)
 }
