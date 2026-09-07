@@ -152,7 +152,8 @@ from texture means, so changing lamp art also changes its emitted tint. Aether a
 Metal and polished stone use texture-derived finish bits in `mesher::solid_word1` for world-surface highlights in
 `chunk.wgsl`; shapes and held items (both hand shaders) inherit the finish through their face textures, and
 `finish_common.wgsl` is the one definition of the lobe. The sun lobe follows the traced sun visibility; local light is
-the probe cache read along the mirrored view ray, a few atlas taps and no per-fragment light scan or shadow march. The
+the probe cache read along the mirrored view ray plus unshadowed Blinn highlights from the head of the light list, which
+`select_lights` orders nearest the eye for exactly that read; no per-fragment light scan or shadow march. The
 `materials` diagnostic scene (`DIG_MATERIALS=1` / `?materials`) compares metal, polished stone and matte stone.
 
 `fire_common.wgsl` (the torch flicker, keyed on the frame clock in `light_color.w`) must precede `gi_dda.wgsl` wherever

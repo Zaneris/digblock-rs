@@ -662,6 +662,14 @@ mod tests {
 					"{name} takes the finish prelude but never calls `{f}`"
 				);
 			}
+			// The two passes with a light list mirror its nearest lamps; the
+			// hand has no list and keeps the camera probe's sheen.
+			if name != "viewmodel" {
+				assert!(
+					src.matches("finish_lamps(").count() >= 2,
+					"{name} draws finished faces but never mirrors the lamps"
+				);
+			}
 		}
 	}
 

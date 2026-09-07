@@ -32,10 +32,11 @@ impl GiDraw {
 	}
 
 	/// Rebuild the flattened light list when it changed: the `cap` nearest emitters to the
-	/// selection anchor, count in the header. Order never matters to a reader, so a stale
-	/// SELECTION bites only through the truncation — "nearest to an anchor that has since left"
-	/// drops the torches around the player. Nothing is sorted: `select_lights` partitions. `cap`
-	/// is `Settings::max_lights`; the buffer and shader clamps stay sized to `MAX_LIGHTS`.
+	/// selection anchor, count in the header, nearest the eye first. The estimators never read
+	/// the order; the glossy highlight reads the head of it. A stale SELECTION bites only through
+	/// the truncation — "nearest to an anchor that has since left" drops the torches around the
+	/// player. `cap` is `Settings::max_lights`; the buffer and shader clamps stay sized to
+	/// `MAX_LIGHTS`.
 	pub(super) fn flush_lights(&mut self, gpu: &Gpu, cam: [f32; 3], lights: LightInputs<'_>) {
 		let LightInputs {
 			fwd,

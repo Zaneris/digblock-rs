@@ -777,6 +777,36 @@ fn every_light_loop_clamps_to_the_lists_capacity() {
 	);
 }
 
+/// The glossy highlight takes the HEAD of the list as the lamps nearest the eye, with no scan of
+/// its own, so the flushed order has to be nearest-the-eye first — under the cap and over it, with
+/// a carried light in the mix, whatever the anchor ahead of the camera ranked.
+#[test]
+fn the_flushed_list_is_nearest_the_eye_first() {
+	let cam = [3.0, 8.0, -2.0];
+	let fwd = [0.0, 0.0, 1.0];
+	let field: Vec<Emitter> = (0..MAX_LIGHTS + 32)
+		.map(|i| {
+			point_at([
+				(i % 40) as f32 - 20.0,
+				8.0 + (i % 3) as f32,
+				(i / 40) as f32 + 2.0,
+			])
+		})
+		.collect();
+	let held = [point_at([cam[0], cam[1], cam[2]])];
+	for cap in [4, MAX_LIGHTS / 2, MAX_LIGHTS] {
+		let all = select_lights(field.iter().copied(), &held, cam, fwd, 1000.0, None, cap);
+		let d2 = |e: &[f32; 8]| {
+			(e[0] - cam[0]).powi(2) + (e[1] - cam[1]).powi(2) + (e[2] - cam[2]).powi(2)
+		};
+		assert!(
+			all.windows(2).all(|w| d2(&w[0]) <= d2(&w[1])),
+			"cap {cap}: the list is not nearest-the-eye first"
+		);
+		assert_eq!(d2(&all[0]), 0.0, "cap {cap}: the carried light leads");
+	}
+}
+
 /// The whole-chunk reach skip may only ever be CONSERVATIVE: admitting a chunk the per-emitter
 /// test then rejects costs a little time, while dropping one that held a reachable light silently
 /// puts a room out. Swept against the per-emitter rule over every cell of a band of chunks, the

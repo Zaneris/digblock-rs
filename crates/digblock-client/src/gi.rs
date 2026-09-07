@@ -569,8 +569,10 @@ pub(crate) fn max_draw_dist(max_buffer_size: u64) -> i32 {
 /// [`BEHIND_REACH`], not under the sky cull — at most `cap` nearest to the forward-leading
 /// segment (see `SELECT_AHEAD`), in the GPU entry form. Carried lights are simply more candidates,
 /// with no reservation: a carrier's own light sits at the near end of the segment and can never be
-/// the one dropped. Selection, NOT ordering — no reader cares about order, so the cap is settled by
-/// `select_nth_unstable_by` in O(n), which matters because a carried light moves every frame.
+/// the one dropped. The cap is settled by `select_nth_unstable_by` in O(n), which matters because a
+/// carried light moves every frame; the survivors are then ordered nearest the EYE first, so the
+/// glossy highlight (`finish_lamps` in chunk.wgsl) can take the first few as the lamps that matter
+/// without a scan. The estimators never cared about order and still do not.
 fn select_lights(
 	emitters: impl Iterator<Item = Emitter>,
 	carried: &[Emitter],
@@ -648,6 +650,11 @@ fn select_lights(
 		all.select_nth_unstable_by(cap, |a, b| a.0.total_cmp(&b.0));
 		all.truncate(cap);
 	}
+	// Nearest the eye first (not the selection anchor): a highlight is
+	// seen from where the eye is. A few hundred entries at most.
+	let eye_d2 =
+		|e: &[f32; 8]| (e[0] - cam[0]).powi(2) + (e[1] - cam[1]).powi(2) + (e[2] - cam[2]).powi(2);
+	all.sort_by(|a, b| eye_d2(&a.1).total_cmp(&eye_d2(&b.1)));
 	all.into_iter().map(|(_, e)| e).collect()
 }
 
