@@ -97,8 +97,9 @@ server *ARGS:
 	cargo run -p digblock-server --bin digblock-server -- {{ARGS}}
 
 # The inventory is authoritative: `apply` renders deploy/compose.yml from
-# each row and pushes it, so an update is one `version =` edit and an
-# apply, and a rollback is the revert. tools/fleet/README.md has the loop.
+# each row and pushes it. The release workflow moves the fleet-wide
+# `version =`, so an update is a pull and an apply, and a rollback is
+# editing it back. tools/fleet/README.md has the loop.
 #
 # Our dedicated servers over ssh: setup | adopt | diff | apply | status | start | stop | restart | logs | backup.
 fleet *ARGS:

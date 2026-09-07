@@ -25,9 +25,11 @@ just fleet start|stop|restart|logs|backup
 
 A name is a server row or a host; none means every server.
 
-**Update** is editing `version =` (fleet-wide or on one row) and running `apply`: a tag change stops the server, tars
-`./data` into `~/digblock-backups` on the host, pulls, brings it up and watches the boot. **Rollback** is reverting that
-edit and applying again. Git history is the deploy log.
+**Update** is `git pull` and `apply`: the release-server workflow moves the fleet-wide `version =` in the same commit
+that bumps the crates, so the pin and the image it names cannot drift. A tag change stops the server, tars `./data` into
+`~/digblock-backups` on the host, pulls, brings it up and watches the boot. **Rollback** is editing `version =` back
+(fleet-wide or on one row, which the workflow never touches) and applying again. Git history is the release log;
+`status` says what each host actually runs against its pin.
 
 A record-format break does NOT replace the world any more — the server refuses to boot and says so, and `apply` reports
 that as a failure. Taking the new format is `archive_world = true` on the row (`--archive-world`), which moves the world

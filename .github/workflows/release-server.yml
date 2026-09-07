@@ -75,11 +75,17 @@ jobs:
       # added. This used to carry a second `sed` for tools/texgen, which
       # was the only member holding a literal — and a list of crates to
       # remember is a list somebody eventually doesn't.
+      #
+      # The fleet pin moves too, so a release is `git pull` and
+      # `just fleet apply` with no edit between. Only the fleet-WIDE line
+      # (before the first `[hosts.…]` header): a server row may carry its
+      # own `version =` override, and that is a deliberate pin.
       - name: Set version
         run: |
           v='${{ inputs.version }}'
           sed -i "/^\[workspace\.package\]/,/^\[/ s/^version = \".*\"/version = \"$v\"/" Cargo.toml
           sed -i "\|<key>CFBundleShortVersionString</key>|{n;s|<string>.*</string>|<string>$v</string>|;}" apps/ios/xcode/Info.plist
+          sed -i "1,/^\[/ s/^version = \".*\"/version = \"$v\"/" tools/fleet/fleet.toml
           cargo update --workspace
           git diff --stat
 
