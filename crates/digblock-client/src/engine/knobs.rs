@@ -97,6 +97,11 @@ pub const SHAPES: Knob = flag(
 	"DIG_SHAPES",
 	"every shaped block laid out in a row",
 );
+pub const MATERIALS: Knob = flag(
+	"materials",
+	"DIG_MATERIALS",
+	"tiled stone, polished stone and metal with lamps for material review",
+);
 pub const DOORS: Knob = flag("doors", "DIG_DOORS", "doors in every state");
 pub const EDITOR: Knob = flag(
 	"editor",
@@ -224,6 +229,7 @@ pub const ALL: &[Knob] = &[
 	BURSTS,
 	NO_MARKERS,
 	SHAPES,
+	MATERIALS,
 	DOORS,
 	EDITOR,
 	SPHERE,
@@ -353,6 +359,7 @@ pub fn apply(
 	}
 	config.markers = !on(&NO_MARKERS);
 	config.debug_shapes = on(&SHAPES);
+	config.debug_materials = on(&MATERIALS);
 	config.debug_doors = on(&DOORS);
 	config.debug_editor = on(&EDITOR);
 	config.debug_vault_dark = on(&VAULT_DARK);

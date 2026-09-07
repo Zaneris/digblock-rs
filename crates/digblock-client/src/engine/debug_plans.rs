@@ -42,6 +42,43 @@ pub(super) fn shaped_roster(s: digblock_core::block::ShapeFamily) -> Vec<BlockTy
 		.collect()
 }
 
+/// Three tiled panels under the same sky and lamps. `?materials&tod=30` and `tod=180`
+/// separate sun and local highlights; camera movement exposes painted-on shine immediately.
+pub(super) fn debug_materials_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
+	use digblock_core::block::BlockType as B;
+	let (bx, by, bz) = (
+		spawn.x.floor() as i32,
+		spawn.y.floor() as i32,
+		spawn.z.floor() as i32,
+	);
+	let mut out = Vec::new();
+	for x in -10..=10 {
+		for z in -5..=10 {
+			let material = if x < -3 {
+				B::Stone
+			} else if x <= 3 {
+				B::PolishedStone
+			} else {
+				B::Metal
+			};
+			out.push((bx + x, by - 2, bz + z, material as u16));
+			for y in -1..=7 {
+				let wall = z == 9 && y <= 3;
+				out.push((
+					bx + x,
+					by + y,
+					bz + z,
+					if wall { material } else { B::Air } as u16,
+				));
+			}
+		}
+	}
+	for x in [-7, 0, 7] {
+		out.push((bx + x, by - 1, bz + 4, B::Lantern as u16));
+	}
+	out
+}
+
 /// DIG_SHAPES=1 layout: every shaped variant in rows floating at eye height near spawn (render
 /// verification needs no ground) — every stair material × 4 facings, then closed and open doors in
 /// every material, then the slabs. Rows run back in z, one material per row, so the rank grows

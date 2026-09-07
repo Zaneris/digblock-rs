@@ -224,6 +224,9 @@ impl Engine {
 				if config.debug_doors {
 					plan.extend(debug_doors_plan(spawn));
 				}
+				if config.debug_materials {
+					plan.extend(debug_materials_plan(spawn));
+				}
 				if config.debug_crack.is_some() {
 					plan.extend(debug_crack_plan(spawn));
 				}

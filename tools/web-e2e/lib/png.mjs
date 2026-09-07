@@ -100,9 +100,16 @@ export function detail(png, { region } = {}) {
 }
 
 /** Mean absolute per-channel difference between two same-sized captures. */
-export function diff(a, b) {
+export function diff(a, b, { region } = {}) {
 	if (a.width !== b.width || a.height !== b.height) throw new Error("size mismatch");
-	let sum = 0;
-	for (let i = 0; i < a.rgba.length; i++) if ((i & 3) !== 3) sum += Math.abs(a.rgba[i] - b.rgba[i]);
-	return sum / (a.rgba.length * 3 / 4);
+	const [x0, y0, x1, y1] = region ?? [0, 0, a.width, a.height];
+	let sum = 0, n = 0;
+	for (let y = y0; y < y1; y++) {
+		for (let x = x0; x < x1; x++) {
+			const o = (y * a.width + x) * 4;
+			for (let c = 0; c < 3; c++) sum += Math.abs(a.rgba[o + c] - b.rgba[o + c]);
+			n += 3;
+		}
+	}
+	return n ? sum / n : 0;
 }

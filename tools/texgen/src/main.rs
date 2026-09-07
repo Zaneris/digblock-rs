@@ -1,17 +1,8 @@
-//! Deterministic generator for derived block textures: palette-shift and noise
-//! variations of the hand-made originals, so new blocks stay in the established
-//! pixel-art style. Run manually (`cargo run -p texgen`) and commit the outputs —
-//! assets are `include_bytes!`d, so generated PNGs live in git. Output matches
-//! the loader contract: `SIZE`-square 8-bit, non-interlaced — RGB, or RGBA for
-//! the rows whose alpha the Translucent bucket reads (`save_rgba`).
-//!
-//! A run rewrites EVERY output, so it is not a free operation: the noisy recipes
-//! below share one rng, so adding, removing or reordering a `save` rerolls the
-//! noise in every output after it, and a hand-edited source whose derivative was
-//! never regenerated comes back into sync the moment anyone runs this. Both are
-//! fine — a reroll of the same recipe is the same texture, and re-syncing is the
-//! point — but they mean the diff of a run is wider than the edit that prompted
-//! it.
+//! Deterministic 64x64 block textures and UI sprites. Run `cargo run -p texgen`
+//! and commit the generated PNGs. Surface recipes own independent seeds; live
+//! and depleted nodes share geometry. Soil, turf and timber are generated in
+//! the same style as the mineral surfaces. Water remains untouched source art.
+//! Output is 8-bit RGB or RGBA, matching the texture-array loader contract.
 
 use digblock_core::block::{BlockType as B, Essence};
 use image::{RgbImage, RgbaImage};
@@ -19,172 +10,134 @@ use image::{RgbImage, RgbaImage};
 const DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/textures");
 const SIZE: u32 = 64;
 
+mod surfaces;
+
 fn main() {
-	let grass_top = load("GrassTop.png");
-	let grass_side = load("GrassSide.png");
-	let dirt = load("Dirt.png");
-	let stone = load("Stone.png");
-	let leaves = load("Leaves.png");
-
-	// Dry savanna grass: hue swung from green toward yellow-tan, slightly
-	// desaturated and lightened. The side texture keeps its dirt body —
-	// only green-dominant pixels (the grass fringe) are transformed.
-	save("DryGrassTop.png", map(&grass_top, dry));
-	save(
-		"DryGrassSide.png",
-		map(&grass_side, |p| {
-			if p[1] > p[0] && p[1] > p[2] {
-				dry(p)
-			} else {
-				p
-			}
-		}),
-	);
-
-	// Wet dark brown with a low-amplitude sheen.
-	let mut rng = Rng(0x00d1_6b10_cc0f_fee5);
-	save("Mud.png", mud(&dirt, &mut rng));
-
-	// Stone speckled with lightened/darkened pebble blobs.
-	save("Gravel.png", gravel(&stone, &mut rng));
-
-	// Darker blue-green conifer foliage with a touch more contrast.
-	save("PineLeaves.png", map(&leaves, pine));
-
-	// Compacted sand with horizontal strata banding.
-	let sand = load("Sand.png");
-	save("Sandstone.png", sandstone(&sand, &mut rng));
-
-	// Broken rock — the ONLY thing a natural quarry hands you now, since
-	// clean rock is bench work (SKILLS-DESIGN §7.1). It has to read as
-	// many stones rather than as one cracked face, which is a question of
-	// silhouette and not of detail; see the recipe.
-	save("Rubble.png", rubble(&stone, &mut rng));
-
-	// Torch: the side texture maps the post's timber to the LOWER rows and the flame glow to the
-	// top rows (a box face's v runs top-down from the cell's top, so the shape's flame head samples
-	// the texture's TOP rows); the flame top face gets its own radial-glow layer. Planed lumber
-	// rather than the log's bark, because a torch is a whittled stick — and the DARK timber,
-	// because this texture is drawn fullbright.
-	save(
-		"TorchSide.png",
-		torch_side(&load("LumberDark.png"), &mut rng),
-	);
-	save("TorchFlame.png", torch_flame(&mut rng));
-
-	// The four ore faces and the generic tapped one, APPENDED deliberately: the noisy recipes share
-	// one rng, so an insertion above rerolls every output after it. The colours live in
-	// `BlockType::node_flecks`, not here — the GI LUT and the spent rocks read the same pair. Cores
-	// are BRIGHT as well as saturated (chunk.wgsl gains ink by luminance), and every tier darkens
-	// its stone BODY, since emissive is a per-BLOCK flag and the contrast must live in the texture.
-	for (name, block, body) in [
-		("Emberore.png", B::Emberore, 0.34),
-		("Duskstone.png", B::Duskstone, 0.32),
-		("Glowvein.png", B::Glowvein, 0.30),
-		("Aetherock.png", B::Aetherock, 0.30),
+	use surfaces::Deposit as D;
+	let stone = surfaces::stone();
+	let sand = surfaces::sand(false);
+	let log = surfaces::bark();
+	let dirt = surfaces::dirt();
+	let grass = surfaces::grass_top(false);
+	let dry_grass = surfaces::grass_top(true);
+	let lumber_dark = surfaces::lumber([96, 73, 48]);
+	for (name, img) in [
+		("Dirt.png", dirt.clone()),
+		("GrassTop.png", grass.clone()),
+		("GrassSide.png", surfaces::grass_side(&dirt, &grass)),
+		("DryGrassTop.png", dry_grass.clone()),
+		("DryGrassSide.png", surfaces::grass_side(&dirt, &dry_grass)),
+		("Log.png", log.clone()),
+		("LogTop.png", surfaces::log_top(&log)),
+		("LumberLight.png", surfaces::lumber([191, 153, 101])),
+		("LumberDark.png", lumber_dark.clone()),
+		("LumberRed.png", surfaces::lumber([145, 87, 54])),
+		("Stone.png", stone.clone()),
+		("Sand.png", sand.clone()),
+		("Snow.png", surfaces::snow()),
+		("Leaves.png", surfaces::foliage(false)),
+		("PineLeaves.png", surfaces::foliage(true)),
+		("Mud.png", surfaces::mud()),
+		("Gravel.png", surfaces::aggregate(true)),
+		("Rubble.png", surfaces::aggregate(false)),
+		("Sandstone.png", surfaces::sand(true)),
+		("StoneBrick.png", surfaces::bricks(false)),
+		("SandstoneBrick.png", surfaces::bricks(true)),
+		("PolishedStone.png", surfaces::polished()),
+		("Metal.png", surfaces::metal()),
+		("DepletedStone.png", surfaces::depleted(&stone)),
+		("Lantern.png", surfaces::lamp(false)),
+		("Aetherlamp.png", surfaces::lamp(true)),
+		("TorchSide.png", surfaces::torch(&lumber_dark)),
+		(
+			"TorchFlame.png",
+			surfaces::glow([255, 230, 120], [225, 110, 20]),
+		),
+		(
+			"SiphonGlow.png",
+			surfaces::glow([48, 190, 96], [12, 84, 48]),
+		),
+		(
+			"PickGlow.png",
+			surfaces::glow([60, 140, 235], [16, 40, 120]),
+		),
 	] {
-		let (core, rim) = block.node_flecks().expect("a tier");
-		save(name, ore(&stone, core, rim, body, &mut rng));
+		save(name, img);
 	}
-	// A tapped vein face: the flecks are GONE and their sockets are not.
-	// Empty pockets are what makes it read as spent rather than as one more
-	// grey rock — the miner's feedback that this face is done. Superseded
-	// by the per-tier spent rocks at the end of this run and kept only
-	// because cells written before them still name it.
-	save("DepletedStone.png", depleted(&stone, &mut rng));
 
-	// The dressed stones (SKILLS-DESIGN §7.2's later materials): the same
-	// rock, worked. Bricks get a running bond, polished stone gets its
-	// grain smoothed out and a faint sheen.
-	save("StoneBrick.png", bricks(&stone, 16, 8, &mut rng));
-	save(
-		"SandstoneBrick.png",
-		bricks(&load("Sandstone.png"), 16, 8, &mut rng),
-	);
-	save("PolishedStone.png", polished(&stone, &mut rng));
-	// Clear glass: one flat near-white tint at a modest alpha, so most of what
-	// you see through a pane is the world behind it (the render's
-	// Translucent bucket multiplies the backdrop by its transmittance).
-	save_rgba("Glass.png", glass(&mut rng));
-	// Metal: a cool grey plate, planished — the flat highlights are what
-	// separate it from stone at a glance.
-	save("Metal.png", metal(&stone, &mut rng));
-	// Crystal: an Aether-blue body carrying the emissive bit the way the
-	// deep ores do, with fine cracks a shade brighter. Near-opaque
-	// throughout — it is see-through, but it is a solid, not a window.
-	save_rgba("Crystal.png", crystal(&mut rng));
-	// The two lamps, both emissive: a metal frame around a lit pane.
-	save("Lantern.png", lamp([255, 214, 138], [96, 88, 78], &mut rng));
-	save(
-		"Aetherlamp.png",
-		lamp([186, 226, 255], [70, 74, 96], &mut rng),
-	);
-	// The two tool glows (SKILLS-DESIGN §7.3): what the siphon collects and what the pick resonates
-	// with, each drawn as one orb and used TWICE — as the emissive face of its tool's geometry, and
-	// as the tool row's texture, where the GI material LUT reads the colour of the light it casts.
-	// One artifact decides how the tool looks and what its light looks like, so the two cannot
-	// drift. Appended after the lamps so everything above keeps the bytes it had.
-	save(
-		"SiphonGlow.png",
-		radial_glow([48, 190, 96], [12, 84, 48], &mut rng),
-	);
-	save(
-		"PickGlow.png",
-		radial_glow([60, 140, 235], [16, 40, 120], &mut rng),
-	);
-	// The four SPENT vein faces — what a siphon leaves standing, one per tier. Appended last for
-	// the reason everything else was. Deliberately NOT the generic tapped stone above, and not
-	// empty sockets: this is the same rock with the same flecks in the same places, drained, so a
-	// worked seam still reads as the seam you worked. Telling spent from live is then a question of
-	// LIGHT — the live rows glow and cast, and these do neither.
-	for (name, block) in [
-		("DepletedEmberore.png", B::Emberore),
-		("DepletedDuskstone.png", B::Duskstone),
-		("DepletedGlowvein.png", B::Glowvein),
-		("DepletedAetherock.png", B::Aetherock),
+	for (live, spent, block, host, kind) in [
+		(
+			"Emberore.png",
+			"DepletedEmberore.png",
+			B::Emberore,
+			&stone,
+			D::Ember,
+		),
+		(
+			"Duskstone.png",
+			"DepletedDuskstone.png",
+			B::Duskstone,
+			&stone,
+			D::Dusk,
+		),
+		(
+			"Glowvein.png",
+			"DepletedGlowvein.png",
+			B::Glowvein,
+			&stone,
+			D::Glow,
+		),
+		(
+			"Aetherock.png",
+			"DepletedAetherock.png",
+			B::Aetherock,
+			&stone,
+			D::Aether,
+		),
+		(
+			"Heartwood.png",
+			"DrainedHeartwood.png",
+			B::Heartwood,
+			&log,
+			D::Heart,
+		),
+		(
+			"Leystone.png",
+			"SpentLeystone.png",
+			B::Leystone,
+			&stone,
+			D::Ley,
+		),
+		(
+			"Springstone.png",
+			"SpentSpringstone.png",
+			B::Springstone,
+			&sand,
+			D::Spring,
+		),
 	] {
-		let (core, rim) = block.node_flecks().expect("a tier");
-		save(name, spent(&stone, core, rim, &mut rng));
+		let (core, rim) = block.node_flecks().expect("node palette");
+		let (a, b) = surfaces::deposit(host, core, rim, kind);
+		save(live, a);
+		save(spent, b);
 	}
+	save_rgba("Crystal.png", surfaces::crystal());
 
-	// The three SURFACE nodes (the essence redesign) and their spent faces — the ore recipe
-	// pointed at the hosts' own bodies, so a node reads as its host WITH something in it: living
-	// green in bark, earthen amber in stone, spring blue in wet sand. Live faces darken their
-	// bodies because they glow (the ore contrast rule); spent faces stay at ordinary brightness,
-	// being lit like any block. Appended last for the reason everything above was.
-	let log = load("Log.png");
-	{
-		let (core, rim) = B::Heartwood.node_flecks().expect("a node");
-		save("Heartwood.png", ore(&log, core, rim, 0.42, &mut rng));
-		save("DrainedHeartwood.png", spent(&log, core, rim, &mut rng));
-	}
-	{
-		let (core, rim) = B::Leystone.node_flecks().expect("a node");
-		save("Leystone.png", ore(&stone, core, rim, 0.34, &mut rng));
-		save("SpentLeystone.png", spent(&stone, core, rim, &mut rng));
-	}
-	{
-		let (core, rim) = B::Springstone.node_flecks().expect("a node");
-		save("Springstone.png", ore(&sand, core, rim, 0.42, &mut rng));
-		save("SpentSpringstone.png", spent(&sand, core, rim, &mut rng));
-	}
-	// The tinted panes — clean glass in a colour, drawn with NO rng at
-	// all and saved after everything else, so adding one can never
-	// reroll an earlier recipe.
+	// Clean panes retain their transmission; a painted pattern repeats across every spell shell.
+	save_rgba(
+		"Glass.png",
+		RgbaImage::from_pixel(SIZE, SIZE, image::Rgba([210, 228, 236, 120])),
+	);
 	for (name, tint) in [
-		("GlassRed.png", [225u8, 58, 48]),
-		("GlassGreen.png", [84u8, 205, 96]),
-		("GlassBlue.png", [72u8, 128, 232]),
-		("GlassAmber.png", [235u8, 172, 64]),
+		("GlassRed.png", [225, 58, 48]),
+		("GlassGreen.png", [84, 205, 96]),
+		("GlassBlue.png", [72, 128, 232]),
+		("GlassAmber.png", [235, 172, 64]),
 	] {
 		save_rgba(name, tinted_pane(tint));
 	}
-	// Wardglass — the conjured pane: whiter and denser than clear glass
-	// so a road reads as glass from above and below. Rng-free, same rule.
 	save_rgba("Wardglass.png", wardglass());
-	// The essence chips — the UI's only sprites, one flake per essence in
-	// its own palette. Also rng-free and also saved last, for the same
-	// reason as the panes.
+
 	for (name, e) in [
 		("EssenceVitae.png", Essence::Vitae),
 		("EssenceTerra.png", Essence::Terra),
@@ -192,101 +145,14 @@ fn main() {
 		("EssenceFerrum.png", Essence::Ferrum),
 		("EssenceAether.png", Essence::Aether),
 	] {
-		let (core, rim) = e.palette();
-		save_rgba(name, essence_flake(core, rim));
+		save_rgba(name, essence_flake(e));
 	}
-	// The spell glyphs — the spell bar's sprites, one per castable shape
-	// plus the two waystone marks (the port one authored near-white as a
-	// tint canvas, coloured per biome at draw time). Rng-free and saved
-	// last, the essence-chip rule.
-	save_rgba("SpellWisp.png", spell_wisp());
-	save_rgba("SpellKindle.png", spell_kindle());
-	save_rgba("SpellSphere.png", spell_sphere());
-	save_rgba("SpellCauseway.png", spell_causeway());
-	save_rgba("SpellHome.png", monolith([150, 150, 158]));
-	save_rgba("SpellPort.png", monolith([236, 239, 244]));
-}
-
-/// A running-bond course: `h`-tall rows offset by half a brick each
-/// course, with a darkened mortar line and a light catch on the top edge
-/// of every brick.
-fn bricks(base: &RgbImage, w: u32, h: u32, rng: &mut Rng) -> RgbImage {
-	let mut out = base.clone();
-	for (x, y, p) in out.enumerate_pixels_mut() {
-		let course = y / h;
-		let offset = if course.is_multiple_of(2) { 0 } else { w / 2 };
-		let bx = (x + offset) % w;
-		let by = y % h;
-		let n = rng.signed(5);
-		let d = if by == 0 || bx == 0 {
-			// Mortar.
-			-46
-		} else if by == 1 {
-			// The light catch under the joint above.
-			14
-		} else {
-			0
-		};
-		for c in p.0.iter_mut() {
-			*c = add8(*c, d + n);
-		}
-	}
-	out
-}
-
-/// Stone with its grain averaged away and a soft diagonal sheen — the
-/// difference between quarried and dressed is mostly the absence of
-/// texture, so this REMOVES rather than adds.
-fn polished(stone: &RgbImage, rng: &mut Rng) -> RgbImage {
-	let mut out = stone.clone();
-	let src = stone.clone();
-	let s = SIZE as i32;
-	for (x, y, p) in out.enumerate_pixels_mut() {
-		let mut acc = [0i32; 3];
-		for dy in -1..=1 {
-			for dx in -1..=1 {
-				let q = src.get_pixel(
-					(x as i32 + dx).rem_euclid(s) as u32,
-					(y as i32 + dy).rem_euclid(s) as u32,
-				);
-				for (a, v) in acc.iter_mut().zip(q.0.iter()) {
-					*a += i32::from(*v);
-				}
-			}
-		}
-		// A gentle diagonal band, and the last of the grain.
-		let sheen = (((x + y) % SIZE) as f32 / SIZE as f32 * std::f32::consts::TAU).sin() * 7.0;
-		let n = rng.signed(2);
-		for (out, a) in p.0.iter_mut().zip(acc.iter()) {
-			*out = clamp8(*a as f32 / 9.0 + sheen + n as f32);
-		}
-	}
-	out
-}
-
-/// Clear glass: one flat pale tint at one flat alpha. No came grid and
-/// no frost — a pane reads by what it does to the world behind it, and a
-/// painted frame only fights the transmission. The rng draws are kept
-/// and burnt unread so every later recipe's noise is unchanged.
-fn glass(rng: &mut Rng) -> RgbaImage {
-	let mut out = RgbaImage::new(SIZE, SIZE);
-	let cell = SIZE / 4;
-	for (x, y, p) in out.enumerate_pixels_mut() {
-		let (cx, cy) = (x % cell, y % cell);
-		let frost = rng.signed(6);
-		let glint = if cx + cy > cell + cell / 3 && cx + cy < cell + cell / 2 {
-			26
-		} else {
-			0
-		};
-		// A clean tinted pane: one flat colour, one flat alpha, no came
-		// lattice — glass reads by what it does to the world behind it,
-		// not by a painted frame. The frost draw above is burnt unread
-		// so the rng stream (and every later recipe) is unchanged.
-		let _ = (frost, glint, cx, cy);
-		p.0 = [210, 228, 236, 120];
-	}
-	out
+	save_rgba("SpellWisp.png", pixel_glyph(spell_wisp()));
+	save_rgba("SpellKindle.png", pixel_glyph(spell_kindle()));
+	save_rgba("SpellSphere.png", pixel_glyph(spell_sphere()));
+	save_rgba("SpellCauseway.png", pixel_glyph(spell_causeway()));
+	save_rgba("SpellHome.png", pixel_glyph(monolith([150, 150, 158])));
+	save_rgba("SpellPort.png", pixel_glyph(monolith([236, 239, 244])));
 }
 
 /// A coloured clean pane: the glass look in one saturated tint, alpha
@@ -312,422 +178,77 @@ fn wardglass() -> RgbaImage {
 	out
 }
 
-/// An essence flake: a disc in the core colour, lit from the upper left — a rim-coloured crescent
-/// and a small highlight there, the far edge darkened — over a transparent field. The field's RGB
-/// is the core colour rather than black: the loader mips the array, and a chip drawn at glyph size
-/// samples a mip where transparent black would bleed a dark fringe into the disc's edge. Rng-free,
-/// so it never rerolls a neighbour.
-fn essence_flake(core: [u8; 3], rim: [u8; 3]) -> RgbaImage {
-	let mut out = RgbaImage::new(SIZE, SIZE);
-	let c = SIZE as f32 / 2.0;
-	let radius = c * 0.84;
-	// The light's direction (upper left) and the highlight's centre.
-	let light = (-0.6f32, -0.8f32);
-	let (hx, hy) = (c + light.0 * radius * 0.45, c + light.1 * radius * 0.45);
-	for (x, y, p) in out.enumerate_pixels_mut() {
-		let (dx, dy) = (x as f32 + 0.5 - c, y as f32 + 0.5 - c);
-		let d = (dx * dx + dy * dy).sqrt();
-		// One-pixel analytic falloff at the edge.
-		let alpha = (radius + 0.5 - d).clamp(0.0, 1.0);
-		// Lit side toward the light: +1 facing it, -1 away.
-		let facing = if d > 0.0 {
-			(dx * light.0 + dy * light.1) / d
+/// A chipped crystal with broad facets and a narrow bevel. Transparent pixels carry the
+/// chip's colour so the atlas mip filter cannot introduce a dark fringe.
+fn essence_flake(e: Essence) -> RgbaImage {
+	let (core, rim) = e.palette();
+	let (sx, sy, slant) = match e {
+		Essence::Vitae => (0.78, 1.0, 0.25),
+		Essence::Terra => (1.0, 0.85, -0.08),
+		Essence::Unda => (0.84, 1.0, -0.15),
+		Essence::Ferrum => (1.0, 0.78, 0.18),
+		Essence::Aether => (0.72, 1.0, -0.22),
+	};
+	let vertices = [
+		(-17.0, -22.0),
+		(5.0, -26.0),
+		(22.0, -13.0),
+		(26.0, 6.0),
+		(11.0, 23.0),
+		(-8.0, 26.0),
+		(-24.0, 9.0),
+		(-25.0, -9.0),
+	];
+	RgbaImage::from_fn(SIZE, SIZE, |x, y| {
+		let py = (y as f32 - 31.5) / sy;
+		let px = (x as f32 - 31.5) / sx - py * slant;
+		let mut distance = f32::MAX;
+		let mut edge = 0;
+		for i in 0..vertices.len() {
+			let (ax, ay) = vertices[i];
+			let (bx, by) = vertices[(i + 1) % vertices.len()];
+			let (dx, dy): (f32, f32) = (bx - ax, by - ay);
+			let d = (dx * (py - ay) - dy * (px - ax)) / (dx * dx + dy * dy).sqrt();
+			if d < distance {
+				distance = d;
+				edge = i;
+			}
+		}
+		let alpha = ((distance + 0.5).clamp(0.0, 1.0) * 255.0).round() as u8;
+		let facet = if px + py * 0.6 < -5.0 {
+			0.30
+		} else if px - py * 0.5 > 8.0 {
+			-0.25
 		} else {
 			0.0
 		};
-		let edge = (d / radius).clamp(0.0, 1.0);
-		// The crescent: rim colour where the edge faces the light; the
-		// far edge darkens toward a third of the core.
-		let toward = (facing * edge).max(0.0).powf(1.5);
-		let away = ((-facing) * edge).max(0.0).powf(2.0);
-		// The highlight: a soft blob near the light.
-		let hd = ((x as f32 + 0.5 - hx).powi(2) + (y as f32 + 0.5 - hy).powi(2)).sqrt();
-		let gloss = (1.0 - hd / (radius * 0.35)).clamp(0.0, 1.0).powi(2);
-		let mut rgb = [0u8; 3];
-		for (i, v) in rgb.iter_mut().enumerate() {
-			let base = f32::from(core[i]);
-			let lit = base + (f32::from(rim[i]) - base) * (toward * 0.8 + gloss).min(1.0);
-			*v = clamp8(lit * (1.0 - away * 0.55));
-		}
-		p.0 = [rgb[0], rgb[1], rgb[2], (alpha * 255.0).round() as u8];
-	}
-	out
-}
-
-/// Planished metal plate: stone's noise flattened, cooled and lifted,
-/// with a few hammer highlights.
-fn metal(stone: &RgbImage, rng: &mut Rng) -> RgbImage {
-	let mut out = stone.clone();
-	for p in out.pixels_mut() {
-		let avg = (i32::from(p.0[0]) + i32::from(p.0[1]) + i32::from(p.0[2])) / 3;
-		let flat = (avg - 128) / 3 + 150;
-		let n = rng.signed(4);
-		p.0 = [
-			clamp8((flat + n) as f32 * 0.96),
-			clamp8((flat + n) as f32 * 0.98),
-			clamp8((flat + n) as f32 * 1.06),
-		];
-	}
-	let s = SIZE as i32;
-	for _ in 0..14 {
-		let (cx, cy) = (rng.range(SIZE as u64) as i32, rng.range(SIZE as u64) as i32);
-		for dy in 0..3 {
-			for dx in 0..3 {
-				let p = out.get_pixel_mut(
-					(cx + dx).rem_euclid(s) as u32,
-					(cy + dy).rem_euclid(s) as u32,
-				);
-				let d = if dx + dy < 2 { 22 } else { -14 };
-				for c in p.0.iter_mut() {
-					*c = add8(*c, d);
-				}
-			}
-		}
-	}
-	out
-}
-
-/// Crystal: a near-uniform translucent blue body under fine cracks. The
-/// facet lattice is retired — the block reads by its glow and what it
-/// passes, so painted structure only competed with both. Its jitter draw
-/// is still burnt at the old band positions to hold the rng stream.
-fn crystal(rng: &mut Rng) -> RgbaImage {
-	let mut out = RgbaImage::new(SIZE, SIZE);
-	for (x, y, p) in out.enumerate_pixels_mut() {
-		let n = rng.signed(5);
-		// A plain gem: a near-uniform translucent blue body — the glow
-		// comes from the ink gain, not from painted structure.
-		p.0 = [
-			add8(58, n * 2),
-			add8(78, n * 2),
-			add8(114, n * 2),
-			add8(214, n * 2),
-		];
-		// The retired facet lattice still BURNS its jitter draw at the
-		// old band positions, so the rng stream (and every later
-		// recipe's output) is unchanged.
-		let a = (x + y) % 19;
-		let b = (x + SIZE - y) % 23;
-		if a < 3 || b < 2 {
-			let _ = rng.signed(14);
-		}
-		// Small cracks: a few thin wandering lines — a staircase wobble
-		// on a coarse period, long enough to read as a crack rather
-		// than mipping down to glitter. Position-derived, so they cost
-		// no draws and tile.
-		let wob_v = (y / 3 + y / 7) % 5;
-		let crack_v = (x + wob_v) % 21 == 0 && y % 32 < 22;
-		let wob_h = (x / 4 + x / 9) % 4;
-		let crack_h = (y + wob_h) % 26 == 0 && (x + 11) % 32 < 20;
-		if crack_v || crack_h {
-			p.0 = [add8(118, n * 3), add8(162, n * 3), add8(204, n * 3), 236];
-		}
-	}
-	out
-}
-
-/// A lamp face: a lit pane inside a metal frame. `lit` is the glass,
-/// `frame` the housing.
-fn lamp(lit: [u8; 3], frame: [u8; 3], rng: &mut Rng) -> RgbImage {
-	let mut out = RgbImage::new(SIZE, SIZE);
-	let edge = SIZE / 8;
-	let c = SIZE as f32 / 2.0;
-	for (x, y, p) in out.enumerate_pixels_mut() {
-		let n = rng.signed(6);
-		if x < edge || y < edge || x >= SIZE - edge || y >= SIZE - edge {
-			p.0 = [add8(frame[0], n), add8(frame[1], n), add8(frame[2], n)];
-			continue;
-		}
-		// Brightest at the middle, so the pane reads as a source rather
-		// than a flat colour.
-		let d = (((x as f32 - c).powi(2) + (y as f32 - c).powi(2)).sqrt() / c).min(1.0);
-		let k = 1.0 - 0.45 * d;
-		p.0 = [
-			clamp8(f32::from(lit[0]) * k + n as f32),
-			clamp8(f32::from(lit[1]) * k + n as f32),
-			clamp8(f32::from(lit[2]) * k + n as f32),
-		];
-	}
-	out
-}
-
-/// Stone with mineral flecks: a coloured core, a lighter catch rim, and a dark socket around it so
-/// each fleck sits IN the rock rather than on it. Far fewer flecks than the gravel recipe scatters
-/// pebbles — a vein has to read as rock that HAS ore in it; at the gravel count the stone
-/// disappears and the face becomes a solid colour, the same mistake as a fleck with no socket, one
-/// scale up.
-fn ore(stone: &RgbImage, core: [u8; 3], rim: [u8; 3], body: f32, rng: &mut Rng) -> RgbImage {
-	let mut out = stone.clone();
-	for p in out.pixels_mut() {
-		let n = rng.signed(6);
-		p.0 = [
-			clamp8(f32::from(add8(p.0[0], n)) * body),
-			clamp8(f32::from(add8(p.0[1], n)) * body),
-			clamp8(f32::from(add8(p.0[2], n)) * body),
-		];
-	}
-	let s = SIZE as i32;
-	for _ in 0..18 {
-		let (cx, cy) = (rng.range(SIZE as u64) as i32, rng.range(SIZE as u64) as i32);
-		let r = 2 + rng.range(2) as i32;
-		for dy in -r - 1..=r + 1 {
-			for dx in -r - 1..=r + 1 {
-				let d2 = dx * dx + dy * dy;
-				let p = out.get_pixel_mut(
-					(cx + dx).rem_euclid(s) as u32,
-					(cy + dy).rem_euclid(s) as u32,
-				);
-				if d2 <= (r - 1).max(0) * (r - 1).max(0) {
-					let j = rng.signed(10);
-					p.0 = [add8(core[0], j), add8(core[1], j), add8(core[2], j)];
-				} else if d2 <= r * r {
-					let j = rng.signed(8);
-					p.0 = [add8(rim[0], j), add8(rim[1], j), add8(rim[2], j)];
-				} else if d2 <= (r + 1) * (r + 1) {
-					p.0 = [add8(p.0[0], -30), add8(p.0[1], -30), add8(p.0[2], -30)];
-				}
-			}
-		}
-	}
-	out
-}
-
-/// Stone with the flecks knocked out: empty sockets, darkest at the
-/// centre, with a light lip where the pick broke the rim.
-fn depleted(stone: &RgbImage, rng: &mut Rng) -> RgbImage {
-	let mut out = stone.clone();
-	for p in out.pixels_mut() {
-		let n = rng.signed(6);
-		p.0 = [add8(p.0[0], n), add8(p.0[1], n), add8(p.0[2], n)];
-	}
-	let s = SIZE as i32;
-	for _ in 0..18 {
-		let (cx, cy) = (rng.range(SIZE as u64) as i32, rng.range(SIZE as u64) as i32);
-		let r = 2 + rng.range(2) as i32;
-		for dy in -r - 1..=r + 1 {
-			for dx in -r - 1..=r + 1 {
-				let d2 = dx * dx + dy * dy;
-				let p = out.get_pixel_mut(
-					(cx + dx).rem_euclid(s) as u32,
-					(cy + dy).rem_euclid(s) as u32,
-				);
-				if d2 <= (r - 1).max(0) * (r - 1).max(0) {
-					let j = rng.signed(5);
-					p.0 = [
-						add8(p.0[0], -58 + j),
-						add8(p.0[1], -58 + j),
-						add8(p.0[2], -56 + j),
-					];
-				} else if d2 <= r * r {
-					p.0 = [add8(p.0[0], -34), add8(p.0[1], -34), add8(p.0[2], -32)];
-				} else if d2 <= (r + 1) * (r + 1) {
-					p.0 = [add8(p.0[0], 14), add8(p.0[1], 14), add8(p.0[2], 14)];
-				}
-			}
-		}
-	}
-	out
-}
-
-/// A tier's vein face with the light drawn out of it: the same rock, the same flecks in the same
-/// places, drained to dark inclusions. The body is left at ordinary stone brightness, the one way
-/// this differs structurally from [`ore`] rather than merely in palette — a live vein darkens its
-/// body because it is drawn FULLBRIGHT, while a spent face is lit like any block and the same
-/// darkening would make it a black rock. An ink texture is authored for fullbright; this is not.
-fn spent(stone: &RgbImage, core: [u8; 3], rim: [u8; 3], rng: &mut Rng) -> RgbImage {
-	// How much of the tier's colour survives the draw. The rim keeps more
-	// than the core so a drained fleck still reads as something set INTO
-	// the rock rather than a smudge on it — the same job the light catch
-	// does on a live one, at a fraction of the brightness.
-	const CORE_LEFT: f32 = 0.34;
-	const RIM_LEFT: f32 = 0.42;
-	let drain = |c: [u8; 3], k: f32| {
-		[
-			clamp8(f32::from(c[0]) * k),
-			clamp8(f32::from(c[1]) * k),
-			clamp8(f32::from(c[2]) * k),
-		]
-	};
-	ore(
-		stone,
-		drain(core, CORE_LEFT),
-		drain(rim, RIM_LEFT),
-		1.0,
-		rng,
-	)
-}
-
-/// Wood post darkened, with the top band of rows turned to flame glow (white-hot core rows fading
-/// through yellow to orange where the flame head's side faces sample). The post is cut from the
-/// DARK timber, and that is not a style choice: this texture is never lit, so every pixel goes
-/// through `emissive_ink`, whose gain rides the ink's own luminance — a pale timber clips on all
-/// three channels and reads as a white bar brighter than the fire on top of it.
-fn torch_side(wood: &RgbImage, rng: &mut Rng) -> RgbImage {
-	let mut out = wood.clone();
-	let flame_rows = SIZE * 5 / 12; // the flame band, in the shape's twelfths
-	for (_, y, p) in out.enumerate_pixels_mut() {
-		if y < flame_rows {
-			// 0 at the very top (cool fringe) → 1 at the head's base.
-			let t = y as f32 / flame_rows as f32;
-			let j = rng.signed(10);
-			p.0 = [
-				clamp8(255.0 + j as f32),
-				clamp8(150.0 + 90.0 * t + j as f32),
-				clamp8(30.0 + 60.0 * t),
-			];
+		let lit_edge = matches!(edge, 0 | 6 | 7);
+		let light = if distance < 2.2 {
+			if lit_edge { 0.70 } else { -0.40 }
 		} else {
-			let g = rng.signed(5);
-			for c in p.0.iter_mut() {
-				*c = add8(*c, -18 + g);
-			}
-		}
-	}
-	out
-}
-
-/// An orb: `core` at the centre falling to `rim` at the edge, jittered — [`torch_flame`]'s shape
-/// with the hue taken as an argument. Both callers are drawn FULLBRIGHT, so both colours are
-/// authored with headroom (R29): a channel painted near white has none left to take
-/// `emissive_ink`'s gain, and an orb clipping on all three is a white blob, not a coloured light.
-/// Only the dominant channel is meant to reach the ceiling — which is what leaves the glow a hue.
-fn radial_glow(core: [u8; 3], rim: [u8; 3], rng: &mut Rng) -> RgbImage {
-	let mut out = RgbImage::new(SIZE, SIZE);
-	let c = SIZE as f32 / 2.0;
-	for (x, y, p) in out.enumerate_pixels_mut() {
-		let d = (((x as f32 - c).powi(2) + (y as f32 - c).powi(2)).sqrt() / c).min(1.0);
-		let j = rng.signed(8) as f32;
-		for (v, (&a, &b)) in p.0.iter_mut().zip(core.iter().zip(rim.iter())) {
-			*v = clamp8(f32::from(a) + (f32::from(b) - f32::from(a)) * d + j);
-		}
-	}
-	out
-}
-
-/// The flame head's top: a radial white-yellow glow on ember orange.
-fn torch_flame(rng: &mut Rng) -> RgbImage {
-	let mut out = RgbImage::new(SIZE, SIZE);
-	let c = SIZE as f32 / 2.0;
-	for (x, y, p) in out.enumerate_pixels_mut() {
-		let d = (((x as f32 - c).powi(2) + (y as f32 - c).powi(2)).sqrt() / c).min(1.0);
-		let j = rng.signed(8) as f32;
-		p.0 = [
-			clamp8(255.0 - 30.0 * d + j),
-			clamp8(230.0 - 120.0 * d + j),
-			clamp8(120.0 - 100.0 * d),
-		];
-	}
-	out
-}
-
-/// Broken rock: MANY stones, not one cracked face. Rubble is the only thing a natural quarry hands
-/// a player now — clean rock is bench work — so the two faces are a decision read off a wall,
-/// which stone's body with fracture walks over it cannot carry: at any distance that is smooth
-/// stone with scratches. So the SILHOUETTE changes, not the detail: a wrapping Worley partition
-/// cuts the tile into cobbles at their own tones, the one cue that survives an inventory icon.
-fn rubble(stone: &RgbImage, rng: &mut Rng) -> RgbImage {
-	let s = SIZE as i32;
-	// Sites on a jittered lattice: chunky stones rather than a fine
-	// crazing, and no cell large enough to read as a flat face of its own.
-	const CELLS: i32 = 4;
-	let step = s / CELLS;
-	let sites: Vec<(i32, i32, i32)> = (0..CELLS * CELLS)
-		.map(|i| {
-			let (gx, gy) = (i % CELLS, i / CELLS);
-			(
-				gx * step + rng.range(step as u64) as i32,
-				gy * step + rng.range(step as u64) as i32,
-				// Each stone's own tone. Biased dark: broken rock is dirtier
-				// than the face it came off.
-				rng.signed(20) - 8,
-			)
-		})
-		.collect();
-	// Wrapped separation on one axis — the near copy of the tile is what
-	// keeps a site on the left edge a neighbour of one on the right.
-	let wrap = |d: i32| {
-		let d = d.rem_euclid(s);
-		d.min(s - d)
-	};
-	let mut out = stone.clone();
-	for (x, y, p) in out.enumerate_pixels_mut() {
-		let (x, y) = (x as i32, y as i32);
-		// The two nearest sites: the closest says which stone this is, and
-		// how close the second one runs says whether we are in the gap.
-		let (mut first, mut second) = (i32::MAX, i32::MAX);
-		let mut tone = 0;
-		for &(sx, sy, t) in &sites {
-			let (dx, dy) = (wrap(x - sx), wrap(y - sy));
-			let d2 = dx * dx + dy * dy;
-			if d2 < first {
-				second = first;
-				first = d2;
-				tone = t;
-			} else if d2 < second {
-				second = d2;
-			}
-		}
-		// Grubby body noise, and the same draw ragged the gap's edge — one
-		// jitter doing both is what keeps a chipped edge and a chipped
-		// surface the same size of chip.
-		let n = rng.signed(7) - 3;
-		let edge = (second as f32).sqrt() - (first as f32).sqrt() + n as f32 * 0.12;
-		let d = if edge < 1.35 {
-			// The mortar gap between two stones.
-			-52 + n
-		} else {
-			tone + n
+			facet
 		};
-		p.0 = [add8(p.0[0], d), add8(p.0[1], d), add8(p.0[2], d)];
-	}
-	// The catch light: one pass over the finished field, lifting a pixel
-	// whose up-left neighbour sits in a gap. Read from a copy, so a lit
-	// pixel cannot go on to light the next one into a smear.
-	let lit = out.clone();
-	for (x, y, p) in out.enumerate_pixels_mut() {
-		let up = lit.get_pixel(
-			(x as i32 - 1).rem_euclid(s) as u32,
-			(y as i32 - 1).rem_euclid(s) as u32,
-		);
-		let here = lit.get_pixel(x, y);
-		if i32::from(here.0[0]) - i32::from(up.0[0]) > 24 {
-			p.0 = [add8(p.0[0], 14), add8(p.0[1], 14), add8(p.0[2], 14)];
-		}
-	}
-	// Chipped corners on top of the cobbles — the grit that reads at
-	// arm's length, where the partition is reading at room's length.
-	for _ in 0..12 {
-		let (cx, cy) = (rng.range(SIZE as u64) as i32, rng.range(SIZE as u64) as i32);
-		let r = 1 + rng.range(2) as i32;
-		let delta = -(8 + rng.signed(6).abs());
-		for dy in -r..=r {
-			for dx in -r..=r {
-				if dx * dx + dy * dy <= r * r {
-					let p = out.get_pixel_mut(
-						(cx + dx).rem_euclid(s) as u32,
-						(cy + dy).rem_euclid(s) as u32,
-					);
-					p.0 = [
-						add8(p.0[0], delta),
-						add8(p.0[1], delta),
-						add8(p.0[2], delta),
-					];
-				}
+		let rgb: [u8; 3] = std::array::from_fn(|i| {
+			if light >= 0.0 {
+				clamp8(f32::from(core[i]) + (f32::from(rim[i]) - f32::from(core[i])) * light)
+			} else {
+				clamp8(f32::from(core[i]) * (1.0 + light))
 			}
-		}
-	}
-	out
+		});
+		image::Rgba([rgb[0], rgb[1], rgb[2], alpha])
+	})
 }
 
-fn load(name: &str) -> RgbImage {
-	let img = image::open(format!("{DIR}/{name}"))
-		.unwrap_or_else(|e| panic!("open {name}: {e}"))
-		.to_rgb8();
-	assert_eq!(
-		(img.width(), img.height()),
-		(SIZE, SIZE),
-		"{name} must be 64x64"
-	);
-	img
+/// A shared two-pixel grid and restrained colour steps for the spell silhouettes.
+/// Preserve transparent RGB and sampled alpha, including the original antialiased edges.
+fn pixel_glyph(src: RgbaImage) -> RgbaImage {
+	RgbaImage::from_fn(SIZE, SIZE, |x, y| {
+		let mut p = *src.get_pixel(x / 2 * 2 + 1, y / 2 * 2 + 1);
+		for v in &mut p.0[..3] {
+			*v = clamp8((f32::from(*v) / 8.0).round() * 8.0);
+		}
+		p
+	})
 }
 
 /// The wisp's glyph: a warm mote — a hot core inside a soft glow, with
@@ -850,12 +371,13 @@ fn spell_causeway() -> RgbaImage {
 		let mut top = 0.0;
 		for (i, &(cx, cy, hw)) in planks.iter().enumerate() {
 			let inside_x = (hw - (fx - cx).abs() + 0.5).clamp(0.0, 1.0);
-			let inside_y = (half_h - (fy - cy).abs() + 0.5).clamp(0.0, 1.0);
+			let local_y = fy - cy + (fx - cx) * 0.22;
+			let inside_y = (half_h - local_y.abs() + 0.5).clamp(0.0, 1.0);
 			let hit = inside_x * inside_y;
 			if hit > a {
 				a = hit;
 				// The nearer planks are the brighter ones.
-				top = 1.0 - i as f32 * 0.18;
+				top = (1.0 - i as f32 * 0.18) * if local_y > 0.8 { 0.62 } else { 1.0 };
 			}
 		}
 		let body = [214.0 * top, 226.0 * top, 240.0 * top];
@@ -933,14 +455,6 @@ fn save_rgba(name: &str, img: RgbaImage) {
 	println!("wrote {name}");
 }
 
-fn map(src: &RgbImage, f: impl Fn([u8; 3]) -> [u8; 3]) -> RgbImage {
-	let mut out = src.clone();
-	for p in out.pixels_mut() {
-		p.0 = f(p.0);
-	}
-	out
-}
-
 /// Splitmix64 — fixed seed, row-major consumption: byte-identical output
 /// on every run.
 struct Rng(u64);
@@ -970,139 +484,4 @@ fn clamp8(v: f32) -> u8 {
 
 fn add8(v: u8, d: i32) -> u8 {
 	(i32::from(v) + d).clamp(0, 255) as u8
-}
-
-fn rgb_to_hsv([r, g, b]: [u8; 3]) -> (f32, f32, f32) {
-	let (r, g, b) = (
-		f32::from(r) / 255.0,
-		f32::from(g) / 255.0,
-		f32::from(b) / 255.0,
-	);
-	let max = r.max(g).max(b);
-	let min = r.min(g).min(b);
-	let d = max - min;
-	let h = if d == 0.0 {
-		0.0
-	} else if max == r {
-		60.0 * (((g - b) / d).rem_euclid(6.0))
-	} else if max == g {
-		60.0 * ((b - r) / d + 2.0)
-	} else {
-		60.0 * ((r - g) / d + 4.0)
-	};
-	let s = if max == 0.0 { 0.0 } else { d / max };
-	(h, s, max)
-}
-
-fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [u8; 3] {
-	let h = h.rem_euclid(360.0);
-	let c = v * s;
-	let x = c * (1.0 - ((h / 60.0).rem_euclid(2.0) - 1.0).abs());
-	let m = v - c;
-	let (r, g, b) = match (h / 60.0) as u32 {
-		0 => (c, x, 0.0),
-		1 => (x, c, 0.0),
-		2 => (0.0, c, x),
-		3 => (0.0, x, c),
-		4 => (x, 0.0, c),
-		_ => (c, 0.0, x),
-	};
-	[
-		clamp8((r + m) * 255.0),
-		clamp8((g + m) * 255.0),
-		clamp8((b + m) * 255.0),
-	]
-}
-
-/// Green → yellow-tan: hue swung back toward yellow, a touch desaturated
-/// and a touch lighter.
-fn dry(p: [u8; 3]) -> [u8; 3] {
-	let (h, s, v) = rgb_to_hsv(p);
-	hsv_to_rgb(h - 30.0, s * 0.8, (v * 1.05).min(1.0))
-}
-
-/// Darker blue-green with a mild contrast lift — deep enough that pine
-/// canopies read distinct from broadleaf at a distance.
-fn pine([r, g, b]: [u8; 3]) -> [u8; 3] {
-	let contrast = |c: f32| (c - 128.0) * 1.15 + 128.0;
-	[
-		clamp8(contrast(f32::from(r) * 0.52)),
-		clamp8(contrast(f32::from(g) * 0.70)),
-		clamp8(contrast(f32::from(b) * 0.66)),
-	]
-}
-
-fn mud(dirt: &RgbImage, rng: &mut Rng) -> RgbImage {
-	let mut out = dirt.clone();
-	for p in out.pixels_mut() {
-		let n = rng.signed(6);
-		p.0 = [
-			add8(clamp8(f32::from(p.0[0]) * 0.62), n),
-			add8(clamp8(f32::from(p.0[1]) * 0.55), n),
-			add8(clamp8(f32::from(p.0[2]) * 0.52), n),
-		];
-	}
-	out
-}
-
-fn sandstone(sand: &RgbImage, rng: &mut Rng) -> RgbImage {
-	let mut out = sand.clone();
-	// Horizontal strata: darken bands of a few rows by a per-band amount,
-	// wrapped per-pixel noise keeping the grain. Row phases come from the
-	// seeded stream, so regeneration is byte-identical.
-	let mut y = 0u32;
-	while y < SIZE {
-		let band_h = 3 + rng.range(4) as u32;
-		let shade = -(4 + rng.range(12) as i32);
-		for by in y..(y + band_h).min(SIZE) {
-			for x in 0..SIZE {
-				let n = rng.signed(5);
-				let p = out.get_pixel_mut(x, by);
-				// Slight desaturation toward a rockier tan.
-				let avg = (i32::from(p.0[0]) + i32::from(p.0[1]) + i32::from(p.0[2])) / 3;
-				for c in p.0.iter_mut() {
-					let mixed = (i32::from(*c) * 3 + avg) / 4;
-					*c = (mixed + shade + n).clamp(0, 255) as u8;
-				}
-			}
-		}
-		y += band_h;
-	}
-	out
-}
-
-fn gravel(stone: &RgbImage, rng: &mut Rng) -> RgbImage {
-	let mut out = stone.clone();
-	for p in out.pixels_mut() {
-		let n = rng.signed(8);
-		p.0 = [add8(p.0[0], n), add8(p.0[1], n), add8(p.0[2], n)];
-	}
-	// Pebbles: small lightened/darkened blobs with a darker rim one pixel
-	// wide, wrapped modularly so the texture keeps tiling.
-	let s = SIZE as i32;
-	for _ in 0..40 {
-		let (cx, cz) = (rng.range(SIZE as u64) as i32, rng.range(SIZE as u64) as i32);
-		let r = 1 + rng.range(2) as i32;
-		let sign = if rng.range(2) == 0 { 1 } else { -1 };
-		let delta = sign * (10 + rng.range(16) as i32);
-		for dy in -r - 1..=r + 1 {
-			for dx in -r - 1..=r + 1 {
-				let d2 = dx * dx + dy * dy;
-				let p = out.get_pixel_mut(
-					(cx + dx).rem_euclid(s) as u32,
-					(cz + dy).rem_euclid(s) as u32,
-				);
-				if d2 <= r * r {
-					p.0 = [
-						add8(p.0[0], delta),
-						add8(p.0[1], delta),
-						add8(p.0[2], delta),
-					];
-				} else if d2 <= (r + 1) * (r + 1) {
-					p.0 = [add8(p.0[0], -18), add8(p.0[1], -18), add8(p.0[2], -18)];
-				}
-			}
-		}
-	}
-	out
 }

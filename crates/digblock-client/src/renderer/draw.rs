@@ -281,7 +281,8 @@ impl Renderer {
 				pass.set_pipeline(&self.solid_pipeline);
 				pass.set_bind_group(0, &self.frame_bg, &[]);
 				pass.set_bind_group(1, &self.materials_bg, &[]);
-				pass.set_bind_group(2, &targets.gi_scene_bg, &[]);
+				pass.set_bind_group(2, self.gi.gather_bind(), &[]);
+				pass.set_bind_group(3, &targets.gi_scene_bg, &[]);
 				// Origins for every chunk, bound once — each draw selects
 				// its own with first_instance.
 				draw.bind(&mut pass);

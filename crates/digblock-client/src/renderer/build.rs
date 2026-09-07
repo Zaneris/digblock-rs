@@ -154,14 +154,17 @@ impl Renderer {
 			&mut ledger,
 		);
 
-		// Shared group scheme: 0 = frame, 1 = materials, 2 = GI. For the solids that's the two
-		// resolve outputs; water and players carry the raw GI world data instead
-		// (`GiDraw::gather_bgl`) and gather per fragment, since their surfaces aren't in the depth
-		// prepass the resolve maps. Chunk origins are NOT a bind group — they arrive as the
-		// instance-step vertex stream at slot 1. Water swaps group 0 for its frame+scene layout.
+		// 0 = frame, 1 = materials, 2 = GI world. Solids also bind the diffuse resolve at 3;
+		// their glossy finishes use the world group for shadowed local highlights only.
+		// Chunk origins arrive through the instance stream. Water swaps group 0 for frame+scene.
 		let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
 			label: Some("chunk"),
-			bind_group_layouts: &[Some(&frame_bgl), Some(&materials_bgl), Some(gi.scene_bgl())],
+			bind_group_layouts: &[
+				Some(&frame_bgl),
+				Some(&materials_bgl),
+				Some(gi.gather_bgl()),
+				Some(gi.scene_bgl()),
+			],
 			immediate_size: 0,
 		});
 		let water_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {

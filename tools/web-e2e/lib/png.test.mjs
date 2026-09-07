@@ -179,6 +179,9 @@ test("diff is per-channel, ignores alpha, and is zero for a repeat", () => {
 	const white = decode(encode(image([[WHITE, WHITE]], 4), 0));
 	assert.equal(diff(black, black), 0);
 	assert.equal(diff(black, white), 255, "black against white is the whole range");
+	const half = decode(encode(image([[BLACK, WHITE]], 4), 0));
+	assert.equal(diff(black, half, { region: [0, 0, 1, 1] }), 0, "changes outside the footprint are ignored");
+	assert.equal(diff(black, half, { region: [1, 0, 2, 1] }), 255, "the footprint keeps the full local difference");
 	// Alpha is not part of what a capture SHOWS, so two frames with the
 	// same colours and different alpha are the same frame — otherwise the
 	// K test's control interval would measure the compositor.

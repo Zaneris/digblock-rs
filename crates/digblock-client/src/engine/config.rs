@@ -277,6 +277,8 @@ pub struct EngineConfig {
 	/// once chunks are Ready. Set by the desktop launcher from
 	/// DIG_SHAPES — visual verification without gameplay wiring.
 	pub debug_shapes: bool,
+	/// Material review: tiled stone, polished stone and metal under shared lamps and sky.
+	pub debug_materials: bool,
 	/// Debug: a glass sphere of this radius closing about spawn from the
 	/// moment every cell it would touch is resident — the cast's own plan
 	/// and climb, with no channel or bill behind it. Set by the launcher
@@ -502,6 +504,7 @@ impl EngineConfig {
 			debug_siphon: None,
 			debug_cast: None,
 			debug_shapes: false,
+			debug_materials: false,
 			debug_sphere: None,
 			debug_sphere_age: None,
 			debug_doors: false,

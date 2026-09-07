@@ -1,8 +1,8 @@
 // Solid chunk shader (water has its own fork — water.wgsl).
 // RTGI shading: ALL lighting arrives through the half-res GI
 // resolve buffers — probe-traced indirect plus a per-pixel DDA sun visibility.
-// This shader upsamples bilaterally and combines
-// tex * (light_color * lambert * sunvis + indirect). Nothing else LIGHTS here;
+// Glossy finishes add a view-dependent sun lobe and shadowed local highlights.
+// Diffuse lighting is upsampled bilaterally;
 // the participating medium (medium_common.wgsl) is applied once at the end to
 // emissive ink and lit surfaces alike, and `block_tint` is a material property
 // that sits on the albedo rather than on the light.
@@ -16,8 +16,8 @@
 // The GI resolve outputs, both rgba16f: indirect rgb + view distance,
 // and sun visibility + face-normal code + the sun ray's water path +
 // history length.
-@group(2) @binding(0) var gi_indirect: texture_2d<f32>;
-@group(2) @binding(1) var gi_sun: texture_2d<f32>;
+@group(3) @binding(0) var resolved_indirect: texture_2d<f32>;
+@group(3) @binding(1) var resolved_sun: texture_2d<f32>;
 
 // Java normal() table order (VertTex.glsl), which is also the face code
 // order the mesher packs: W(+x), N(+z), S(-z), B(-y), T(+y), E(-x).
@@ -56,11 +56,13 @@ struct VsOut {
 	// one BELOW this one. Set on a door's upper half so its two cells
 	// wear one tint.
 	@location(7) @interpolate(flat) tint_down: u32,
+	// solid_word1's finish bits: matte, polished stone, metal.
+	@location(8) @interpolate(flat) finish: u32,
 }
 
 // Packed vertex, two words: w0 carries geometry (x, y and z in TWELFTH-block units, the normal
 // index and the corner code), w1 the solid material (texture layer, uv, the emissive and
-// tint-from-below flags). Must agree with `mesher::pack` / `solid_word1`. Twelfths → blocks with
+// tint-from-below flags, and the finish). Must agree with `mesher::pack` / `solid_word1`. Twelfths → blocks with
 // the whole-block part split off in INTEGER space, so full-block lattice vertices decode exactly
 // even under fast-math — a plain float divide becomes an inexact reciprocal on some backends.
 fn twelfths(v: u32) -> f32 {
@@ -91,6 +93,7 @@ fn vs(@location(0) packed: vec2u, @location(1) origin: vec4f) -> VsOut {
 	o.view_dist = distance(world, frame.cam_pos.xyz);
 	o.emissive = (w1 >> 18u) & 1u;
 	o.tint_down = (w1 >> 19u) & 1u;
+	o.finish = (w1 >> 20u) & 3u;
 	// NORMALS order (W N S B T E) → gi_resolve's axis*2+sign code.
 	var code_of = array<u32, 6>(0u, 4u, 5u, 3u, 2u, 1u);
 	o.ncode = code_of[ni];
@@ -176,6 +179,60 @@ fn block_tint(world: vec3f, ncode: u32, tint_down: u32) -> vec3f {
 	return (1.0 + v) * vec3f(1.0 + d, 1.0, 1.0 - d);
 }
 
+// Normalized Blinn lobe with Schlick Fresnel. The metal is tighter and more reflective;
+// stone carries a broad, restrained polish. No response below the surface or behind the eye.
+fn finish_lobe(n: vec3f, v: vec3f, l: vec3f, finish: u32) -> f32 {
+	let nl = max(dot(n, l), 0.0);
+	let nv = max(dot(n, v), 0.0);
+	if nl <= 0.0 || nv <= 0.0 { return 0.0; }
+	let h = normalize(v + l);
+	let exponent = select(36.0, 96.0, finish == 2u);
+	let f0 = select(0.06, 0.5, finish == 2u);
+	let fresnel = f0 + (1.0 - f0) * pow(1.0 - max(dot(v, h), 0.0), 5.0);
+	let distribution = (exponent + 8.0) * (1.0 / 25.132741) * pow(max(dot(n, h), 0.0), exponent);
+	return fresnel * distribution * nl / max(4.0 * nv * nl, 0.15);
+}
+
+// Two strongest specular candidates, with deterministic visibility through the existing GI
+// marcher. Only glossy fragments pay for this; shaded emitters and tinted panes obey the same
+// occlusion, attenuation and emitter calibration as their diffuse illumination.
+fn local_finish(p: vec3f, n: vec3f, v: vec3f, finish: u32) -> vec3f {
+	let count = min(bitcast<u32>(lights[0].x), 256u);
+	var best = array<f32, 2>(0.0, 0.0);
+	var picks = array<u32, 2>(0u, 0u);
+	for (var j = 1u; j <= count; j++) {
+		let light = lights[j * 2u - 1u];
+		let shape = lights[j * 2u];
+		let diffuse = gi_light_score(light, shape, p, n);
+		if diffuse <= 0.0 { continue; }
+		let sample = gi_light_sample(light, shape, p, 0.5, 0.5);
+		let l = normalize(sample.p - p);
+		let score = diffuse * finish_lobe(n, v, l, finish) / max(dot(n, l), 0.01);
+		if score > best[0] {
+			best[1] = best[0]; picks[1] = picks[0];
+			best[0] = score; picks[0] = j;
+		} else if score > best[1] {
+			best[1] = score; picks[1] = j;
+		}
+	}
+	var result = vec3f(0.0);
+	for (var k = 0u; k < 2u; k++) {
+		if best[k] <= 0.0001 { break; }
+		let light = lights[picks[k] * 2u - 1u];
+		let sample = gi_light_sample(light, lights[picks[k] * 2u], p, 0.5, 0.5);
+		let d = sample.p - p;
+		let dist = length(d);
+		let reach = max(dist - gi_light_margin_of(light), 0.0);
+		let sh = gi_march(i32(frame.gi_misc.x), 256.0, frame.cam_pos.xz, p,
+			d / max(dist, 0.001), reach, GI_NEE_ITERS, reach, 0u);
+		if !sh.hit {
+			result += gi_light_tint(light.w, gi_emit_tint(gi_light_class(light.w)))
+				* LIGHT_GAIN * best[k] * medium_water_tr(sh.water) * sh.thru;
+		}
+	}
+	return result;
+}
+
 @fragment
 fn fs(i: VsOut) -> @location(0) vec4f {
 	let tex = textureSample(blocks_tex, blocks_smp, i.uv, i.layer).rgb;
@@ -194,7 +251,7 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 		// what lets the resolve run at a coarser fraction of the render size, and an INTEGER
 		// divisor, or the 2x2 neighbourhood `base` names drifts off the texels it weights.
 		let gi_div = max(i32(frame.misc.w), 1);
-		let dim = vec2i(textureDimensions(gi_indirect)) - 1;
+		let dim = vec2i(textureDimensions(resolved_indirect)) - 1;
 		let base = (vec2i(i.pos.xy) - gi_div / 2) / gi_div;
 		var acc = vec3f(0.0);
 		var sun_acc = 0.0;
@@ -210,8 +267,8 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 		var matched = false;
 		for (var t = 0; t < 4; t++) {
 			let c = clamp(base + vec2i(t & 1, t >> 1), vec2i(0), dim);
-			let ind = textureLoad(gi_indirect, c, 0);
-			let sn = textureLoad(gi_sun, c, 0);
+			let ind = textureLoad(resolved_indirect, c, 0);
+			let sn = textureLoad(resolved_sun, c, 0);
 			let dd = abs(ind.w - i.view_dist);
 			if dd < best_d {
 				best_d = dd;
@@ -259,6 +316,17 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 		// feeds a calibrated gain that an albedo jitter would detune.
 		let albedo = tex * block_tint(i.world, i.ncode, i.tint_down);
 		col = albedo * (frame.light_color.rgb * frame.light_dir.w * i.direct * sh + indirect);
+		if i.finish != 0u {
+			let axis = i.ncode >> 1u;
+			let n = vec3f(f32(axis == 0u), f32(axis == 1u), f32(axis == 2u))
+				* select(1.0, -1.0, (i.ncode & 1u) == 1u);
+			let v = normalize(frame.cam_pos.xyz - i.world);
+			let sun = frame.light_color.rgb * frame.light_dir.w * sh
+				* finish_lobe(n, v, -frame.light_dir.xyz, i.finish);
+			let local = local_finish(i.world + n * GI_SURFACE_EPS, n, v, i.finish);
+			let tint = select(vec3f(1.0), mix(vec3f(1.0), tex, 0.35), i.finish == 2u);
+			col = col * select(0.94, 0.70, i.finish == 2u) + (sun + local) * tint;
+		}
 	}
 	// The medium, from this surface to the eye. In-scatter is `sky_base`
 	// itself, so at distance the surface fades into exactly the sky pixel

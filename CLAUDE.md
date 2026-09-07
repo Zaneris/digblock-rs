@@ -135,8 +135,8 @@ precedence: CLI/query overrides > saved settings > platform defaults.
 ### Assets and shaders
 
 Everything in `digblock-assets` is embedded at compile time. Generated textures come from `cargo run -p texgen` (never
-hand-edit; outputs are committed, and one run legitimately rewrites every noisy texture since recipes share one RNG).
-WGSL shared preludes are prepended via `concat!` in a fixed order; all render-pipeline descriptors funnel through
+hand-edit; outputs are committed, and each surface recipe owns a stable seed so unrelated materials do not reroll). WGSL
+shared preludes are prepended via `concat!` in a fixed order; all render-pipeline descriptors funnel through
 `crates/digblock-client/src/pipeline_builder.rs`. Shader validation is three non-overlapping gates: naga parse
 (`digblock-assets` test), full wgpu-core validation with `Backends::NOOP` (`every_pipeline_builds_without_a_gpu` in the
 renderer), and real Chrome's Tint via `just check-shaders`; Tint rejects WGSL naga accepts, so passing native gates is

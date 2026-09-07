@@ -582,12 +582,12 @@ impl Essence {
 	#[inline]
 	pub const fn palette(self) -> ([u8; 3], [u8; 3]) {
 		match self {
-			// Living green, earthen amber, spring blue, cool steel, pale gold.
+			// Living green, earthen amber, spring blue, cool steel, electric magenta.
 			Essence::Vitae => ([118, 196, 84], [204, 255, 164]),
 			Essence::Terra => ([198, 150, 70], [244, 208, 140]),
 			Essence::Unda => ([62, 158, 224], [172, 224, 255]),
 			Essence::Ferrum => ([150, 160, 176], [224, 232, 240]),
-			Essence::Aether => ([240, 214, 96], [255, 248, 200]),
+			Essence::Aether => ([224, 42, 182], [255, 112, 222]),
 		}
 	}
 

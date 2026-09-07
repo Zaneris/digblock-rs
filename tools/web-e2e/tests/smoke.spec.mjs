@@ -97,17 +97,17 @@ test("the shape editor boots, loads a built-in, and draws its panel", async ({ d
 		.toBeGreaterThan(sky * 2);
 	// Enter loads the selected built-in (the roster's first, the bed): the
 	// sculpted preview lands on the pad through the game's own mesher, so
-	// the flat pad under the object's footprint gains its lit faces. The
-	// box is the FOOTPRINT, not the whole pad: under the editor's frozen
-	// afternoon sun the pad itself is bright, and a box mostly made of pad
-	// would measure the sun rather than the object.
+	// footprint must change beyond its own idle drift. Material palettes
+	// may make the shape brighter or darker than the pad, so compare pixels
+	// rather than requiring a particular direction of luminance change.
 	const mid = { region: [Math.round(w * 0.45), Math.round(h * 0.56), Math.round(w * 0.55), Math.round(h * 0.74)] };
-	const flat = stats(png, mid).mean;
+	await d.page.waitForTimeout(800);
+	const before = await d.shot();
+	const drift = diff(png, before, mid);
 	await d.keys("Enter");
 	await d.page.waitForTimeout(800);
 	png = await d.shot(test.info().outputPath("editor-loaded.png"));
-	const loaded = stats(png, mid).mean;
-	expect(loaded, `the pad (${flat.toFixed(1)}) should brighten under the loaded shape (${loaded.toFixed(1)})`)
-		.toBeGreaterThan(flat * 1.2);
+	expect(diff(before, png, mid), "loading a shape must change its footprint beyond idle drift")
+		.toBeGreaterThan(drift * 4 + 4);
 	expect(d.trouble(), "console trouble").toEqual([]);
 });

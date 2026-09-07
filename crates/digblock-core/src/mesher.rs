@@ -436,7 +436,7 @@ fn face_visible(me: BlockType, neighbor: Option<u16>, dir: Dir) -> bool {
 /// Pack a vertex's GEOMETRY word (word 0 — solid and water share it), in order: x, y and z in
 /// TWELFTH-block units (the sub-block shape grid), then the normal, then the corner code. Word 1 is
 /// per-stream material, assembled by the caller: [`solid_word1`] carries texture layer, uv in
-/// twelfths, the emissive flag and tint-from-below; water leaves the layer field zero and carries
+/// twelfths, emissive, tint-from-below and finish; water leaves the layer field zero and carries
 /// the payload above it. Every consumer moves with this layout — chunk.wgsl's `vs` and `vs_depth`,
 /// water.wgsl, the attributes.
 #[inline]
@@ -451,7 +451,18 @@ fn pack(pos: (u32, u32, u32), normal: Dir, corner: u32) -> u32 {
 fn solid_word1(tex: u32, uv_u: u32, uv_v: u32, emissive: bool, tint_below: bool) -> u32 {
 	debug_assert!((tex as usize) < crate::block::MAX_TEX_LAYERS);
 	debug_assert!(uv_u <= 12 && uv_v <= 12);
-	tex | (uv_u << 10) | (uv_v << 14) | ((emissive as u32) << 18) | ((tint_below as u32) << 19)
+	// Visual-only finish: every shape using the same texture gets the same response.
+	// Bits 20..21 are decoded by chunk.wgsl: 0 matte, 1 polished stone, 2 metal.
+	let finish = match tex as u16 {
+		crate::block::tex::POLISHED_STONE => 1,
+		crate::block::tex::METAL => 2,
+		_ => 0,
+	};
+	tex | (uv_u << 10)
+		| (uv_v << 14)
+		| ((emissive as u32) << 18)
+		| ((tint_below as u32) << 19)
+		| (finish << 20)
 }
 
 /// Corner lattice positions [TL, TR, BL, BR] of the face of block (x, y, z) toward `dir`, as a
