@@ -135,8 +135,25 @@ precedence: CLI/query overrides > saved settings > platform defaults.
 ### Assets and shaders
 
 Everything in `digblock-assets` is embedded at compile time. Generated textures come from `cargo run -p texgen` (never
-hand-edit; outputs are committed, and each surface recipe owns a stable seed so unrelated materials do not reroll). WGSL
-shared preludes are prepended via `concat!` in a fixed order; all render-pipeline descriptors funnel through
+hand-edit; outputs are committed, and each surface recipe owns a stable seed so unrelated materials do not reroll).
+`tools/texgen/src/surfaces.rs` owns material recipes; `main.rs` assembles the catalog. See `tools/texgen/README.md` for
+authoring and capture commands. Review terrain textures tiled and in-game: corner motifs or strong edge contrast can
+turn mountains into a visible grid even when a single tile looks good.
+
+Live and spent essence deposits share their host albedo and mineral placement. Live nodes have separate `*Emission.png`
+masks registered in `digblock_assets::tex::EMISSION_MASKS`: only the mineral inclusions are fullbright; the host
+receives normal lighting. Never darken the entire surface to simulate an emission map. `texture.rs` uploads albedo in
+the first atlas bank and matching emission masks in the second (white defaults preserve other emitters). The chunk,
+viewmodel and player shaders use that same layout; surface alpha remains transparency for glass and icons. `glows`
+controls visible emission independently of cast-light strength. Node light tint comes from `node_flecks`, other emitters
+from texture means, so changing lamp art also changes its emitted tint. Aether art derives from
+`Essence::Aether.palette()` to keep the ore, chip and lamp consistent.
+
+Metal and polished stone use texture-derived finish bits in `mesher::solid_word1` for world-surface highlights in
+`chunk.wgsl`; shapes inherit the finish through their face textures. Highlights follow sun and local-light visibility.
+The `materials` diagnostic scene (`DIG_MATERIALS=1` / `?materials`) compares metal, polished stone and matte stone.
+
+WGSL shared preludes are prepended via `concat!` in a fixed order; all render-pipeline descriptors funnel through
 `crates/digblock-client/src/pipeline_builder.rs`. Shader validation is three non-overlapping gates: naga parse
 (`digblock-assets` test), full wgpu-core validation with `Backends::NOOP` (`every_pipeline_builds_without_a_gpu` in the
 renderer), and real Chrome's Tint via `just check-shaders`; Tint rejects WGSL naga accepts, so passing native gates is
