@@ -189,7 +189,10 @@ impl Engine {
 		}
 		self.vfx.carried.finish(self.body_anchor());
 		let cam_fx = self.vfx.camera_fx.offset();
-		let frame = self.frame_uniforms(&cam_fx);
+		let mut frame = self.frame_uniforms(&cam_fx);
+		if let Some(age) = self.config.debug_fx {
+			frame.light_color[3] = age * 4.0;
+		}
 		let aspect = size.0 as f32 / size.1.max(1) as f32;
 		let view_proj = self.camera.view_proj_with(aspect, &cam_fx);
 		// Name tags: project each nearby remote's head-top to screen px.
@@ -791,6 +794,45 @@ impl Engine {
 				scratch.clear();
 			}
 			self.vfx.marker_scratch = scratch;
+		}
+		if let Some(age) = self.config.debug_fx {
+			use crate::teleport::Mode;
+			let forward =
+				Vec3::new(self.camera.dir().x, 0.0, self.camera.dir().z).normalize_or_zero();
+			let base = self.camera.pos + forward * 7.0 - Vec3::Y * 1.5;
+			let right = forward.cross(Vec3::Y);
+			self.vfx.fx_scratch.clear();
+			for (i, mode) in [Mode::Departure, Mode::Arrival, Mode::Channel, Mode::Kindled]
+				.into_iter()
+				.enumerate()
+			{
+				let at = base
+					+ right * (i as f32 - 1.5) * 2.2
+					+ if mode == Mode::Kindled {
+						Vec3::Y * 1.2
+					} else {
+						Vec3::ZERO
+					};
+				let time = if mode == Mode::Channel {
+					age
+				} else {
+					age * crate::teleport::LIFE
+				};
+				self.vfx.fx_scratch.push(crate::teleport::instance(
+					at.to_array(),
+					mode,
+					time,
+					1.0,
+					3.7,
+				));
+			}
+			self.vfx.marker_scratch.clear();
+			self.vfx.marker_scratch.push(crate::waystone_fx::instance(
+				(base + forward * 4.0).to_array(),
+				0.0,
+				1.4,
+				3.2,
+			));
 		}
 		let sky_floor = self.sky_floor();
 		// Hoisted: the renderer borrow below holds `self` mutably.

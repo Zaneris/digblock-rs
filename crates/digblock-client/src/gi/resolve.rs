@@ -182,7 +182,12 @@ impl GiDraw {
 			frame.light_dir[3],
 		]));
 		data.extend_from_slice(bytemuck::cast_slice(&frame.zenith));
-		data.extend_from_slice(bytemuck::cast_slice(&frame.horizon));
+		data.extend_from_slice(bytemuck::cast_slice(&[
+			frame.horizon[0],
+			frame.horizon[1],
+			frame.horizon[2],
+			frame.light_color[3],
+		]));
 		for col in self.prev_vp {
 			data.extend_from_slice(bytemuck::cast_slice(&col));
 		}

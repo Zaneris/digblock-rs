@@ -87,6 +87,11 @@ pub const BURSTS: Knob = flag(
 	"DIG_BURSTS",
 	"the burst rack: all four particle kinds thrown a few blocks ahead",
 );
+pub const FX: Knob = value(
+	"fx",
+	"DIG_FX",
+	"pose departure, arrival, channel, orb and marker at <percent>",
+);
 pub const NO_MARKERS: Knob = flag(
 	"nomarkers",
 	"DIG_NO_MARKERS",
@@ -131,6 +136,11 @@ pub const TUNNEL: Knob = flag(
 	"a sealed bore past the cascades' coverage",
 );
 pub const DIVE: Knob = flag("dive", "DIG_DIVE", "submerged in the sea");
+pub const SPRAY: Knob = flag(
+	"spray",
+	"DIG_SPRAY",
+	"a waterfall feeding the diagnostic pool",
+);
 pub const RIVER: Knob = flag(
 	"river",
 	"DIG_RIVER",
@@ -227,6 +237,7 @@ pub const ALL: &[Knob] = &[
 	DOLLY,
 	TUTORIAL,
 	BURSTS,
+	FX,
 	NO_MARKERS,
 	SHAPES,
 	MATERIALS,
@@ -240,6 +251,7 @@ pub const ALL: &[Knob] = &[
 	TUNNEL,
 	DIVE,
 	RIVER,
+	SPRAY,
 	TORCHES,
 	TORCHES_FAR,
 	TORCHES_WALL,
@@ -367,7 +379,8 @@ pub fn apply(
 	config.debug_roof = on(&ROOF);
 	config.debug_tunnel = on(&TUNNEL);
 	config.debug_dive = on(&DIVE);
-	config.debug_river = on(&RIVER);
+	config.debug_spray = on(&SPRAY);
+	config.debug_river = on(&RIVER) || config.debug_spray;
 	config.debug_torches_wall = on(&TORCHES_WALL);
 	if let Some(v) = get(&ORE) {
 		config.debug_ore = v
@@ -468,6 +481,7 @@ pub fn apply(
 			)
 		})?);
 	}
+	config.debug_fx = percent(&FX)?;
 	config.debug_cast = percent(&CAST)?;
 	config.debug_siphon = percent(&SIPHON)?;
 	if config.debug_siphon.is_some() {

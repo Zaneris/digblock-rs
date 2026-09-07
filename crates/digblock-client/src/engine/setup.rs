@@ -247,6 +247,9 @@ impl Engine {
 				}
 				if config.debug_river {
 					plan.extend(debug_river_plan(spawn));
+					if config.debug_spray {
+						plan.extend(debug_spray_plan(spawn));
+					}
 				}
 				if config.debug_torches > 0 {
 					plan.extend(debug_torches_plan(

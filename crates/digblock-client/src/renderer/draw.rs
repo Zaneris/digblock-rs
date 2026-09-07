@@ -5,6 +5,19 @@
 use super::*;
 
 impl Renderer {
+	/// Debris uses the same authored albedo as the block it came from.
+	pub(crate) fn block_color(&self, block: digblock_core::block::BlockType) -> [f32; 3] {
+		let rgba = self.block_colors[usize::from(block.props().tex_side)];
+		[rgba[0], rgba[1], rgba[2]].map(|v| {
+			let s = f32::from(v) / 255.0;
+			if s <= 0.04045 {
+				s / 12.92
+			} else {
+				((s + 0.055) / 1.055).powf(2.4)
+			}
+		})
+	}
+
 	/// Encode the frame in one command encoder, fixed order — probes →
 	/// depth prepass → depth blit → GI resolve → scene → water →
 	/// viewmodel → overlay.
@@ -92,6 +105,51 @@ impl Renderer {
 		let siphon_n = self.siphon.prepare(gpu, siphon.as_ref());
 		let teleport_n = self.teleport.prepare(gpu, teleport);
 		let marker_n = self.waystone_fx.prepare(gpu, markers);
+		self.flame_scratch.clear();
+		let cam = glam::Vec3::new(frame.cam_pos[0], frame.cam_pos[1], frame.cam_pos[2]);
+		let vp = glam::Mat4::from_cols_array_2d(&frame.view_proj);
+		self.flame_sites.clear();
+		self.flame_sites.extend(
+			self.gi
+				.torch_sites()
+				.map(glam::Vec3::from_array)
+				.filter(|p| p.distance_squared(cam) < 64.0 * 64.0),
+		);
+		self.flame_sites
+			.sort_unstable_by(|a, b| a.distance_squared(cam).total_cmp(&b.distance_squared(cam)));
+		// Reserve room for every visible remote before filling with placed torches.
+		for (kind, i) in held {
+			if crate::ui::hud::icon_block(*kind) == Some(digblock_core::block::BlockType::Torch) {
+				let model = crate::flame::remote_transform(i);
+				let origin = model.transform_point3(glam::Vec3::ZERO);
+				self.flame_scratch
+					.push(crate::flame::instance(vp * model, origin, 0.0));
+			}
+		}
+		for &origin in &self.flame_sites {
+			if self.flame_scratch.len() >= crate::flame::CAPACITY - 1 {
+				break;
+			}
+			let model = glam::Mat4::from_translation(origin);
+			self.flame_scratch.push(crate::flame::instance(
+				vp * model,
+				origin,
+				origin.dot(glam::Vec3::new(12.9898, 4.1414, 78.233)),
+			));
+		}
+		let hand = viewmodel
+			.as_ref()
+			.filter(|f| {
+				crate::ui::hud::icon_block(f.kind) == Some(digblock_core::block::BlockType::Torch)
+			})
+			.map(|f| {
+				let transform =
+					crate::viewmodel::mvp(aspect, crate::item_geom::height(f.kind), f.pose)
+						* glam::Mat4::from_translation(crate::flame::tip() * 12.0)
+						* glam::Mat4::from_scale(glam::Vec3::splat(12.0));
+				crate::flame::instance(transform, cam, 0.0)
+			});
+		let (flame_n, hand_flame_n) = self.flames.prepare(gpu, &self.flame_scratch, hand);
 
 		let mut encoder = gpu
 			.device
@@ -433,6 +491,9 @@ impl Renderer {
 				let marker_tris = self.waystone_fx.draw(&mut pass, marker_n);
 				stats.draw_calls += u32::from(marker_tris > 0);
 				stats.triangles += marker_tris;
+				let flame_tris = self.flames.draw(&mut pass, 0..flame_n);
+				stats.draw_calls += u32::from(flame_tris > 0);
+				stats.triangles += flame_tris;
 			}
 
 			// The item in your own hand, over the finished world. Its own
@@ -483,6 +544,10 @@ impl Renderer {
 					.draw(&mut pass, &self.index_buf, &self.materials_bg);
 				stats.draw_calls += 1;
 				stats.triangles += tris;
+				pass.set_bind_group(0, &self.frame_bg, &[]);
+				let flame_tris = self.flames.draw(&mut pass, flame_n..flame_n + hand_flame_n);
+				stats.draw_calls += u32::from(flame_tris > 0);
+				stats.triangles += flame_tris;
 			}
 
 			// THE UPSCALE. Everything above rendered at RENDER resolution

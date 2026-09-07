@@ -222,7 +222,7 @@ fn fs(in: VsOut) -> @location(0) vec4f {
 		let lat = gp.xz - frame.cam_pos.xz;
 		let gmax = gi_lateral_max(frame.gi_misc.x);
 		if dot(lat, lat) <= gmax * gmax && !stubbed(STUB_GINEE) {
-			nee = sum_lights(side, frame.gi_misc.y, frame.cam_pos.xz, gp, in.wn);
+			nee = sum_lights(side, frame.gi_misc.y, frame.cam_pos.xz, gp, in.wn, frame.light_color.w);
 		}
 		col = albedo * (frame.light_color.rgb * direct * sh + indirect + nee);
 	}

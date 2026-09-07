@@ -234,6 +234,8 @@ pub struct EngineConfig {
 	pub clouds: bool,
 	/// DIG_BURSTS: the generic burst rack, one of each kind, on repeat.
 	pub debug_bursts: bool,
+	/// Pose magic effects at a fixed lifetime fraction for visual review.
+	pub debug_fx: Option<f32>,
 	/// DIG_ORBIT: a slow cinematic orbit of the aim point,
 	/// `(radius, deg/s)`.
 	pub debug_orbit: Option<(f32, f32)>,
@@ -346,6 +348,8 @@ pub struct EngineConfig {
 	/// cross; no other water capture puts a SHADED surface on screen at all. Set by the desktop
 	/// launcher from DIG_RIVER.
 	pub debug_river: bool,
+	/// A waterfall feeding the diagnostic pool, to inspect mist and droplets.
+	pub debug_spray: bool,
 	/// Debug: how many torches `debug_torches_plan` lights its courtyard
 	/// with, 0 = scene off. The local-light capture DIG_VAULT cannot be:
 	/// a room deeper than `LIGHT_RANGE` and an emitter COUNT that varies
@@ -494,6 +498,7 @@ impl EngineConfig {
 			debug_confetti: false,
 			clouds: false,
 			debug_bursts: false,
+			debug_fx: None,
 			debug_orbit: None,
 			debug_dolly: None,
 			show_tutorial: true,
@@ -518,6 +523,7 @@ impl EngineConfig {
 			debug_tunnel: false,
 			debug_dive: false,
 			debug_river: false,
+			debug_spray: false,
 			debug_torches: 0,
 			debug_torches_far: 0,
 			debug_torches_wall: false,

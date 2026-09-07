@@ -424,7 +424,7 @@ fn nee(p: vec3f, n: vec3f, rnd: f32) -> vec3f {
 	// LIGHT_NEAR and holds inside it — the clamp started as "don't divide
 	// by nothing" for a probe sharing a torch's cell and is now also what
 	// keeps the near field under the white point (see the constant).
-	let radiance = gi_light_tint(l.w, emit_tint_of(cls)) * emit * LIGHT_GAIN;
+	let radiance = gi_light_tint(l.w, emit_tint_of(cls)) * emit * LIGHT_GAIN * gi_fire_gain(l, q, gi.sun_color.w);
 	// `s.w` is 1 for a point and cos(theta_l) * area for a rectangle —
 	// the factors that make an area source an area source, from the one
 	// shared sampler, so the probes and the resolve cannot price the same

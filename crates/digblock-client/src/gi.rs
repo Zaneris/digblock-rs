@@ -580,22 +580,23 @@ fn select_lights(
 	sky_floor: Option<f32>,
 	cap: usize,
 ) -> Vec<[f32; 8]> {
+	let torch = digblock_core::gi::gi_look(BlockType::Torch as u16);
 	let entry = |e: Emitter, carried: u32| {
 		let w = u32::from(e.class)
 			| carried | (u32::from(e.level) & LIGHT_LEVEL_MASK) << LIGHT_LEVEL_SHIFT
 			| if e.whitened { LIGHT_WHITENED } else { 0 }
 			| if e.face.is_some() { LIGHT_QUAD } else { 0 };
-		// The second half is the rectangle, or zero. A punctual light's
-		// pair is [pos, class] then four zeros, so the only thing that
-		// changed for a torch is the stride.
-		let f = e.face.map_or([0.0; 4], |f| {
-			[
-				f.ext[0],
-				f.ext[1],
-				f32::from_bits(u32::from(f.axis) | u32::from(f.positive) << 2),
-				0.0,
-			]
-		});
+		// The second half holds the rectangle; its spare w tags torch flicker.
+		let f = e
+			.face
+			.map_or([0.0, 0.0, 0.0, f32::from(e.class == torch)], |f| {
+				[
+					f.ext[0],
+					f.ext[1],
+					f32::from_bits(u32::from(f.axis) | u32::from(f.positive) << 2),
+					0.0,
+				]
+			});
 		(
 			e.pos,
 			[

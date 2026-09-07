@@ -202,7 +202,7 @@ fn local_finish(p: vec3f, n: vec3f, v: vec3f, finish: u32) -> vec3f {
 	for (var j = 1u; j <= count; j++) {
 		let light = lights[j * 2u - 1u];
 		let shape = lights[j * 2u];
-		let diffuse = gi_light_score(light, shape, p, n);
+		let diffuse = gi_light_score(light, shape, p, n, frame.light_color.w);
 		if diffuse <= 0.0 { continue; }
 		let sample = gi_light_sample(light, shape, p, 0.5, 0.5);
 		let l = normalize(sample.p - p);

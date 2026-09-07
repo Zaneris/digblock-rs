@@ -409,6 +409,7 @@ impl Renderer {
 			chunk_slots,
 			ledger,
 			block_texture: textures.texture,
+			block_colors: textures.layer_means,
 			gpu_timer: GpuTimer::new(gpu),
 			debug_gi: config.debug_gi,
 			stub: config.stub,
@@ -437,6 +438,9 @@ impl Renderer {
 			siphon: crate::siphon::Siphon::new(gpu, surface_format, &frame_bgl),
 			teleport: crate::teleport::Teleport::new(gpu, surface_format, &frame_bgl),
 			waystone_fx: crate::waystone_fx::WaystoneFx::new(gpu, surface_format, &frame_bgl),
+			flames: crate::flame::Flames::new(gpu, surface_format, &frame_bgl),
+			flame_scratch: Vec::with_capacity(crate::flame::CAPACITY),
+			flame_sites: Vec::with_capacity(crate::flame::CAPACITY),
 			players: crate::players::RemotePlayersDraw::new(
 				gpu,
 				surface_format,

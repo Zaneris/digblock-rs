@@ -587,6 +587,23 @@ pub(super) fn debug_dive_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
 	out
 }
 
+/// A short waterfall with a source above the pool, using the real water mesh and impact path.
+pub(super) fn debug_spray_plan(spawn: Vec3) -> Vec<(i32, i32, i32, u16)> {
+	let (x, y, z) = (
+		spawn.x.floor() as i32,
+		spawn.y.floor() as i32,
+		spawn.z.floor() as i32 + 9,
+	);
+	let mut plan = Vec::new();
+	for dx in -1..=1 {
+		for height in y - 2..=y + 3 {
+			plan.push((x + dx, height, z, BlockType::WaterFall as u16));
+		}
+		plan.push((x + dx, y + 4, z, BlockType::Water as u16));
+	}
+	plan
+}
+
 /// DIG_RIVER=1 layout: a wide, deep flooded basin AHEAD of the spawn camera (yaw 0 faces +z), its
 /// surface a few blocks below the eye — the "standing at a river's edge looking into it"
 /// frame-cost scene (R17). Pair with `--pitch -35` so near water fills most of the screen. All of

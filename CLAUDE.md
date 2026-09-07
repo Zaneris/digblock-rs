@@ -153,6 +153,11 @@ Metal and polished stone use texture-derived finish bits in `mesher::solid_word1
 `chunk.wgsl`; shapes inherit the finish through their face textures. Highlights follow sun and local-light visibility.
 The `materials` diagnostic scene (`DIG_MATERIALS=1` / `?materials`) compares metal, polished stone and matte stone.
 
+`fire_common.wgsl` (the torch flicker, keyed on the frame clock in `light_color.w`) must precede `gi_dda.wgsl` wherever
+that is included, because the light scorer reads it; `fx_common.wgsl` holds the procedural footprints the effect shaders
+share. Visible torch fire is `crates/digblock-client/src/flame.rs`, fed from the GI emitter list for placed torches and
+from the held-item transforms for hands, so there is no second torch scan.
+
 WGSL shared preludes are prepended via `concat!` in a fixed order; all render-pipeline descriptors funnel through
 `crates/digblock-client/src/pipeline_builder.rs`. Shader validation is three non-overlapping gates: naga parse
 (`digblock-assets` test), full wgpu-core validation with `Backends::NOOP` (`every_pipeline_builds_without_a_gpu` in the

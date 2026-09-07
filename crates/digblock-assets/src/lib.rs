@@ -306,6 +306,7 @@ pub mod shader {
 		include_str!("../../../assets/shaders/frame_common.wgsl"),
 		include_str!("../../../assets/shaders/medium_common.wgsl"),
 		include_str!("../../../assets/shaders/sky_common.wgsl"),
+		include_str!("../../../assets/shaders/fire_common.wgsl"),
 		include_str!("../../../assets/shaders/gi_dda.wgsl"),
 		include_str!("../../../assets/shaders/gi_common.wgsl"),
 		include_str!("../../../assets/shaders/ink_common.wgsl"),
@@ -315,6 +316,7 @@ pub mod shader {
 		include_str!("../../../assets/shaders/frame_common.wgsl"),
 		include_str!("../../../assets/shaders/medium_common.wgsl"),
 		include_str!("../../../assets/shaders/sky_common.wgsl"),
+		include_str!("../../../assets/shaders/fire_common.wgsl"),
 		include_str!("../../../assets/shaders/gi_dda.wgsl"),
 		include_str!("../../../assets/shaders/gi_common.wgsl"),
 		include_str!("../../../assets/shaders/water.wgsl"),
@@ -332,6 +334,7 @@ pub mod shader {
 		include_str!("../../../assets/shaders/frame_common.wgsl"),
 		include_str!("../../../assets/shaders/medium_common.wgsl"),
 		include_str!("../../../assets/shaders/sky_common.wgsl"),
+		include_str!("../../../assets/shaders/fx_common.wgsl"),
 		include_str!("../../../assets/shaders/spray.wgsl"),
 	);
 	/// Level-up confetti. Takes the GI world bindings its spray sibling
@@ -343,8 +346,10 @@ pub mod shader {
 		include_str!("../../../assets/shaders/frame_common.wgsl"),
 		include_str!("../../../assets/shaders/medium_common.wgsl"),
 		include_str!("../../../assets/shaders/sky_common.wgsl"),
+		include_str!("../../../assets/shaders/fire_common.wgsl"),
 		include_str!("../../../assets/shaders/gi_dda.wgsl"),
 		include_str!("../../../assets/shaders/gi_common.wgsl"),
+		include_str!("../../../assets/shaders/fx_common.wgsl"),
 		include_str!("../../../assets/shaders/confetti.wgsl"),
 	);
 	/// The generic burst rack (debris/splash/sparkle/poof) — confetti's
@@ -354,8 +359,10 @@ pub mod shader {
 		include_str!("../../../assets/shaders/frame_common.wgsl"),
 		include_str!("../../../assets/shaders/medium_common.wgsl"),
 		include_str!("../../../assets/shaders/sky_common.wgsl"),
+		include_str!("../../../assets/shaders/fire_common.wgsl"),
 		include_str!("../../../assets/shaders/gi_dda.wgsl"),
 		include_str!("../../../assets/shaders/gi_common.wgsl"),
+		include_str!("../../../assets/shaders/fx_common.wgsl"),
 		include_str!("../../../assets/shaders/bursts.wgsl"),
 	);
 	/// The essence draw — the Essence Siphon's motes and face kindle. No
@@ -365,6 +372,7 @@ pub mod shader {
 	pub const SIPHON: &str = concat!(
 		include_str!("../../../assets/shaders/frame_common.wgsl"),
 		include_str!("../../../assets/shaders/medium_common.wgsl"),
+		include_str!("../../../assets/shaders/fx_common.wgsl"),
 		include_str!("../../../assets/shaders/siphon.wgsl"),
 	);
 	/// Teleport light (the cast channel, departure, arrival) and the
@@ -373,17 +381,27 @@ pub mod shader {
 	pub const TELEPORT: &str = concat!(
 		include_str!("../../../assets/shaders/frame_common.wgsl"),
 		include_str!("../../../assets/shaders/medium_common.wgsl"),
+		include_str!("../../../assets/shaders/fx_common.wgsl"),
 		include_str!("../../../assets/shaders/teleport.wgsl"),
+	);
+	pub const FLAME: &str = concat!(
+		include_str!("../../../assets/shaders/frame_common.wgsl"),
+		include_str!("../../../assets/shaders/medium_common.wgsl"),
+		include_str!("../../../assets/shaders/fx_common.wgsl"),
+		include_str!("../../../assets/shaders/fire_common.wgsl"),
+		include_str!("../../../assets/shaders/flame.wgsl"),
 	);
 	pub const WAYSTONE: &str = concat!(
 		include_str!("../../../assets/shaders/frame_common.wgsl"),
 		include_str!("../../../assets/shaders/medium_common.wgsl"),
+		include_str!("../../../assets/shaders/fx_common.wgsl"),
 		include_str!("../../../assets/shaders/waystone.wgsl"),
 	);
 	pub const PLAYERS: &str = concat!(
 		include_str!("../../../assets/shaders/frame_common.wgsl"),
 		include_str!("../../../assets/shaders/medium_common.wgsl"),
 		include_str!("../../../assets/shaders/sky_common.wgsl"),
+		include_str!("../../../assets/shaders/fire_common.wgsl"),
 		include_str!("../../../assets/shaders/gi_dda.wgsl"),
 		include_str!("../../../assets/shaders/gi_common.wgsl"),
 		include_str!("../../../assets/shaders/ink_common.wgsl"),
@@ -397,6 +415,7 @@ pub mod shader {
 		include_str!("../../../assets/shaders/frame_common.wgsl"),
 		include_str!("../../../assets/shaders/medium_common.wgsl"),
 		include_str!("../../../assets/shaders/sky_common.wgsl"),
+		include_str!("../../../assets/shaders/fire_common.wgsl"),
 		include_str!("../../../assets/shaders/gi_dda.wgsl"),
 		include_str!("../../../assets/shaders/gi_common.wgsl"),
 		include_str!("../../../assets/shaders/ink_common.wgsl"),
@@ -436,11 +455,13 @@ pub mod shader {
 	/// transmittance is the same constant the view ray uses.
 	pub const GI_PROBE: &str = concat!(
 		include_str!("../../../assets/shaders/medium_common.wgsl"),
+		include_str!("../../../assets/shaders/fire_common.wgsl"),
 		include_str!("../../../assets/shaders/gi_dda.wgsl"),
 		include_str!("../../../assets/shaders/gi_probe.wgsl"),
 	);
 	/// The voxel-window debug raymarch (`DIG_GI=window`).
 	pub const GI_DEBUG: &str = concat!(
+		include_str!("../../../assets/shaders/fire_common.wgsl"),
 		include_str!("../../../assets/shaders/gi_dda.wgsl"),
 		include_str!("../../../assets/shaders/gi_debug.wgsl"),
 	);
@@ -449,6 +470,7 @@ pub mod shader {
 	/// world bindings with water/players via the gi_common prelude.
 	pub const GI_RESOLVE: &str = concat!(
 		include_str!("../../../assets/shaders/medium_common.wgsl"),
+		include_str!("../../../assets/shaders/fire_common.wgsl"),
 		include_str!("../../../assets/shaders/gi_dda.wgsl"),
 		include_str!("../../../assets/shaders/gi_common.wgsl"),
 		include_str!("../../../assets/shaders/gi_resolve.wgsl"),
@@ -464,18 +486,22 @@ pub mod shader {
 	/// it, which is exactly the coupling these files exist to prevent.
 	/// medium_common must validate with nothing before it at all.
 	pub const MEDIUM_COMMON: &str = include_str!("../../../assets/shaders/medium_common.wgsl");
-	pub const GI_DDA: &str = include_str!("../../../assets/shaders/gi_dda.wgsl");
+	pub const GI_DDA: &str = concat!(
+		include_str!("../../../assets/shaders/fire_common.wgsl"),
+		include_str!("../../../assets/shaders/gi_dda.wgsl")
+	);
 	pub const INK_COMMON: &str = include_str!("../../../assets/shaders/ink_common.wgsl");
 	// gi_common consumes medium_common's depth fade (R32) as well as
 	// gi_dda's steppers, so its standalone validation carries both — the
 	// same order every real consumer already concatenates them in.
 	pub const GI_COMMON: &str = concat!(
 		include_str!("../../../assets/shaders/medium_common.wgsl"),
+		include_str!("../../../assets/shaders/fire_common.wgsl"),
 		include_str!("../../../assets/shaders/gi_dda.wgsl"),
 		include_str!("../../../assets/shaders/gi_common.wgsl"),
 	);
 
-	pub const ALL: [(&str, &str); 26] = [
+	pub const ALL: [(&str, &str); 27] = [
 		("chunk.wgsl", CHUNK),
 		("water.wgsl", WATER),
 		("glass.wgsl", GLASS),
@@ -489,6 +515,7 @@ pub mod shader {
 		("siphon.wgsl", SIPHON),
 		("teleport.wgsl", TELEPORT),
 		("waystone.wgsl", WAYSTONE),
+		("flame.wgsl", FLAME),
 		("players.wgsl", PLAYERS),
 		("highlight.wgsl", HIGHLIGHT),
 		("highlight_crack.wgsl", HIGHLIGHT_CRACK),

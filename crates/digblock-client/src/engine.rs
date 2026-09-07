@@ -66,8 +66,8 @@ pub(crate) mod editor;
 pub use debug_plans::parse_node_kind;
 use debug_plans::{
 	debug_crack_plan, debug_dive_plan, debug_doors_plan, debug_materials_plan, debug_node_plan,
-	debug_ore_plan, debug_river_plan, debug_roof_plan, debug_shapes_plan, debug_torches_plan,
-	debug_tunnel_plan, debug_vault_plan, quantized_facing,
+	debug_ore_plan, debug_river_plan, debug_roof_plan, debug_shapes_plan, debug_spray_plan,
+	debug_torches_plan, debug_tunnel_plan, debug_vault_plan, quantized_facing,
 };
 pub use stare::STARE_FRAMES;
 
