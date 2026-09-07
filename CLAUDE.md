@@ -17,12 +17,22 @@ just gate                 # check + check-ios + check-web + web-e2e, i.e. "am I 
 just run                  # desktop client, debug build
 just web                  # wasm build served at http://127.0.0.1:8080 (Chrome/WebGPU)
 just play                 # containerized master + native server + client, all local, torn down together
-just bench                # deterministic perf run (release build; window must stay visible or it stalls)
+just bench                # deterministic perf run (release build; window must stay visible or it stalls: --offscreen if it cannot)
 just fmt-md               # dprint re-wrap of Markdown (this file included) to 120 cols
 ```
 
 `just check` needs Docker running: the server e2e tests boot the real `apps/master` .NET container. CI is intentionally
 disabled pre-deployment; the just gates are the gate.
+
+Measuring: a windowed bench produces no frames behind a locked screen or screensaver and looks like a hang, and
+`--offscreen` is the cure (the recorded baselines went through the surface, so say so when comparing). `--mobile`
+REPLACES the whole config, so it must come before `--bench` and every other flag, or bench mode is silently dropped and
+the run never exits. The web bench (`node tools/web-e2e/dig.mjs --bench`) does not default the seed or the time of day
+the way the desktop launcher does: pass `--seed 42 --tod 45` or it measures another world. The overlay's per-pass `gpu`
+line (`--overlay`, `?overlay&gputimer=1` on web) is the attribution tool, and a steady `fps` with motion that looks like
+2 fps is the sim, not the renderer. `just play-web` takes minutes the first time (release wasm build, the master image)
+and is up when its two `→` URL lines print or port 8080 answers; if a wait on it seems endless, probe the port before
+assuming a hang.
 
 Workspace lints deny all warnings and `unreachable_pub`, so plain `cargo build` surfaces what CI would. Rust uses hard
 tabs, `max_width = 100` (rustfmt.toml).

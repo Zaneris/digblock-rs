@@ -161,6 +161,9 @@ def serve(bind, port, directory, tls=None):
 
 
 def main():
+	# The two "→" URL lines are the ready signal, and a pipe (a harness, a
+	# log) must see them when the listeners are up, not when this exits.
+	sys.stdout.reconfigure(line_buffering=True)
 	ap = argparse.ArgumentParser()
 	ap.add_argument("--dir", default="target/web")
 	ap.add_argument("--http-port", type=int, default=8080)
