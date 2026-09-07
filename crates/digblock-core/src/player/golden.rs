@@ -139,13 +139,14 @@ fn golden_water_trajectory_pins_sim_version() {
 		p.tick(TICK, Vec3::Z, Vec3::Z, intent, &shelf);
 	}
 	let s = p.state();
-	// The last tick catches the breach arc over the shelf lip — falling
-	// in, sinking, swim-up, and the breach all feed these bits.
+	// The last tick catches the drop onto the shelf after the breach —
+	// falling in, the surface buoyancy, sinking, swim-up, and the breach
+	// all feed these bits.
 	assert_eq!(
 		(s.pos.to_array(), s.vel.to_array()),
 		(
-			[0.5f32, 22.090445, 11.964334],
-			[0.0f32, 3.856666, 0.6533333]
+			[0.5f32, 21.8335, 14.515615],
+			[0.0f32, -4.3100023, 2.7621694]
 		),
 		"swim behavior changed — update these values AND bump digblock_core::SIM_VERSION"
 	);

@@ -612,6 +612,118 @@ fn swims_where_pointed() {
 	assert!(climber.pos.y > 14.6, "climbed to {}", climber.pos.y);
 }
 
+/// Swimming forward with the look pitched up, the swimmer surfaces and then FLOATS: the
+/// swim target must not carry the capsule through the swim threshold, or the dry branch drops
+/// it back every few ticks and the eye judders at the surface (the "2 fps" swim on phones,
+/// where a thumb-held look sits a few degrees up).
+#[test]
+fn an_upward_look_floats_at_the_surface_instead_of_juddering() {
+	let forward = PlayerIntent {
+		move_axis: Vec2::new(0.0, 1.0),
+		jump: false,
+	};
+	for pitch_deg in [3.0f32, 5.0, 10.0, 20.0] {
+		let (sn, cs) = pitch_deg.to_radians().sin_cos();
+		let up = Vec3::new(0.0, sn, cs);
+		let mut p = Player::new(Vec3::new(0.5, 17.0, 0.5));
+		// Two seconds to reach the surface, then eight of steady swimming.
+		for _ in 0..120 {
+			p.tick(TICK, up, up, forward, &water_world);
+		}
+		let (mut lo, mut hi) = (p.pos.y, p.pos.y);
+		let (mut reversals, mut last_sign) = (0, 0i8);
+		for _ in 0..480 {
+			p.tick(TICK, up, up, forward, &water_world);
+			lo = lo.min(p.pos.y);
+			hi = hi.max(p.pos.y);
+			let vy = p.state().vel.y;
+			let sign = if vy > 0.02 {
+				1
+			} else if vy < -0.02 {
+				-1
+			} else {
+				0
+			};
+			if sign != 0 && last_sign != 0 && sign != last_sign {
+				reversals += 1;
+			}
+			if sign != 0 {
+				last_sign = sign;
+			}
+		}
+		assert!(
+			p.pos.y > 19.0,
+			"{pitch_deg} deg up: never surfaced, eye at {}",
+			p.pos.y
+		);
+		assert!(
+			hi - lo < 0.02 && reversals == 0,
+			"{pitch_deg} deg up: the eye judders at the surface, {reversals} reversals over \
+			 {:.3} blocks in 8 s",
+			hi - lo
+		);
+	}
+}
+
+/// The water holds up a swimmer whose head is out: idle, or swimming level, they drift to the
+/// float line and stay there with their eyes above the surface, and no jump is needed to keep
+/// them there. Fully under, the slow sink stands (`sinks_slowly_in_water`), so a dive is still a
+/// dive.
+#[test]
+fn a_swimmer_with_their_head_out_floats_there_without_a_jump() {
+	let surface = 20.0 - WATER_SURFACE_DROP;
+	let level_forward = PlayerIntent {
+		move_axis: Vec2::new(0.0, 1.0),
+		jump: false,
+	};
+	for (label, intent) in [
+		("idle", PlayerIntent::default()),
+		("swimming level", level_forward),
+	] {
+		// Eyes just under, crown just out.
+		let mut p = Player::new(Vec3::new(0.5, surface - 0.2, 0.5));
+		for _ in 0..300 {
+			p.tick(TICK, Vec3::Z, Vec3::Z, intent, &water_world);
+		}
+		let settled = p.pos.y;
+		for _ in 0..300 {
+			p.tick(TICK, Vec3::Z, Vec3::Z, intent, &water_world);
+			assert!(
+				(p.pos.y - settled).abs() < 0.02,
+				"{label}: still moving vertically at the surface, {} vs {settled}",
+				p.pos.y
+			);
+		}
+		assert!(
+			p.pos.y > surface + 0.3,
+			"{label}: eyes went under, eye at {} against a surface at {surface}",
+			p.pos.y
+		);
+	}
+}
+
+/// Holding jump and forward on open water hops along the surface; the hops may not compound.
+/// Air control drifts a flight but never builds speed past a walk, so with no landing to brake
+/// it a held jump cannot skim the sea faster than a run on land.
+#[test]
+fn surface_hops_never_outrun_a_walk() {
+	let mut p = Player::new(Vec3::new(0.5, 20.0, 0.5));
+	let mut peak = 0.0f32;
+	for _ in 0..1200 {
+		p.tick(TICK, Vec3::Z, Vec3::Z, SWIM, &water_world);
+		peak = peak.max(p.state().vel.z);
+	}
+	assert!(
+		peak <= WALK_SPEED + 1e-3,
+		"skimmed the surface at {peak} blocks/s, faster than a walk ({WALK_SPEED})"
+	);
+	assert!(
+		p.pos.z > 0.5 + 40.0,
+		"the hops should still carry the swimmer a long way: only {} blocks in 20 s",
+		p.pos.z - 0.5
+	);
+}
+
 #[test]
 fn jump_out_mounts_adjacent_block() {
 	// Swimming against the shelf wall, holding forward + jump: the
