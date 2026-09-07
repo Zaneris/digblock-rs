@@ -229,8 +229,8 @@ pub struct EngineConfig {
 	/// `debug_screen` makes for the input-only screens. Set by the
 	/// desktop launcher from DIG_CONFETTI.
 	pub debug_confetti: bool,
-	/// DIG_CLOUDS / ?clouds: draw the volumetric cloud deck (sky.wgsl) and mirror it in water.
-	/// Off by default while its look is tuned; the code stays live behind the flag.
+	/// Draw the volumetric cloud deck (sky.wgsl) and mirror it in water. On by default;
+	/// DIG_NO_CLOUDS / ?noclouds drops it, the A/B for its frame cost.
 	pub clouds: bool,
 	/// DIG_BURSTS: the generic burst rack, one of each kind, on repeat.
 	pub debug_bursts: bool,
@@ -496,7 +496,7 @@ impl EngineConfig {
 			player_name: None,
 			debug_playerbox: None,
 			debug_confetti: false,
-			clouds: false,
+			clouds: true,
 			debug_bursts: false,
 			debug_fx: None,
 			debug_orbit: None,

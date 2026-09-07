@@ -60,10 +60,10 @@ pub const PLAYERBOX: Knob = value(
 	"a fake remote holding <item> (dirt|torch|stairs|slab|door|bucket|bucket-full|siphon|pick|sigil|empty)",
 );
 pub const CONFETTI: Knob = flag("confetti", "DIG_CONFETTI", "the milestone confetti burst");
-pub const CLOUDS: Knob = flag(
-	"clouds",
-	"DIG_CLOUDS",
-	"the volumetric cloud deck, off by default while it is tuned",
+pub const NO_CLOUDS: Knob = flag(
+	"noclouds",
+	"DIG_NO_CLOUDS",
+	"drop the volumetric cloud deck from the sky and the water's mirror",
 );
 pub const ORBIT: Knob = value(
 	"orbit",
@@ -232,7 +232,7 @@ pub const ALL: &[Knob] = &[
 	SCREEN,
 	PLAYERBOX,
 	CONFETTI,
-	CLOUDS,
+	NO_CLOUDS,
 	ORBIT,
 	DOLLY,
 	TUTORIAL,
@@ -317,7 +317,7 @@ pub fn apply(
 		})?);
 	}
 	config.debug_confetti = on(&CONFETTI);
-	config.clouds = on(&CLOUDS);
+	config.clouds = !on(&NO_CLOUDS);
 	config.debug_bursts = on(&BURSTS);
 	if let Some(v) = get(&TUTORIAL) {
 		use crate::tutorial::{StepId, TutorialOverride};

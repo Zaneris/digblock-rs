@@ -84,6 +84,16 @@ fn sky_stars(ray: vec3f) -> f32 {
 // inside it.
 const SKY_CLOUD_BASE = 260.0;
 const SKY_CLOUD_TOP = 330.0;
+// The deck's horizontal extent, as a soft edge on cover: whole between the eye and
+// SKY_CLOUD_NEAR blocks out, gone at SKY_CLOUD_REACH. Without it a grazing ray crosses cover
+// without end, so every pixel below a dozen degrees of elevation saturates to cloud and the
+// horizon reads as overcast under any amount of cover. The sky march and the water mirror both
+// take it, so the deck ends at the same distance in the dome and in its reflection.
+const SKY_CLOUD_NEAR = 600.0;
+const SKY_CLOUD_REACH = 1600.0;
+fn sky_cloud_far(dist: f32) -> f32 {
+	return 1.0 - smoothstep(SKY_CLOUD_NEAR, SKY_CLOUD_REACH, dist);
+}
 
 // Cloud cover over a world xz: fbm on the shared wind's circle, run 14x faster than the water's
 // gusts (about 4 blocks/s), thresholded. The march extrudes this through the deck with the shape
@@ -103,8 +113,9 @@ fn sky_cloud_mirror(origin: vec3f, ray: vec3f, t: f32) -> f32 {
 	if ray.y < 0.02 || rise <= 0.0 {
 		return 0.0;
 	}
-	let xz = origin.xz + ray.xz * (rise / ray.y);
-	return sky_cloud_cover(xz, t) * smoothstep(0.02, 0.15, ray.y);
+	let dist = rise / ray.y;
+	let xz = origin.xz + ray.xz * dist;
+	return sky_cloud_cover(xz, t) * sky_cloud_far(dist) * smoothstep(0.02, 0.15, ray.y);
 }
 
 // A cloud's underside as the water sees it: skylit, with a little of the direct light bled
