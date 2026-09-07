@@ -335,7 +335,7 @@ pub enum InputEvent {
 		dx: f64,
 		dy: f64,
 	},
-	/// Scroll in wheel notches, pixel deltas scaled down; only while the cursor is captured.
+	/// Scroll in wheel notches, at most one per event; only while the cursor is captured.
 	Scroll {
 		dy: f32,
 	},
@@ -461,9 +461,79 @@ pub(crate) fn map_touch_phase(phase: winit::event::TouchPhase) -> TouchPhase {
 	}
 }
 
+/// Wheel notches for one event. A detent mouse sends one event per click on
+/// every browser and OS, so each event counts at most one notch either way;
+/// only trackpads send the many sub-notch pixel events that accumulate.
+/// Pixel deltas are read in CSS/logical pixels: winit's web backend hands
+/// them pre-multiplied by devicePixelRatio, which made one click 2..5 slots.
+pub(crate) fn wheel_notches(delta: winit::event::MouseScrollDelta, scale_factor: f64) -> f32 {
+	use winit::event::MouseScrollDelta as D;
+	let raw = match delta {
+		D::LineDelta(_, y) => y,
+		D::PixelDelta(p) => (p.y / scale_factor.max(f64::EPSILON) / PIXELS_PER_NOTCH) as f32,
+	};
+	raw.clamp(-1.0, 1.0)
+}
+
+/// Logical pixels a browser reports for one wheel detent (Chrome: 100).
+const PIXELS_PER_NOTCH: f64 = 100.0;
+
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use winit::dpi::PhysicalPosition;
+	use winit::event::MouseScrollDelta as D;
+
+	/// One click of a detent wheel must move exactly one slot, however the
+	/// browser and display scale dress it up: Firefox reports 3 lines, Chrome
+	/// 100 CSS px which winit multiplies by devicePixelRatio.
+	#[test]
+	fn one_wheel_click_is_one_notch_on_every_browser_and_scale() {
+		assert_eq!(
+			wheel_notches(D::LineDelta(0.0, 3.0), 1.0),
+			1.0,
+			"Firefox line mode"
+		);
+		assert_eq!(
+			wheel_notches(D::LineDelta(0.0, -1.0), 2.0),
+			-1.0,
+			"native line mode"
+		);
+		for scale in [1.0, 1.25, 1.5, 2.0, 2.5, 3.0] {
+			let one_click = PhysicalPosition::new(0.0, 100.0 * scale);
+			assert_eq!(
+				wheel_notches(D::PixelDelta(one_click), scale),
+				1.0,
+				"Chrome at {scale}x scale"
+			);
+			let down = PhysicalPosition::new(0.0, -100.0 * scale);
+			assert_eq!(
+				wheel_notches(D::PixelDelta(down), scale),
+				-1.0,
+				"Chrome at {scale}x down"
+			);
+		}
+	}
+
+	/// Trackpad events are sub-notch and must still add up rather than
+	/// each firing a full step or vanishing.
+	#[test]
+	fn trackpad_pixels_stay_fractional() {
+		let nudge = PhysicalPosition::new(0.0, 20.0);
+		let n = wheel_notches(D::PixelDelta(nudge), 2.0);
+		assert!(
+			n > 0.0 && n < 1.0,
+			"a small pixel delta is a fraction of a notch, got {n}"
+		);
+		let mut acc = 0.0;
+		while acc < 1.0 {
+			acc += n;
+		}
+		assert!(
+			(acc - 1.0).abs() < 1e-5,
+			"ten 20px nudges at 2x scale sum to one notch"
+		);
+	}
 
 	#[test]
 	fn every_nameable_key_roundtrips_and_is_unique() {

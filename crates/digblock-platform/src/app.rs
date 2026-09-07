@@ -16,7 +16,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
 use crate::clock::GameClock;
-use crate::input::{InputEvent, map_button, map_key, map_touch_phase};
+use crate::input::{InputEvent, map_button, map_key, map_touch_phase, wheel_notches};
 use crate::lifecycle::{Action, Event as LcEvent, Lifecycle};
 use crate::{Game, Gpu, RunOptions};
 
@@ -1510,12 +1510,8 @@ impl<G: Game> ApplicationHandler<UserEvent> for App<G> {
 			WindowEvent::MouseWheel { delta, .. } => {
 				// Gameplay-only (hotbar selection), gated like MouseInput; the
 				// menu has no scroll region today.
-				if self.cursor_grabbed {
-					use winit::event::MouseScrollDelta;
-					let dy = match delta {
-						MouseScrollDelta::LineDelta(_, y) => y,
-						MouseScrollDelta::PixelDelta(p) => (p.y / 50.0) as f32,
-					};
+				if let (true, AppState::Running(r)) = (self.cursor_grabbed, &self.state) {
+					let dy = wheel_notches(delta, r.window.scale_factor());
 					if dy != 0.0 {
 						self.game.input(InputEvent::Scroll { dy });
 					}
