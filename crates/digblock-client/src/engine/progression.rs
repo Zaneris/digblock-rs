@@ -160,7 +160,9 @@ impl Engine {
 		}
 		let priced = digblock_core::alchemy::craft_feedstock(siphon)
 			.iter()
-			.all(|&(b, n)| self.inventory.count(b) >= n);
+			.all(|&(f, n)| {
+				digblock_core::alchemy::feedstock_held(f, |b| self.inventory.count(b)) >= n
+			});
 		if !priced {
 			return;
 		}

@@ -125,7 +125,7 @@ pub fn strip_reason(view: &AlchView, item: BlockType) -> StripReason {
 	}
 	let feedstock = alchemy::craft_feedstock(item);
 	if let Some((f, more)) = feedstock.iter().find_map(|&(f, n)| {
-		let have = view.counts[f as usize];
+		let have = view.held(f);
 		(have < n).then(|| (f, n - have))
 	}) {
 		return StripReason::Short {
@@ -164,12 +164,15 @@ pub fn cost_chips(view: &AlchView, item: BlockType, locked: bool) -> Vec<Chip> {
 	};
 	let tint = |t: u32| if locked { LOCKED_TINT } else { t };
 	let feedstock = alchemy::craft_feedstock(item).into_iter().map(|(f, n)| {
-		let (kind, t) = hud::item_icon(HotbarItem::Block(f), false);
+		// The chip wears the face of what the pack would actually pay
+		// with: a line the pack covers in pine reads as pine, not as
+		// the leaves it does not hold.
+		let (kind, t) = hud::item_icon(HotbarItem::Block(view.pays_with(f)), false);
 		Chip {
 			kind,
 			tint: tint(t),
 			n,
-			ink: ink(view.counts[f as usize] < n),
+			ink: ink(view.held(f) < n),
 		}
 	});
 	let ideal = alchemy::craft_ideal(item).unwrap_or_default();
@@ -194,6 +197,28 @@ fn chip_name(chip: &Chip) -> String {
 }
 
 impl AlchView {
+	/// What the pack can pay toward a feedstock line — the same count
+	/// `apply_alchemy` checks, so the chip that reads short and the
+	/// rule that refuses are one answer.
+	pub fn held(&self, f: BlockType) -> u32 {
+		alchemy::feedstock_held(f, |b| self.counts[b as usize])
+	}
+
+	/// The block the pack would pay a line with: the named block when
+	/// any is held, else whichever accepted alternate it holds most of.
+	pub fn pays_with(&self, f: BlockType) -> BlockType {
+		if self.counts[f as usize] > 0 {
+			return f;
+		}
+		BlockType::ALL
+			.iter()
+			.copied()
+			.filter(|&b| alchemy::feedstock_accepts(f, b))
+			.max_by_key(|&b| self.counts[b as usize])
+			.filter(|&b| self.counts[b as usize] > 0)
+			.unwrap_or(f)
+	}
+
 	pub fn build(inv: &Inventory, skills_set: &SkillSet) -> Self {
 		let level = skills_set.level(Skill::Alchemy);
 		let xp = skills_set.xp(Skill::Alchemy);
@@ -237,7 +262,7 @@ impl AlchView {
 			.min();
 		let matter = alchemy::craft_feedstock(item)
 			.iter()
-			.map(|&(f, n)| self.counts[f as usize] / n)
+			.map(|&(f, n)| self.held(f) / n)
 			.min();
 		essence
 			.into_iter()

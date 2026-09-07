@@ -347,7 +347,7 @@ pub fn apply_alchemy(inv: &mut Inventory, op: AlchemyOp, skills: &crate::skills:
 				}
 			}
 			for &(f, n) in &feedstock {
-				if inv.count(f) < n * count {
+				if alchemy::feedstock_held(f, |b| inv.count(b)) < n * count {
 					return false;
 				}
 			}
@@ -356,13 +356,35 @@ pub fn apply_alchemy(inv: &mut Inventory, op: AlchemyOp, skills: &crate::skills:
 				debug_assert!(taken, "checked above");
 			}
 			for &(f, n) in &feedstock {
-				let taken = inv.try_take(f, n * count);
-				debug_assert!(taken, "checked above");
+				take_feedstock(inv, f, n * count);
 			}
 			inv.add(item, per_batch * count);
 			true
 		}
 	}
+}
+
+/// Debit one feedstock line the pack has been checked to cover: the named block first, then
+/// whatever else the line accepts, in catalog order, until the line is paid.
+fn take_feedstock(inv: &mut Inventory, f: BlockType, mut need: u32) {
+	let order = std::iter::once(f).chain(
+		BlockType::ALL
+			.iter()
+			.copied()
+			.filter(|&b| b != f && crate::alchemy::feedstock_accepts(f, b)),
+	);
+	for b in order {
+		let take = need.min(inv.count(b));
+		if take > 0 {
+			let taken = inv.try_take(b, take);
+			debug_assert!(taken, "counted above");
+			need -= take;
+		}
+		if need == 0 {
+			return;
+		}
+	}
+	debug_assert!(need == 0, "checked before the debit");
 }
 
 #[cfg(test)]

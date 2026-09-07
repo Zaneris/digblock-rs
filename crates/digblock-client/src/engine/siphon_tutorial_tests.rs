@@ -56,6 +56,14 @@ fn the_walkthrough_arms_only_for_a_fresh_character() {
 
 /// An in-game engine whose pack can afford a siphon.
 fn affordable_engine() -> Engine {
+	engine_holding(&digblock_core::alchemy::craft_feedstock(
+		BlockType::EssenceSiphon,
+	))
+}
+
+/// An in-game engine holding exactly this pack, at an Alchemy level that
+/// opens the siphon.
+fn engine_holding(pack: &[(BlockType, u32)]) -> Engine {
 	let mut config = EngineConfig::desktop();
 	config.workers = 0;
 	config.seed = Some(3.0);
@@ -68,10 +76,38 @@ fn affordable_engine() -> Engine {
 	});
 	assert!(!engine.ui.menu.is_open(), "in-game to start");
 	engine.skills.set_total(Skill::Alchemy, total_xp_for(99));
-	for (b, n) in digblock_core::alchemy::craft_feedstock(BlockType::EssenceSiphon) {
+	for &(b, n) in pack {
 		engine.inventory.add(b, n);
 	}
 	engine
+}
+
+/// A spawn among conifers: the nudge prices the siphon by the same rule
+/// the bench pays it, so a pack of needles and no leaves arms the chapter
+/// exactly as leaves do — otherwise that player is never invited to the
+/// one craft that opens the game.
+#[test]
+fn a_pine_canopy_arms_the_chapter_too() {
+	let pack: Vec<_> = digblock_core::alchemy::craft_feedstock(BlockType::EssenceSiphon)
+		.into_iter()
+		.map(|(f, n)| {
+			(
+				if f.is_foliage() {
+					BlockType::PineLeaves
+				} else {
+					f
+				},
+				n,
+			)
+		})
+		.collect();
+	let mut engine = engine_holding(&pack);
+	assert!(!engine.tutorial.is_running());
+	engine.nudge_siphon();
+	assert!(
+		engine.tutorial.is_running(),
+		"needles price the siphon as leaves do"
+	);
 }
 
 #[test]
