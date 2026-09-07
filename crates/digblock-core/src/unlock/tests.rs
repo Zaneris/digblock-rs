@@ -462,18 +462,20 @@ fn one_question_answers_every_dig_gate() {
 /// other level is an ordinary one.
 #[test]
 fn unlock_levels_are_the_threshold_levels() {
-	// Mining: the two strength rungs above the starting one, then the
-	// reveals — the first reveal sits one rung past rock on purpose, so a
-	// quarry is something you work before it starts glittering.
+	// Mining: the strength rungs above the starting one (timber, the
+	// loose rock, rock), then the reveals — the first reveal sits one rung
+	// past rock on purpose, so a quarry is something you work before it
+	// starts glittering.
 	let mining: Vec<u32> = (1..=MAX_LEVEL)
 		.filter(|&l| opens(Skill::Mining, l))
 		.collect();
 	assert_eq!(
 		mining,
-		vec![2, 10, 15, 18, 23, 33, 40, 43, 50, 60, 85],
-		"timber and rock, the reveals, metal and crystal, the pick, the \
-			 prospector's two ranks, mastery — the content tops at 60, and \
-			 the pick's plane at 85 is the tail's one deliberate exception"
+		vec![2, 5, 10, 15, 18, 23, 33, 40, 43, 50, 60, 85],
+		"timber, loose rock and rock, the reveals, metal and crystal, the \
+			 pick, the prospector's two ranks, mastery — the content tops at \
+			 60, and the pick's plane at 85 is the tail's one deliberate \
+			 exception"
 	);
 	// Alchemy: the shape and material unlocks and the hand-priced items —
 	// the surface-node reveals left the ladder for the siphon craft.

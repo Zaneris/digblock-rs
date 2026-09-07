@@ -622,11 +622,14 @@ fn an_upward_look_floats_at_the_surface_instead_of_juddering() {
 		move_axis: Vec2::new(0.0, 1.0),
 		jump: false,
 	};
+	let surface = 20.0 - WATER_SURFACE_DROP;
 	for pitch_deg in [3.0f32, 5.0, 10.0, 20.0] {
 		let (sn, cs) = pitch_deg.to_radians().sin_cos();
 		let up = Vec3::new(0.0, sn, cs);
-		let mut p = Player::new(Vec3::new(0.5, 17.0, 0.5));
-		// Two seconds to reach the surface, then eight of steady swimming.
+		// Already at the surface, eyes just under: the climb from depth
+		// is `swims_where_pointed`; this is what happens on arrival.
+		let mut p = Player::new(Vec3::new(0.5, surface - 0.2, 0.5));
+		// Two seconds to settle, then eight of steady swimming.
 		for _ in 0..120 {
 			p.tick(TICK, up, up, forward, &water_world);
 		}
@@ -652,8 +655,8 @@ fn an_upward_look_floats_at_the_surface_instead_of_juddering() {
 			}
 		}
 		assert!(
-			p.pos.y > 19.0,
-			"{pitch_deg} deg up: never surfaced, eye at {}",
+			p.pos.y > surface + 0.3,
+			"{pitch_deg} deg up: eyes went under, eye at {} against a surface at {surface}",
 			p.pos.y
 		);
 		assert!(

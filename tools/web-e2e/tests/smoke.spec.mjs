@@ -7,7 +7,9 @@ import { test, expect, expectRendered, diff, detail, stats } from "./fixtures.mj
 const STEP_MS = 400;
 
 test("a capture run reaches its frame count and renders terrain", async ({ dig }) => {
-	const d = await dig({ seed: 7, tod: 60, frames: 90, fixeddt: 1 / 60 });
+	// No cloud deck: the measure below takes the sky as the smooth band the
+	// terrain has to out-texture, and clouds are texture the world did not draw.
+	const d = await dig({ seed: 7, tod: 60, frames: 90, fixeddt: 1 / 60, noclouds: true });
 	await d.exit();
 	const png = await d.shot(test.info().outputPath("terrain.png"));
 	expectRendered(png);
