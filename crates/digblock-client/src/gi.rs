@@ -365,6 +365,12 @@ pub(crate) struct GiDraw {
 	/// heading swing while oversubscribed re-flushes on the same rule a
 	/// walk does: either one moves the anchor.
 	lights_anchor: [f32; 3],
+	/// The eye the flushed list was last ordered for, and the entries as flushed. The glossy
+	/// highlight reads the HEAD of the list as the lamps nearest the eye, and a walk short of
+	/// the selection's refresh distance still changes which lamps those are — so the entries
+	/// are kept, to re-sort and re-upload without a reselection (`flush_lights`).
+	lights_eye: [f32; 3],
+	light_entries: Vec<[f32; 8]>,
 	/// Emitters IN REACH at that flush, so a move that changes WHICH are in reach re-flushes even
 	/// under the cap. Deliberately the pre-cull count and not the flushed length: the staleness
 	/// test compares it against a freshly counted `reachable()`, and the culls
@@ -652,10 +658,9 @@ fn select_lights(
 	}
 	// Nearest the eye first (not the selection anchor): a highlight is
 	// seen from where the eye is. A few hundred entries at most.
-	let eye_d2 =
-		|e: &[f32; 8]| (e[0] - cam[0]).powi(2) + (e[1] - cam[1]).powi(2) + (e[2] - cam[2]).powi(2);
-	all.sort_by(|a, b| eye_d2(&a.1).total_cmp(&eye_d2(&b.1)));
-	all.into_iter().map(|(_, e)| e).collect()
+	let mut all: Vec<[f32; 8]> = all.into_iter().map(|(_, e)| e).collect();
+	lights::sort_nearest_eye(&mut all, cam);
+	all
 }
 
 /// The per-frame inputs to the light-list flush, handed over WITH the frame

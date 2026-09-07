@@ -333,8 +333,9 @@ blocks! {
 	RubbleSlab = 93 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::RUBBLE, tex::RUBBLE, tex::RUBBLE)), ShapeKind::Slab), 20, DigFamily::Loose), Material::Rubble),
 	RubbleStairs = 94 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::RUBBLE, tex::RUBBLE, tex::RUBBLE)), ShapeKind::Stairs), 60, DigFamily::Loose), Material::Rubble),
 	/// Conifer boughs: the sloped pieces a pine's tiers are built from (`shapes::CanopyForm`).
-	/// Worldgen's, never crafted; a dig hands back the plain needle cube, so no slot ever holds one.
-	PineBoughs = 95 => drops(dig(shaped(props(RenderClass::Shaped, true, tex::PINE_LEAVES, tex::PINE_LEAVES, tex::PINE_LEAVES), ShapeKind::Canopy), 10, DigFamily::Fixed), BlockType::PineLeaves),
+	/// Worldgen's, never crafted (the canopy has no `ShapeFamily`, so the material puts it on no
+	/// grid); it sounds and lights as the needle cube, and a dig hands that cube back.
+	PineBoughs = 95 => mat(drops(dig(shaped(props(RenderClass::Shaped, true, tex::PINE_LEAVES, tex::PINE_LEAVES, tex::PINE_LEAVES), ShapeKind::Canopy), 10, DigFamily::Fixed), BlockType::PineLeaves), Material::PineLeaf),
 }
 
 /// The indestructible world floor: cells at this height can never be dug

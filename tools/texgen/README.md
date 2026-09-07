@@ -17,11 +17,13 @@ the three lumber colours share restrained planed grain. Heartwood and torches us
 clean generation run never depends on stale PNGs. Water remains untouched source art. Clean glass, tinted panes and
 wardglass retain their flat transmission: repeated painted frames obscure the world behind large panes and spell shells.
 
-Metal and polished stone get their shine in `chunk.wgsl`, not from a painted reflection. The mesher's visual finish bits
-follow the texture on cubes, slabs, stairs and doors. Metal has a tighter, stronger highlight; polished stone has a
-broader, weaker one. Both use the resolved sun shadow. Local highlights select the two strongest specular candidates and
-use the existing GI marcher for visibility and water/glass attenuation. Matte surfaces skip this work. This is a surface
-highlight model, not a mirror or screen-space reflection pass; held items retain their existing lighting.
+Metal and polished stone get their shine from `finish_common.wgsl`, not from a painted reflection. The mesher's visual
+finish bits follow the texture on cubes, slabs, stairs and doors, and both hand shaders apply the same finish to held
+items and to other players' hands. Metal has a tighter, stronger highlight; polished stone has a broader, weaker one.
+The sun lobe follows the traced sun visibility. Local light is the probe cache read along the mirrored view ray plus
+unshadowed Blinn highlights from the head of the light list, which is flushed nearest the eye first for exactly that
+read: no per-fragment light scan and no shadow march, so a lamp behind a thin wall can still gleam on a metal floor.
+Matte surfaces skip this work. This is a surface highlight model, not a mirror or screen-space reflection pass.
 
 ## Visual review
 

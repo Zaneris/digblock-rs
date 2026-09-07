@@ -98,18 +98,30 @@ test("the shape editor boots, loads a built-in, and draws its panel", async ({ d
 	expect(panel, `the panel corner (${panel.toFixed(2)}) should be busier than the opposite one (${sky.toFixed(2)})`)
 		.toBeGreaterThan(sky * 2);
 	// Enter loads the selected built-in (the roster's first, the bed): the
-	// sculpted preview lands on the pad through the game's own mesher, so
-	// footprint must change beyond its own idle drift. Material palettes
-	// may make the shape brighter or darker than the pad, so compare pixels
-	// rather than requiring a particular direction of luminance change.
+	// sculpted preview lands on the pad through the game's own mesher. A
+	// material palette may draw it brighter or darker than the pad, so the
+	// proof is structure, not luminance: the flat pad under the footprint
+	// gains edges, and the pad BESIDE it does not move, so a toast or a
+	// camera settle (which touch the whole frame) cannot pass for a shape.
+	// The pad, not the sky: the horizon is still streaming chunks in and
+	// clouds drift, motion the editor did not make.
 	const mid = { region: [Math.round(w * 0.45), Math.round(h * 0.56), Math.round(w * 0.55), Math.round(h * 0.74)] };
+	const side = { region: [Math.round(w * 0.05), Math.round(h * 0.6), Math.round(w * 0.3), Math.round(h * 0.8)] };
 	await d.page.waitForTimeout(800);
 	const before = await d.shot();
 	const drift = diff(png, before, mid);
+	const flat = detail(before, mid);
 	await d.keys("Enter");
 	await d.page.waitForTimeout(800);
 	png = await d.shot(test.info().outputPath("editor-loaded.png"));
 	expect(diff(before, png, mid), "loading a shape must change its footprint beyond idle drift")
 		.toBeGreaterThan(drift * 4 + 4);
+	const loaded = detail(png, mid);
+	// The bed is low and flat, so its edges roughly triple the pad's own
+	// grain; doubling is the bar, with room for a palette that draws softer.
+	expect(loaded, `the footprint (${flat.toFixed(2)}) should gain the shape's edges (${loaded.toFixed(2)})`)
+		.toBeGreaterThan(flat * 2);
+	expect(diff(before, png, side), "the pad beside the footprint must not move: the change is the shape, not the frame")
+		.toBeLessThan(drift * 4 + 4);
 	expect(d.trouble(), "console trouble").toEqual([]);
 });

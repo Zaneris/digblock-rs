@@ -533,3 +533,42 @@ fn no_craft_has_more_cost_lines_than_the_budget() {
 	assert!(checked > 0, "nothing craftable");
 	assert_eq!(widest, MAX_COST_LINES, "the budget has slack to give back");
 }
+
+/// Two lines that admit the same block draw on ONE heap. Read a line at a time, a pack holding
+/// one canopy's worth covers two canopy lines, and the craft is granted with the second line
+/// never paid; read as a whole it affords exactly what the heap can pay. Swept over every pair
+/// of blocks a line accepts, since no shipped recipe names two such lines to catch it.
+#[test]
+fn lines_that_share_a_block_are_paid_from_one_pool() {
+	let mut swept = 0;
+	for &f in &BlockType::ALL {
+		for g in feedstock_pay_order(f).filter(|&g| g != f) {
+			let lines = [(f, 3), (g, 3)];
+			for held in [5u32, 6, 11, 12] {
+				let count = |b: BlockType| if b == f { held } else { 0 };
+				let per_line = lines
+					.iter()
+					.map(|&(l, n)| feedstock_held(l, count) / n)
+					.min()
+					.unwrap();
+				let whole = feedstock_batches(&lines, count).unwrap();
+				assert_eq!(
+					whole,
+					held / 6,
+					"{f:?} and {g:?} share a heap of {held}: two lines of three are paid \
+					 {} times over, but a per-line reading says {per_line}",
+					held / 6
+				);
+			}
+			swept += 1;
+		}
+	}
+	assert!(
+		swept > 0,
+		"no line accepts an alternate, so nothing was swept"
+	);
+	// No line asking for anything bounds nothing, so a matter-free price
+	// is never capped at zero by its absent matter.
+	assert_eq!(feedstock_batches(&[], |_| 0), None);
+	assert_eq!(feedstock_batches(&[(BlockType::Wood, 0)], |_| 0), None);
+}

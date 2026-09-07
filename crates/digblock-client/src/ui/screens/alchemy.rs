@@ -204,18 +204,12 @@ impl AlchView {
 		alchemy::feedstock_held(f, |b| self.counts[b as usize])
 	}
 
-	/// The block the pack would pay a line with: the named block when
-	/// any is held, else whichever accepted alternate it holds most of.
+	/// The block the pack would pay a line with first: the debit's own
+	/// order (`feedstock_pay_order`), so the chip wears what the craft
+	/// actually spends, not the alternate held in greatest number.
 	pub fn pays_with(&self, f: BlockType) -> BlockType {
-		if self.counts[f as usize] > 0 {
-			return f;
-		}
-		BlockType::ALL
-			.iter()
-			.copied()
-			.filter(|&b| alchemy::feedstock_accepts(f, b))
-			.max_by_key(|&b| self.counts[b as usize])
-			.filter(|&b| self.counts[b as usize] > 0)
+		alchemy::feedstock_pay_order(f)
+			.find(|&b| self.counts[b as usize] > 0)
 			.unwrap_or(f)
 	}
 
@@ -260,10 +254,10 @@ impl AlchView {
 			.iter()
 			.map(|&(e, n)| self.subs[e as usize] / alchemy::craft_cost(n, self.level))
 			.min();
-		let matter = alchemy::craft_feedstock(item)
-			.iter()
-			.map(|&(f, n)| self.held(f) / n)
-			.min();
+		// The matter half as one pool, the way `apply_alchemy` checks
+		// it: lines that share a block cannot each count it.
+		let feedstock = alchemy::craft_feedstock(item);
+		let matter = alchemy::feedstock_batches(&feedstock, |b| self.counts[b as usize]);
 		essence
 			.into_iter()
 			.chain(matter)

@@ -311,6 +311,7 @@ pub mod shader {
 		include_str!("../../../assets/shaders/gi_common.wgsl"),
 		include_str!("../../../assets/shaders/ink_common.wgsl"),
 		include_str!("../../../assets/shaders/finish_common.wgsl"),
+		include_str!("../../../assets/shaders/finish_lamps.wgsl"),
 		include_str!("../../../assets/shaders/chunk.wgsl"),
 	);
 	pub const WATER: &str = concat!(
@@ -407,6 +408,7 @@ pub mod shader {
 		include_str!("../../../assets/shaders/gi_common.wgsl"),
 		include_str!("../../../assets/shaders/ink_common.wgsl"),
 		include_str!("../../../assets/shaders/finish_common.wgsl"),
+		include_str!("../../../assets/shaders/finish_lamps.wgsl"),
 		include_str!("../../../assets/shaders/players.wgsl"),
 	);
 	/// Blended glass — the Translucent mesh bucket, drawn in the water
@@ -496,6 +498,17 @@ pub mod shader {
 	);
 	pub const INK_COMMON: &str = include_str!("../../../assets/shaders/ink_common.wgsl");
 	pub const FINISH_COMMON: &str = include_str!("../../../assets/shaders/finish_common.wgsl");
+	// finish_lamps reads the frame clock, the light list and the lobe, so its standalone
+	// validation carries the same stack chunk and players put ahead of it.
+	pub const FINISH_LAMPS: &str = concat!(
+		include_str!("../../../assets/shaders/frame_common.wgsl"),
+		include_str!("../../../assets/shaders/medium_common.wgsl"),
+		include_str!("../../../assets/shaders/fire_common.wgsl"),
+		include_str!("../../../assets/shaders/gi_dda.wgsl"),
+		include_str!("../../../assets/shaders/gi_common.wgsl"),
+		include_str!("../../../assets/shaders/finish_common.wgsl"),
+		include_str!("../../../assets/shaders/finish_lamps.wgsl"),
+	);
 	// gi_common consumes medium_common's depth fade (R32) as well as
 	// gi_dda's steppers, so its standalone validation carries both — the
 	// same order every real consumer already concatenates them in.
@@ -506,7 +519,7 @@ pub mod shader {
 		include_str!("../../../assets/shaders/gi_common.wgsl"),
 	);
 
-	pub const ALL: [(&str, &str); 28] = [
+	pub const ALL: [(&str, &str); 29] = [
 		("chunk.wgsl", CHUNK),
 		("water.wgsl", WATER),
 		("glass.wgsl", GLASS),
@@ -534,6 +547,7 @@ pub mod shader {
 		("gi_dda.wgsl", GI_DDA),
 		("ink_common.wgsl", INK_COMMON),
 		("finish_common.wgsl", FINISH_COMMON),
+		("finish_lamps.wgsl", FINISH_LAMPS),
 		("gi_common.wgsl", GI_COMMON),
 	];
 }

@@ -150,19 +150,21 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 		return None
 
 
-def serve(bind, port, directory, tls=None):
+def listen(bind, port, directory, tls=None):
+	"""Bind the listener now; the caller announces it, then serves it."""
 	handler = functools.partial(Handler, directory=directory)
 	httpd = http.server.ThreadingHTTPServer((bind, port), handler)
 	if tls:
 		ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
 		ctx.load_cert_chain(*tls)
 		httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
-	httpd.serve_forever()
+	return httpd
 
 
 def main():
-	# The two "→" URL lines are the ready signal, and a pipe (a harness, a
-	# log) must see them when the listeners are up, not when this exits.
+	# The two "→" URL lines are the ready signal: each is printed only once
+	# its listener is bound, and a pipe (a harness, a log) must see them
+	# then, not when this exits.
 	sys.stdout.reconfigure(line_buffering=True)
 	ap = argparse.ArgumentParser()
 	ap.add_argument("--dir", default="target/web")
@@ -189,6 +191,7 @@ def main():
 	mimetypes.add_type("application/wasm", ".wasm")
 	Handler.master_proxy = args.master_proxy.rstrip("/") if args.master_proxy else None
 
+	local = listen("127.0.0.1", args.http_port, args.dir)
 	print(f"→ http://127.0.0.1:{args.http_port}/{args.query}")
 	ip = lan_ip()
 	tls = None
@@ -201,13 +204,10 @@ def main():
 		origin = f"https://{ip}:{args.https_port}"
 		phone_query = args.phone_query if args.phone_query is not None else args.query
 		phone_query = phone_query.replace("{master}", f"{origin}/master")
+		lan = listen("0.0.0.0", args.https_port, args.dir, tls)
 		print(f"→ {origin}/{phone_query}   (phone on the same wifi)")
-		threading.Thread(
-			target=serve,
-			args=("0.0.0.0", args.https_port, args.dir, tls),
-			daemon=True,
-		).start()
-	serve("127.0.0.1", args.http_port, args.dir)
+		threading.Thread(target=lan.serve_forever, daemon=True).start()
+	local.serve_forever()
 
 
 if __name__ == "__main__":
