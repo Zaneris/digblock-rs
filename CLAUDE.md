@@ -166,8 +166,10 @@ not enough for web.
 
 Sub-block geometry is data: `assets/shapes/*.shape` (plain text on the twelfths grid; grammar in
 `crates/digblock-core/src/shapes/def.rs`) are embedded and parsed by digblock-core and baked into the shape registry.
-Editing an existing file's collision geometry is a sim change: the `LEGACY_*` pins in `shapes/tests.rs` prove each
-ported file bakes byte-identical to the retired hardcoded consts, and an intentional edit deletes that shape's pin,
+Boxes carry collision, light and the look; `tri`/`quad` lines add sloped faces that only draw (the pine boughs in
+`canopy.shape`), lit as the axis face their `dir=` names, with stepped boxes underneath kept just inside the drawn
+plane. Editing an existing file's collision geometry is a sim change: the `LEGACY_*` pins in `shapes/tests.rs` prove
+each ported file bakes byte-identical to the retired hardcoded consts, and an intentional edit deletes that shape's pin,
 re-pins the semantic tests it disturbs, and bumps `SIM_VERSION` if collision moved. Author them with the shape editor
 (`DIG_EDITOR=1 just run`, or `?editor` on web), which sculpts at any exact twelfths resolution and saves back into
 `assets/shapes/` (web: browser download / file picker).

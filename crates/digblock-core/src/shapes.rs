@@ -158,6 +158,8 @@ pub fn state_layout(kind: ShapeKind) -> StateLayout {
 		ShapeKind::Stairs | ShapeKind::Chair | ShapeKind::Bed => (true, None, 2, [1, 1, 1]),
 		ShapeKind::Door => (true, Some(2), 3, [1, 2, 1]),
 		ShapeKind::Slab | ShapeKind::Torch | ShapeKind::Table => (false, None, 0, [1, 1, 1]),
+		// Bits 2-3 are the form; a single cell, so no part index lives there.
+		ShapeKind::Canopy => (true, None, 4, [1, 1, 1]),
 	};
 	StateLayout {
 		facing,
@@ -248,6 +250,46 @@ pub fn place_canonical(value: u16) -> bool {
 #[inline]
 pub fn door_toggled(cell: u16) -> u16 {
 	cell ^ (0b0100 << STATE_SHIFT)
+}
+
+/// The forms the canopy kind authors, each turned by the facing in the low
+/// two bits: state = form × 4 + facing. Sized so the nibble holds every
+/// (form, facing) pair with room for one more form.
+pub const CANOPY_FORMS: u8 = 3;
+
+/// A conifer bough's form. The facing names where the slope falls away:
+/// a wedge slopes down toward it; a hip slopes down toward it AND the next
+/// facing counter-clockwise (PosX is the +x/+z corner); the peak is the
+/// same from every side.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+pub enum CanopyForm {
+	/// A right-angle wedge, full height on the trunk side: a tier's edge run.
+	Wedge = 0,
+	/// A tier's outside corner: two wedge slopes meeting on the diagonal.
+	Hip = 1,
+	/// The tip: a pyramid half a cell tall, sitting on the trunk top.
+	Peak = 2,
+}
+
+impl CanopyForm {
+	pub const ALL: [CanopyForm; CANOPY_FORMS as usize] =
+		[CanopyForm::Wedge, CanopyForm::Hip, CanopyForm::Peak];
+
+	/// The form of a canopy state; a form the nibble could name but no
+	/// section authors clamps to the last, the way `shape_of` masks every
+	/// other kind's nibble down to a real variant.
+	#[inline]
+	pub fn of_state(state: u8) -> CanopyForm {
+		Self::ALL[usize::from(state >> 2).min(Self::ALL.len() - 1)]
+	}
+}
+
+/// Canopy: the form above the facing — exactly what the `forms` model
+/// reads (`state_valid` refuses forms past the authored count).
+#[inline]
+pub fn canopy_state(form: CanopyForm, f: Facing) -> u8 {
+	(form as u8) << 2 | f as u8
 }
 
 /// Slab: the size bit set = two-thirds fill (clear = one third), then the
@@ -446,8 +488,8 @@ pub struct ShapeVariant {
 	/// Union AABB of the DRAWN geometry, in twelfths — the box of best fit around the shape. The
 	/// crosshair outline wraps this instead of the cell, so a slab or a door leaf is boxed at its
 	/// own size; a stair's is the full cube, because that already IS its best fit. Taken from the
-	/// authored boxes, which is exactly what the raster fills, rather than from `collision` — a
-	/// closed door's knob protrudes past the leaf physics uses.
+	/// authored visual boxes and polygons, which is exactly what draws, rather than from
+	/// `collision` — a closed door's knob protrudes past the leaf physics uses.
 	pub bounds: SubBox,
 	/// Stairs: the ascending facing — physics resolves a diagonal ramp
 	/// instead of the sub-boxes when approaching from the low side.
@@ -471,6 +513,7 @@ pub fn shape_of(b: BlockType, state: u8) -> Option<&'static ShapeVariant> {
 		ShapeKind::Table => Some(&TABLES[0]),
 		ShapeKind::Chair => Some(&CHAIRS[(state & 3) as usize]),
 		ShapeKind::Bed => Some(&BEDS[(state & 3) as usize]),
+		ShapeKind::Canopy => Some(&CANOPIES[(state & 0xF) as usize]),
 	}
 }
 
@@ -492,6 +535,7 @@ pub fn prewarm() {
 	let _ = LazyLock::force(&TABLES);
 	let _ = LazyLock::force(&CHAIRS);
 	let _ = LazyLock::force(&BEDS);
+	let _ = LazyLock::force(&CANOPIES);
 }
 
 /// No sub-block geometry — physics/raycast take the unit-cube fast path.
@@ -613,6 +657,7 @@ pub fn state_valid(cell: u16) -> bool {
 		Some(ShapeKind::Slab) => state & !3 == 0,
 		Some(ShapeKind::Torch) | Some(ShapeKind::Table) => state == 0,
 		Some(ShapeKind::Chair) | Some(ShapeKind::Bed) => state & !3 == 0,
+		Some(ShapeKind::Canopy) => state >> 2 < CANOPY_FORMS,
 	}
 }
 
@@ -652,6 +697,18 @@ static STAIRS: LazyLock<[[ShapeVariant; 4]; ShapeStyle::ALL.len()]> = LazyLock::
 
 static DOORS: LazyLock<[ShapeVariant; 16]> =
 	LazyLock::new(|| std::array::from_fn(|state| plain(ShapeKind::Door, state as u8)));
+
+/// Every nibble bakes, the unauthored forms clamped to the last one, so a
+/// stored cell always draws as something.
+static CANOPIES: LazyLock<[ShapeVariant; 16]> = LazyLock::new(|| {
+	std::array::from_fn(|state| {
+		let state = state as u8;
+		plain(
+			ShapeKind::Canopy,
+			canopy_state(CanopyForm::of_state(state), Facing::from_bits(state)),
+		)
+	})
+});
 
 /// The authored boxes falling inside one footprint cell, clipped and
 /// translated to cell-local twelfths (authored order preserved — it is the
@@ -710,6 +767,62 @@ fn visual_pairs(list: &[def::DefBox], open: bool, k: u8) -> Vec<(SubBox, [Option
 		.collect()
 }
 
+/// An authored polygon posed for one variant: cell-local corners in
+/// perimeter order, the face it is lit as, its texture override.
+struct PosedPoly {
+	pts: Vec<[i32; 3]>,
+	dir: Dir,
+	tex: Option<u16>,
+}
+
+/// The polygons of one footprint cell, translated to cell-local twelfths
+/// and turned by k. Polygons never swing: the door model refuses them.
+fn posed_polys(polys: &[def::DefPoly], fp: [u8; 3], co: (i32, i32, i32), k: u8) -> Vec<PosedPoly> {
+	polys
+		.iter()
+		.filter(|p| {
+			def::poly_cell(fp, &p.pts)
+				.is_ok_and(|c| (i32::from(c[0]), i32::from(c[1]), i32::from(c[2])) == co)
+		})
+		.map(|p| {
+			let lo = [co.0 * G, co.1 * G, co.2 * G];
+			let pts = p
+				.pts
+				.iter()
+				.map(|c| rotate_point([0, 1, 2].map(|a| i32::from(c[a]) - lo[a]), k))
+				.collect();
+			PosedPoly {
+				pts,
+				dir: rotate_dir(p.dir, k),
+				tex: p.tex,
+			}
+		})
+		.collect()
+}
+
+/// Rotate a lattice point k × 90° CCW about +y, the point form of
+/// [`rotate_boxes`]: (x, z) → (GRID − z, x).
+fn rotate_point(p: [i32; 3], k: u8) -> [i32; 3] {
+	let [mut x, y, mut z] = p;
+	for _ in 0..(k & 3) {
+		(x, z) = (G - z, x);
+	}
+	[x, y, z]
+}
+
+/// The face a lit-as direction turns into under the same rotation (the
+/// linear part of [`rotate_point`]: (x, z) → (−z, x)).
+fn rotate_dir(d: Dir, k: u8) -> Dir {
+	let (mut x, y, mut z) = d.offset();
+	for _ in 0..(k & 3) {
+		(x, z) = (-z, x);
+	}
+	*DIRS
+		.iter()
+		.find(|d| d.offset() == (x, y, z))
+		.expect("an axis offset turns into an axis offset")
+}
+
 /// Bake one (kind, look, state) variant from its loaded `.shape` definition:
 /// slice the state's footprint cell out of the authored volume, split by
 /// role, pose (the door's swing, then the facing rotation), bake the
@@ -723,12 +836,14 @@ fn build_variant(kind: ShapeKind, style: ShapeStyle, state: u8) -> ShapeVariant 
 			let (f, open, _) = door_parts(state);
 			(open, f as u8)
 		}
-		def::StateModel::Facing => (false, state & 3),
+		def::StateModel::Facing | def::StateModel::Forms(_) => (false, state & 3),
 		_ => (false, 0),
 	};
 	let part = (state >> l.part_shift) & ((1 << l.part_bits()) - 1);
-	let list = slice_cell(d.state_boxes(state), part_offset(&l, part, 0));
-	let baked = bake_tex(&visual_pairs(&list, open, k));
+	let co = part_offset(&l, part, 0);
+	let list = slice_cell(d.state_boxes(state), co);
+	let polys = posed_polys(d.state_polys(state), d.footprint, co, k);
+	let baked = bake_tex(&visual_pairs(&list, open, k), &polys);
 	let closed_role = |pick: fn(def::Roles) -> bool| {
 		if open {
 			Vec::new()
@@ -788,10 +903,11 @@ struct Baked {
 	bounds: SubBox,
 }
 
-/// Union AABB of an authored box list, in twelfths. An empty list has no
-/// geometry to bound, so it reports the whole cell — nothing draws there
-/// anyway, and a zero-size box would be a degenerate outline.
-fn union_bounds(boxes: &[SubBox]) -> SubBox {
+/// Union AABB of an authored box list and the polygon corners drawn beside
+/// it, in twelfths. Nothing at all has no geometry to bound, so it reports
+/// the whole cell — nothing draws there anyway, and a zero-size box would
+/// be a degenerate outline.
+fn union_bounds(boxes: &[SubBox], polys: &[PosedPoly]) -> SubBox {
 	let mut min = [GRID; 3];
 	let mut max = [0u8; 3];
 	for b in boxes {
@@ -800,7 +916,13 @@ fn union_bounds(boxes: &[SubBox]) -> SubBox {
 			max[i] = max[i].max(b.max[i]);
 		}
 	}
-	if boxes.is_empty() {
+	for p in polys.iter().flat_map(|p| &p.pts) {
+		for i in 0..3 {
+			min[i] = min[i].min(p[i] as u8);
+			max[i] = max[i].max(p[i] as u8);
+		}
+	}
+	if boxes.is_empty() && polys.is_empty() {
 		SubBox::new([0; 3], [GRID; 3])
 	} else {
 		SubBox::new(min, max)
@@ -881,7 +1003,7 @@ fn neutral_axes(dir: Dir) -> (usize, usize) {
 #[cfg(test)]
 fn bake(boxes: &[SubBox]) -> Baked {
 	let pairs: Vec<(SubBox, [Option<u16>; 3])> = boxes.iter().map(|&b| (b, [None; 3])).collect();
-	bake_tex(&pairs)
+	bake_tex(&pairs, &[])
 }
 
 // --- editor preview -----------------------------------------------------
@@ -889,9 +1011,16 @@ fn bake(boxes: &[SubBox]) -> Baked {
 /// Bake one footprint cell of an ARBITRARY authored list into a full
 /// variant, the exact pipeline the game runs on a `.shape` file — the
 /// editor's preview, paired with [`set_preview_override`].
-pub fn preview_variant(list: &[def::DefBox], cell_offset: (i32, i32, i32), k: u8) -> ShapeVariant {
+pub fn preview_variant(
+	list: &[def::DefBox],
+	polys: &[def::DefPoly],
+	footprint: [u8; 3],
+	cell_offset: (i32, i32, i32),
+	k: u8,
+) -> ShapeVariant {
 	let sliced = slice_cell(list, cell_offset);
-	let baked = bake_tex(&visual_pairs(&sliced, false, k));
+	let posed = posed_polys(polys, footprint, cell_offset, k);
+	let baked = bake_tex(&visual_pairs(&sliced, false, k), &posed);
 	ShapeVariant {
 		collision: role_boxes(&sliced, false, k, |r| r.collision),
 		light: role_boxes(&sliced, false, k, |r| r.light),
@@ -960,7 +1089,7 @@ fn tex_slot(dir: Dir) -> usize {
 	}
 }
 
-fn bake_tex(boxes: &[(SubBox, [Option<u16>; 3])]) -> Baked {
+fn bake_tex(boxes: &[(SubBox, [Option<u16>; 3])], polys: &[PosedPoly]) -> Baked {
 	let plain: Vec<SubBox> = boxes.iter().map(|&(b, _)| b).collect();
 	let occ = rasterize(&plain);
 	// Exposure comes from the UNION (interior faces between boxes still
@@ -1076,13 +1205,134 @@ fn bake_tex(boxes: &[(SubBox, [Option<u16>; 3])]) -> Baked {
 		}
 	}
 	quads.extend(joined.quads);
+	for p in polys {
+		quads.push(bake_poly(p, &mut face_masks));
+	}
 	let occludes_full = std::array::from_fn(|d| face_masks[d].is_full());
 	Baked {
 		quads,
 		face_masks,
 		occludes_full,
-		bounds: union_bounds(&plain),
+		bounds: union_bounds(&plain, polys),
 	}
+}
+
+fn sub(a: [i32; 3], b: [i32; 3]) -> [i32; 3] {
+	[a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+fn cross(u: [i32; 3], v: [i32; 3]) -> [i32; 3] {
+	[
+		u[1] * v[2] - u[2] * v[1],
+		u[2] * v[0] - u[0] * v[2],
+		u[0] * v[1] - u[1] * v[0],
+	]
+}
+
+fn dot(u: [i32; 3], v: [i32; 3]) -> i32 {
+	u[0] * v[0] + u[1] * v[1] + u[2] * v[2]
+}
+
+/// What the grammar accepts as a polygon: distinct corners, a triangle
+/// with area, a quad that is planar and strictly convex in perimeter order
+/// (a quad with three corners in a line is a triangle wearing four points,
+/// and one folded across itself would draw inside out).
+pub(crate) fn poly_check(pts: &[[u8; 3]]) -> Result<(), String> {
+	let p: Vec<[i32; 3]> = pts.iter().map(|c| c.map(i32::from)).collect();
+	for i in 0..p.len() {
+		if p[i + 1..].contains(&p[i]) {
+			return Err("repeated corner".into());
+		}
+	}
+	let n = cross(sub(p[1], p[0]), sub(p[2], p[0]));
+	if n == [0; 3] {
+		return Err("collinear corners".into());
+	}
+	if p.len() == 4 {
+		if dot(n, sub(p[3], p[0])) != 0 {
+			return Err("quad corners are not coplanar".into());
+		}
+		for i in 0..4 {
+			let (a, b, c) = (p[i], p[(i + 1) % 4], p[(i + 2) % 4]);
+			if dot(cross(sub(b, a), sub(c, b)), n) <= 0 {
+				return Err("quad is not convex in perimeter order".into());
+			}
+		}
+	}
+	Ok(())
+}
+
+/// A polygon as one template quad: perimeter corners a b c (d) land in the
+/// [TL, TR, BL, BR] slots as [a, b, d, c] (a triangle folds d onto c), the
+/// perimeter reversed first when its normal would point away from `dir`,
+/// so it winds outward under the shared index pattern. On the boundary
+/// plane it faces, it culls like a box face and covers the face mask
+/// wherever a whole twelfth cell lies inside it.
+fn bake_poly(p: &PosedPoly, face_masks: &mut [FaceMask; 6]) -> ShapeQuad {
+	let (ox, oy, oz) = p.dir.offset();
+	let mut ring = p.pts.clone();
+	let n = cross(sub(ring[1], ring[2]), sub(ring[0], ring[2]));
+	if dot(n, [ox, oy, oz]) < 0 {
+		ring[1..].reverse();
+	}
+	let (a, b, c) = (ring[0], ring[1], ring[2]);
+	let d = ring.get(3).copied().unwrap_or(c);
+	let lattice = [a, b, d, c];
+	let corners = lattice.map(|q| q.map(|v| v as u8));
+	let uv = lattice.map(|q| {
+		let (u, v) = ramp::uv_of(p.dir, q);
+		[u as u8, v as u8]
+	});
+	let axis = if ox != 0 {
+		0
+	} else if oy != 0 {
+		1
+	} else {
+		2
+	};
+	let plane = if ox + oy + oz > 0 { G } else { 0 };
+	let boundary = lattice.iter().all(|q| q[axis] == plane);
+	let rect = if boundary {
+		let (na, nb) = neutral_axes(p.dir);
+		let ring2: Vec<(i32, i32)> = ring.iter().map(|q| (q[na], q[nb])).collect();
+		let r = boundary_rect(p.dir, &corners);
+		for bb in i32::from(r[1])..i32::from(r[3]) {
+			for aa in i32::from(r[0])..i32::from(r[2]) {
+				let cell = [(aa, bb), (aa + 1, bb), (aa, bb + 1), (aa + 1, bb + 1)];
+				if cell.iter().all(|&pt| inside_convex(&ring2, pt)) {
+					face_masks[p.dir as usize].0[bb as usize] |= 1 << aa;
+				}
+			}
+		}
+		r
+	} else {
+		[0; 4]
+	};
+	ShapeQuad {
+		dir: p.dir,
+		corners,
+		uv,
+		tex: p.tex,
+		boundary,
+		rect,
+	}
+}
+
+/// Whether a lattice point lies in a convex polygon (edges included): every
+/// edge turns the same way around it.
+fn inside_convex(ring: &[(i32, i32)], pt: (i32, i32)) -> bool {
+	let mut sign = 0;
+	for i in 0..ring.len() {
+		let (a, b) = (ring[i], ring[(i + 1) % ring.len()]);
+		let s = (b.0 - a.0) * (pt.1 - a.1) - (b.1 - a.1) * (pt.0 - a.0);
+		if s != 0 {
+			if sign != 0 && s.signum() != sign {
+				return false;
+			}
+			sign = s.signum();
+		}
+	}
+	true
 }
 
 /// A boundary quad's covered rect [a0, b0, a1, b1) in the neutral tangent

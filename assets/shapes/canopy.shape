@@ -1,0 +1,45 @@
+# Conifer boughs: the sloped pieces a pine's tiers are built from. Three
+# forms, each turned by the facing: a wedge sloping down toward +x, a hip
+# sloping down toward +x and +z (a tier's outside corner), and the peak,
+# a pyramid half a cell tall. Every slope is 45 degrees, so a wide tier's
+# wedges, the narrow ring above and the peak read as one cone.
+# Polygons draw the slopes exactly; the boxes are what a body and light
+# meet, stepped just under the drawn plane so a point on a slope never
+# starts inside its own occluder (the GI's ramp rule).
+version 1
+shape canopy
+grid 12
+states forms 3
+form 0   # wedge: top at y = 12 - x
+box collision+light+interaction  0 0 0  10 2 12
+box collision+light+interaction  0 2 0  8 4 12
+box collision+light+interaction  0 4 0  6 6 12
+box collision+light+interaction  0 6 0  4 8 12
+box collision+light+interaction  0 8 0  2 10 12
+quad  0 12 0  0 12 12  12 0 12  12 0 0  dir=+x   # the slope
+quad  0 0 0  0 12 0  0 12 12  0 0 12  dir=-x     # back, against the trunk side
+quad  0 0 0  12 0 0  12 0 12  0 0 12  dir=-y     # underside
+tri  0 0 0  0 12 0  12 0 0  dir=-z
+tri  0 0 12  0 12 12  12 0 12  dir=+z
+form 1   # hip: top at y = 12 - max(x, z)
+box collision+light+interaction  0 0 0  10 2 10
+box collision+light+interaction  0 2 0  8 4 8
+box collision+light+interaction  0 4 0  6 6 6
+box collision+light+interaction  0 6 0  4 8 4
+box collision+light+interaction  0 8 0  2 10 2
+tri  0 12 0  12 0 0  12 0 12  dir=+x    # the +x slope, over x >= z
+tri  0 12 0  12 0 12  0 0 12  dir=+z    # the +z slope, over z >= x
+tri  0 0 0  0 12 0  0 0 12  dir=-x      # back faces: the wedge sides they meet
+tri  0 0 0  0 12 0  12 0 0  dir=-z
+quad  0 0 0  12 0 0  12 0 12  0 0 12  dir=-y
+form 2   # peak: top at y = 6 - max(|x - 6|, |z - 6|)
+box collision+light+interaction  1 0 1  11 1 11
+box collision+light+interaction  2 1 2  10 2 10
+box collision+light+interaction  3 2 3  9 3 9
+box collision+light+interaction  4 3 4  8 4 8
+box collision+light+interaction  5 4 5  7 5 7
+tri  12 0 0  12 0 12  6 6 6  dir=+x
+tri  0 0 0  0 0 12  6 6 6  dir=-x
+tri  0 0 12  12 0 12  6 6 6  dir=+z
+tri  0 0 0  12 0 0  6 6 6  dir=-z
+quad  0 0 0  12 0 0  12 0 12  0 0 12  dir=-y

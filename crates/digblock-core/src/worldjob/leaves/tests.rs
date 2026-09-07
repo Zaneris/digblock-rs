@@ -70,13 +70,13 @@ fn grow(px: i32, pz: i32, seed: Seed) -> (Grown, Vec<(i32, i32, i32)>, [bool; 3]
 	let mut leaves = Vec::new();
 	let mut kinds = [false; 3];
 	for st in structures_near(px, pz, seed) {
-		st.for_each_block(|x, y, z, b| {
+		st.for_each_cell(|x, y, z, cell| {
 			let buried = y <= worldgen::terrain_height(x, z, seed);
 			if (buried && !st.is_root(x, y, z)) || cells.contains_key(&(x, y, z)) {
 				return;
 			}
-			cells.insert((x, y, z), b as u16);
-			if b.is_foliage() {
+			cells.insert((x, y, z), cell);
+			if BlockType::from_id(cell_id(cell)).is_foliage() {
 				leaves.push((x, y, z));
 				match st {
 					Structure::Tree(_) => kinds[0] = true,

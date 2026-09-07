@@ -866,7 +866,11 @@ mod tests {
 		let chair = make_cell(BlockType::Chair, 2);
 		let own = gi_cover(chair);
 		assert_ne!(own, 0);
-		set_preview_override(BlockType::Chair, 2, preview_variant(&[], (0, 0, 0), 0));
+		set_preview_override(
+			BlockType::Chair,
+			2,
+			preview_variant(&[], &[], [1, 1, 1], (0, 0, 0), 0),
+		);
 		assert_eq!(gi_cover(chair), preview_cover_slot(2));
 		assert_eq!(gi_look(chair), gi_look(BlockType::Chair as u16));
 		// Another state of the same block is untouched.

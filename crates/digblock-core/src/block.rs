@@ -332,6 +332,9 @@ blocks! {
 	DirtStairs = 92 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::DIRT, tex::DIRT, tex::DIRT)), ShapeKind::Stairs), 30, DigFamily::Soft), Material::Dirt),
 	RubbleSlab = 93 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::RUBBLE, tex::RUBBLE, tex::RUBBLE)), ShapeKind::Slab), 30, DigFamily::Rock), Material::Rubble),
 	RubbleStairs = 94 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::RUBBLE, tex::RUBBLE, tex::RUBBLE)), ShapeKind::Stairs), 90, DigFamily::Rock), Material::Rubble),
+	/// Conifer boughs: the sloped pieces a pine's tiers are built from (`shapes::CanopyForm`).
+	/// Worldgen's, never crafted; a dig hands back the plain needle cube, so no slot ever holds one.
+	PineBoughs = 95 => drops(dig(shaped(props(RenderClass::Shaped, true, tex::PINE_LEAVES, tex::PINE_LEAVES, tex::PINE_LEAVES), ShapeKind::Canopy), 10, DigFamily::Fixed), BlockType::PineLeaves),
 }
 
 /// The indestructible world floor: cells at this height can never be dug
@@ -408,6 +411,8 @@ pub enum ShapeKind {
 	Chair,
 	/// A one-cell cot, mattress on a low frame; the state nibble carries the facing (the head).
 	Bed,
+	/// A conifer bough: wedge, hip or peak (bits 2-3), turned by the facing (bits 0-1).
+	Canopy,
 }
 
 /// The authored LOOK a shaped row bakes from, when its kind ships more than one `.shape` file:
@@ -1165,7 +1170,14 @@ impl BlockType {
 			Some(ShapeKind::Door) => Some(ShapeFamily::Door),
 			// Functional shapes: things, not forms any substance could be
 			// worked into. They opt out of the grid and are priced by hand.
-			Some(ShapeKind::Torch | ShapeKind::Table | ShapeKind::Chair | ShapeKind::Bed) => None,
+			// The canopy is worldgen's own and never an item at all.
+			Some(
+				ShapeKind::Torch
+				| ShapeKind::Table
+				| ShapeKind::Chair
+				| ShapeKind::Bed
+				| ShapeKind::Canopy,
+			) => None,
 		}
 	}
 
@@ -1211,6 +1223,7 @@ impl BlockType {
 			BlockType::Table => "Table".into(),
 			BlockType::Chair => "Chair".into(),
 			BlockType::Bed => "Bed".into(),
+			BlockType::PineBoughs => "Pine Boughs".into(),
 			BlockType::Bucket => "Bucket".into(),
 			BlockType::EssenceSiphon => "Essence Siphon".into(),
 			BlockType::ResonantPick => "Resonant Pick".into(),
@@ -1424,7 +1437,10 @@ impl BlockType {
 	/// that ever keys on "the trivial canopy set" shares the same roster.
 	#[inline]
 	pub fn is_foliage(self) -> bool {
-		matches!(self, BlockType::Leaves | BlockType::PineLeaves)
+		matches!(
+			self,
+			BlockType::Leaves | BlockType::PineLeaves | BlockType::PineBoughs
+		)
 	}
 
 	/// A tool id: an item-only row that lives in the dedicated tool slot,

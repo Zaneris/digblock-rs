@@ -63,7 +63,7 @@ fn sides(d: Dir) -> [Dir; 2] {
 
 /// Lattice (u, v) of a position on the face plane toward `dir`: the inverse
 /// of `uv_pos`.
-fn uv_of(dir: Dir, p: [i32; 3]) -> (i32, i32) {
+pub(super) fn uv_of(dir: Dir, p: [i32; 3]) -> (i32, i32) {
 	let [x, y, z] = p;
 	match dir {
 		Dir::West => (G - z, G - y),

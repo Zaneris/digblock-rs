@@ -13,7 +13,8 @@ use std::cell::RefCell;
 use std::thread::LocalKey;
 
 use crate::block::BlockType;
-use crate::chunk::{CHUNK_SIZE, ChunkData, ChunkPos, WORLD_VBLOCK};
+use crate::chunk::{CHUNK_SIZE, ChunkData, ChunkPos, WORLD_VBLOCK, cell_id, make_cell};
+use crate::shapes::{CanopyForm, Facing, canopy_state};
 use crate::worldgen::Seed;
 use crate::worldgen::{
 	ColumnShape, SEA_LEVEL, TreeDensity, TreeSpecies, carved, column_shape_above,
@@ -239,12 +240,20 @@ impl Structure {
 		}
 	}
 
-	pub fn for_each_block(&self, f: impl FnMut(i32, i32, i32, BlockType)) {
+	/// Every block of the structure, by type: what everything but the chunk
+	/// writer asks (a bough's facing is the writer's business).
+	pub fn for_each_block(&self, mut f: impl FnMut(i32, i32, i32, BlockType)) {
+		self.for_each_cell(|x, y, z, cell| f(x, y, z, BlockType::from_id(cell_id(cell))));
+	}
+
+	/// Every cell of the structure, state nibble included: the conifer
+	/// canopy's boughs carry their form and facing there.
+	pub fn for_each_cell(&self, mut f: impl FnMut(i32, i32, i32, u16)) {
 		match self {
-			Structure::Tree(t) => t.for_each_block(f),
-			Structure::Landmark(l) => l.for_each_block(f),
-			Structure::Boulder(b) => b.for_each_block(f),
-			Structure::Bush(b) => b.for_each_block(f),
+			Structure::Tree(t) => t.for_each_cell(f),
+			Structure::Landmark(l) => l.for_each_block(|x, y, z, b| f(x, y, z, b as u16)),
+			Structure::Boulder(b) => b.for_each_block(|x, y, z, b| f(x, y, z, b as u16)),
+			Structure::Bush(b) => b.for_each_block(|x, y, z, b| f(x, y, z, b as u16)),
 		}
 	}
 
@@ -670,21 +679,27 @@ impl Tree {
 		self.y + self.trunk_h + 1
 	}
 
-	/// Every block of the tree in world coordinates. The trunk roots one
+	/// Every block of the tree in world coordinates, by type.
+	pub fn for_each_block(&self, mut f: impl FnMut(i32, i32, i32, BlockType)) {
+		self.for_each_cell(|x, y, z, cell| f(x, y, z, BlockType::from_id(cell_id(cell))));
+	}
+
+	/// Every cell of the tree in world coordinates. The trunk roots one
 	/// block into the surface cell and wins over leaves; canopy layers are
 	/// listed per kind relative to the trunk top, with rim leaves of the
-	/// wide layers dropped by the per-tree jitter roll. Conifers
-	/// carry PineLeaves; every other kind carries Leaves.
-	pub fn for_each_block(&self, mut f: impl FnMut(i32, i32, i32, BlockType)) {
-		f(self.x, self.y - 1, self.z, BlockType::Wood);
+	/// wide layers dropped by the per-tree jitter roll. Conifers grow the
+	/// bough cone instead; every other kind carries Leaves.
+	pub fn for_each_cell(&self, mut f: impl FnMut(i32, i32, i32, u16)) {
+		f(self.x, self.y - 1, self.z, BlockType::Wood as u16);
 		for dy in 0..self.trunk_h {
-			f(self.x, self.y + dy, self.z, BlockType::Wood);
+			f(self.x, self.y + dy, self.z, BlockType::Wood as u16);
 		}
 		let t = self.y + self.trunk_h - 1;
-		let leaf = match self.kind {
-			TreeKind::Pine => BlockType::PineLeaves,
-			_ => BlockType::Leaves,
-		};
+		if self.kind == TreeKind::Pine {
+			self.for_each_pine_cell(t, &mut f);
+			return;
+		}
+		let leaf = BlockType::Leaves as u16;
 		// (dy relative to the trunk top, radius, clip corners). The trunk
 		// center is skipped automatically for dy <= 0; r = 0 is a single
 		// leaf above the trunk (tip/cap center).
@@ -697,14 +712,7 @@ impl Tree {
 				(0, 1, false),
 				(1, 0, false),
 			],
-			TreeKind::Pine => &[
-				(-4, 2, true),
-				(-3, 1, false),
-				(-2, 2, true),
-				(-1, 1, false),
-				(0, 1, false),
-				(1, 0, false),
-			],
+			TreeKind::Pine => unreachable!("the cone above"),
 			TreeKind::SquatWide => &[(-1, 3, true), (0, 3, true), (1, 2, true)],
 			TreeKind::FlatTop => &[(0, 2, true), (1, 1, false)],
 		};
@@ -725,6 +733,67 @@ impl Tree {
 			}
 		}
 	}
+
+	/// The conifer: a stepped cone that only ever narrows going up. Most
+	/// pines are a stack of rings of boughs hugging the trunk; one in four
+	/// is fat: every tier but the top one spreads to radius two (needle
+	/// cubes inside, boughs at the rim). The peak caps the trunk top. Every
+	/// bough slopes away from the trunk at 45 degrees, so each tier's rim
+	/// meets the one above as one cone with a sawtooth edge. No jitter: a
+	/// missing bough would read as a bite out of the cone.
+	fn for_each_pine_cell(&self, t: i32, f: &mut impl FnMut(i32, i32, i32, u16)) {
+		let cube = BlockType::PineLeaves as u16;
+		let wide = self.salt & 3 == 0;
+		for dy in -4..=0 {
+			let r = if wide && dy < 0 { 2i32 } else { 1 };
+			for dz in -r..=r {
+				for dx in -r..=r {
+					if dx == 0 && dz == 0 {
+						continue; // trunk occupies the center
+					}
+					let cell = if dx.abs().max(dz.abs()) == r {
+						make_cell(BlockType::PineBoughs, bough_state(dx, dz))
+					} else {
+						cube
+					};
+					f(self.x + dx, t + dy, self.z + dz, cell);
+				}
+			}
+		}
+		let peak = canopy_state(CanopyForm::Peak, Facing::PosX);
+		f(
+			self.x,
+			t + 1,
+			self.z,
+			make_cell(BlockType::PineBoughs, peak),
+		);
+	}
+}
+
+/// The bough a tier's rim cell wears at (dx, dz) from the trunk: a hip on
+/// the corners, a wedge along the edges, each sloping away from the trunk.
+/// The hip's facing names the first of its two outward sides
+/// counter-clockwise (see [`CanopyForm`]).
+pub fn bough_state(dx: i32, dz: i32) -> u8 {
+	let r = dx.abs().max(dz.abs());
+	if dx.abs() == r && dz.abs() == r {
+		let facing = match (dx > 0, dz > 0) {
+			(true, true) => Facing::PosX,
+			(false, true) => Facing::PosZ,
+			(false, false) => Facing::NegX,
+			(true, false) => Facing::NegZ,
+		};
+		canopy_state(CanopyForm::Hip, facing)
+	} else {
+		let facing = if dx.abs() == r {
+			if dx > 0 { Facing::PosX } else { Facing::NegX }
+		} else if dz > 0 {
+			Facing::PosZ
+		} else {
+			Facing::NegZ
+		};
+		canopy_state(CanopyForm::Wedge, facing)
+	}
 }
 
 /// Apply every reachable structure to one chunk's freshly filled data. Structures never erase
@@ -742,7 +811,7 @@ pub fn decorate_chunk(data: &mut ChunkData, pos: ChunkPos, structures: &[Structu
 		if st.top() <= py || st.base() >= py + n {
 			continue;
 		}
-		st.for_each_block(|x, y, z, block| {
+		st.for_each_cell(|x, y, z, cell| {
 			let (lx, ly, lz) = (x - px, y - py, z - pz);
 			if (0..n).contains(&lx) && (0..n).contains(&ly) && (0..n).contains(&lz) {
 				let (lx, ly, lz) = (lx as usize, ly as usize, lz as usize);
@@ -754,7 +823,7 @@ pub fn decorate_chunk(data: &mut ChunkData, pos: ChunkPos, structures: &[Structu
 							BlockType::Grass | BlockType::Dirt | BlockType::DryGrass
 						));
 				if writable {
-					data.set(lx, ly, lz, block);
+					data.set_cell(lx, ly, lz, cell);
 				}
 			}
 		});
