@@ -108,7 +108,7 @@ struct VsOut {
 	@location(2) world: vec3f,
 	// World-space face normal (flat — a box face has one).
 	@location(3) @interpolate(flat) wn: vec3f,
-	// Set means fullbright ink (`glows`): skip the lighting entirely.
+	// Set enables fullbright ink through the material’s emission mask.
 	@location(4) @interpolate(flat) emissive: f32,
 }
 
@@ -197,13 +197,11 @@ fn fs(in: VsOut) -> @location(0) vec4f {
 		0.0,
 	);
 	let albedo = select(in.albedo, tex.rgb, in.uvl.z >= 0.0);
-	var col: vec3f;
-	if in.emissive > 0.5 {
-		// Fullbright ink is its own light — no sun, no GI — exactly as
-		// chunk.wgsl treats the same block standing in the world, through
-		// the same shared function. One torch, three places, one look.
-		col = emissive_ink(albedo);
-	} else {
+	let mask = textureSampleLevel(materials, mat_smp, in.uvl.xy,
+		i32(max(in.uvl.z, 0.0) + 0.5) + i32(textureNumLayers(materials) / 2u), 0.0).r;
+	let emission = select(0.0, mask, in.emissive > 0.5);
+	var col = emissive_ink(albedo);
+	if emission < 1.0 {
 		// RTGI: quantized-sun lambert x traced visibility + probe indirect
 		// — the same combine as chunk.wgsl.
 		let side = i32(frame.gi_misc.x);
@@ -228,6 +226,7 @@ fn fs(in: VsOut) -> @location(0) vec4f {
 		}
 		col = albedo * (frame.light_color.rgb * direct * sh + indirect + nee);
 	}
+	col = mix(col, emissive_ink(albedo), emission);
 	// The same medium the terrain beside them goes through — that
 	// sharing is the whole reason it is a prelude and not a local. It
 	// runs on BOTH branches: the branch narrows to the lighting rather

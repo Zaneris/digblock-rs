@@ -1,12 +1,14 @@
 # Material textures
 
 Run `cargo run -p texgen` from the workspace root and commit the generated PNGs with their recipes. All textures remain
-64×64, with RGB for opaque surfaces and RGBA for translucent materials and sprites.
+64×64, with RGB for opaque surfaces and emission masks, and RGBA for translucent materials and sprites.
 
 `surfaces.rs` generates terrain, worked stone, metal, foliage, deposits, lamps and tool glows. Broad forms identify the
 material at a distance; quantized tones, bevels and chips supply close detail. Each recipe owns stable seeds. A new
 recipe must not consume another recipe's random stream. Live and depleted deposits share a mask, so draining a node
-changes its colour and light without moving its mineral inclusions.
+changes its colour and light without moving its mineral inclusions. Live nodes retain their host’s albedo; separate
+`*Emission.png` masks make only the mineral inclusions fullbright. The GPU atlas has a matching second bank for masks,
+leaving surface alpha available for transparency and icons. World and held-item shaders share this separation.
 
 `main.rs` assembles the catalog and draws the essence chips and spell silhouettes. Dirt, grass, logs and lumber now
 share the same procedural palette and pixel-cluster treatment as the other surfaces. Grass sides expose the same dirt as

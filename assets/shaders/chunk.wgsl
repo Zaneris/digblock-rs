@@ -44,8 +44,7 @@ struct VsOut {
 	@location(2) @interpolate(flat) direct: f32,
 	// Distance to the camera — the bilateral upsample's depth guide.
 	@location(3) view_dist: f32,
-	// Stage-A emissive (the w1 flag): set means fullbright ink — the
-	// lighting terms are skipped entirely.
+	// Stage-A emissive (the w1 flag): enables the texture’s emission mask.
 	@location(4) @interpolate(flat) emissive: u32,
 	// Face-normal code (axis*2 + sign) matching gi_resolve's encoding,
 	// for the bilateral upsample's normal test.
@@ -236,15 +235,12 @@ fn local_finish(p: vec3f, n: vec3f, v: vec3f, finish: u32) -> vec3f {
 @fragment
 fn fs(i: VsOut) -> @location(0) vec4f {
 	let tex = textureSample(blocks_tex, blocks_smp, i.uv, i.layer).rgb;
-	// Fullbright ink, through ink_common's shared `emissive_ink` — the ONE definition, so the
-	// same block reads identically here, in your own hand (viewmodel.wgsl) and in somebody
-	// else's (players.wgsl). This is the ink alone: `glows` and `emits` are independent block
-	// properties, so nothing here changes what a torch CASTS, only how the emitter reads.
-	var col = select(tex, emissive_ink(tex), i.emissive == 1u);
-	// Emissive ink is its own light — no sun, no GI. It still travels to
-	// the eye through the medium like everything else, which is why the
-	// branch narrowed to the lighting instead of returning early.
-	if i.emissive == 0u {
+	// The second atlas bank separates mineral emission from the lit host surface.
+	let mask = textureSample(blocks_tex, blocks_smp, i.uv,
+		i.layer + textureNumLayers(blocks_tex) / 2u).r;
+	let emission = select(0.0, mask, i.emissive == 1u);
+	var col = emissive_ink(tex);
+	if emission < 1.0 {
 		// Bilateral upsample of the reduced-res GI buffers: the 4 nearest GI texels, each
 		// weighted by view-distance proximity and a face-normal match, so lighting never
 		// bleeds across a silhouette or around a corner. The ratio is a UNIFORM, which is
@@ -328,6 +324,7 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 			col = col * select(0.94, 0.70, i.finish == 2u) + (sun + local) * tint;
 		}
 	}
+	col = mix(col, emissive_ink(tex), emission);
 	// The medium, from this surface to the eye. In-scatter is `sky_base`
 	// itself, so at distance the surface fades into exactly the sky pixel
 	// behind it — including the streaming rim, which is why the world's

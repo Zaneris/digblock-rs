@@ -3,6 +3,37 @@
 //! bundle-path logic.
 
 pub mod tex {
+	/// Separate mineral emission masks; surface PNGs remain ordinary opaque albedo.
+	pub const EMISSION_MASKS: &[(&[u8], &[u8])] = &[
+		(
+			EMBERORE,
+			include_bytes!("../../../assets/textures/EmberoreEmission.png"),
+		),
+		(
+			DUSKSTONE,
+			include_bytes!("../../../assets/textures/DuskstoneEmission.png"),
+		),
+		(
+			GLOWVEIN,
+			include_bytes!("../../../assets/textures/GlowveinEmission.png"),
+		),
+		(
+			AETHEROCK,
+			include_bytes!("../../../assets/textures/AetherockEmission.png"),
+		),
+		(
+			HEARTWOOD,
+			include_bytes!("../../../assets/textures/HeartwoodEmission.png"),
+		),
+		(
+			LEYSTONE,
+			include_bytes!("../../../assets/textures/LeystoneEmission.png"),
+		),
+		(
+			SPRINGSTONE,
+			include_bytes!("../../../assets/textures/SpringstoneEmission.png"),
+		),
+	];
 	pub const WATER: &[u8] = include_bytes!("../../../assets/textures/Water.png");
 	pub const DIRT: &[u8] = include_bytes!("../../../assets/textures/Dirt.png");
 	pub const GRASS_SIDE: &[u8] = include_bytes!("../../../assets/textures/GrassSide.png");
@@ -64,8 +95,8 @@ pub mod tex {
 	pub const PICK_GLOW: &[u8] = include_bytes!("../../../assets/textures/PickGlow.png");
 	// The four SPENT vein faces: the same rock as their tier with the
 	// flecks drained to dark inclusions, so a worked seam still reads as
-	// the seam you worked. Unlike the live rows these are drawn LIT, which
-	// is why their bodies stay at ordinary stone brightness.
+	// the seam you worked. Live and spent hosts share ordinary stone albedo;
+	// only live mineral inclusions have a separate emission mask.
 	pub const DEPLETED_EMBERORE: &[u8] =
 		include_bytes!("../../../assets/textures/DepletedEmberore.png");
 	pub const DEPLETED_DUSKSTONE: &[u8] =

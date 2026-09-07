@@ -233,20 +233,18 @@ pub(super) fn lumber(base: [u8; 3]) -> RgbImage {
 
 pub(super) fn stone() -> RgbImage {
 	field(|x, y| {
-		let mass = noise(x, y, 16, 11);
-		let grain = noise(x, y, 4, 12);
-		let seam = (noise(x, y, 32, 13) + grain * 0.12).abs();
-		let fracture = if seam < 0.022 {
-			-13.0
-		} else if seam < 0.05 {
-			4.0
-		} else {
-			0.0
-		};
+		// Warped, quiet mottling avoids corner fractures outlining every mountain block.
+		let wx = x + noise(x + 7.0, y + 19.0, 16, 13) * 6.0;
+		let wy = y + noise(x + 23.0, y + 5.0, 16, 15) * 6.0;
+		let mass = noise(wx + 11.0, wy + 7.0, 16, 11);
+		let grain = noise(wx, wy, 4, 12);
 		tone(
 			[127, 128, 132],
-			band(mass * 17.0 + grain * 5.0, 3.0) + fracture,
-			noise(x, y, 16, 14) * 3.0,
+			band(
+				mass * 9.0 + noise(wx + 3.0, wy + 17.0, 8, 16) * 5.0 + grain * 4.0,
+				2.0,
+			),
+			noise(wx, wy, 16, 14) * 1.5,
 		)
 	})
 }
@@ -516,7 +514,7 @@ pub(super) fn deposit(
 	core: [u8; 3],
 	rim: [u8; 3],
 	kind: Deposit,
-) -> (RgbImage, RgbImage) {
+) -> (RgbImage, RgbImage, RgbImage) {
 	let mut mask = vec![0.0f32; (SIZE * SIZE) as usize];
 	let mut rng = Rng(match kind {
 		Deposit::Ember => 101,
@@ -570,14 +568,7 @@ pub(super) fn deposit(
 		field(|x, y| {
 			let p = host.get_pixel(x as u32, y as u32).0;
 			let m = mask[(y as u32 * SIZE + x as u32) as usize];
-			let body = if spent {
-				0.93
-			} else if matches!(kind, Deposit::Heart | Deposit::Spring) {
-				0.42
-			} else {
-				0.34
-			};
-			let mut rgb = p.map(|v| clamp8(f32::from(v) * body));
+			let mut rgb = p;
 			if m > 0.0 {
 				if m < 0.55 {
 					rgb = rgb.map(|v| add8(v, -18));
@@ -595,7 +586,11 @@ pub(super) fn deposit(
 			rgb
 		})
 	};
-	(paint(false), paint(true))
+	let emission = field(|x, y| {
+		let m = mask[(y as u32 * SIZE + x as u32) as usize];
+		[if m >= 0.55 { 255 } else { 0 }; 3]
+	});
+	(paint(false), paint(true), emission)
 }
 
 pub(super) fn depleted(stone: &RgbImage) -> RgbImage {

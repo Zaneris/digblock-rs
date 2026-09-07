@@ -117,9 +117,10 @@ fn main() {
 		),
 	] {
 		let (core, rim) = block.node_flecks().expect("node palette");
-		let (a, b) = surfaces::deposit(host, core, rim, kind);
+		let (a, b, emission) = surfaces::deposit(host, core, rim, kind);
 		save(live, a);
 		save(spent, b);
+		save(&live.replace(".png", "Emission.png"), emission);
 	}
 	save_rgba("Crystal.png", surfaces::crystal());
 

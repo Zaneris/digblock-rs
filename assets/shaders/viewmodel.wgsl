@@ -92,12 +92,12 @@ fn fs(in: VsOut) -> @location(0) vec4f {
 	// page has no mips, and Tint's derivative-uniformity rule wants the
 	// level spelled out anyway.
 	let tex = textureSampleLevel(materials, mat_smp, in.uv, i32(in.layer), 0.0);
-	// Fullbright ink is its own light — no ambient, no sun, no diffuse — through the same shared
-	// `emissive_ink` chunk.wgsl uses, so a held torch and a floor torch are one object rendered
-	// twice. No medium term on either branch, unlike chunk.wgsl: the item is one world unit from
-	// the eye and this pass carries no frame uniforms to read a medium from, so a submerged
-	// camera's hand takes no water extinction. Ink is the whole item (`glows`) or this face alone.
+	// Only masked minerals bypass hand lighting; the host remains ordinary albedo.
+	// Other glowing materials carry a white mask, retaining their fullbright ink.
+	// The same mask bank is used for world blocks and other players' held items.
 	let ink = vm.light_color.w > 0.5 || in.ink > 0.5;
-	let lit = select(tex.rgb * in.shade, emissive_ink(tex.rgb), ink);
+	let mask = textureSampleLevel(materials, mat_smp, in.uv,
+		i32(in.layer) + i32(textureNumLayers(materials) / 2u), 0.0).r;
+	let lit = mix(tex.rgb * in.shade, emissive_ink(tex.rgb), select(0.0, mask, ink));
 	return vec4f(lit, 1.0);
 }
