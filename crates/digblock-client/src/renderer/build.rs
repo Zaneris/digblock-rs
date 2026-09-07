@@ -155,7 +155,7 @@ impl Renderer {
 		);
 
 		// 0 = frame, 1 = materials, 2 = GI world. Solids also bind the diffuse resolve at 3;
-		// their glossy finishes use the world group for shadowed local highlights only.
+		// their glossy finishes read the world group's probe atlases for the reflection only.
 		// Chunk origins arrive through the instance stream. Water swaps group 0 for frame+scene.
 		let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
 			label: Some("chunk"),

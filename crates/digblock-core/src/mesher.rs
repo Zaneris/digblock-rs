@@ -451,13 +451,8 @@ fn pack(pos: (u32, u32, u32), normal: Dir, corner: u32) -> u32 {
 fn solid_word1(tex: u32, uv_u: u32, uv_v: u32, emissive: bool, tint_below: bool) -> u32 {
 	debug_assert!((tex as usize) < crate::block::MAX_TEX_LAYERS);
 	debug_assert!(uv_u <= 12 && uv_v <= 12);
-	// Visual-only finish: every shape using the same texture gets the same response.
-	// Bits 20..21 are decoded by chunk.wgsl: 0 matte, 1 polished stone, 2 metal.
-	let finish = match tex as u16 {
-		crate::block::tex::POLISHED_STONE => 1,
-		crate::block::tex::METAL => 2,
-		_ => 0,
-	};
+	// Visual-only finish (`tex::finish`), in bits 20..21 for chunk.wgsl.
+	let finish = crate::block::tex::finish(tex as u16);
 	tex | (uv_u << 10)
 		| (uv_v << 14)
 		| ((emissive as u32) << 18)

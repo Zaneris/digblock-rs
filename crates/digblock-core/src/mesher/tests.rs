@@ -504,6 +504,7 @@ fn packed_vertex_roundtrip() {
 	// Shader contract: glossy finishes must neither alias one another nor change UVs/ink/tint.
 	for (layer, finish) in [
 		(crate::block::tex::POLISHED_STONE, 1),
+		(crate::block::tex::CRYSTAL, 1),
 		(crate::block::tex::METAL, 2),
 	] {
 		let word = solid_word1(u32::from(layer), 12, 12, true, true);

@@ -310,6 +310,7 @@ pub mod shader {
 		include_str!("../../../assets/shaders/gi_dda.wgsl"),
 		include_str!("../../../assets/shaders/gi_common.wgsl"),
 		include_str!("../../../assets/shaders/ink_common.wgsl"),
+		include_str!("../../../assets/shaders/finish_common.wgsl"),
 		include_str!("../../../assets/shaders/chunk.wgsl"),
 	);
 	pub const WATER: &str = concat!(
@@ -405,6 +406,7 @@ pub mod shader {
 		include_str!("../../../assets/shaders/gi_dda.wgsl"),
 		include_str!("../../../assets/shaders/gi_common.wgsl"),
 		include_str!("../../../assets/shaders/ink_common.wgsl"),
+		include_str!("../../../assets/shaders/finish_common.wgsl"),
 		include_str!("../../../assets/shaders/players.wgsl"),
 	);
 	/// Blended glass — the Translucent mesh bucket, drawn in the water
@@ -441,11 +443,13 @@ pub mod shader {
 	pub const HOTBAR_ICONS: &str = include_str!("../../../assets/shaders/hotbar_icons.wgsl");
 	/// The first-person viewmodel. Deliberately WITHOUT the frame prelude: it is authored in view
 	/// space and carries its own projection and light rig, so the shared Frame block would only be
-	/// an unused binding it must not declare. ink_common is the one prelude it can take, and only
-	/// because it declares no bindings at all — a torch in your hand glows by the same rule as the
-	/// torch on the floor beside it, and that rule is a pure function.
+	/// an unused binding it must not declare. ink_common and finish_common are the preludes it can
+	/// take, and only because they declare no bindings at all — a torch in your hand glows, and a
+	/// metal block gleams, by the same rules as on the floor beside it, and those rules are pure
+	/// functions.
 	pub const VIEWMODEL: &str = concat!(
 		include_str!("../../../assets/shaders/ink_common.wgsl"),
+		include_str!("../../../assets/shaders/finish_common.wgsl"),
 		include_str!("../../../assets/shaders/viewmodel.wgsl"),
 	);
 	/// RTGI probe-update compute. No frame prelude: the
@@ -491,6 +495,7 @@ pub mod shader {
 		include_str!("../../../assets/shaders/gi_dda.wgsl")
 	);
 	pub const INK_COMMON: &str = include_str!("../../../assets/shaders/ink_common.wgsl");
+	pub const FINISH_COMMON: &str = include_str!("../../../assets/shaders/finish_common.wgsl");
 	// gi_common consumes medium_common's depth fade (R32) as well as
 	// gi_dda's steppers, so its standalone validation carries both — the
 	// same order every real consumer already concatenates them in.
@@ -501,7 +506,7 @@ pub mod shader {
 		include_str!("../../../assets/shaders/gi_common.wgsl"),
 	);
 
-	pub const ALL: [(&str, &str); 27] = [
+	pub const ALL: [(&str, &str); 28] = [
 		("chunk.wgsl", CHUNK),
 		("water.wgsl", WATER),
 		("glass.wgsl", GLASS),
@@ -528,6 +533,7 @@ pub mod shader {
 		("medium_common.wgsl", MEDIUM_COMMON),
 		("gi_dda.wgsl", GI_DDA),
 		("ink_common.wgsl", INK_COMMON),
+		("finish_common.wgsl", FINISH_COMMON),
 		("gi_common.wgsl", GI_COMMON),
 	];
 }
@@ -637,6 +643,25 @@ mod tests {
 				src.matches("emissive_ink(").count() >= 2,
 				"{name} takes the ink prelude but never calls it"
 			);
+		}
+	}
+
+	/// A glossy block gleams the same wherever it is drawn, for the ink rule's reason: one
+	/// definition of the lobe, and every pass that draws a finished face takes it and CALLS it.
+	/// Two occurrences at least, because the prelude's own `fn` is one of them.
+	#[test]
+	fn every_pass_that_draws_a_finish_folds_it_the_same_way() {
+		for (name, src) in [
+			("chunk", super::shader::CHUNK),
+			("viewmodel", super::shader::VIEWMODEL),
+			("players", super::shader::PLAYERS),
+		] {
+			for f in ["finish_lobe(", "finish_fresnel(", "finish_combine("] {
+				assert!(
+					src.matches(f).count() >= 2,
+					"{name} takes the finish prelude but never calls `{f}`"
+				);
+			}
 		}
 	}
 

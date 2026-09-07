@@ -1,7 +1,7 @@
 // Solid chunk shader (water has its own fork — water.wgsl).
 // RTGI shading: ALL lighting arrives through the half-res GI
 // resolve buffers — probe-traced indirect plus a per-pixel DDA sun visibility.
-// Glossy finishes add a view-dependent sun lobe and shadowed local highlights.
+// Glossy finishes (finish_common.wgsl) add a sun lobe and a probe-cache reflection.
 // Diffuse lighting is upsampled bilaterally;
 // the participating medium (medium_common.wgsl) is applied once at the end to
 // emissive ink and lit surfaces alike, and `block_tint` is a material property
@@ -178,58 +178,15 @@ fn block_tint(world: vec3f, ncode: u32, tint_down: u32) -> vec3f {
 	return (1.0 + v) * vec3f(1.0 + d, 1.0, 1.0 - d);
 }
 
-// Normalized Blinn lobe with Schlick Fresnel. The metal is tighter and more reflective;
-// stone carries a broad, restrained polish. No response below the surface or behind the eye.
-fn finish_lobe(n: vec3f, v: vec3f, l: vec3f, finish: u32) -> f32 {
-	let nl = max(dot(n, l), 0.0);
-	let nv = max(dot(n, v), 0.0);
-	if nl <= 0.0 || nv <= 0.0 { return 0.0; }
-	let h = normalize(v + l);
-	let exponent = select(36.0, 96.0, finish == 2u);
-	let f0 = select(0.06, 0.5, finish == 2u);
-	let fresnel = f0 + (1.0 - f0) * pow(1.0 - max(dot(v, h), 0.0), 5.0);
-	let distribution = (exponent + 8.0) * (1.0 / 25.132741) * pow(max(dot(n, h), 0.0), exponent);
-	return fresnel * distribution * nl / max(4.0 * nv * nl, 0.15);
-}
-
-// Two strongest specular candidates, with deterministic visibility through the existing GI
-// marcher. Only glossy fragments pay for this; shaded emitters and tinted panes obey the same
-// occlusion, attenuation and emitter calibration as their diffuse illumination.
-fn local_finish(p: vec3f, n: vec3f, v: vec3f, finish: u32) -> vec3f {
-	let count = min(bitcast<u32>(lights[0].x), 256u);
-	var best = array<f32, 2>(0.0, 0.0);
-	var picks = array<u32, 2>(0u, 0u);
-	for (var j = 1u; j <= count; j++) {
-		let light = lights[j * 2u - 1u];
-		let shape = lights[j * 2u];
-		let diffuse = gi_light_score(light, shape, p, n, frame.light_color.w);
-		if diffuse <= 0.0 { continue; }
-		let sample = gi_light_sample(light, shape, p, 0.5, 0.5);
-		let l = normalize(sample.p - p);
-		let score = diffuse * finish_lobe(n, v, l, finish) / max(dot(n, l), 0.01);
-		if score > best[0] {
-			best[1] = best[0]; picks[1] = picks[0];
-			best[0] = score; picks[0] = j;
-		} else if score > best[1] {
-			best[1] = score; picks[1] = j;
-		}
-	}
-	var result = vec3f(0.0);
-	for (var k = 0u; k < 2u; k++) {
-		if best[k] <= 0.0001 { break; }
-		let light = lights[picks[k] * 2u - 1u];
-		let sample = gi_light_sample(light, lights[picks[k] * 2u], p, 0.5, 0.5);
-		let d = sample.p - p;
-		let dist = length(d);
-		let reach = max(dist - gi_light_margin_of(light), 0.0);
-		let sh = gi_march(i32(frame.gi_misc.x), 256.0, frame.cam_pos.xz, p,
-			d / max(dist, 0.001), reach, GI_NEE_ITERS, reach, 0u);
-		if !sh.hit {
-			result += gi_light_tint(light.w, gi_emit_tint(gi_light_class(light.w)))
-				* LIGHT_GAIN * best[k] * medium_water_tr(sh.water) * sh.thru;
-		}
-	}
-	return result;
+// The local highlight is the probe cache read along the mirrored view ray: the nearest-probe
+// gather the resolve itself falls back to, so a torch or a vein lands as a soft reflection for
+// a few atlas taps, with no light scan and no shadow march per fragment. Probes hold
+// cosine-weighted irradiance, so the reflection is blurred to about the width polished stone
+// wants; metal reads as a soft sheen rather than a mirror.
+fn finish_reflection(p: vec3f, n: vec3f, v: vec3f) -> vec3f {
+	let r = reflect(-v, n);
+	return gi_cache_at(i32(frame.gi_misc.x), p, r, frame.cam_pos.xyz, frame.gi0, frame.gi1,
+		frame.zenith.rgb, frame.horizon.rgb);
 }
 
 @fragment
@@ -319,9 +276,11 @@ fn fs(i: VsOut) -> @location(0) vec4f {
 			let v = normalize(frame.cam_pos.xyz - i.world);
 			let sun = frame.light_color.rgb * frame.light_dir.w * sh
 				* finish_lobe(n, v, -frame.light_dir.xyz, i.finish);
-			let local = local_finish(i.world + n * GI_SURFACE_EPS, n, v, i.finish);
-			let tint = select(vec3f(1.0), mix(vec3f(1.0), tex, 0.35), i.finish == 2u);
-			col = col * select(0.94, 0.70, i.finish == 2u) + (sun + local) * tint;
+			// Schlick at the view angle weights the reflection the way the lobe's own
+			// Fresnel weights the sun, so one f0 per finish prices both terms.
+			let local = finish_fresnel(i.finish, dot(n, v))
+				* finish_reflection(i.world + n * GI_SURFACE_EPS, n, v);
+			col = finish_combine(col, tex, i.finish, sun, local);
 		}
 	}
 	col = mix(col, emissive_ink(tex), emission);

@@ -98,6 +98,8 @@ const ITEM_YAW = -0.785398163;
 // (viewmodel.rs's `INK_BIT`, and the twin of viewmodel.wgsl's constant).
 // Held items are built once for both hands, so both pipelines decode it.
 const ITEM_INK_BIT = 65536u;
+// The finish's two bits sit just above it (viewmodel.rs's FINISH_SHIFT).
+const ITEM_FINISH_SHIFT = 17u;
 
 struct VsOut {
 	@builtin(position) pos: vec4f,
@@ -110,6 +112,8 @@ struct VsOut {
 	@location(3) @interpolate(flat) wn: vec3f,
 	// Set enables fullbright ink through the material’s emission mask.
 	@location(4) @interpolate(flat) emissive: f32,
+	// The held face's finish (finish_common.wgsl); a body is matte.
+	@location(5) @interpolate(flat) finish: u32,
 }
 
 @vertex
@@ -141,6 +145,7 @@ fn vs(
 	out.world = world;
 	out.wn = wn;
 	out.emissive = 0.0;
+	out.finish = 0u;
 	return out;
 }
 
@@ -182,6 +187,7 @@ fn vs_held(
 	// (the bit above the layer index). A remote's siphon has to hold the
 	// same lit bulb yours does, or the two hands disagree about one item.
 	out.emissive = max(i1.x, f32((layer & ITEM_INK_BIT) != 0u));
+	out.finish = (layer >> ITEM_FINISH_SHIFT) & 3u;
 	return out;
 }
 
@@ -225,6 +231,16 @@ fn fs(in: VsOut) -> @location(0) vec4f {
 			nee = sum_lights(side, frame.gi_misc.y, frame.cam_pos.xz, gp, in.wn, frame.light_color.w);
 		}
 		col = albedo * (frame.light_color.rgb * direct * sh + indirect + nee);
+		if in.finish != 0u {
+			// The world's glossy rule (chunk.wgsl): the sun lobe through the traced
+			// visibility, and the probe cache read along the mirrored view ray.
+			let v = normalize(frame.cam_pos.xyz - gp);
+			let spec = frame.light_color.rgb * sh * finish_lobe(in.wn, v, -frame.light_dir.xyz, in.finish);
+			let mirror = gi_cache_at(side, gp + in.wn * GI_SURFACE_EPS, reflect(-v, in.wn),
+				frame.cam_pos.xyz, frame.gi0, frame.gi1, frame.zenith.rgb, frame.horizon.rgb);
+			let local = finish_fresnel(in.finish, dot(in.wn, v)) * mirror;
+			col = finish_combine(col, albedo, in.finish, spec, local);
+		}
 	}
 	col = mix(col, emissive_ink(albedo), emission);
 	// The same medium the terrain beside them goes through — that

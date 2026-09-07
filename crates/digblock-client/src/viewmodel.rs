@@ -378,20 +378,31 @@ pub(crate) fn combine(a: Pose, b: Pose) -> Pose {
 /// its cells — used to centre it, so a door hangs in the hand like a
 /// cube does.
 pub(crate) fn mvp(aspect: f32, height: i32, pose: Pose) -> Mat4 {
+	let proj = perspective(FOV_Y_DEG.to_radians(), aspect.max(0.01), 0.01, 2.0);
+	proj * model(aspect, height, pose)
+}
+
+/// Item twelfths → view space. Right to left: centre the twelfths on the origin, shrink to
+/// SIZE, turn to the resting orientation, apply this frame's flick, then park it in the corner.
+fn model(aspect: f32, height: i32, pose: Pose) -> Mat4 {
 	let half_h = (FOV_Y_DEG.to_radians() / 2.0).tan() * DIST;
 	let half_w = half_h * aspect.max(0.01);
 	let rest = Vec3::new(REST_X_FRAC * half_w, REST_Y_FRAC * half_h, -DIST);
-	let proj = perspective(FOV_Y_DEG.to_radians(), aspect.max(0.01), 0.01, 2.0);
-	// Right to left: centre the twelfths on the origin, shrink to
-	// SIZE, turn to the resting orientation, apply this frame's flick,
-	// then park it in the corner.
-	let model = Mat4::from_translation(rest + pose.offset * SIZE)
+	Mat4::from_translation(rest + pose.offset * SIZE)
 		* Mat4::from_rotation_z(pose.roll)
 		* Mat4::from_rotation_x(REST_PITCH + pose.pitch)
 		* Mat4::from_rotation_y(REST_YAW)
 		* Mat4::from_scale(Vec3::splat(SIZE / 12.0))
-		* Mat4::from_translation(Vec3::new(-6.0, -height as f32 / 2.0, -6.0));
-	proj * model
+		* Mat4::from_translation(Vec3::new(-6.0, -height as f32 / 2.0, -6.0))
+}
+
+/// The eye in the item's own twelfths frame, so a glossy face can dot its raw normal against
+/// the view ray the way it dots the light: the model is a rigid motion plus a uniform scale, so
+/// the inverse is exact.
+pub(crate) fn eye_in_item_space(aspect: f32, height: i32, pose: Pose) -> Vec3 {
+	model(aspect, height, pose)
+		.inverse()
+		.transform_point3(Vec3::ZERO)
 }
 
 /// The light direction rotated OUT of view space and into the item's
@@ -432,11 +443,13 @@ pub(crate) fn build(kind: IconKind, out: &mut Vec<Vert>) {
 	item_geom::faces(kind, |faces| {
 		for f in faces.iter() {
 			let face = f.dir as u32;
-			// The ink bit rides above the layer index rather than taking an
-			// attribute of its own: this vertex feeds TWO pipelines (your own
-			// hand and a remote's), so a new attribute would be a format
-			// change in both, and the layer word has every bit spare.
-			let layer = u32::from(f.tex_layer) | (u32::from(f.emissive) << INK_BIT);
+			// The ink bit and the finish ride above the layer index rather than
+			// taking attributes of their own: this vertex feeds TWO pipelines
+			// (your own hand and a remote's), so a new attribute would be a
+			// format change in both, and the layer word has every bit spare.
+			let layer = u32::from(f.tex_layer)
+				| (u32::from(f.emissive) << INK_BIT)
+				| (digblock_core::block::tex::finish(f.tex_layer) << FINISH_SHIFT);
 			for i in 0..4 {
 				let c = f.corners[i];
 				out.push(Vert {
@@ -455,6 +468,11 @@ pub(crate) fn build(kind: IconKind, out: &mut Vec<Vert>) {
 /// be. Both item shaders mask it back out before they sample; pinned
 /// against the WGSL twins by `the_ink_bit_matches_the_shaders`.
 pub(crate) const INK_BIT: u32 = 16;
+
+/// Where the face's finish (`block::tex::finish`, two bits) rides in the same word, above the
+/// ink bit. Read by both item shaders, so a metal block gleams in your hand exactly as it does
+/// on the floor; pinned against the WGSL twins by `the_ink_bit_matches_the_shaders`.
+pub(crate) const FINISH_SHIFT: u32 = INK_BIT + 1;
 
 /// Everything the viewmodel pass needs for one frame.
 #[derive(Clone, Copy)]
@@ -479,6 +497,8 @@ struct Uniforms {
 	/// rgb = the frame's direct color; w = 1 when the item is fullbright
 	/// ink (see [`uniforms`]).
 	light_color: [f32; 4],
+	/// xyz = the eye in item space ([`eye_in_item_space`]); w spare.
+	eye: [f32; 4],
 }
 
 /// The frame's uniform block. Pure, and separate from `prepare`, for two reasons: a test can
@@ -488,8 +508,10 @@ struct Uniforms {
 fn uniforms(aspect: f32, f: &ViewmodelFrame) -> Uniforms {
 	let light = light_in_item_space(f.light_dir_view, f.pose);
 	let emissive = crate::ui::hud::icon_block(f.kind).is_some_and(|b| b.props().emissive);
+	let height = item_geom::height(f.kind);
+	let eye = eye_in_item_space(aspect, height, f.pose);
 	Uniforms {
-		mvp: mvp(aspect, item_geom::height(f.kind), f.pose).to_cols_array_2d(),
+		mvp: mvp(aspect, height, f.pose).to_cols_array_2d(),
 		light: [light.x, light.y, light.z, f.light_strength],
 		light_color: [
 			f.light_color[0],
@@ -497,6 +519,7 @@ fn uniforms(aspect: f32, f: &ViewmodelFrame) -> Uniforms {
 			f.light_color[2],
 			f32::from(emissive),
 		],
+		eye: [eye.x, eye.y, eye.z, 0.0],
 	}
 }
 

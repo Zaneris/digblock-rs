@@ -1021,6 +1021,18 @@ pub mod tex {
 	/// digblock-client, the one crate that can see both.
 	pub const COUNT: u16 = SPELL_PORT + 1;
 
+	/// The visual finish a layer wears, decoded by `finish_common.wgsl`: 0 matte, 1 polished
+	/// (the broad stone lobe; crystal takes it too, so a slab reads as glossy as the cube drawn
+	/// through the glass pass), 2 metal. Per TEXTURE, so every shape cut from a material, and
+	/// the same block in a hand, wears one response.
+	pub fn finish(layer: u16) -> u32 {
+		match layer {
+			POLISHED_STONE | CRYSTAL => 1,
+			METAL => 2,
+			_ => 0,
+		}
+	}
+
 	/// Every layer's canonical name — the handle `.shape` files use, because
 	/// the INDEX is runtime-only and may be reordered. Completeness (one row
 	/// per layer, unique, covering `0..COUNT`) is pinned by a test, so a new
