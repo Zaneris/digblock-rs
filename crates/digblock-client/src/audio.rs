@@ -623,7 +623,7 @@ pub fn ambient_sfx(z: AmbientZone) -> Sfx {
 	}
 }
 
-/// The prospector's sense (SKILLS-DESIGN §5.5): a faint shimmer near a deposit you cannot yet
+/// The prospector's sense: a faint shimmer near a deposit you cannot yet
 /// see. A cadence emitter like `Footsteps`, but paced by TIME rather than by distance — the
 /// point is "something is near", and a player standing still at a wall should still hear it.
 /// Silence resets the clock, so walking into range speaks at once instead of on the next tick

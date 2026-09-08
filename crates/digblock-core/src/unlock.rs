@@ -163,7 +163,7 @@ pub fn craft(b: BlockType) -> Option<u32> {
 	Some(material(m)?.max(shape(s)))
 }
 
-/// The Mining level a vein of `b` becomes VISIBLE at (SKILLS-DESIGN §5.3), or `None` for
+/// The Mining level a vein of `b` becomes VISIBLE at, or `None` for
 /// anything that is not an ore. A stranger gate than the others, deliberately: below it the
 /// cell is Stone to that player in every respect — it renders, raycasts and digs as stone, and
 /// the server agrees, so a low-level miner tunnelling through a deposit spends it without
@@ -213,7 +213,7 @@ pub const BENCH_FASTEST_AT: u32 = 45;
 /// ([`crate::alchemy::waste_permille`] owns the floor it clamps to).
 pub const WASTE_DIP_AT: u32 = 56;
 
-/// How many cells one hold breaks with the Resonant Pick in hand (SKILLS-DESIGN §5.6): a single
+/// How many cells one hold breaks with the Resonant Pick in hand: a single
 /// cell below the tool's own Mining level, then a row, then the full square plane. A width, not
 /// a boolean, because the pick's two ranks are one progression — the same machinery widens, and
 /// the timing multiplier beside it in `skills` steps with it.
@@ -232,7 +232,7 @@ pub const PICK_WIDE_AT: u32 = 33;
 
 /// The Mining level the swing reaches [`PICK_PLANE`] at. Deep in the
 /// post-catalog tail ON PURPOSE — the one functional unlock out there, a
-/// long-haul goal past where the content ladder ends (SKILLS-DESIGN: the
+/// long-haul goal past where the content ladder ends (the
 /// 1–60 compression keeps exactly this exception).
 pub const PICK_PLANE_AT: u32 = 85;
 
@@ -242,7 +242,7 @@ pub const PICK_PLANE_AT: u32 = 85;
 /// exactly the level the swing widens.
 pub const PICK_PLANE: usize = 9;
 
-/// The **prospector's sense** (SKILLS-DESIGN §5.5): within
+/// The **prospector's sense**: within
 /// [`prospect_range`] of a deposit you cannot yet SEE, a faint shimmer.
 /// Audio only, in the `Footsteps` cadence mould — never an overlay, or
 /// the reveal levels would stop meaning anything.

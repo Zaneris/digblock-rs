@@ -6,7 +6,7 @@
 //! roster rather than a function per kind because [`MIN_SEPARATION`] is a MUTUAL rule: a pad can
 //! only be judged against the pads already placed, so a per-kind answer would depend on who asked
 //! first. The authority resolves the set against its edits once, stamps each structure as ORDINARY
-//! journaled edits, stores the answers and locks the spheres; MAGIC-DESIGN §5 records that model.
+//! journaled edits, stores the answers and locks the spheres.
 //!
 //! [`stamp`] is a pure builder that RETURNS writes, each side applying them through its own
 //! authoritative path — the worldjob precedent. It deliberately builds from EXISTING block rows,

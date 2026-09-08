@@ -101,8 +101,8 @@ fn a_drawn_cell_needs_a_fresh_press_before_it_breaks() {
 }
 
 /// The conditional rock rule, client half: a stone standing in a cell somebody WROTE comes
-/// back whole to a mason and crumbles for anyone who could not have cut it (SKILLS-DESIGN
-/// §7.1/§7.5). Prediction has to agree with the server or a quarry silently drifts the two
+/// back whole to a mason and crumbles for anyone who could not have cut it.
+/// Prediction has to agree with the server or a quarry silently drifts the two
 /// inventories apart — there is no rebase behind an ordinary dig. `block_ahead` leaves an
 /// EDITED cell, the case under test; the pristine half is `only_the_worlds_own_rock_crumbles`.
 #[test]

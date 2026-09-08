@@ -1,4 +1,4 @@
-//! The Resonant Pick's break pattern (SKILLS-DESIGN §5.6): one hold, several cells — the plane
+//! The Resonant Pick's break pattern: one hold, several cells — the plane
 //! perpendicular to the face you hit, a row at the first Mining milestone and the full plane at
 //! the second. The set is derived from the ray on BOTH ends plus a declared [`DigOrientation`]
 //! that itself rides the reliable stream and is clamped by both ends — the orientation is chosen,

@@ -303,7 +303,7 @@ impl Sim {
 				client.hotbar.tool_in_hand(),
 			)
 		};
-		// Is this dig a field EXTRACTION (SKILLS-DESIGN §5.3)? Resolved
+		// Is this dig a field EXTRACTION? Resolved
 		// here, from the server's own world and the client's own level and
 		// tool — the same `ore::dig_mode` the client predicted with, so
 		// neither end can decide alone what an action was.
@@ -501,7 +501,7 @@ impl Sim {
 					air
 				};
 				writes.push((req.cell, new_val));
-				// The Resonant Pick's plane (SKILLS-DESIGN §5.6), derived
+				// The Resonant Pick's plane, derived
 				// from the SERVER's raycast and its own world — never from
 				// anything the client chose. Extras clear outright, and
 				// `pick::breaks_as_extra` is what makes that safe: only the

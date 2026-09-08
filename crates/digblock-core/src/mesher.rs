@@ -47,7 +47,7 @@ pub struct MeshInput {
 	pub blocks: Box<[u16; PADDED_VOLUME]>,
 	/// Face neighbor not loaded: suppress that border's faces.
 	pub missing: [bool; 6],
-	/// The node reveal (SKILLS-DESIGN §5.3, generalized to every node
+	/// The node reveal (generalized to every node
 	/// kind), when this job's owner wants one. Consumed by
 	/// [`MeshInput::apply_nodes`] in the WORKER, before any meshing — see
 	/// that method for why the stamp writes block ids.
@@ -193,7 +193,7 @@ impl MeshInput {
 		self.blocks[pidx(x, y, z)]
 	}
 
-	/// The node reveal (SKILLS-DESIGN §5.3, generalized): rewrite qualifying pristine HOST cells
+	/// The node reveal (generalized): rewrite qualifying pristine HOST cells
 	/// to their node's BLOCK ID, before anything looks at this array — deposits in Stone,
 	/// heartwood in trunk Wood, springstone in bed Sand. Stamping ids rather than texture layers
 	/// is the whole trick: the mesher, the texture path, the emissive bit, `block_tint` and shaped

@@ -68,7 +68,7 @@ pub(crate) fn flat_sim(tag: &str) -> Sim {
 }
 
 /// A flat sim spawning somewhere specific. Ore is DERIVED from world
-/// position (SKILLS-DESIGN §5.3), so a test about veins cannot pick its
+/// position, so a test about veins cannot pick its
 /// cell — it has to go and stand where one is.
 pub(crate) fn flat_sim_at(tag: &str, spawn: Vec3) -> Sim {
 	let dir = temp_dir(tag);

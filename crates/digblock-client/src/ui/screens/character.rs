@@ -75,7 +75,7 @@ impl CharView {
 }
 
 /// The board line under a skill (or the total): where this account stands. The number on the
-/// board is what makes the totals above it mean something (SOCIAL-DESIGN §1).
+/// board is what makes the totals above it mean something.
 fn rank_line(r: &RankView) -> String {
 	format!("Hiscores: rank {}", group(u64::from(r.rank)))
 }

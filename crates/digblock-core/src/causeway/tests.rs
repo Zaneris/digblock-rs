@@ -397,7 +397,7 @@ fn a_road_carries_a_running_player_off_a_cliff_and_through_two_turns() {
 /// A held jump climbs the road. Not a side effect to be fixed later: the rule is "the feet have
 /// no support, so give them some", and a jump is the feet having no support. Pinned so it reads
 /// as INTENDED — stopping it would need a predicate separating a fall from a jump, per-tick
-/// movement state the two ends would have to agree about, the surface MAGIC-DESIGN §1 avoids.
+/// movement state the two ends would have to agree about, which the design avoids.
 #[test]
 fn a_held_jump_climbs_the_road() {
 	use crate::player::{EYE_TO_FEET, Player, PlayerIntent, TICK};

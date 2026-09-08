@@ -15,7 +15,7 @@ pub const SLOT_PX: f32 = 56.0;
 pub const SLOT_GAP: f32 = 4.0;
 pub const ICON_PX: f32 = 48.0;
 pub const BOTTOM_MARGIN: f32 = 12.0;
-/// EXTRA space before the last slot (SKILLS-DESIGN §6): the tool slot is not the ninth block slot,
+/// EXTRA space before the last slot: the tool slot is not the ninth block slot,
 /// and standing it apart is the whole of how a player is told so. Added to ONE slot at DRAW time
 /// ([`bar_slot_rect`]) rather than to [`row_grid`]'s spacing, which stays the uniform lattice
 /// every panel measures itself against. [`row_grid`]'s CENTRING has to know: the drawn row is a
@@ -868,7 +868,7 @@ pub fn toasts(
 	}
 }
 
-/// The background bench's tell (SKILLS-DESIGN §13.4): one quiet line above the bar's TOOL end
+/// The background bench's tell: one quiet line above the bar's TOOL end
 /// while a job runs with the screen closed — the bench working out of sight has to be visible
 /// somewhere, or the first background extraction reads as "my essence changed on its own". It
 /// sits over the tool slot rather than the toasts' center lane, so the two never collide.

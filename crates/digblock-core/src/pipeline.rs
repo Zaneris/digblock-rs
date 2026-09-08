@@ -186,7 +186,7 @@ pub struct Pipeline {
 	/// rejection reverts through `set_cell` and `record` is insert-only.
 	record_local: bool,
 	/// The looker's skill levels, which decide which node kinds the mesh
-	/// stamp reveals (SKILLS-DESIGN §5.3 — Mining for the ore tiers,
+	/// stamp reveals (Mining for the ore tiers,
 	/// Alchemy for the surface nodes). Crossing a threshold re-meshes
 	/// everything resident — see [`Pipeline::set_levels`].
 	levels: crate::worldgen::nodes::Levels,

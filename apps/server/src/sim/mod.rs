@@ -1124,8 +1124,8 @@ impl Sim {
 		}
 	}
 
-	/// Has this cell ever been written? The ore reveal's anti-dupe gate
-	/// (SKILLS-DESIGN §5.3), answered from the journal — the complete and
+	/// Has this cell ever been written? The ore reveal's anti-dupe gate,
+	/// answered from the journal — the complete and
 	/// correct source, fluid included. `JournalIndex::record` only ever
 	/// inserts, so the answer is monotone: a spent vein cannot be
 	/// un-spent by putting stone back.

@@ -470,7 +470,7 @@ struct AudioState {
 
 	ambient: crate::audio::Ambient,
 
-	/// The prospector's sense's cadence (SKILLS-DESIGN §5.5).
+	/// The prospector's sense's cadence.
 	prospect: crate::audio::Prospect,
 
 	/// Scratch for batched audio commands (water voices).

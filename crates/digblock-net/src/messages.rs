@@ -150,7 +150,7 @@ pub enum AdminReply {
 	NoBanMatches {
 		arg: String,
 	},
-	/// A pre-account character was folded into the account that just joined (AUTH-DESIGN §6).
+	/// A pre-account character was folded into the account that just joined.
 	LegacyCharacterClaimed,
 	/// A slash line from a player who is not an admin.
 	CommandsAreAdminOnly,
@@ -448,7 +448,7 @@ pub enum ClientMsg {
 		hotbar: Vec<u16>,
 		grid: Vec<u16>,
 	},
-	/// Claim this server's pre-account character: `legacy` is the local hash key. AUTH-DESIGN §6.
+	/// Claim this server's pre-account character: `legacy` is the local hash key.
 	ClaimLegacy {
 		legacy: [u8; 16],
 	},

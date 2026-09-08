@@ -142,7 +142,7 @@ impl Engine {
 				gain: crate::audio::AMBIENT_GAIN,
 			});
 		}
-		// The prospector's sense (SKILLS-DESIGN §5.5): a faint shimmer near a deposit whose tier
+		// The prospector's sense: a faint shimmer near a deposit whose tier
 		// you cannot yet see, reaching further at the sense's second rank. Audio only — an overlay
 		// would make every reveal level meaningless. It borrows the cave bed's voice as a
 		// POSITIONAL one-shot, a stand-in; swapping this to a new `Sfx` variant is the whole change

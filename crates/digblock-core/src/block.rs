@@ -48,7 +48,7 @@ blocks! {
 	Dirt = 2 => mat(dig(carveable(props(RenderClass::Opaque, true, tex::DIRT, tex::DIRT, tex::DIRT)), 30, DigFamily::Soft), Material::Dirt),
 	Grass = 3 => mat(dig(carveable(props(RenderClass::Opaque, true, tex::GRASS_SIDE, tex::GRASS_TOP, tex::DIRT)), 30, DigFamily::Soft), Material::Grass),
 	Sand = 4 => mat(dig(props(RenderClass::Opaque, true, tex::SAND, tex::SAND, tex::SAND), 25, DigFamily::Soft), Material::Sand),
-	/// Mined stone crumbles to Rubble (SKILLS-DESIGN §7.1): the clean block
+	/// Mined stone crumbles to Rubble: the clean block
 	/// exists only pristine in terrain or transmuted at the bench, which
 	/// is what makes transmutation the economy rather than a curiosity.
 	/// `crumbles` and not `drops`, so a stone somebody MADE comes back
@@ -99,27 +99,27 @@ blocks! {
 	/// removes one third. Crafted via alchemy.
 	WoodSlab = 25 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LOG, tex::LOG_TOP, tex::LOG_TOP)), ShapeKind::Slab), 20, DigFamily::Wood), Material::Wood),
 	StoneSlab = 26 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::STONE, tex::STONE, tex::STONE)), ShapeKind::Slab), 30, DigFamily::Rock), Material::Stone),
-	/// What mined rock actually is (SKILLS-DESIGN §7.1): cracked, fully
+	/// What mined rock actually is: cracked, fully
 	/// placeable, and the mass Terra feedstock at the bench. Placed, it
 	/// reads as rough cobble — the free rustic building material. Drops
 	/// itself, so it round-trips.
 	Rubble = 27 => mat(dig(props(RenderClass::Opaque, true, tex::RUBBLE, tex::RUBBLE, tex::RUBBLE), 60, DigFamily::Loose), Material::Rubble),
-	/// First light (SKILLS-DESIGN §7.3/§7.4): a floor-mounted post with a
+	/// First light: a floor-mounted post with a
 	/// glowing head, crafted early — before ore on purpose. It both
 	/// `glows` (fullbright ink, so the head reads bright of itself) and
 	/// `emits`, which is what puts it in the GI light list.
 	Torch = 28 => dig(emits(glows(shaped(crafted(props(RenderClass::Shaped, true, tex::TORCH_SIDE, tex::TORCH_FLAME, tex::TORCH_SIDE)), ShapeKind::Torch)), 14), 10, DigFamily::Fixed),
-	/// The water tool as an ITEM-ONLY row (SKILLS-DESIGN §6): tools are
+	/// The water tool as an ITEM-ONLY row: tools are
 	/// blocks that never render, collide, place, or slot — they exist so
 	/// ownership, prediction, rebase, and both persistence formats ride
 	/// the count machinery untouched. The bucket is the catalog's FIRST
-	/// tool (SKILLS-DESIGN §13.5): crafted like the other three, priced
+	/// tool: crafted like the other three, priced
 	/// so the opening dig-and-extract loop pays for it, and granted by
 	/// migration to every record written while it was still owned by
 	/// everyone. Its charge stays the Water count. Its texture layers are
 	/// placeholders, never sampled — RenderClass::None.
 	Bucket = 29 => props(RenderClass::None, false, 0, 0, 0),
-	/// Planed timber (SKILLS-DESIGN §7.2's material × shape grid): the
+	/// Planed timber (a material × shape grid cell): the
 	/// refined counterpart of the felled `Wood` trunk, craft-only and
 	/// never generated — the bench's second timber, opened after the log's
 	/// own shapes. Exists as a full block because its slab has to
@@ -151,7 +151,7 @@ blocks! {
 	RedLumberStairs = 42 => mat(dig(styled(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_RED, tex::LUMBER_RED, tex::LUMBER_RED)), ShapeKind::Stairs), ShapeStyle::Lumber), 60, DigFamily::Wood), Material::RedLumber),
 	RedLumberSlab = 43 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_RED, tex::LUMBER_RED, tex::LUMBER_RED)), ShapeKind::Slab), 20, DigFamily::Wood), Material::RedLumber),
 	RedLumberDoor = 44 => mat(dig(shaped(crafted(props(RenderClass::Shaped, true, tex::LUMBER_RED, tex::LUMBER_RED, tex::LUMBER_RED)), ShapeKind::Door), 45, DigFamily::Wood), Material::RedLumber),
-	/// Furniture (SKILLS-DESIGN §7.3): FUNCTIONAL items, not §7.2 grid
+	/// Furniture: FUNCTIONAL items, not material × shape grid
 	/// cells — a table is a thing, the way a torch is, rather than a form
 	/// any substance could be worked into. So they carry no material,
 	/// wear the joinery timber, and are priced by hand — which is also
@@ -202,7 +202,7 @@ blocks! {
 	/// one face `item_geom` marks as its glow. The tint comes from the texture,
 	/// which is why a row that renders nothing carries one.
 	EssenceSiphon = 53 => emits(props(RenderClass::None, false, tex::SIPHON_GLOW, tex::SIPHON_GLOW, tex::SIPHON_GLOW), 5),
-	/// The Resonant Pick (SKILLS-DESIGN §5.6): crafted and wielded at the
+	/// The Resonant Pick: crafted and wielded at the
 	/// same level in either skill — the flagship cross-skill dependency,
 	/// and the game's biggest essence sink. Held, one hold breaks the plane
 	/// of the face you hit, over a square that widens again later in Mining.
@@ -436,7 +436,7 @@ impl ShapeStyle {
 	pub const ALL: [ShapeStyle; 3] = [ShapeStyle::Plain, ShapeStyle::Lumber, ShapeStyle::Stone];
 }
 
-/// The SHAPE axis of SKILLS-DESIGN §7.2's material × shape grid: the form a substance is worked
+/// The SHAPE axis of the material × shape grid: the form a substance is worked
 /// into. Distinct from [`ShapeKind`], which is a rendering/collision tag — `Block` has no
 /// sub-block geometry at all, and `ShapeKind::Torch` is a functional item rather than a form you
 /// can put any material into, so it has no family here. The transmute tab's families ARE this
@@ -518,7 +518,7 @@ impl ShapeFamily {
 	}
 }
 
-/// The five reagents — what a siphon draws a NODE into (SKILLS-DESIGN §14). `repr` indices are a
+/// The five reagents — what a siphon draws a NODE into. `repr` indices are a
 /// wire and persistence format (flagged inventory pairs), APPEND-ONLY. **The indices are frozen;
 /// the names are not** — renaming moves no byte, since the discriminants are explicit, nothing
 /// serializes an `Essence` by name, and `/give` reads [`Essence::ident`]. The first two keep the
@@ -692,7 +692,7 @@ pub struct BlockProps {
 	/// Which of the kind's authored files this row bakes from; `Plain` for every row whose kind
 	/// ships one. Meaningless without [`Self::shape`] (pinned by `table_sanity`).
 	pub shape_style: ShapeStyle,
-	/// Stage-A light (SKILLS-DESIGN §7.4): every face renders fullbright ink — the shader skips
+	/// Stage-A light: every face renders fullbright ink — the shader skips
 	/// the sun/shadow terms. Independent of [`Self::light`] on purpose: ore-reveal seams want ink
 	/// that casts nothing, and a recessed lamp could cast without glowing. Both stay per-ROW
 	/// builders while the rest of a §7.2 grid cell derives from the pair, so both are what a
@@ -710,19 +710,19 @@ pub struct BlockProps {
 	/// `gi::classify_chunk` places no point source, and the mesher hands the renderer merged
 	/// rectangles instead (GI-DESIGN R31). [`Self::light`] says how bright; this says WHERE FROM.
 	pub surface_light: bool,
-	/// Which per-material dig-speed curve applies (SKILLS-DESIGN §5.1).
+	/// Which per-material dig-speed curve applies.
 	/// Set together with hardness by the `dig` builder so a diggable row
 	/// can never forget it. Shared client/server behavior — a family
 	/// change is a SIM_VERSION bump like a hardness retune.
 	pub dig_family: DigFamily,
-	/// The substance this block is made OF (SKILLS-DESIGN §7.2's grid). Together with
+	/// The substance this block is made OF (the material × shape grid). Together with
 	/// [`Self::shape`] it derives the unlock level, the craft cost, the extraction yield and the
 	/// earned half of the strength wall — see [`crate::material`]. `None` for air, the water
 	/// family and every FUNCTIONAL item: function is priced by hand, never by volume.
 	pub material: Option<Material>,
 }
 
-/// The per-material dig-speed families (SKILLS-DESIGN §5.1). A family is just the two ENDPOINTS
+/// The per-material dig-speed families. A family is just the two ENDPOINTS
 /// of its Mining curve — first-level speed and mastery speed — so it chooses the approach and the
 /// ceiling and nothing else; the shape between them is one shared taper in
 /// `skills::dig_speed_permille`. It is also the axis the strength wall is keyed on
@@ -856,7 +856,7 @@ const fn crumbles(mut p: BlockProps, d: BlockType) -> BlockProps {
 	p
 }
 
-/// The substance half of SKILLS-DESIGN §7.2's grid. Everything a structural block's economy needs
+/// The substance half of the material × shape grid. Everything a structural block's economy needs
 /// — unlock level, craft cost, extraction yield, the earned strength wall — falls out of this
 /// plus the row's `shaped` tag, so a material × shape pair is a row and a PNG rather than four
 /// table edits. FUNCTIONAL items deliberately have none.
@@ -947,7 +947,7 @@ pub mod tex {
 	pub const LUMBER_LIGHT: u16 = 19;
 	pub const LUMBER_DARK: u16 = 20;
 	pub const LUMBER_RED: u16 = 21;
-	/// The four ore faces and the tapped one (SKILLS-DESIGN §5.3): stone
+	/// The four ore faces and the tapped one: stone
 	/// bodies with tier-coloured flecks, the deep two bright enough to
 	/// read as ink in a dark cave.
 	pub const EMBERORE: u16 = 22;
@@ -1160,7 +1160,7 @@ impl BlockType {
 		self.props().light
 	}
 
-	/// The per-material dig-speed family (SKILLS-DESIGN §5.1).
+	/// The per-material dig-speed family.
 	#[inline]
 	pub fn dig_family(self) -> DigFamily {
 		self.props().dig_family

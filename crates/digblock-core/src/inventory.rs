@@ -24,7 +24,7 @@ pub const BUCKET_CHARGE: u32 = 1;
 
 /// The ceiling for one type. Applied at BOTH ends of every write — [`Inventory::add`] and
 /// [`Inventory::from_wire`] — so a save written back when water was an ordinary stack decodes as a
-/// full bucket rather than a windfall of free sources. Tools cap at ONE (SKILLS-DESIGN §7.3), so a
+/// full bucket rather than a windfall of free sources. Tools cap at ONE, so a
 /// second craft has nowhere to go and is refused before any debit by the standing `InventoryFull`
 /// rebase — which also makes ownership a count prediction and both save formats already carry.
 #[inline]
@@ -93,7 +93,7 @@ impl Inventory {
 	}
 
 	/// Does the player have this tool? Tools cap at one, so ownership IS the count — the bucket
-	/// included, since it joined the catalog (SKILLS-DESIGN §13.5; records written while it was
+	/// included, since it joined the catalog (records written while it was
 	/// owned by everyone are granted one on load, so nothing loses a bucket it had). Non-tools
 	/// are never owned in this sense, whatever their stack says.
 	#[inline]
@@ -152,7 +152,7 @@ impl Inventory {
 		self.subs[m as usize]
 	}
 
-	/// The essence redesign's one-time balance reset (SKILLS-DESIGN §14): clear every essence
+	/// The essence redesign's one-time balance reset: clear every essence
 	/// EXCEPT Aether, always the scarce one and what the sigil and the pick are saved up in.
 	/// Pre-redesign balances were earned against an unbounded bench, and carrying them into an
 	/// economy where essence is FOUND would hand the hardest grinders a head start. Called from

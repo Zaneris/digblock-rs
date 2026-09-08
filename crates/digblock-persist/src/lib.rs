@@ -44,11 +44,11 @@ pub struct PlayerPersist {
 /// The player-record revision — CONTENT migrations, not format ones: the journal's `VERSION` stays
 /// the format/worldgen contract, and bumping it refuses a client save outright. A store stamps the
 /// current revision on every write and reports a FRESH world as current, so the only saves below it
-/// were written by an older build. rev 1: the bucket joined the catalog (SKILLS-DESIGN §13.5), and
+/// were written by an older build. rev 1: the bucket joined the catalog, and
 /// the engine grants one on load — a migration, never a windfall, since a fresh world starts here.
 pub const REV_CRAFTED_BUCKET: u32 = 1;
 
-/// rev 2: the essence redesign (SKILLS-DESIGN §14). A save below this
+/// rev 2: the essence redesign. A save below this
 /// holds essence earned against the unbounded bench the redesign
 /// removed, so the engine clears every balance but Aether on load — the
 /// same one-time reset the server's record reader runs, keyed the same

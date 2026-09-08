@@ -67,7 +67,7 @@ pub mod tex {
 	pub const LUMBER_LIGHT: &[u8] = include_bytes!("../../../assets/textures/LumberLight.png");
 	pub const LUMBER_DARK: &[u8] = include_bytes!("../../../assets/textures/LumberDark.png");
 	pub const LUMBER_RED: &[u8] = include_bytes!("../../../assets/textures/LumberRed.png");
-	// The ore faces (SKILLS-DESIGN §5.3), texgen-derived from STONE:
+	// The ore faces, texgen-derived from STONE:
 	// tier-coloured flecks with a catch rim and a dark socket, and the
 	// tapped face where the flecks are gone and the sockets are not.
 	pub const EMBERORE: &[u8] = include_bytes!("../../../assets/textures/Emberore.png");

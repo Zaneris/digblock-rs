@@ -709,7 +709,7 @@ fn a_fresh_siphon_holder_draws_leystone_through_stones_wall() {
 	);
 }
 
-/// SKILLS-DESIGN §5.3, server half — the whole ore loop in one test, because the parts only mean
+/// The ore reveal, server half — the whole ore loop in one test, because the parts only mean
 /// anything together: (1) below the reveal a vein is stone and pays rubble; (2) at the reveal
 /// without the siphon `DigStart` refuses with `NeedsTool` and opens no hold; (3) with the siphon
 /// the completing dig writes the tier's SPENT ROCK rather than air, credits ESSENCE, and pays
@@ -898,7 +898,7 @@ fn a_revealed_vein_needs_the_siphon_and_pays_two_skills() {
 	);
 }
 
-/// SKILLS-DESIGN §5.6, server half: the Resonant Pick breaks the PLANE of the face it hits,
+/// Server half: the Resonant Pick breaks the PLANE of the face it hits,
 /// derived from the server's own raycast and its own world — the client names one cell and this
 /// end decides what the swing touched. The three properties, in one test because they are one
 /// mechanism: the width follows the level, every extra cell holds the same id, and the credit is

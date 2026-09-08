@@ -28,14 +28,14 @@ use std::time::{Duration, Instant};
 const MAGIC: [u8; 4] = *b"DBI1";
 const VERSION: u16 = 12;
 
-/// The version from which the bucket is a CRAFTED tool (SKILLS-DESIGN §13.5). Every record below
+/// The version from which the bucket is a CRAFTED tool. Every record below
 /// it was written when the bucket was owned by everyone — the count machinery just never stored
 /// one — so the reader grants it, writing down the ownership the old build implied. Never a
 /// windfall: records at this version and above own exactly what their counts say. The record BODY
 /// is unchanged; the version is the grant's whole trigger.
 const FIRST_CRAFTED_BUCKET_VERSION: u16 = 7;
 
-/// The version from which essence is FOUND, not ground (SKILLS-DESIGN §14). Every record below it
+/// The version from which essence is FOUND, not ground. Every record below it
 /// holds balances earned against the unbounded bench the redesign removed, so the reader clears
 /// them — all but Aether, which was always the scarce one. The record BODY is unchanged; the
 /// version is the reset's whole trigger, so it runs at most once per record and a fresh account

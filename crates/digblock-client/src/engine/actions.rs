@@ -113,7 +113,7 @@ impl Engine {
 		digblock_core::player::ascend_clear(resolved, &|x, y, z| pipeline.cell_at(x, y, z))
 	}
 
-	/// What a dig on this cell IS for us right now (SKILLS-DESIGN §5.3) — the same `dig_mode` the
+	/// What a dig on this cell IS for us right now — the same `dig_mode` the
 	/// server asks of its own world, so prediction and authority cannot disagree about whether an
 	/// action was a dig, a draw, or a refusal. The chunk store still holds Stone here: the reveal
 	/// is a stamp on the MESH input, never a world write, which keeps ore out of the journal and
@@ -1218,7 +1218,7 @@ impl Engine {
 		};
 		let prev = BlockType::from_id(digblock_core::chunk::cell_id(prev_cell));
 		// (cell, prev) list this dig clears — a door adds its partner, the Resonant Pick adds
-		// the plane of the face (SKILLS-DESIGN §5.6). Every extra cell holds the SAME id and is
+		// the plane of the face. Every extra cell holds the SAME id and is
 		// the plain breakable case (`pick::breaks_as_extra`), which is what makes `begin_multi`'s
 		// single `inv_delta` a correct description of the whole group — and what keeps the aimed
 		// door's own partner out of the plane, where it would be counted AND written twice.
@@ -1246,7 +1246,7 @@ impl Engine {
 				}
 			}
 		}
-		// A field extraction (SKILLS-DESIGN §5.3): the vein is DRAWN out,
+		// A field extraction: the vein is DRAWN out,
 		// not dug out, so the cell becomes a tapped face and the mountain
 		// keeps its shape. Resolved before the write, because it changes
 		// both what is written and what is credited.

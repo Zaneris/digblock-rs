@@ -153,7 +153,7 @@ pub fn drawn_kind(face: BlockType) -> Option<BlockType> {
 }
 
 /// What a dig on one cell actually IS, for this player with this tool in
-/// hand (SKILLS-DESIGN §5.3). The one question the client's prediction and
+/// hand. The one question the client's prediction and
 /// the server's validation both ask, so they cannot disagree about whether
 /// an action was a dig, a draw, or a refusal.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

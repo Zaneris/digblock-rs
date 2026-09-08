@@ -286,7 +286,7 @@ pub fn dig_required(block: BlockType, hardness: u16, level: u32) -> u32 {
 /// rather than in ticks is what makes the crack retreat at one visible speed on every block.
 pub const DIG_DECAY_TICKS: u32 = 60;
 
-/// The Resonant Pick's hold multiplier in permille (SKILLS-DESIGN §5.6), applied on top of the
+/// The Resonant Pick's hold multiplier in permille, applied on top of the
 /// family curve when the pick is the ACTIVE tool.
 ///
 /// **Level-only, never derived from how many cells actually qualify** — a world-derived one

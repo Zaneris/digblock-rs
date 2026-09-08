@@ -317,7 +317,7 @@ impl Default for AlchScreen {
 }
 
 /// One transmute family: a tile that previews its members in slow rotation; selecting it lays the
-/// members out under the page's single TRANSMUTE button. The grouping IS SKILLS-DESIGN §7.2's
+/// members out under the page's single TRANSMUTE button. The grouping IS the
 /// shape axis (`block::ShapeFamily`), members in material (i.e. unlock) order, so a new material ×
 /// shape pair joins its family on its own and the catalog grows without the screen growing. Only
 /// the FUNCTIONAL families are authored here — §7.3's hand-priced items have no axis to derive on.
