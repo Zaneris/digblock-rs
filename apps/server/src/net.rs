@@ -11,13 +11,33 @@ use digblock_net::protocol::{
 	MAX_CLIENT_FRAME, MIN_PROTOCOL, PREAMBLE_LEN, PROTOCOL_VERSION, TICK_RATE, decode_preamble,
 	encode_preamble, protocol_supported,
 };
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use tokio::sync::Notify;
 use tokio::sync::mpsc::channel;
 use wtransport::endpoint::endpoint_side::Server;
 use wtransport::tls::Sha256DigestFmt;
 use wtransport::{Connection, Endpoint, Identity, RecvStream, SendStream, ServerConfig};
+
+/// Who may join, and how the server learns who they are.
+#[derive(Clone)]
+pub enum Admission {
+	/// A one-time token the master minted, verified back with it; the account is its answer.
+	Master(Arc<MasterState>),
+	/// No master: the Hello token is the player's own key, the account derived from it.
+	Direct,
+}
+
+/// Where a CA-issued certificate goes inside the data directory, copied in by the host's ACME
+/// client. Present, it is served instead of a self-signed one.
+pub const TLS_DIR: &str = "tls";
+const TLS_CERT: &str = "fullchain.pem";
+const TLS_KEY: &str = "privkey.pem";
+/// How often [`watch_tls`] looks for a renewal; ACME renews weeks before expiry.
+const TLS_POLL: Duration = Duration::from_secs(60 * 60);
+/// A changed pair is read this long after it is seen, so both halves of a renewal have landed.
+const TLS_SETTLE: Duration = Duration::from_secs(10);
 
 /// How long a fresh connection gets to produce its `PREAMBLE_LEN` preamble.
 const PREAMBLE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -111,6 +131,59 @@ fn server_config(identity: Identity, port: u16) -> anyhow::Result<ServerConfig> 
 pub fn make_endpoint(port: u16) -> anyhow::Result<(Endpoint<Server>, [u8; 32])> {
 	let (identity, hash) = fresh_identity()?;
 	Ok((Endpoint::server(server_config(identity, port)?)?, hash))
+}
+
+/// The certificate in `dir` ([`TLS_DIR`]), if one was put there. `Ok(None)` = no files, so the
+/// self-signed default; half a pair is an error, since the default would hide a broken renewal.
+pub async fn load_tls(dir: &Path) -> anyhow::Result<Option<(Identity, [u8; 32])>> {
+	let (cert, key) = (dir.join(TLS_CERT), dir.join(TLS_KEY));
+	match (cert.exists(), key.exists()) {
+		(false, false) => return Ok(None),
+		(true, true) => {}
+		_ => anyhow::bail!("{} needs both {TLS_CERT} and {TLS_KEY}", dir.display()),
+	}
+	let identity = Identity::load_pemfiles(&cert, &key).await?;
+	let hash = *identity.certificate_chain().as_slice()[0].hash().as_ref();
+	Ok(Some((identity, hash)))
+}
+
+/// Build the endpoint around a certificate [`load_tls`] found.
+pub fn make_endpoint_with(port: u16, identity: Identity) -> anyhow::Result<Endpoint<Server>> {
+	Ok(Endpoint::server(server_config(identity, port)?)?)
+}
+
+/// Serve each renewal of the certificate in `dir` without a restart: poll the pair's modification
+/// times and swap a changed pair into the live endpoint, as [`rotate_cert`] does. A pair that will
+/// not load is logged and the current certificate kept, to be tried again at the next poll.
+pub async fn watch_tls(endpoint: Arc<Endpoint<Server>>, dir: PathBuf) {
+	let stamp = |dir: &Path| -> Option<(SystemTime, SystemTime)> {
+		let modified = |name| std::fs::metadata(dir.join(name)).and_then(|m| m.modified());
+		Some((modified(TLS_CERT).ok()?, modified(TLS_KEY).ok()?))
+	};
+	let mut seen = stamp(&dir);
+	loop {
+		tokio::time::sleep(TLS_POLL).await;
+		if stamp(&dir) == seen {
+			continue;
+		}
+		tokio::time::sleep(TLS_SETTLE).await;
+		let loaded = match load_tls(&dir).await {
+			Ok(Some((identity, _))) => server_config(identity, 0)
+				.and_then(|config| Ok(endpoint.reload_config(config, false)?)),
+			Ok(None) => Err(anyhow::anyhow!("the certificate files are gone")),
+			Err(e) => Err(e),
+		};
+		match loaded {
+			Ok(()) => {
+				seen = stamp(&dir);
+				log::info!("serving the renewed certificate in {}", dir.display());
+			}
+			Err(e) => log::error!(
+				"certificate in {} changed but did not load: {e}",
+				dir.display()
+			),
+		}
+	}
 }
 
 /// Swap a fresh certificate into the live endpoint. Existing connections
@@ -220,7 +293,7 @@ impl Drop for IpSlot {
 pub async fn serve(
 	endpoint: Arc<Endpoint<Server>>,
 	events: Sender<SimEvent>,
-	master: Arc<MasterState>,
+	admission: Admission,
 	max_conns_per_ip: usize,
 ) {
 	let mut next_conn: u64 = 1;
@@ -237,7 +310,7 @@ pub async fn serve(
 		let conn_id = next_conn;
 		next_conn += 1;
 		let events = events.clone();
-		let master = master.clone();
+		let admission = admission.clone();
 		// RAII, not paired calls: a panic anywhere in the task below would
 		// skip a manual `fetch_sub` and leak the slot forever.
 		let slot = ConnSlot::take(&active);
@@ -267,7 +340,7 @@ pub async fn serve(
 				);
 			};
 			log::info!("conn {conn_id}: {}", conn.remote_address());
-			let why = handle_connection(conn, conn_id, &events, &master).await;
+			let why = handle_connection(conn, conn_id, &events, &admission).await;
 			let _ = events.send(SimEvent::Disconnected { conn_id });
 			match why {
 				Some(why) => log::info!("conn {conn_id}: closed ({why})"),
@@ -286,13 +359,13 @@ async fn handle_connection(
 	conn: Connection,
 	conn_id: u64,
 	events: &Sender<SimEvent>,
-	master: &MasterState,
+	admission: &Admission,
 ) -> Option<String> {
 	// Everything up to the sim hearing about this connection runs under one
 	// deadline. The individual reads have their own, tighter ones; this
 	// covers the steps BETWEEN them — the control-stream accept, our own
 	// preamble write, and the master verify — none of which were bounded.
-	match tokio::time::timeout(LOBBY_TIMEOUT, lobby(&conn, conn_id, events, master)).await {
+	match tokio::time::timeout(LOBBY_TIMEOUT, lobby(&conn, conn_id, events, admission)).await {
 		Ok(Some((send, recv, buf, frames, out_rx))) => {
 			Some(serve_connection(conn, conn_id, events, send, recv, buf, frames, out_rx).await)
 		}
@@ -323,7 +396,7 @@ async fn lobby(
 	conn: &Connection,
 	conn_id: u64,
 	events: &Sender<SimEvent>,
-	master: &MasterState,
+	admission: &Admission,
 ) -> Option<(
 	SendStream,
 	RecvStream,
@@ -413,15 +486,16 @@ async fn lobby(
 		}
 	};
 	let mut hello = hello;
-	let ClientMsg::Hello { token, .. } = &hello else {
+	let ClientMsg::Hello { token, name, .. } = &hello else {
 		log::warn!("conn {conn_id}: first frame was not hello");
 		return None;
 	};
-	let token = *token;
-	let verified = match verify_join(master, &token).await {
+	let (token, claimed) = (*token, name.clone());
+	let verified = match verify_join(admission, &token, &claimed).await {
 		Ok(verified) => {
-			// The master's answer wins over the claimed name; the sim's
-			// sanitize_name still applies downstream.
+			// The master's answer wins over the claimed name (without a
+			// master the claim IS the answer); the sim's sanitize_name
+			// still applies downstream.
 			if let ClientMsg::Hello { name, .. } = &mut hello {
 				*name = verified.display_name.clone();
 			}
@@ -549,17 +623,31 @@ async fn serve_connection(
 	}
 }
 
-/// Gatekeeper for the mandatory-token join flow. Fails closed: when the
-/// master cannot confirm a token, nobody gets in — a registered server is a
-/// listed server, and with the master down no legitimate player can mint a
-/// token either.
+/// Gatekeeper for the join. Under a master it fails closed: when the master
+/// cannot confirm a token nobody gets in, since with it down no legitimate
+/// player can mint one either. Without a master the token is the player's
+/// key, so the account comes from it and the name they claimed stands.
 async fn verify_join(
-	master: &MasterState,
+	admission: &Admission,
 	token: &[u8; 16],
+	claimed: &str,
 ) -> Result<master::VerifiedJoin, String> {
-	if *token == [0u8; 16] {
-		return Err("joining requires a token from the master server".into());
-	}
+	let master = match admission {
+		Admission::Master(_) if *token == [0u8; 16] => {
+			return Err("joining requires a token from the master server".into());
+		}
+		Admission::Master(master) => master,
+		Admission::Direct if *token == [0u8; 16] => {
+			return Err("this server needs a newer game client, refresh or update".into());
+		}
+		Admission::Direct => {
+			return Ok(master::VerifiedJoin {
+				display_name: claimed.to_string(),
+				account: digblock_net::protocol::direct_account(token),
+				skills: Default::default(),
+			});
+		}
+	};
 	let Some(reg) = master.registration() else {
 		return Err("server not yet registered with master".into());
 	};

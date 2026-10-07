@@ -419,6 +419,9 @@ pub struct EngineConfig {
 	/// once menu services arrive, the menu walks the exact user join path
 	/// unattended. Web `?join` and scripted flows.
 	pub auto_join: Option<String>,
+	/// Multiplayer joins the first listed server as it opens (`Menu::set_join_first`): the
+	/// launcher sets it when it answers the menu with its one hardcoded server.
+	pub join_first: bool,
 	/// The signed-in account, if the launcher found a stored session. The
 	/// engine never reads or writes the session TOKEN — that lives in the
 	/// launcher's services thread, which is the only thing that talks to
@@ -431,6 +434,10 @@ pub struct EngineConfig {
 	/// Read-only, and never created: a machine with no old identity has nothing to migrate, and
 	/// minting one would invent a character out of thin air.
 	pub legacy_identity: Option<[u8; 16]>,
+	/// The claim on this player's master-era save (`protocol::master_session_claim` of the session
+	/// the launcher still holds), offered on master-free joins only. Computed by the launcher, so
+	/// the session token itself never enters the engine.
+	pub master_claim: Option<[u8; 16]>,
 	/// Log a per-phase breakdown of every over-budget frame. The LAUNCHER
 	/// fills this (desktop: `DIG_SPIKELOG`; web: `?spikelog`) — reading the
 	/// environment inside core answers None forever on wasm, which is
@@ -540,8 +547,10 @@ impl EngineConfig {
 			fullscreen_button: false,
 			fullscreen_hint: false,
 			auto_join: None,
+			join_first: false,
 			account: None,
 			legacy_identity: None,
+			master_claim: None,
 			spike_log: false,
 			gpu_timer: true,
 			fps_cap: None,

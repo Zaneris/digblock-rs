@@ -361,6 +361,43 @@ fn browser_flow_join_and_fail_returns_with_status() {
 	);
 }
 
+/// With one server to go to, Multiplayer is one press into it. A join that fails must stop on
+/// the list with its reason, and asking for the list again must only list: otherwise a server
+/// that is down turns the menu into a connect loop the player cannot read or escape.
+#[test]
+fn a_one_server_build_joins_as_multiplayer_opens() {
+	let mut menu = Menu::new(true, Settings::default(), None, named("ted"));
+	menu.set_join_first();
+	menu.set_services_available();
+	open_browser(&mut menu);
+	assert_matches!(
+		menu.take_commands().as_slice(),
+		[MenuCommand::RefreshServers]
+	);
+	menu.on_response(MenuResponse::ServerList(Ok(vec![entry("s1", "Alpha")])));
+	match menu.take_commands().as_slice() {
+		[MenuCommand::Join { server_id }] => assert_eq!(server_id, "s1"),
+		other => panic!(
+			"expected a Join with no second press, got {} commands",
+			other.len()
+		),
+	}
+	menu.on_net_failed("server unreachable");
+	let view = menu.view(SIZE, 1.0, false);
+	assert!(
+		view.rows
+			.iter()
+			.any(|r| r.text.contains("server unreachable"))
+	);
+	menu.activate(Act::Refresh);
+	menu.on_response(MenuResponse::ServerList(Ok(vec![entry("s1", "Alpha")])));
+	assert_matches!(
+		menu.take_commands().as_slice(),
+		[MenuCommand::RefreshServers],
+		"a refresh after a failure lists, it does not join again"
+	);
+}
+
 /// An illegal name is refused on the name screen rather than travelling
 /// to the master. The rule itself is `validate_name`; what this pins is
 /// that the screen consults it before spending a round trip.

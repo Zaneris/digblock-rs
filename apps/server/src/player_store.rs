@@ -297,6 +297,14 @@ impl PlayerStore {
 		self.dirty = true;
 	}
 
+	/// Remove a record outright; `None` when nothing is held under `id`.
+	fn take(&mut self, id: &IdentityKey) -> Option<PlayerRecord> {
+		self.used.remove(id);
+		let rec = self.map.remove(id)?;
+		self.dirty = true;
+		Some(rec)
+	}
+
 	/// A player's persisted record; default (empty, no layout) when
 	/// unknown.
 	pub fn get(&self, id: &IdentityKey) -> PlayerRecord {
@@ -345,6 +353,30 @@ impl PlayerStore {
 		};
 		self.map.remove(&victim);
 		self.used.remove(&victim);
+	}
+
+	/// Move the save under `from` onto `to`, emptying `from`; `None` when nothing is there. The
+	/// OLD character wins where only one can (position, layout), with anything `to` already
+	/// gathered merged in: `to` is the same player under a new key, not a second character.
+	pub fn claim_account(&mut self, from: IdentityKey, to: IdentityKey) -> Option<PlayerRecord> {
+		let old = self.take(&from)?;
+		let moved = old.merged_with(&self.get(&to));
+		self.put(to, moved.clone());
+		Some(moved)
+	}
+
+	/// [`PlayerStore::claim_account`] on the store in `dir`, offline (`--move-save`): a running
+	/// server's next flush would overwrite it. `Ok(false)` when nothing is saved under `from`.
+	pub fn move_save(dir: &Path, from: IdentityKey, to: IdentityKey) -> io::Result<bool> {
+		let mut store = Self::open(dir)?;
+		if store.claim_account(from, to).is_none() {
+			return Ok(false);
+		}
+		store.sync();
+		if store.writer.write_failed() {
+			return Err(io::Error::other("the player store could not be written"));
+		}
+		Ok(true)
 	}
 
 	/// Called once per sim tick: flush if dirty and the interval passed.

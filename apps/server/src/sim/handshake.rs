@@ -1,15 +1,14 @@
-//! Join: token verification against the master, the pre-account
-//! legacy claim, and the sync every new client is sent. Verification
-//! fails CLOSED; the client never asserts who it is.
+//! Join: token verification against the master, the claims on earlier
+//! characters (pre-account, master-era), and the sync every new client is
+//! sent. Verification fails CLOSED; the client never asserts who it is.
 
 use super::*;
 
 impl Sim {
-	/// One-time transfer of this server's pre-account character onto the account that asked for it
-	/// (`ClientMsg::ClaimLegacy`). Silence is the normal answer: a client cannot know which servers
-	/// it has already migrated on, so it asks on every join, and "nothing held under that key" is
-	/// the common case rather than an error. The one-time-ness lives in the store — a successful
-	/// claim deletes the quarantined record, so a repeat looks like a key that was never here.
+	/// One-time transfer of an earlier character onto the account that asked (`ClaimLegacy`): the
+	/// pre-account one filed under `legacy`, else the master-era save a session claim names
+	/// (`crate::master_claims`). Silence is the normal answer, as a client asks on every join; the
+	/// one-time-ness lives in the store, since a claim deletes its source and a repeat finds nothing.
 	pub(super) fn claim_legacy(&mut self, conn_id: u64, legacy: [u8; 16]) {
 		// An unverified connection has no account to migrate ONTO, so there
 		// is nothing this could mean. That is the offline harness and the
@@ -17,9 +16,20 @@ impl Sim {
 		let Some(account) = self.clients.get(&conn_id).and_then(|c| c.identity) else {
 			return;
 		};
-		let Some(record) = self.player_store.claim_legacy(legacy, account) else {
-			return;
+		let (record, from_master) = match self.player_store.claim_legacy(legacy, account) {
+			Some(record) => (record, None),
+			None => {
+				let claimed = self.master_claims.get(&legacy).copied();
+				let Some(old) = claimed.filter(|old| *old != account) else {
+					return;
+				};
+				let Some(record) = self.player_store.claim_account(old, account) else {
+					return;
+				};
+				(record, Some(old))
+			}
 		};
+		let old_pos = record.pos;
 		let kindled: Vec<Kindled> = self.kindled.clone();
 		let Some(client) = self.clients.get_mut(&conn_id) else {
 			return;
@@ -90,7 +100,17 @@ impl Sim {
 		// the quarantined record still in it and the account record
 		// un-merged — the player simply claims again on their next join,
 		// which is the state they were already in.
-		log::info!("player {name} claimed a pre-account character on this server");
+		let Some(old) = from_master else {
+			log::info!("player {name} claimed a pre-account character on this server");
+			return;
+		};
+		log::info!("player {name} ({account}) took back the save of master account {old}");
+		// The old character wins the position too, and the player is standing
+		// at spawn: put them back where they left it.
+		if let Some(pos) = old_pos {
+			let pos = self.clear_landing(Vec3::from_array(pos));
+			self.teleport_client(conn_id, pos, Vec3::ZERO);
+		}
 	}
 
 	pub(super) fn handle_hello(

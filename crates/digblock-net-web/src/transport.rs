@@ -297,7 +297,13 @@ fn watch_for_stall(shared: &SharedRef, stage: &Stage) {
 	});
 }
 
-fn options(cert_hash: [u8; 32]) -> JsValue {
+/// `None` asks for nothing beyond the browser's own CA validation: a server with a real
+/// certificate, which is the only kind a browser can reach without a master handing it a pin.
+fn options(cert_hash: Option<[u8; 32]>) -> JsValue {
+	let opts = js_sys::Object::new();
+	let Some(cert_hash) = cert_hash else {
+		return opts.into();
+	};
 	let hash = js_sys::Object::new();
 	js_sys::Reflect::set(&hash, &"algorithm".into(), &"sha-256".into()).expect("set");
 	js_sys::Reflect::set(
@@ -306,7 +312,6 @@ fn options(cert_hash: [u8; 32]) -> JsValue {
 		&js_sys::Uint8Array::from(&cert_hash[..]).into(),
 	)
 	.expect("set");
-	let opts = js_sys::Object::new();
 	js_sys::Reflect::set(
 		&opts,
 		&"serverCertificateHashes".into(),
@@ -345,12 +350,16 @@ async fn read_loop(reader: ReadableStreamDefaultReader, shared: SharedRef, datag
 	}
 }
 
-/// Connect with the server's pinned certificate hash, the only trust mode a browser can express
-/// for self-signed servers. Returns immediately with `Connecting`; `url` is a WebTransport URL.
+/// Connect with the server's pinned certificate hash (a self-signed server), or `None` for a
+/// CA-certified one. Returns immediately with `Connecting`; `url` is a WebTransport URL.
 /// `force_no_datagrams` pretends this browser has no datagram channel (`?nodatagrams`), because
 /// otherwise the reliable-stream fallback could only be exercised on the one browser that needs it
 /// and is hardest to attach a console to — a path with no way to run on a dev machine rots.
-pub fn connect(url: &str, cert_hash: [u8; 32], force_no_datagrams: bool) -> WebTransportClient {
+pub fn connect(
+	url: &str,
+	cert_hash: Option<[u8; 32]>,
+	force_no_datagrams: bool,
+) -> WebTransportClient {
 	let shared: SharedRef = Rc::new(RefCell::new(Shared {
 		events: VecDeque::new(),
 		connected_sent: false,
@@ -633,7 +642,7 @@ impl WebTransportClient {
 /// time divided by the round trips it is made of, and marked as the estimate it is.
 pub fn probe(
 	url: &str,
-	cert_hash: [u8; 32],
+	cert_hash: Option<[u8; 32]>,
 	timeout_ms: u32,
 	done: impl FnOnce(Option<Ping>) + 'static,
 ) {

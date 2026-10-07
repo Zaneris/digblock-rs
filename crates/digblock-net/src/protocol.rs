@@ -16,11 +16,18 @@ pub const SERVER_ID: PlayerId = u8::MAX;
 /// can't drop a real pending edit whose verdict is still coming.
 pub const NO_CLIENT_SEQ: u32 = 0;
 
-/// The production master server. Launchers and the dedicated server fall
-/// back to this when no master is specified; an explicitly empty override
-/// (`--master-url ""`, `?master=`) disables master-backed features (menu
-/// multiplayer, music) instead.
+/// The production master server. The dedicated server falls back to this
+/// unless started with `--no-master`. Launchers no longer do: with no master
+/// named they join [`DIRECT_SERVER_URL`], and an explicitly empty override
+/// (`--master-url ""`, `?master=`) disables multiplayer and music instead.
 pub const DEFAULT_MASTER_URL: &str = "https://master.digblock.net";
+
+/// The one server a client plays on when no master is named: the master is out of the loop, so
+/// launchers join this directly with a device key ([`direct_token`]) instead of a minted token.
+pub const DIRECT_SERVER_NAME: &str = "CSharp Void";
+/// [`DIRECT_SERVER_NAME`]'s address. A host name with a CA-issued certificate, because without a
+/// master there is nobody to hand a browser the hash of a self-signed one.
+pub const DIRECT_SERVER_URL: &str = "https://vps-b78cfafb.vps.ovh.ca:4433";
 
 /// The wire contract both ends must agree on. Exchanged in the handshake preamble; a peer
 /// outside `MIN_PROTOCOL..=PROTOCOL_VERSION` is refused.
@@ -317,6 +324,40 @@ pub fn legacy_identity_from_hex(hex: &str) -> Option<[u8; 16]> {
 	(secret != [0; 16]).then(|| legacy_identity_hash(&secret))
 }
 
+/// The Hello token a master-free client presents to `server_url`: its device key hashed with the
+/// server's address, so a server only ever learns a token that opens nothing anywhere else.
+///
+/// **A FILE FORMAT, like [`direct_account`]**: every master-free save is keyed through it.
+pub fn direct_token(device_key: &[u8; 32], server_url: &str) -> [u8; 16] {
+	use sha2::{Digest, Sha256};
+	let mut h = Sha256::new();
+	h.update(b"digblock direct token v1\0");
+	h.update(device_key);
+	h.update(server_url.as_bytes());
+	h.finalize()[..16].try_into().expect("digest is 32 bytes")
+}
+
+/// The account a master-free server files a player under: their token hashed again, so the id
+/// that admin lists and Copy ID publish can never be replayed as the token itself.
+pub fn direct_account(token: &[u8; 16]) -> AccountId {
+	use sha2::{Digest, Sha256};
+	let mut h = Sha256::new();
+	h.update(b"digblock direct account v1\0");
+	h.update(token);
+	AccountId(h.finalize()[..16].try_into().expect("digest is 32 bytes"))
+}
+
+/// The claim a client makes on its master-era save with the master session it still holds: the
+/// head of the hash the master stored that session under (`Secrets.Hash`, SHA-256 of the token's
+/// UTF-8), so the server matches it against an export of those hashes without the master. Sent as
+/// `ClaimLegacy`, and only to the master-free server: whoever holds it can take that save.
+pub fn master_session_claim(session_token: &str) -> [u8; 16] {
+	use sha2::{Digest, Sha256};
+	Sha256::digest(session_token.as_bytes())[..16]
+		.try_into()
+		.expect("digest is 32 bytes")
+}
+
 /// Chat message cap, in CHARS. Not bytes: accented characters are two
 /// bytes each in UTF-8, so a full line can encode to twice the cap —
 /// still nowhere near [`MAX_FRAME`].
@@ -558,6 +599,39 @@ mod tests {
 		// raw file contents would hand every server the old bearer
 		// credential, which is the thing v23 removed.
 		assert_ne!(legacy_identity_hash(&[7; 16]), [7; 16]);
+	}
+
+	/// Every master-free save is filed under these two hashes, so moving either strands every
+	/// player who joined without a master. Pinned to vectors from an independent implementation
+	/// (Python's hashlib) for the reason the legacy key is: a derivation always agrees with itself.
+	#[test]
+	fn a_direct_players_account_never_moves() {
+		let token = direct_token(&[7; 32], "https://vps-b78cfafb.vps.ovh.ca:4433");
+		assert_eq!(
+			token,
+			[
+				0x48, 0x7a, 0x64, 0x96, 0x67, 0x0d, 0x12, 0x4d, 0x27, 0xf3, 0x4d, 0x6c, 0xd2, 0x04,
+				0x20, 0xfc
+			]
+		);
+		assert_eq!(
+			direct_account(&token).to_string(),
+			"d3cec032-4b6e-a43a-7bda-09d905bd8e4f"
+		);
+		// A different server must never learn this one's token: an operator could replay it.
+		assert_ne!(direct_token(&[7; 32], "https://elsewhere:4433"), token);
+	}
+
+	/// A master-era save is reclaimed by matching this against hashes the MASTER computed
+	/// (`Secrets.Hash`: SHA-256 of the token's UTF-8, exported from its database), so it must be
+	/// the head of exactly that hash or every claim misses. FIPS 180-2's "abc" vector.
+	#[test]
+	fn a_session_claim_matches_what_the_master_stored() {
+		let want = [
+			0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40, 0xde, 0x5d, 0xae,
+			0x22, 0x23,
+		];
+		assert_eq!(master_session_claim("abc"), want);
 	}
 
 	/// Desktop reads 16 raw bytes from a file; the browser reads 32 hex characters out of

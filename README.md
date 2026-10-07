@@ -5,7 +5,8 @@ as a faithful recreation and is now free to diverge: probe-traced global illumin
 a crafting economy, and account-authenticated multiplayer.
 
 Runs on macOS, in Chrome via WebGPU, and on iOS, off one engine crate. A headless dedicated server and a .NET master
-(accounts, server listing, join tokens) sit behind the multiplayer.
+(accounts, server listing, join tokens) sit behind the multiplayer; for now the master is out of the loop and clients
+join one server directly with a per-device key.
 
 ## Commands
 

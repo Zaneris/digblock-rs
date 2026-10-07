@@ -9,6 +9,8 @@
 //! forces `Master:Dev:ProbeHostOverride`, which collapses the source probe into
 //! the advertised one. [`ComposeRig`] brings up `docker/compose.yml` instead,
 //! the only topology here where the master dials the registrant's real address.
+//! And [`TestServer::start_direct`] boots a `--no-master` server, which needs
+//! no master at all: its door is the player's own key.
 
 use crossbeam_channel::unbounded;
 use digblock_core::block::BlockType;
@@ -290,7 +292,7 @@ impl TestServer {
 	/// As `start`, with `--use-master-levels false`: the board's copy of a
 	/// joiner's skills is not folded in.
 	fn start_local_levels(tag: &str, master_url: &str) -> Self {
-		Self::start_with(tag, master_url, true, None, false)
+		Self::start_with(tag, master_url, true, None, false, false)
 	}
 
 	/// As `start`, but the data dir already holds a pre-account character — a server that ran
@@ -304,7 +306,13 @@ impl TestServer {
 		registered: bool,
 		legacy: Option<([u8; 16], BlockType, u32)>,
 	) -> Self {
-		Self::start_with(tag, master_url, registered, legacy, true)
+		Self::start_with(tag, master_url, registered, legacy, true, false)
+	}
+
+	/// A `--no-master` server: nothing registers, and a Hello token is the
+	/// player's own key for this server.
+	fn start_direct(tag: &str) -> Self {
+		Self::start_with(tag, "http://127.0.0.1:0", false, None, true, true)
 	}
 
 	fn start_with(
@@ -313,6 +321,7 @@ impl TestServer {
 		registered: bool,
 		legacy: Option<([u8; 16], BlockType, u32)>,
 		master_levels: bool,
+		direct: bool,
 	) -> Self {
 		let rt = tokio::runtime::Builder::new_multi_thread()
 			.enable_all()
@@ -347,7 +356,11 @@ impl TestServer {
 		rt.spawn(net::serve(
 			endpoint.clone(),
 			event_tx,
-			state.clone(),
+			if direct {
+				net::Admission::Direct
+			} else {
+				net::Admission::Master(state.clone())
+			},
 			usize::MAX,
 		));
 		let server = Self {
@@ -446,7 +459,7 @@ impl TestClient {
 					name: name.into(),
 					draw_dist: 4,
 					token,
-					legacy_identity,
+					claims: legacy_identity.into_iter().collect(),
 				},
 			),
 			events: Vec::new(),
@@ -623,7 +636,7 @@ fn expect_refused(url: &str, token: [u8; 16], substr: &str) {
 			name: "x".into(),
 			draw_dist: 4,
 			token,
-			legacy_identity: None,
+			claims: Vec::new(),
 		},
 	);
 	let deadline = Instant::now() + Duration::from_secs(30);
@@ -1079,6 +1092,27 @@ fn the_server_keys_a_player_on_their_account() {
 		"a claimed Hello name must never reach the roster: {:?}",
 		other.joined_names
 	);
+}
+
+/// Without a master a player's key is who they are: the same key is the same player (one live
+/// connection, as for an account), another key is somebody else, and the name they chose is the
+/// one everybody sees. A client with no key at all is turned away with a reason it can show.
+#[test]
+fn a_masterless_server_knows_a_player_by_their_key() {
+	let _ = env_logger::builder().is_test(true).try_init();
+	let server = TestServer::start_direct("direct");
+	let key = digblock_net::protocol::direct_token(&[1; 32], &server.url);
+	let mut a = TestClient::connect(&server.url, "Ada_L", key);
+	a.wait("welcome", |c| c.welcomed);
+	assert!(
+		TestClient::try_connect(&server.url, "Imposter", key).is_err(),
+		"one key must not hold two live connections"
+	);
+	let other = digblock_net::protocol::direct_token(&[2; 32], &server.url);
+	let mut b = TestClient::connect(&server.url, "Bob_R", other);
+	b.wait("welcome", |c| c.welcomed);
+	b.wait("roster", |c| c.joined_names.iter().any(|n| n == "Ada_L"));
+	expect_refused(&server.url, [0; 16], "newer game client");
 }
 
 /// The pre-account migration over a real connection: a player who used to play here before

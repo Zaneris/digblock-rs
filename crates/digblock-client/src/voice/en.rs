@@ -388,7 +388,7 @@ fn admin(r: &AdminReply) -> String {
 		}
 		AdminReply::NoBanMatches { arg } => format!("No ban matches {arg}"),
 		AdminReply::LegacyCharacterClaimed => {
-			"Your pre-account character on this server has been added to your account".into()
+			"Your earlier character on this server has been added to your account".into()
 		}
 		AdminReply::CommandsAreAdminOnly => "Commands are admin-only".into(),
 		AdminReply::WithheldOnRankedServer { command } => {

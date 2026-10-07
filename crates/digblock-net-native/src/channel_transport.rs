@@ -31,6 +31,23 @@ pub enum CertPolicy {
 	Insecure,
 	/// Trust exactly this SHA-256 certificate hash (the server logs its own hash at startup).
 	PinnedSha256([u8; 32]),
+	/// Trust the system's root CAs: a CA-certified server, reached with no master to hand a pin.
+	SystemRoots,
+}
+
+impl CertPolicy {
+	/// The wtransport client config this policy describes; shared with the probe so a ping
+	/// and a join can never trust different things.
+	pub(crate) fn client_config(self) -> ClientConfig {
+		let builder = ClientConfig::builder().with_bind_default();
+		match self {
+			CertPolicy::Insecure => builder.with_no_cert_validation().build(),
+			CertPolicy::PinnedSha256(hash) => builder
+				.with_server_certificate_hashes([wtransport::tls::Sha256Digest::new(hash)])
+				.build(),
+			CertPolicy::SystemRoots => builder.with_native_certs().build(),
+		}
+	}
 }
 
 impl CertPolicy {
@@ -202,17 +219,7 @@ async fn run(
 		let _ = in_tx.send(TransportEvent::Disconnected { reason });
 	};
 
-	let config = match policy {
-		CertPolicy::Insecure => ClientConfig::builder()
-			.with_bind_default()
-			.with_no_cert_validation()
-			.build(),
-		CertPolicy::PinnedSha256(hash) => ClientConfig::builder()
-			.with_bind_default()
-			.with_server_certificate_hashes([wtransport::tls::Sha256Digest::new(hash)])
-			.build(),
-	};
-	let endpoint = match Endpoint::client(config) {
+	let endpoint = match Endpoint::client(policy.client_config()) {
 		Ok(e) => e,
 		Err(e) => return disconnect(format!("endpoint: {e}")),
 	};

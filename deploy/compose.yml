@@ -78,3 +78,10 @@ services:
       # take the server. A name works too and is looked up once when the
       # server starts, but the id is what is stored either way.
       #DIGBLOCK_ADMIN_IDS: "b2379408-3102-8b68-b56b-5774dec269b8"
+      # Run without the master: nothing registers and the server is not
+      # listed; a player's own device key is their account here, and
+      # admins must be given by id. Browsers can only reach such a server
+      # under a CA-issued certificate, which it serves from ./data/tls
+      # (fullchain.pem + privkey.pem, e.g. copied in by certbot) and
+      # reloads when renewed.
+      #DIGBLOCK_NO_MASTER: "true"

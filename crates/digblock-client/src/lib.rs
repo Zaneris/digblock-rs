@@ -12,6 +12,7 @@ mod camrig;
 mod chat;
 mod cloud_noise;
 mod confetti;
+pub mod direct;
 mod dusk;
 mod engine;
 pub mod events;

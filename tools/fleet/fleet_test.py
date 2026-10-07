@@ -7,7 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 import fleet  # noqa: E402
 
-FULL = fleet.Values(port=4434, tag="0.8.2", name="Canada East", seed="7", admins=("id-one", "id-two"), advertise_host="play.example.com")
+FULL = fleet.Values(port=4434, tag="0.8.2", name="Canada East", seed="7", admins=("id-one", "id-two"), advertise_host="play.example.com", no_master=True)
 BARE = fleet.Values(port=4433, tag="0.8.2", name="Plain")
 
 
@@ -118,17 +118,26 @@ class InventoryRules(unittest.TestCase):
 			"nested dir": inventory(a2={"host": "a", "dir": "x/y", "port": 4434, "name": "n"}),
 			"admins not a list": inventory(a2={"host": "a", "dir": "other", "port": 4434, "name": "n", "admins": "id"}),
 			"a world lever that is not a bool": inventory(a2={"host": "a", "dir": "other", "port": 4434, "name": "n", "archive_world": "yes"}),
+			"no_master that is not a bool": inventory(a2={"host": "a", "dir": "other", "port": 4434, "name": "n", "no_master": 1}),
+			"stopped that is not a bool": inventory(a2={"host": "a", "dir": "other", "port": 4434, "name": "n", "stopped": "yes"}),
 		}
 		for label, data in cases.items():
 			with self.subTest(label), self.assertRaises(fleet.Fatal):
 				fleet.build_inventory(data)
-		self.assertEqual(len(cases), 9)
+		self.assertEqual(len(cases), 11)
 
 	def test_adopt_output_reloads_to_the_same_inventory(self):
-		inv = fleet.build_inventory(inventory(a2={"host": "a", "dir": "digblock2", "port": 4434, "name": "Two", "seed": 7, "admins": ["id"], "version": "0.7.0", "adopt_terrain": True}))
+		inv = fleet.build_inventory(inventory(a2={"host": "a", "dir": "digblock2", "port": 4434, "name": "Two", "seed": 7, "admins": ["id"], "version": "0.7.0", "adopt_terrain": True, "no_master": True}))
 		text = fleet.toml_rows(inv, {n: (s.host, s.dir, s.values) for n, s in inv.servers.items()})
 		again = fleet.build_inventory(fleet.tomllib.loads(text))
 		self.assertEqual(again, inv)
+
+	def test_a_stopped_server_is_never_brought_back_by_a_fleet_wide_command(self):
+		"""`apply` with no names means every server, and a row kept down for later must not ride
+		along: its host still holds its world and master key, so up would bring it back for real."""
+		inv = fleet.build_inventory(inventory(a2={"host": "a", "dir": "digblock2", "port": 4434, "name": "Two", "stopped": True}))
+		self.assertEqual([s.name for s in fleet.running(inv.select([]))], ["a1"])
+		self.assertEqual(fleet.running(inv.select(["a2"])), [], "naming it does not override the row")
 
 	def test_selection_by_server_or_host(self):
 		inv = fleet.build_inventory(inventory(a2={"host": "a", "dir": "digblock2", "port": 4434, "name": "Two"}))
@@ -146,6 +155,7 @@ class LogClassifier(unittest.TestCase):
 		self.assertEqual(fleet.classify("failed to bind udp 4433: in use"), "failed")
 		self.assertEqual(fleet.classify("archiving /data/world-x.journal to /data/world-x.v1.bak"), "archived")
 		self.assertEqual(fleet.classify("world archived; starting fresh under the current generator"), "archived")
+		self.assertEqual(fleet.classify("accepting players without a master"), "live")
 		self.assertIsNone(fleet.classify("listening on udp 4433"))
 
 	def test_a_refusal_is_never_a_successful_boot(self):

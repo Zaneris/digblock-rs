@@ -242,7 +242,7 @@ fn run_bot(
 			name,
 			draw_dist: 4,
 			token,
-			legacy_identity: None,
+			claims: Vec::new(),
 		},
 	);
 

@@ -117,6 +117,9 @@ impl Engine {
 			config.account.clone(),
 		);
 		menu.set_draw_min(config.draw_min);
+		if config.join_first {
+			menu.set_join_first();
+		}
 		if config.touch_hud {
 			menu.set_touch();
 		}
@@ -687,7 +690,12 @@ impl Engine {
 				name,
 				draw_dist: self.config.draw_dist,
 				token,
-				legacy_identity: self.config.legacy_identity,
+				claims: self
+					.config
+					.legacy_identity
+					.into_iter()
+					.chain(self.config.master_claim)
+					.collect(),
 			},
 		));
 		// Fresh connection: the layout dedup re-primes from the server's

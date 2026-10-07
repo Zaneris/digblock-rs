@@ -8,7 +8,7 @@
 //! blocks comes back at unity with no falloff at all, and such voices stack — which is why
 //! engine-side gains taper with distance too.
 //!
-//! Music: fetched from the master server (never embedded) by a helper thread.
+//! Music: fetched over HTTP (never embedded) by a helper thread, from the master or the web bundle.
 
 use digblock_client::audio::{AudioCmd, AudioSink, LoopId, Sfx, bytes};
 use rodio::source::{Buffered, Source};
@@ -37,14 +37,14 @@ impl AudioSink for ChannelSink {
 }
 
 /// Spawn the audio thread and return the engine-facing sink.
-/// `master_url` enables the music playlist when present.
-pub(crate) fn start(master_url: Option<String>) -> Box<dyn AudioSink> {
+/// `music`, the playlist manifest's URL, enables the music when present.
+pub(crate) fn start(music: Option<String>) -> Box<dyn AudioSink> {
 	let (tx, rx) = mpsc::channel::<AudioCmd>();
 	let (music_tx, music_rx) = mpsc::channel::<(bool, Vec<u8>)>();
-	if let Some(url) = master_url {
+	if let Some(manifest) = music {
 		std::thread::Builder::new()
 			.name("music-fetch".into())
-			.spawn(move || fetch_music(&url, &music_tx))
+			.spawn(move || fetch_music(&manifest, &music_tx))
 			.ok();
 	}
 	std::thread::Builder::new()
@@ -56,7 +56,7 @@ pub(crate) fn start(master_url: Option<String>) -> Box<dyn AudioSink> {
 
 /// Pull the manifest, then each track's bytes (decode happens on the
 /// audio thread). Any failure just means no music.
-fn fetch_music(master_url: &str, out: &mpsc::Sender<(bool, Vec<u8>)>) {
+fn fetch_music(manifest: &str, out: &mpsc::Sender<(bool, Vec<u8>)>) {
 	#[derive(serde::Deserialize)]
 	#[serde(rename_all = "camelCase")]
 	struct Track {
@@ -68,8 +68,8 @@ fn fetch_music(master_url: &str, out: &mpsc::Sender<(bool, Vec<u8>)>) {
 		#[serde(default)]
 		set: String,
 	}
-	let manifest = format!("{}/api/music", master_url.trim_end_matches('/'));
-	let tracks: Vec<Track> = match ureq::get(&manifest)
+	let base = digblock_client::audio::manifest_origin(manifest);
+	let tracks: Vec<Track> = match ureq::get(manifest)
 		.call()
 		.and_then(|mut r| r.body_mut().read_json())
 	{
@@ -84,11 +84,7 @@ fn fetch_music(master_url: &str, out: &mpsc::Sender<(bool, Vec<u8>)>) {
 		let url = if t.url.starts_with("http") {
 			t.url
 		} else {
-			format!(
-				"{}/{}",
-				master_url.trim_end_matches('/'),
-				t.url.trim_start_matches('/')
-			)
+			format!("{base}/{}", t.url.trim_start_matches('/'))
 		};
 		match ureq::get(&url)
 			.call()

@@ -280,7 +280,7 @@ async fn run(
 							continue;
 						};
 						let resp_tx = resp_tx.clone();
-						digblock_net_web::probe(&url, hash, 3000, move |ping| {
+						digblock_net_web::probe(&url, Some(hash), 3000, move |ping| {
 							let _ = resp_tx.send(MenuResponse::Ping {
 								server_id: id,
 								ping,
@@ -412,7 +412,7 @@ async fn join(
 	let hash = digblock_net_web::parse_sha256_hex(&join.cert_hash)
 		.map_err(|e| format!("bad certHash from master: {e}"))?;
 	Ok((
-		digblock_net_web::connect(&join.url, hash, no_datagrams),
+		digblock_net_web::connect(&join.url, Some(hash), no_datagrams),
 		token,
 	))
 }

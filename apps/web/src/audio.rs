@@ -95,8 +95,9 @@ impl AudioSink for WebSink {
 }
 
 /// Build the graph, kick off async decode + music fetch, hook the
-/// autoplay-resume gestures. Any failure degrades to silence.
-pub(crate) fn start(master_url: Option<String>) -> Box<dyn AudioSink> {
+/// autoplay-resume gestures. Any failure degrades to silence. `music` is
+/// the playlist manifest's URL: the master's, or the bundle's own.
+pub(crate) fn start(music: Option<String>) -> Box<dyn AudioSink> {
 	let build = || -> Option<Rc<RefCell<State>>> {
 		let ctx = AudioContext::new().ok()?;
 		let sfx_bus = ctx.create_gain().ok()?;
@@ -140,8 +141,8 @@ pub(crate) fn start(master_url: Option<String>) -> Box<dyn AudioSink> {
 
 	hook_resume_gestures(&state);
 	wasm_bindgen_futures::spawn_local(decode_all(state.clone()));
-	if let Some(url) = master_url {
-		wasm_bindgen_futures::spawn_local(fetch_music(state.clone(), url));
+	if let Some(manifest) = music {
+		wasm_bindgen_futures::spawn_local(fetch_music(state.clone(), manifest));
 	}
 	Box::new(WebSink(state))
 }
@@ -207,11 +208,11 @@ async fn decode_all(state: Rc<RefCell<State>>) {
 	}
 }
 
-/// Fetch the master's music manifest + tracks; decoded tracks feed the
-/// looping playlist. Any failure = no music, nothing else affected.
-async fn fetch_music(state: Rc<RefCell<State>>, master_url: String) {
-	let base = master_url.trim_end_matches('/').to_string();
-	let manifest = match fetch_json(&format!("{base}/api/music")).await {
+/// Fetch the music manifest + tracks; decoded tracks feed the looping
+/// playlist. Any failure = no music, nothing else affected.
+async fn fetch_music(state: Rc<RefCell<State>>, manifest_url: String) {
+	let base = digblock_client::audio::manifest_origin(&manifest_url).to_string();
+	let manifest = match fetch_json(&manifest_url).await {
 		Some(v) => v,
 		None => {
 			log::warn!("music manifest fetch failed");

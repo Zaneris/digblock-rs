@@ -117,10 +117,19 @@ the same seam.
 trait is synchronous and must degrade (log, keep running) rather than fail the game. Server world journal and client
 local saves share the format.
 
-There is no unregistered server mode and no tokenless join: the server registers with the master (retrying forever), the
-master probes it over real QUIC, and clients join only by presenting a master-minted token the server verifies back. The
-server port range is mirrored across the C# master, deploy files, and the fleet tool, and the test
-`the_masters_port_block_mirrors_ours` reads those files to keep them honest.
+Under a master there is no tokenless join: the server registers (retrying forever), the master probes it over real QUIC,
+and clients join only by presenting a master-minted token the server verifies back. The server port range is mirrored
+across the C# master, deploy files, and the fleet tool, and the test `the_masters_port_block_mirrors_ours` reads those
+files to keep them honest.
+
+The master is currently out of the loop. Production runs one server with `--no-master` (`DIGBLOCK_NO_MASTER`): nothing
+registers, a player's Hello token is their own device key hashed per server (`protocol::direct_token`), and the account
+is that token hashed again (`direct_account`; both are save keys, pinned by `a_direct_players_account_never_moves`). It
+serves a CA-issued certificate from `<data-dir>/tls`, since browsers can only pin hashes of self-signed certs. Launchers
+given no master join `protocol::DIRECT_SERVER_URL` through `digblock_client::direct`; an explicit `--master-url` /
+`?master=` (what `just play` passes) still runs the master flow, and music ships in the web bundle (`/music/`). Saves
+from the master's days stay filed under master ids until a returning client's kept session claims one
+(`apps/server/src/master_claims.rs`, exported by `tools/fleet/master_claims.py`).
 
 ### Core pipeline (chunks, meshing, jobs)
 

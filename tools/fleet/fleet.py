@@ -44,7 +44,7 @@ WATCH_POLL_SECS = 3
 SSH_OPTS = ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]
 
 HOST_KEYS = {"addr", "user"}
-SERVER_KEYS = {"host", "dir", "port", "name", "seed", "admins", "advertise_host", "version", "archive_world", "adopt_terrain"}
+SERVER_KEYS = {"host", "dir", "port", "name", "seed", "admins", "advertise_host", "version", "archive_world", "adopt_terrain", "no_master", "stopped"}
 # Row keys that are a one-off DECISION rather than configuration: each is inert until its own
 # reason applies, so leaving one set costs nothing, but `apply` says so every time.
 DECISIONS = ("archive_world", "adopt_terrain")
@@ -79,6 +79,8 @@ class Values:
 	# this build cannot read must not still be armed at the next terrain release.
 	archive_world: bool = False
 	adopt_terrain: bool = False
+	# Run without the master (DIGBLOCK_NO_MASTER): unlisted, players keyed on their own device key.
+	no_master: bool = False
 
 	def same_world(self, other: Values) -> bool:
 		"""Whether the two name the same world. Seeds compare NUMERICALLY, so "6" and "6.0" are
@@ -98,7 +100,7 @@ class Values:
 	def changes(self, other: Values) -> list[str]:
 		"""Field-by-field differences, worded as `field: mine -> other`."""
 		out = []
-		for name in ("port", "tag", "name", "seed", "admins", "advertise_host", *DECISIONS):
+		for name in ("port", "tag", "name", "seed", "admins", "advertise_host", "no_master", *DECISIONS):
 			a, b = getattr(self, name), getattr(other, name)
 			if name == "seed":
 				if self.same_world(other):
@@ -115,6 +117,9 @@ class Server:
 	host: Host
 	dir: str
 	values: Values
+	# Kept down on purpose, its folder and data (master-key included) left on the host:
+	# apply, start and restart pass it by until the row says otherwise.
+	stopped: bool = False
 
 	@property
 	def label(self) -> str:
@@ -209,11 +214,12 @@ def build_inventory(data: dict) -> Inventory:
 		if not isinstance(admins, list) or not all(isinstance(a, str) and a for a in admins):
 			raise Fatal(f"server {name!r}: admins must be a list of account ids")
 		decisions = {}
-		for key in DECISIONS:
+		for key in (*DECISIONS, "no_master", "stopped"):
 			v = row.get(key, False)
 			if not isinstance(v, bool):
 				raise Fatal(f"server {name!r}: {key} must be true or false, not {v!r}")
 			decisions[key] = v
+		stopped = decisions.pop("stopped")
 		values = Values(
 			port=port,
 			tag=str(row.get("version", default_version)),
@@ -223,7 +229,7 @@ def build_inventory(data: dict) -> Inventory:
 			advertise_host=row.get("advertise_host") or None,
 			**decisions,
 		)
-		inv.servers[name] = Server(name, host, directory, values)
+		inv.servers[name] = Server(name, host, directory, values, stopped)
 	return inv
 
 
@@ -250,6 +256,8 @@ def toml_rows(inv: Inventory, servers: dict[str, tuple[Host, str, Values]]) -> s
 			lines.append("admins = [" + ", ".join(json.dumps(a) for a in v.admins) + "]")
 		if v.advertise_host:
 			lines.append(f"advertise_host = {json.dumps(v.advertise_host)}")
+		if v.no_master:
+			lines.append("no_master = true")
 		for key in DECISIONS:
 			if getattr(v, key):
 				lines.append(f"{key} = true")
@@ -263,8 +271,8 @@ def toml_rows(inv: Inventory, servers: dict[str, tuple[Host, str, Values]]) -> s
 
 PORT_LINE = re.compile(r'^x-port: &port "(\d+)"$')
 IMAGE_LINE = re.compile(rf"^(\s*)image: {re.escape(IMAGE)}:(\S+)$")
-ENV_LINE = re.compile(r'^(\s*)(#?)(DIGBLOCK_(?:SERVER_NAME|ADVERTISE_HOST|SEED|ADMIN_IDS|ARCHIVE_WORLD|ADOPT_TERRAIN)): "(.*)"$')
-OPTIONAL = {"DIGBLOCK_ADVERTISE_HOST", "DIGBLOCK_SEED", "DIGBLOCK_ADMIN_IDS", "DIGBLOCK_ARCHIVE_WORLD", "DIGBLOCK_ADOPT_TERRAIN"}
+ENV_LINE = re.compile(r'^(\s*)(#?)(DIGBLOCK_(?:SERVER_NAME|ADVERTISE_HOST|SEED|ADMIN_IDS|ARCHIVE_WORLD|ADOPT_TERRAIN|NO_MASTER)): "(.*)"$')
+OPTIONAL = {"DIGBLOCK_ADVERTISE_HOST", "DIGBLOCK_SEED", "DIGBLOCK_ADMIN_IDS", "DIGBLOCK_ARCHIVE_WORLD", "DIGBLOCK_ADOPT_TERRAIN", "DIGBLOCK_NO_MASTER"}
 
 
 def _slots(text: str, *, missing_ok: frozenset[str] = frozenset()) -> dict[str, int]:
@@ -312,6 +320,7 @@ def parse(text: str) -> Values:
 		# so a commented slot and an explicit "false" read the same.
 		archive_world=(env("DIGBLOCK_ARCHIVE_WORLD") or "").lower() == "true",
 		adopt_terrain=(env("DIGBLOCK_ADOPT_TERRAIN") or "").lower() == "true",
+		no_master=(env("DIGBLOCK_NO_MASTER") or "").lower() == "true",
 	)
 
 
@@ -332,6 +341,7 @@ def render(v: Values, kit: str | None = None) -> str:
 		# renders the kit's own example and the host carries no switch.
 		"DIGBLOCK_ARCHIVE_WORLD": "true" if v.archive_world else None,
 		"DIGBLOCK_ADOPT_TERRAIN": "true" if v.adopt_terrain else None,
+		"DIGBLOCK_NO_MASTER": "true" if v.no_master else None,
 	}
 	for key, value in wanted.items():
 		i = slots[key]
@@ -358,6 +368,8 @@ def classify(line: str) -> str | None:
 	stop the watch.
 	"""
 	if "registered with master" in line and "(listed at " in line:
+		return "live"
+	if "accepting players without a master" in line:
 		return "live"
 	if "world archived" in line or ("archiving" in line and ".bak" in line):
 		return "archived"
@@ -565,8 +577,16 @@ def cmd_render(inv: Inventory, args) -> None:
 	print(render(server.values), end="")
 
 
+def running(servers: list[Server]) -> list[Server]:
+	"""The servers a command may bring up: a `stopped` row is passed by, saying so."""
+	for s in servers:
+		if s.stopped:
+			print(f"{s.label}: stopped in {INVENTORY.name}, skipped (drop `stopped` to bring it back)")
+	return [s for s in servers if not s.stopped]
+
+
 def cmd_apply(inv: Inventory, args) -> None:
-	for s in inv.select(args.targets):
+	for s in running(inv.select(args.targets)):
 		remote = remote_compose_text(s)
 		rendered = render(s.values)
 		changes, differs = show_diff(s, remote, rendered)
@@ -612,7 +632,8 @@ def cmd_apply(inv: Inventory, args) -> None:
 
 def cmd_verb(verb: str):
 	def run(inv: Inventory, args) -> None:
-		for s in inv.select(args.targets):
+		servers = inv.select(args.targets)
+		for s in servers if verb == "stop" else running(servers):
 			print(f"{s.label}: {verb}")
 			since = ssh(s.host, "date -u +%Y-%m-%dT%H:%M:%SZ").stdout.strip()
 			compose(s, verb if verb != "start" else "up -d")
@@ -641,7 +662,14 @@ def cmd_status(inv: Inventory, args) -> None:
 		# only at the IP reported "not listed" for every healthy server with
 		# a DNS name.
 		entry = listed.get(f"{s.values.advertise_host or s.host.addr}:{s.values.port}")
-		master = f"listed, {entry['players']} online, p{entry['protocolVersion']}/s{entry['simVersion']}" if entry else "not listed"
+		if s.values.no_master:
+			master = "no master"
+		elif entry:
+			master = f"listed, {entry['players']} online, p{entry['protocolVersion']}/s{entry['simVersion']}"
+		else:
+			master = "not listed"
+		if s.stopped:
+			master += " (stopped)"
 		pinned = s.values.tag + ("" if running == s.values.tag else "  <- drift")
 		rows.append((s.name, f"{s.host.name}:{s.values.port}", s.dir, state, running, pinned, master))
 	widths = [max(len(str(r[i])) for r in [("server", "host:port", "dir", "state", "running", "pinned", "master"), *rows]) for i in range(7)]

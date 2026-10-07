@@ -488,6 +488,9 @@ pub(crate) struct Menu {
 	/// browser, pick the matching row, join — so the Connect handoff
 	/// needs no special case. Web `?join` / scripted flows.
 	auto_join: Option<String>,
+	/// Opening Multiplayer joins the first listed server rather than
+	/// waiting on the list: the master-free build lists exactly one.
+	join_first: bool,
 }
 
 impl Menu {
@@ -526,6 +529,7 @@ impl Menu {
 			settings_dirty: false,
 			cursor: (-1.0, -1.0),
 			auto_join,
+			join_first: false,
 		}
 	}
 
@@ -534,6 +538,12 @@ impl Menu {
 		if self.enabled && self.auto_join.is_some() {
 			self.activate(Act::OpenMultiplayer);
 		}
+	}
+
+	/// Multiplayer has one server to go to, so opening it joins rather
+	/// than lists. A failed join lands on the list, where Refresh only lists.
+	pub(crate) fn set_join_first(&mut self) {
+		self.join_first = true;
 	}
 
 	/// This build draws the touch HUD: surface the touch-only settings
@@ -1372,6 +1382,9 @@ impl Menu {
 	}
 
 	fn open_browser(&mut self) {
+		if self.join_first {
+			self.auto_join.get_or_insert_with(String::new);
+		}
 		self.pending_cmds.push(MenuCommand::RefreshServers);
 		self.screen = Some(Screen::Browser(BrowserState {
 			rows: Vec::new(),
