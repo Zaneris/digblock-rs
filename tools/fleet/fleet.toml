@@ -5,7 +5,7 @@
 # refuses both without --i-mean-it. While the master is out of the loop
 # only a1 runs (no_master); a2 and b1 are stopped with their worlds and
 # master keys left on the hosts, to come back if the master does.
-version = "0.9.3"
+version = "0.9.4"
 
 [hosts.a]
 addr = "148.113.183.210"
