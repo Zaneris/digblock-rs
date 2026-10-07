@@ -21,7 +21,8 @@ dir = "digblock"
 port = 4433
 name = "CSharp Void"
 seed = 6
-admins = ["f7a89819-53c1-4ba7-a8bc-be1d68e2b936"]
+# Master-free, so the admin is the device account (Account -> Copy ID).
+admins = ["9d8415f7-bd26-c671-36d6-21f34b62ef9b"]
 no_master = true
 
 [servers.a2]
