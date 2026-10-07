@@ -459,6 +459,72 @@ fn a_legacy_character_transfers_to_the_account_once() {
 	);
 }
 
+/// A player back after the master is gone: their save is filed under the master account, and the
+/// session their client kept is the only proof left. It moves the save onto the account they play
+/// under now and puts them back where they stood, once; a session the export lacks claims nothing.
+#[test]
+fn a_returning_player_takes_back_their_master_era_save_once() {
+	use digblock_core::block::BlockType;
+	let mut sim = flat_sim("masterclaim");
+	let (master_account, device_account) = (test_account(31), test_account(32));
+	let claim = [0x5cu8; 16];
+	let stood = FLAT_SPAWN + glam::Vec3::new(6.0, 0.0, -4.0);
+	let mut old = crate::player_store::PlayerRecord::default();
+	old.inventory.add(BlockType::Dirt, 9);
+	old.pos = Some(stood.to_array());
+	sim.test_put_record(master_account, old);
+	sim.set_master_claims([(claim, master_account)].into_iter().collect());
+
+	let mut c = connect_as_account(&mut sim, 1, device_account);
+	c.msgs.clear();
+	sim.tick_once(vec![SimEvent::Msg {
+		conn_id: 1,
+		msg: ClientMsg::ClaimLegacy { legacy: [0x5d; 16] },
+	}]);
+	c.drain();
+	assert!(
+		!c.msgs.iter().any(is_claim_answer),
+		"an unknown session: {:?}",
+		c.msgs
+	);
+
+	sim.tick_once(vec![SimEvent::Msg {
+		conn_id: 1,
+		msg: ClientMsg::ClaimLegacy { legacy: claim },
+	}]);
+	c.drain();
+	assert_eq!(
+		sim.test_client_inventory(1).count(BlockType::Dirt),
+		9,
+		"the save came back"
+	);
+	assert!(
+		c.msgs.iter().any(|m| matches!(
+			m,
+			ServerMsg::Teleported { pos, .. } if (pos[0] - stood.x).abs() < 1.0 && (pos[2] - stood.z).abs() < 1.0
+		)),
+		"and the player is back where they stood: {:?}",
+		c.msgs
+	);
+
+	c.msgs.clear();
+	sim.tick_once(vec![SimEvent::Msg {
+		conn_id: 1,
+		msg: ClientMsg::ClaimLegacy { legacy: claim },
+	}]);
+	c.drain();
+	assert!(
+		!c.msgs.iter().any(is_claim_answer),
+		"a spent claim: {:?}",
+		c.msgs
+	);
+	assert_eq!(
+		sim.test_client_inventory(1).count(BlockType::Dirt),
+		9,
+		"paid out once"
+	);
+}
+
 /// An unverified connection carries no account, so there is nothing a
 /// claim could transfer ONTO. It must not consume the quarantined
 /// record on the way to discovering that — otherwise any accountless

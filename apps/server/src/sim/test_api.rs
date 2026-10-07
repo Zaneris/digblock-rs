@@ -48,6 +48,12 @@ impl Sim {
 		self.player_store.test_put_legacy(legacy, rec);
 	}
 
+	/// Plant a save under an account, standing in for one written while the master ran.
+	#[cfg(test)]
+	pub(super) fn test_put_record(&mut self, account: AccountId, rec: PlayerRecord) {
+		self.player_store.put(account, rec);
+	}
+
 	#[cfg(test)]
 	pub(super) fn test_legacy_len(&self) -> usize {
 		self.player_store.legacy_len()

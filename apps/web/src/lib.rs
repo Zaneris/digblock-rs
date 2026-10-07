@@ -8,6 +8,7 @@ use wasm_bindgen::prelude::*;
 
 mod audio;
 mod auth;
+mod direct;
 mod jobs;
 mod services;
 mod settings;
@@ -286,16 +287,22 @@ async fn boot() -> Result<(), JsValue> {
 		config.auto_join = Some(params.get("server").unwrap_or_default());
 	}
 
-	// The production master is the default; ?master= overrides for dev
-	// stacks, and an explicitly empty ?master= disables multiplayer + music
-	// entirely (no master, no server list, no token mint). The default
-	// applies to interactive runs and joins only — a capture path must not
-	// ping the master.
-	let master_url = match params.get("master") {
-		Some(m) if m.is_empty() => None,
-		Some(m) => Some(m),
-		None if interactive || join => Some(digblock_net::protocol::DEFAULT_MASTER_URL.to_string()),
-		None => None,
+	// The master is out of the loop: with no ?master= a run that can play
+	// joins the one hardcoded server directly (direct.rs) and plays the
+	// bundle's own music. ?master= keeps the master flow for dev stacks, and
+	// an explicitly empty one disables multiplayer + music entirely. A
+	// capture path gets neither, so it never touches the network.
+	let master_param = params.get("master");
+	let masterless = master_param.is_none() && (interactive || join);
+	let master_url = master_param.filter(|m| !m.is_empty());
+	let direct = if masterless {
+		let me = direct::load_or_create(auth::load().and_then(|s| s.display_name));
+		if me.is_none() {
+			log::warn!("this browser exposes no secure randomness: multiplayer is off");
+		}
+		me
+	} else {
+		None
 	};
 	// Redeem a returned sign-in before the engine exists, so the menu opens
 	// already signed in and the code leaves the address bar immediately.
@@ -331,11 +338,22 @@ async fn boot() -> Result<(), JsValue> {
 		}
 		_ => session,
 	};
-	config.player_name = session.as_ref().and_then(|s| s.display_name.clone());
-	config.account = session.as_ref().map(|s| digblock_client::AccountView {
-		id: s.account_id.clone(),
-		name: s.display_name.clone(),
-	});
+	if let Some(me) = &direct {
+		config.player_name = me.name.clone();
+		config.account = Some(me.view());
+		config.join_first = true;
+		// A save from the master's days is filed under that account, and the
+		// session this browser kept is what proves it (server: master_claims).
+		config.master_claim = session
+			.as_ref()
+			.map(|s| digblock_net::protocol::master_session_claim(&s.token));
+	} else {
+		config.player_name = session.as_ref().and_then(|s| s.display_name.clone());
+		config.account = session.as_ref().map(|s| digblock_client::AccountView {
+			id: s.account_id.clone(),
+			name: s.display_name.clone(),
+		});
+	}
 	// The pre-account character's lookup key, for servers this browser
 	// played on before accounts existed. Only where a join can happen: a
 	// capture path has no business reading it.
@@ -388,11 +406,17 @@ async fn boot() -> Result<(), JsValue> {
 	// interactive runs only — the engine's sink stays None on a capture,
 	// the same as desktop's.
 	if interactive && !flag(&params, "mute") {
-		engine.set_audio(audio::start(master_url.clone()));
+		let music = match &master_url {
+			Some(m) => Some(format!("{}/api/music", m.trim_end_matches('/'))),
+			None => masterless.then(|| digblock_client::audio::BUNDLE_MUSIC.to_string()),
+		};
+		engine.set_audio(audio::start(music));
 	}
 	engine.set_clipboard(Box::new(copy_to_clipboard));
 	if let Some(master_url) = master_url {
 		engine.set_menu_services(services::start(master_url, session, no_datagrams));
+	} else if let Some(me) = direct {
+		engine.set_menu_services(direct::start(me, no_datagrams));
 	}
 	digblock_platform::run(
 		engine,

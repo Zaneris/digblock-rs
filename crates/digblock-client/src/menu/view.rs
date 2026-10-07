@@ -466,7 +466,11 @@ impl Menu {
 				// Four columns — name, players, ranked, ping. The count is right-aligned within
 				// its column so the figures stay in step as they climb; the mark stands at one
 				// x for every row, past the widest count; the ping keeps the right edge.
-				let count = |e: &ServerEntry| format!("{}/{}", e.players, e.max_players);
+				// A server listed without a master has no count, and "0/0" would read as closed.
+				let count = |e: &ServerEntry| match e.max_players {
+					0 => String::new(),
+					max => format!("{}/{max}", e.players),
+				};
 				let widest = |f: &dyn Fn(&ServerEntry) -> String| {
 					b.rows
 						.iter()

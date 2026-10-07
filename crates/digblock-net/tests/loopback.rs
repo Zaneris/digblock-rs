@@ -32,7 +32,7 @@ fn new_client(end: LoopbackEnd) -> NetClient {
 			name: "test".into(),
 			draw_dist: 8,
 			token: [0; 16],
-			legacy_identity: None,
+			claims: Vec::new(),
 		},
 	)
 }
@@ -139,7 +139,7 @@ fn the_configured_token_reaches_the_wire() {
 			name: "test".into(),
 			draw_dist: 8,
 			token,
-			legacy_identity: None,
+			claims: Vec::new(),
 		},
 	);
 	let mut server = Stub::new(b);
@@ -168,7 +168,7 @@ fn an_old_identity_is_offered_immediately_after_hello() {
 			name: "test".into(),
 			draw_dist: 8,
 			token: [0; 16],
-			legacy_identity: Some(legacy),
+			claims: vec![legacy],
 		},
 	);
 	let mut server = Stub::new(b);

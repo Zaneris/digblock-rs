@@ -53,6 +53,24 @@ pub enum Sfx {
 	UiChirp,
 }
 
+/// The music playlist served beside the web bundle (`just build-web` writes it from the tracks in
+/// `apps/master/music`), as a path on the page's own origin.
+pub const BUNDLE_MUSIC: &str = "/music/index.json";
+/// The web bundle's home, where desktop fetches [`BUNDLE_MUSIC`] when there is no master.
+pub const WEB_ORIGIN: &str = "https://digblock.net";
+
+/// What a music manifest's track paths (`/music/x.ogg`) resolve against: the manifest's own scheme
+/// and host, or `""`, the page's origin, for a manifest named by path alone.
+pub fn manifest_origin(manifest: &str) -> &str {
+	let Some(scheme) = manifest.find("://") else {
+		return "";
+	};
+	let host = scheme + 3;
+	manifest[host..]
+		.find('/')
+		.map_or(manifest, |path| &manifest[..host + path])
+}
+
 /// The embedded bytes for a sound — the enum↔asset pairing lives here
 /// and nowhere else; both platform fillers key their decode caches off
 /// this.
@@ -739,6 +757,26 @@ impl Ambient {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	/// A manifest's tracks come from the host that served it: the master's from the master, the
+	/// bundle's from the page. Resolved anywhere else, every track 404s and the game is silent.
+	#[test]
+	fn music_tracks_come_from_the_host_that_listed_them() {
+		let track = |manifest: &str| format!("{}/music/a.ogg", manifest_origin(manifest));
+		assert_eq!(
+			track("https://master.digblock.net/api/music"),
+			"https://master.digblock.net/music/a.ogg"
+		);
+		assert_eq!(
+			track("http://127.0.0.1:5200/api/music"),
+			"http://127.0.0.1:5200/music/a.ogg"
+		);
+		assert_eq!(track(BUNDLE_MUSIC), "/music/a.ogg");
+		assert_eq!(
+			track(&format!("{WEB_ORIGIN}{BUNDLE_MUSIC}")),
+			"https://digblock.net/music/a.ogg"
+		);
+	}
 
 	/// Every shape of a substance sounds like the cube it came from, swept over the whole
 	/// catalog rather than a hand-kept list of rows.

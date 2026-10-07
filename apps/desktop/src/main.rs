@@ -7,6 +7,7 @@ use digblock_platform::RunOptions;
 
 mod audio;
 mod auth;
+mod direct;
 mod services;
 mod settings;
 mod shape_store;
@@ -40,10 +41,9 @@ fn main() {
 	// frame-time run measures), --render-scale is dev/capture only, and --bench-speed's default is
 	// every bench baseline's value — a different STREAMING regime, not merely a faster one.
 	let mut frames: Option<u32> = None;
-	// Multiplayer goes through the master exclusively: it lists servers, distributes cert pins and
-	// mints the one-time join tokens game servers require, so there is no direct-connect path. The
-	// production master is the default; --master-url / DIG_MASTER_URL point dev stacks elsewhere,
-	// and an explicitly empty value opts out of master-backed features (menu multiplayer, music).
+	// The master is out of the loop: with none named, multiplayer joins the one hardcoded server
+	// directly (direct.rs) and music comes from the web bundle. --master-url / DIG_MASTER_URL keep
+	// the master flow for dev stacks, and an explicitly empty value opts out of both.
 	let mut master_url = std::env::var("DIG_MASTER_URL").ok();
 	let mut join = false;
 	let mut server_filter: Option<String> = None;
@@ -442,21 +442,33 @@ fn main() {
 	// elsewhere).
 	let audio_on = !mute && interactive;
 
-	let master_url = match master_url {
-		Some(u) if u.is_empty() => None,
-		Some(u) => Some(u),
-		// The production default applies to interactive runs and joins
-		// only — hermetic capture paths must not ping the master.
-		None if interactive || join => Some(digblock_net::protocol::DEFAULT_MASTER_URL.into()),
-		None => None,
-	};
+	// The master-free default applies to interactive runs and joins only:
+	// hermetic capture paths must not touch the network.
+	let masterless = master_url.is_none() && (interactive || join);
+	let master_url = master_url.filter(|u| !u.is_empty());
+	// The master-era session this machine kept: its name carries over, and it is the proof that
+	// reclaims the save filed under its account (server: master_claims).
+	let master_session = masterless
+		.then(|| auth::load(&auth::session_path()))
+		.flatten();
+	let direct = masterless.then(|| {
+		direct::load_or_create(master_session.as_ref().and_then(|s| s.display_name.clone()))
+	});
+	if let Some(me) = &direct {
+		config.player_name = me.name.clone();
+		config.account = Some(me.view());
+		config.join_first = true;
+		config.master_claim = master_session
+			.as_ref()
+			.map(|s| digblock_net::protocol::master_session_claim(&s.token));
+	}
 
 	// A scripted join has no browser and no menu, so its session comes from
 	// the master's development sign-in rather than the real flow. There is
 	// no unauthenticated fallback: joining is authenticated now, and
 	// pretending otherwise would fail later and less clearly. Done BEFORE
 	// the engine exists so the resolved name can go into its config.
-	let join_session = if join {
+	let join_session = if join && !masterless {
 		let master_url = master_url
 			.as_deref()
 			.map(|u| u.trim_end_matches('/'))
@@ -514,11 +526,14 @@ fn main() {
 		engine.set_world_store(Box::new(digblock_persist::FsWorldStore::new(worlds)));
 	}
 	if audio_on {
-		engine.set_audio(audio::start(
-			master_url
-				.as_deref()
-				.map(|u| u.trim_end_matches('/').to_string()),
-		));
+		let music = match &master_url {
+			Some(m) => Some(format!("{}/api/music", m.trim_end_matches('/'))),
+			None => masterless.then(|| {
+				use digblock_client::audio::{BUNDLE_MUSIC, WEB_ORIGIN};
+				format!("{WEB_ORIGIN}{BUNDLE_MUSIC}")
+			}),
+		};
+		engine.set_audio(audio::start(music));
 	}
 	if let Some(master_url) = master_url.as_deref().map(|u| u.trim_end_matches('/')) {
 		if let Some(session) = &join_session {
@@ -539,6 +554,14 @@ fn main() {
 				master_url.to_string(),
 				auth::load(&auth::session_path()),
 			));
+			engine.set_clipboard(Box::new(copy_to_clipboard));
+		}
+	} else if let Some(me) = direct {
+		if join {
+			let (transport, token) = direct::connect(&me);
+			engine.set_transport_with_token(Box::new(transport), token);
+		} else {
+			engine.set_menu_services(direct::start(me));
 			engine.set_clipboard(Box::new(copy_to_clipboard));
 		}
 	} else if join {

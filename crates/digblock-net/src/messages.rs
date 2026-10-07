@@ -448,7 +448,7 @@ pub enum ClientMsg {
 		hotbar: Vec<u16>,
 		grid: Vec<u16>,
 	},
-	/// Claim this server's pre-account character: `legacy` is the local hash key.
+	/// Claim an earlier character here: `legacy` is a pre-account hash or a master-session claim.
 	ClaimLegacy {
 		legacy: [u8; 16],
 	},

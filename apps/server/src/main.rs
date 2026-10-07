@@ -10,11 +10,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
-/// Turn every `--admin` argument into an account id, in order.
-///
-/// An id passes straight through; a display name costs one lookup against the master. Doing it
-/// here rather than at each chat command is what makes admin a decision about an ACCOUNT: the name
-/// is resolved once, against the only party that can answer, and stays a label its owner may edit.
 /// A yes/no setting, spelled the way a compose file or a shell writes one;
 /// anything else is a misconfiguration and exits like a bad number does.
 fn parse_bool_or_die(what: &str, v: &str) -> bool {
@@ -28,7 +23,12 @@ fn parse_bool_or_die(what: &str, v: &str) -> bool {
 	}
 }
 
-fn resolve_admins(specs: &[String], master_url: &str) -> Result<Vec<AccountId>, String> {
+/// Turn every `--admin` argument into an account id, in order.
+///
+/// An id passes straight through; a display name costs one lookup against the master (`None`:
+/// none, so ids only). Resolving here rather than at each chat command makes admin a decision
+/// about an ACCOUNT: the name is asked once of the only party that can answer, then just a label.
+fn resolve_admins(specs: &[String], master_url: Option<&str>) -> Result<Vec<AccountId>, String> {
 	specs
 		.iter()
 		.map(|spec| {
@@ -40,6 +40,12 @@ fn resolve_admins(specs: &[String], master_url: &str) -> Result<Vec<AccountId>, 
 					"--admin {spec:?}: not an account id, and not a possible display name either"
 				));
 			}
+			let Some(master_url) = master_url else {
+				return Err(format!(
+					"--admin {spec:?}: a name needs a master to resolve it, and this server runs \
+					 with --no-master. Pass the player's account id (Account -> Copy ID)."
+				));
+			};
 			master::lookup_account(master_url, spec).map_err(|e| {
 				format!(
 					"--admin {spec:?}: could not resolve that name with the master ({e}).\n\
@@ -70,7 +76,8 @@ use digblock_net::protocol::DEFAULT_MASTER_URL;
 const USAGE: &str = "usage: digblock-server [--advertise-host HOST] \
 	 [--master-url URL] [--advertise-port N] [--server-name S] [--port N] \
 	 [--seed F] [--data-dir P] [--sim-radius N] [--workers N] [--admin ID-OR-NAME] \
-	 [--max-conns-per-ip N] [--use-master-levels BOOL] [--archive-world] [--adopt-terrain]\n\
+	 [--max-conns-per-ip N] [--use-master-levels BOOL] [--archive-world] [--adopt-terrain] \
+	 [--no-master] [--move-save FROM-ID TO-ID]\n\
 	 (--advertise-host defaults to the address the master observes registering — your public \
 	 IP; set it for a DNS name or multi-homed hosts. --advertise-port defaults to --port; set \
 	 it when players reach you at a different one (a port forward, a container mapping) — \
@@ -89,8 +96,16 @@ const USAGE: &str = "usage: digblock-server [--advertise-host HOST] \
 	 --adopt-terrain is the TRADE: a world stays on the generator that made it, and this \
 	 gives up that world for the current generator. Both are inert until their own reason \
 	 applies, so neither is a standing hazard — but they are separate because a flag left \
-	 set for one must not fire for the other. Env fallbacks: \
-	 DIGBLOCK_MASTER_URL, DIGBLOCK_ADVERTISE_HOST, DIGBLOCK_ADVERTISE_PORT, \
+	 set for one must not fire for the other. --no-master takes the master out of the loop: \
+	 nothing registers, and a player's Hello token is their own device key for this server, \
+	 the account id derived from it; --admin then takes ids only. A certificate in \
+	 <data-dir>/tls (fullchain.pem + privkey.pem, e.g. copied in by certbot) is served instead \
+	 of a self-signed one and reloaded when it changes, which only --no-master allows: \
+	 browsers can pin nothing but a self-signed cert. --move-save moves one player's save \
+	 onto another account id (the old character wins, anything the new one holds is added) \
+	 and exits; run it with the server STOPPED, or its next save puts the old file back. \
+	 Env fallbacks: \
+	 DIGBLOCK_NO_MASTER, DIGBLOCK_MASTER_URL, DIGBLOCK_ADVERTISE_HOST, DIGBLOCK_ADVERTISE_PORT, \
 	 DIGBLOCK_SERVER_NAME, DIGBLOCK_SEED, DIGBLOCK_MAX_CONNS_PER_IP, DIGBLOCK_ADMIN_IDS \
 	 (comma-separated), DIGBLOCK_USE_MASTER_LEVELS, DIGBLOCK_ARCHIVE_WORLD, \
 	 DIGBLOCK_ADOPT_TERRAIN)";
@@ -131,6 +146,11 @@ fn main() {
 		.filter(|s| !s.is_empty())
 		.map(|v| parse_or_die("DIGBLOCK_MAX_CONNS_PER_IP", Some(v)))
 		.unwrap_or(net::DEFAULT_MAX_CONNECTIONS_PER_IP);
+	let mut no_master = std::env::var("DIGBLOCK_NO_MASTER")
+		.ok()
+		.filter(|s| !s.trim().is_empty())
+		.map(|v| parse_bool_or_die("DIGBLOCK_NO_MASTER", &v))
+		.unwrap_or(false);
 	let mut use_master_levels = std::env::var("DIGBLOCK_USE_MASTER_LEVELS")
 		.ok()
 		.filter(|s| !s.trim().is_empty())
@@ -156,6 +176,7 @@ fn main() {
 		.filter(|s| !s.is_empty())
 		.collect();
 
+	let mut move_save: Option<(String, String)> = None;
 	let mut args = std::env::args().skip(1);
 	while let Some(arg) = args.next() {
 		match arg.as_str() {
@@ -181,6 +202,11 @@ fn main() {
 			}
 			"--admin" => admins.push(parse_or_die("--admin", args.next())),
 			"--archive-world" => archive.stale_format = true,
+			"--no-master" => no_master = true,
+			"--move-save" => {
+				let from: String = parse_or_die("--move-save", args.next());
+				move_save = Some((from, parse_or_die("--move-save", args.next())));
+			}
 			"--adopt-terrain" => archive.foreign_terrain = true,
 			// Both of these were security holes, not merely renames, so
 			// they exit rather than mapping onto the replacement — an
@@ -211,6 +237,30 @@ fn main() {
 			}
 		}
 	}
+	// Maintenance, not a boot: done before anything opens the world.
+	if let Some((from, to)) = move_save {
+		let id = |s: &str| {
+			AccountId::parse(s)
+				.filter(|a| !a.is_none())
+				.unwrap_or_else(|| {
+					eprintln!("--move-save: {s:?} is not an account id");
+					std::process::exit(2);
+				})
+		};
+		let store = digblock_server::player_store::PlayerStore::move_save;
+		match store(&data_dir, id(&from), id(&to)) {
+			Ok(true) => log::info!("moved the save of {from} onto {to}"),
+			Ok(false) => {
+				eprintln!("--move-save: nothing is saved under {from}");
+				std::process::exit(1);
+			}
+			Err(e) => {
+				eprintln!("--move-save failed: {e}");
+				std::process::exit(1);
+			}
+		}
+		return;
+	}
 	let master_url = master_url.unwrap_or_else(|| DEFAULT_MASTER_URL.into());
 	// Empty counts as unset, like DIGBLOCK_SEED: compose files pass
 	// blanks through.
@@ -219,7 +269,7 @@ fn main() {
 	// lists BEFORE anything binds or registers: the refusal the master
 	// would send is a 400 after a round trip, and this one names the fix.
 	let advertise_port = advertise_port.unwrap_or(port);
-	if !PORT_RANGE.contains(&advertise_port) {
+	if !no_master && !PORT_RANGE.contains(&advertise_port) {
 		eprintln!(
 			"advertised port {advertise_port} is outside {}-{}, the block the master lists \
 			 servers at. Pick a port in that block for --port, or for --advertise-port \
@@ -285,7 +335,7 @@ fn main() {
 	// admin, and a name claimed later by somebody else never inherits it. An unresolvable admin is
 	// fatal: a server that boots with admin silently granted to nobody is worse than one that
 	// refuses to boot.
-	let admin_accounts = match resolve_admins(&admins, &master_url) {
+	let admin_accounts = match resolve_admins(&admins, (!no_master).then_some(&*master_url)) {
 		Ok(ids) => ids,
 		Err(e) => {
 			eprintln!("{e}");
@@ -296,15 +346,36 @@ fn main() {
 		log::info!("admin: {id} ({spec})");
 	}
 	sim.set_admin_accounts(admin_accounts);
-	sim.set_master_levels(use_master_levels);
-	if !use_master_levels {
+	// Master-era saves, reclaimable by the session a returning client still holds. Malformed is
+	// fatal: a line skipped is a player whose save never comes back.
+	match digblock_server::master_claims::load(&data_dir) {
+		Ok(claims) if claims.is_empty() => {}
+		Ok(claims) => {
+			log::info!(
+				"{} master-era session(s) may reclaim their saves",
+				claims.len()
+			);
+			sim.set_master_claims(claims);
+		}
+		Err(e) => {
+			eprintln!(
+				"failed to read {}: {e}",
+				digblock_server::master_claims::FILE
+			);
+			std::process::exit(1);
+		}
+	}
+	sim.set_master_levels(use_master_levels && !no_master);
+	if !use_master_levels && !no_master {
 		log::info!("skills are local to this server; the master's copy is not pulled at join");
 	}
 	// The board's outbox: every stored record now, every change of
 	// skills from here on. Whether any of it is sent is the master's call
-	// at registration.
+	// at registration, so without a master there is no outbox at all.
 	let outbox = Arc::new(digblock_server::hiscores::SkillOutbox::new());
-	sim.attach_skill_outbox(outbox.clone());
+	if !no_master {
+		sim.attach_skill_outbox(outbox.clone());
+	}
 	log::info!("world seed {seed}, data dir {}", data_dir.display());
 
 	let (event_tx, event_rx) = unbounded();
@@ -324,7 +395,35 @@ fn main() {
 		.build()
 		.expect("tokio runtime");
 	rt.block_on(async {
-		let (endpoint, cert_hash) = match net::make_endpoint(port) {
+		let tls_dir = data_dir.join(net::TLS_DIR);
+		let tls = match net::load_tls(&tls_dir).await {
+			Ok(tls) => tls,
+			Err(e) => {
+				eprintln!(
+					"failed to load the certificate in {}: {e}",
+					tls_dir.display()
+				);
+				std::process::exit(1);
+			}
+		};
+		// The master can only hand out a certificate HASH, and browsers pin
+		// a hash only for a cert that lives two weeks at most, so a
+		// CA-issued one under a master is a server no browser can join.
+		if tls.is_some() && !no_master {
+			eprintln!(
+				"{} holds a certificate, which only a --no-master server can serve: browsers \
+				 refuse the master's pin for a cert valid longer than 14 days. Remove it, or run \
+				 with --no-master.",
+				tls_dir.display()
+			);
+			std::process::exit(2);
+		}
+		let using_tls = tls.is_some();
+		let bound = match tls {
+			Some((identity, hash)) => net::make_endpoint_with(port, identity).map(|e| (e, hash)),
+			None => net::make_endpoint(port),
+		};
+		let (endpoint, cert_hash) = match bound {
 			Ok(e) => e,
 			Err(e) => {
 				eprintln!("failed to bind udp {port}: {e}");
@@ -333,6 +432,25 @@ fn main() {
 		};
 		let endpoint = Arc::new(endpoint);
 		log::info!("listening on udp {port}");
+		if no_master {
+			if using_tls {
+				log::info!("serving the certificate in {}", tls_dir.display());
+				tokio::spawn(net::watch_tls(endpoint.clone(), tls_dir));
+			} else {
+				// Still rotated, so a long-running server stays joinable by
+				// a client pinning the logged hash; nobody re-registers it.
+				let cert_hash = Arc::new(std::sync::RwLock::new(cert_hash));
+				let nobody = Arc::new(tokio::sync::Notify::new());
+				tokio::spawn(net::rotate_certs(endpoint.clone(), cert_hash, nobody));
+			}
+			// The boot watch (`just fleet apply`) reads this line as live.
+			log::info!("accepting players without a master");
+			tokio::select! {
+				_ = net::serve(endpoint, event_tx, net::Admission::Direct, max_conns_per_ip) => {}
+				_ = shutdown_signal() => {}
+			}
+			return;
+		}
 		let master_state = Arc::new(MasterState::new(master_cfg.url.clone(), event_tx.clone()));
 		let cert_hash = Arc::new(std::sync::RwLock::new(cert_hash));
 		let reregister = Arc::new(tokio::sync::Notify::new());
@@ -351,7 +469,12 @@ fn main() {
 		// long-running server never becomes unjoinable.
 		tokio::spawn(net::rotate_certs(endpoint.clone(), cert_hash, reregister));
 		tokio::select! {
-			_ = net::serve(endpoint, event_tx, master_state.clone(), max_conns_per_ip) => {}
+			_ = net::serve(
+				endpoint,
+				event_tx,
+				net::Admission::Master(master_state.clone()),
+				max_conns_per_ip,
+			) => {}
 			_ = shutdown_signal() => {}
 		}
 		if let Some(reg) = master_state.registration() {

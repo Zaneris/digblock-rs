@@ -344,9 +344,9 @@ impl Engine {
 		if let Some(services) = &self.services {
 			for cmd in self.ui.menu.take_commands() {
 				// The account's name becomes the session name, so the Hello
-				// introduces us consistently. It is a courtesy only: the
-				// server overwrites it with the master's answer, which is
-				// now the same string by construction.
+				// introduces us consistently. Under a master it is a courtesy
+				// (the server overwrites it with the master's answer, the same
+				// string by construction); without one it IS the name.
 				if matches!(cmd, crate::menu::MenuCommand::Join { .. }) {
 					self.config.player_name = self.ui.menu.account().and_then(|a| a.name.clone());
 				}

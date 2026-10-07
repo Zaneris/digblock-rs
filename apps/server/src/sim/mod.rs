@@ -514,6 +514,8 @@ pub struct Sim {
 	/// authorization decision, and it keys on the one identifier the master
 	/// vouches for.
 	admin_accounts: FxHashSet<AccountId>,
+	/// Master-era saves a client can reclaim with its old session (`crate::master_claims`).
+	master_claims: FxHashMap<[u8; 16], AccountId>,
 	/// Fold the master's copy of a joiner's skills into the record at
 	/// join — the default, so a character is one character everywhere.
 	/// Off, this server's ladder stands alone (`--use-master-levels false`).
@@ -720,6 +722,7 @@ impl Sim {
 			ban_store,
 			waystone_store,
 			admin_accounts: FxHashSet::default(),
+			master_claims: FxHashMap::default(),
 			master_levels: true,
 			ranked: false,
 			tod_offset_secs: 0.0,
@@ -741,6 +744,11 @@ impl Sim {
 	/// connection at once.
 	pub fn set_admin_accounts(&mut self, accounts: impl IntoIterator<Item = AccountId>) {
 		self.admin_accounts = accounts.into_iter().filter(|a| !a.is_none()).collect();
+	}
+
+	/// The master-era saves a joiner may take back by presenting its old session.
+	pub fn set_master_claims(&mut self, claims: FxHashMap<[u8; 16], AccountId>) {
+		self.master_claims = claims;
 	}
 
 	/// Whether a join folds in the board's copy of the account's skills.

@@ -239,22 +239,19 @@ web:
 	just build-web
 	python3 tools/serve-web.py
 
-# `just web` already defaults to the production master; this differs only
-# by probing it FIRST, so a deploy outage fails loudly here instead of
-# looking like a broken menu three clicks in. QUERY replaces the default
-# params (`just web-live '?draw=32&overlay'`), which are the frame-pacing
+# `just web` already plays on the live server: with no `?master=` the page
+# joins `protocol::DIRECT_SERVER_URL` itself, the master being out of the
+# loop. This differs only by its params. QUERY replaces the default ones
+# (`just web-live '?draw=32&overlay'`), which are the frame-pacing
 # diagnostic pair: `overlay` for the live busy/out split, `spikelog` for
 # per-frame attribution in the console.
 #
-# Browser client against the live master.digblock.net, diagnostics on.
+# Browser client against the live server, diagnostics on.
 web-live QUERY="?overlay&spikelog":
 	#!/usr/bin/env bash
 	set -euo pipefail
 	just check-web-ports
-	curl -sf --max-time 10 https://master.digblock.net/api/servers >/dev/null \
-		|| { echo "master.digblock.net unreachable — not starting" >&2; exit 1; }
 	just build-web
-	echo "   (master: https://master.digblock.net)"
 	python3 tools/serve-web.py --query '{{QUERY}}'
 
 # Same topology as `just play`. Open the printed URL in Chrome, pick
@@ -369,6 +366,23 @@ build-web:
 	# Favicons, social-embed image, manifest: plain files at the deploy
 	# root, mutable by name (unlike /pkg/*, which is stamped).
 	cp -R apps/web/public/. target/web/
+	# The music the master used to serve, beside the bundle so it ships
+	# with every web deploy: the tracks, and the manifest the master's
+	# /api/music answered (ordinal order, `night_` names the night set),
+	# at the path digblock_client::audio::BUNDLE_MUSIC names.
+	rm -rf target/web/music
+	mkdir -p target/web/music
+	cp apps/master/music/*.ogg target/web/music/
+	{
+		sep=""
+		printf '['
+		for f in $(cd target/web/music && LC_ALL=C ls *.ogg); do
+			case "$f" in night_*) set=night ;; *) set=day ;; esac
+			printf '%s{"name":"%s","url":"/music/%s","set":"%s"}' "$sep" "${f%.ogg}" "$f" "$set"
+			sep=","
+		done
+		printf ']\n'
+	} > target/web/music/index.json
 
 # Compiles every shader with the front end that SHIPS them, by handing
 # them to a headless Chrome. naga (what `cargo test` runs) is the

@@ -13,7 +13,7 @@
 use crate::CertPolicy;
 use digblock_net::probe::Ping;
 use std::time::{Duration, Instant};
-use wtransport::{ClientConfig, Endpoint};
+use wtransport::Endpoint;
 
 pub fn probe(
 	url: &str,
@@ -30,17 +30,7 @@ pub fn probe(
 				.build()
 				.expect("tokio runtime");
 			let ms = rt.block_on(async {
-				let config = match policy {
-					CertPolicy::Insecure => ClientConfig::builder()
-						.with_bind_default()
-						.with_no_cert_validation()
-						.build(),
-					CertPolicy::PinnedSha256(hash) => ClientConfig::builder()
-						.with_bind_default()
-						.with_server_certificate_hashes([wtransport::tls::Sha256Digest::new(hash)])
-						.build(),
-				};
-				let endpoint = Endpoint::client(config).ok()?;
+				let endpoint = Endpoint::client(policy.client_config()).ok()?;
 				let start = Instant::now();
 				let conn = tokio::time::timeout(timeout, endpoint.connect(&url))
 					.await

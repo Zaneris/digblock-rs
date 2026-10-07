@@ -10,6 +10,7 @@ pub mod player_store;
 /// paths stay put.
 pub use digblock_persist::journal;
 pub mod master;
+pub mod master_claims;
 pub mod net;
 pub mod sim;
 pub mod spawn_store;

@@ -718,3 +718,49 @@ fn spell_bar_bytes_round_trip_opaquely() {
 	assert_eq!(s.get(&id).spells, vec![100, 0, 200]);
 	assert!(s.get(&key(32)).spells.is_empty(), "never set reads empty");
 }
+
+/// An operator moving a player's save onto the account they play under now (`--move-save`, the
+/// master's ids giving way to device keys): the old character arrives where it stood, anything
+/// the new account picked up is added on, and the old key is left empty so a repeat moves nothing.
+#[test]
+fn a_moved_save_arrives_whole_and_leaves_nothing_behind() {
+	let dir = temp_dir("movesave");
+	let record = |dirt: u32, pos: [f32; 3]| {
+		let mut inventory = Inventory::default();
+		inventory.add(BlockType::Dirt, dirt);
+		PlayerRecord {
+			inventory,
+			pos: Some(pos),
+			..PlayerRecord::default()
+		}
+	};
+	let (old, new) = (key(1), key(2));
+	{
+		let mut s = PlayerStore::open(&dir).unwrap();
+		s.put(old, record(7, [10.0, 20.0, 30.0]));
+		s.put(new, record(2, [0.0, 64.0, 0.0]));
+		s.sync();
+	}
+	assert!(PlayerStore::move_save(&dir, old, new).unwrap());
+	let s = PlayerStore::open(&dir).unwrap();
+	assert_eq!(
+		s.get(&new).inventory.count(BlockType::Dirt),
+		9,
+		"both piles, added"
+	);
+	assert_eq!(
+		s.get(&new).pos,
+		Some([10.0, 20.0, 30.0]),
+		"back where the old one stood"
+	);
+	assert_eq!(
+		s.get(&old).inventory.count(BlockType::Dirt),
+		0,
+		"moved, not copied"
+	);
+	drop(s);
+	assert!(
+		!PlayerStore::move_save(&dir, old, new).unwrap(),
+		"nothing left to move"
+	);
+}

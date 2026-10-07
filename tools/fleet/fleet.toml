@@ -2,7 +2,9 @@
 # deploy/compose.yml and pushed by `apply`; `just fleet adopt` prints what
 # the hosts currently hold in this same shape. A seed change starts a
 # fresh world and a port change renames the compose project, so `apply`
-# refuses both without --i-mean-it.
+# refuses both without --i-mean-it. While the master is out of the loop
+# only a1 runs (no_master); a2 and b1 are stopped with their worlds and
+# master keys left on the hosts, to come back if the master does.
 version = "0.9.3"
 
 [hosts.a]
@@ -20,6 +22,7 @@ port = 4433
 name = "CSharp Void"
 seed = 6
 admins = ["f7a89819-53c1-4ba7-a8bc-be1d68e2b936"]
+no_master = true
 
 [servers.a2]
 host = "a"
@@ -28,6 +31,7 @@ port = 4434
 name = "Canada East"
 seed = 7
 admins = ["f7a89819-53c1-4ba7-a8bc-be1d68e2b936"]
+stopped = true
 
 [servers.b1]
 host = "b"
@@ -36,3 +40,4 @@ port = 4433
 name = "United Kingdom"
 seed = 8
 admins = ["f7a89819-53c1-4ba7-a8bc-be1d68e2b936"]
+stopped = true
